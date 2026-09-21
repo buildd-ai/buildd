@@ -118,7 +118,7 @@ export interface FlightStripProps {
 }
 
 /** Pure SVG renderer for MissionFlightStripData (packages/core/mission-helpers.ts).
- * No data fetching — callers compute the model and pass it in. Replaces MissionSkylineChart. */
+ * No data fetching — callers compute the model and pass it in. */
 export function FlightStrip({ data, width = 322, className, selectedTaskId = null, onBarSelect }: FlightStripProps) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
   const rows = laneRows(data);
