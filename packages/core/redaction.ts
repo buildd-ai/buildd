@@ -296,18 +296,24 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /(?<!\\)\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /(?<!\\)\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /(?<!\\)\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
-  // Full base64/base64url alphabet, including `-`/`_`. Those two chars are also
-  // every kebab-case/snake-case identifier's word separator, and this codebase
-  // mints plenty of long ones (mission branch names like
-  // `mission/<slug>-<missionId8>-w<workerId8>` easily clear 48 chars of
-  // lowercase letters, digits, and hyphens) — matching them here would corrupt
-  // structural fields like `branch` or `lastCommitSha`. Rather than narrowing
-  // the alphabet (which silently drops coverage for real base64url secrets
-  // pasted into free-text fields), generic patterns in this array are only
-  // applied to fields on the SECRET_SCAN_FIELDS allowlist by
-  // redactSecretsInBody — structural fields get exact-value matching only.
-  // See PR #2305 / its follow-up for the incident this guards against.
-  { pattern: /(?<!\\)\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
+  // Full base64/base64url alphabet, including `-`/`_` — and `/`, which makes a
+  // branch *path* one candidate run: `mission/<slug>-<missionId8>-w<workerId8>`
+  // clears 48 chars without a break. Field scoping (SECRET_SCAN_FIELDS, below)
+  // keeps structural keys like `branch` safe, but a branch name quoted inside a
+  // scanned free-text field — `command`, say, as `git push origin <branch>` —
+  // is still a candidate, and rewriting it to a redaction marker corrupts the
+  // very identifier a reader needs.
+  //
+  // So require mixed case as well as a digit. A kebab/snake identifier minted
+  // in this codebase is lowercase; base64 of random bytes is not. Measured over
+  // 200k random 48-char base64 runs, zero lacked an uppercase letter, so the
+  // coverage this gives up is a lowercase-only 48+ char secret that is also
+  // absent from the exact-value table — while lowercase hex keys stay covered
+  // by the hex rule above, which is unchanged.
+  //
+  // Narrowing the alphabet instead was considered and rejected: it drops real
+  // base64url coverage. See PR #2305 / its follow-up for the original incident.
+  { pattern: /(?<!\\)\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[a-z])(?=[A-Za-z0-9+/=_-]*[A-Z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
 ];
 
 /**

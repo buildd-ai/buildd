@@ -576,11 +576,22 @@ describe('createSecretRedactor().body — field-targeted redaction', () => {
   // distinguishes it, so a caller holding a parsed structure must redact by
   // field instead of by regex over the serialized form.
   const STRUCTURAL_IDENTIFIER = 'mission/synthetic-placeholder-identifier-0000aaaa-w1111bbbb';
+  // Mixed case, so the generic heuristic still treats it as credential-shaped.
+  // The all-lowercase identifier above no longer is — see the mixed-case
+  // requirement on the base64url rule — so it cannot carry this test's point
+  // any more, while field scoping still has to hold for the ones that do.
+  const MIXED_CASE_STRUCTURAL = 'mission/Synthetic-Placeholder-Identifier-0000AAAA-w1111BBBB';
 
   it('preserves a structural identifier that the free-text redactor rewrites', () => {
     const redact = createSecretRedactor([]);
     // Documents why .body exists: as free text the same value is credential-shaped.
-    expect(redact(STRUCTURAL_IDENTIFIER)).toBe('[REDACTED:credential]');
+    expect(redact(MIXED_CASE_STRUCTURAL)).toBe('[REDACTED:credential]');
+    expect(redact.body({ branch: MIXED_CASE_STRUCTURAL }).branch).toBe(MIXED_CASE_STRUCTURAL);
+  });
+
+  it('leaves a lowercase structural identifier alone on both paths', () => {
+    const redact = createSecretRedactor([]);
+    expect(redact(STRUCTURAL_IDENTIFIER)).toBe(STRUCTURAL_IDENTIFIER);
     expect(redact.body({ branch: STRUCTURAL_IDENTIFIER }).branch).toBe(STRUCTURAL_IDENTIFIER);
   });
 
@@ -661,5 +672,51 @@ describe('redactTranscriptMessages', () => {
       { type: 'result', subtype: 'success' },
     ];
     expect(redactTranscriptMessages(messages, redact)).toEqual(messages);
+  });
+});
+
+// ── The base64url heuristic must not eat a branch name in a scanned field ────
+
+describe('generic credential heuristic — mixed case requirement', () => {
+  // Field scoping keeps a branch name safe under a STRUCTURAL key, but a branch
+  // quoted inside a scanned free-text field (`command`) is still candidate text,
+  // and `/` is in the base64url class, so the whole `mission/<slug>-<id8>-w<id8>`
+  // path is one 48+ char run. Requiring mixed case separates it from base64 of
+  // random bytes, which is never lowercase-only at this length.
+
+  const SYNTHETIC_BRANCH = 'mission/synthetic-placeholder-identifier-0000aaaa-w1111bbbb';
+
+  it('preserves a lowercase branch path quoted inside a scanned free-text field', () => {
+    const redact = createSecretRedactor([]);
+    const result = redact(`git push origin ${SYNTHETIC_BRANCH}`);
+    expect(result).toBe(`git push origin ${SYNTHETIC_BRANCH}`);
+    expect(result).not.toContain('[REDACTED');
+  });
+
+  it('still redacts a mixed-case base64url run of credential length', () => {
+    const redact = createSecretRedactor([]);
+    // Synthetic, hand-written: lower + UPPER + digits, 48+ chars, no real secret.
+    const candidate = 'Aa0Bb1Cc2Dd3Ee4Ff5Gg6Hh7Ii8Jj9Kk0Ll1Mm2Nn3Oo4Pp5Qq6';
+    expect(candidate.length).toBeGreaterThanOrEqual(48);
+    // Separate with a space, not `=`: `=` is itself in the base64url class, so
+    // `token=<candidate>` is one run and the prefix is redacted along with it.
+    expect(redact(`token ${candidate}`)).toBe('token [REDACTED:credential]');
+  });
+
+  it('still redacts a long lowercase hex run via the hex rule', () => {
+    const redact = createSecretRedactor([]);
+    // Lowercase-only, so the base64url rule now declines it — the separate hex
+    // rule must still cover it, which is why that rule was left unchanged.
+    const hex = 'a3f19b'.repeat(11);
+    expect(hex.length).toBeGreaterThanOrEqual(48);
+    expect(redact(`sig=${hex}`)).toBe('sig=[REDACTED:credential]');
+  });
+
+  it('redacts a branch-shaped string that is actually mixed case', () => {
+    const redact = createSecretRedactor([]);
+    // Guard against the fix over-reaching into a "looks like a branch" test:
+    // the discriminator is character class, not the presence of slashes.
+    const mixed = 'mission/Synthetic-Placeholder-Identifier-0000AAAA-w1111BBBB';
+    expect(redact(`git push origin ${mixed}`)).toContain('[REDACTED:credential]');
   });
 });
