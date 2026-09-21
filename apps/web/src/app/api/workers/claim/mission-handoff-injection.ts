@@ -262,6 +262,8 @@ export async function attachMissionHandoff(
         if (handoffExcludedSources) {
           for (const depId of (task as any).dependsOn) {
             handoffExcludedSources.add(`task:${depId}`);
+            const prNumber = upstreamResults.get(depId)?.prNumber;
+            if (prNumber) handoffExcludedSources.add(`pr:${prNumber}`);
           }
         }
       }
