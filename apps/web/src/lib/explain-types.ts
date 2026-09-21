@@ -108,7 +108,8 @@ export interface HistoryNode {
  * stranding the task hit. `consecutiveDeferrals`/`firstDeferredAt` (when
  * present in `detail`) are surfaced separately since they answer "how long
  * has this been stuck", the exact question a task deferred silently for hours
- * used to leave unanswerable without SQL.
+ * used to leave unanswerable without SQL. For `reason: 'path_overlap'`, blocker
+ * info names the conflicting PR or task.
  */
 export interface GateHistoryEntry {
   occurredAt: string;
@@ -117,6 +118,12 @@ export interface GateHistoryEntry {
   reason: string;
   consecutiveDeferrals: number | null;
   firstDeferredAt: string | null;
+  /** For path_overlap deferrals: blocking PR number. */
+  blockingPrNumber: number | null;
+  /** For path_overlap deferrals: blocking PR URL (if no prNumber available). */
+  blockingPrUrl: string | null;
+  /** For path_overlap deferrals: blocking task ID (layer 2 — active path_claim). */
+  blockingTaskId: string | null;
 }
 
 export interface ExplainSubject {

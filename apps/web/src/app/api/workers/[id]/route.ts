@@ -1565,50 +1565,48 @@ export async function PATCH(
         }
         if (hasCrossBranchDeliverable || discardReason) skipRelease = true;
       }
-    }
-  }
 
-  // Handoff gate: tasks with dependents must include handoff.delivered
-  if (isTerminalStatus) {
-    try {
-      // Check if this task has any dependents (other tasks with dependsOn naming this id)
-      const hasDependent = await db.query.tasks.findFirst({
-        where: and(
-          sql`dependsOn @> ${sql.raw(`'"${worker.taskId}"'`)}`,
-          not(inArray(tasks.status, ['cancelled']))
-        ),
-      });
+      // Handoff gate: a task with dependents must include handoff.delivered
+      // in its structuredOutput before completing. Check live at completion time
+      // to catch tasks that acquire dependents mid-flight.
+      if (worker.taskId) {
+        const taskId = worker.taskId;
+        // Check if any task has this taskId in its dependsOn array via JSONB containment
+        const dependentTask = await db.query.tasks.findFirst({
+          where: and(
+            sql`${tasks.dependsOn} @> ${sql.raw(`'${JSON.stringify([taskId]).replace(/'/g, "''")}'`)}`,
+            not(eq(tasks.status, 'cancelled')),
+          ),
+          columns: { id: tasks.id },
+        });
 
-      if (hasDependent) {
-        const handoffDelivered = (body.structuredOutput as Record<string, unknown> | null)?.handoff?.delivered;
-        const isEmptyHandoff = !handoffDelivered || (typeof handoffDelivered === 'string' && !handoffDelivered.trim());
+        if (dependentTask) {
+          const handoff = body.structuredOutput?.handoff as { delivered?: unknown } | undefined;
+          const handoffDelivered = typeof handoff?.delivered === 'string' ? handoff.delivered.trim() : '';
 
-        if (isEmptyHandoff) {
-          await persistRejectedCompletionPayload('handoff_required');
-          fireGateEvent({
-            gate: GATE_SLUGS.HANDOFF_REQUIRED,
-            surface: 'PATCH /api/workers/[id]',
-            outcome: 'rejected',
-            reason: 'This task has downstream dependents and must include handoff.delivered in structuredOutput before completing.',
-            workspaceId: worker.workspaceId,
-            missionId: taskMissionId,
-            taskId: worker.taskId,
-            workerId: worker.id,
-            callerOrigin: 'worker',
-            detail: {
-              category: terminalTaskRow[0]?.category ?? null,
-              summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
-            },
-          });
-          return NextResponse.json({
-            error: 'This task has dependent(s) waiting on it. You must include `handoff.delivered` in your structured output (`structuredOutput.handoff.delivered`) with a one-line summary of what you delivered before completing.',
-            hint: 'handoff_required',
-          }, { status: 400 });
+          if (!handoffDelivered) {
+            await persistRejectedCompletionPayload('handoff_required');
+            fireGateEvent({
+              gate: GATE_SLUGS.HANDOFF_REQUIRED,
+              surface: 'PATCH /api/workers/[id]',
+              outcome: 'rejected',
+              reason: 'completion refused: task with dependents must include handoff.delivered',
+              workspaceId: worker.workspaceId,
+              missionId: taskMissionId,
+              taskId: worker.taskId,
+              workerId: worker.id,
+              callerOrigin: 'worker',
+              detail: {
+                hasDependents: true,
+              },
+            });
+            return NextResponse.json({
+              error: 'This task has dependents waiting for its output. You must include `handoff.delivered` in your `structuredOutput` before completing.',
+              hint: 'handoff_required',
+            }, { status: 400 });
+          }
         }
       }
-    } catch (err) {
-      // Handoff gate is best-effort: a DB error does not block completion
-      console.error(`[Worker ${id}] Error checking handoff dependents:`, err);
     }
   }
 

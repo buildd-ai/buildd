@@ -278,7 +278,6 @@ export async function attachKnowledgeContext(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   predictions?: ReadonlyMap<string, TaskAreaPrediction>,
-  handoffExcludedSources?: Set<string>,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);

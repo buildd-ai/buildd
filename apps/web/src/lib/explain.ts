@@ -75,6 +75,9 @@ async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
       reason: r.reason,
       consecutiveDeferrals: typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null,
       firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+      blockingPrNumber: typeof detail?.prNumber === 'number' ? detail.prNumber : null,
+      blockingPrUrl: typeof detail?.prUrl === 'string' ? detail.prUrl : null,
+      blockingTaskId: typeof detail?.blockingTaskId === 'string' ? detail.blockingTaskId : null,
     };
   });
 }
