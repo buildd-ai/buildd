@@ -1,3 +1,31 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# Unverified against the doc's own Acceptance Criteria / Implementation Breakdown
+# beyond what each assertion checks; core-model and SVG-renderer items have
+# shipped further than the Implementation Breakdown's own "status: partially
+# preempted" note suggests (FlightStrip.tsx, FlightDetailSheet.tsx, and the
+# backfill script all exist) — flagged for manual review, not resolved here.
+assertions:
+  - id: "compute-mission-flight-strip"
+    type: "symbol"
+    name: "computeMissionFlightStrip"
+    path: "packages/core/mission-helpers.ts"
+  - id: "flight-strip-reachable-from-detail-page"
+    type: "symbol_reachable"
+    symbol: "computeMissionFlightStrip"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
+  - id: "flight-strip-cache-migration"
+    type: "migration"
+    number: "172"
+    contains: "flight_strip_cache"
+  - id: "list-card-pagination-rule-p4"
+    type: "symbol_reachable"
+    symbol: "cursor"
+    entry: "apps/web/src/app/app/(protected)/missions/page.tsx"
+    as: "read"
+---
+
 # Mission Flight Strip: Chart Encoding, Detail Alignment, Performance
 
 **Status:** Proposed

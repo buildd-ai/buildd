@@ -9,6 +9,30 @@ surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx,
 related: [timeline-dependency-geometry, mission-structure-view, mission-task-lifecycle]
 keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge, criteria evaluator, verification task, bookkeeping footer]
 supersedes: []
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# Checked against the v1 baseline of the Code surface section only — the v2/v3
+# rewrite items (RailNode.retries removal, RailRightColumn disclosure rewrite,
+# RailNodeRow badge-plus-title toggle) were not individually verified here.
+# The mobile branch and rail-attempt-toggle test id already exist in the tree,
+# which reads as further along than a `draft` status suggests — worth a closer
+# look, not resolved by this draft.
+assertions:
+  - id: "condensed-timeline-identify-chains"
+    type: "symbol"
+    name: "identifyChains"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "condensed-timeline-build-rail"
+    type: "symbol"
+    name: "buildRail"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "build-rail-reachable-from-rail-view"
+    type: "symbol_reachable"
+    symbol: "buildRail"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx"
+  - id: "attempt-strip-attempt-kind"
+    type: "symbol"
+    name: "attemptKind"
+    path: "apps/web/src/lib/attempt-strip.ts"
 ---
 
 # Mobile Timeline Rail

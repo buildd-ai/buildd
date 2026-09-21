@@ -1,3 +1,34 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# All four assertions below pass against the current tree: Proposal §1
+# (emitsPlan), §2 (forced requiresPlanApproval), §3 (specSource traceability)
+# and §4 (renderSpecConformanceGuidance) all read as shipped, even though the
+# doc's own "Current state (recon)" section still says the create_task path is
+# unreachable — that recon is now stale, not the code. All-pass here derives
+# `implemented`, which will contradict the declared `proposed` status under
+# CI's derived-vs-declared check (§2 case 2) once this is merged — surfaced
+# for manual review/promotion, not resolved in this draft.
+assertions:
+  - id: "emits-plan-gate-in-tasks-route"
+    type: "symbol_reachable"
+    symbol: "emitsPlan"
+    entry: "apps/web/src/app/api/tasks/route.ts"
+    as: "assign"
+  - id: "spec-source-context-type"
+    type: "symbol"
+    name: "SpecSourceContext"
+    path: "apps/web/src/lib/approve-plan.ts"
+  - id: "spec-conformance-reviewer-guidance"
+    type: "symbol"
+    name: "renderSpecConformanceGuidance"
+    path: "apps/web/src/lib/reviewer.ts"
+  - id: "emits-plan-mcp-allowlist"
+    type: "config_key"
+    key: "emitsPlan"
+    file: "packages/core/mcp-tools.ts"
+---
+
 # Spec-to-build as a first-class pattern
 
 **Status:** Proposed
