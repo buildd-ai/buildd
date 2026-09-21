@@ -23,6 +23,7 @@ import {
   type WorktreeOwnershipRecord,
   type WorktreeTelemetry,
 } from './worktree-utils';
+import { activityAt } from './worker-store';
 
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const WORKER_STORE_TTL_MS = 24 * 60 * 60 * 1000; // mirrors worker-store MAX_AGE_MS
@@ -198,7 +199,12 @@ function loadOwnerRecords(): WorktreeOwnerRecord[] {
     if (!f.endsWith('.json') || f.endsWith('.tmp')) continue;
     try {
       const data = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
-      if (data._savedAt && now - data._savedAt > WORKER_STORE_TTL_MS) continue;
+      // Same activity-age rule as the store itself (worker-store.activityAt).
+      // A `_savedAt` comparison here would have doctor and the store disagree
+      // about which files still exist, because `_savedAt` is the write time and
+      // gets re-stamped by every persist.
+      const age = activityAt(data);
+      if (age && now - age > WORKER_STORE_TTL_MS) continue;
       out.push({
         status: data.status,
         worktreePath: data.worktreePath,

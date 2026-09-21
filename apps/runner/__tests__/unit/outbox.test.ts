@@ -5,6 +5,15 @@
  */
 
 import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+// outbox.ts resolves `BUILDD_HOME || homedir()/.buildd` at import time, so this
+// has to be set before the dynamic import below. scripts/run-unit-tests.ts
+// normally injects it per test process; the fallback keeps a bare
+// `bun test <file>` pointed somewhere harmless. 'fs' is mocked in this file, so
+// nothing is created on disk either way.
+process.env.BUILDD_HOME ??= join(tmpdir(), `buildd-outbox-test-${process.pid}`);
 
 // In-memory fs mock
 let mockFs: Record<string, string> = {};
@@ -26,6 +35,17 @@ mock.module('fs', () => ({
 
 // Must import after mock.module
 const { Outbox } = await import('../../src/outbox');
+
+/**
+ * The path outbox.ts itself resolved: `BUILDD_HOME || homedir()/.buildd`.
+ *
+ * These tests used to rebuild it from `process.env.HOME`, which happened to
+ * agree only because nothing set BUILDD_HOME. scripts/run-unit-tests.ts now
+ * gives every test process its own throwaway home, so the env var is the single
+ * source of truth — and reading it here, rather than the real home, is what
+ * keeps this file off scripts/test-home-isolation.test.ts's offender list.
+ */
+const OUTBOX_FILE = `${process.env.BUILDD_HOME}/outbox.json`;
 
 describe('Outbox', () => {
   beforeEach(() => {
@@ -211,15 +231,8 @@ describe('Outbox', () => {
 
   describe('persistence', () => {
     test('loads entries from disk on construction', () => {
-      // Pre-populate the mock outbox file
-      const outboxPath = Object.keys(mockFs).length === 0
-        ? `${process.env.HOME}/.buildd/outbox.json`
-        : Object.keys(mockFs)[0];
-
-      // Write directly to the expected path
-      const homePath = process.env.HOME || '/tmp';
-      const filePath = `${homePath}/.buildd/outbox.json`;
-      mockFs[filePath] = JSON.stringify({
+      // Pre-populate the mock outbox file at the path the module resolved
+      mockFs[OUTBOX_FILE] = JSON.stringify({
         entries: [
           { id: 'old-1', method: 'PATCH', endpoint: '/api/workers/w1', timestamp: Date.now(), retries: 2 },
         ],
@@ -233,9 +246,7 @@ describe('Outbox', () => {
     });
 
     test('handles corrupt JSON gracefully', () => {
-      const homePath = process.env.HOME || '/tmp';
-      const filePath = `${homePath}/.buildd/outbox.json`;
-      mockFs[filePath] = '{not valid json!!!';
+      mockFs[OUTBOX_FILE] = '{not valid json!!!';
 
       const outbox = new Outbox();
       expect(outbox.count()).toBe(0);
