@@ -898,6 +898,15 @@ export const missions = pgTable('missions', {
   // existed" — both read as no-baseline, never as "just now", to a derived
   // metric keyed off it (docs/design/derived-metric-availability.md).
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Stored flight-strip geometry (docs/design/mission-flight-strip.md, Rule P-1).
+  // Same lifecycle as `completedAt`: written once, by the same code paths, at
+  // the moment status transitions to 'completed', and never recomputed —
+  // a completed mission's worker spans don't change, so the strip can't either.
+  // Null means "not completed yet" or "completed before this column existed /
+  // before the backfill ran" — the list query (Rule P-2) reads this directly
+  // and skips task/worker fan-out entirely for completed missions; it does
+  // NOT compute-on-read when null, matching goalCriteriaState's snapshot model.
+  flightStripCache: jsonb('flight_strip_cache').$type<import('../mission-helpers').MissionFlightStripData | null>(),
   // Set when the token-free heartbeat circuit breaker (lib/heartbeat-circuit-
   // breaker.ts) pauses this mission after N consecutive died-early heartbeat
   // cycles — a provider outage or similar has no supervisor otherwise, since

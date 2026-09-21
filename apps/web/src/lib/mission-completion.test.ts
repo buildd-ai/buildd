@@ -808,6 +808,30 @@ describe('completeMissionIfVerified — allowed', () => {
     expect(result.decision.code).toBe('mission_not_active');
     expect(insertedRows.some(r => r.title === 'Mission completed')).toBe(false);
   });
+
+  it('Rule P-1: the winner of the claim computes and stores the flight-strip cache', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    // Fire-and-forget, same as the release trigger above — flush to observe it.
+    await new Promise(r => setTimeout(r, 0));
+
+    const cacheWrite = updateCalls.find(c => c.data.flightStripCache !== undefined);
+    expect(cacheWrite).toBeDefined();
+    expect(cacheWrite!.data.flightStripCache).toMatchObject({ bars: expect.any(Array), foldedBars: expect.any(Number) });
+  });
+
+  it('Rule P-1: a losing racer never computes a flight-strip cache', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    missionUpdateReturning = []; // WHERE status='active' matched nothing — lost the race
+
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(updateCalls.some(c => c.data.flightStripCache !== undefined)).toBe(false);
+  });
 });
 
 describe('completeMissionIfVerified — refused', () => {

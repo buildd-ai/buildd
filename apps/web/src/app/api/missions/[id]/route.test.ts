@@ -105,7 +105,7 @@ mock.module('@buildd/core/db', () => ({
       initiatives: { findFirst: mockInitiativesFindFirst },
       missionNotes: { findFirst: mockMissionNotesFindFirst },
       workers: { findFirst: mock(() => Promise.resolve(null)) },
-      tasks: { findFirst: mock(() => Promise.resolve(null)) },
+      tasks: { findFirst: mock(() => Promise.resolve(null)), findMany: mock(() => Promise.resolve([])) },
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
@@ -196,7 +196,10 @@ describe('PATCH /api/missions/[id]', () => {
     });
     mockMissionsUpdate.mockImplementation(() => ({
       set: mock((data: any) => {
-        updatedSetData = data;
+        // Merged, not overwritten: a completion request now issues a SECOND
+        // `db.update(missions)` call for the flight-strip cache (Rule P-1)
+        // alongside the main status write — see the top-level mock for why.
+        updatedSetData = { ...updatedSetData, ...data };
         return {
           where: mock(() => ({
             returning: mock(() => [{ id: 'obj-1', ...data }]),
@@ -408,6 +411,36 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(200);
 
     expect(updatedSetData.status).toBe('completed');
+  });
+
+  it('Rule P-1: an explicit completion computes and stores the flight-strip cache', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(updatedSetData.flightStripCache).toMatchObject({ bars: expect.any(Array), foldedBars: expect.any(Number) });
+    // The status write is still visible — the two `db.update(missions)` calls
+    // for one request merge in the mock, matching the real DB seeing both.
+    expect(updatedSetData.status).toBe('completed');
+  });
+
+  it('does not compute a flight-strip cache when the mission was already completed', async () => {
+    mockMissionsFindFirst.mockImplementationOnce(() => ({
+      id: 'obj-1', teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'completed',
+    }) as any);
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ priority: 5 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(updatedSetData.flightStripCache).toBeUndefined();
   });
 
   it('updates status to archived', async () => {
@@ -923,7 +956,10 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     });
     mockMissionsUpdate.mockImplementation(() => ({
       set: mock((data: any) => {
-        updatedSetData = data;
+        // Merged, not overwritten: a completion request now issues a SECOND
+        // `db.update(missions)` call for the flight-strip cache (Rule P-1)
+        // alongside the main status write — see the top-level mock for why.
+        updatedSetData = { ...updatedSetData, ...data };
         return {
           where: mock(() => ({
             returning: mock(() => [{ id: 'obj-1', ...data }]),
