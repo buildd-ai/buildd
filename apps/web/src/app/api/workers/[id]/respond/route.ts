@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks } from '@buildd/core/db/schema';
+import { workers, tasks, secrets as secretsTable } from '@buildd/core/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { getActiveClaudeSecretId } from '@/lib/credential-health';
 
 // POST /api/workers/[id]/respond - Respond to a worker's question, creating a retry task
 export async function POST(
@@ -64,6 +65,42 @@ export async function POST(
   }
 
   const task = (worker as any).task;
+
+  // A credential already known-revoked at answer time will kill the
+  // continuation exactly as it killed (or will kill) this session — the only
+  // difference is WHEN the owner finds out. Refuse here, before the worker is
+  // claimed and the continuation is created, so the answer is not lost: the
+  // question stays open (waitingFor untouched) and the owner can resubmit
+  // once the credential is reconnected. This mirrors the classification
+  // credential-health.ts already runs on a live PATCH — it does not add a new
+  // policy, it just runs the existing one one step earlier.
+  const workspaceForHealth = (worker as any).workspace as { teamId?: string } | undefined;
+  const teamId = workspaceForHealth?.teamId;
+  if (teamId) {
+    const backend = (task?.backend as string | undefined) ?? 'claude';
+    const secretId = backend === 'codex'
+      ? (await db.query.secrets.findFirst({
+          where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+          columns: { id: true },
+        }))?.id ?? null
+      : await getActiveClaudeSecretId(teamId, worker.workspaceId);
+
+    if (secretId) {
+      const secretRow = await db.query.secrets.findFirst({
+        where: eq(secretsTable.id, secretId),
+        columns: { healthStatus: true, lastFailureMessage: true },
+      });
+      if (secretRow?.healthStatus === 'revoked') {
+        return NextResponse.json({
+          error: `Backend credential (${backend}) is revoked — reconnect it in Settings → Agent Backends before continuing.`
+            + (secretRow.lastFailureMessage ? ` Last error: ${secretRow.lastFailureMessage.slice(0, 200)}` : ''),
+          credentialRevoked: true,
+          backend,
+        }, { status: 409 });
+      }
+    }
+  }
+
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
   const milestones = (worker.milestones as Array<{ type?: string; label?: string; timestamp: number }>) || [];
   const question = (worker.waitingFor as { prompt: string }).prompt;
@@ -234,6 +271,22 @@ export async function POST(
       { error: 'Failed to record response' },
       { status: 500 },
     );
+  }
+
+  // Best-effort back-reference from the answered worker to its continuation,
+  // so a later reader of THIS worker's row (a task-detail page opened from a
+  // stale link, a post-supersession error report — see workers/[id]/route.ts)
+  // can point at where the work actually continued without reconstructing it
+  // from tasks.context.previousAttempt.workerId. The answer already
+  // succeeded by this point (the task exists); a failure here only means the
+  // link is missing, not that anything was lost.
+  try {
+    await db
+      .update(workers)
+      .set({ continuationTaskId: newTask.id })
+      .where(eq(workers.id, id));
+  } catch (err) {
+    console.error(`[Worker ${id}] Failed to record continuation task link:`, err);
   }
 
   return NextResponse.json({ taskId: newTask.id });

@@ -3101,6 +3101,68 @@ describe('POST /api/tasks', () => {
       expect(captured.values.mode).toBe('execution');
       expect(captured.values.context?.requiresPlanApproval).toBeUndefined();
     });
+
+    // Regression: a mission with an already-active mode:'planning' task hits
+    // the partial unique index tasks_active_planning_per_mission at insert.
+    // That used to propagate as a raw Postgres 23505, wrapped by the neon-http
+    // driver into an opaque "Failed query: insert into tasks..." message and
+    // surfaced as a generic 500 — indistinguishable from a real server error.
+    it('returns 409 with an actionable message when the mission already has an active planning task', async () => {
+      setupEmitsPlanAuth();
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => {
+            const err = new Error('Failed query: insert into "tasks" ("id", ...) values (...)');
+            (err as unknown as { cause: unknown }).cause = {
+              code: '23505',
+              constraint: 'tasks_active_planning_per_mission',
+              message: 'duplicate key value violates unique constraint "tasks_active_planning_per_mission"',
+            };
+            throw err;
+          }),
+        })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Spec: something',
+          emitsPlan: true,
+          pathManifest: ['docs/design/something.md'],
+          missionId: 'mission-1',
+        },
+      }));
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.error).toMatch(/active planning task/i);
+    });
+
+    it('still surfaces an unrelated insert failure as a 500, not as the planning-conflict 409', async () => {
+      setupEmitsPlanAuth();
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => {
+            throw new Error('connection reset by peer');
+          }),
+        })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Spec: something',
+          emitsPlan: true,
+          pathManifest: ['docs/design/something.md'],
+        },
+      }));
+
+      expect(response.status).toBe(500);
+    });
   });
 
   // ── Pre-dispatch subject dedupe ────────────────────────────────────────────

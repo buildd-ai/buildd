@@ -898,6 +898,15 @@ export const missions = pgTable('missions', {
   // existed" — both read as no-baseline, never as "just now", to a derived
   // metric keyed off it (docs/design/derived-metric-availability.md).
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Stored flight-strip geometry (docs/design/mission-flight-strip.md, Rule P-1).
+  // Same lifecycle as `completedAt`: written once, by the same code paths, at
+  // the moment status transitions to 'completed', and never recomputed —
+  // a completed mission's worker spans don't change, so the strip can't either.
+  // Null means "not completed yet" or "completed before this column existed /
+  // before the backfill ran" — the list query (Rule P-2) reads this directly
+  // and skips task/worker fan-out entirely for completed missions; it does
+  // NOT compute-on-read when null, matching goalCriteriaState's snapshot model.
+  flightStripCache: jsonb('flight_strip_cache').$type<import('../mission-helpers').MissionFlightStripData | null>(),
   // Set when the token-free heartbeat circuit breaker (lib/heartbeat-circuit-
   // breaker.ts) pauses this mission after N consecutive died-early heartbeat
   // cycles — a provider outage or similar has no supervisor otherwise, since
@@ -1514,6 +1523,28 @@ export const workers = pgTable('workers', {
   // update_progress PATCH. Appended server-side (deduped, capped at 500). Cleared
   // on terminal worker status. Used by passive collision detection (§6d).
   observedTouches: jsonb('observed_touches').$type<string[] | null>(),
+  // A runner terminal PATCH (status=failed/error) that arrives for a worker
+  // ALREADY `superseded` (POST /api/workers/[id]/respond answered its question
+  // first) cannot go through the normal terminal-transition write — that CAS is
+  // reserved by whichever write reaches the row first, and superseded already
+  // won. Without this column that later report had nowhere durable to land: the
+  // PATCH 409s before `error` is ever set, so a real backend-auth failure on the
+  // answered session was invisible to the owner and never reached credential
+  // health. Set only by that late-PATCH path in workers/[id]/route.ts, never by
+  // the normal terminal-transition write — a superseded worker's OWN outcome
+  // stays whatever `/respond` recorded; this is strictly an out-of-band report
+  // about what happened to the session afterward. Deliberately excluded from
+  // failure-analytics signatures/rate (keyed off `status`, not this column) —
+  // see lib/failure-analytics.ts's superseded-error lookup for how it still
+  // surfaces to `get_failure_analytics(error=...)`.
+  postSupersessionError: text('post_supersession_error'),
+  postSupersessionErrorAt: timestamp('post_supersession_error_at', { withTimezone: true }),
+  // The `Continue: <title>` task /respond created when this worker's question
+  // was answered. Written back after that insert succeeds, so the worker row
+  // — surfaced in the UI long after the continuation is the only task anyone
+  // still looks at — carries a durable pointer to it instead of requiring a
+  // reverse lookup through `tasks.context.previousAttempt.workerId`.
+  continuationTaskId: uuid('continuation_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
