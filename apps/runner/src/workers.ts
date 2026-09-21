@@ -1628,6 +1628,8 @@ export class WorkerManager {
     const defaultBranch = gitConfig?.defaultBranch || 'main';
 
     let sessionCwd = workspacePath;
+    /** Set when a structural install fault must kill the session pre-budget. */
+    let installBlock: string | undefined;
     if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
@@ -1671,6 +1673,46 @@ export class WorkerManager {
             }],
           }).catch(() => {});
         }
+        // Dependency install outcome. This used to be unobservable —
+        // installWorkspaceDeps returned void — so a worker could run a full
+        // budget and report `done` with an empty node_modules and nothing
+        // anywhere saying so.
+        //
+        // Fail-vs-degrade splits on whether the runner GUESSED that install
+        // mattered. `skipped` means it did not matter (no manifest, non-bun
+        // toolchain, or a declared manifest the provision gate owns) and raises
+        // nothing at all — that is the population that produced the old
+        // false-alarm noise.
+        const install = setupResult.install;
+        if (install?.status === 'failed') {
+          const label = `Dependency install failed (${install.failure}) at ${install.dir} — imports may fail`;
+          console.warn(`[Worker ${worker.id}] ${label}`);
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'worktree_install_failed',
+              excerpt: `${install.failure} installing at "${install.dir}": ${install.message}`,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+
+          if (install.failure === 'registry-auth' || install.failure === 'toolchain-missing') {
+            // Structural and host-level: not fixable by the agent, and it will
+            // hit every task on this runner. Fail before a budget is spent
+            // rather than producing a `done` with broken imports. The trace
+            // above still lands, so this dedupes into one friction report per
+            // host fault instead of one per worker. Raised through the
+            // session-start boundary below so it gets the same server report
+            // and worktree cleanup as any other start failure.
+            installBlock = `Provision failed: dependency install (${install.failure}) at ${install.dir}`;
+          } else {
+            // Drift / timeout / unknown: proceed, but visibly. The banner goes
+            // in the prompt (see startSession) and the flag rides the worker
+            // record so a `done` carrying it is machine-visible rather than
+            // invisible.
+            worker.envDegraded = { phase: 'install', failure: install.failure, dir: install.dir };
+          }
+        }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
         // Worktree setup failed — fall back to main repo (legacy behavior)
@@ -1696,6 +1738,10 @@ export class WorkerManager {
     // this in the session-start error boundary so rejection also cleans up the
     // worktree and reports failure instead of launching an unusable session.
     const startWithPersistedBranch = async () => {
+      // A host-level install fault (registry credentials, missing runtime)
+      // blocks here, inside the error boundary, so it is reported and cleaned up
+      // like any other session-start failure — with zero agent budget spent.
+      if (installBlock) throw new Error(installBlock);
       if (worker.branch && worker.branch !== claimedWorker.branch) {
         for (let attempt = 1; attempt <= 3; attempt++) {
           const response = await this.buildd.updateWorker(worker.id, { branch: worker.branch }) as
@@ -2125,6 +2171,23 @@ export class WorkerManager {
           tenantLines.push(`Dispatch API base URL: ${promptTenantCtx.dispatchUrl}`);
         }
         promptText = promptText + '\n\n' + tenantLines.join('\n');
+      }
+
+      // Degraded-environment banner. Impossible to miss, because the failure
+      // mode being closed is a worker that completed successfully on a tree
+      // whose dependencies were never installed.
+      if (worker.envDegraded) {
+        const { failure, dir } = worker.envDegraded;
+        promptText = promptText + '\n\n' + [
+          '## ⚠ Degraded Environment — Dependencies NOT Installed',
+          '',
+          `Dependency install failed in this worktree (\`${failure}\` at \`${dir}\`).`,
+          '`node_modules` is absent or incomplete, so workspace imports and any',
+          'command that needs them will fail.',
+          '',
+          'Run the install yourself before trusting a test result. If it cannot be',
+          'fixed, report **blocked** rather than completing.',
+        ].join('\n');
       }
 
       // Build the agent subprocess environment from an allowlist rather than
@@ -2558,9 +2621,9 @@ export class WorkerManager {
       // cleanEnv is now fully assembled (server creds + connector + role secrets),
       // so env.required is validated against exactly what the agent will see, not
       // raw process.env. Enforcement is opt-in (only a declared .buildd/env.yaml
-      // blocks); `install` is skipped because setupWorktree already ran the runner's
-      // tolerant install. On a real block we throw — matching the codex-credential
-      // guard above, so the outer catch marks the worker failed with this reason and
+      // blocks), and for those repos setupWorktree deliberately does NOT run its
+      // own install — the gate owns it. On a real block we throw — matching the
+      // codex-credential guard above, so the outer catch marks the worker failed with this reason and
       // cleans up, with zero agent budget spent. A gate that itself errors fails
       // open. See docs/design/reliable-env-provisioning.md.
       try {
@@ -2575,7 +2638,15 @@ export class WorkerManager {
           baseCommit = stdout.trim() || undefined;
         } catch { /* no commit → gate runs fresh (no caching) */ }
 
-        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, skipPhases: ['install'], commit: baseCommit });
+        // `install` is no longer skipped. The old justification was "the runner
+        // already ran its own tolerant install", which is false whenever that
+        // install found nothing to install — which is exactly the population
+        // this whole change exists to close. Safe to enforce because the gate
+        // only enforces for a repo that committed `.buildd/env.yaml`, and
+        // setupWorktree now defers its own install to that same case, so there
+        // is one owner each and no double install. The pass is cached per
+        // (baseCommit, manifestHash), so the cost is once per base per runner.
+        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
             console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);

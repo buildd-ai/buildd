@@ -421,11 +421,16 @@ export interface ExecuteOptions {
   env?: NodeJS.ProcessEnv;
   runCommand?: CommandRunner;
   /**
-   * Phases to skip (their steps report `skip` and neither run nor fail). The
-   * runner passes `['install']` because it already ran its own tolerant install
-   * (installWorkspaceDeps) — re-running a frozen install here would falsely fail
-   * on lockfile drift the runner deliberately tolerates. Readiness still proves
-   * the tree is usable.
+   * Phases to skip (their steps report `skip` and neither run nor fail).
+   *
+   * The runner used to pass `['install']`, justified as "it already ran its own
+   * tolerant install". That premise is false whenever the runner's install found
+   * nothing to install — which was the common case for any repo whose manifest
+   * is not at the worktree root. Ownership is now split instead of skipped: a
+   * repo that DECLARES an install command owns it here (and blocks), and
+   * `setupWorktree` does not install for it; a repo with no manifest has its
+   * install done there, tolerantly, and this gate does not enforce for it at all
+   * (enforcement requires `source === 'manifest'`). One owner each.
    */
   skipPhases?: PhaseKind[];
   /** Filesystem probe injection for tests; defaults to the real fs at `root`. */

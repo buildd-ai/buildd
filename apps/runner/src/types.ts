@@ -198,6 +198,18 @@ export interface LocalWorker {
    * travel on the worker rather than be re-derived and risk disagreeing.
    */
   worktreeBaseRef?: string;
+  /**
+   * Set when the worker's environment was provisioned but degraded — today only
+   * by a dependency install that failed for a non-structural reason (drift,
+   * timeout, unknown) on an auto-detected repo, where failing closed on a guess
+   * would be worse than proceeding.
+   *
+   * Exists because the failure used to be invisible: install returned `void`, so
+   * a worker could report `done` with an empty node_modules and nothing
+   * anywhere recorded it. A `done` carrying this is a *visible* degradation,
+   * which a review or merge policy can act on.
+   */
+  envDegraded?: { phase: 'install'; failure: string; dir: string };
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
