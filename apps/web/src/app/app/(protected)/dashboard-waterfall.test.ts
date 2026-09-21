@@ -79,6 +79,24 @@ describe('task detail keeps GitHub off the critical path', () => {
   });
 });
 
+describe('every dashboard surface has loading UI', () => {
+  // There were none in this tree, so a navigation painted nothing at all until
+  // the slowest query in the page resolved. `loading.tsx` is what gives Next a
+  // Suspense boundary around the segment's children, so the shell streams and
+  // the frame paints while the reads are still in flight.
+  const SEGMENTS = ['.', './missions', './missions/[id]', './tasks/[id]'];
+
+  for (const segment of SEGMENTS) {
+    it(`${segment} defines loading.tsx`, async () => {
+      const file = Bun.file(new URL(`${segment}/loading.tsx`, import.meta.url));
+      expect(await file.exists()).toBe(true);
+      const source = await file.text();
+      // Announce the loading state once for the route, not once per placeholder.
+      expect(source).toContain('SkeletonRoute');
+    });
+  }
+});
+
 describe('protected layout degrades per-surface, not all-or-nothing', () => {
   const layout = () => sources.get('layout.tsx')!;
 
