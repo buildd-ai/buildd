@@ -170,18 +170,22 @@ export const getTeamWorkspaceIds = cache(async (teamId: string): Promise<string[
  * resolveActiveTeamId calls this too, so a page that resolves both pays once.
  */
 export const getUserTeamIds = cache(async (userId: string): Promise<string[]> => {
-  const memberships = await db.query.teamMembers.findMany({
-    where: eq(teamMembers.userId, userId),
-    columns: { teamId: true },
-  });
+  // The two reads share no inputs, so they go out together — neon-http bills a
+  // full HTTP round trip per statement, and this helper is on the critical path
+  // of every team-scoped surface.
+  const [memberships, personalTeam] = await Promise.all([
+    db.query.teamMembers.findMany({
+      where: eq(teamMembers.userId, userId),
+      columns: { teamId: true },
+    }),
+    // Personal-team fallback for accounts missing a teamMembers row
+    db.query.teams.findFirst({
+      where: eq(teams.slug, `personal-${userId}`),
+      columns: { id: true },
+    }),
+  ]);
 
   const ids = new Set(memberships.map(m => m.teamId));
-
-  // Personal-team fallback for accounts missing a teamMembers row
-  const personalTeam = await db.query.teams.findFirst({
-    where: eq(teams.slug, `personal-${userId}`),
-    columns: { id: true },
-  });
   if (personalTeam) {
     ids.add(personalTeam.id);
   }
