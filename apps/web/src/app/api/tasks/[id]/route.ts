@@ -18,6 +18,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { appBaseUrl } from '@/lib/app-url';
@@ -367,6 +368,20 @@ export async function PATCH(
           console.error('[task-patch] cancel abort push failed:', err)
         );
       }
+
+      // Release this task's own held path_claims immediately. The abort push above
+      // is best-effort delivery to a worker that may not still be listening — the
+      // worker's own terminal PATCH is what normally releases claims (see
+      // releaseAndNotify call in workers/[id]/route.ts), but a cancel here does not
+      // guarantee that PATCH ever lands (worker already dead, never processes the
+      // abort, or was never assigned a live worker in the first place). Without this,
+      // a cancelled task's path_claims rows stay held forever and deadlock any
+      // sibling task whose manifest overlaps them. Idempotent — releaseAndNotify is a
+      // no-op when the task has no active claims, so it is safe even when the worker
+      // does go on to release them itself.
+      releaseAndNotify(id, 'abandoned').catch((err) =>
+        console.error('[task-patch] cancel path-claim release failed:', err)
+      );
 
       // Fire mission dormancy check so missions with all deliverables in terminal
       // state auto-complete without waiting for the next heartbeat.
