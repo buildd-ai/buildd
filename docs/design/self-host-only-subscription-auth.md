@@ -1,3 +1,24 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# The current-state citations (accounts.authType, codex's subscription-only
+# credentialPurposes) check out. The proposal's own deliverable — the
+# enforcement gate at scripts/hosted-capability-boundary.test.ts and the
+# @buildd/subscription-auth package split — has not been started.
+assertions:
+  - id: "account-auth-type-billing-mode"
+    type: "config_key"
+    key: "authType"
+    file: "packages/core/db/schema.ts"
+  - id: "codex-subscription-only-credential-purpose"
+    type: "config_key"
+    key: "codex_credential"
+    file: "packages/core/backend-policy.ts"
+  - id: "hosted-capability-boundary-gate"
+    type: "test_file"
+    path: "scripts/hosted-capability-boundary.test.ts"
+---
+
 # Subscription auth as a self-host-only capability
 
 **Status:** Proposed

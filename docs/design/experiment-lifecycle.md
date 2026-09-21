@@ -1,3 +1,28 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# The cited reused infrastructure (randomiser, CBM readout, the ad-hoc
+# memory-digest cleanup-task precedent) all check out. The proposal's own
+# deliverable — a generic `experiments` registry table — has not been built.
+assertions:
+  - id: "experiment-registry-table-not-yet-built"
+    type: "symbol"
+    name: "experiments"
+    path: "packages/core/db/schema.ts"
+  - id: "arm-assignment-randomizer"
+    type: "symbol"
+    name: "hashUnitInterval"
+    path: "apps/runner/src/experiment-randomizer.ts"
+  - id: "cbm-readout-aggregation"
+    type: "symbol"
+    name: "aggregateCbm"
+    path: "apps/web/src/lib/cbm-insight.ts"
+  - id: "experiment-cleanup-task-precedent"
+    type: "symbol"
+    name: "fileExperimentCleanupTask"
+    path: "apps/web/src/lib/experiment-cleanup-task.ts"
+---
+
 # Experiment Lifecycle
 
 **Status:** Proposed
