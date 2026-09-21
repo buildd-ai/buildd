@@ -503,6 +503,19 @@ export interface McpToolCall {
   durationMs?: number;
 }
 
+export interface TaskHandoff {
+  /** One-line delivery summary, required when handoff exists. */
+  delivered: string;
+  /** Interfaces/exports added — function/type/route/table names, not prose. */
+  interfaces?: string[];
+  /** Decisions made, each with a one-line why. */
+  decisions?: Array<{ decision: string; why: string }>;
+  /** Non-obvious traps a consumer of this work would otherwise re-discover. */
+  gotchas?: string[];
+  /** Named, explicitly — not "everything else". */
+  leftUndone?: string[];
+}
+
 export interface TaskResult {
   summary?: string;
   branch?: string;
