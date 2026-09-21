@@ -398,6 +398,19 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     );
   }
 
+  // Handoff requirement: check if downstream tasks depend on this one
+  const taskContext = task.context as Record<string, unknown> | undefined;
+  const hasDependents = (taskContext?.dependentCount as number | undefined) ?? 0 > 0;
+
+  if (hasDependents) {
+    const dependentCount = taskContext?.dependentCount as number;
+    promptParts.push(
+      '## Handoff Requirement\n' +
+      `**${dependentCount} task(s) depend on this one.** Before completing, you must include a \`handoff\` object in your structured output with at minimum a \`delivered\` field (one-line summary of what you delivered). Example: \`{ handoff: { delivered: "Implemented X feature that Y tasks will use" } }\`\n` +
+      'Your handoff fields: `delivered` (required), `interfaces` (function/type names), `decisions` (array of {decision, why}), `gotchas` (pitfalls for consumers), `leftUndone` (explicitly named incomplete work).'
+    );
+  }
+
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
   // A planning task whose plan is a PROPOSAL SLOT rather than its deliverable
