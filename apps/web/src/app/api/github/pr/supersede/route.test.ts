@@ -99,6 +99,26 @@ describe('POST /api/github/pr/supersede', () => {
     expect(res.status).toBe(403);
   });
 
+  it('prioritizes prNumber over a co-supplied workerId (e.g. ctx.workerId implicitly injected by the MCP layer)', async () => {
+    // Simulates the real bug: recordPrSupersession({ workerId: ctx.workerId, prNumber }) where
+    // the caller's OWN worker (workerId) happens to have a stale/superseded PR association,
+    // but prNumber explicitly names the PR to supersede. workers.findFirst below stands in for
+    // that stale worker row — if the route ever falls back to it instead of resolving by
+    // prNumber, resolvedWorkerId would wrongly become 'w-other'.
+    mockWorkersFindFirst.mockImplementation(() => Promise.resolve({ id: 'w-other', workspace: { teamId: 'team-1' } } as any));
+    const res = await POST(makeRequest({ workerId: 'w-other', prNumber: 2287, supersedingPrNumber: 2293, reason: 'branch deleted' }));
+    expect(res.status).toBe(200);
+    expect(mockResolveWorkerByPrNumber).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: 'team-1' }),
+      2287,
+      null,
+    );
+    expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: 'w-1',
+    }));
+  });
+
   it('surfaces the write-time rejection status and message from recordPrSupersession', async () => {
     mockRecordPrSupersession.mockImplementation(() => Promise.resolve({ ok: false, error: 'PR #2293 is not merged (state: open)', status: 409 } as any));
     const res = await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
