@@ -111,11 +111,15 @@ export interface FlightStripProps {
   /** viewBox width in px; height is derived from lane/rail count. */
   width?: number;
   className?: string;
+  /** Task id of the bar to outline (mission-detail navigator selection). */
+  selectedTaskId?: string | null;
+  /** Present only when bars are meant to act as a navigator — adds tap targets and a pointer cursor. */
+  onBarSelect?: (taskId: string) => void;
 }
 
 /** Pure SVG renderer for MissionFlightStripData (packages/core/mission-helpers.ts).
  * No data fetching — callers compute the model and pass it in. Replaces MissionSkylineChart. */
-export function FlightStrip({ data, width = 322, className }: FlightStripProps) {
+export function FlightStrip({ data, width = 322, className, selectedTaskId = null, onBarSelect }: FlightStripProps) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
   const rows = laneRows(data);
   const showRail = data.rail.visible;
@@ -225,30 +229,72 @@ export function FlightStrip({ data, width = 322, className }: FlightStripProps) 
           <g key={`bars-${row.key}`}>
             {rects.map((rect, i) => {
               const fill = fillFor(rect.bar);
+              const isSelected = selectedTaskId !== null && rect.bar.taskId === selectedTaskId;
+              const interactive = Boolean(onBarSelect);
+              const tapProps = interactive
+                ? {
+                    role: 'button' as const,
+                    tabIndex: 0,
+                    style: { cursor: 'pointer' },
+                    onClick: () => onBarSelect!(rect.bar.taskId),
+                    onKeyDown: (e: React.KeyboardEvent) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onBarSelect!(rect.bar.taskId);
+                      }
+                    },
+                  }
+                : {};
               if (rect.bar.dashed) {
                 return (
-                  <rect
-                    key={`${row.key}-${i}`}
-                    x={rect.x}
-                    y={y + 0.5}
-                    width={rect.width}
-                    height={ROW_H - 1}
-                    fill="none"
-                    stroke={FLIGHT_STRIP_QUEUED_STROKE}
-                    strokeWidth={1}
-                    strokeDasharray="3 2"
-                  />
+                  <g key={`${row.key}-${i}`}>
+                    <rect
+                      x={rect.x}
+                      y={y + 0.5}
+                      width={rect.width}
+                      height={ROW_H - 1}
+                      fill="none"
+                      stroke={FLIGHT_STRIP_QUEUED_STROKE}
+                      strokeWidth={1}
+                      strokeDasharray="3 2"
+                      {...tapProps}
+                    />
+                    {isSelected && (
+                      <rect
+                        x={rect.x - 1.5}
+                        y={y - 1}
+                        width={rect.width + 3}
+                        height={ROW_H + 2}
+                        fill="none"
+                        stroke={FLIGHT_STRIP_NOW_COLOR}
+                        strokeWidth={2}
+                      />
+                    )}
+                  </g>
                 );
               }
               return (
-                <rect
-                  key={`${row.key}-${i}`}
-                  x={rect.x}
-                  y={y}
-                  width={rect.width}
-                  height={ROW_H}
-                  fill={fill ?? 'none'}
-                />
+                <g key={`${row.key}-${i}`}>
+                  <rect
+                    x={rect.x}
+                    y={y}
+                    width={rect.width}
+                    height={ROW_H}
+                    fill={fill ?? 'none'}
+                    {...tapProps}
+                  />
+                  {isSelected && (
+                    <rect
+                      x={rect.x - 1.5}
+                      y={y - 1}
+                      width={rect.width + 3}
+                      height={ROW_H + 2}
+                      fill="none"
+                      stroke={FLIGHT_STRIP_NOW_COLOR}
+                      strokeWidth={2}
+                    />
+                  )}
+                </g>
               );
             })}
             {folded > 0 && (() => {
