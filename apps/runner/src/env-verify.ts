@@ -28,7 +28,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 const pexec = promisify(exec);
@@ -116,6 +116,11 @@ const DETECTORS: Array<{
  * Best-effort manifest for a repo that hasn't declared one. Returns `null` when
  * nothing recognizable is found — the caller reports that honestly rather than
  * pretending an empty plan "passed".
+ *
+ * ROOT-ONLY, deliberately: this answers "what does this repo declare about
+ * itself", which is a property of the repo root. `detectInstallPlans` below is
+ * the one that descends, for the runner's "where do I actually have to run
+ * install" question.
  */
 export function autoDetectManifest(
   root: string,
@@ -127,6 +132,141 @@ export function autoDetectManifest(
     }
   }
   return null;
+}
+
+/** One directory that needs an install, and how to do it. */
+export interface InstallPlan {
+  /** Repo-relative directory; `.` for the root. */
+  dir: string;
+  runtime: string;
+  install: string;
+  /** The lockfile that decided it; `''` when only a bare package.json was found. */
+  lockfile: string;
+}
+
+/**
+ * Filesystem probe for plan detection. Paths are relative to the root.
+ * `listDirs` returns immediate subdirectory NAMES of `rel`.
+ */
+export interface InstallProbe {
+  exists: (rel: string) => boolean;
+  listDirs: (rel: string) => string[];
+}
+
+/**
+ * Hard cap on how many directories one worktree setup will install. A
+ * pathological monorepo must not turn worktree setup into a ten-minute install.
+ */
+export const MAX_INSTALL_DIRS = 3;
+
+/** Directories that are never project roots, and never worth descending into. */
+function isSkippedDir(name: string): boolean {
+  return name === 'node_modules' || name.startsWith('.');
+}
+
+function realInstallProbe(root: string): InstallProbe {
+  return {
+    exists: (rel) => existsSync(join(root, rel)),
+    listDirs: (rel) => {
+      try {
+        return readdirSync(join(root, rel), { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name);
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/**
+ * Which directories under `root` are installable project roots?
+ *
+ * `autoDetectManifest` probed exactly one directory — the root — which is why
+ * every worktree of a repo whose manifest lives in a subdirectory failed with
+ * "Bun could not find a package.json file to install from" and had that
+ * reported as lockfile drift.
+ *
+ * Rules, first non-empty wins, so the common case is one `existsSync`:
+ *
+ *  1. A lockfile at the root → just the root. This covers bun/pnpm workspaces:
+ *     the root install links every workspace package, which is the whole point
+ *     of the runner's call. No per-package fan-out.
+ *  2. Else, directories at depth ≤ `maxDepth` holding a `DETECTORS` lockfile,
+ *     skipping `node_modules` and any dot-directory, and dropping any candidate
+ *     nested inside another candidate.
+ *  3. Else, directories at depth ≤ 2 holding a bare `package.json`.
+ *  4. Else nothing — reported as such rather than guessed at.
+ */
+export function detectInstallPlans(
+  root: string,
+  probe: InstallProbe = realInstallProbe(root),
+  maxDepth = 3,
+): InstallPlan[] {
+  const planFor = (dir: string): InstallPlan | null => {
+    for (const d of DETECTORS) {
+      const rel = dir === '.' ? d.lockfile : `${dir}/${d.lockfile}`;
+      if (probe.exists(rel)) {
+        return { dir, runtime: d.runtime, install: d.install, lockfile: d.lockfile };
+      }
+    }
+    return null;
+  };
+
+  const rootPlan = planFor('.');
+  if (rootPlan) return [rootPlan];
+
+  /** Breadth-first directory walk, excluding the root itself. */
+  const walk = (depthLimit: number): string[] => {
+    const out: string[] = [];
+    let frontier = ['.'];
+    for (let depth = 1; depth <= depthLimit; depth++) {
+      const next: string[] = [];
+      for (const parent of frontier) {
+        for (const name of probe.listDirs(parent)) {
+          if (isSkippedDir(name)) continue;
+          const dir = parent === '.' ? name : `${parent}/${name}`;
+          out.push(dir);
+          next.push(dir);
+        }
+      }
+      if (next.length === 0) break;
+      frontier = next;
+    }
+    return out;
+  };
+
+  /** Keep only the outermost of any nested pair, then cap. */
+  const outermost = (plans: InstallPlan[]): InstallPlan[] => {
+    const kept = plans.filter(
+      (p) => !plans.some((q) => q !== p && p.dir.startsWith(`${q.dir}/`)),
+    );
+    if (kept.length > MAX_INSTALL_DIRS) {
+      const dropped = kept.slice(MAX_INSTALL_DIRS).map((p) => p.dir);
+      console.warn(
+        `[env-verify] ${kept.length} installable directories found; capping at ` +
+        `${MAX_INSTALL_DIRS} and skipping: ${dropped.join(', ')}`,
+      );
+    }
+    return kept.slice(0, MAX_INSTALL_DIRS);
+  };
+
+  const lockPlans = walk(maxDepth)
+    .map(planFor)
+    .filter((p): p is InstallPlan => p !== null);
+  if (lockPlans.length > 0) return outermost(lockPlans);
+
+  // No lockfile anywhere. A bare package.json is a weaker signal (the install
+  // is not deterministic), so it is only trusted close to the root.
+  const barePlans = walk(Math.min(2, maxDepth))
+    .filter((dir) => probe.exists(`${dir}/package.json`))
+    .map((dir): InstallPlan => ({
+      dir,
+      runtime: 'bun',
+      install: 'bun install',
+      lockfile: '',
+    }));
+  return outermost(barePlans);
 }
 
 export interface ResolvedManifest {

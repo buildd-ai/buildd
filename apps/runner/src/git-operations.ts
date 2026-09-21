@@ -16,6 +16,7 @@ import {
 } from './worktree-utils';
 import { sessionLog as realSessionLog } from './session-logger';
 import { isGeneratedPath } from '@buildd/shared';
+import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
@@ -32,6 +33,10 @@ let mkdirSync = fs.mkdirSync;
 let appendFileSync = fs.appendFileSync;
 let readFileSync = fs.readFileSync;
 let rmSync = fs.rmSync;
+// Used only by the install-plan probe (which directories under the worktree
+// hold a manifest). Injectable so that test drives the detector without a
+// temp-dir fixture.
+let readdirSync = fs.readdirSync;
 // Injected so unit tests do not append to the host's ~/.buildd/logs while
 // exercising the removal guard.
 let sessionLog: typeof realSessionLog = realSessionLog;
@@ -46,6 +51,8 @@ export interface GitOpsDeps {
   appendFileSync: typeof fs.appendFileSync;
   readFileSync: typeof fs.readFileSync;
   rmSync: typeof fs.rmSync;
+  /** Optional: drive the install-plan directory walk without a temp dir. */
+  readdirSync?: typeof fs.readdirSync;
   /** Optional: keep session-log writes out of the host log dir in tests. */
   sessionLog?: typeof realSessionLog;
   // Optional spy that intercepts cleanupWorktree calls (used by eviction tests)
@@ -61,6 +68,7 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   appendFileSync = mocks.appendFileSync;
   readFileSync = mocks.readFileSync;
   rmSync = mocks.rmSync;
+  readdirSync = mocks.readdirSync ?? fs.readdirSync;
   sessionLog = mocks.sessionLog ?? realSessionLog;
   if (mocks.cleanupSpy !== undefined) _cleanupSpy = mocks.cleanupSpy;
 }
@@ -74,6 +82,7 @@ export function __resetGitOpsDeps(): void {
   appendFileSync = fs.appendFileSync;
   readFileSync = fs.readFileSync;
   rmSync = fs.rmSync;
+  readdirSync = fs.readdirSync;
   sessionLog = realSessionLog;
   _cleanupSpy = null;
 }
@@ -89,52 +98,150 @@ export interface GitStats {
   dirtyWorktree?: boolean;
 }
 
-/**
- * Install workspace dependencies into a freshly-created worktree so Bun's nested
- * node_modules symlinks (@buildd/core, @buildd/shared, …) exist locally — without
- * them, deep imports like '@buildd/core/db' fail with "Cannot find module".
- *
- * Runs ASYNCHRONOUSLY (execFile, not execSync): even a warm-cache install takes a
- * few seconds, and a synchronous call would freeze the runner's single event loop
- * for the whole duration — starving heartbeats, the 30s stale-check and the 10s
- * server sync, which can get an active worker wrongly flagged stale.
- *
- * `--frozen-lockfile` keeps the common path fast and deterministic (no re-resolution,
- * no lockfile mutation). If the branch's lockfile has drifted, frozen install fails,
- * so we retry unfrozen — node_modules gets created either way. Both attempts are
- * non-fatal: a total failure only warns (deep @buildd/* imports may then break, and
- * the caller falls back to the main repo).
- */
-async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<void> {
-  const opts = { cwd: worktreePath, timeout: 120_000, encoding: 'utf-8' as const };
+/** Why an install failed, in the terms a caller can act on. */
+export type InstallFailureClass =
+  | 'no-manifest'
+  | 'registry-auth'
+  | 'toolchain-missing'
+  | 'lockfile-drift'
+  | 'timeout'
+  | 'unknown';
 
-  // Use new Promise + execFile directly instead of util.promisify so that mock
-  // injection via __setGitOpsDeps works consistently across bun versions.
-  const run = (args: string[]) => new Promise<void>((resolve, reject) => {
-    execFile('bun', args, opts, (err) => { if (err) reject(err); else resolve(); });
+/** The outcome of the runner's own dependency install for a worktree. */
+export type InstallOutcome =
+  | { status: 'ok'; dirs: string[]; unfrozen?: boolean }
+  | { status: 'skipped'; reason: 'no-manifest' | 'non-bun-toolchain' | 'declared-manifest' }
+  | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string };
+
+const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Classify a failed `bun install` from its output.
+ *
+ * This exists so the unfrozen retry stops firing blind. Measured: the retry
+ * rescued roughly one failure in a hundred and never a non-drift one, while on
+ * a registry 401 it doubled the stall and then reported "lockfile may have
+ * drifted" — the wrong cause, attributed to the wrong owner.
+ */
+export function classifyInstallFailure(err: unknown): InstallFailureClass {
+  const text = errMessage(err).toLowerCase();
+  if (/\b(401|403)\b|unauthorized|forbidden|authentication|incorrect or missing password/.test(text)) {
+    return 'registry-auth';
+  }
+  if (/enoent|command not found|no such file or directory|not found in \$path/.test(text)) {
+    return 'toolchain-missing';
+  }
+  if (/etimedout|timed out|timeout/.test(text)) return 'timeout';
+  // Deliberately NOT matching the bare flag name `--frozen-lockfile`: every
+  // failure of the frozen attempt echoes the command line, so that pattern
+  // classifies *anything* as drift — which is the same misattribution the old
+  // "lockfile may have drifted" warning made, one layer down. Only a message
+  // that says the lockfile itself was rejected counts.
+  if (/lockfile had changes|lockfile is frozen|lockfile is outdated|outdated_lockfile|lockfile needs to be updated|lockfile would be (modified|updated)/.test(text)) {
+    return 'lockfile-drift';
+  }
+  return 'unknown';
+}
+
+/**
+ * Install dependencies into a freshly-created worktree so Bun's nested
+ * node_modules symlinks (@buildd/core, @buildd/shared, …) exist locally —
+ * without them, deep imports like '@buildd/core/db' fail with "Cannot find
+ * module".
+ *
+ * Runs ASYNCHRONOUSLY (execFile, not execSync): even a warm-cache install takes
+ * a few seconds, and a synchronous call would freeze the runner's single event
+ * loop for the whole duration — starving heartbeats, the 30s stale-check and the
+ * 10s server sync, which can get an active worker wrongly flagged stale.
+ *
+ * WHERE it installs is now detected rather than assumed. It used to hardcode
+ * `cwd: worktreePath`, so a repo whose manifest lives in a subdirectory failed
+ * every time with "Bun could not find a package.json file to install from" —
+ * and, because the return type was `void`, nobody found out.
+ *
+ * Stays BUN-ONLY for the auto-detected path: it exists to create bun's nested
+ * workspace symlinks. Having worktree setup start running `npm ci`/`cargo
+ * fetch`/`go mod download` for every clone is a different feature with a
+ * different risk profile. A non-bun lockfile yields
+ * `{status:'skipped', reason:'non-bun-toolchain'}` — honest, and recorded. Repos
+ * that need it declare `.buildd/env.yaml` and the provision gate owns it.
+ */
+async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<InstallOutcome> {
+  const plans = detectInstallPlans(worktreePath, {
+    exists: (rel) => existsSync(join(worktreePath, rel)),
+    listDirs: (rel) => {
+      try {
+        return readdirSync(join(worktreePath, rel), { withFileTypes: true })
+          .filter(e => e.isDirectory())
+          .map(e => e.name);
+      } catch {
+        return [];
+      }
+    },
   });
 
-  console.log(`[Worker ${workerId}] Running bun install in worktree (frozen lockfile)...`);
-  try {
-    await run(['install', '--frozen-lockfile']);
-    console.log(`[Worker ${workerId}] Workspace packages linked`);
-    return;
-  } catch (err) {
-    console.warn(
-      `[Worker ${workerId}] Frozen bun install failed (lockfile may have drifted), retrying unfrozen:`,
-      err instanceof Error ? err.message : err,
-    );
+  if (plans.length === 0) {
+    // NOT a degradation: a tree with no manifest has no dependencies to break.
+    // This is the population that used to invoke bun anyway and then blame the
+    // lockfile for a missing package.json.
+    console.log(`[Worker ${workerId}] No package manifest in worktree — skipping install`);
+    return { status: 'skipped', reason: 'no-manifest' };
   }
 
-  try {
-    await run(['install']);
-    console.log(`[Worker ${workerId}] Workspace packages linked (unfrozen)`);
-  } catch (err) {
-    console.warn(
-      `[Worker ${workerId}] bun install in worktree failed — @buildd/* imports may break:`,
-      err instanceof Error ? err.message : err,
+  const bunPlans = plans.filter(p => p.runtime === 'bun');
+  if (bunPlans.length === 0) {
+    console.log(
+      `[Worker ${workerId}] Worktree uses a non-bun toolchain (${plans.map(p => p.runtime).join(', ')}) ` +
+      `— skipping install; declare ${MANIFEST_PATH} to have the provision gate run it`,
     );
+    return { status: 'skipped', reason: 'non-bun-toolchain' };
   }
+
+  const dirs: string[] = [];
+  let usedUnfrozen = false;
+
+  for (const plan of bunPlans) {
+    const cwd = plan.dir === '.' ? worktreePath : join(worktreePath, plan.dir);
+    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const };
+    // new Promise + execFile directly rather than util.promisify, so mock
+    // injection via __setGitOpsDeps works consistently across bun versions.
+    const run = (args: string[]) => new Promise<void>((resolve, reject) => {
+      execFile('bun', args, opts, (err) => { if (err) reject(err); else resolve(); });
+    });
+
+    console.log(`[Worker ${workerId}] Running bun install in ${plan.dir} (frozen lockfile)...`);
+    try {
+      await run(['install', '--frozen-lockfile']);
+      dirs.push(plan.dir);
+      continue;
+    } catch (err) {
+      const failure = classifyInstallFailure(err);
+      if (failure !== 'lockfile-drift') {
+        console.warn(
+          `[Worker ${workerId}] bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
+        );
+        return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+      }
+      console.warn(
+        `[Worker ${workerId}] Frozen bun install in ${plan.dir} rejected the lockfile, retrying unfrozen: ${errMessage(err)}`,
+      );
+    }
+
+    try {
+      await run(['install']);
+      dirs.push(plan.dir);
+      usedUnfrozen = true;
+    } catch (err) {
+      const failure = classifyInstallFailure(err);
+      console.warn(
+        `[Worker ${workerId}] Unfrozen bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
+      );
+      return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+    }
+  }
+
+  console.log(`[Worker ${workerId}] Workspace packages linked in: ${dirs.join(', ')}`);
+  return { status: 'ok', dirs, ...(usedUnfrozen ? { unfrozen: true } : {}) };
 }
 
 /**
@@ -230,6 +337,13 @@ export interface SetupWorktreeResult {
    * a predicted ref that never existed, failing silently.
    */
   base: string;
+  /**
+   * What the runner's own dependency install did. Previously `void`: install
+   * failed silently at the wrong path and workers finished `done` with broken
+   * workspace imports. The caller must inspect this — see the surfacing block
+   * in workers.ts next to the `fallback` handling.
+   */
+  install: InstallOutcome;
   /** Set when resume candidate was requested but not usable (missing/diverged),
    *  causing a fresh start from the default branch.  Callers should surface
    *  this as a visible warning rather than silently degrading. */
@@ -635,13 +749,26 @@ export async function setupWorktree(
     // module resolution from the worktree tree never finds the symlinks that exist in the
     // parent repo — causing '@buildd/core/db' (and similar deep imports) to fail with
     // "Cannot find module". Running bun install creates the links in-place.
-    await installWorkspaceDeps(worktreePath, workerId);
+    //
+    // A repo that DECLARES an install command in `.buildd/env.yaml` owns its own
+    // install via the provision gate, which enforces and blocks. One owner each:
+    // declared repos → the gate; undeclared repos → this tolerant install, which
+    // degrades. Running both would install twice for every declared repo.
+    const declared = resolveManifest(worktreePath, {
+      exists: (rel) => existsSync(join(worktreePath, rel)),
+      read: (rel) => String(readFileSync(join(worktreePath, rel), 'utf-8')),
+    });
+    const install: InstallOutcome =
+      declared.source === 'manifest' && declared.manifest?.install?.command
+        ? { status: 'skipped', reason: 'declared-manifest' }
+        : await installWorkspaceDeps(worktreePath, workerId);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return {
       path: worktreePath,
       branch: actualBranch,
       base,
+      install,
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
     };

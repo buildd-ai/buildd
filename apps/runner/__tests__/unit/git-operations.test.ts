@@ -140,7 +140,8 @@ function mockExecFile(
 ) {
   fileCalls.push({ file, args, opts: _opts });
   const frozen = args.includes('--frozen-lockfile');
-  if (frozen && failBunInstall.frozen) return cb(new Error('lockfile drifted'));
+  // Drift-shaped text: only a real drift message earns the unfrozen retry now.
+  if (frozen && failBunInstall.frozen) return cb(new Error('error: lockfile had changes, but lockfile is frozen'));
   if (!frozen && failBunInstall.unfrozen) return cb(new Error('bun: command not found'));
   return cb(null, '', '');
 }
@@ -180,7 +181,12 @@ describe('setupWorktree', () => {
   beforeEach(() => {
     syncCalls.length = 0;
     fileCalls.length = 0;
-    existsSyncMap = {};
+    // A root lockfile, which is what these tests always implicitly assumed:
+    // install used to run unconditionally at the worktree root. It is now
+    // planned from what is actually on disk, so the manifest has to be stated.
+    // (See worktree-install-detect.test.ts for the detection rules and
+    // worktree-install-outcome.test.ts for the no-manifest case.)
+    existsSyncMap = { [`${WORKTREE_PATH}/bun.lock`]: true };
     failBunInstall = { frozen: false, unfrozen: false };
     revListBehavior = 'ok';
     worktreeListOutput = '';
