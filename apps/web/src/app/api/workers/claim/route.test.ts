@@ -5019,6 +5019,52 @@ describe('claim insert — atomic duplicate-worker guard', () => {
     expect(insertSql).toContain('w_dup.task_id');
   });
 
+  it('attaches dependentCount to context when another task depends on the claimed one', async () => {
+    // Route SQL discrimination: the dependentCounts scan (jsonb_array_elements_text)
+    // gets a real row; the worker INSERT gets its usual shape.
+    mockDbExecute.mockImplementation(((q: any) => {
+      const text = Array.isArray(q?.strings) ? q.strings.join(' ') : '';
+      if (text.includes('jsonb_array_elements_text')) {
+        return Promise.resolve({ rows: [{ taskId: 'task-1', dependentCount: 2 }] });
+      }
+      return Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      });
+    }) as any);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.workers[0].task.context.dependentCount).toBe(2);
+  });
+
+  it('leaves dependentCount unset when nothing depends on the claimed task', async () => {
+    mockDbExecute.mockImplementation(((q: any) => {
+      const text = Array.isArray(q?.strings) ? q.strings.join(' ') : '';
+      if (text.includes('jsonb_array_elements_text')) {
+        return Promise.resolve({ rows: [] });
+      }
+      return Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      });
+    }) as any);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.workers[0].task.context.dependentCount).toBeUndefined();
+  });
+
   it('does not roll the task back to pending when the dup guard blocks the insert', async () => {
     // Insert no-ops...
     mockDbExecute.mockReturnValue(Promise.resolve({ rows: [] }));

@@ -1806,25 +1806,36 @@ export async function POST(req: NextRequest) {
   // @buildd/core/task-area-prediction.
   const taskAreaPredictions = await predictTaskAreas(filteredTasks);
 
-  // Count dependents for each claimed task (for handoff announcement)
+  // Count dependents for each claimed task (for handoff announcement). This
+  // scans OTHER tasks' dependsOn arrays for a claimed id, not the claimed
+  // tasks' own dependsOn — a dependent can never be claimed in the same batch
+  // as its still-in-progress upstream (see dependenciesSatisfied() in
+  // ./deps-gate), so restricting the scan to claimedTaskIds would never match.
   const claimedTaskIds = claimedWorkers.map(cw => cw.taskId);
   if (claimedTaskIds.length > 0) {
     const dependentCounts = new Map<string, number>();
-    const dependentRows = await db
-      .select({ taskId: sql`jsonb_array_elements(dependsOn)::text`, dependentCount: sql`count(*)::integer` })
-      .from(tasks)
-      .where(inArray(tasks.id, claimedTaskIds))
-      .groupBy(sql`jsonb_array_elements(dependsOn)::text`);
+    const dependentRows = await db.execute(sql`
+      SELECT dep_id AS "taskId", count(*)::integer AS "dependentCount"
+      FROM ${tasks}, jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
+      WHERE dep_id = ANY(${claimedTaskIds})
+        AND ${tasks.status} != 'cancelled'
+      GROUP BY dep_id
+    `);
 
-    for (const row of dependentRows) {
-      dependentCounts.set(row.taskId, (row as any).dependentCount ?? 0);
+    for (const row of dependentRows.rows as any[]) {
+      dependentCounts.set(row.taskId, Number(row.dependentCount) ?? 0);
     }
 
     for (const cw of claimedWorkers) {
       const count = dependentCounts.get(cw.taskId) ?? 0;
       if (count > 0) {
-        if (!cw.context) cw.context = {};
-        (cw.context as any).dependentCount = count;
+        // The runner reads task.context (claimedWorker.task.context), not a
+        // top-level field on the worker — see prompt-builder.ts's taskContext.
+        const taskObj = cw.task as any;
+        if (taskObj) {
+          taskObj.context = taskObj.context ?? {};
+          taskObj.context.dependentCount = count;
+        }
       }
     }
   }

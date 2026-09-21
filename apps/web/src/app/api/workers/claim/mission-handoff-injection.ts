@@ -10,8 +10,9 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions, missionNotes, artifacts } from '@buildd/core/db/schema';
 import { eq, inArray, and, not, sql } from 'drizzle-orm';
-import type { ClaimTasksResponse } from '@buildd/shared';
+import type { ClaimTasksResponse, TaskHandoff } from '@buildd/shared';
 import type { TaskResult } from '@buildd/shared';
+import { appendContextBlock } from './context-injection';
 
 /** The claimed-task rows this block looks tasks up in. */
 type ClaimedTask = { id: string; missionId?: string | null };
@@ -43,8 +44,9 @@ function renderMissionHandoff(
     const upstream = upstreamResults.get(depId);
     if (!upstream) continue;
 
-    const delivered = upstream.result?.structuredOutput?.handoff?.delivered
-      ? String(upstream.result.structuredOutput.handoff.delivered).slice(0, 200)
+    const handoff = upstream.result?.structuredOutput?.handoff as TaskHandoff | undefined;
+    const delivered = handoff?.delivered
+      ? String(handoff.delivered).slice(0, 200)
       : `${upstream.title} (${upstream.status})`;
 
     let edgeLine = `- **${upstream.title}**: ${delivered}`;
@@ -160,6 +162,7 @@ export async function attachMissionHandoff(
         .orderBy(workers.createdAt);
 
       for (const wr of workerRows) {
+        if (!wr.taskId) continue;
         const depTask = depTasksMap.get(wr.taskId);
         if (depTask) {
           (depTask as any).prUrl = wr.prUrl;
@@ -249,17 +252,11 @@ export async function attachMissionHandoff(
       );
 
       if (handoffBlock) {
-        if (!cw.resolvedContextProviders) {
-          cw.resolvedContextProviders = [];
-        }
-        cw.resolvedContextProviders.push({
-          provider: 'mission-handoff',
-          content: handoffBlock,
-        });
-
-        // Mirror into task.context
-        if (!cw.context) cw.context = {};
-        (cw.context as any).missionHandoff = handoffBlock;
+        // Appends to the same resolvedContextProviders rail attachKnowledgeContext
+        // uses — the runner only ever reads task.context.resolvedContextProviders
+        // (apps/runner/src/workers.ts), so a separate cw.context.missionHandoff
+        // field would never reach the prompt.
+        appendContextBlock(cw, handoffBlock);
 
         // Track rendered sources for knowledge dedupe
         if (handoffExcludedSources) {

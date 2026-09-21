@@ -400,7 +400,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
 
   // Handoff requirement: check if downstream tasks depend on this one
   const taskContext = task.context as Record<string, unknown> | undefined;
-  const hasDependents = (taskContext?.dependentCount as number | undefined) ?? 0 > 0;
+  const hasDependents = ((taskContext?.dependentCount as number | undefined) ?? 0) > 0;
 
   if (hasDependents) {
     const dependentCount = taskContext?.dependentCount as number;

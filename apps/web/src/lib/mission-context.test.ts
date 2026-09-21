@@ -512,6 +512,47 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('ws-1');
   });
 
+  it('prefers structuredOutput.handoff.delivered over the raw summary in Completed Tasks, labelled', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-handoff',
+      title: 'Build app',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-handoff',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries({
+      completedTasks: [
+        {
+          id: 't1',
+          title: 'Implement client',
+          roleSlug: 'builder',
+          result: {
+            summary: 'raw chatter summary',
+            structuredOutput: { handoff: { delivered: 'Implemented the shared HTTP client.' } },
+          },
+          createdAt: new Date(),
+        },
+        {
+          id: 't2',
+          title: 'Draft docs',
+          roleSlug: 'writer',
+          result: { summary: 'Wrote docs' },
+          createdAt: new Date(),
+        },
+      ],
+    });
+
+    const result = await buildMissionContext('obj-hb-handoff', { triggerSource: 'cron' });
+    expect(result!.description).toContain('[handoff] Implemented the shared HTTP client.');
+    expect(result!.description).not.toContain('raw chatter summary');
+    expect(result!.description).toContain('[summary] Wrote docs');
+  });
+
   it('includes outputSchema in heartbeat context', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-hb2',

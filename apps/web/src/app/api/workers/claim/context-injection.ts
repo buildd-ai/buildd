@@ -148,7 +148,7 @@ function deriveErrorClusterKeys(task: {
  * use this — it runs first and assigns, and it only mirrors into an existing
  * task context rather than creating one.
  */
-function appendContextBlock(cw: ClaimTasksResponse['workers'][number], block: string): void {
+export function appendContextBlock(cw: ClaimTasksResponse['workers'][number], block: string): void {
   (cw as any).resolvedContextProviders = [...((cw as any).resolvedContextProviders ?? []), block];
   const taskObj = cw.task as any;
   if (taskObj) {
