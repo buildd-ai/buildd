@@ -5,6 +5,14 @@ import type { BuilddTask, WorkerCommand, LocalUIConfig, LocalWorker } from './ty
 import type { BuilddClient } from './buildd';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import { refreshCbmSeedForBaseAdvance } from './cbm-enforcement';
+import { logCollapsed } from './log';
+
+// 97% of claim-poll failures on reconnect/startup are the benign
+// no_pending_tasks nudge/poll race, whose clean reason is already logged by
+// claimPendingTasks itself (claimLog) and written to claims.log — this window
+// keeps a flapping reconnect (many failures in a burst) from spamming one
+// line per occurrence while still surfacing a genuine, sustained problem.
+const CLAIM_POLL_FAILURE_COLLAPSE_WINDOW_MS = 5 * 60_000;
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -75,9 +83,7 @@ export class PusherManager {
         this.callbacks.sendHeartbeat();
         // Claim any tasks that were created while Pusher was disconnected
         if (this.acceptRemoteTasks) {
-          this.callbacks.claimPendingTasks().catch(err => {
-            console.error('Failed to claim tasks on Pusher reconnect:', err);
-          });
+          this.pollPendingTasksBestEffort('Pusher reconnect');
         }
       }
     });
@@ -88,9 +94,28 @@ export class PusherManager {
 
       // Claim any pending tasks on startup (covers tasks dispatched while runner was down).
       // Runs after subscription so we don't miss events for tasks created between claim and subscribe.
-      this.callbacks.claimPendingTasks().catch(err => {
-        console.error('Failed to claim tasks on startup:', err);
-      });
+      this.pollPendingTasksBestEffort('startup');
+    }
+  }
+
+  /**
+   * Best-effort claim poll: swallow the failure (claimPendingTasks already
+   * handles/logs anything it needs to internally) rather than dumping the
+   * raw Error — passing an Error object to console.error prints its full
+   * stack, and 97% of these occurrences are the benign no_pending_tasks
+   * nudge/poll race whose clean reason is already in claims.log. Collapsed so
+   * a flapping reconnect doesn't spam one line per occurrence.
+   */
+  private async pollPendingTasksBestEffort(context: string): Promise<void> {
+    try {
+      await this.callbacks.claimPendingTasks();
+    } catch (err) {
+      logCollapsed(
+        'warn',
+        `claim-poll-failure:${context}`,
+        CLAIM_POLL_FAILURE_COLLAPSE_WINDOW_MS,
+        `Failed to claim tasks on ${context}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
