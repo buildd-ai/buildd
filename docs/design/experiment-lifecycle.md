@@ -2,8 +2,15 @@
 status: proposed
 # Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
 # The cited reused infrastructure (randomiser, CBM readout, the ad-hoc
-# memory-digest cleanup-task precedent) all check out. The proposal's own
-# deliverable — a generic `experiments` registry table — has not been built.
+# memory-digest cleanup-task precedent) all check out — genuinely shipped,
+# not false positives — but they predate/support this proposal rather than
+# constitute it. The proposal's own deliverable — a generic `experiments`
+# registry table — has not been built, so the doc must stay 'proposed'
+# indefinitely until it does. Left unsuppressed, the three passing assertions
+# below would reclassify as code_ahead and redispatch a reconcile-spec task
+# against this already-accurate doc forever (same shape as
+# docs/design/mission-context-clusters.md, docs/design/backend-failover-policy.md).
+# Suppressed below (skip_until) instead.
 assertions:
   - id: "experiment-registry-table-not-yet-built"
     type: "symbol"
@@ -13,14 +20,20 @@ assertions:
     type: "symbol"
     name: "hashUnitInterval"
     path: "apps/runner/src/experiment-randomizer.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "hashUnitInterval genuinely shipped (extracted from the memory-digest arm ahead of the registry proposed below) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
   - id: "cbm-readout-aggregation"
     type: "symbol"
     name: "aggregateCbm"
     path: "apps/web/src/lib/cbm-insight.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "aggregateCbm genuinely shipped (existing CBM readout this proposal reuses) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
   - id: "experiment-cleanup-task-precedent"
     type: "symbol"
     name: "fileExperimentCleanupTask"
     path: "apps/web/src/lib/experiment-cleanup-task.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "fileExperimentCleanupTask genuinely shipped (the retirement-cleanup precedent this proposal's §1 generalises) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
 ---
 
 # Experiment Lifecycle
