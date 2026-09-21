@@ -559,6 +559,32 @@ export async function setupWorktree(
       );
     }
 
+    // THE PATH MUST FOLLOW THE BRANCH THAT IS ACTUALLY CHECKED OUT.
+    //
+    // `worktreePath` above is keyed on the REQUESTED branch. When the ladder
+    // diverts to `uniqueBranch`, that mismatch is the whole worktree-collision
+    // bug: a mission hands every one of its tasks the same shared head branch
+    // (branch-names.ts, `sharedHeadBranch` precedence), the ladder then rejects
+    // every candidate derived from it — `looksLikeMissionIntegrationBranch` is a
+    // bare `startsWith('mission/')` test, so even `<branch>-w<id8>` is flagged —
+    // and `actualBranch` keeps its per-worker default. N distinct branches, one
+    // directory, and each new worker reclaimed the previous one's cwd. Same
+    // shape for a task whose branch IS the repo default branch.
+    //
+    // Only the `uniqueBranch` landing recomputes. A resume landing
+    // (`actualBranch === requestedBranch`) must NOT: a resume branch is shared
+    // across the attempts that resume it, so keying the directory on it would
+    // reintroduce the same collision from the other side. `uniqueBranch` embeds
+    // the worker id, so it is unique per attempt by construction.
+    if (actualBranch === uniqueBranch && uniqueBranch !== branch) {
+      const divertedPath = join(worktreeBase, safeWorktreeDirName(actualBranch));
+      if (divertedPath !== worktreePath) {
+        // Through the same guard as the first reclaim — a recompute must not
+        // grow a second, unguarded force-remove.
+        worktreePath = reclaimOrDivert(divertedPath);
+      }
+    }
+
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
 
     // Delete stale local branches from a previous run. Skip any branch a live

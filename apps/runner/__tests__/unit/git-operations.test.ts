@@ -58,9 +58,31 @@ let numstatOutput = '';
 // existing tests (which don't care about lastCommitSha) see it reported.
 let headOutput = 'deadbee';
 
+// Paths this fake git has removed. `git worktree list --porcelain` must stop
+// reporting them (and stop reporting their branch as held): setupWorktree runs
+// the reclaim BEFORE listBranchOwners precisely so the freed branch is
+// available again, and a static porcelain fixture would hide that.
+let removedWorktrees: Set<string> = new Set();
+
+function livePorcelain(): string {
+  if (!worktreeListOutput) return worktreeListOutput;
+  return worktreeListOutput
+    .split('\n\n')
+    .filter(stanza => {
+      const m = stanza.match(/^worktree (.+)$/m);
+      return !m || !removedWorktrees.has(m[1].trim());
+    })
+    .join('\n\n');
+}
+
 function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   syncCalls.push({ cmd, opts });
-  if (cmd.includes('worktree list --porcelain')) return worktreeListOutput;
+  if (cmd.includes('worktree list --porcelain')) return livePorcelain();
+  const rm = cmd.match(/git worktree remove --force "([^"]+)"/);
+  if (rm) {
+    removedWorktrees.add(rm[1]);
+    return '';
+  }
   if (cmd === 'git rev-parse HEAD') return headOutput;
   if (cmd.includes('status --porcelain')) {
     if (statusFails) {
@@ -164,6 +186,7 @@ describe('setupWorktree', () => {
     worktreeListOutput = '';
     statusPorcelain = '';
     statusFails = false;
+    removedWorktrees = new Set();
     // Re-inject each test to reset mocks to initial state (clears per-test overrides
     // like custom execSync functions set in the stale-branch guard tests).
     __setGitOpsDeps({
