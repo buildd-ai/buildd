@@ -1,25 +1,30 @@
 ---
 title: Mobile Timeline Rail
-status: draft
+status: active
 owner: builder
-last_verified: 2026-09-16
+last_verified: 2026-09-21
 summary: Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx, apps/web/src/lib/attempt-strip.ts]
 related: [timeline-dependency-geometry, mission-structure-view, mission-task-lifecycle]
 keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge, criteria evaluator, verification task, bookkeeping footer]
+verified_by: [apps/web/src/lib/condensed-timeline.test.ts, apps/web/src/lib/condensed-timeline-rail.test.ts, apps/web/src/lib/attempt-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx]
 supersedes: []
-# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
-# Checked against the v1 baseline of the Code surface section only — the v2/v3
-# rewrite items (RailNode.retries removal, RailRightColumn disclosure rewrite,
-# RailNodeRow badge-plus-title toggle) were not individually verified here.
-# The mobile branch and rail-attempt-toggle test id already exist in the tree,
-# which reads as further along than a `draft` status suggests — worth a closer
-# look. All four assertions below pass, which derives `implemented` and would
-# contradict the declared `draft` status; the `build-rail-reachable-from-rail-view`
-# assertion is suppressed below so status promotion to `active` stays a human
-# call (it requires confirming the v2/v3 items, not just the v1 baseline this
-# draft checked) rather than this Tier-3 pass deciding it unilaterally.
+# Promoted from draft to active 2026-09-21. The prior Tier-3 weekly cron pass
+# (docs/design/spec-conformance.md §Tier 3) checked only the v1-baseline Code
+# surface (the three symbol assertions below) and deliberately left promotion
+# to a human call, because the v2/v3 rewrite items — RailNode.retries/
+# RailOptions.retryLinks removal, the RailRightColumn disclosure rewrite, the
+# RailNodeRow badge-plus-title toggle and data-task-id relocation, the D5-5..D5-7
+# goal-root/evaluator rules — were not individually re-verified at that time.
+# This pass did that verification directly against the tree: every v2/v3/v3.1
+# rewrite item the body narrates (§3.3, §6.4, §12, §13, §13.4, §5) is present in
+# apps/web/src/lib/condensed-timeline.ts and CondensedTimeline.tsx exactly as
+# described, and apps/web/src/lib/condensed-timeline-rail.test.ts plus
+# CondensedTimeline.rail.test.tsx assert the rules and ACs by id. No symbol the
+# body cites was found renamed or moved, so no claim text changed beyond this
+# frontmatter. The `build-rail-reachable-from-rail-view` assertion is no longer
+# suppressed now that the promotion it was gated on has been made.
 assertions:
   - id: "condensed-timeline-identify-chains"
     type: "symbol"
@@ -33,8 +38,6 @@ assertions:
     type: "symbol_reachable"
     symbol: "buildRail"
     entry: "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx"
-    skip_until: "2026-12-15"
-    skip_reason: "Passes, but promoting this spec's status to 'active' requires verifying the v2/v3 rewrite items (RailNode.retries removal, RailRightColumn disclosure rewrite, RailNodeRow badge-plus-title toggle) that this Tier-3 draft did not individually check — see status callout above. Suppressed so the doc stays 'draft' (honest partial coverage) instead of contradicting on a promotion this draft can't yet back."
   - id: "attempt-strip-attempt-kind"
     type: "symbol"
     name: "attemptKind"
@@ -712,8 +715,8 @@ definition of an attempt) MUST render a disclosure chevron in the right column:
 rail.
 
 **Rule D6-5 (v2)**: The outcome mark is a single derived value per row. It is
-computed by a new pure function in `condensed-timeline.ts` (proposed name
-railOutcome) returning one of five states, evaluated in this precedence order —
+computed by the pure function `railOutcome` in `condensed-timeline.ts`,
+returning one of five states, evaluated in this precedence order —
 **first match wins**:
 
 | # | State | Predicate (all fields already on `CondensedTimelineTask`) | Mark | Tone |
@@ -938,7 +941,7 @@ risk a hydration mismatch this codebase has no existing pattern for handling).
 | Rail node (circle/ring/square glyphs, §7) | New `shape` prop (`'circle' \| 'square'`) and new glyph states (`ring`, `dashed-hollow`) on `SegmentStrip`'s existing glyph vocabulary (`SegmentGlyph`, `SegmentStrip.tsx:11–20`) — that module already owns the box-glyph state machine (`solid`/`half`/`ghost`/`notch`/`skipped`/`empty`); this is a variant, not a new module. |
 | Solid/dashed edge lines (§3) | New prop on `DependencyRail` distinguishing a "line" render mode from its current "chip" render mode — same component, same file, additive prop. **v2 removes the `'retry'` member of `RailEdgeKind`; the prop itself stays.** |
 | Outcome mark + chevron (§6.4) | Text spans inside the existing `RailRightColumn` (`CondensedTimeline.tsx:952`), which becomes the disclosure `<button>` (§13). No new file; the mark is characters, not a glyph component — deliberately, so it is legible at 10px where a 10px `SegmentGlyph` box is not. |
-| Attempt disclosure panel (§13) | Existing `AttemptStrip`, plus one new boolean prop (proposed name hideToggle) that suppresses its own internal summary button so the row's control is the single toggle. Nesting two toggles is what produced Finding 1. |
+| Attempt disclosure panel (§13) | Existing `AttemptStrip`, plus the boolean prop `hideToggle` that suppresses its own internal summary button so the row's control is the single toggle. Nesting two toggles is what produced Finding 1. |
 | Day/`now` tick row (§4.2) | Inline `<div>` in the mobile render branch, directly analogous to the existing inline `<hr className="border-t border-border-default ...">` chain-boundary divider already used in `timeline-dependency-geometry.md` Rule DIV-1 and implemented ad hoc in `TaskList`/`ChainList` — not a component then, not one now. |
 | `waiting on you` / `running` labels (§8) | Existing `SectionLabel` function, unchanged. |
 | Chain collapse badge (`▣N`/`▼N`, §1.3) | New prop on `StageChip`'s adjacent muted-span pattern (the same `step N/M` slot `timeline-dependency-geometry.md §5` already defines as "StageChip-adjacent muted text span, NOT inside the StageChip itself") — this spec's badge occupies that same slot with different content, on terminal chains instead of blocked ones. **v3: the badge and the row's title text become the children of one `<button>` inside `RailTaskLine` — a `lead`/`children` arrangement, not a new component (§13.4).** |
@@ -1682,8 +1685,8 @@ Collapsing one MUST NOT collapse another. The rail is a list, not a wizard, and
 comparing two rows' attempt histories is a real reason to open both.
 
 **Rule D13-9 (one toggle, not two)**: The panel is `AttemptStrip` rendered with
-its internal summary `<button>` suppressed (a new boolean prop, proposed name
-hideToggle). `AttemptStrip` keeps its own `defaultExpanded` seam for fixtures.
+its internal summary `<button>` suppressed via the boolean prop `hideToggle`.
+`AttemptStrip` keeps its own `defaultExpanded` seam for fixtures.
 Two nested toggles — the row's and the strip's — is precisely the ambiguity that
 made v1's stub untappable in practice.
 
