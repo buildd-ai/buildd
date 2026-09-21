@@ -74,7 +74,7 @@ import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
-import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
+import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
@@ -565,7 +565,9 @@ export class WorkerManager {
   // Per-worker secret redactors — built from BUILDD_API_KEY + MCP credential values
   // at session start and used to scrub secrets from milestones, currentAction, error
   // traces, and the history archive before any of those reach the server or disk.
-  private secretRedactors = new Map<string, (text: string) => string>();
+  // Call it for free text; use `.body()` for anything already parsed, so field
+  // names (not string escaping) decide what the generic patterns may rewrite.
+  private secretRedactors = new Map<string, SecretRedactor>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -4079,19 +4081,13 @@ export class WorkerManager {
             worker.lastAssistantMessage = redactArchive(worker.lastAssistantMessage);
           }
           worker.output = worker.output.map(line => redactArchive(line));
-          worker.messages = worker.messages.map((m: any) => {
-            if (m.type === 'text' && typeof m.content === 'string') {
-              return { ...m, content: redactArchive(m.content) };
-            }
-            if (m.type === 'tool_use' && m.input && typeof m.input === 'object') {
-              const cleanInput: Record<string, unknown> = {};
-              for (const [k, v] of Object.entries(m.input as Record<string, unknown>)) {
-                cleanInput[k] = typeof v === 'string' ? redactArchive(v) : v;
-              }
-              return { ...m, input: cleanInput };
-            }
-            return m;
-          });
+          // Field-blind before: every string in a tool_use input got the
+          // generic credential-shaped patterns, which rewrite any long
+          // kebab-case identifier — a branch name, for one — to
+          // "[REDACTED:credential]", and skipped nested leaves entirely.
+          // redactTranscriptMessages redacts the input as the structure it is,
+          // so the field allowlist decides which values the heuristics see.
+          worker.messages = redactTranscriptMessages(worker.messages, redactArchive);
         }
         try { archiveSession(worker); } catch {}
       }
