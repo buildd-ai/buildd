@@ -867,7 +867,15 @@ export class WorkerManager {
     // orphaned), so it never touches an active worktree.
     try {
       const { fixStaleWorktrees } = await import('./doctor');
-      const result = fixStaleWorktrees();
+      const { formatWorktreeTelemetry } = await import('./worktree-utils');
+      // Pass the live in-memory view: persisted worker records are written on a
+      // cadence, so a worker whose write lagged would classify as `orphan`.
+      const result = fixStaleWorktrees(this.workers);
+      // ALWAYS log the inventory, including the all-zero case. This used to be
+      // gated on the message not starting with "No stale", which — combined
+      // with a branch-prefix eligibility filter that hid every leaking shape —
+      // meant a leaking runner logged nothing at all.
+      if (result.telemetry) console.log(formatWorktreeTelemetry(result.telemetry));
       if (result.message && !result.message.startsWith('No stale')) {
         console.log(`[Cleanup] Worktree sweep: ${result.message}`);
       }

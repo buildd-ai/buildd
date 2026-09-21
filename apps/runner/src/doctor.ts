@@ -12,12 +12,16 @@ import { homedir } from 'os';
 import { checkBwrapSupport } from './env-scan';
 import {
   parseWorktreeList,
-  isBuilddTaskBranch,
+  isRunnerWorktreePath,
+  isWorktreePathOwnedByOtherLiveWorker,
+  formatWorktreeTelemetry,
   shouldRemoveWorktree,
   classifyOwner,
   candidateRepoRoots,
   STALE_WORKTREE_IDLE_MS,
   type WorktreeOwnerRecord,
+  type WorktreeOwnershipRecord,
+  type WorktreeTelemetry,
 } from './worktree-utils';
 
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -218,16 +222,34 @@ function isBranchPushed(repoDir: string, branch: string): boolean {
   }
 }
 
+/** What the sweep saw this pass, alongside what it may remove. */
+interface SweepScan {
+  removable: RemovableWorktree[];
+  telemetry: WorktreeTelemetry;
+}
+
 /**
- * Enumerate leftover buildd task worktrees across all discovered repos and
- * return those that pass the safety gates for removal. Shared by the check
- * (report) and the fix (remove) so they can never disagree.
+ * The live in-memory worker view, when the sweep runs in-process from
+ * `runCleanup`. Persisted records are written on a cadence, so a worker whose
+ * JSON write lagged would otherwise classify as `orphan` — the same predicate
+ * every teardown path uses is the second line of defence. Omitted by the CLI,
+ * which has no in-memory map and falls back to records only.
  */
-function findRemovableWorktrees(): RemovableWorktree[] {
+export type LiveWorkerView = Iterable<[string, WorktreeOwnershipRecord]>;
+
+/** Never clear a host in one pass — a misclassification must stay survivable. */
+const MAX_REAP_PER_TICK = 10;
+
+function scanWorktrees(liveWorkers?: LiveWorkerView): SweepScan {
   const repos = discoverMainRepos();
   const records = loadOwnerRecords();
   const seen = new Set<string>();
-  const result: RemovableWorktree[] = [];
+  const removable: RemovableWorktree[] = [];
+  const telemetry: WorktreeTelemetry = {
+    repos: repos.length, worktrees: 0, live: 0, terminal: 0, orphan: 0,
+    removable: 0, diskMB: 0, reaped: 0, skippedOwned: 0,
+  };
+  const live = liveWorkers ? [...liveWorkers] : null;
 
   for (const repoDir of repos) {
     let porcelain = '';
@@ -237,10 +259,18 @@ function findRemovableWorktrees(): RemovableWorktree[] {
       });
     } catch { continue; }
 
+    // Size `.buildd-worktrees` once per repo rather than once per worktree, so
+    // the per-tick cost stays flat as worktrees accumulate.
+    telemetry.diskMB += dirSizeMB(join(repoDir, '.buildd-worktrees'));
+
     for (const wt of parseWorktreeList(porcelain)) {
       if (wt.path === repoDir || seen.has(wt.path)) continue; // skip main worktree + dupes
-      if (!isBuilddTaskBranch(wt.branch)) continue;
+      // Location, not branch name — and never a worktree outside our own
+      // directory (a human feature branch, or an SDK `isolation: 'worktree'`
+      // subagent tree, is not ours to reap).
+      if (!isRunnerWorktreePath(wt.path)) continue;
       seen.add(wt.path);
+      telemetry.worktrees++;
 
       let ageMs: number;
       try {
@@ -249,8 +279,23 @@ function findRemovableWorktrees(): RemovableWorktree[] {
         ageMs = Infinity; // dir gone but ref lingers → prunable
       }
 
-      const owner = classifyOwner(records, wt.path, wt.branch!);
-      const branchPushed = owner === 'orphan' ? true : isBranchPushed(repoDir, wt.branch!);
+      // A detached worktree has no branch. `classifyOwner` matches on path in
+      // that case and `isBranchPushed` cannot answer, so an unpushed-work check
+      // is impossible — which shouldRemoveWorktree already treats as "retain".
+      const branch = wt.branch ?? '';
+      const owner = classifyOwner(records, wt.path, branch);
+      telemetry[owner]++;
+
+      if (live && isWorktreePathOwnedByOtherLiveWorker(live, wt.path, '__sweep__')) {
+        // Beats the record-based classification: the store write may simply
+        // not have happened yet.
+        telemetry.skippedOwned++;
+        continue;
+      }
+
+      const branchPushed = owner === 'orphan'
+        ? true
+        : branch !== '' && isBranchPushed(repoDir, branch);
       const decision = shouldRemoveWorktree({
         idleMs: ageMs,
         idleThresholdMs: STALE_WORKTREE_IDLE_MS,
@@ -258,11 +303,21 @@ function findRemovableWorktrees(): RemovableWorktree[] {
         branchPushed,
       });
       if (decision.remove) {
-        result.push({ repoDir, path: wt.path, branch: wt.branch!, ageMs, reason: decision.reason });
+        removable.push({ repoDir, path: wt.path, branch, ageMs, reason: decision.reason });
       }
     }
   }
-  return result;
+  telemetry.removable = removable.length;
+  return { removable, telemetry };
+}
+
+/**
+ * Enumerate leftover runner worktrees across all discovered repos and return
+ * those that pass the safety gates for removal. Shared by the check (report)
+ * and the fix (remove) so they can never disagree.
+ */
+function findRemovableWorktrees(): RemovableWorktree[] {
+  return scanWorktrees().removable;
 }
 
 function dirSizeMB(path: string): number {
@@ -440,6 +495,8 @@ export interface FixResult {
   check: string;
   success: boolean;
   message: string;
+  /** Only on the worktree sweep: the per-tick inventory, always populated. */
+  telemetry?: WorktreeTelemetry;
 }
 
 function fixGitBranch(): FixResult {
@@ -475,10 +532,10 @@ function fixBunInstall(): FixResult {
   }
 }
 
-export function fixStaleWorktrees(): FixResult {
-  let removable: RemovableWorktree[];
+export function fixStaleWorktrees(liveWorkers?: LiveWorkerView): FixResult {
+  let scan: SweepScan;
   try {
-    removable = findRemovableWorktrees();
+    scan = scanWorktrees(liveWorkers);
   } catch {
     return { check: 'stale-worktrees', success: true, message: 'Worktree scan failed (non-fatal)' };
   }
@@ -486,8 +543,14 @@ export function fixStaleWorktrees(): FixResult {
   let cleaned = 0;
   let freedMB = 0;
 
-  for (const w of removable) {
+  for (const w of scan.removable.slice(0, MAX_REAP_PER_TICK)) {
     freedMB += dirSizeMB(w.path);
+    // Log before removing, so a misclassification is diagnosable after the fact
+    // rather than only inferable from an absence.
+    console.log(
+      `[worktree-sweep] removing ${w.path} (branch=${w.branch || '<detached>'}, ` +
+      `idle=${Math.round(w.ageMs / 60000)}m, reason=${w.reason})`,
+    );
     // Remove via git (also drops the .git/worktrees/ admin ref), fallback to rm -rf.
     try {
       execSync(`git worktree remove --force "${w.path}" 2>/dev/null`, {
@@ -500,6 +563,7 @@ export function fixStaleWorktrees(): FixResult {
     }
     cleaned++;
   }
+  scan.telemetry.reaped = cleaned;
 
   // Prune dangling worktree refs (covers rm -rf fallback + externally deleted dirs).
   for (const repoDir of discoverMainRepos()) {
@@ -512,6 +576,7 @@ export function fixStaleWorktrees(): FixResult {
     check: 'stale-worktrees',
     success: true,
     message: cleaned > 0 ? `Removed ${cleaned} stale worktree(s), freed ~${freedMB}MB` : 'No stale worktrees to clean',
+    telemetry: scan.telemetry,
   };
 }
 
