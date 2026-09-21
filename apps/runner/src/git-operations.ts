@@ -247,23 +247,35 @@ export interface SetupWorktreeResult {
   };
 }
 
+/** Branch name → directory name. The only place this mapping is spelled. */
+function safeWorktreeDirName(branch: string): string {
+  return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 export async function setupWorktree(
   repoPath: string,
   branch: string,
   defaultBranch: string,
   workerId: string,
   taskContext?: Record<string, unknown>,
+  /**
+   * Live-worker view, for the ownership guard on path reclaim. Omit and the
+   * guard degrades to the clean-tree probe alone (CLI / doctor callers, which
+   * have no in-memory map).
+   */
+  liveWorkers?: Iterable<[string, WorktreeOwnershipRecord]>,
 ): Promise<SetupWorktreeResult | null> {
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
   // Worktrees live in .buildd-worktrees/ inside the repo
   const worktreeBase = join(repoPath, '.buildd-worktrees');
-  const safeBranch = branch.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeBranch = safeWorktreeDirName(branch);
   // Keyed on the REQUESTED branch, so two workers asking for the same branch
   // (a mission carrying a stable `headBranch`, a shared base) compute the same
   // directory even though the shared-branch guard below gives them distinct
-  // branches. Reassigned below when that path turns out to be occupied by a
-  // worktree with live, uncommitted work.
+  // branches. Recomputed from the RESOLVED branch after the candidate ladder
+  // below, which is what closes that collision at the source; also reassigned
+  // when this path turns out to be occupied.
   let worktreePath = join(worktreeBase, safeBranch);
 
   try {
@@ -297,36 +309,51 @@ export async function setupWorktree(
     // (plain leftover directory) or registered with a clean tree. Otherwise
     // leave it to its owner and take a worker-scoped path instead — unique per
     // attempt by construction, the same escape the branch ladder below uses.
-    if (existsSync(worktreePath)) {
-      const registered = listWorktreeEntries(execOpts).some(e => e.path === worktreePath);
-      if (registered && !worktreeIsReclaimable(worktreePath, execOpts)) {
-        const diverted = `${worktreePath}-w${workerId.slice(0, 8)}`;
+    /**
+     * Free `candidate` for our own use, or return a worker-scoped path to use
+     * instead. The single place this decision is made — P4 below reuses it for
+     * the post-ladder path so the recompute cannot reintroduce an unguarded
+     * force-remove one line further down.
+     */
+    const reclaimOrDivert = (candidate: string): string => {
+      if (!existsSync(candidate)) return candidate;
+      const registered = listWorktreeEntries(execOpts).some(e => e.path === candidate);
+      // Ownership FIRST: a live worker that has committed its work reads clean,
+      // so worktreeIsReclaimable() alone happily deletes an active session's cwd.
+      const ownedByLive = liveWorkers
+        ? isWorktreePathOwnedByOtherLiveWorker(liveWorkers, candidate, workerId)
+        : false;
+      if (ownedByLive || (registered && !worktreeIsReclaimable(candidate, execOpts))) {
+        const diverted = `${candidate}-w${workerId.slice(0, 8)}`;
+        const why = ownedByLive
+          ? 'owned by another live worker'
+          : 'a registered worktree that is not provably clean';
         console.warn(
-          `[Worker ${workerId}] Worktree path ${worktreePath} is a registered worktree that is ` +
-          `not provably clean — refusing to force-remove it (that deletes another worker's ` +
-          `uncommitted work and still exits 0). Using ${diverted} instead.`,
+          `[Worker ${workerId}] Worktree path ${candidate} is ${why} — refusing to force-remove ` +
+          `it (that deletes another worker's work and still exits 0). Using ${diverted} instead.`,
         );
-        worktreePath = diverted;
-        if (existsSync(worktreePath)) {
-          // Our own leftover from a previous attempt with this worker id.
-          try {
-            execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-          } catch {
-            rmSync(worktreePath, { recursive: true, force: true });
-            try { execSync('git worktree prune', execOpts); } catch {}
-          }
+        sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned',
+          `Diverted to ${diverted}: ${candidate} is ${why}`);
+        if (existsSync(diverted)) {
+          // Scoped to our own worker id, so any leftover here is our own from a
+          // previous attempt. Still recursed through this same guard rather than
+          // force-removed inline.
+          return reclaimOrDivert(diverted);
         }
-      } else {
-        console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
-        try {
-          execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-        } catch {
-          // Force-remove the directory if git worktree remove fails
-          rmSync(worktreePath, { recursive: true, force: true });
-          try { execSync('git worktree prune', execOpts); } catch {}
-        }
+        return diverted;
       }
-    }
+      console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${candidate}`);
+      try {
+        execSync(`git worktree remove --force "${candidate}"`, execOpts);
+      } catch {
+        // Force-remove the directory if git worktree remove fails
+        rmSync(candidate, { recursive: true, force: true });
+        try { execSync('git worktree prune', execOpts); } catch {}
+      }
+      return candidate;
+    };
+
+    worktreePath = reclaimOrDivert(worktreePath);
 
     // Determine if there is a resume candidate from prior attempt context —
     // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to

@@ -502,6 +502,61 @@ describe('setupWorktree', () => {
     expect(result?.path).toBe(WORKTREE_PATH);
     expect(result?.branch).toBe('buildd/test-branch');
   });
+
+  // ─── Ownership, not cleanliness, protects a live session's cwd ─────────────
+  // The clean-tree probe above is necessary but not sufficient: an agent that
+  // has COMMITTED its work (commit early, push late) reads clean, so the
+  // easiest worktree to destroy was a productive one. `liveWorkers` lets
+  // setupWorktree ask the question worker-sync.ts was already asking.
+
+  const registeredAtWorktreePath = () => [
+    'worktree /repo',
+    'branch refs/heads/main',
+    '',
+    `worktree ${WORKTREE_PATH}`,
+    'branch refs/heads/buildd/test-branch',
+    '',
+  ].join('\n');
+
+  test('a live worker that has committed (clean tree) keeps its worktree', async () => {
+    existsSyncMap[WORKTREE_PATH] = true;
+    worktreeListOutput = registeredAtWorktreePath();
+    statusPorcelain = ''; // committed → clean → reclaimable by the old rule
+
+    const result = await setupWorktree(
+      '/repo', 'buildd/test-branch', 'main', 'worker-second-1', undefined,
+      new Map([['worker-first-1', { worktreePath: WORKTREE_PATH, status: 'working' }]]),
+    );
+
+    expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(false);
+    expect(result?.path).not.toBe(WORKTREE_PATH);
+    expect(result?.path).toContain('-wworker-s');
+  });
+
+  test('a terminal owner at that path is still reclaimed (behaviour preserved)', async () => {
+    existsSyncMap[WORKTREE_PATH] = true;
+    worktreeListOutput = registeredAtWorktreePath();
+    statusPorcelain = '';
+
+    const result = await setupWorktree(
+      '/repo', 'buildd/test-branch', 'main', 'worker-second-2', undefined,
+      new Map([['worker-first-2', { worktreePath: WORKTREE_PATH, status: 'error' }]]),
+    );
+
+    expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(true);
+    expect(result?.path).toBe(WORKTREE_PATH);
+  });
+
+  test('omitting liveWorkers leaves the clean-tree behaviour unchanged (CLI/doctor callers)', async () => {
+    existsSyncMap[WORKTREE_PATH] = true;
+    worktreeListOutput = registeredAtWorktreePath();
+    statusPorcelain = '';
+
+    const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-nolist');
+
+    expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(true);
+    expect(result?.path).toBe(WORKTREE_PATH);
+  });
 });
 
 describe('collectGitStats', () => {

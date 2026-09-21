@@ -18,7 +18,10 @@ import {
   restoreCodexAgentsMd,
   type AgentsMdWriteResult,
 } from './codex-instructions.js';
-import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
+// `cleanupWorktree` is deliberately NOT imported: every teardown path in this
+// file goes through removeWorktreeIfUnowned so no site can force-remove a
+// directory a live worker is sitting in. See git-operations.ts.
+import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 import { buildRetryContinuitySection } from './worktree-utils';
 import { PusherManager } from './pusher-manager';
 import {
@@ -1635,6 +1638,9 @@ export class WorkerManager {
         defaultBranch,
         worker.id,
         fullTask.context,
+        // Live-worker view: a path another running session owns must never be
+        // reclaimed, not even when its tree reads clean (committed-but-unpushed).
+        this.workers,
       );
 
       if (setupResult) {
@@ -1732,9 +1738,15 @@ export class WorkerManager {
 
       this.emit({ type: 'worker_update', worker });
 
-      // Clean up worktree on session start failure
+      // Clean up worktree on session start failure — unless another live worker
+      // has since taken this path (branch-keyed paths make that reachable).
       if (worker.worktreePath) {
-        cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+        removeWorktreeIfUnowned({
+          repoPath: workspacePath,
+          worktreePath: worker.worktreePath,
+          workerId: worker.id,
+          workers: this.workers,
+        }).catch(() => {});
       }
     });
 
@@ -4013,7 +4025,12 @@ export class WorkerManager {
         // bwrap retry: preserve the worktree so the restarted session can reuse it.
         const isEphemeral = isEphemeralTestBranch(worker.branch);
         if (!bwrapRetryAfterCleanup && worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
-          await cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
+          await removeWorktreeIfUnowned({
+            repoPath: session.repoPath,
+            worktreePath: worker.worktreePath,
+            workerId: worker.id,
+            workers: this.workers,
+          }).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
         }
@@ -5366,21 +5383,25 @@ export class WorkerManager {
       session.abortController.abort();
       session.inputStream.end();
 
-      // Synchronously clean up worktrees on destroy
+      // Synchronously clean up worktrees on destroy.
+      //
+      // Two guards this used to lack. (1) It removed the worktree of EVERY
+      // worker with a live session, including `done` and `waiting` ones whose
+      // tree is deliberately retained for session resume (see the finally
+      // block's retention rule) — so a runner restart ate resumable trees and
+      // left the persisted record pointing at a path that no longer existed.
+      // (2) It force-removed with no ownership check at all, on the one code
+      // path where every worker is being torn down at once.
       const worker = this.workers.get(workerId);
-      if (worker?.worktreePath) {
-        try {
-          const cp = require('child_process');
-          cp.execSync(`git worktree remove --force "${worker.worktreePath}"`, {
-            cwd: session.repoPath,
-            timeout: 5000,
-          });
-        } catch {
-          try {
-            const fs = require('fs');
-            fs.rmSync(worker.worktreePath, { recursive: true, force: true });
-          } catch {}
-        }
+      if (worker?.worktreePath && worker.status !== 'done' && worker.status !== 'waiting') {
+        removeWorktreeIfUnownedSync({
+          repoPath: session.repoPath,
+          worktreePath: worker.worktreePath,
+          workerId,
+          workers: this.workers,
+          branch: worker.branch,
+          protectUnpushed: true,
+        });
       }
     }
     this.sessions.clear();
