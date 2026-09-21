@@ -98,9 +98,14 @@ export interface GitStats {
   dirtyWorktree?: boolean;
 }
 
-/** Why an install failed, in the terms a caller can act on. */
+/**
+ * Why an install failed, in the terms a caller can act on. The split that
+ * matters is structural-host-fault (`registry-auth`, `toolchain-missing` — the
+ * agent cannot fix these and they hit every task on the host) versus everything
+ * else. "Nothing to install" is not in here: that is a `skipped` outcome, not a
+ * failure, and treating it as one is what produced the old false alarms.
+ */
 export type InstallFailureClass =
-  | 'no-manifest'
   | 'registry-auth'
   | 'toolchain-missing'
   | 'lockfile-drift'
