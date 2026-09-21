@@ -77,6 +77,7 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
@@ -4204,27 +4205,12 @@ export class WorkerManager {
   }
 
   /**
-   * Cost + model attribution for a terminal worker update.
-   *
-   * `costUsd` is only sent when the backend reported real spend: a 0 would be
-   * indistinguishable from "this session was free" and would suppress the
-   * server's token-derived estimate (the seat/OAuth path, where the SDK always
-   * reports $0). `actualModel` is always sent when known so
-   * task_outcomes.actual_model stops being NULL.
+   * Cost + model attribution for a terminal worker update. Delegates to the
+   * shared, dependency-free builder in terminal-attribution.ts — see its doc
+   * for why this is pulled out rather than kept private to this class.
    */
   private terminalAttributionPayload(worker: LocalWorker): { costUsd?: number; actualModel?: string } {
-    const meta = worker.resultMeta;
-    const reportedCost = meta?.totalCostUsd;
-    const actualModel = meta?.actualModel
-      || resolveActualModel({
-        modelUsage: meta?.modelUsage ?? null,
-        reportedModel: worker.reportedModel ?? null,
-        requestedModel: worker.sessionModel ?? null,
-      });
-    return {
-      ...(typeof reportedCost === 'number' && reportedCost > 0 ? { costUsd: reportedCost } : {}),
-      ...(actualModel ? { actualModel } : {}),
-    };
+    return buildTerminalAttributionPayload(worker);
   }
 
   private async handleMessage(worker: LocalWorker, msg: SDKMessage) {

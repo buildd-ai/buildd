@@ -45,6 +45,7 @@ import { formatAttemptTitle } from '@/lib/task-title';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -767,6 +768,12 @@ export async function PATCH(
     // Passive observed-touches: incremental list from git diff --name-only on the runner.
     // Server accumulates into workers.observedTouches for §6d collision detection.
     touchedPaths,
+    // Set by the runner's startup reconciliation (worker-sync.ts
+    // restoreWorkersFromDisk) when it finds a local session whose process died
+    // without ever reporting a terminal status — never sent by a live session.
+    // Distinguishes a terminal record's outcome ('crashed') from an ordinary
+    // agent-reported failure, since both arrive as status: 'failed'.
+    crashReconciled,
   } = body;
 
   // ── Who may consume the human-instruction queue ────────────────────────────
@@ -1330,6 +1337,16 @@ export async function PATCH(
       // row before refusing it; each rejection is its own worker row, so
       // there is nothing to reconcile against a later, successful attempt.
       const persistRejectedCompletionPayload = async (reason: string) => {
+        // Salvage measurement before refusing the status write. `body` still
+        // carries the full completion payload (costUsd, tokens, turns, git
+        // stats, resultMeta) at this point — the gate returns 400 below without
+        // ever reaching the `updates` write further down this handler, so
+        // without this call every one of those numbers is lost with the
+        // refusal. `applyMetricsOnlyPatch` writes measurement only (see its own
+        // doc) — it cannot resurrect this worker or rewrite its outcome, so
+        // running it ahead of a hard refusal is safe.
+        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+
         // The gate row and the preserved payload are written from the same
         // place on purpose: every arm of this gate refuses through here, so a
         // future arm cannot be added that persists the payload and forgets the
@@ -1389,6 +1406,26 @@ export async function PATCH(
           },
           updatedAt: new Date(),
         }).where(eq(workers.id, id));
+
+        // Every terminal signal gets a record, including this one — a gate
+        // refusal is a session end (the runner's query loop already exited by
+        // the time this PATCH lands), just not a completed one. `shipped` is
+        // hardcoded false: the gate refused precisely because nothing shipped.
+        fireTerminalRecord({
+          workerId: worker.id,
+          taskId: worker.taskId,
+          workspaceId: worker.workspaceId,
+          outcome: 'refused',
+          exitCause: `outputRequirement ${reason} not satisfied`,
+          turns: typeof turns === 'number' ? turns : worker.turns,
+          inputTokens: typeof inputTokens === 'number' ? inputTokens : worker.inputTokens,
+          outputTokens: typeof outputTokens === 'number' ? outputTokens : worker.outputTokens,
+          costUsd: typeof costUsd === 'number' ? costUsd : Number(worker.costUsd ?? 0),
+          durationMs: worker.startedAt ? Date.now() - new Date(worker.startedAt).getTime() : null,
+          shipped: false,
+          summaryProvenance: rejectedSummarySource === 'agent' || rejectedSummarySource === 'fallback' ? rejectedSummarySource : null,
+          detail: { outputRequirement: reason, salvagedArtifactId },
+        });
       };
 
       // pr_required: always require a PR (regardless of commits)
@@ -3216,6 +3253,30 @@ export async function PATCH(
 
   if (!updated) {
     return workerConflictResponse(id);
+  }
+
+  // One terminal record per worker, on every path that lands here: a real
+  // completion, a real failure, and a runner-reconciled process death
+  // reported as status:'failed' with crashReconciled:true (see
+  // apps/runner/src/worker-sync.ts restoreWorkersFromDisk). The
+  // outputRequirement gate's own refusal path writes its row from
+  // persistRejectedCompletionPayload above, since a refused completion never
+  // reaches this write at all.
+  if (isTerminalStatus) {
+    fireTerminalRecord({
+      workerId: worker.id,
+      taskId: worker.taskId,
+      workspaceId: worker.workspaceId,
+      outcome: crashReconciled === true ? 'crashed' : (status === 'completed' ? 'completed' : 'failed'),
+      exitCause: updated.error ?? error ?? null,
+      turns: updated.turns,
+      inputTokens: updated.inputTokens,
+      outputTokens: updated.outputTokens,
+      costUsd: Number(updated.costUsd ?? 0),
+      durationMs: worker.startedAt ? Date.now() - new Date(worker.startedAt).getTime() : null,
+      shipped: workerHasPR,
+      summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
+    });
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.
