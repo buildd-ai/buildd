@@ -1624,8 +1624,13 @@ export async function GET(req: NextRequest) {
  * Walk the parentTaskId chain, collect all ancestor task IDs, find workers
  * with open PRs on those tasks, and close each via GitHub API with a comment
  * linking the successor. Best-effort — errors are logged but not fatal.
+ *
+ * Exported for direct unit testing (see closeAncestorRetryPrs.test.ts) — the
+ * ancestor-walk termination rule is the entire correctness of this function,
+ * and exercising it through the full POST handler would bury that behind
+ * hundreds of lines of unrelated setup.
  */
-async function closeAncestorRetryPrs(opts: {
+export async function closeAncestorRetryPrs(opts: {
   parentTaskId: string;
   successorPrNumber: number;
   installationId: number;
@@ -1633,7 +1638,21 @@ async function closeAncestorRetryPrs(opts: {
 }): Promise<void> {
   const { parentTaskId, successorPrNumber, installationId, repoFullName } = opts;
 
-  // Walk task ancestry to collect all ancestor task IDs
+  // Walk task ancestry to collect all ancestor task IDs.
+  //
+  // parentTaskId is not exclusively a retry-lineage pointer: resolveCreatorContext
+  // (apps/web/src/lib/task-service.ts) auto-sets it to the calling worker's *current*
+  // task whenever a new task is created without an explicit parentTaskId — e.g. a
+  // worker filing an unrelated `[friction]` task mid-task. Following that link here
+  // would sweep up and close a completely unrelated task's open PR (see task 78532721:
+  // PR #2556 was wrongly closed as "superseded" by an unrelated PR because a friction
+  // task's auto-derived parentTaskId happened to point at #2556's task).
+  //
+  // Only continue climbing past a task if IT is itself a genuine retry attempt
+  // (taskClass === 'attempt', stamped by ci-retry.ts / conflict-retry.ts / the
+  // reviewer-retry path in workers/[id]/route.ts) — otherwise its own parentTaskId
+  // is creation provenance, not retry lineage, and the walk must stop there. The
+  // starting task itself is always included: it is the direct ancestor being retried.
   const ancestorTaskIds: string[] = [];
   const visited = new Set<string>();
   let taskId: string | null = parentTaskId;
@@ -1641,11 +1660,11 @@ async function closeAncestorRetryPrs(opts: {
     visited.add(taskId);
     ancestorTaskIds.push(taskId);
     const currentId: string = taskId;
-    const parent = await db.query.tasks.findFirst({
+    const current = await db.query.tasks.findFirst({
       where: eq(tasks.id, currentId),
-      columns: { parentTaskId: true },
+      columns: { parentTaskId: true, taskClass: true },
     });
-    taskId = parent?.parentTaskId ?? null;
+    taskId = current?.taskClass === 'attempt' ? (current.parentTaskId ?? null) : null;
   }
 
   if (ancestorTaskIds.length === 0) return;
