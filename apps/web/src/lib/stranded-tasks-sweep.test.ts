@@ -124,7 +124,8 @@ describe('sweepStrandedTasks', () => {
     expect(updatedNotes.some(u => u.id === 'note-1')).toBe(true);
   });
 
-  it('flags a task via consecutiveDeferrals when it has no startAt at all', async () => {
+  // @signal-fire: claim-loop-stranding
+  it('flags a task via a stale deferral streak when it has no startAt at all', async () => {
     candidateRows = [{
       id: TASK,
       title: 'Perpetually mission-paced task',
@@ -132,13 +133,53 @@ describe('sweepStrandedTasks', () => {
       missionId: 'mission-1',
       startAt: null,
       reason: 'mission_paced',
-      detail: { consecutiveDeferrals: 250, firstDeferredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+      // A handful of deferrals over 3 hours at the real, measured claim
+      // cadence (p50 over 5 minutes) — nowhere near the OLD 200-poll
+      // threshold, which is exactly why that threshold could never fire.
+      detail: { consecutiveDeferrals: 5, firstDeferredAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString() },
     }];
 
     const result = await sweepStrandedTasks();
 
     expect(result.stranded).toBe(1);
     expect(firedEvents[0].reason).toBe('mission_paced');
+  });
+
+  it('does NOT flag a fast-but-brief deferral streak — this is the bug the old poll-count threshold had backwards', async () => {
+    // Old logic keyed on consecutiveDeferrals alone: 250 would have tripped a
+    // 200-poll threshold regardless of how little wall-clock time it spanned.
+    // Elapsed time is what actually means "stuck".
+    candidateRows = [{
+      id: TASK,
+      title: 'Just deferred a lot, briefly',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      startAt: null,
+      reason: 'mission_paced',
+      detail: { consecutiveDeferrals: 250, firstDeferredAt: new Date(Date.now() - 5 * 60 * 1000).toISOString() },
+    }];
+
+    const result = await sweepStrandedTasks();
+
+    expect(result.stranded).toBe(0);
+    expect(result.scanned).toBe(0);
+  });
+
+  it('does not flag a single old deferral — the noise floor still applies at any age', async () => {
+    candidateRows = [{
+      id: TASK,
+      title: 'Deferred once, ages ago',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      startAt: null,
+      reason: 'workspace_cap',
+      detail: { consecutiveDeferrals: 1, firstDeferredAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString() },
+    }];
+
+    const result = await sweepStrandedTasks();
+
+    expect(result.stranded).toBe(0);
+    expect(result.scanned).toBe(0);
   });
 
   it('clears a previously-stranded note once the task is no longer pending', async () => {

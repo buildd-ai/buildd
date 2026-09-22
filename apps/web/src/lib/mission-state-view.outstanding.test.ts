@@ -17,7 +17,7 @@ import {
   type MissionStateInput,
   type WaitingOnDescriptor,
 } from './mission-state-view';
-import { SURFACE_DEFERRAL_THRESHOLD, STRAND_CONSECUTIVE_THRESHOLD } from './claim-deferral-thresholds';
+import { SURFACE_DEFERRAL_MS, STRAND_MS, MIN_CONSECUTIVE_DEFERRALS } from './claim-deferral-thresholds';
 
 const base: MissionStateInput = {
   status: 'active',
@@ -142,14 +142,22 @@ describe('Part 2 — guidance survives a wrong state read', () => {
 });
 
 describe('Part 2 — repeated claim-loop deferrals', () => {
-  const deferred = (n: number): MissionStateInput => ({
+  // A streak that has been running for `elapsedMs`, at the real measured
+  // claim cadence (p50 over five minutes) rather than the ~30s this used to
+  // assume — a handful of deferrals, not hundreds.
+  const deferred = (elapsedMs: number, n = MIN_CONSECUTIVE_DEFERRALS): MissionStateInput => ({
     ...base,
     activeAgents: 1,
-    deferrals: [{ taskId: 'task-stuck', reason: 'workspace_cap', consecutiveDeferrals: n, firstDeferredAt: '2026-09-19T09:00:00.000Z' }],
+    deferrals: [{
+      taskId: 'task-stuck',
+      reason: 'workspace_cap',
+      consecutiveDeferrals: n,
+      firstDeferredAt: new Date(Date.now() - elapsedMs).toISOString(),
+    }],
   });
 
   it('names the deferral and its reason instead of rendering a healthy spinner', () => {
-    const view = deriveMissionStateView(deferred(13));
+    const view = deriveMissionStateView(deferred(SURFACE_DEFERRAL_MS * 2, 13));
 
     const fact = factOfKind(view.outstanding, 'claim_deferral');
     if (fact.kind !== 'claim_deferral') throw new Error('unreachable');
@@ -162,17 +170,24 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
   });
 
   it('stays quiet below the surfacing threshold — transient contention is not news', () => {
-    const view = deriveMissionStateView(deferred(SURFACE_DEFERRAL_THRESHOLD - 1));
+    const view = deriveMissionStateView(deferred(SURFACE_DEFERRAL_MS - 1000));
     expect(view.outstanding.some(f => f.kind === 'claim_deferral')).toBe(false);
   });
 
   it('speaks at the threshold, and long before the stranding sweep gives up', () => {
-    expect(deriveMissionStateView(deferred(SURFACE_DEFERRAL_THRESHOLD)).outstanding.some(f => f.kind === 'claim_deferral')).toBe(true);
-    expect(SURFACE_DEFERRAL_THRESHOLD).toBeLessThan(STRAND_CONSECUTIVE_THRESHOLD);
+    expect(deriveMissionStateView(deferred(SURFACE_DEFERRAL_MS)).outstanding.some(f => f.kind === 'claim_deferral')).toBe(true);
+    expect(SURFACE_DEFERRAL_MS).toBeLessThan(STRAND_MS);
+  });
+
+  it('stays quiet no matter the poll count when the streak has not run long enough — this is the bug the old poll-count threshold had', () => {
+    // A huge consecutiveDeferrals count from a hyperactive claim loop, but the
+    // streak only started a moment ago — should NOT surface.
+    const view = deriveMissionStateView(deferred(1000, 9999));
+    expect(view.outstanding.some(f => f.kind === 'claim_deferral')).toBe(false);
   });
 
   it('never becomes the precedence verdict — it annotates the state, it is not a state', () => {
-    const view = deriveMissionStateView(deferred(50));
+    const view = deriveMissionStateView(deferred(SURFACE_DEFERRAL_MS * 2, 50));
     expect(view.kind).toBe('running');
     expect(view.waitingOn).toBeNull();
   });
@@ -183,7 +198,12 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
     const view = deriveMissionStateView({
       ...workFinishedMissionPrOpen,
       activeAgents: 1,
-      deferrals: [{ taskId: 'task-stuck', reason: 'workspace_cap', consecutiveDeferrals: 13, firstDeferredAt: null }],
+      deferrals: [{
+        taskId: 'task-stuck',
+        reason: 'workspace_cap',
+        consecutiveDeferrals: 13,
+        firstDeferredAt: new Date(Date.now() - SURFACE_DEFERRAL_MS * 2).toISOString(),
+      }],
     });
 
     expect(view.situation.focus?.kind).toBe('merge');

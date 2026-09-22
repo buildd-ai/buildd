@@ -55,6 +55,10 @@ function makeEnforcedRow() {
   return { resultMeta: { cbm: { outcome: 'enforced' } } };
 }
 
+function makeBootstrapFailedRow() {
+  return { resultMeta: { cbm: { outcome: 'enforced', bootstrapResult: 'failed' } } };
+}
+
 describe('detectCbmFleetDisabled', () => {
   beforeEach(() => {
     findManyResult = [];
@@ -161,6 +165,51 @@ describe('detectCbmFleetDisabled', () => {
     await detectCbmFleetDisabled(WS, null);
     await detectCbmFleetDisabled(WS, undefined);
     expect(reportOpsCalls).toHaveLength(0);
+  });
+
+  // The bug this task exists to fix: the worker path sets outcome='enforced'
+  // unconditionally once CBM is mounted, even when the index bootstrap that
+  // enforcement depends on failed. A fleet where every index build fails but
+  // the binary is present therefore reported 'enforced' on every worker and
+  // this detector's outcome==='disabled' predicate could never see it — 100%
+  // healthy while indexing was 100% broken.
+  // @signal-fire: cbm-fleet-health
+  it('fires when enforced workers all report a failed index bootstrap', async () => {
+    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBootstrapFailedRow());
+    await detectCbmFleetDisabled(WS, { outcome: 'enforced', bootstrapResult: 'failed' });
+    expect(reportOpsCalls).toHaveLength(1);
+    const call = reportOpsCalls[0] as Record<string, unknown>;
+    expect(call.severity).toBe('error');
+    expect(String(call.detail)).toContain('bootstrap_failed');
+  });
+
+  it('does not treat a merely-unindexed-yet worker as unhealthy — only outcome=enforced + bootstrapResult=failed counts', async () => {
+    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBootstrapFailedRow());
+    // skipped_warm means a shared seed was admitted — no per-task index ran, and
+    // that is not a failure.
+    await detectCbmFleetDisabled(WS, { outcome: 'enforced', bootstrapResult: 'skipped_warm' });
+    expect(reportOpsCalls).toHaveLength(0);
+  });
+
+  it('a single healthy bootstrap breaks a bootstrap-failed streak', async () => {
+    findManyResult = [
+      { resultMeta: { cbm: { outcome: 'enforced', bootstrapResult: 'ok' } } },
+      ...Array(CBM_FLEET_THRESHOLD - 2).fill(makeBootstrapFailedRow()),
+    ];
+    await detectCbmFleetDisabled(WS, { outcome: 'enforced', bootstrapResult: 'failed' });
+    expect(reportOpsCalls).toHaveLength(0);
+  });
+
+  it('names bootstrap failure alongside disabled reasons in a mixed streak', async () => {
+    findManyResult = [
+      makeBinaryAbsentRow(),
+      ...Array(CBM_FLEET_THRESHOLD - 2).fill(makeBootstrapFailedRow()),
+    ];
+    await detectCbmFleetDisabled(WS, { outcome: 'enforced', bootstrapResult: 'failed' });
+    expect(reportOpsCalls).toHaveLength(1);
+    const call = reportOpsCalls[0] as Record<string, unknown>;
+    expect(String(call.message)).toContain('bootstrap_failed');
+    expect(String(call.message)).toContain('binary_absent');
   });
 });
 
