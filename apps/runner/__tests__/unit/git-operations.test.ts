@@ -58,9 +58,31 @@ let numstatOutput = '';
 // existing tests (which don't care about lastCommitSha) see it reported.
 let headOutput = 'deadbee';
 
+// Paths this fake git has removed. `git worktree list --porcelain` must stop
+// reporting them (and stop reporting their branch as held): setupWorktree runs
+// the reclaim BEFORE listBranchOwners precisely so the freed branch is
+// available again, and a static porcelain fixture would hide that.
+let removedWorktrees: Set<string> = new Set();
+
+function livePorcelain(): string {
+  if (!worktreeListOutput) return worktreeListOutput;
+  return worktreeListOutput
+    .split('\n\n')
+    .filter(stanza => {
+      const m = stanza.match(/^worktree (.+)$/m);
+      return !m || !removedWorktrees.has(m[1].trim());
+    })
+    .join('\n\n');
+}
+
 function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   syncCalls.push({ cmd, opts });
-  if (cmd.includes('worktree list --porcelain')) return worktreeListOutput;
+  if (cmd.includes('worktree list --porcelain')) return livePorcelain();
+  const rm = cmd.match(/git worktree remove --force "([^"]+)"/);
+  if (rm) {
+    removedWorktrees.add(rm[1]);
+    return '';
+  }
   if (cmd === 'git rev-parse HEAD') return headOutput;
   if (cmd.includes('status --porcelain')) {
     if (statusFails) {
@@ -118,7 +140,8 @@ function mockExecFile(
 ) {
   fileCalls.push({ file, args, opts: _opts });
   const frozen = args.includes('--frozen-lockfile');
-  if (frozen && failBunInstall.frozen) return cb(new Error('lockfile drifted'));
+  // Drift-shaped text: only a real drift message earns the unfrozen retry now.
+  if (frozen && failBunInstall.frozen) return cb(new Error('error: lockfile had changes, but lockfile is frozen'));
   if (!frozen && failBunInstall.unfrozen) return cb(new Error('bun: command not found'));
   return cb(null, '', '');
 }
@@ -158,12 +181,18 @@ describe('setupWorktree', () => {
   beforeEach(() => {
     syncCalls.length = 0;
     fileCalls.length = 0;
-    existsSyncMap = {};
+    // A root lockfile, which is what these tests always implicitly assumed:
+    // install used to run unconditionally at the worktree root. It is now
+    // planned from what is actually on disk, so the manifest has to be stated.
+    // (See worktree-install-detect.test.ts for the detection rules and
+    // worktree-install-outcome.test.ts for the no-manifest case.)
+    existsSyncMap = { [`${WORKTREE_PATH}/bun.lock`]: true };
     failBunInstall = { frozen: false, unfrozen: false };
     revListBehavior = 'ok';
     worktreeListOutput = '';
     statusPorcelain = '';
     statusFails = false;
+    removedWorktrees = new Set();
     // Re-inject each test to reset mocks to initial state (clears per-test overrides
     // like custom execSync functions set in the stale-branch guard tests).
     __setGitOpsDeps({
@@ -501,6 +530,61 @@ describe('setupWorktree', () => {
     expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(true);
     expect(result?.path).toBe(WORKTREE_PATH);
     expect(result?.branch).toBe('buildd/test-branch');
+  });
+
+  // ─── Ownership, not cleanliness, protects a live session's cwd ─────────────
+  // The clean-tree probe above is necessary but not sufficient: an agent that
+  // has COMMITTED its work (commit early, push late) reads clean, so the
+  // easiest worktree to destroy was a productive one. `liveWorkers` lets
+  // setupWorktree ask the question worker-sync.ts was already asking.
+
+  const registeredAtWorktreePath = () => [
+    'worktree /repo',
+    'branch refs/heads/main',
+    '',
+    `worktree ${WORKTREE_PATH}`,
+    'branch refs/heads/buildd/test-branch',
+    '',
+  ].join('\n');
+
+  test('a live worker that has committed (clean tree) keeps its worktree', async () => {
+    existsSyncMap[WORKTREE_PATH] = true;
+    worktreeListOutput = registeredAtWorktreePath();
+    statusPorcelain = ''; // committed → clean → reclaimable by the old rule
+
+    const result = await setupWorktree(
+      '/repo', 'buildd/test-branch', 'main', 'worker-second-1', undefined,
+      new Map([['worker-first-1', { worktreePath: WORKTREE_PATH, status: 'working' }]]),
+    );
+
+    expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(false);
+    expect(result?.path).not.toBe(WORKTREE_PATH);
+    expect(result?.path).toContain('-wworker-s');
+  });
+
+  test('a terminal owner at that path is still reclaimed (behaviour preserved)', async () => {
+    existsSyncMap[WORKTREE_PATH] = true;
+    worktreeListOutput = registeredAtWorktreePath();
+    statusPorcelain = '';
+
+    const result = await setupWorktree(
+      '/repo', 'buildd/test-branch', 'main', 'worker-second-2', undefined,
+      new Map([['worker-first-2', { worktreePath: WORKTREE_PATH, status: 'error' }]]),
+    );
+
+    expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(true);
+    expect(result?.path).toBe(WORKTREE_PATH);
+  });
+
+  test('omitting liveWorkers leaves the clean-tree behaviour unchanged (CLI/doctor callers)', async () => {
+    existsSyncMap[WORKTREE_PATH] = true;
+    worktreeListOutput = registeredAtWorktreePath();
+    statusPorcelain = '';
+
+    const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-nolist');
+
+    expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(true);
+    expect(result?.path).toBe(WORKTREE_PATH);
   });
 });
 

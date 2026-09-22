@@ -27,19 +27,22 @@ export default async function ProtectedLayout({
   let teamWorkspaces: { id: string; name: string }[] = [];
 
   if (user) {
-    try {
-      userTeams = await getUserTeamsWithDetails(user.id);
-    } catch {
-      // Teams will be empty, page still renders
-    }
+    // These three have no dependency on each other, and this layout re-runs on
+    // every navigation under /app (force-dynamic, inherited from
+    // app/app/layout.tsx). Run serially they were three separate neon-http
+    // round-trip chains before anything painted. Each keeps its own catch so a
+    // failure degrades exactly the surface it used to — Promise.all would
+    // otherwise reject the whole group on the first error.
+    const [userTeamsResult, workspaceIdsResult, cookieStore] = await Promise.all([
+      // Teams empty on failure, page still renders
+      getUserTeamsWithDetails(user.id).catch(() => [] as typeof userTeams),
+      // Workspace IDs empty on failure, notifications won't load
+      getUserWorkspaceIds(user.id).catch(() => [] as string[]),
+      cookies(),
+    ]);
+    userTeams = userTeamsResult;
+    workspaceIds = workspaceIdsResult;
 
-    try {
-      workspaceIds = await getUserWorkspaceIds(user.id);
-    } catch {
-      // Workspace IDs will be empty, notifications won't load
-    }
-
-    const cookieStore = await cookies();
     const teamCookie = cookieStore.get('buildd-team')?.value;
 
     // Use cookie value if it matches a valid team, otherwise default to first team

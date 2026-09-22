@@ -96,7 +96,7 @@ import type { CompletionDecisionCode } from '@buildd/core/mission-completion-cod
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
 import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
-import { isRepeatedlyDeferred, SURFACE_DEFERRAL_THRESHOLD } from './claim-deferral-thresholds';
+import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -346,7 +346,7 @@ export interface MissionStateInput {
   failedTasks?: Array<{ id: string; title?: string | null; infra?: boolean }>;
   /**
    * The newest open `claim_loop_deferral` gate row per task in this mission,
-   * from `gate_events`. Only rows past `SURFACE_DEFERRAL_THRESHOLD` become a
+   * from `gate_events`. Only rows past `SURFACE_DEFERRAL_MS` become a
    * fact — the threshold lives in `claim-deferral-thresholds.ts` with its
    * justification, so a caller may pass everything it loaded.
    */
@@ -904,7 +904,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
  * a task the claim loop had turned away a dozen times running.
  */
 function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
-  const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals));
+  const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals, d.firstDeferredAt));
   if (stuck.length === 0) return null;
   // Worst offender leads: it is the one with the longest unbroken refusal.
   const worst = stuck.reduce((a, b) => (b.consecutiveDeferrals > a.consecutiveDeferrals ? b : a));
@@ -1134,4 +1134,4 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
 }
 
 /** Exported for the threshold's own regression test and for surfaces that explain it. */
-export { SURFACE_DEFERRAL_THRESHOLD };
+export { SURFACE_DEFERRAL_MS };

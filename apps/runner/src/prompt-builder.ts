@@ -180,11 +180,22 @@ export function discoverModelCapabilities(
 ): void {
   // Fire-and-forget — capability discovery should not block the worker
   queryInstance.supportedModels().then((models: any[]) => {
-    const currentModel = models.find((m: any) => m.value === modelId);
+    // `ModelInfo.value` is the model ALIAS (e.g. 'sonnet'); `resolvedModel` is
+    // the canonical wire id it resolves to (e.g. 'claude-sonnet-5') — see the
+    // SDK's own ModelInfo doc comment. Tasks are configured with exact wire
+    // ids far more often than bare aliases, so matching on `value` alone
+    // missed every lookup in the fleet: this comparison must accept a match
+    // on either field.
+    const currentModel = models.find((m: any) => m.value === modelId || m.resolvedModel === modelId);
 
     if (!currentModel) {
-      console.warn(`[Worker ${worker.id}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
-      worker.modelCapabilities = { warnings: [`Model "${modelId}" not found in supported models list`] };
+      const warning = `Model "${modelId}" not found in supported models list`;
+      console.warn(`[Worker ${worker.id}] ${warning}`);
+      // This branch used to be the only warning path in this function that
+      // skipped sessionLog — console-only, so the one warning actually able
+      // to fire left no durable record.
+      sessionLog(worker.id, 'warn', 'model_capability', warning, worker.taskId);
+      worker.modelCapabilities = { warnings: [warning] };
       emit('event');
       return;
     }

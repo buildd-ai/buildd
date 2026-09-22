@@ -76,6 +76,7 @@ validation (which would change which error a doubly-invalid request gets).
 | 15 | `route.ts:1087` | `mission_base_adoption` | rejected | auto-detected PR on the worker's branch targets the wrong base |
 | 16-18 | `route.ts:1143` | `output_requirement` | rejected | `pr_required` / `artifact_required` / `auto`. All three refuse through `persistRejectedCompletionPayload`, so the ledger row is written there — a fourth arm cannot be added that preserves the payload and forgets the ledger |
 | 19 | `route.ts:1249` | `output_requirement` | bypassed | `discardEdits` acknowledged the edits as scratch |
+| 19a | `route.ts` terminal block | `worker_patch_refused` | rejected | the runner reporting that a prior mutation of ours was refused with a non-gate 4xx (or an unqueueable 5xx). Those reports are exempt from the task's retry budget, so this row is what keeps the exemption countable: a rise here means we are rejecting the runner's requests, not that agents are failing. An output-gate refusal is deliberately excluded — it already has its `output_requirement` row from sites 16-18 |
 
 Site 19 is the direct read on how often the `auto` gate is being talked out of
 a refusal, which is the number that would have shown the reviewer-task

@@ -63,55 +63,6 @@ export default async function MissionsPage({
     (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
   const scopedTeamIds = [activeTeamId];
 
-  // Query seat utilization across the active team's accounts
-  const teamAccounts = await db.query.accounts.findMany({
-    where: inArray(accounts.teamId, scopedTeamIds),
-    columns: { id: true, maxConcurrentWorkers: true },
-  });
-  const maxSeats = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
-  let activeSeats = 0;
-  if (teamAccounts.length > 0) {
-    const accountIds = teamAccounts.map(a => a.id);
-    const [row] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(workers)
-      .where(and(
-        inArray(workers.accountId, accountIds),
-        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-      ));
-    activeSeats = row?.count ?? 0;
-  }
-
-  // Build team name map for display (only when user has multiple teams)
-  const teamNameMap = new Map<string, string>();
-  if (teamIds.length > 1) {
-    const teamRows = await db.query.teams.findMany({
-      where: inArray(teams.id, teamIds),
-      columns: { id: true, name: true, slug: true },
-    });
-    teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
-  }
-
-  // Load active team's workspaces for the filter dropdown
-  const teamWorkspaces = await db
-    .select({ id: workspaces.id, name: workspaces.name })
-    .from(workspaces)
-    .where(eq(workspaces.teamId, activeTeamId));
-
-  // Query roles for display
-  const wsIds = await getUserWorkspaceIds(user.id);
-  const rolesMap = new Map<string, { name: string; color: string }>();
-  if (wsIds.length > 0) {
-    const roles = await db.query.workspaceSkills.findMany({
-      where: and(
-        inArray(workspaceSkills.workspaceId, wsIds),
-        eq(workspaceSkills.enabled, true),
-      ),
-      columns: { slug: true, name: true, color: true },
-    });
-    roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
-  }
-
   // Missions filter: when workspace is selected, show missions anchored to that
   // workspace OR team-level missions (workspaceId IS NULL). Team-level missions
   // are never excluded — they belong to the team, not any one workspace.
@@ -127,34 +78,78 @@ export default async function MissionsPage({
   // workspace maxConcurrentTasks). Rule P-2: the completed query's `with`
   // shape omits roleSlug/exitCause by construction — see missions-query.ts.
   const completedCursor = decodeCompletedCursor(completedCursorParam);
-  const [activeRows, completedRowsPage] = await Promise.all([
+
+  // Everything below needs only `activeTeamId`, `teamIds` and the URL filter,
+  // all of which are already resolved — so none of these depend on each other
+  // and they used to run as one long serial chain of neon-http round trips.
+  // The two chains that *are* dependent (accounts -> live-seat count, workspace
+  // scope -> roles) stay chained inside their own entry.
+  const [
+    seats,
+    teamRows,
+    teamWorkspaces,
+    rolesResult,
+    activeRows,
+    completedRowsPage,
+  ] = await Promise.all([
+    // Seat utilization across the active team's accounts. The live-seat count
+    // needs the account ids, so it genuinely follows the accounts read.
+    (async () => {
+      const teamAccounts = await db.query.accounts.findMany({
+        where: inArray(accounts.teamId, scopedTeamIds),
+        columns: { id: true, maxConcurrentWorkers: true },
+      });
+      const max = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
+      if (teamAccounts.length === 0) return { maxSeats: max, activeSeats: 0 };
+      const accountIds = teamAccounts.map(a => a.id);
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(workers)
+        .where(and(
+          inArray(workers.accountId, accountIds),
+          inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+        ));
+      return { maxSeats: max, activeSeats: row?.count ?? 0 };
+    })(),
+    // Team name map for display (only when the user has multiple teams)
+    teamIds.length > 1
+      ? db.query.teams.findMany({
+          where: inArray(teams.id, teamIds),
+          columns: { id: true, name: true, slug: true },
+        })
+      : Promise.resolve([] as { id: string; name: string; slug: string }[]),
+    // Active team's workspaces for the filter dropdown
+    db
+      .select({ id: workspaces.id, name: workspaces.name })
+      .from(workspaces)
+      .where(eq(workspaces.teamId, activeTeamId)),
+    // Roles for display. getUserWorkspaceIds is React cache()-wrapped, so on a
+    // normal navigation the layout has already resolved this scope and only the
+    // workspaceSkills read is a new round trip.
+    (async () => {
+      const wsIds = await getUserWorkspaceIds(user.id);
+      if (wsIds.length === 0) return [] as { slug: string; name: string; color: string }[];
+      return db.query.workspaceSkills.findMany({
+        where: and(
+          inArray(workspaceSkills.workspaceId, wsIds),
+          eq(workspaceSkills.enabled, true),
+        ),
+        columns: { slug: true, name: true, color: true },
+      });
+    })(),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
   ]);
+
+  const { maxSeats, activeSeats } = seats;
+  const teamNameMap = new Map<string, string>();
+  teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
+  const rolesMap = new Map<string, { name: string; color: string }>();
+  rolesResult.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
   const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
     completedRowsPage as unknown as Array<{ completedAt: Date | string | null; id: string }>,
     COMPLETED_MISSIONS_PAGE_SIZE,
   ) as unknown as { items: typeof completedRowsPage; nextCursor: string | null };
-
-  // Rule A-1/A-2: live flight-strip compute for every non-completed mission —
-  // the completed-only gate the old skyline had is gone. Human steering marks
-  // (mission_notes, authorType='user') are one batched query across the whole
-  // active set, not one query per mission.
-  const steeringMarksByMission = await loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id));
-  const flightStripByMission = new Map<string, MissionFlightStripData | null>();
-  for (const obj of activeRows as any[]) {
-    const { tasks: flightTasks, workers: flightWorkers } = adaptFlightStripInputs(obj.tasks || []);
-    flightStripByMission.set(
-      obj.id,
-      computeMissionFlightStrip(flightTasks, flightWorkers, {
-        missionCompletedAt: obj.completedAt ?? null,
-        steeringEvents: steeringMarksByMission.get(obj.id),
-      }),
-    );
-  }
-  for (const obj of completedRows as any[]) {
-    flightStripByMission.set(obj.id, (obj.flightStripCache as MissionFlightStripData | null) ?? null);
-  }
 
   const allMissions = [...activeRows, ...completedRows] as any[];
 
@@ -182,27 +177,52 @@ export default async function MissionsPage({
     if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
   }
 
-  // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
-  // so the two surfaces cannot disagree about queue depth or deploy state.
+  // These three read from the mission rows above and from nothing each other
+  // produces, so they are one wait rather than three. Previously the steering
+  // marks, the per-workspace release footers and the follow-up batch ran in
+  // sequence, and the release footers are themselves 3 deep per workspace.
   const releaseFooterMap = new Map<string, ReleaseFooterData>();
-  await Promise.all(
-    Array.from(uniqueWorkspaces.values()).map(async (ws) => {
-      releaseFooterMap.set(ws.id, await loadReleaseFooterData({
-        id: ws.id,
-        name: ws.name,
-        gitConfig: ws.gitConfig,
-        releaseConfig: ws.releaseConfig,
-      }));
-    }),
-  );
+  const [steeringMarksByMission, , followupsByMission] = await Promise.all([
+    // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
+    // one batched query across the whole active set, not one per mission.
+    loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
+    // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
+    // so the two surfaces cannot disagree about queue depth or deploy state.
+    Promise.all(
+      Array.from(uniqueWorkspaces.values()).map(async (ws) => {
+        releaseFooterMap.set(ws.id, await loadReleaseFooterData({
+          id: ws.id,
+          name: ws.name,
+          gitConfig: ws.gitConfig,
+          releaseConfig: ws.releaseConfig,
+        }));
+      }),
+    ),
+    // Steering-cost visibility: one batched query for every mission's
+    // post-completion follow-ups, so N missions cost one extra query instead of
+    // N. Missions with no completedAt are skipped inside — their metric renders
+    // `no_baseline`, not zero.
+    loadMissionFollowupTasks(
+      allMissions.map(m => ({ id: m.id, completedAt: (m as any).completedAt ?? null, taskIds: (m.tasks || []).map((t: any) => t.id) })),
+    ),
+  ]);
 
-  // Steering-cost visibility: one batched query for every mission's
-  // post-completion follow-ups, so N missions cost one extra query instead of
-  // N. Missions with no completedAt are skipped inside — their metric renders
-  // `no_baseline`, not zero.
-  const followupsByMission = await loadMissionFollowupTasks(
-    allMissions.map(m => ({ id: m.id, completedAt: (m as any).completedAt ?? null, taskIds: (m.tasks || []).map((t: any) => t.id) })),
-  );
+  // Rule A-1/A-2: live flight-strip compute for every non-completed mission —
+  // the completed-only gate the old skyline had is gone.
+  const flightStripByMission = new Map<string, MissionFlightStripData | null>();
+  for (const obj of activeRows as any[]) {
+    const { tasks: flightTasks, workers: flightWorkers } = adaptFlightStripInputs(obj.tasks || []);
+    flightStripByMission.set(
+      obj.id,
+      computeMissionFlightStrip(flightTasks, flightWorkers, {
+        missionCompletedAt: obj.completedAt ?? null,
+        steeringEvents: steeringMarksByMission.get(obj.id),
+      }),
+    );
+  }
+  for (const obj of completedRows as any[]) {
+    flightStripByMission.set(obj.id, (obj.flightStripCache as MissionFlightStripData | null) ?? null);
+  }
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {

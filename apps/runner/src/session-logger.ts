@@ -109,7 +109,12 @@ export function cleanupOldLogs(): void {
   const now = Date.now();
   try {
     for (const file of readdirSync(LOGS_DIR)) {
-      if (!file.endsWith('.log')) continue;
+      // claims.log holds months of the best forensic data available and is
+      // append-only — its mtime only looks fresh while the runner is
+      // actively claiming, so an idle runner would otherwise age it past
+      // MAX_AGE_MS and this sweep would delete it. Same exemption doctor.ts's
+      // disk-usage cleanup already applies by name.
+      if (!file.endsWith('.log') || file === 'claims.log') continue;
       const filePath = join(LOGS_DIR, file);
       try {
         const stat = statSync(filePath);

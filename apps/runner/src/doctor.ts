@@ -6,23 +6,32 @@
  */
 
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { checkBwrapSupport } from './env-scan';
 import {
   parseWorktreeList,
-  isBuilddTaskBranch,
+  isRunnerWorktreePath,
+  isWorktreePathOwnedByOtherLiveWorker,
+  formatWorktreeTelemetry,
   shouldRemoveWorktree,
   classifyOwner,
   candidateRepoRoots,
   STALE_WORKTREE_IDLE_MS,
   type WorktreeOwnerRecord,
+  type WorktreeOwnershipRecord,
+  type WorktreeTelemetry,
 } from './worktree-utils';
+import { activityAt } from './worker-store';
 
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const WORKER_STORE_TTL_MS = 24 * 60 * 60 * 1000; // mirrors worker-store MAX_AGE_MS
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
+// Overridable for tests — production always redirects the runner's own
+// stdout/stderr to this fixed path (an external wrapper, not this process).
+const RUNNER_LOG_PATH = process.env.BUILDD_RUNNER_LOG_PATH || '/tmp/buildd.log';
+const RUNNER_LOG_ROTATE_MAX_BYTES = 5 * 1024 * 1024; // 5MB — grows ~0.5MB/day, so this is days of history per rotation
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -190,7 +199,12 @@ function loadOwnerRecords(): WorktreeOwnerRecord[] {
     if (!f.endsWith('.json') || f.endsWith('.tmp')) continue;
     try {
       const data = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
-      if (data._savedAt && now - data._savedAt > WORKER_STORE_TTL_MS) continue;
+      // Same activity-age rule as the store itself (worker-store.activityAt).
+      // A `_savedAt` comparison here would have doctor and the store disagree
+      // about which files still exist, because `_savedAt` is the write time and
+      // gets re-stamped by every persist.
+      const age = activityAt(data);
+      if (age && now - age > WORKER_STORE_TTL_MS) continue;
       out.push({
         status: data.status,
         worktreePath: data.worktreePath,
@@ -218,16 +232,34 @@ function isBranchPushed(repoDir: string, branch: string): boolean {
   }
 }
 
+/** What the sweep saw this pass, alongside what it may remove. */
+interface SweepScan {
+  removable: RemovableWorktree[];
+  telemetry: WorktreeTelemetry;
+}
+
 /**
- * Enumerate leftover buildd task worktrees across all discovered repos and
- * return those that pass the safety gates for removal. Shared by the check
- * (report) and the fix (remove) so they can never disagree.
+ * The live in-memory worker view, when the sweep runs in-process from
+ * `runCleanup`. Persisted records are written on a cadence, so a worker whose
+ * JSON write lagged would otherwise classify as `orphan` — the same predicate
+ * every teardown path uses is the second line of defence. Omitted by the CLI,
+ * which has no in-memory map and falls back to records only.
  */
-function findRemovableWorktrees(): RemovableWorktree[] {
+export type LiveWorkerView = Iterable<[string, WorktreeOwnershipRecord]>;
+
+/** Never clear a host in one pass — a misclassification must stay survivable. */
+const MAX_REAP_PER_TICK = 10;
+
+function scanWorktrees(liveWorkers?: LiveWorkerView): SweepScan {
   const repos = discoverMainRepos();
   const records = loadOwnerRecords();
   const seen = new Set<string>();
-  const result: RemovableWorktree[] = [];
+  const removable: RemovableWorktree[] = [];
+  const telemetry: WorktreeTelemetry = {
+    repos: repos.length, worktrees: 0, live: 0, terminal: 0, orphan: 0,
+    removable: 0, diskMB: 0, reaped: 0, skippedOwned: 0,
+  };
+  const live = liveWorkers ? [...liveWorkers] : null;
 
   for (const repoDir of repos) {
     let porcelain = '';
@@ -237,10 +269,18 @@ function findRemovableWorktrees(): RemovableWorktree[] {
       });
     } catch { continue; }
 
+    // Size `.buildd-worktrees` once per repo rather than once per worktree, so
+    // the per-tick cost stays flat as worktrees accumulate.
+    telemetry.diskMB += dirSizeMB(join(repoDir, '.buildd-worktrees'));
+
     for (const wt of parseWorktreeList(porcelain)) {
       if (wt.path === repoDir || seen.has(wt.path)) continue; // skip main worktree + dupes
-      if (!isBuilddTaskBranch(wt.branch)) continue;
+      // Location, not branch name — and never a worktree outside our own
+      // directory (a human feature branch, or an SDK `isolation: 'worktree'`
+      // subagent tree, is not ours to reap).
+      if (!isRunnerWorktreePath(wt.path)) continue;
       seen.add(wt.path);
+      telemetry.worktrees++;
 
       let ageMs: number;
       try {
@@ -249,8 +289,23 @@ function findRemovableWorktrees(): RemovableWorktree[] {
         ageMs = Infinity; // dir gone but ref lingers → prunable
       }
 
-      const owner = classifyOwner(records, wt.path, wt.branch!);
-      const branchPushed = owner === 'orphan' ? true : isBranchPushed(repoDir, wt.branch!);
+      // A detached worktree has no branch. `classifyOwner` matches on path in
+      // that case and `isBranchPushed` cannot answer, so an unpushed-work check
+      // is impossible — which shouldRemoveWorktree already treats as "retain".
+      const branch = wt.branch ?? '';
+      const owner = classifyOwner(records, wt.path, branch);
+      telemetry[owner]++;
+
+      if (live && isWorktreePathOwnedByOtherLiveWorker(live, wt.path, '__sweep__')) {
+        // Beats the record-based classification: the store write may simply
+        // not have happened yet.
+        telemetry.skippedOwned++;
+        continue;
+      }
+
+      const branchPushed = owner === 'orphan'
+        ? true
+        : branch !== '' && isBranchPushed(repoDir, branch);
       const decision = shouldRemoveWorktree({
         idleMs: ageMs,
         idleThresholdMs: STALE_WORKTREE_IDLE_MS,
@@ -258,11 +313,21 @@ function findRemovableWorktrees(): RemovableWorktree[] {
         branchPushed,
       });
       if (decision.remove) {
-        result.push({ repoDir, path: wt.path, branch: wt.branch!, ageMs, reason: decision.reason });
+        removable.push({ repoDir, path: wt.path, branch, ageMs, reason: decision.reason });
       }
     }
   }
-  return result;
+  telemetry.removable = removable.length;
+  return { removable, telemetry };
+}
+
+/**
+ * Enumerate leftover runner worktrees across all discovered repos and return
+ * those that pass the safety gates for removal. Shared by the check (report)
+ * and the fix (remove) so they can never disagree.
+ */
+function findRemovableWorktrees(): RemovableWorktree[] {
+  return scanWorktrees().removable;
 }
 
 function dirSizeMB(path: string): number {
@@ -369,12 +434,49 @@ function checkConfig(): CheckResult {
   }
 }
 
+export interface RotateResult {
+  rotated: boolean;
+  sizeBefore: number;
+}
+
+/**
+ * Copy-then-truncate rotation, not rename-then-recreate: the log file is
+ * stdout redirected by an external wrapper (`>> logPath`) that holds the fd
+ * open for the runner's whole lifetime. Renaming the path away wouldn't give
+ * that still-running process a new fd at the old name — nothing would exist
+ * there again until the process restarts. Truncating in place is safe for an
+ * O_APPEND writer (every write() re-seeks to EOF first), so the next append
+ * after truncateSync(path, 0) correctly resumes from offset 0 with no gap.
+ *
+ * Keeps exactly one prior rotation (`<path>.1`) rather than a full history —
+ * this is a bound on a single ever-growing file, not the forensic archive
+ * (that's claims.log, which this never touches: different file, different
+ * directory, never passed here).
+ */
+export function rotateLogIfLarge(path: string, maxBytes: number): RotateResult {
+  if (!existsSync(path)) return { rotated: false, sizeBefore: 0 };
+  const sizeBefore = statSync(path).size;
+  if (sizeBefore < maxBytes) return { rotated: false, sizeBefore };
+  try {
+    copyFileSync(path, `${path}.1`);
+    truncateSync(path, 0);
+  } catch {
+    return { rotated: false, sizeBefore };
+  }
+  return { rotated: true, sizeBefore };
+}
+
 function checkRunnerLog(): CheckResult {
-  const logPath = '/tmp/buildd.log';
+  const logPath = RUNNER_LOG_PATH;
   try {
     if (!existsSync(logPath)) {
-      return { name: 'runner-log', status: 'warn', message: 'No runner log at /tmp/buildd.log' };
+      return { name: 'runner-log', status: 'warn', message: `No runner log at ${logPath}` };
     }
+
+    // Proactive, size-triggered rotation on every doctor cycle — decoupled
+    // from the crash/update-loop detection below, which used to be the only
+    // trigger for touching this file (and only "fixed" it by clearing it).
+    rotateLogIfLarge(logPath, RUNNER_LOG_ROTATE_MAX_BYTES);
 
     const tail = execSync(`tail -50 "${logPath}"`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
 
@@ -440,6 +542,8 @@ export interface FixResult {
   check: string;
   success: boolean;
   message: string;
+  /** Only on the worktree sweep: the per-tick inventory, always populated. */
+  telemetry?: WorktreeTelemetry;
 }
 
 function fixGitBranch(): FixResult {
@@ -475,10 +579,10 @@ function fixBunInstall(): FixResult {
   }
 }
 
-export function fixStaleWorktrees(): FixResult {
-  let removable: RemovableWorktree[];
+export function fixStaleWorktrees(liveWorkers?: LiveWorkerView): FixResult {
+  let scan: SweepScan;
   try {
-    removable = findRemovableWorktrees();
+    scan = scanWorktrees(liveWorkers);
   } catch {
     return { check: 'stale-worktrees', success: true, message: 'Worktree scan failed (non-fatal)' };
   }
@@ -486,8 +590,14 @@ export function fixStaleWorktrees(): FixResult {
   let cleaned = 0;
   let freedMB = 0;
 
-  for (const w of removable) {
+  for (const w of scan.removable.slice(0, MAX_REAP_PER_TICK)) {
     freedMB += dirSizeMB(w.path);
+    // Log before removing, so a misclassification is diagnosable after the fact
+    // rather than only inferable from an absence.
+    console.log(
+      `[worktree-sweep] removing ${w.path} (branch=${w.branch || '<detached>'}, ` +
+      `idle=${Math.round(w.ageMs / 60000)}m, reason=${w.reason})`,
+    );
     // Remove via git (also drops the .git/worktrees/ admin ref), fallback to rm -rf.
     try {
       execSync(`git worktree remove --force "${w.path}" 2>/dev/null`, {
@@ -500,6 +610,7 @@ export function fixStaleWorktrees(): FixResult {
     }
     cleaned++;
   }
+  scan.telemetry.reaped = cleaned;
 
   // Prune dangling worktree refs (covers rm -rf fallback + externally deleted dirs).
   for (const repoDir of discoverMainRepos()) {
@@ -512,6 +623,7 @@ export function fixStaleWorktrees(): FixResult {
     check: 'stale-worktrees',
     success: true,
     message: cleaned > 0 ? `Removed ${cleaned} stale worktree(s), freed ~${freedMB}MB` : 'No stale worktrees to clean',
+    telemetry: scan.telemetry,
   };
 }
 
@@ -583,13 +695,20 @@ function fixHistoryDb(): FixResult {
 }
 
 function fixRunnerLog(): FixResult {
-  // If auto-update loop detected, the update retry fix should handle it.
-  // Clear the log to break the visual pattern.
+  // Auto-update/crash loop detection itself is unaffected by this — this only
+  // stops the log from growing unbounded. Previously this cleared the file
+  // outright (`echo ... > logPath`), destroying the forensic record instead
+  // of preserving it; force a rotation now instead, keeping the content in
+  // `<path>.1` rather than discarding it.
   try {
-    execSync('echo "--- doctor cleared log $(date) ---" > /tmp/buildd.log', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
-    return { check: 'runner-log', success: true, message: 'Cleared runner log' };
-  } catch {
-    return { check: 'runner-log', success: false, message: 'Could not clear runner log' };
+    const result = rotateLogIfLarge(RUNNER_LOG_PATH, 0);
+    return {
+      check: 'runner-log',
+      success: true,
+      message: result.rotated ? `Rotated runner log (${result.sizeBefore} bytes preserved in ${RUNNER_LOG_PATH}.1)` : 'Runner log empty, nothing to rotate',
+    };
+  } catch (err: any) {
+    return { check: 'runner-log', success: false, message: err?.message || 'Could not rotate runner log' };
   }
 }
 

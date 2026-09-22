@@ -6,7 +6,7 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { cleanupWorktree } from './git-operations';
-import { WAITING_WORKTREE_TTL_MS } from './worktree-utils';
+import { WAITING_WORKTREE_TTL_MS, isWorktreePathOwnedByOtherLiveWorker } from './worktree-utils';
 import { sessionLog } from './session-logger';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
@@ -75,30 +75,11 @@ function computeDirtyWorktree(worktreePath: string): boolean {
   }
 }
 
-/**
- * Worktree paths are keyed on the requested branch (see setupWorktree), not on
- * worker id — a retry on the same task computes the identical path. That means
- * a failed worker's record can outlive it in memory (pending eviction retention)
- * while a newer worker on the same task is actively checked out at that same
- * path. Eviction cleanup must not tear down a path another live worker owns,
- * or a still-running session loses its worktree (and any uncommitted work)
- * out from under it. "Live" here means anything short of the two terminal
- * statuses — 'stale' and 'waiting' workers can still resume into the same
- * session and worktree.
- */
-function isWorktreeOwnedByOtherActiveWorker(
-  workers: Map<string, LocalWorker>,
-  worktreePath: string,
-  excludeWorkerId: string,
-): boolean {
-  for (const [id, other] of workers) {
-    if (id === excludeWorkerId) continue;
-    if (other.worktreePath === worktreePath && other.status !== 'done' && other.status !== 'error') {
-      return true;
-    }
-  }
-  return false;
-}
+// The ownership predicate this file used to own privately now lives in
+// worktree-utils.ts as `isWorktreePathOwnedByOtherLiveWorker`, next to the rest
+// of the pure worktree policy. It was private here, which is why only these two
+// eviction sites consulted it while four other removal sites force-removed
+// blind. See that docstring for the hazard.
 
 /**
  * Check if a branch name indicates an ephemeral e2e test worktree.
@@ -564,7 +545,7 @@ export class WorkerSync {
           worker.worktreePath &&
           existsSync(worker.worktreePath)
         ) {
-          if (isWorktreeOwnedByOtherActiveWorker(this.ctx.workers, worker.worktreePath, id)) {
+          if (isWorktreePathOwnedByOtherLiveWorker(this.ctx.workers, worker.worktreePath, id)) {
             sessionLog(id, 'info', 'waiting_worktree_reclaim_skipped', 'Skipped TTL reclaim: worktree path is now owned by another active worker');
           } else {
             const repoPath = repoPathFromWorktree(worker.worktreePath);
@@ -592,7 +573,7 @@ export class WorkerSync {
         // retention window elapses — skip cleanup rather than deleting a live worktree
         // out from under an active worker.
         if (worker.worktreePath && existsSync(worker.worktreePath)) {
-          if (isWorktreeOwnedByOtherActiveWorker(this.ctx.workers, worker.worktreePath, id)) {
+          if (isWorktreePathOwnedByOtherLiveWorker(this.ctx.workers, worker.worktreePath, id)) {
             sessionLog(id, 'info', 'eviction_worktree_cleanup_skipped', 'Skipped worktree cleanup on eviction: path is now owned by another active worker');
           } else {
             const repoPath = repoPathFromWorktree(worker.worktreePath);

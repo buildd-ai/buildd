@@ -3,6 +3,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
+import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
@@ -18,7 +19,10 @@ import {
   restoreCodexAgentsMd,
   type AgentsMdWriteResult,
 } from './codex-instructions.js';
-import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
+// `cleanupWorktree` is deliberately NOT imported: every teardown path in this
+// file goes through removeWorktreeIfUnowned so no site can force-remove a
+// directory a live worker is sitting in. See git-operations.ts.
+import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 import { buildRetryContinuitySection } from './worktree-utils';
 import { PusherManager } from './pusher-manager';
 import {
@@ -74,7 +78,7 @@ import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
-import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
+import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
@@ -99,10 +103,19 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
 /**
  * Parse the HTTP status and server reason from a BuilddClient fetch error.
- * Error message format: "API error: <status> - <body>"
- * Body is usually JSON: {"error":"routing_mismatch","detail":"..."}
+ *
+ * A refusal now arrives typed, so read the status off the error rather than
+ * recovering it from the message. That is not belt-and-braces: the typed
+ * error's message is the SERVER'S prose, which matches no `API error:` shape
+ * at all — so without this branch every refused claim would be logged as
+ * `status: 0`, silently downgrading the one log an operator greps to find out
+ * why a runner stopped claiming. The string form is kept for anything that
+ * still throws a bare Error.
  */
 function parseClaimError(err: Error): { status: number; reason: string } {
+  if (isServerRefusal(err)) {
+    return { status: err.status, reason: err.message };
+  }
   const match = err.message.match(/^API error: (\d+) - ([\s\S]*)$/);
   if (!match) return { status: 0, reason: err.message };
   const status = parseInt(match[1], 10);
@@ -566,7 +579,9 @@ export class WorkerManager {
   // Per-worker secret redactors — built from BUILDD_API_KEY + MCP credential values
   // at session start and used to scrub secrets from milestones, currentAction, error
   // traces, and the history archive before any of those reach the server or disk.
-  private secretRedactors = new Map<string, (text: string) => string>();
+  // Call it for free text; use `.body()` for anything already parsed, so field
+  // names (not string escaping) decide what the generic patterns may rewrite.
+  private secretRedactors = new Map<string, SecretRedactor>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -865,7 +880,15 @@ export class WorkerManager {
     // orphaned), so it never touches an active worktree.
     try {
       const { fixStaleWorktrees } = await import('./doctor');
-      const result = fixStaleWorktrees();
+      const { formatWorktreeTelemetry } = await import('./worktree-utils');
+      // Pass the live in-memory view: persisted worker records are written on a
+      // cadence, so a worker whose write lagged would classify as `orphan`.
+      const result = fixStaleWorktrees(this.workers);
+      // ALWAYS log the inventory, including the all-zero case. This used to be
+      // gated on the message not starting with "No stale", which — combined
+      // with a branch-prefix eligibility filter that hid every leaking shape —
+      // meant a leaking runner logged nothing at all.
+      if (result.telemetry) console.log(formatWorktreeTelemetry(result.telemetry));
       if (result.message && !result.message.startsWith('No stale')) {
         console.log(`[Cleanup] Worktree sweep: ${result.message}`);
       }
@@ -1626,6 +1649,8 @@ export class WorkerManager {
     const defaultBranch = gitConfig?.defaultBranch || 'main';
 
     let sessionCwd = workspacePath;
+    /** Set when a structural install fault must kill the session pre-budget. */
+    let installBlock: string | undefined;
     if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
@@ -1636,6 +1661,9 @@ export class WorkerManager {
         defaultBranch,
         worker.id,
         fullTask.context,
+        // Live-worker view: a path another running session owns must never be
+        // reclaimed, not even when its tree reads clean (committed-but-unpushed).
+        this.workers,
       );
 
       if (setupResult) {
@@ -1666,6 +1694,46 @@ export class WorkerManager {
             }],
           }).catch(() => {});
         }
+        // Dependency install outcome. This used to be unobservable —
+        // installWorkspaceDeps returned void — so a worker could run a full
+        // budget and report `done` with an empty node_modules and nothing
+        // anywhere saying so.
+        //
+        // Fail-vs-degrade splits on whether the runner GUESSED that install
+        // mattered. `skipped` means it did not matter (no manifest, non-bun
+        // toolchain, or a declared manifest the provision gate owns) and raises
+        // nothing at all — that is the population that produced the old
+        // false-alarm noise.
+        const install = setupResult.install;
+        if (install?.status === 'failed') {
+          const label = `Dependency install failed (${install.failure}) at ${install.dir} — imports may fail`;
+          console.warn(`[Worker ${worker.id}] ${label}`);
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'worktree_install_failed',
+              excerpt: `${install.failure} installing at "${install.dir}": ${install.message}`,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+
+          if (install.failure === 'registry-auth' || install.failure === 'toolchain-missing') {
+            // Structural and host-level: not fixable by the agent, and it will
+            // hit every task on this runner. Fail before a budget is spent
+            // rather than producing a `done` with broken imports. The trace
+            // above still lands, so this dedupes into one friction report per
+            // host fault instead of one per worker. Raised through the
+            // session-start boundary below so it gets the same server report
+            // and worktree cleanup as any other start failure.
+            installBlock = `Provision failed: dependency install (${install.failure}) at ${install.dir}`;
+          } else {
+            // Drift / timeout / unknown: proceed, but visibly. The banner goes
+            // in the prompt (see startSession) and the flag rides the worker
+            // record so a `done` carrying it is machine-visible rather than
+            // invisible.
+            worker.envDegraded = { phase: 'install', failure: install.failure, dir: install.dir };
+          }
+        }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
         // Worktree setup failed — fall back to main repo (legacy behavior)
@@ -1691,6 +1759,10 @@ export class WorkerManager {
     // this in the session-start error boundary so rejection also cleans up the
     // worktree and reports failure instead of launching an unusable session.
     const startWithPersistedBranch = async () => {
+      // A host-level install fault (registry credentials, missing runtime)
+      // blocks here, inside the error boundary, so it is reported and cleaned up
+      // like any other session-start failure — with zero agent budget spent.
+      if (installBlock) throw new Error(installBlock);
       if (worker.branch && worker.branch !== claimedWorker.branch) {
         for (let attempt = 1; attempt <= 3; attempt++) {
           const response = await this.buildd.updateWorker(worker.id, { branch: worker.branch }) as
@@ -1733,9 +1805,15 @@ export class WorkerManager {
 
       this.emit({ type: 'worker_update', worker });
 
-      // Clean up worktree on session start failure
+      // Clean up worktree on session start failure — unless another live worker
+      // has since taken this path (branch-keyed paths make that reachable).
       if (worker.worktreePath) {
-        cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+        removeWorktreeIfUnowned({
+          repoPath: workspacePath,
+          worktreePath: worker.worktreePath,
+          workerId: worker.id,
+          workers: this.workers,
+        }).catch(() => {});
       }
     });
 
@@ -1867,6 +1945,73 @@ export class WorkerManager {
         return;
       }
     }
+  }
+
+  /**
+   * Report a server refusal as a refusal, not a crash.
+   *
+   * Two things this has to get right:
+   *
+   * 1. **`error` carries the SERVER'S OWN MESSAGE**, never
+   *    `API error: <status> - <json>`. The server already wrote a gate_events
+   *    row whose `reason` went through normalizeErrorSignature; reusing the
+   *    same prose puts the worker row in that same cluster instead of minting
+   *    a blob that clusters with nothing.
+   *
+   * 2. **The flags are a report, not a decision.** The runner holds no retry
+   *    counter — chargeability is derived server-side from `exit_cause` — so
+   *    all this does is say which kind of refusal happened and let
+   *    classifyReportedFailure decide. `serverRefused` is also what makes the
+   *    terminal record read 'refused' instead of 'failed'.
+   *
+   * Deliberately NOT here: re-sending the refused completion's measurement as
+   * a metrics-only PATCH. The route salvages it at the refusal site —
+   * `persistRejectedCompletionPayload` calls `applyMetricsOnlyPatch` on the
+   * body it is already holding, before returning the 400 — so a second round
+   * trip from here would write the same numbers twice for the one cohort that
+   * has them. For every other refusal (a dead credential, a missing row, a
+   * rate limit) the salvage PATCH would be refused by the same endpoint for
+   * the same reason the completion was, so it buys nothing there either.
+   */
+  private async reportServerRefusal(
+    worker: LocalWorker,
+    refusal: ServerRefusalError,
+  ): Promise<void> {
+    const label = refusal.gate ?? `HTTP ${refusal.status}`;
+    console.warn(`[Worker ${worker.id}] Server refused ${refusal.method} ${refusal.endpoint} (${label}): ${refusal.message}`);
+    // A distinct event name from session_error, so a /tmp/buildd.log grep can
+    // separate "we refused it" from "it crashed" — two different triages.
+    sessionLog(worker.id, 'warn', 'server_refusal', `${label}: ${refusal.message}`, worker.taskId);
+    this.addMilestone(worker, { type: 'status', label: `Server refused completion: ${label}`, ts: Date.now() });
+    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+
+    worker.status = 'error';
+    worker.error = refusal.message;
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+
+    const failSpans = buildSubagentSpans(worker.subagentTasks);
+    await this.buildd.updateWorker(worker.id, {
+      status: 'failed',
+      error: refusal.message,
+      serverRefused: true,
+      refusal: {
+        status: refusal.status,
+        method: refusal.method,
+        endpoint: refusal.endpoint,
+        ...(refusal.gate ? { gate: refusal.gate } : {}),
+        ...(refusal.hint ? { hint: refusal.hint } : {}),
+      },
+      ...this.terminalAttributionPayload(worker),
+      ...(failSpans.length > 0 ? { subagentSpans: failSpans } : {}),
+      subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+      backgroundAgentMs: computeBackgroundAgentMs(failSpans),
+    }).catch(err => {
+      console.error(`[Worker ${worker.id}] Failed to report server refusal:`, err);
+    });
+
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
   }
 
   /**
@@ -2114,6 +2259,23 @@ export class WorkerManager {
           tenantLines.push(`Dispatch API base URL: ${promptTenantCtx.dispatchUrl}`);
         }
         promptText = promptText + '\n\n' + tenantLines.join('\n');
+      }
+
+      // Degraded-environment banner. Impossible to miss, because the failure
+      // mode being closed is a worker that completed successfully on a tree
+      // whose dependencies were never installed.
+      if (worker.envDegraded) {
+        const { failure, dir } = worker.envDegraded;
+        promptText = promptText + '\n\n' + [
+          '## ⚠ Degraded Environment — Dependencies NOT Installed',
+          '',
+          `Dependency install failed in this worktree (\`${failure}\` at \`${dir}\`).`,
+          '`node_modules` is absent or incomplete, so workspace imports and any',
+          'command that needs them will fail.',
+          '',
+          'Run the install yourself before trusting a test result. If it cannot be',
+          'fixed, report **blocked** rather than completing.',
+        ].join('\n');
       }
 
       // Build the agent subprocess environment from an allowlist rather than
@@ -2547,9 +2709,9 @@ export class WorkerManager {
       // cleanEnv is now fully assembled (server creds + connector + role secrets),
       // so env.required is validated against exactly what the agent will see, not
       // raw process.env. Enforcement is opt-in (only a declared .buildd/env.yaml
-      // blocks); `install` is skipped because setupWorktree already ran the runner's
-      // tolerant install. On a real block we throw — matching the codex-credential
-      // guard above, so the outer catch marks the worker failed with this reason and
+      // blocks), and for those repos setupWorktree deliberately does NOT run its
+      // own install — the gate owns it. On a real block we throw — matching the
+      // codex-credential guard above, so the outer catch marks the worker failed with this reason and
       // cleans up, with zero agent budget spent. A gate that itself errors fails
       // open. See docs/design/reliable-env-provisioning.md.
       try {
@@ -2564,7 +2726,15 @@ export class WorkerManager {
           baseCommit = stdout.trim() || undefined;
         } catch { /* no commit → gate runs fresh (no caching) */ }
 
-        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, skipPhases: ['install'], commit: baseCommit });
+        // `install` is no longer skipped. The old justification was "the runner
+        // already ran its own tolerant install", which is false whenever that
+        // install found nothing to install — which is exactly the population
+        // this whole change exists to close. Safe to enforce because the gate
+        // only enforces for a repo that committed `.buildd/env.yaml`, and
+        // setupWorktree now defers its own install to that same case, so there
+        // is one owner each and no double install. The pass is cached per
+        // (baseCommit, manifestHash), so the cost is once per base per runner.
+        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
             console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
@@ -3857,8 +4027,16 @@ export class WorkerManager {
       }
 
     } catch (error) {
+      // A server REFUSAL is not a crash: it is a decision the coordination
+      // server made about this request, and it has to be tested BEFORE the
+      // abort heuristic below. That heuristic is a substring match on the
+      // error message, and a refusal's message is the server's own prose — so
+      // a refusal worded "completion aborted: …" would otherwise be handled as
+      // a clean session abort and reported with no refusal signal at all.
+      const refusal = isServerRefusal(error) ? error : null;
+
       // Check if this is an expected abort (from loop detection or user)
-      const isAbortError = error instanceof Error &&
+      const isAbortError = !refusal && error instanceof Error &&
         (error.message.includes('aborted') || error.message.includes('Aborted'));
 
       // Before marking as failed, check if server already has this as completed.
@@ -3888,6 +4066,18 @@ export class WorkerManager {
       // docs/specs/human-in-the-loop-protocol.md.
       if (worker.error?.startsWith('needs_input')) {
         await this.parkNeedsInputAbort(worker);
+        return;
+      }
+
+      // Returning here deliberately skips the `if (resumeSessionId) throw
+      // error` at the bottom of this catch: that re-throw exists so
+      // resumeSession can fall through to Layer 2 (reconstructed context) when
+      // a RESUME failed. A refusal is not a resume failure — the session ran,
+      // we already reported its terminal outcome, and re-running it would
+      // spend a whole second session arguing with a decision the server has
+      // already made. Same shape as the needs_input park above.
+      if (refusal) {
+        await this.reportServerRefusal(worker, refusal);
         return;
       }
 
@@ -4014,7 +4204,12 @@ export class WorkerManager {
         // bwrap retry: preserve the worktree so the restarted session can reuse it.
         const isEphemeral = isEphemeralTestBranch(worker.branch);
         if (!bwrapRetryAfterCleanup && worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
-          await cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
+          await removeWorktreeIfUnowned({
+            repoPath: session.repoPath,
+            worktreePath: worker.worktreePath,
+            workerId: worker.id,
+            workers: this.workers,
+          }).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
         }
@@ -4080,19 +4275,13 @@ export class WorkerManager {
             worker.lastAssistantMessage = redactArchive(worker.lastAssistantMessage);
           }
           worker.output = worker.output.map(line => redactArchive(line));
-          worker.messages = worker.messages.map((m: any) => {
-            if (m.type === 'text' && typeof m.content === 'string') {
-              return { ...m, content: redactArchive(m.content) };
-            }
-            if (m.type === 'tool_use' && m.input && typeof m.input === 'object') {
-              const cleanInput: Record<string, unknown> = {};
-              for (const [k, v] of Object.entries(m.input as Record<string, unknown>)) {
-                cleanInput[k] = typeof v === 'string' ? redactArchive(v) : v;
-              }
-              return { ...m, input: cleanInput };
-            }
-            return m;
-          });
+          // Field-blind before: every string in a tool_use input got the
+          // generic credential-shaped patterns, which rewrite any long
+          // kebab-case identifier — a branch name, for one — to
+          // "[REDACTED:credential]", and skipped nested leaves entirely.
+          // redactTranscriptMessages redacts the input as the structure it is,
+          // so the field allowlist decides which values the heuristics see.
+          worker.messages = redactTranscriptMessages(worker.messages, redactArchive);
         }
         try { archiveSession(worker); } catch {}
       }
@@ -5352,21 +5541,25 @@ export class WorkerManager {
       session.abortController.abort();
       session.inputStream.end();
 
-      // Synchronously clean up worktrees on destroy
+      // Synchronously clean up worktrees on destroy.
+      //
+      // Two guards this used to lack. (1) It removed the worktree of EVERY
+      // worker with a live session, including `done` and `waiting` ones whose
+      // tree is deliberately retained for session resume (see the finally
+      // block's retention rule) — so a runner restart ate resumable trees and
+      // left the persisted record pointing at a path that no longer existed.
+      // (2) It force-removed with no ownership check at all, on the one code
+      // path where every worker is being torn down at once.
       const worker = this.workers.get(workerId);
-      if (worker?.worktreePath) {
-        try {
-          const cp = require('child_process');
-          cp.execSync(`git worktree remove --force "${worker.worktreePath}"`, {
-            cwd: session.repoPath,
-            timeout: 5000,
-          });
-        } catch {
-          try {
-            const fs = require('fs');
-            fs.rmSync(worker.worktreePath, { recursive: true, force: true });
-          } catch {}
-        }
+      if (worker?.worktreePath && worker.status !== 'done' && worker.status !== 'waiting') {
+        removeWorktreeIfUnownedSync({
+          repoPath: session.repoPath,
+          worktreePath: worker.worktreePath,
+          workerId,
+          workers: this.workers,
+          branch: worker.branch,
+          protectUnpushed: true,
+        });
       }
     }
     this.sessions.clear();

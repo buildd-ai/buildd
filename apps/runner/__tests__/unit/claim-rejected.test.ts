@@ -192,6 +192,37 @@ describe('claim_rejected logging', () => {
     expect(rejectedEvent.reason).toBe('routing_mismatch');
   });
 
+  // The claim log's status/reason used to be recovered by regex from the
+  // `API error: <status> - <body>` message BuilddClient.fetch minted. Once a
+  // refusal became a typed error carrying its own status and the server's
+  // prose as its message, that regex matched nothing and every refused claim
+  // was logged as `status: 0` — a silent downgrade of the one log an operator
+  // greps to find out why a runner stopped claiming.
+  test('a typed refusal writes claim_rejected with the refusal status, not 0', async () => {
+    mockClaimTask.mockImplementation(async () => {
+      throw Object.assign(new Error('Runner credential rejected'), {
+        name: 'ServerRefusalError',
+        status: 401,
+        method: 'POST',
+        endpoint: '/api/workers/claim',
+        raw: '{"error":"Runner credential rejected"}',
+      });
+    });
+
+    manager = new WorkerManager(makeConfig());
+    const events = collectEvents(manager);
+
+    await expect(manager.claimAndStart(makeTask())).rejects.toThrow('Runner credential rejected');
+
+    const rejectedCall = claimLogSpy.mock.calls.find((args: any[]) => args[0]?.event === 'claim_rejected');
+    expect(rejectedCall).toBeDefined();
+    expect(rejectedCall![0].status).toBe(401);
+    expect(rejectedCall![0].reason).toBe('Runner credential rejected');
+
+    const rejectedEvent = events.find(e => e.type === 'claim_rejected');
+    expect(rejectedEvent.status).toBe(401);
+  });
+
   test('500 API error writes claim_rejected with status 500 and rethrows', async () => {
     mockClaimTask.mockImplementation(async () => {
       throw new Error('API error: 500 - Internal Server Error');

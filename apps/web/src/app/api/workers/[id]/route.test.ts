@@ -219,6 +219,11 @@ let lastInsertValues: any = null;
 // Controls whether onConflictDoNothing returns a row (default) or null (dedup suppressed)
 let mockInsertConflictDoNothingResult: 'row' | 'empty' = 'row';
 let missionNoteInserts: any[] = [];
+// gate_events rows, kept separately: `lastInsertValues` is overwritten by every
+// insert, and a refusal path writes a ledger row and then several other rows.
+// Identified by shape rather than by table, because the schema mock maps only
+// the tables the handler itself names.
+let gateEventInserts: any[] = [];
 const mockGenericInsert = mock((table: any) => {
   // Delegate tenant budget inserts to the existing mock so existing tests still work
   // (schema mock returns an object for tenantBudgets, not a string)
@@ -231,6 +236,9 @@ const mockGenericInsert = mock((table: any) => {
       // `lastInsertValues` is overwritten by every insert, so a handler that
       // writes an audit note and then a task leaves no trace of the note.
       if (table === 'missionNotes') missionNoteInserts.push(values);
+      if (values && typeof values.gate === 'string' && typeof values.surface === 'string') {
+        gateEventInserts.push(values);
+      }
       const row = { id: 'new-task-id', ...values };
       return {
         onConflictDoUpdate: mock(() => Promise.resolve()),
@@ -638,6 +646,7 @@ describe('PATCH /api/workers/[id]', () => {
     mockSecretsFindFirst.mockResolvedValue(null);
     lastInsertTable = null;
     lastInsertValues = null;
+    gateEventInserts = [];
     mockGenericInsert.mockClear();
 
     // Defaults
@@ -2927,6 +2936,119 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(400);
       expect(taskUpdateCalled).toBe(false);
+    });
+
+    // The refusal body is the ONLY thing on this path that did not carry the
+    // gate's identity: the gate_events row already records
+    // GATE_SLUGS.OUTPUT_REQUIREMENT, so echoing the slug is what lets the
+    // runner report the refusal as a refusal rather than re-deriving an
+    // identity from the prose.
+    it('echoes the gate slug in the pr_required refusal body', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body.gate).toBe('output_requirement');
+      expect(body.hint).toBe('create_pr');
+    });
+
+    it('echoes the gate slug in the auto-mode refusal body', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 3,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body.gate).toBe('output_requirement');
+    });
+
+    // Measurement is orthogonal to this gate: a metrics-only PATCH returns
+    // ahead of BOTH the terminal guard and the gate, and writes no state. That
+    // is what makes the gate's own salvage call safe — persistRejectedCompletionPayload
+    // runs applyMetricsOnlyPatch on the body it is refusing, and must not be
+    // able to resurrect the worker or rewrite its outcome on the way past.
+    // Nothing pinned the property before.
+    it('accepts a metrics-only PATCH on a task whose completion this gate would refuse', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          metricsOnly: true,
+          resultMeta: { numTurns: 41 },
+          inputTokens: 1200,
+          outputTokens: 300,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.metricsOnly).toBe(true);
+      expect(capturedSet.resultMeta).toEqual({ numTurns: 41 });
+      expect(capturedSet.inputTokens).toBe(1200);
+      // No state transition rode along with the measurement.
+      expect(capturedSet.status).toBeUndefined();
     });
 
     it('refuses completion when the worktree has uncommitted changes but zero commits and no PR (auto mode)', async () => {
@@ -8455,6 +8577,298 @@ describe('PATCH /api/workers/[id]', () => {
       // Task must never be set to 'failed' — it should be 'pending' (re-queue) or left alone
       expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
     });
+
+    // ── Server refusals ────────────────────────────────────────────────────
+    // Regression for the fault-classification bug. The completion PATCH was
+    // the one runner call with no `.catch`, so a 4xx from the outcome gate
+    // unwound to the crash handler and came back here as a plain
+    // `status: 'failed'` whose error was the stringified refusal body. None of
+    // the predicates above matched it, so it landed on
+    // classifyReportedFailure's code_failure default — charging the task a
+    // retry for a decision this server made.
+
+    it('classifies an output-gate refusal report as output_unmet, and still charges the retry', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'This task requires a pull request before completing. Use create_pr to open one.',
+          serverRefused: true,
+          refusal: { status: 400, method: 'PATCH', endpoint: '/api/workers/worker-1', gate: 'output_requirement', hint: 'create_pr' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('output_unmet');
+      // Deliberately still charged: the session ran and shipped nothing
+      // reviewable, and a fresh attempt can plausibly open the PR. What
+      // changed is that it is no longer booked as an agent code defect.
+      expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(true);
+    });
+
+    it('classifies a non-gate refusal report as server_refused, and does not charge the retry', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Forbidden',
+          serverRefused: true,
+          refusal: { status: 403, method: 'PATCH', endpoint: '/api/workers/worker-1' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('server_refused');
+      expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(false);
+    });
+
+    // The exemption must be measured, not invisible: if the runner ever starts
+    // sending malformed bodies, those 400s are now non-chargeable and the only
+    // way that shows up is the ledger row.
+    it('records a gate_events row for a non-gate refusal so the exemption stays countable', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Worker not found',
+          serverRefused: true,
+          refusal: { status: 404, method: 'PATCH', endpoint: '/api/workers/worker-1' },
+        },
+      });
+      await PATCH(req, { params: mockParams });
+      // fireGateEvent is deliberately not awaited by the request path.
+      await new Promise(r => setTimeout(r, 0));
+
+      const row = gateEventInserts.find((g: any) => g.gate === 'worker_patch_refused');
+      expect(row).toBeDefined();
+      expect(row.outcome).toBe('rejected');
+      expect(row.surface).toBe('PATCH /api/workers/[id]');
+      expect(row.detail?.status).toBe(404);
+      expect(gateEventInserts.filter((g: any) => g.gate === 'worker_patch_refused')).toHaveLength(1);
+    });
+
+    // An output-gate refusal already wrote its own output_requirement row when
+    // the completion was refused — counting it again here would double-report
+    // one refusal as two gate events.
+    it('does not record a second ledger row for an output-gate refusal', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'This task requires a pull request before completing. Use create_pr to open one.',
+          serverRefused: true,
+          refusal: { status: 400, method: 'PATCH', endpoint: '/api/workers/worker-1', gate: 'output_requirement' },
+        },
+      });
+      await PATCH(req, { params: mockParams });
+      await new Promise(r => setTimeout(r, 0));
+
+      expect(gateEventInserts.filter((g: any) => g.gate === 'worker_patch_refused')).toHaveLength(0);
+    });
+
+    // Runaway protection. An exemption with no budget is how a task retries
+    // forever, so server_refused rides the SAME infra budget steeringDelivery
+    // uses (infraRetryCount, cap 3, backoff) rather than the task retry count.
+    it('spends the infra retry budget for server_refused, not the task retry budget', async () => {
+      const taskSetCalls: any[] = [];
+      const taskWhereArgs: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return {
+            where: mock((predicate: any) => {
+              taskWhereArgs.push(predicate);
+              return Promise.resolve();
+            }),
+          };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      // Non-mission task: maxRetries is 0, so a `pending` requeue here can only
+      // have come from the infra budget.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: {} });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Forbidden',
+          serverRefused: true,
+          refusal: { status: 401, method: 'PATCH', endpoint: '/api/workers/worker-1' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect(requeue.context.infraRetryCount).toBe(1);
+      expect(requeue.context.retryCount).toBeUndefined();
+      // `db` is mocked, so the predicate is the ONLY evidence this update was
+      // scoped to the failing worker's own task rather than to every row.
+      const scoped = taskWhereArgs.find((p: any) => JSON.stringify(p ?? null).includes('task-1'));
+      expect(scoped).toBeDefined();
+    });
+
+    it('exhausts the infra budget rather than requeueing a refused task forever', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      // Already at the cap (MAX_INFRA_RETRIES_PATCH = 3).
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: { infraRetryCount: 3 } });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Forbidden',
+          serverRefused: true,
+          refusal: { status: 401, method: 'PATCH', endpoint: '/api/workers/worker-1' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+      expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(true);
+    });
+
+    // Compatibility guard: this is what makes the server patch landable ahead
+    // of a runner release. The route has no zod schema (the body is
+    // hand-destructured), so an old runner that never sends `serverRefused`
+    // must classify exactly as it does today.
+    it('classifies an old runner report (no serverRefused field) exactly as before', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'API error: 400 - {"error":"This task requires a pull request before completing.","hint":"create_pr"}',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('code_failure');
+    });
   });
 
   // ── Cancelled-task protection ────────────────────────────────────────────────
@@ -9466,6 +9880,45 @@ describe('terminal-record ledger', () => {
     expect(res.status).toBe(200);
     expect(firedTerminalRecords).toHaveLength(1);
     expect(firedTerminalRecords[0].outcome).toBe('crashed');
+  });
+
+  // The gate refusal above writes its row at 400-time, so the row this branch
+  // creates is the NON-GATE one: the runner reporting back that we refused one
+  // of its mutations (a dead credential, a missing row, a rate limit). It
+  // arrives as status:'failed' like any crash, and without the serverRefused
+  // signal it was recorded as one — the same conflation the exit-cause fix
+  // corrects for retry charging, here for the measurement ledger.
+  it('records outcome:refused (not failed) when the runner reports a non-gate refusal', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'failed', error: 'Runner credential rejected' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'failed',
+        error: 'Runner credential rejected',
+        serverRefused: true,
+        refusal: { status: 401, method: 'PATCH', endpoint: '/api/workers/worker-1' },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(firedTerminalRecords).toHaveLength(1);
+    expect(firedTerminalRecords[0].outcome).toBe('refused');
   });
 
   it('does not fire a terminal record for a non-terminal progress update', async () => {

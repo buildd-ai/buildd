@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.217.3",
+  "version": "0.217.4",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -99,6 +99,7 @@
     "./derived-metric": "./derived-metric.ts",
     "./error-signature": "./error-signature.ts",
     "./gate-events": "./gate-events.ts",
+    "./gate-slugs": "./gate-slugs.ts",
     "./gate-analytics": "./gate-analytics.ts",
     "./terminal-records": "./terminal-records.ts",
     "./terminal-records-query": "./terminal-records-query.ts",

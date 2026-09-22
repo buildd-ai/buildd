@@ -256,49 +256,102 @@ export default async function MissionDetailPage({
     }
   }
 
-  // Query roles and workspaces for this user
-  const wsIds = await getUserWorkspaceIds(user.id);
-  let roles: { slug: string; name: string; color: string }[] = [];
-  let teamWorkspaces: { id: string; name: string }[] = [];
-  if (wsIds.length > 0) {
-    const [rolesResult, workspacesResult] = await Promise.all([
-      db.query.workspaceSkills.findMany({
-        where: and(
-          inArray(workspaceSkills.workspaceId, wsIds),
-          eq(workspaceSkills.enabled, true),
-        ),
-        columns: { slug: true, name: true, color: true },
-        orderBy: [desc(workspaceSkills.createdAt)],
-      }),
-      db.query.workspaces.findMany({
-        where: inArray(workspaces.teamId, teamIds),
-        columns: { id: true, name: true },
-      }),
-    ]);
-    roles = rolesResult;
-    teamWorkspaces = workspacesResult;
-  }
-
-  // Fetch reviewer verdict notes for BT-16 (verdict chips)
+  // Everything from here to the merge-policy chip reads off the mission row
+  // that is already in hand, and nothing in the group consumes another entry's
+  // result — so it is one wait instead of five serial neon-http round trips
+  // (roles/workspaces, reviewer notes, steering notes, policy workspace,
+  // follow-ups). The derived, purely-computed values follow the group.
   const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
-  const reviewerNotes = allMissionTaskIds.length > 0
-    ? await db.query.missionNotes.findMany({
-        where: and(
-          inArray(missionNotes.taskId, allMissionTaskIds),
-          inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
-        ),
-        columns: {
-          taskId: true,
-          type: true,
-          title: true,
-          body: true,
-          status: true,
-          supersededByPrNumber: true,
-          createdAt: true,
-        },
-        orderBy: desc(missionNotes.createdAt),
-      })
-    : [];
+
+  const [
+    scopeResult,
+    reviewerNotes,
+    humanSteeringNotes,
+    workspaceForPolicy,
+    missionFollowupTasks,
+  ] = await Promise.all([
+    // Roles and workspaces for this user. getUserWorkspaceIds is React
+    // cache()-wrapped, so the protected layout has normally already resolved
+    // this scope and only the two reads below are new round trips.
+    (async () => {
+      const wsIds = await getUserWorkspaceIds(user.id);
+      if (wsIds.length === 0) {
+        return {
+          roles: [] as { slug: string; name: string; color: string }[],
+          teamWorkspaces: [] as { id: string; name: string }[],
+        };
+      }
+      const [rolesResult, workspacesResult] = await Promise.all([
+        db.query.workspaceSkills.findMany({
+          where: and(
+            inArray(workspaceSkills.workspaceId, wsIds),
+            eq(workspaceSkills.enabled, true),
+          ),
+          columns: { slug: true, name: true, color: true },
+          orderBy: [desc(workspaceSkills.createdAt)],
+        }),
+        db.query.workspaces.findMany({
+          where: inArray(workspaces.teamId, teamIds),
+          columns: { id: true, name: true },
+        }),
+      ]);
+      return { roles: rolesResult, teamWorkspaces: workspacesResult };
+    })(),
+    // Reviewer verdict notes for BT-16 (verdict chips)
+    allMissionTaskIds.length > 0
+      ? db.query.missionNotes.findMany({
+          where: and(
+            inArray(missionNotes.taskId, allMissionTaskIds),
+            inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
+          ),
+          columns: {
+            taskId: true,
+            type: true,
+            title: true,
+            body: true,
+            status: true,
+            supersededByPrNumber: true,
+            createdAt: true,
+          },
+          orderBy: desc(missionNotes.createdAt),
+        })
+      : [],
+    // Human-authored mission notes — the flight-strip steering rail's "human
+    // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
+    // or guidance posted against one task) are written with `missionId: null`
+    // (apps/web/src/app/api/tasks/[id]/notes/route.ts) — a human touch on this
+    // mission's work, so both arms must be read or most human steering marks
+    // would silently vanish from the rail.
+    allMissionTaskIds.length > 0
+      ? db.query.missionNotes.findMany({
+          where: and(
+            or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
+            eq(missionNotes.authorType, 'user'),
+          ),
+          columns: { id: true, authorType: true, createdAt: true },
+        })
+      : db.query.missionNotes.findMany({
+          where: and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user')),
+          columns: { id: true, authorType: true, createdAt: true },
+        }),
+    // BT-21: the workspace row behind the effective merge policy tier.
+    mission.workspaceId
+      ? db.query.workspaces.findFirst({
+          where: eq(workspaces.id, mission.workspaceId),
+          columns: { id: true, gitConfig: true },
+        })
+      : Promise.resolve(null),
+    // Steering-cost visibility: how much of this mission a human had to write
+    // directly, and how much leaked in after it was marked done. One accessor
+    // computes both — see computeMissionAuthorshipHealth's docstring.
+    loadMissionFollowupTasks([{
+      id: mission.id,
+      completedAt: (mission as any).completedAt ?? null,
+      taskIds: (mission.tasks || []).map(t => t.id),
+    }]),
+  ]);
+
+  const { roles, teamWorkspaces } = scopeResult;
 
   // Map taskId → latest reviewer note
   const reviewerNoteMap = new Map<string, {
@@ -315,32 +368,6 @@ export default async function MissionDetailPage({
     }
   }
 
-  // Human-authored mission notes — the flight-strip steering rail's "human
-  // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
-  // or guidance posted against one task) are written with `missionId: null`
-  // (apps/web/src/app/api/tasks/[id]/notes/route.ts) — a human touch on this
-  // mission's work, so both arms must be read or most human steering marks
-  // would silently vanish from the rail.
-  const humanSteeringNotes = allMissionTaskIds.length > 0
-    ? await db.query.missionNotes.findMany({
-        where: and(
-          or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
-          eq(missionNotes.authorType, 'user'),
-        ),
-        columns: { id: true, authorType: true, createdAt: true },
-      })
-    : await db.query.missionNotes.findMany({
-        where: and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user')),
-        columns: { id: true, authorType: true, createdAt: true },
-      });
-
-  // BT-21: resolve effective merge policy tier for mission header chip
-  const workspaceForPolicy = mission.workspaceId
-    ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
-        columns: { id: true, gitConfig: true },
-      })
-    : null;
   const effectivePolicy = resolvePolicy(
     workspaceForPolicy ?? { gitConfig: null },
     { mergePolicy: (mission as any).mergePolicy ?? null },
@@ -372,14 +399,6 @@ export default async function MissionDetailPage({
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
 
-  // Steering-cost visibility: how much of this mission a human had to write
-  // directly, and how much leaked in after it was marked done. One accessor
-  // computes both — see computeMissionAuthorshipHealth's docstring.
-  const missionFollowupTasks = await loadMissionFollowupTasks([{
-    id: mission.id,
-    completedAt: (mission as any).completedAt ?? null,
-    taskIds: (mission.tasks || []).map(t => t.id),
-  }]);
   const authorshipHealth = computeMissionAuthorshipHealth({
     tasks: mission.tasks || [],
     missionCreatedAt: (mission as any).createdAt,
@@ -460,7 +479,18 @@ export default async function MissionDetailPage({
   // answer: this screen's whole defect was that the platform already knew the
   // next action and the screen declined to say it, and a second derivation here
   // would be the same failure with better intentions.
-  const explained = await explainMission(id);
+  // Cost budget is read straight off the mission row, so the spend lookup can
+  // start alongside the explain accessor rather than waiting behind it.
+  const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
+
+  // explainMission, the mission spend and the tracker links share no inputs
+  // beyond the mission id, so they are one wait instead of three.
+  const [explained, spendUsd, trackerLinks] = await Promise.all([
+    explainMission(id),
+    costBudgetUsd != null ? getMissionSpendUsd(id) : Promise.resolve(null),
+    // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
+    getLinksForEntity(db, 'mission', id),
+  ]);
   const missionAnswer = explained?.subjects[0] ?? null;
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
@@ -485,19 +515,12 @@ export default async function MissionDetailPage({
   // Configuration from schedule template
   const configModel = (templateContext?.model as string) || null;
 
-  // Cost budget
-  const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
-  const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
-
   // Settings panel summary — non-default values for the collapsed header
   const configSummaryParts: string[] = [];
   if (configModel) configSummaryParts.push(configModel.replace(/^claude-/, '').replace(/-latest$/, ''));
   if (mission.maxConcurrentTasks != null) configSummaryParts.push(`${mission.maxConcurrentTasks} concurrent`);
   if (costBudgetUsd != null) configSummaryParts.push(`$${parseFloat(costBudgetUsd).toFixed(0)} budget`);
   const configSummary = configSummaryParts.length > 0 ? configSummaryParts.join(', ') : null;
-
-  // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
-  const trackerLinks = await getLinksForEntity(db, 'mission', id);
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -889,37 +912,8 @@ export default async function MissionDetailPage({
 
   const missionTaskIds = allTasks.map((t) => t.id);
 
-  // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
-  // so users see the parent initiative even when navigating directly to the mission.
-  const initiativeName = (from === 'initiative' && initiativeId)
-    ? (await db.query.initiatives.findFirst({
-        where: eq(initiatives.id, initiativeId),
-        columns: { title: true },
-      }))?.title
-    : undefined;
-
-  const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
-
-  const breadcrumb = resolveMissionBreadcrumb({
-    from,
-    initiativeId,
-    initiativeName,
-    dbInitiativeId: dbInitiative?.id,
-    dbInitiativeName: dbInitiative?.title,
-    missionTitle: mission.title,
-  });
-
   // Fetch team's active/paused initiatives for the initiative selector
   const isTerminal = ['completed', 'archived'].includes(mission.status);
-  const teamInitiativeOptions: InitiativeOption[] = isTerminal ? [] : await db.query.initiatives.findMany({
-    where: and(
-      inArray(initiatives.teamId, teamIds),
-      inArray(initiatives.status, ['active', 'paused']),
-    ),
-    columns: { id: true, title: true, status: true },
-    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
-    limit: 50,
-  }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 })));
 
   // Release section (§8.5): reads the same workspace-scoped loader as the
   // mission-card footer (lib/release-footer.ts) so the two surfaces cannot
@@ -937,22 +931,64 @@ export default async function MissionDetailPage({
         gitConfig: releaseWorkspace.gitConfig as WorkspaceGitConfig | null,
       })
     : 'none';
-  const releaseFooterData = shouldQueryRelease(releaseArchetype) && releaseWorkspace
-    ? await loadReleaseFooterData({
-        id: releaseWorkspace.id,
-        name: releaseWorkspace.name,
-        gitConfig: releaseWorkspace.gitConfig,
-        releaseConfig: releaseWorkspace.releaseConfig,
-      })
-    : null;
   const releaseStrategy: ReleaseStrategy | null = releaseWorkspace?.releaseConfig?.enabled
     ? (releaseWorkspace.releaseConfig.strategy ?? 'branch_merge')
     : null;
-  let hasVercelToken: boolean | null = null;
-  if (releaseFooterData && releaseStrategy === 'branch_merge') {
-    const secrets = await getSecretsProvider().list(mission.teamId);
-    hasVercelToken = secrets.some((s) => s.purpose === 'vercel_token');
-  }
+
+  // The breadcrumb initiative, the initiative-selector options and the release
+  // block are mutually independent; only the Vercel-token probe depends on
+  // anything in the group, so it stays chained behind the footer load it needs.
+  const [initiativeName, teamInitiativeOptions, releaseBlock] = await Promise.all([
+    // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
+    // so users see the parent initiative even when navigating directly to the mission.
+    (from === 'initiative' && initiativeId)
+      ? db.query.initiatives.findFirst({
+          where: eq(initiatives.id, initiativeId),
+          columns: { title: true },
+        }).then(row => row?.title)
+      : Promise.resolve(undefined),
+    isTerminal
+      ? Promise.resolve([] as InitiativeOption[])
+      : db.query.initiatives.findMany({
+          where: and(
+            inArray(initiatives.teamId, teamIds),
+            inArray(initiatives.status, ['active', 'paused']),
+          ),
+          columns: { id: true, title: true, status: true },
+          orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+          limit: 50,
+        }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }))),
+    (async () => {
+      const footer = shouldQueryRelease(releaseArchetype) && releaseWorkspace
+        ? await loadReleaseFooterData({
+            id: releaseWorkspace.id,
+            name: releaseWorkspace.name,
+            gitConfig: releaseWorkspace.gitConfig,
+            releaseConfig: releaseWorkspace.releaseConfig,
+          })
+        : null;
+      let vercelToken: boolean | null = null;
+      if (footer && releaseStrategy === 'branch_merge') {
+        const secrets = await getSecretsProvider().list(mission.teamId);
+        vercelToken = secrets.some((s) => s.purpose === 'vercel_token');
+      }
+      return { footer, vercelToken };
+    })(),
+  ]);
+
+  const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
+
+  const breadcrumb = resolveMissionBreadcrumb({
+    from,
+    initiativeId,
+    initiativeName,
+    dbInitiativeId: dbInitiative?.id,
+    dbInitiativeName: dbInitiative?.title,
+    missionTitle: mission.title,
+  });
+
+  const releaseFooterData = releaseBlock.footer;
+  const hasVercelToken = releaseBlock.vercelToken;
   const releaseNowState = deriveReleaseNowState({ strategy: releaseStrategy, hasVercelToken });
 
   return (

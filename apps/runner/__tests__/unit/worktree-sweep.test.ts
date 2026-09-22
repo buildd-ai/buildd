@@ -1,7 +1,7 @@
 /**
  * Unit tests for the pure worktree-sweep helpers in worktree-utils.ts:
  *   - parseWorktreeList (git porcelain parsing)
- *   - isBuilddTaskBranch (which branches the sweep may touch)
+ *   - isRunnerWorktreePath (which worktrees the sweep may touch)
  *   - shouldRemoveWorktree (the safety gates)
  *
  * Run: bun test apps/runner/__tests__/unit/worktree-sweep.test.ts
@@ -10,7 +10,9 @@
 import { describe, it, expect } from 'bun:test';
 import {
   parseWorktreeList,
-  isBuilddTaskBranch,
+  isRunnerWorktreePath,
+  isWorktreePathOwnedByOtherLiveWorker,
+  formatWorktreeTelemetry,
   shouldRemoveWorktree,
   classifyOwner,
   candidateRepoRoots,
@@ -57,22 +59,47 @@ describe('parseWorktreeList', () => {
   });
 });
 
-describe('isBuilddTaskBranch', () => {
-  it('matches buildd/ task branches', () => {
-    expect(isBuilddTaskBranch('buildd/abc-fix')).toBe(true);
+/**
+ * Regression: the sweep's eligibility filter was `isBuilddTaskBranch(wt.branch)`,
+ * i.e. a `buildd/` prefix test. Every OTHER branch shape the runner creates was
+ * therefore invisible to it: `mission/…`, `mission/…-w<id8>`, `task-<id8>` (the
+ * `branchingStrategy: 'none'` shape), a workspace `branchPrefix`, and
+ * `<default>-w<id8>`. Those are precisely the shapes that collided and leaked,
+ * so the sweeper was structurally blind to its own backlog.
+ *
+ * Location is the authoritative signal: setupWorktree always builds under
+ * `<repo>/.buildd-worktrees/`. Branch-name prefixes are not.
+ */
+describe('isRunnerWorktreePath (eligibility by location, not branch name)', () => {
+  const base = '/home/coder/.buildd/roles/builder/.buildd-worktrees';
+
+  for (const dir of [
+    'buildd_0000abcd-slug',
+    'mission_tidy-0000abcd',
+    'mission_tidy-0000abcd-w00001111',
+    'task-0000abcd',
+    'acme-0000abcd-slug',
+    'dev-w00001111',
+  ]) {
+    it(`recognises the runner-created directory ${dir}`, () => {
+      expect(isRunnerWorktreePath(`${base}/${dir}`)).toBe(true);
+    });
+  }
+
+  it('does not recognise a worktree outside .buildd-worktrees', () => {
+    // A human feature branch checkout, or an SDK `isolation: 'worktree'`
+    // subagent tree — neither is ours to reap.
+    expect(isRunnerWorktreePath('/home/coder/work/feature-x')).toBe(false);
+    expect(isRunnerWorktreePath('/home/coder/.claude/worktrees/agent-0000abcd')).toBe(false);
   });
-  it('matches e2e ephemeral branches', () => {
-    expect(isBuilddTaskBranch('buildd/abc--e2e-test-echo')).toBe(true);
-    expect(isBuilddTaskBranch('task--e2e-test-x')).toBe(true);
+
+  it('does not recognise a lookalike directory name', () => {
+    expect(isRunnerWorktreePath('/repo/my-buildd-worktrees-backup/x')).toBe(false);
   });
-  it('never matches human/default branches', () => {
-    expect(isBuilddTaskBranch('main')).toBe(false);
-    expect(isBuilddTaskBranch('dev')).toBe(false);
-    expect(isBuilddTaskBranch('feature/foo')).toBe(false);
-  });
-  it('handles null/undefined', () => {
-    expect(isBuilddTaskBranch(null)).toBe(false);
-    expect(isBuilddTaskBranch(undefined)).toBe(false);
+
+  it('handles the base directory itself and empty input', () => {
+    expect(isRunnerWorktreePath(base)).toBe(true);
+    expect(isRunnerWorktreePath('')).toBe(false);
   });
 });
 
@@ -140,6 +167,61 @@ describe('classifyOwner', () => {
   it('treats waiting as live within the 24h TTL and terminal past it', () => {
     expect(classifyOwner([rec({ status: 'waiting', lastActivity: now - 60_000 })], wtPath, branch, now)).toBe('live');
     expect(classifyOwner([rec({ status: 'waiting', lastActivity: now - (WAITING_WORKTREE_TTL_MS + 1) })], wtPath, branch, now)).toBe('terminal');
+  });
+});
+
+/**
+ * Regression: `runCleanup` logged the sweep's message only when it did NOT
+ * start with "No stale". Combined with the branch-prefix eligibility filter
+ * above, a runner that was leaking worktrees but whose leaks were all filtered
+ * out logged nothing at all — zero runtime worktree/disk telemetry, so the only
+ * way to see a leak was to SSH in and run `git worktree list`.
+ */
+describe('formatWorktreeTelemetry', () => {
+  it('emits a line even when every counter is zero', () => {
+    const line = formatWorktreeTelemetry({
+      repos: 0, worktrees: 0, live: 0, terminal: 0, orphan: 0,
+      removable: 0, diskMB: 0, reaped: 0, skippedOwned: 0,
+    });
+    expect(line).toContain('[worktree-telemetry]');
+    expect(line).toContain('worktrees=0');
+    expect(line).toContain('reaped=0');
+  });
+
+  it('names every counter so the line is greppable and chartable', () => {
+    const line = formatWorktreeTelemetry({
+      repos: 3, worktrees: 12, live: 4, terminal: 5, orphan: 3,
+      removable: 6, diskMB: 900, reaped: 6, skippedOwned: 2,
+    });
+    for (const kv of [
+      'repos=3', 'worktrees=12', 'live=4', 'terminal=5', 'orphan=3',
+      'removable=6', 'diskMB=900', 'reaped=6', 'skipped_owned=2',
+    ]) {
+      expect(line).toContain(kv);
+    }
+    expect(line).not.toContain('WARN');
+  });
+
+  it('flags a leaking or bloated runner inline', () => {
+    const leaking = formatWorktreeTelemetry({
+      repos: 1, worktrees: 40, live: 1, terminal: 2, orphan: 37,
+      removable: 0, diskMB: 6000, reaped: 0, skippedOwned: 0,
+    });
+    expect(leaking).toContain('WARN');
+  });
+});
+
+describe('sweep ownership uses the same predicate as teardown', () => {
+  it('a path held by a live in-memory worker is protected even if records say orphan', () => {
+    // The persisted record can lag (the store writes on a cadence), so
+    // classifyOwner alone can call a live worker's tree an orphan.
+    const path = '/repo/.buildd-worktrees/buildd_0000abcd-slug';
+    expect(classifyOwner([], path, 'buildd/0000abcd-slug')).toBe('orphan');
+    expect(isWorktreePathOwnedByOtherLiveWorker(
+      new Map([['w-1', { worktreePath: path, status: 'working' }]]),
+      path,
+      '__sweep__',
+    )).toBe(true);
   });
 });
 

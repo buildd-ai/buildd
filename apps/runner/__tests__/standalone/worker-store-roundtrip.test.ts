@@ -5,7 +5,7 @@
  * with tests that mock 'fs'. Bun's mock.module is process-global, so other
  * test files' fs mocks would break worker-store. This file has no mocks.
  *
- * Run standalone: bun test apps/runner/__tests__/unit/worker-store-roundtrip.test.ts
+ * Run this file alone: bun run scripts/run-unit-tests.ts apps/runner/__tests__/standalone/worker-store-roundtrip.test.ts
  *
  * When run as part of the full suite, bun may parallelize test files into
  * the same process. If tests fail in suite but pass standalone, that's the
@@ -13,13 +13,24 @@
  */
 
 import { describe, test, expect, afterAll } from 'bun:test';
-import { existsSync, writeFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
-import { saveWorker, loadWorker, loadAllWorkers, deleteWorker } from '../../src/worker-store';
+import { tmpdir } from 'os';
+import { saveWorker, loadWorker, loadAllWorkers, deleteWorker, __resetWorkerStoreRoot } from '../../src/worker-store';
 import type { LocalWorker } from '../../src/types';
 
-const WORKERS_DIR = join(homedir(), '.buildd', 'workers');
+// NEVER the real home. This file calls the real saveWorker/loadWorker/
+// loadAllWorkers -- no fs mock, no store mock -- so pointing it at
+// $HOME/.buildd put fixture records into the operator's live runner store,
+// where `loadAllWorkers` rewrote them to `error` status and the running runner
+// logged a bogus "not found remotely" reconcile line for each (their task ids
+// have no server row). BUILDD_HOME is injected per file by
+// scripts/run-unit-tests.ts; the fallback keeps a bare `bun test <file>` safe.
+process.env.BUILDD_HOME ??= mkdtempSync(join(tmpdir(), 'buildd-store-roundtrip-'));
+__resetWorkerStoreRoot();
+
+const TEST_HOME = process.env.BUILDD_HOME;
+const WORKERS_DIR = join(TEST_HOME, 'workers');
 const TEST_PREFIX = `_test_rt_${Date.now()}`;
 
 // Track all worker IDs for cleanup
@@ -112,11 +123,16 @@ function makeWorker(overrides: Partial<LocalWorker> = {}): LocalWorker {
 }
 
 afterAll(() => {
-  // Clean up all test workers from disk
+  // Still id-by-id (a crash mid-file must not strand anything), but no longer
+  // the only thing standing between this suite and real data.
   for (const id of createdIds) {
     try { deleteWorker(id); } catch {}
     const p = join(WORKERS_DIR, `${id}.json`);
     try { unlinkSync(p); } catch {}
+  }
+  // Only ever a directory this file created under tmpdir().
+  if (TEST_HOME.startsWith(tmpdir())) {
+    try { rmSync(TEST_HOME, { recursive: true, force: true }); } catch {}
   }
 });
 
@@ -283,14 +299,22 @@ describe('worker-store round-trip', () => {
     expect(loaded.commits).toHaveLength(50);
   });
 
-  test('expired workers (>24h) return null and file is deleted', () => {
+  test('expired workers (>24h of inactivity) return null and the file is deleted', () => {
+    // Rewritten, not appended to: this used to age only `_savedAt`, which is the
+    // WRITE time and is re-stamped by every persist, so it asserted a TTL that
+    // could never be reached in practice. Age the activity fields too --
+    // worker-store.activityAt is what expiry keys on now. The inverted cases
+    // (fresh write + stale activity, and vice versa) live in
+    // apps/runner/__tests__/unit/worker-store-integrity.test.ts.
     const worker = makeWorker();
     saveWorker(worker);
 
-    // Manually rewrite the file with an old _savedAt
     const filePath = join(WORKERS_DIR, `${worker.id}.json`);
     const data = JSON.parse(readFileSync(filePath, 'utf-8'));
-    data._savedAt = Date.now() - 25 * 60 * 60 * 1000; // 25h ago
+    const stale = Date.now() - 25 * 60 * 60 * 1000; // 25h ago
+    data._savedAt = stale;
+    data.lastActivity = stale;
+    data.completedAt = stale;
     writeFileSync(filePath, JSON.stringify(data));
 
     const loaded = loadWorker(worker.id);
