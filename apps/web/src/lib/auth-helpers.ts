@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { NextRequest } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
@@ -17,8 +18,15 @@ export type CurrentUser = {
 /**
  * Get the current authenticated user from the database.
  * Returns null if not authenticated.
+ *
+ * Cached per-request via React cache() so layout + page share the same result —
+ * this is imported by the protected layout and by every page it renders, and
+ * each call is otherwise a fresh `users` round trip. Nothing in the request
+ * lifecycle writes to the session user before reading it back (the one
+ * `users` write, PUT /api/me/timezone, happens after its only read), so the
+ * value is per-request idempotent.
  */
-export async function getCurrentUser(): Promise<CurrentUser | null> {
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   // Dev mode - allow masquerading as real user via DEV_USER_EMAIL env var
   if (process.env.NODE_ENV === 'development') {
     // If DEV_USER_EMAIL is set, authenticate as that real user from the database
@@ -70,7 +78,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     image: user.image,
     timezone: user.timezone,
   };
-}
+});
 
 /**
  * Resolve the current user from a request, supporting both session and API key auth.
