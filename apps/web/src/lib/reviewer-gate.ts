@@ -13,7 +13,24 @@
  * A third owner joined those two under Option A′: a task PR based on a mission
  * integration branch is owned by neither the reviewer nor the human — buildd
  * merges it unattended. See `isMissionIntegrationTaskPr`.
+ *
+ * `deriveStoredVerdictFallback` closes a fourth gap: `escalationReason` and
+ * `approvalSummary` below are normally sourced from a mission note
+ * (`reviewer_escalated` / `reviewer_approved`), but `handleReviewerOutcomeIfNeeded`
+ * only ever writes those notes `if (missionId)` — a mission-less PR never gets
+ * one, no matter how the reviewer verdict came out. Without a note, a
+ * `completed` reviewer task with a real terminal verdict was indistinguishable
+ * from one that never produced a verdict at all, and fell into the "no
+ * recorded verdict" fail-safe below even when `get_pr_review` (which reads the
+ * verdict straight off the task row via `derivePrReviewStatus`) reported a
+ * clean terminal approve. The fallback reads that same row and applies the
+ * same rule the real merge doors use (`evaluateReviewVerdictGate`) so the gate
+ * can never show a different answer than the one that actually decided
+ * whether to merge — including a stale approval a later push has superseded.
  */
+
+import { derivePrReviewStatus } from './pr-review-status';
+import { evaluateReviewVerdictGate } from './review-verdict-gate';
 
 /**
  * Who owns the next move on this PR.
@@ -196,4 +213,52 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
     actor: 'human',
     reason: 'Review completed without a recorded verdict — needs human review',
   };
+}
+
+export interface StoredVerdictFallbackInput {
+  /** Already-resolved evidence from a mission note, if any. The fallback only
+   * engages when BOTH are absent — a note, where one exists, is the richer,
+   * preferred source (it carries the reviewer's dispatchable recommendation
+   * text, which the stored verdict alone does not). */
+  escalationReason: string | null;
+  approvalSummary: string | null;
+  /** The reviewer task's own row — same shape `derivePrReviewStatus` reads. */
+  reviewerTask: { status: ReviewerTaskStatus; result: unknown; context?: unknown } | null;
+  /** The PR's CURRENT head — what would actually be merged. */
+  currentHeadSha: string | null;
+}
+
+/**
+ * Fall back to the reviewer task's own stored verdict when no mission note
+ * recorded one — see the module doc. A no-op (returns the input evidence
+ * unchanged) unless both `escalationReason` and `approvalSummary` are null AND
+ * the reviewer task is terminal (`completed`); a live/pending reviewer task
+ * must keep resolving through `resolveReviewerGate`'s agent-owns-it branches,
+ * untouched. Returns both null (never fabricates a note) when the reviewer
+ * task genuinely produced no verdict — `derivePrReviewStatus` reports that as
+ * `review_failed`, which is the one case with nothing to fall back to.
+ */
+export function deriveStoredVerdictFallback(
+  input: StoredVerdictFallbackInput,
+): { escalationReason: string | null; approvalSummary: string | null } {
+  if (input.escalationReason != null || input.approvalSummary != null) {
+    return { escalationReason: input.escalationReason, approvalSummary: input.approvalSummary };
+  }
+  const rt = input.reviewerTask;
+  if (!rt || rt.status !== 'completed') return { escalationReason: null, approvalSummary: null };
+
+  const status = derivePrReviewStatus({
+    reviewTask: { id: '', status: rt.status, result: rt.result, context: rt.context },
+    worker: null,
+  });
+  if (status.state === 'review_failed') return { escalationReason: null, approvalSummary: null };
+
+  const verdictGate = evaluateReviewVerdictGate(status, input.currentHeadSha);
+  if (verdictGate.blocks) {
+    return { escalationReason: verdictGate.reason ?? null, approvalSummary: null };
+  }
+  if (status.state === 'approved') {
+    return { escalationReason: null, approvalSummary: status.summary ?? 'Reviewer approved — awaiting human merge' };
+  }
+  return { escalationReason: null, approvalSummary: null };
 }
