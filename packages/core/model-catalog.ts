@@ -217,6 +217,18 @@ export function priceFromCatalog(
   return { input: hit.input, output: hit.output, cacheRead: hit.cacheRead, cacheWrite: hit.cacheWrite };
 }
 
+export interface PickTierModelOptions {
+  /**
+   * Excludes a candidate the caller cannot actually serve (e.g. the claiming
+   * runner's CLI predates the model's version floor). Filtering it out of the
+   * candidate pool — rather than picking it and then rejecting the pick — is
+   * what turns "too new for this runner" into "fall back to the previous
+   * in-band release" for free: the newest-wins sort below just lands on
+   * whichever remaining candidate is next.
+   */
+  isServable?: (id: string) => boolean;
+}
+
 /**
  * Resolve a tier to a concrete model: newest release inside the tier's price band.
  * Returns null when nothing qualifies — the caller keeps its configured value
@@ -226,6 +238,7 @@ export function pickTierModel(
   tier: CatalogTier,
   entries: readonly CatalogEntry[],
   provider: CatalogProvider = 'anthropic',
+  options?: PickTierModelOptions,
 ): CatalogEntry | null {
   const band = TIER_PRICE_BANDS[tier];
 
@@ -234,7 +247,8 @@ export function pickTierModel(
       e.provider === provider &&
       e.contextLength >= MIN_CONTEXT_TOKENS &&
       e.input >= band.minInput &&
-      e.input < band.maxInput,
+      e.input < band.maxInput &&
+      (!options?.isServable || options.isServable(e.id)),
   );
   if (candidates.length === 0) return null;
 
