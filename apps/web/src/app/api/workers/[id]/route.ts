@@ -1434,6 +1434,11 @@ export async function PATCH(
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
           hint: 'create_pr',
+          // Machine-readable identity of the refusal, so the runner reports
+          // this as the output-gate decision it is instead of unwinding into
+          // its crash handler. Same slug the gate_events row above carries —
+          // one vocabulary, not two.
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
         }, { status: 400 });
       }
 
@@ -1444,6 +1449,11 @@ export async function PATCH(
           return NextResponse.json({
             error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',
             hint: 'create_pr or create_artifact',
+            // Machine-readable identity of the refusal, so the runner reports
+            // this as the output-gate decision it is instead of unwinding into
+            // its crash handler. Same slug the gate_events row above carries —
+            // one vocabulary, not two.
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           }, { status: 400 });
         }
         // Artifact is the satisfier (no PR). Nothing was committed/pushed to the
@@ -1494,6 +1504,11 @@ export async function PATCH(
         return NextResponse.json({
           error: 'Task has no confirmed outcome — the session ended without the agent calling complete_task to report its status. This is a bookkeeping/organizer task: report the outcome via complete_task (summary or structuredOutput), not a pull request or artifact.',
           hint: 'organizer_did_not_report',
+          // Machine-readable identity of the refusal, so the runner reports
+          // this as the output-gate decision it is instead of unwinding into
+          // its crash handler. Same slug the gate_events row above carries —
+          // one vocabulary, not two.
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
         }, { status: 400 });
       }
 
@@ -1521,6 +1536,11 @@ export async function PATCH(
           return NextResponse.json({
             error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
+            // Machine-readable identity of the refusal, so the runner reports
+            // this as the output-gate decision it is instead of unwinding into
+            // its crash handler. Same slug the gate_events row above carries —
+            // one vocabulary, not two.
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           }, { status: 400 });
         }
         // `discardEdits` is the caller talking the gate out of a refusal it
@@ -1578,6 +1598,11 @@ export async function PATCH(
           return NextResponse.json({
             error: `Task has ${workDescription} but no pull request or artifact, and outputRequirement is 'none'. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
+            // Machine-readable identity of the refusal, so the runner reports
+            // this as the output-gate decision it is instead of unwinding into
+            // its crash handler. Same slug the gate_events row above carries —
+            // one vocabulary, not two.
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           }, { status: 400 });
         }
         if (discardReason && !hasCrossBranchDeliverable) {
@@ -1657,6 +1682,25 @@ export async function PATCH(
   const isSandboxMountGap = body.sandboxMountGap === true;
   const isSteeringDelivery = body.steeringDelivery === true;
   const isConcurrencyConflict = body.concurrencyConflict === true || isConcurrencyConflictError(error);
+  // The runner is reporting that WE refused one of its mutations, rather than
+  // that the session crashed. Before this existed, the completion PATCH (the
+  // one runner call with no `.catch`) unwound into the runner's crash handler
+  // on any 4xx, arrived back here as a plain `failed` whose error was the
+  // stringified refusal body, and fell through to code_failure — charging the
+  // task a retry for a decision this server made.
+  //
+  // The refusal's own gate slug is read rather than regex-matched out of the
+  // error text: the server minted that slug, so re-deriving it here would be a
+  // second vocabulary that can drift from GATE_SLUGS.
+  const refusal = (body.refusal ?? null) as
+    { status?: number; gate?: string; hint?: string; method?: string; endpoint?: string } | null;
+  const isServerRefusal = body.serverRefused === true;
+  // An output-gate refusal is about the session's DELIVERABLES (it ran and
+  // shipped nothing reviewable), so it stays chargeable under its own cause.
+  // Every other refusal is about the REQUEST — a dead credential, a missing
+  // row, a malformed body — and says nothing about the work.
+  const isOutputGateRefusal = isServerRefusal && refusal?.gate === GATE_SLUGS.OUTPUT_REQUIREMENT;
+  const isNonGateRefusal = isServerRefusal && !isOutputGateRefusal;
   // Codex sequential-enforcement deferral: the runner allows only one active
   // Codex worker per workspace and reports extras as failed with a "Deferred:"
   // error. These aren't real failures — re-queue the task so it's retried once
@@ -1684,6 +1728,33 @@ export async function PATCH(
       steeringDelivery: isSteeringDelivery,
       concurrencyConflict: isConcurrencyConflict,
       conditionUnmet: isCodexDeferral,
+      serverRefused: isServerRefusal,
+      outputGateRefused: isOutputGateRefusal,
+    });
+  }
+  // A non-gate refusal is exempt from the task's retry budget, so record it —
+  // an exemption nobody counts is how a runner bug becomes invisible. The
+  // output-gate refusals already wrote their own OUTPUT_REQUIREMENT row when
+  // the completion was refused; re-recording them here would report one
+  // refusal as two gate events.
+  if (isNonGateRefusal) {
+    fireGateEvent({
+      gate: GATE_SLUGS.WORKER_PATCH_REFUSED,
+      surface: 'PATCH /api/workers/[id]',
+      outcome: 'rejected',
+      // RAW on purpose — recordGateEvent normalizes, and pre-normalizing here
+      // would make this site disagree with every other gate about sameness.
+      reason: `runner reported a refused mutation: HTTP ${refusal?.status ?? '?'} ${error ?? ''}`,
+      workspaceId: worker.workspaceId,
+      taskId: worker.taskId,
+      workerId: worker.id,
+      callerOrigin: 'worker',
+      detail: {
+        status: refusal?.status ?? null,
+        method: refusal?.method ?? null,
+        endpoint: refusal?.endpoint ?? null,
+        hint: refusal?.hint ?? null,
+      },
     });
   }
   // Held = task goes back to pending and is NOT treated as a real failure
@@ -2343,11 +2414,19 @@ export async function PATCH(
           }
         }
 
-        // Infra failure override (steeringDelivery = true):
+        // Infra failure override (steeringDelivery = true, or a non-gate server
+        // refusal):
         // CLI startup errors (session collision, env collision) are infra — not code bugs.
         // Use a separate infraRetryCount so infra burns don't consume code-failure retry
         // slots. Apply exponential backoff and cap at MAX_INFRA_RETRIES_PATCH attempts.
-        if (isSteeringDelivery && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        //
+        // A non-gate refusal rides the same budget deliberately. It is exempt
+        // from consumesRetryAttempt, and an exemption with no ceiling is how a
+        // task retries forever — so the ceiling is this one, already built,
+        // already backed off, already ending in infraStalledFail. An
+        // output-gate refusal is excluded: that one IS charged, so it belongs
+        // to the ordinary retry budget.
+        if ((isSteeringDelivery || isNonGateRefusal) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -3256,18 +3335,31 @@ export async function PATCH(
   }
 
   // One terminal record per worker, on every path that lands here: a real
-  // completion, a real failure, and a runner-reconciled process death
-  // reported as status:'failed' with crashReconciled:true (see
-  // apps/runner/src/worker-sync.ts restoreWorkersFromDisk). The
-  // outputRequirement gate's own refusal path writes its row from
-  // persistRejectedCompletionPayload above, since a refused completion never
-  // reaches this write at all.
+  // completion, a real failure, a runner-reconciled process death reported as
+  // status:'failed' with crashReconciled:true (see
+  // apps/runner/src/worker-sync.ts restoreWorkersFromDisk), and a refusal the
+  // runner is reporting back to us. The outputRequirement gate's own refusal
+  // path writes its row from persistRejectedCompletionPayload above, since a
+  // refused completion never reaches this write at all — so the row this
+  // branch's `refused` outcome actually creates is the NON-GATE one (a dead
+  // credential, a missing row, a rate limit), which has no earlier row to
+  // dedupe against. For a gate refusal the row written at 400-time wins on
+  // workerId uniqueness, which is correct: it is the write closest to the
+  // session end.
+  //
+  // `crashReconciled` is checked first and the two are mutually exclusive: it
+  // is only ever set by the startup reconciliation of a session whose process
+  // died, which never had a refusal to report.
   if (isTerminalStatus) {
     fireTerminalRecord({
       workerId: worker.id,
       taskId: worker.taskId,
       workspaceId: worker.workspaceId,
-      outcome: crashReconciled === true ? 'crashed' : (status === 'completed' ? 'completed' : 'failed'),
+      outcome: crashReconciled === true
+        ? 'crashed'
+        : isServerRefusal
+          ? 'refused'
+          : (status === 'completed' ? 'completed' : 'failed'),
       exitCause: updated.error ?? error ?? null,
       turns: updated.turns,
       inputTokens: updated.inputTokens,

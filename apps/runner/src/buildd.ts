@@ -4,6 +4,7 @@ import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
+import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH } from './updater';
 
 /**
@@ -72,12 +73,21 @@ export class BuilddClient {
           this.outbox.enqueue(method, endpoint, options.body as string | undefined);
           return {};
         }
-        const error = await res.text();
-        throw new Error(`API error: ${res.status} - ${error}`);
+        const raw = await res.text();
+        throw ServerRefusalError.from({ status: res.status, raw, method, endpoint });
       }
 
       return res.json();
     } catch (err: any) {
+      // A refusal is the server's DECISION, not a transport fault — and it is
+      // thrown from inside this same `try`, so without this guard the
+      // heuristic below inspects the SERVER'S RESPONSE BODY. A 4xx whose text
+      // happened to contain "aborted" / "timed out" / "ECONNRESET" was
+      // enqueued to the outbox and `{}` returned, so the caller concluded the
+      // mutation had landed: a refusal lost silently, then retried against a
+      // server that had already decided to refuse it.
+      if (isServerRefusal(err)) throw err;
+
       // Network errors (server unreachable) - queue if outbox is attached
       const isNetworkError = err instanceof TypeError ||
         // AbortSignal.timeout fires a DOMException (TimeoutError); a caller abort is AbortError.
@@ -213,6 +223,22 @@ export class BuilddClient {
     // never sent by a live session. Tells the server's terminal-record ledger
     // to classify this outcome as 'crashed' rather than an ordinary failure.
     crashReconciled?: boolean;
+    /**
+     * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
+     * 5xx) rather than the session crashing. Chargeability is the SERVER's
+     * call — see consumesRetryAttempt — so this is a report, not a decision:
+     * the runner holds no retry counter at all. Also the signal that makes the
+     * terminal record's outcome read 'refused' rather than 'failed' (see
+     * apps/web/src/lib/terminal-record-ledger.ts): mutually exclusive with
+     * `crashReconciled`, which only a dead session's reconciliation sets.
+     */
+    serverRefused?: boolean;
+    /**
+     * Identity of the refusal. `gate` is a GATE_SLUGS value when one applies,
+     * and it is the field that decides whether the refusal was about this
+     * session's deliverables (charged) or about the request (exempt).
+     */
+    refusal?: { status: number; method: string; endpoint: string; gate?: string; hint?: string };
     // Deliberate resume of a terminal worker (sendMessage follow-up). The server
     // reactivates a completed/failed/error worker ONLY when this is true — the
     // periodic keepalive sync sends an identical status:'running' payload and
