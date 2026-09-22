@@ -121,9 +121,20 @@ it watches.**
 - **Runtime:** its own process with its own lifecycle, not inside the worker
   container and not on Vercel. A container rebuild or a serverless outage must not
   remove the watcher.
-- **Credentials:** its own model credential and its own notification credential,
-  distinct from any the platform uses, so a credential failure in the platform does
-  not disarm it.
+- **Credentials: reuse the existing OAuth credential.** The tempting answer is a
+  dedicated credential per responder, isolated from the platform's. Rejected, for an
+  operational reason that outweighs the isolation: a separate credential is one more
+  thing to provision, rotate and remember, and credential rot has already been a
+  real failure mode here — an expired refresh token and a stale encryption key have
+  each taken out working systems. A responder disarmed by a credential nobody
+  renewed is worse than one that shares the platform's.
+
+  The shared-fate objection is real and is answered by design rather than by a
+  second secret: **every detector must be evaluable without a model call.** The
+  detectors are deterministic queries over status codes, timestamps and counters. A
+  dead credential therefore costs the *diagnosis narrative*, not the alert — the
+  responder degrades to a pager that still says which condition tripped and when.
+  Notification must use a path that does not depend on the model credential at all.
 - **State:** local, embedded. Never the production database — that is shared fate.
 - **Inputs, all black-box:** the claim endpoint's status code and latency; the
   version endpoint; recent CI runs; the runner's local HTTP port; and `cron_runs`
@@ -185,9 +196,13 @@ Anything automatic states its bound.
   to be done by hand during this incident — including once as the direct result of an
   operator probe against a live claim endpoint, which is itself an argument for a
   tool that does it correctly and records it.
-- **What if the model API is the thing that is down?** *Leaning:* accept it. The
-  responder degrades to a dumb pager: the detectors are deterministic queries and
-  must not require a model to evaluate. Only the diagnosis narrative needs one.
+- **What if the shared OAuth credential is the thing that is down?** This is the
+  accepted cost of reusing it, and the mitigation is the credential-free detector
+  rule above: the responder still pages, without a narrative. *Open sub-question:*
+  whether a dead-credential condition should itself be one of the responder's
+  detectors. *Leaning:* yes — it is cheap to check, it has precedent as an outage
+  cause here, and a responder that notices its own disarmament is strictly better
+  than one that goes quiet.
 - **Should it own the existing host healthcheck** (which lives in a separate
   infrastructure repository)? *Leaning:* no — but it should assert that healthcheck
   is *capable of failing*, since a monitor that has never failed is indistinguishable
