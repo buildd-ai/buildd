@@ -3,6 +3,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
+import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
@@ -102,10 +103,19 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
 /**
  * Parse the HTTP status and server reason from a BuilddClient fetch error.
- * Error message format: "API error: <status> - <body>"
- * Body is usually JSON: {"error":"routing_mismatch","detail":"..."}
+ *
+ * A refusal now arrives typed, so read the status off the error rather than
+ * recovering it from the message. That is not belt-and-braces: the typed
+ * error's message is the SERVER'S prose, which matches no `API error:` shape
+ * at all — so without this branch every refused claim would be logged as
+ * `status: 0`, silently downgrading the one log an operator greps to find out
+ * why a runner stopped claiming. The string form is kept for anything that
+ * still throws a bare Error.
  */
 function parseClaimError(err: Error): { status: number; reason: string } {
+  if (isServerRefusal(err)) {
+    return { status: err.status, reason: err.message };
+  }
   const match = err.message.match(/^API error: (\d+) - ([\s\S]*)$/);
   if (!match) return { status: 0, reason: err.message };
   const status = parseInt(match[1], 10);
@@ -1935,6 +1945,73 @@ export class WorkerManager {
         return;
       }
     }
+  }
+
+  /**
+   * Report a server refusal as a refusal, not a crash.
+   *
+   * Two things this has to get right:
+   *
+   * 1. **`error` carries the SERVER'S OWN MESSAGE**, never
+   *    `API error: <status> - <json>`. The server already wrote a gate_events
+   *    row whose `reason` went through normalizeErrorSignature; reusing the
+   *    same prose puts the worker row in that same cluster instead of minting
+   *    a blob that clusters with nothing.
+   *
+   * 2. **The flags are a report, not a decision.** The runner holds no retry
+   *    counter — chargeability is derived server-side from `exit_cause` — so
+   *    all this does is say which kind of refusal happened and let
+   *    classifyReportedFailure decide. `serverRefused` is also what makes the
+   *    terminal record read 'refused' instead of 'failed'.
+   *
+   * Deliberately NOT here: re-sending the refused completion's measurement as
+   * a metrics-only PATCH. The route salvages it at the refusal site —
+   * `persistRejectedCompletionPayload` calls `applyMetricsOnlyPatch` on the
+   * body it is already holding, before returning the 400 — so a second round
+   * trip from here would write the same numbers twice for the one cohort that
+   * has them. For every other refusal (a dead credential, a missing row, a
+   * rate limit) the salvage PATCH would be refused by the same endpoint for
+   * the same reason the completion was, so it buys nothing there either.
+   */
+  private async reportServerRefusal(
+    worker: LocalWorker,
+    refusal: ServerRefusalError,
+  ): Promise<void> {
+    const label = refusal.gate ?? `HTTP ${refusal.status}`;
+    console.warn(`[Worker ${worker.id}] Server refused ${refusal.method} ${refusal.endpoint} (${label}): ${refusal.message}`);
+    // A distinct event name from session_error, so a /tmp/buildd.log grep can
+    // separate "we refused it" from "it crashed" — two different triages.
+    sessionLog(worker.id, 'warn', 'server_refusal', `${label}: ${refusal.message}`, worker.taskId);
+    this.addMilestone(worker, { type: 'status', label: `Server refused completion: ${label}`, ts: Date.now() });
+    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+
+    worker.status = 'error';
+    worker.error = refusal.message;
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+
+    const failSpans = buildSubagentSpans(worker.subagentTasks);
+    await this.buildd.updateWorker(worker.id, {
+      status: 'failed',
+      error: refusal.message,
+      serverRefused: true,
+      refusal: {
+        status: refusal.status,
+        method: refusal.method,
+        endpoint: refusal.endpoint,
+        ...(refusal.gate ? { gate: refusal.gate } : {}),
+        ...(refusal.hint ? { hint: refusal.hint } : {}),
+      },
+      ...this.terminalAttributionPayload(worker),
+      ...(failSpans.length > 0 ? { subagentSpans: failSpans } : {}),
+      subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+      backgroundAgentMs: computeBackgroundAgentMs(failSpans),
+    }).catch(err => {
+      console.error(`[Worker ${worker.id}] Failed to report server refusal:`, err);
+    });
+
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
   }
 
   /**
@@ -3950,8 +4027,16 @@ export class WorkerManager {
       }
 
     } catch (error) {
+      // A server REFUSAL is not a crash: it is a decision the coordination
+      // server made about this request, and it has to be tested BEFORE the
+      // abort heuristic below. That heuristic is a substring match on the
+      // error message, and a refusal's message is the server's own prose — so
+      // a refusal worded "completion aborted: …" would otherwise be handled as
+      // a clean session abort and reported with no refusal signal at all.
+      const refusal = isServerRefusal(error) ? error : null;
+
       // Check if this is an expected abort (from loop detection or user)
-      const isAbortError = error instanceof Error &&
+      const isAbortError = !refusal && error instanceof Error &&
         (error.message.includes('aborted') || error.message.includes('Aborted'));
 
       // Before marking as failed, check if server already has this as completed.
@@ -3981,6 +4066,18 @@ export class WorkerManager {
       // docs/specs/human-in-the-loop-protocol.md.
       if (worker.error?.startsWith('needs_input')) {
         await this.parkNeedsInputAbort(worker);
+        return;
+      }
+
+      // Returning here deliberately skips the `if (resumeSessionId) throw
+      // error` at the bottom of this catch: that re-throw exists so
+      // resumeSession can fall through to Layer 2 (reconstructed context) when
+      // a RESUME failed. A refusal is not a resume failure — the session ran,
+      // we already reported its terminal outcome, and re-running it would
+      // spend a whole second session arguing with a decision the server has
+      // already made. Same shape as the needs_input park above.
+      if (refusal) {
+        await this.reportServerRefusal(worker, refusal);
         return;
       }
 
