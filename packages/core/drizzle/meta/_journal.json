@@ -1212,6 +1212,13 @@
       "when": 1790027795091,
       "tag": "0173_lucky_mantis",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1790117889226,
+      "tag": "0174_bumpy_tarantula",
+      "breakpoints": true
     }
   ]
 }
