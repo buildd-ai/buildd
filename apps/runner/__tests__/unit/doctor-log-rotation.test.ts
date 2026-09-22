@@ -25,15 +25,23 @@ import { join } from 'path';
 const dir = mkdtempSync(join(tmpdir(), 'buildd-runner-log-'));
 const logPath = join(dir, 'buildd.log');
 process.env.BUILDD_RUNNER_LOG_PATH = logPath;
-process.env.BUILDD_HOME = mkdtempSync(join(tmpdir(), 'buildd-home-doctor-'));
+// Kept so the hook below can put it back. `runTestFile` injects a throwaway
+// BUILDD_HOME into every test process; deleting it rather than restoring it
+// would leave anything that resolves a store path afterwards pointing at the
+// operator's real ~/.buildd.
+const injectedHome = process.env.BUILDD_HOME;
+const doctorHome = mkdtempSync(join(tmpdir(), 'buildd-home-doctor-'));
+process.env.BUILDD_HOME = doctorHome;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { rotateLogIfLarge } = require('../../src/doctor');
 
 afterAll(() => {
   delete process.env.BUILDD_RUNNER_LOG_PATH;
-  delete process.env.BUILDD_HOME;
+  if (injectedHome === undefined) delete process.env.BUILDD_HOME;
+  else process.env.BUILDD_HOME = injectedHome;
   rmSync(dir, { recursive: true, force: true });
+  rmSync(doctorHome, { recursive: true, force: true });
 });
 
 beforeEach(() => {

@@ -203,13 +203,14 @@ reconcile line for each of them. Analyses built on that store had to be
 retracted. The suite was green the whole time, because writing to the wrong
 place is not a test failure.
 
-Three layers keep it that way, weakest to strongest:
+Four layers keep it that way, weakest to strongest:
 
 | layer | where | what it catches |
 |---|---|---|
 | injection | `runTestFile` | any module reading `BUILDD_HOME`, whenever it reads it |
 | corpus lint | `scripts/test-home-isolation.test.ts` | a tracked test file referencing `homedir()` / `process.env.HOME` outside its allow-list |
 | run tripwire | `scripts/run-unit-tests.ts` | the real store changing at all across a run, on a quiescent host |
+| child guard | `scripts/test-store-guard.ts` | any write inside the real `~/.buildd`, attributed to the test file that made it |
 
 The tripwire snapshots `~/.buildd/workers` before the first spawn and after the
 last, and names the changed entries. A missing directory snapshots as `null`
@@ -228,8 +229,24 @@ activity from *before* any test process spawned (`isStoreLikelyLive`, in
 (`storeDiffIsFatal`) — the injection and corpus-lint layers above are what
 still gate a real regression there.
 
+The child guard is what makes a failure *actionable*, and it is the layer that
+still gates on a busy host. The tripwire is one before/after snapshot of a
+directory that 800+ concurrently-running files share, so when it fires it can
+name a changed entry but not a culprit — the first time it did, it cost a full
+manual bisect. `scripts/test-store-guard.ts` is `--preload`ed into every child
+from the single spawn point (so no test file changes): it wraps the sync `fs`
+mutators the home-resolving runner modules use and refuses any path inside the
+real `~/.buildd`, printing the offending call and stack from inside the process
+that attempted it. A refused write belongs to exactly one process, so
+co-resident runner churn cannot manufacture it — unlike the byte-diff, it fails
+the build even on a live host, and it prevents the write instead of merely
+reporting it afterwards. The marker is printed before the throw because the
+store's persist paths swallow exceptions.
+
 If you need real store I/O in a test, write under `process.env.BUILDD_HOME` and
-call `__resetWorkerStoreRoot()` after changing it. Never `homedir()`.
+call `__resetWorkerStoreRoot()` after changing it. Never `homedir()`. Restore
+the injected `BUILDD_HOME` rather than `delete`-ing it in an `afterAll`:
+deleting it hands the next thing that resolves a store path the real home.
 
 ### Why isolation is mandatory
 

@@ -182,6 +182,34 @@ function discardTestHome(home: string): void {
   } catch { /* a leaked temp dir is not worth failing a run over */ }
 }
 
+/**
+ * Preloaded into every child so a reach for the real `~/.buildd` is refused
+ * *and attributed* in the process that attempts it. See `test-store-guard.ts`:
+ * the run-level tripwire below can only say the store changed, not which of
+ * 800+ concurrently-running files changed it.
+ */
+export function storeGuardPath(): string {
+  return join(import.meta.dir, 'test-store-guard.ts');
+}
+
+/**
+ * Must stay identical to `STORE_REACH_MARKER` in `test-store-guard.ts`.
+ * Duplicated rather than imported because importing the guard would run its
+ * fs-patching side effect in this parent process too;
+ * `run-unit-tests.test.ts` asserts the two literals still match.
+ */
+export const STORE_REACH_MARKER = '::buildd-real-home-write::';
+
+/** Test files whose output shows they reached the real runner home. */
+export function attributeStoreReaches(
+  results: ReadonlyArray<{ file: string; output: string }>,
+): string[] {
+  return results
+    .filter(r => r.output.includes(STORE_REACH_MARKER))
+    .map(r => r.file)
+    .sort();
+}
+
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
@@ -196,7 +224,7 @@ export async function runTestFile(
   // where they were counted as fleet data.
   const testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
   try {
-    const child = spawn([process.execPath, 'test', file], {
+    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), file], {
       stdout: 'pipe',
       stderr: 'pipe',
       env: { ...process.env, BUILDD_HOME: testHome },
@@ -329,9 +357,13 @@ export function storeDiffIsFatal(diffs: readonly string[], storeWasLive: boolean
 export function formatStoreTripwireReport(
   dir: string,
   diffs: readonly string[],
-  opts: { advisory?: boolean } = {},
+  opts: { advisory?: boolean; culprits?: readonly string[] } = {},
 ): string {
-  if (opts.advisory) {
+  const culprits = opts.culprits ?? [];
+  // Advisory is only reachable when the guard named nobody: a refused write is
+  // attributable to one process, so co-resident churn cannot explain it and it
+  // gates regardless of how busy the host is.
+  if (opts.advisory && culprits.length === 0) {
     return [
       '',
       `The real worker store at ${dir} changed during this run, but it was already`,
@@ -348,12 +380,35 @@ export function formatStoreTripwireReport(
       '',
     ].join('\n');
   }
+  // Naming the file is the whole point of the child-side guard. A detector that
+  // fires without a culprit costs the next person the bisect it just cost the
+  // last one, so say so explicitly when attribution is missing rather than
+  // leaving the reader to wonder whether the list is empty or absent.
+  const attribution = culprits.length > 0
+    ? [
+      'Attributed to:',
+      ...culprits.map(f => `  ${f}`),
+      '',
+      'That file reached the real home directly. Its own output (above, and in',
+      'the log) carries the fs call and the stack that got there.',
+      '',
+    ]
+    : [
+      'No test file could be attributed: the child-side guard in',
+      'scripts/test-store-guard.ts saw no refused write. Either the write came',
+      'from an fs call it does not wrap, or from a subprocess a test spawned',
+      'with its own environment. Widen the guard rather than the allow-list.',
+      '',
+    ];
+  // A refused write leaves the directory byte-identical, so "changed" would be
+  // a false claim in exactly the case the guard is working.
+  const headline = diffs.length > 0
+    ? [`The unit suite changed the REAL worker store at ${dir}:`, '', ...diffs.map(d => `  ${d}`), '']
+    : [`The unit suite tried to write inside the REAL runner home (${dir}).`, 'The guard refused the write, so the store itself is unchanged.', ''];
   return [
     '',
-    `The unit suite changed the REAL worker store at ${dir}:`,
-    '',
-    ...diffs.map(d => `  ${d}`),
-    '',
+    ...headline,
+    ...attribution,
     `::error::Unit tests must never touch ${dir}. Every test process gets its own`,
     'BUILDD_HOME under tmpdir() (see runTestFile). A test that reaches the real',
     'store is either resolving a path from homedir() directly or importing a',
@@ -480,8 +535,15 @@ async function main(): Promise<void> {
   // can only come from something else running on this host.
   const storeWasLive = isStoreLikelyLive(storeBefore);
 
+  // Scanned at collection time rather than by keeping every child's output:
+  // a passing file can still have reached the real home (the persist paths
+  // swallow the guard's throw), so the marker has to be checked for all of
+  // them — but holding 800+ outputs in memory to do it is not worth it.
+  const storeReaches: string[] = [];
+
   await runWithConcurrency(files, concurrency, async file => {
     const result = await runTestFile(file);
+    if (result.output.includes(STORE_REACH_MARKER)) storeReaches.push(file);
     if (result.exitCode === 0) {
       passed++;
     } else {
@@ -520,7 +582,16 @@ async function main(): Promise<void> {
   }
 
   const storeDiffs = diffStoreSnapshots(storeBefore, snapshotStore(storeDir));
-  if (storeDiffs.length > 0) {
+  // Two independent layers. The child-side guard is the authoritative one: it
+  // attributes a reach to the process that made it, so co-resident runner churn
+  // cannot produce it and it gates even on a live host — which is exactly the
+  // case the byte-diff has to go advisory on. The guard also catches a reach the
+  // byte-diff misses, since a refused write leaves the directory unchanged.
+  const culprits = storeReaches.sort();
+  if (culprits.length > 0) {
+    console.error(formatStoreTripwireReport(storeDir, storeDiffs, { culprits }));
+    process.exitCode = 1;
+  } else if (storeDiffs.length > 0) {
     console.error(formatStoreTripwireReport(storeDir, storeDiffs, { advisory: storeWasLive }));
     if (storeDiffIsFatal(storeDiffs, storeWasLive)) {
       process.exitCode = 1;
