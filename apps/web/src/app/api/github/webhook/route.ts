@@ -2244,6 +2244,9 @@ async function handleReleasePrCiSuccess(
     workspaceId: pendingReleaseTasks[0]!.workspaceId,
     prNumber,
     headSha,
+    surface: 'release-pr ci-success',
+    taskId: pendingReleaseTasks[0]!.id,
+    callerOrigin: 'system',
   });
   if (releaseGate.blocks) {
     console.log(

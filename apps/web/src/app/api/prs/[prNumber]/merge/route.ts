@@ -224,6 +224,10 @@ export async function POST(
       workspaceId: worker.workspaceId,
       prNumber,
       headSha: liveHeadSha,
+      surface: 'POST /api/prs/[prNumber]/merge',
+      taskId: worker.taskId ?? null,
+      workerId: worker.id,
+      callerOrigin: 'dashboard',
     });
 
     if (reviewGate.blocks) {

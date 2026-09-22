@@ -7,6 +7,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
 import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import {
   ANSWER_PATH_REASONS,
   buildContinuationTaskValues,
@@ -94,34 +95,24 @@ async function resolveStaleTask(
     }
   }
 
-  // Reviewer timeout: when a reviewer worker goes stale, post a note on the
-  // original task so the PR surfaces in the human queue with a clear reason.
+  // Reviewer timeout: when a reviewer worker goes stale, escalate the same
+  // way a reviewer task that completes with a dropped verdict does — one
+  // shared function (escalateReviewContractFailure) rather than two paths
+  // that both land a review task in `review_failed` but only one of which
+  // used to notify anyone. This path previously wrote its own mission note,
+  // gated on missionId same as the other one was before it was fixed to
+  // always fire — now both go through the single escalation, which also
+  // posts to the PR's own activity comment and the gate ledger.
   if (currentTask?.category === 'review') {
     const ctx = (currentTask.context ?? {}) as Record<string, unknown>;
-    const originalTaskId = ctx.reviewerFor as string | undefined;
     const prNumber = ctx.prNumber as number | undefined;
-    if (originalTaskId) {
-      try {
-        const originalTask = await db.query.tasks.findFirst({
-          where: eq(tasks.id, originalTaskId),
-          columns: { missionId: true },
-        });
-        if (originalTask?.missionId) {
-          await db.insert(missionNotes).values({
-            missionId: originalTask.missionId,
-            taskId: originalTaskId,
-            authorType: 'system',
-            type: 'reviewer_escalated',
-            title: `PR #${prNumber ?? '?'} — agent review timed out`,
-            body: 'The agent reviewer did not complete before the staleness timeout. Review and merge manually.',
-            status: 'open',
-          });
-        }
-      } catch (err) {
-        // Non-fatal — task still goes through normal stale resolution
-        console.error('[stale-workers] Failed to post reviewer timeout note:', err);
-      }
-    }
+    await escalateReviewContractFailure({
+      taskId,
+      repoFullName: String(ctx.repoFullName ?? ''),
+      prNumber: Number(prNumber ?? 0),
+      headSha: String(ctx.headSha ?? ''),
+      installationId: Number(ctx.installationId ?? 0),
+    }).catch((err) => console.error('[stale-workers] escalateReviewContractFailure failed:', err));
 
     // Expiry terminates the review lease. Reviewer tasks are one-shot checks:
     // retrying an infra failure would immediately reacquire the lease and hide

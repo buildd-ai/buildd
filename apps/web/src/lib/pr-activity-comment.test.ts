@@ -114,6 +114,7 @@ describe('the header spinner', () => {
     for (const kind of [
       'ci_exhausted',
       'review_escalated',
+      'review_failed',
       'human_review_required',
       'review_approved_awaiting_human',
       'merged',
@@ -139,6 +140,19 @@ describe('the header spinner', () => {
     const closed = renderPrActivityComment([working, { kind: 'closed_unmerged', at: '2026-08-29T14:31:00.000Z' }]);
     expect(closed).not.toContain(SPINNER_PATH);
     expect(closed).toContain('**Closed without merging**');
+  });
+
+  it('renders review_failed distinctly from review_escalated', () => {
+    // review_escalated means the reviewer looked and raised a finding;
+    // review_failed means it never produced a verdict at all. Before this
+    // kind existed the comment simply stopped at "Reviewing changes" forever
+    // on this path, which reads as still-in-progress to a human watching it.
+    const body = renderPrActivityComment([
+      { kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' },
+      { kind: 'review_failed', at: '2026-08-29T14:45:00.000Z' },
+    ]);
+    expect(body).toContain('Review never completed');
+    expect(body).not.toContain(SPINNER_PATH);
   });
 
   it('points the spinner at a camo-reachable origin, never at localhost', () => {
