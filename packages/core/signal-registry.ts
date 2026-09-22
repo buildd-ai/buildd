@@ -131,7 +131,7 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
     threshold:
       'Any mismatch between configured effort/thinking and the matched ModelInfo row emits a warning. ' +
       "Previously the lookup compared the running model id only against ModelInfo.value (the model ALIAS, " +
-      "e.g. 'sonnet') and never against ModelInfo.resolvedModel (the wire id, e.g. 'claude-sonnet-5') that " +
+      "e.g. 'sonnet') and never against ModelInfo.resolvedModel (the fully-qualified wire id) that " +
       'fleet tasks are actually configured with — every lookup missed, for every model, and zero warnings ' +
       'were ever emitted.',
     location: 'apps/runner/src/prompt-builder.ts#discoverModelCapabilities',
@@ -167,7 +167,7 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
     location: 'disk-cleanup.sh (infrastructure repo, not this codebase)',
     noLocalFireTest: {
       reason: 'implementation lives in the infrastructure repo, not this codebase',
-      trackedBy: 'buildd task fa6d9242-de79-43fb-a7f2-e3393f217730 (buildd-ai/infrastructure)',
+      trackedBy: 'paired buildd task filed against the infrastructure repo',
     },
   },
 ];
