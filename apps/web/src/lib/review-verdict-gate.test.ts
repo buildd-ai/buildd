@@ -1,4 +1,11 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
+
+const firedGateEvents: any[] = [];
+mock.module('@/lib/gate-ledger', () => ({
+  fireGateEvent: mock((input: any) => { firedGateEvents.push(input); }),
+  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict' },
+}));
+
 import { evaluateReviewVerdictGate, guardReviewVerdict } from './review-verdict-gate';
 import type { PrReviewStatus, PrReviewState } from './pr-review-status';
 
@@ -159,14 +166,21 @@ describe('evaluateReviewVerdictGate', () => {
   });
 
   it('passes when no review was ever requested', () => {
-    expect(evaluateReviewVerdictGate(status({ state: 'not_requested' }), SHA_A).blocks).toBe(false);
+    const result = evaluateReviewVerdictGate(status({ state: 'not_requested' }), SHA_A);
+    expect(result.blocks).toBe(false);
+    expect(result.state).toBe('not_requested');
   });
 
   it('passes review_failed — no verdict means no finding to protect', () => {
     // A reviewer whose session died produced nothing to enforce, and nothing
     // re-reviews the same head SHA, so this would strand the PR forever.
     // escalateReviewContractFailure already surfaces it to a human.
-    expect(evaluateReviewVerdictGate(status({ state: 'review_failed' }), SHA_A).blocks).toBe(false);
+    const result = evaluateReviewVerdictGate(status({ state: 'review_failed' }), SHA_A);
+    expect(result.blocks).toBe(false);
+    // `state` rides along on every PASS (not just a block) specifically so a
+    // caller — guardReviewVerdict below — can tell this PASS apart from
+    // not_requested/approved and count it.
+    expect(result.state).toBe('review_failed');
   });
 
   it('passes an already-merged PR so an idempotent re-merge is not a refusal', () => {
@@ -212,6 +226,52 @@ describe('evaluateReviewVerdictGate', () => {
 });
 
 describe('guardReviewVerdict', () => {
+  beforeEach(() => {
+    firedGateEvents.length = 0;
+  });
+
+  it('fires a warned gate event when a review_failed PASS lets a merge proceed', async () => {
+    const result = await guardReviewVerdict({
+      workspaceId: 'ws-1',
+      prNumber: 2587,
+      headSha: SHA_A,
+      surface: 'auto-merge',
+      taskId: 'review-task-1',
+      deps: {
+        read: async () => status({ state: 'review_failed', reviewTaskId: 'review-task-1' }),
+      },
+    });
+    expect(result.blocks).toBe(false);
+    expect(firedGateEvents).toHaveLength(1);
+    expect(firedGateEvents[0].gate).toBe('review_verdict');
+    expect(firedGateEvents[0].outcome).toBe('warned');
+    expect(firedGateEvents[0].surface).toBe('auto-merge');
+    expect(firedGateEvents[0].taskId).toBe('review-task-1');
+    expect(firedGateEvents[0].detail.prNumber).toBe(2587);
+  });
+
+  it('does not fire a gate event for an ordinary not_requested PASS', async () => {
+    const result = await guardReviewVerdict({
+      workspaceId: 'ws-1',
+      prNumber: 1,
+      headSha: SHA_A,
+      deps: { read: async () => status({ state: 'not_requested' }) },
+    });
+    expect(result.blocks).toBe(false);
+    expect(firedGateEvents).toHaveLength(0);
+  });
+
+  it('does not fire a gate event when the gate blocks', async () => {
+    const result = await guardReviewVerdict({
+      workspaceId: 'ws-1',
+      prNumber: 1,
+      headSha: SHA_A,
+      deps: { read: async () => status({ state: 'changes_requested', reviewHeadSha: SHA_A }) },
+    });
+    expect(result.blocks).toBe(true);
+    expect(firedGateEvents).toHaveLength(0);
+  });
+
   it('reads the status and applies the rule', async () => {
     const result = await guardReviewVerdict({
       workspaceId: 'ws-1',
