@@ -57,7 +57,7 @@ interface CountRow {
 }
 
 async function countTable(table: string): Promise<number> {
-  const res = await db.execute(sql.raw(`SELECT count(*) AS count FROM ${table}`));
+  const res = await db.execute(sql`SELECT count(*) AS count FROM ${sql.identifier(table)}`);
   return parseInt((res.rows[0] as CountRow).count, 10);
 }
 
