@@ -37,7 +37,7 @@ import {
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
-import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
+import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
@@ -636,6 +636,7 @@ export class WorkerManager {
       probedWorkers: this.probedWorkers,
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       buildUserMessage: (content, opts) => buildUserMessage(content, opts),
+      unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
     });
 
     // Check for stale workers every 30s
@@ -909,6 +910,7 @@ export class WorkerManager {
         this.workerTeamKeys.delete(id);
         clearWorkerThrottle(id);
         storeDeleteWorker(id);
+        this.pusherManager.unsubscribeFromWorker(id);
         // Terminal teardown: now safe to delete the stable Codex home (and its
         // resumable sessions) — the worker is fully purged, no follow-up possible.
         if (worker.taskBackend === 'codex') teardownStableCodexHome(id, this.config.workspaceIsolationRoot, worker.workspaceId);
@@ -923,6 +925,9 @@ export class WorkerManager {
         count++;
       }
     }
+    // getWorkers() serves its disk-side merge from a short-TTL cache; without
+    // this, a purge would stay invisible there for up to the cache's TTL.
+    __resetDiskWorkersCache();
     return count;
   }
 
@@ -1003,12 +1008,16 @@ export class WorkerManager {
   }
 
   getWorkers(): LocalWorker[] {
-    // Merge in-memory workers with completed workers persisted on disk (24h history)
+    // Merge in-memory workers with completed workers persisted on disk (24h
+    // history). Called from several hot HTTP route handlers (GET /health,
+    // GET /api/workers, the GET /api/events SSE init payload) plus a 60s
+    // watchdog and the periodic reconcile pass, so the disk side is a bounded
+    // cache (loadTerminalWorkersCached) rather than a fresh readdirSync+parse
+    // of the whole store on every call.
     const inMemory = Array.from(this.workers.values());
     const inMemoryIds = new Set(inMemory.map(w => w.id));
 
-    const diskWorkers = loadAllWorkers()
-      .filter(w => !inMemoryIds.has(w.id) && (w.status === 'done' || w.status === 'error'));
+    const diskWorkers = loadTerminalWorkersCached().filter(w => !inMemoryIds.has(w.id));
 
     return [...inMemory, ...diskWorkers];
   }

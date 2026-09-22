@@ -131,6 +131,8 @@ export interface WorkerSyncContext {
   probedWorkers: Set<string>;
   addMilestone: (worker: LocalWorker, milestone: any) => void;
   buildUserMessage: (content: string, opts?: { sessionId?: string }) => any;
+  /** Tears down the worker's Pusher channel subscription, if any. Idempotent. */
+  unsubscribeFromWorker: (workerId: string) => void;
 }
 
 /**
@@ -212,7 +214,21 @@ export class WorkerSync {
   restoreWorkersFromDisk() {
     try {
       const restored = loadAllWorkers();
+      let skippedTerminal = 0;
       for (const worker of restored) {
+        // A record that was ALREADY done/error before this restart (not one
+        // this restart just killed) needs no live tracking: it's already
+        // correctly persisted, getWorkers() merges it straight off disk, and
+        // evictCompletedWorkers() would just delete it again on its very next
+        // tick — pure churn. This was the single largest category in the
+        // per-worker logs (worker_evicted, 37.7% of all entries): every
+        // restart reloaded the whole 24h history into memory only to evict
+        // it moments later.
+        if (!worker.killedByRestart && (worker.status === 'done' || worker.status === 'error')) {
+          skippedTerminal++;
+          continue;
+        }
+
         // Workers with active status can't be resumed (no SDK session/inputStream).
         // Exception: 'waiting' workers keep their status so the user can still answer —
         // sendMessage() will detect waiting+no-session and restart via resumeSession().
@@ -262,8 +278,12 @@ export class WorkerSync {
         }
         this.ctx.workers.set(worker.id, worker);
       }
-      if (restored.length > 0) {
-        console.log(`[WorkerStore] Restored ${restored.length} worker(s) from disk`);
+      const liveRestored = restored.length - skippedTerminal;
+      if (liveRestored > 0 || skippedTerminal > 0) {
+        console.log(
+          `[WorkerStore] Restored ${liveRestored} worker(s) from disk` +
+          (skippedTerminal > 0 ? ` (${skippedTerminal} already-terminal, left on disk)` : ''),
+        );
       }
     } catch (err) {
       console.error('[WorkerStore] Failed to restore workers from disk:', err);
@@ -586,6 +606,16 @@ export class WorkerSync {
         this.ctx.workers.delete(id);
         this.ctx.sessions.delete(id);
         this.lastSeenUserMessageTs.delete(id);
+        // Every terminal worker passes through here before leaving memory —
+        // whether it already unsubscribed via an explicit abort (redundant,
+        // idempotent no-op) or never did (normal completion, auth failure,
+        // budget exceeded, server refusal, reconciliation, markDone — none of
+        // those touch Pusher). This is the one unconditional teardown point.
+        try {
+          this.ctx.unsubscribeFromWorker(id);
+        } catch (err) {
+          console.error(`[Worker ${id}] Failed to unsubscribe Pusher channel on eviction:`, err);
+        }
         // Note: NOT deleting from disk — workers persist for 24h for history
       }
     }

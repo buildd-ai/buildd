@@ -362,6 +362,52 @@ export function loadWorker(workerId: string): LocalWorker | null {
   }
 }
 
+// `getWorkers()` (workers.ts) merges in-memory workers with the done/error
+// workers still on disk (24h history). It's called from several HTTP route
+// handlers — `GET /health`, `GET /api/workers`, the `GET /api/events` SSE
+// init payload, `POST /api/update` — plus a 60s watchdog and the periodic
+// reconcile pass. Before this cache, every one of those calls paid a full
+// `readdirSync` + JSON.parse of the whole store — a 23-day audit of the live
+// runner found several hundred files there routinely, so this was the actual
+// bottleneck on hot paths. (Pusher event handlers use a separate, already-
+// cheap in-memory Map callback of the same name and were never part of this.)
+//
+// Bounded instead of invalidated on write: the disk-only terminal set only
+// gains members when a worker is evicted from memory (a 5-minute timer) or
+// restored at startup, so a short TTL trades at most a few seconds of
+// staleness on a history listing for turning O(calls x files) into
+// O(files / ttl).
+const TERMINAL_CACHE_TTL_MS = 5_000;
+let terminalWorkersCache: { workers: LocalWorker[]; expiresAt: number } | null = null;
+let diskScanCountForTests = 0;
+
+/**
+ * Cached, filtered view of `loadAllWorkers()` for hot paths that only need
+ * the terminal (done/error) disk history, not the live workers already held
+ * in memory. `now` is injectable for deterministic tests.
+ */
+export function loadTerminalWorkersCached(now: number = Date.now()): LocalWorker[] {
+  if (!terminalWorkersCache || terminalWorkersCache.expiresAt <= now) {
+    diskScanCountForTests += 1;
+    terminalWorkersCache = {
+      workers: loadAllWorkers().filter(w => w.status === 'done' || w.status === 'error'),
+      expiresAt: now + TERMINAL_CACHE_TTL_MS,
+    };
+  }
+  return terminalWorkersCache.workers;
+}
+
+/** Test-only: drop the cache and its scan counter so the next call re-scans. */
+export function __resetDiskWorkersCache(): void {
+  terminalWorkersCache = null;
+  diskScanCountForTests = 0;
+}
+
+/** Test-only: how many real disk scans loadTerminalWorkersCached has performed. */
+export function __getDiskScanCountForTests(): number {
+  return diskScanCountForTests;
+}
+
 /** Delete a worker's persisted state */
 export function deleteWorker(workerId: string): void {
   const filePath = workerPath(workerId);
