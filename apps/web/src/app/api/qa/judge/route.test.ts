@@ -19,9 +19,19 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockResolveAnthropicAuth = mock(() => Promise.resolve(null as any));
+mock.module('@/lib/claude-credential', () => ({
+  resolveAnthropicAuth: mockResolveAnthropicAuth,
+}));
+
 import { POST } from './route';
 
 const FAKE_ACCOUNT = { id: 'acct-1', teamId: 'team-1', level: 'trigger' };
+const FAKE_ANTHROPIC_AUTH = {
+  headers: { 'anthropic-version': '2023-06-01', 'x-api-key': 'test-anthropic-key' },
+  purpose: 'anthropic_api_key',
+  secretId: 'secret-1',
+};
 
 const ROUTE = {
   id: 'home',
@@ -52,13 +62,12 @@ function makeReq(body: unknown, authHeader?: string): NextRequest {
 }
 
 describe('POST /api/qa/judge', () => {
-  let originalEnv: string | undefined;
   let fetchSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
-    originalEnv = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    mockResolveAnthropicAuth.mockReset();
+    mockResolveAnthropicAuth.mockResolvedValue(FAKE_ANTHROPIC_AUTH as any);
 
     fetchSpy = spyOn(global, 'fetch').mockResolvedValue(new Response(
       JSON.stringify({
@@ -73,11 +82,6 @@ describe('POST /api/qa/judge', () => {
   });
 
   afterEach(() => {
-    if (originalEnv !== undefined) {
-      process.env.ANTHROPIC_API_KEY = originalEnv;
-    } else {
-      delete process.env.ANTHROPIC_API_KEY;
-    }
     fetchSpy.mockRestore();
   });
 
@@ -87,9 +91,9 @@ describe('POST /api/qa/judge', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 503 when ANTHROPIC_API_KEY is not set', async () => {
+  it('returns 503 when no Anthropic credential resolves for the team', async () => {
     mockAuthenticateApiKey.mockResolvedValue(FAKE_ACCOUNT);
-    delete process.env.ANTHROPIC_API_KEY;
+    mockResolveAnthropicAuth.mockResolvedValue(null);
     const res = await POST(makeReq({ route: ROUTE, capture: CAPTURE_NORMAL }));
     expect(res.status).toBe(503);
   });
@@ -126,6 +130,7 @@ describe('POST /api/qa/judge', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  // @signal-fire: visual-qa-judge-credential-resolution
   it('calls Anthropic and returns parsed verdict for a normal capture', async () => {
     mockAuthenticateApiKey.mockResolvedValue(FAKE_ACCOUNT);
     const res = await POST(makeReq({ route: ROUTE, capture: CAPTURE_NORMAL }, 'Bearer bld_testkey'));
@@ -136,7 +141,13 @@ describe('POST /api/qa/judge', () => {
     expect(data.overallVerdict).toBe('PASS');
     expect(data.expectations[0].verdict).toBe('MATCHES-SPEC');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect((fetchSpy.mock.calls[0] as string[])[0]).toContain('anthropic.com');
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('anthropic.com');
+    // Regression guard: this route used to read process.env.ANTHROPIC_API_KEY
+    // directly and 503 on every real call — it must resolve credentials via
+    // the shared team-scoped resolver, keyed by the authenticated account's team.
+    expect(mockResolveAnthropicAuth).toHaveBeenCalledWith({ teamId: FAKE_ACCOUNT.teamId });
+    expect((init.headers as Record<string, string>)['x-api-key']).toBe('test-anthropic-key');
   });
 
   it('returns ERROR verdict when Anthropic API call fails', async () => {

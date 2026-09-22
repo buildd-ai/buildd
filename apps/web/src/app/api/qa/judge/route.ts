@@ -11,6 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { resolveAnthropicAuth, type AnthropicAuth } from '@/lib/claude-credential';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 
@@ -51,8 +52,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicApiKey) {
+  // Same resolution path every other server-side Anthropic call in this app
+  // uses (see resolveAnthropicAuth's doc comment): process.env.ANTHROPIC_API_KEY
+  // is never set in production. This route used to read it directly and 503
+  // on every single call — the workflow that hits it was built specifically to
+  // avoid needing that env var, and this route quietly reintroduced it.
+  const anthropicAuth = await resolveAnthropicAuth({ teamId: account.teamId });
+  if (!anthropicAuth) {
     return NextResponse.json({ error: 'Server not configured for AI judgment' }, { status: 503 });
   }
 
@@ -68,14 +74,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'route (with id + expectations) and capture are required' }, { status: 400 });
   }
 
-  const verdict = await judgeCapture(route, capture, anthropicApiKey);
+  const verdict = await judgeCapture(route, capture, anthropicAuth);
   return NextResponse.json(verdict);
 }
 
 async function judgeCapture(
   route: RouteInput,
   capture: CaptureInput,
-  anthropicApiKey: string,
+  anthropicAuth: AnthropicAuth,
 ) {
   if (capture.skipped) {
     return {
@@ -156,8 +162,7 @@ Respond with exactly this JSON shape (no extra fields, no markdown):
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': anthropicApiKey,
-      'anthropic-version': '2023-06-01',
+      ...anthropicAuth.headers,
     },
     body: JSON.stringify({
       model: MODEL,

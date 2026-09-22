@@ -157,6 +157,69 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
     },
   },
   {
+    slug: 'ci-fix-bot-actor-allowlist',
+    name: 'CI auto-fix bot-actor allowlist',
+    watches: 'Whether the claude-code-action repair step is allowed to run when the dev push it is reacting to was authored by a known repo bot (buildd-ai worker commits, buildd-release)',
+    threshold:
+      "allowed_bots names both bots this workflow's trigger can ever produce, never '*'. Previously the " +
+      "default empty allowlist rejected every bot-authored push outright ('Workflow initiated by " +
+      "non-human actor... Add bot to allowed_bots list') — a 30-day audit found this was 22 of 47 " +
+      'ci-fix.yml failures, with another 22 of 47 hitting the 30-turn cap (below) and every single ' +
+      'failure landing at the claude-code-action step.',
+    location: '.github/workflows/ci-fix.yml (auto-fix job, claude-code-action step)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'allows the two bots this workflow can ever be triggered by, and nothing wider',
+    },
+  },
+  {
+    slug: 'ci-fix-max-turns-headroom',
+    name: 'CI auto-fix turn budget',
+    watches: "The claude-code-action repair step's --max-turns budget against what a working fix has actually needed",
+    threshold:
+      '--max-turns >= 50. Measured: of the runs in the audited window that succeeded, several finished ' +
+      'at 26-28 of the previous 30-turn cap — already close to binding on a WORKING fix — while 22 of 47 ' +
+      'failures hit the cap outright (Claude execution failed: Reached maximum number of turns).',
+    location: '.github/workflows/ci-fix.yml (auto-fix job, claude-code-action step claude_args)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'gives the fix agent headroom above what a working run has actually needed',
+    },
+  },
+  {
+    slug: 'visual-qa-trigger-reachable',
+    name: 'Visual QA release-PR trigger',
+    watches: "Whether the visual-qa job's if: condition can ever be true for an actual dev→main release PR",
+    threshold:
+      "Job runs when the PR's source branch is dev, or via manual dispatch — no further gate. Previously " +
+      "AND-ed a contains(...labels..., 'visual-qa') requirement that nothing in this codebase ever " +
+      "applies; the gate's own documented removal condition ('once a dispatch run comes back green') was " +
+      'never attempted either — zero workflow_dispatch runs existed in this history before this fix. All ' +
+      '500 recorded pull_request-triggered runs (287 in the audited 30-day window) skipped as a direct result.',
+    location: '.github/workflows/visual-qa.yml (visual-qa job if:)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'does not gate on a label nothing in this repo ever applies',
+    },
+  },
+  {
+    slug: 'visual-qa-judge-credential-resolution',
+    name: 'Visual QA judge Anthropic credential resolution',
+    watches: "Whether POST /api/qa/judge can actually reach Anthropic for a team with Claude access configured",
+    threshold:
+      "Resolves credentials via resolveAnthropicAuth({teamId}) — the same team-scoped resolver every other " +
+      "server-side Anthropic call in this app uses. Previously read process.env.ANTHROPIC_API_KEY directly, " +
+      "which is never set in production (confirmed by resolveAnthropicAuth's own doc comment and by task " +
+      "2ad8d304's prior audit) — every real judge call 503'd ('Server not configured for AI judgment'), " +
+      'confirmed live via a manual workflow_dispatch run that captured 6 of 8 routes successfully and then ' +
+      'got a 503 from all 6 judge calls.',
+    location: 'apps/web/src/app/api/qa/judge/route.ts#POST',
+    fireTest: {
+      file: 'apps/web/src/app/api/qa/judge/route.test.ts',
+      title: 'calls Anthropic and returns parsed verdict for a normal capture',
+    },
+  },
+  {
     slug: 'disk-space-alert',
     name: 'Disk-space alert',
     watches: 'Free space on the volume that actually fills on a worker host',
