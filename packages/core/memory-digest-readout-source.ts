@@ -31,7 +31,7 @@
  * the join in memory is not a consideration.
  */
 
-import { and, asc, count, desc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, lte } from 'drizzle-orm';
 import { db } from './db';
 import { artifacts, systemCache, workerPromptCompositionEvents, workers } from './db/schema';
 import {
@@ -138,6 +138,7 @@ export async function loadReadoutInput(opts: LoadOptions) {
       ts: workerPromptCompositionEvents.ts,
       policyVersion: workerPromptCompositionEvents.policyVersion,
       arm: workerPromptCompositionEvents.arm,
+      propensity: workerPromptCompositionEvents.propensity,
       taskMatchDerivedBy: workerPromptCompositionEvents.taskMatchDerivedBy,
       backend: workerPromptCompositionEvents.backend,
       promptBytes: workerPromptCompositionEvents.promptBytes,
@@ -156,6 +157,7 @@ export async function loadReadoutInput(opts: LoadOptions) {
     ts: r.ts instanceof Date ? r.ts : new Date(r.ts as any),
     policyVersion: r.policyVersion,
     arm: r.arm as MemoryDigestArm,
+    propensity: numeric(r.propensity),
     taskMatchDerivedBy: r.taskMatchDerivedBy,
     backend: r.backend,
     promptBytes: r.promptBytes,
@@ -241,6 +243,123 @@ export async function loadReadoutInput(opts: LoadOptions) {
  */
 export async function runMemoryDigestReadout(opts: LoadOptions): Promise<Readout> {
   return computeReadout(await loadReadoutInput(opts));
+}
+
+// ── Guardrail monitor loader ────────────────────────────────────────────────
+
+/**
+ * Cohort filter for the standing post-ship guardrail monitor
+ * (`memory-digest-guardrail-monitor.ts`).
+ *
+ * Unlike `compositionCohortScope`, this is scoped to a time window rather than
+ * to the whole policy version — the monitor runs on a rolling cadence, not
+ * once at conclusion — and to `propensity = 1`, which is the shipped,
+ * unconditional-rendering cohort. `propensity < 1` rows are the pre-flip
+ * randomised cohort the terminal readout already judged; re-including them in
+ * a rolling window would let old, already-decided rows dilute a fresh signal.
+ */
+export function guardrailWindowScope(windowStart: Date, now: Date, policyVersion: string) {
+  return and(
+    eq(workerPromptCompositionEvents.policyVersion, policyVersion),
+    eq(workerPromptCompositionEvents.arm, 'task_scoped'),
+    eq(workerPromptCompositionEvents.propensity, '1'),
+    isNotNull(workerPromptCompositionEvents.taskId),
+    gte(workerPromptCompositionEvents.ts, windowStart),
+    lte(workerPromptCompositionEvents.ts, now),
+  );
+}
+
+export interface GuardrailLoadOptions {
+  policyVersion: string;
+  windowStart: Date;
+  now: Date;
+}
+
+/**
+ * Load the rolling window's composition rows and their worker sessions.
+ *
+ * Same two-query shape as `loadReadoutInput` and for the same reason: the
+ * cohort filter is tested against rendered SQL, the arithmetic is tested
+ * against literal rows, and neither test needs a live database.
+ */
+export async function loadGuardrailWindowInput(opts: GuardrailLoadOptions) {
+  const compositionRows = await db
+    .select({
+      taskId: workerPromptCompositionEvents.taskId,
+      workerId: workerPromptCompositionEvents.workerId,
+      buildIndex: workerPromptCompositionEvents.buildIndex,
+      ts: workerPromptCompositionEvents.ts,
+      policyVersion: workerPromptCompositionEvents.policyVersion,
+      arm: workerPromptCompositionEvents.arm,
+      propensity: workerPromptCompositionEvents.propensity,
+      taskMatchDerivedBy: workerPromptCompositionEvents.taskMatchDerivedBy,
+      backend: workerPromptCompositionEvents.backend,
+      promptBytes: workerPromptCompositionEvents.promptBytes,
+      memoryBlockBytes: workerPromptCompositionEvents.memoryBlockBytes,
+      digestBytes: workerPromptCompositionEvents.digestBytes,
+      digestBytesAvailable: workerPromptCompositionEvents.digestBytesAvailable,
+      memoryShare: workerPromptCompositionEvents.memoryShare,
+    })
+    .from(workerPromptCompositionEvents)
+    .where(guardrailWindowScope(opts.windowStart, opts.now, opts.policyVersion));
+
+  const composition: CompositionRow[] = compositionRows.map(r => ({
+    taskId: r.taskId,
+    workerId: r.workerId,
+    buildIndex: r.buildIndex,
+    ts: r.ts instanceof Date ? r.ts : new Date(r.ts as any),
+    policyVersion: r.policyVersion,
+    arm: r.arm as MemoryDigestArm,
+    propensity: numeric(r.propensity),
+    taskMatchDerivedBy: r.taskMatchDerivedBy,
+    backend: r.backend,
+    promptBytes: r.promptBytes,
+    memoryBlockBytes: r.memoryBlockBytes,
+    digestBytes: r.digestBytes,
+    digestBytesAvailable: r.digestBytesAvailable,
+    memoryShare: numeric(r.memoryShare),
+  }));
+
+  const taskIds = [...new Set(composition.map(c => c.taskId).filter((t): t is string => !!t))];
+  if (taskIds.length === 0) return { composition, sessions: [] as SessionRow[] };
+
+  const workerRows = await db
+    .select({
+      id: workers.id,
+      taskId: workers.taskId,
+      status: workers.status,
+      turns: workers.turns,
+      resultMeta: workers.resultMeta,
+    })
+    .from(workers)
+    .where(sessionScope(taskIds));
+
+  const sessions: SessionRow[] = workerRows.map(w => {
+    const meta = (w.resultMeta ?? null) as
+      | {
+          durationMs?: number;
+          numTurns?: number;
+          toolCounts?: Record<string, number>;
+          bashCommandCounts?: { total?: number };
+          cbm?: { readCount?: number };
+        }
+      | null;
+    const toolCounts = meta?.toolCounts;
+    const readCalls = toolCounts ? (toolCounts.Read ?? 0) : optionalCount(meta?.cbm?.readCount);
+    const shellCalls = toolCounts ? (toolCounts.Bash ?? 0) : optionalCount(meta?.bashCommandCounts?.total);
+    return {
+      taskId: w.taskId,
+      workerId: w.id,
+      status: w.status,
+      turns: optionalCount(meta?.numTurns) ?? (w.turns > 0 ? w.turns : null),
+      durationMs: optionalCount(meta?.durationMs),
+      readCalls,
+      shellCalls,
+      calledRecall: toolCounts ? (toolCounts[RECALL_TOOL] ?? 0) > 0 : null,
+    };
+  });
+
+  return { composition, sessions };
 }
 
 // ── Durable persistence ─────────────────────────────────────────────────────
