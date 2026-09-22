@@ -1,12 +1,19 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
-import { eq, and, or, not, inArray, lt, gt, notInArray, sql } from 'drizzle-orm';
+import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, sql } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
 import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import {
+  ANSWER_PATH_REASONS,
+  buildContinuationTaskValues,
+  describeAnswerPath,
+  type AnswerDeliveryRecord,
+  type ContinuationParentTask,
+} from '@/lib/answer-resume';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -955,4 +962,149 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
   }
 
   return { failedWorkers, retriedTasks };
+}
+
+/**
+ * Degrade an answer that was queued for a parked session but never acknowledged.
+ *
+ * `POST /api/workers/[id]/respond` resumes a parked worker by queueing the
+ * human's answer on that worker's own row, which the runner holding the session
+ * drains and injects. That queue is acknowledged — but nothing guarantees the
+ * acknowledgement arrives: the runner can die in the seconds between the answer
+ * and its next sync, taking the transcript and the worktree with it.
+ *
+ * Past `RESUME_ACK_DEADLINE_MS` the platform stops believing the resume
+ * happened and converts the answer into the cold continuation it would have
+ * created in the first place — carrying the queued text forward, so nothing the
+ * human typed is lost. Loud, not silent: the recorded reason changes to
+ * `resume_not_acknowledged` and a warning note goes to the task feed.
+ *
+ * Idempotent three ways over: the SQL predicate requires the answer to still be
+ * queued and the worker still parked, and the JSON filter requires the recorded
+ * path to still be `resume` — all three are false after one pass.
+ *
+ * See docs/specs/answered-question-resume.md.
+ */
+export async function cleanupUnresumedAnswers(
+  accountId: string,
+): Promise<{ degraded: number }> {
+  const now = Date.now();
+
+  const candidates = await db.query.workers.findMany({
+    where: and(
+      eq(workers.accountId, accountId),
+      eq(workers.status, 'waiting_input'),
+      isNotNull(workers.pendingInstructions),
+    ),
+    columns: {
+      id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
+      milestones: true, pendingInstructions: true, instructionHistory: true,
+    },
+    with: { task: true },
+  });
+
+  let degraded = 0;
+
+  for (const worker of candidates) {
+    const task = (worker as any).task as Record<string, any> | null;
+    const delivery = (task?.context as Record<string, unknown> | null)
+      ?.answerDelivery as AnswerDeliveryRecord | undefined;
+
+    // Only an answer this route decided to resume is ours to degrade. Anything
+    // else queued on the worker is an /instruct steer, which has its own
+    // (at-most-once, unswept) contract.
+    if (!delivery || delivery.path !== 'resume' || delivery.workerId !== worker.id) continue;
+    if (!delivery.ackDeadlineAt || new Date(delivery.ackDeadlineAt).getTime() > now) continue;
+
+    const answer = worker.pendingInstructions;
+    if (!answer) continue;
+
+    // Supersede and clear the queue in one write, gated on the answer still
+    // being undrained. A runner that drains it in this exact window wins, and
+    // the sweep leaves the resume alone — the same compare-and-swap discipline
+    // the answer itself was claimed with.
+    const [claimed] = await db
+      .update(workers)
+      .set({
+        status: 'superseded',
+        pendingInstructions: null,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(workers.id, worker.id),
+        eq(workers.status, 'waiting_input'),
+        eq(workers.pendingInstructions, answer),
+      ))
+      .returning({ id: workers.id });
+
+    if (!claimed) continue;
+
+    const coldDecision = {
+      path: 'cold_continuation' as const,
+      reasonCode: 'resume_not_acknowledged' as const,
+      reason: ANSWER_PATH_REASONS.resume_not_acknowledged,
+    };
+    // Spread-then-delete rather than `ackDeadlineAt: undefined`: the record is
+    // stored as JSONB, where an explicit undefined round-trips as a null key
+    // and reads as "deadline unknown" instead of "no deadline any more".
+    const coldDelivery: AnswerDeliveryRecord = {
+      ...delivery,
+      path: coldDecision.path,
+      reasonCode: coldDecision.reasonCode,
+      reason: coldDecision.reason,
+      decidedAt: new Date(now).toISOString(),
+    };
+    delete coldDelivery.ackDeadlineAt;
+
+    if (task?.id) {
+      await db
+        .insert(tasks)
+        .values(buildContinuationTaskValues({
+          task: task as ContinuationParentTask,
+          workspaceId: worker.workspaceId,
+          workerId: worker.id,
+          branch: worker.branch,
+          milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
+          // The question was cleared from `waitingFor` when the answer was
+          // claimed; the delivery record kept a copy precisely for this.
+          question: delivery.question || 'A question the agent asked (not retained)',
+          answer,
+          delivery: coldDelivery,
+        }))
+        .returning({ id: tasks.id });
+
+      await db
+        .update(tasks)
+        .set({
+          context: { ...((task.context as Record<string, unknown>) || {}), answerDelivery: coldDelivery },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+
+      await db.insert(missionNotes).values({
+        missionId: task.missionId ?? null,
+        taskId: task.id,
+        workerId: worker.id,
+        authorType: 'system',
+        type: 'warning',
+        title: 'Answer never reached the parked session',
+        body: describeAnswerPath(coldDecision),
+        status: 'open',
+      });
+    }
+
+    degraded++;
+  }
+
+  // Release concurrency seats for OAuth accounts — a superseded worker no
+  // longer holds one. Grouped per account for one atomic decrement.
+  if (degraded > 0) {
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${degraded}, 0)` })
+      .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
+  }
+
+  return { degraded };
 }

@@ -130,6 +130,7 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 const { WorkerManager } = await import('../../src/workers');
+const { shouldPreserveWorktreeOnSessionEnd } = await import('../../src/worktree-utils');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -239,5 +240,49 @@ describe('waiting worker worktree reclamation', () => {
     (manager as any).workerSync.evictCompletedWorkers();
 
     expect(mockCleanupWorktree).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Session-end preservation ────────────────────────────────────────────────
+//
+// The eviction tests above cover the 24h TTL. This covers the moment BEFORE
+// it: the session-end cleanup that runs the instant AskUserQuestion aborts the
+// subprocess, while the worker still holds unpushed commits and uncommitted
+// changes. Deleting the worktree there destroys exactly the state a resumed
+// answer needs, and the cold continuation cannot recreate it — `baseBranch`
+// resolves only against an already-pushed branch and carries no uncommitted
+// work at all. See docs/specs/answered-question-resume.md.
+describe('shouldPreserveWorktreeOnSessionEnd', () => {
+  const base = { isEphemeralBranch: false, bwrapRetryPending: false };
+
+  test('preserves the worktree of a worker parked on a question', () => {
+    expect(shouldPreserveWorktreeOnSessionEnd({ ...base, status: 'waiting' })).toBe(true);
+  });
+
+  test('preserves the worktree of a completed worker for follow-ups', () => {
+    expect(shouldPreserveWorktreeOnSessionEnd({ ...base, status: 'done' })).toBe(true);
+  });
+
+  test.each([['error'], ['working'], ['stale'], [undefined]])(
+    'cleans up the worktree for status %p',
+    (status) => {
+      expect(shouldPreserveWorktreeOnSessionEnd({ ...base, status: status as string | undefined })).toBe(false);
+    },
+  );
+
+  test('always cleans up an ephemeral e2e branch, even when parked', () => {
+    expect(shouldPreserveWorktreeOnSessionEnd({
+      status: 'waiting',
+      isEphemeralBranch: true,
+      bwrapRetryPending: false,
+    })).toBe(false);
+  });
+
+  test('preserves the worktree for a pending bwrap retry regardless of status', () => {
+    expect(shouldPreserveWorktreeOnSessionEnd({
+      status: 'error',
+      isEphemeralBranch: true,
+      bwrapRetryPending: true,
+    })).toBe(true);
   });
 });

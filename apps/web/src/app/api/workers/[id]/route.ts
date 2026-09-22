@@ -54,10 +54,11 @@ import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
-import type { LoopHistoryEntry } from '@buildd/shared';
+import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
 import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
+import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { claimObservedPaths } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
@@ -1626,6 +1627,51 @@ export async function PATCH(
           });
         }
         if (hasCrossBranchDeliverable || discardReason) skipRelease = true;
+      }
+
+      // Handoff gate: tasks with dependents must include handoff.delivered.
+      // Lives in this scope (not a standalone `if (isTerminalStatus)` below)
+      // because it refuses through the same persistRejectedCompletionPayload
+      // ledger every other gate arm here uses.
+      try {
+        // Check if this task has any dependents (other tasks whose depends_on names this id).
+        // The predicate lives in @/lib/handoff-gate so it can be rendered and
+        // asserted on — this file's tests stub `drizzle-orm` outright, and the
+        // fail-open catch below makes a malformed one indistinguishable from
+        // "no dependents".
+        const hasDependent = await hasUnfinishedDependent(worker.taskId);
+
+        if (hasDependent) {
+          const structuredOutput = body.structuredOutput as { handoff?: TaskHandoff } | null;
+          const handoffDelivered = structuredOutput?.handoff?.delivered;
+          const isEmptyHandoff = !handoffDelivered || (typeof handoffDelivered === 'string' && !handoffDelivered.trim());
+
+          if (isEmptyHandoff) {
+            await persistRejectedCompletionPayload('handoff_required');
+            fireGateEvent({
+              gate: GATE_SLUGS.HANDOFF_REQUIRED,
+              surface: 'PATCH /api/workers/[id]',
+              outcome: 'rejected',
+              reason: 'This task has downstream dependents and must include handoff.delivered in structuredOutput before completing.',
+              workspaceId: worker.workspaceId,
+              missionId: taskMissionId,
+              taskId: worker.taskId,
+              workerId: worker.id,
+              callerOrigin: 'worker',
+              detail: {
+                category: terminalTaskRow[0]?.category ?? null,
+                summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+              },
+            });
+            return NextResponse.json({
+              error: 'This task has dependent(s) waiting on it. You must include `handoff.delivered` in your structured output (`structuredOutput.handoff.delivered`) with a one-line summary of what you delivered before completing.',
+              hint: 'handoff_required',
+            }, { status: 400 });
+          }
+        }
+      } catch (err) {
+        // Handoff gate is best-effort: a DB error does not block completion
+        console.error(`[Worker ${id}] Error checking handoff dependents:`, err);
       }
     }
   }

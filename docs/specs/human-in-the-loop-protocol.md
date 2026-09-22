@@ -2,11 +2,11 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-09-19
+last_verified: 2026-09-20
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts]
-related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts]
+related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
 verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts]
 supersedes: []
@@ -53,13 +53,16 @@ ignored my answer" incidents.
 | UI entry | needs-input banner, `/app/tasks/[id]/respond` | instruct form, `TaskQuestionFeed` reply |
 | MCP entry | none | `send_agent_message` (admin) |
 | Precondition | `workers.waitingFor` is non-null — **any** status | worker status not `completed`/`failed` |
-| Effect | new `pending` task; old worker `superseded` | message queued or pushed to the same session |
+| Effect | resume the parked session, or a new `pending` task with the old worker `superseded` | message queued or pushed to the same session |
 | Durability | a DB row; survives a dead runner | at-most-once; no acknowledgement |
-| Session continuity | new session, `baseBranch` = old branch | same session, same context window |
+| Session continuity | the SAME session when the runner still holds it, else a new session with `baseBranch` = old branch | same session, same context window |
 
-Channel A is the dashboard default. `deriveTaskPhase`'s `waiting_input` phase is
-documented in `apps/web/src/lib/task-presentation.ts` as "a worker asked a
-question — answering spawns a new worker", and that is literal.
+Channel A is the dashboard default. It is **no longer unconditionally a new
+worker**: `docs/specs/answered-question-resume.md` owns what happens to the
+session after an answer, and its cold-continuation path is the behaviour
+described below. Everything in this section about authorisation, the
+single-answer guard and the continuation's inherited fields applies to that
+path unchanged.
 
 ---
 
@@ -215,13 +218,19 @@ question — answering spawns a new worker", and that is literal.
   non-null and on nothing else; a worker in `error`, `failed` or `waiting_input`
   all accept an answer. This is not laxity — it is the contract that keeps the
   `inputAsRetry` abort (above) from swallowing the question.
-- An accepted answer MUST produce one new `pending` task titled
+- An answer that CANNOT resume the parked session (see
+  `docs/specs/answered-question-resume.md` for the five gates and the recorded
+  reason) MUST produce one new `pending` task titled
   `Continue: <original title>` whose description carries the original task, the
   recorded milestones, the question and the human answer verbatim, and whose
   `context` carries `baseBranch` (the dead worker's branch), `userInput`,
   `previousAttempt.workerId` and `iteration + 1`. Branch continuity is what
   makes the answer resumable rather than a restart.
-- The answering worker MUST be marked `superseded` (not `completed`, not
+- An answer that CAN resume it creates no task at all: the same worker row
+  receives the answer through the acknowledged instruction queue and continues.
+  The invariants below about superseding the worker apply to the cold path
+  only.
+- A COLD-path answering worker MUST be marked `superseded` (not `completed`, not
   `failed`) with `waitingFor = null` — it did not finish its task, it was
   replaced by the continuation task, so it must not count as either a success
   or a failure. `superseded` is included in `IN_FLIGHT_WORKER_STATUSES`
@@ -617,10 +626,11 @@ fix or to test.
    LAST `pending` history entry is flipped to `delivered` (`lastIndexOf`), so the
    dropped one stays `pending` forever — that stale `pending` is the only signal,
    and it is indistinguishable from "not yet checked in".
-3. **`/respond` has no compare-and-swap.** Two people (or a double-submitting
-   client) answering concurrently both read `waitingFor` as set and both create a
-   `Continue:` task on the same branch. `/interrupt` demonstrates the guard
-   (`WHERE status = <read status>`) that `/respond` lacks. Untested.
+3. ~~**`/respond` has no compare-and-swap.**~~ Closed: both answer paths claim
+   the answer with `WHERE id = ? AND waiting_for IS NOT NULL` before doing
+   anything else, so a second answerer gets HTTP 409 and leaves nothing behind.
+   Covered by the concurrency tests in
+   `apps/web/src/app/api/workers/[id]/respond/route.test.ts`.
 4. **An answer after reassignment is accepted.** `/api/tasks/[id]/reassign` fails
    active workers with `error: 'Task was reassigned'` but does not clear
    `waitingFor`, so the banner still renders and `/respond` still accepts —

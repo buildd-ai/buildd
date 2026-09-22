@@ -172,6 +172,16 @@ export function isPrLegalForMissionTask(args: {
  * adoption, retarget detection) must skip a task this returns `true` for —
  * its correct base is the recorded predecessor branch, not the mission's
  * integration branch, and forcing the latter would break the stack.
+ *
+ * A genuine stacked predecessor is a task branch (`buildd/...`), never a
+ * `mission/...` ref: that shape is reserved for integration branches, this
+ * mission's own or another's, plus the worker-scoped emergency-diversion
+ * branches the runner's checkout guard cuts (`mission/<slug>-w<workerId8>`,
+ * PR #2521) when it steers away from checking out directly onto the shared
+ * mission branch. Any of those landing in `context.baseBranch` — a stale
+ * value copied forward by a retry/resume path — must not be mistaken for a
+ * stacked declaration, or `resolveTaskPrBase` hands it back unenforced as a
+ * PR base instead of routing to the real integration branch.
  */
 export function isStackedPhaseBase(args: {
   contextBaseBranch?: string | null;
@@ -182,7 +192,7 @@ export function isStackedPhaseBase(args: {
   if (!integrationBase) return false;
   const base = args.contextBaseBranch?.trim();
   if (!base) return false;
-  if (base === integrationBase) return false;
+  if (looksLikeMissionIntegrationBranch(base)) return false;
   if (base === args.head) return false;
   return true;
 }

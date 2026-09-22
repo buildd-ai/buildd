@@ -16,10 +16,13 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 let queryCallCount = 0;
 let mockMessages: any[] = [];
+/** Every options object handed to the SDK, so resume wiring is assertable. */
+const queryOptionCalls: any[] = [];
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
     queryCallCount++;
+    queryOptionCalls.push(opts?.options ?? {});
     const msgs = [...mockMessages];
     let idx = 0;
     return {
@@ -205,6 +208,7 @@ describe('Resume layer logging', () => {
   beforeEach(() => {
     queryCallCount = 0;
     mockMessages = [];
+    queryOptionCalls.length = 0;
     mockUpdateWorker.mockClear();
     mockSessionLog.mockClear();
   });
@@ -333,5 +337,117 @@ describe('Resume layer logging', () => {
       const workers = (manager as any).workers as Map<string, LocalWorker>;
       expect(workers.has('w-evict-2')).toBe(true);
     });
+  });
+});
+
+// ─── Answering a parked question ─────────────────────────────────────────────
+//
+// A worker parked on AskUserQuestion is a HEALTHY session. Answering it must
+// resume THAT session — same transcript, same worktree — not discard it for a
+// cold continuation. The runner reaches that through the same sendMessage path
+// a steering message uses; these assert the wiring and the session id, never
+// generated text. See docs/specs/answered-question-resume.md.
+describe('answering a parked question resumes the same session', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  afterEach(() => {
+    manager?.destroy();
+  });
+
+  beforeEach(() => {
+    queryCallCount = 0;
+    mockMessages = [];
+    queryOptionCalls.length = 0;
+    mockUpdateWorker.mockClear();
+    mockSessionLog.mockClear();
+  });
+
+  /** A worker parked on a question: status 'waiting', no live session. */
+  function parked(overrides?: Partial<LocalWorker>) {
+    return makeWorker({
+      status: 'waiting',
+      sessionId: 'sess-parked-1',
+      waitingFor: { type: 'question', prompt: 'Which database?' },
+      ...overrides,
+    } as Partial<LocalWorker>);
+  }
+
+  test('resumes by the parked session id rather than starting a fresh session', async () => {
+    manager = new WorkerManager(makeConfig());
+    injectWorker(manager, parked());
+
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-parked-1' },
+      { type: 'result', subtype: 'success', session_id: 'sess-parked-1' },
+    ];
+
+    await manager.sendMessage('w-log-1', 'Postgres');
+    await new Promise(r => setTimeout(r, 200));
+
+    const events = getSessionLogCalls().map(l => l.event);
+    expect(events).toContain('resume_requested');
+    expect(events).toContain('resume_layer1_attempt');
+    expect(events).not.toContain('resume_layer1_skipped');
+
+    expect(queryOptionCalls.length).toBeGreaterThan(0);
+    expect(queryOptionCalls[0].resume).toBe('sess-parked-1');
+  });
+
+  // Regression: the CLI rejects --session-id alongside --resume unless
+  // --fork-session is set, which turned every steering message on a resumed
+  // worker into an exit-1 crash. The answer path must reach the SDK through the
+  // same corrected wiring and add no invocation of its own.
+  test('never combines a session id with a resume id', async () => {
+    manager = new WorkerManager(makeConfig());
+    injectWorker(manager, parked());
+
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-parked-1' },
+      { type: 'result', subtype: 'success', session_id: 'sess-parked-1' },
+    ];
+
+    await manager.sendMessage('w-log-1', 'Postgres');
+    await new Promise(r => setTimeout(r, 200));
+
+    for (const options of queryOptionCalls) {
+      if (options.resume) expect(options.sessionId).toBeUndefined();
+    }
+  });
+
+  test('reactivates the worker server-side instead of leaving it parked', async () => {
+    manager = new WorkerManager(makeConfig());
+    injectWorker(manager, parked());
+
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-parked-1' },
+      { type: 'result', subtype: 'success', session_id: 'sess-parked-1' },
+    ];
+
+    await manager.sendMessage('w-log-1', 'Postgres');
+    await new Promise(r => setTimeout(r, 200));
+
+    const reactivating = mockUpdateWorker.mock.calls.find(
+      (call: any[]) => call[1]?.reactivate === true,
+    );
+    expect(reactivating).toBeDefined();
+    expect((reactivating as any[])[1].status).toBe('running');
+  });
+
+  // Codex parks and resumes the same way, by thread id against the stable
+  // per-worker CODEX_HOME — same owner-visible behaviour, different id.
+  test('a parked Codex worker resumes by thread id, not by session id', async () => {
+    manager = new WorkerManager(makeConfig());
+    injectWorker(manager, parked({
+      taskBackend: 'codex',
+      codexThreadId: 'thread-parked-1',
+    } as Partial<LocalWorker>));
+
+    await manager.sendMessage('w-log-1', 'Postgres');
+    await new Promise(r => setTimeout(r, 200));
+
+    const l1 = getSessionLogCalls().find(l => l.event === 'resume_layer1_attempt');
+    expect(l1?.detail).toContain('codexThreadId');
+    expect(l1?.detail).toContain('thread-parked-1');
+    expect(l1?.detail).not.toContain('sess-parked-1');
   });
 });

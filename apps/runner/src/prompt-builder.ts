@@ -3,6 +3,7 @@ import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
+import { HEARTBEAT_PROTOCOL_BLOCK } from '@buildd/shared';
 import {
   buildMemoryBlock,
   type MemoryBlockResult,
@@ -425,6 +426,19 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     );
   }
 
+  // Handoff requirement: check if downstream tasks depend on this one
+  const taskContext = task.context as Record<string, unknown> | undefined;
+  const hasDependents = ((taskContext?.dependentCount as number | undefined) ?? 0) > 0;
+
+  if (hasDependents) {
+    const dependentCount = taskContext?.dependentCount as number;
+    promptParts.push(
+      '## Handoff Requirement\n' +
+      `**${dependentCount} task(s) depend on this one.** Before completing, you must include a \`handoff\` object in your structured output with at minimum a \`delivered\` field (one-line summary of what you delivered). Example: \`{ handoff: { delivered: "Implemented X feature that Y tasks will use" } }\`\n` +
+      'Your handoff fields: `delivered` (required), `interfaces` (function/type names), `decisions` (array of {decision, why}), `gotchas` (pitfalls for consumers), `leftUndone` (explicitly named incomplete work).'
+    );
+  }
+
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
   // A planning task whose plan is a PROPOSAL SLOT rather than its deliverable
@@ -472,6 +486,17 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       'Use it only when the task description asks you to propose follow-up work. When you do, each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
       'Nothing in the plan is dispatched automatically — a human approves or rejects it. Do NOT call create_task to file the work yourself.'
     );
+  }
+
+  // Heartbeat protocol — static text, unconditional on roleSlug (mission-run's
+  // dominant-role derivation can swap a heartbeat task's role away from
+  // 'organizer', and a workspace may run an overridden organizer role config
+  // that never carries this text) so a heartbeat gets it regardless of which
+  // role, if any, got attached at claim time. See heartbeat-protocol.ts for why
+  // this is not rendered into task.description any more.
+  const isHeartbeatTask = (task.context as { heartbeat?: boolean } | undefined)?.heartbeat === true;
+  if (isHeartbeatTask) {
+    promptParts.push(HEARTBEAT_PROTOCOL_BLOCK);
   }
 
   // Inject aggregation context: embed child task results directly so the agent

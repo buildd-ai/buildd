@@ -55,6 +55,7 @@ import {
   attachTaskAreaScope,
   predictTaskAreas,
 } from './context-injection';
+import { attachMissionHandoff } from './mission-handoff-injection';
 import {
   attachClaudeCredentials,
   attachCodexCredentials,
@@ -1805,11 +1806,48 @@ export async function POST(req: NextRequest) {
   // @buildd/core/task-area-prediction.
   const taskAreaPredictions = await predictTaskAreas(filteredTasks);
 
+  // Count dependents for each claimed task (for handoff announcement). This
+  // scans OTHER tasks' dependsOn arrays for a claimed id, not the claimed
+  // tasks' own dependsOn — a dependent can never be claimed in the same batch
+  // as its still-in-progress upstream (see dependenciesSatisfied() in
+  // ./deps-gate), so restricting the scan to claimedTaskIds would never match.
+  const claimedTaskIds = claimedWorkers.map(cw => cw.taskId);
+  if (claimedTaskIds.length > 0) {
+    const dependentCounts = new Map<string, number>();
+    const dependentRows = await db.execute(sql`
+      SELECT dep_id AS "taskId", count(*)::integer AS "dependentCount"
+      FROM ${tasks}, jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
+      WHERE dep_id = ANY(${claimedTaskIds})
+        AND ${tasks.status} != 'cancelled'
+      GROUP BY dep_id
+    `);
+
+    for (const row of dependentRows.rows as any[]) {
+      dependentCounts.set(row.taskId, Number(row.dependentCount) ?? 0);
+    }
+
+    for (const cw of claimedWorkers) {
+      const count = dependentCounts.get(cw.taskId) ?? 0;
+      if (count > 0) {
+        // The runner reads task.context (claimedWorker.task.context), not a
+        // top-level field on the worker — see prompt-builder.ts's taskContext.
+        const taskObj = cw.task as any;
+        if (taskObj) {
+          taskObj.context = taskObj.context ?? {};
+          taskObj.context.dependentCount = count;
+        }
+      }
+    }
+  }
+
   // Prompt-context injection. ORDER IS THE CONTRACT: these five append to the
   // same resolvedContextProviders rail and the runner concatenates it in order.
   // See ./context-injection.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
-  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions);
+  // Track sources rendered by handoff for knowledge context dedupe
+  const handoffExcludedSources = new Set<string>();
+  await attachMissionHandoff(claimedWorkers, filteredTasks, handoffExcludedSources);
+  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions, handoffExcludedSources);
   await attachSubjectPriorWork(claimedWorkers, filteredTasks);
   await attachDiscrepancyContext(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);

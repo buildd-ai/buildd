@@ -5,6 +5,11 @@ import { WORKER_STALE_REAP_MS } from '@buildd/shared';
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockTasksFindFirst = mock(() => null as any);
 const mockTasksFindMany = mock(() => [] as any[]);
+// cleanupUnresumedAnswers claims its worker with a returning CAS while every
+// other caller just awaits the update, so its own beforeEach installs a
+// `where` that is both thenable and exposes `.returning()`.
+let workersUpdateReturning: any[] = [{ id: 'worker-1' }];
+const capturedWorkerUpdates: any[] = [];
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
@@ -78,6 +83,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -99,7 +105,7 @@ mock.module('@/lib/worker-deliverables', () => ({
   getLatestWorkerArtifactWithStructuredOutput: mockGetLatestWorkerArtifactWithStructuredOutput,
 }));
 
-import { cleanupStaleWorkers, cleanupStuckWaitingInput } from './stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from './stale-workers';
 
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
@@ -2225,5 +2231,202 @@ describe('cleanupStuckWaitingInput — account scoping', () => {
     expect(workerUpdateIds).toEqual(['w-b']);
     expect(result.failedWorkers).toBe(1);
     expect(result.retriedTasks).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanupUnresumedAnswers — an answer queued for a parked session that never
+// got acknowledged must degrade to the cold continuation it would have been,
+// carrying the human's text forward. See docs/specs/answered-question-resume.md.
+// ---------------------------------------------------------------------------
+describe('cleanupUnresumedAnswers', () => {
+  const PAST = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const FUTURE = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+  function parkedWithQueuedAnswer(deliveryOverrides: Record<string, unknown> = {}) {
+    return {
+      id: 'worker-1',
+      taskId: 'task-1',
+      accountId: 'account-1',
+      workspaceId: 'workspace-1',
+      branch: 'buildd/task-1-thing',
+      milestones: [{ label: 'Read the route', timestamp: 1 }],
+      pendingInstructions: 'Use Postgres',
+      instructionHistory: [{ type: 'instruction', message: 'Use Postgres', timestamp: 1, deliveryState: 'pending' }],
+      task: {
+        id: 'task-1',
+        title: 'Pick a database',
+        description: 'Choose and wire the store',
+        missionId: 'mission-1',
+        taskClass: 'work',
+        context: {
+          answerDelivery: {
+            path: 'resume',
+            reasonCode: 'resume_eligible',
+            reason: 'eligible',
+            workerId: 'worker-1',
+            decidedAt: PAST,
+            ackDeadlineAt: PAST,
+            question: 'Which database?',
+            ...deliveryOverrides,
+          },
+        },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksInsert.mockReset();
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
+    } as any);
+    capturedInsertValues = null;
+    capturedWorkerUpdates.length = 0;
+    workersUpdateReturning = [{ id: 'worker-1' }];
+    capturedAccountsSet = null;
+    mockAccountsUpdate.mockReset();
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    } as any);
+    mockWorkersUpdate.mockReset();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedWorkerUpdates.push(vals);
+        return {
+          where: mock(() => Object.assign(Promise.resolve(), {
+            returning: () => Promise.resolve(workersUpdateReturning),
+          })),
+        };
+      }),
+    } as any);
+  });
+
+  // AC-AQR-16
+  it('creates a continuation carrying the queued answer and supersedes the worker', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(1);
+    // The worker is superseded and its queue cleared, so a late runner cannot
+    // inject the answer into a row that no longer owns the task.
+    const supersede = capturedWorkerUpdates[0];
+    expect(supersede.status).toBe('superseded');
+    expect(supersede.pendingInstructions).toBeNull();
+
+    expect(mockTasksInsert).toHaveBeenCalled();
+  });
+
+  it('records resume_not_acknowledged as the reason on the continuation', async () => {
+    const insertedValues: any[] = [];
+    mockTasksInsert.mockReturnValue({
+      values: mock((v: any) => { insertedValues.push(v); return { returning: mock(() => [{ id: 'new-task' }]) }; }),
+    } as any);
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    await cleanupUnresumedAnswers('account-1');
+
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0].title).toBe('Continue: Pick a database');
+    expect(insertedValues[0].context.userInput).toBe('Use Postgres');
+    expect(insertedValues[0].context.answerDelivery.reasonCode).toBe('resume_not_acknowledged');
+    expect(insertedValues[0].context.answerDelivery.path).toBe('cold_continuation');
+    // The deadline is gone — there is nothing left to wait for.
+    expect(insertedValues[0].context.answerDelivery.ackDeadlineAt).toBeUndefined();
+    // The question was cleared from waitingFor at answer time; the delivery
+    // record kept a copy precisely so the description can still be built.
+    expect(insertedValues[0].description).toContain('Which database?');
+  });
+
+  it('posts one warning note naming the failure to deliver', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    await cleanupUnresumedAnswers('account-1');
+
+    expect(capturedInsertValues?.type).toBe('warning');
+    expect(capturedInsertValues?.taskId).toBe('task-1');
+    expect(capturedInsertValues?.body).toContain('never acknowledged');
+  });
+
+  it('leaves an answer alone before its deadline', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer({ ackDeadlineAt: FUTURE })] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(capturedWorkerUpdates).toHaveLength(0);
+  });
+
+  // AC-AQR-17 — one pass flips the recorded path, so a second pass skips it.
+  it('does not degrade an answer it has already degraded', async () => {
+    mockWorkersFindMany.mockReturnValue([
+      parkedWithQueuedAnswer({ path: 'cold_continuation', reasonCode: 'resume_not_acknowledged' }),
+    ] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+  });
+
+  // AC-AQR-18 — an acknowledged answer clears the queue; the SQL predicate
+  // already excludes it, and the JS guard agrees.
+  it('ignores a worker with nothing queued', async () => {
+    const worker = parkedWithQueuedAnswer();
+    worker.pendingInstructions = null as any;
+    mockWorkersFindMany.mockReturnValue([worker] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+  });
+
+  it('ignores a queued /instruct steer that this route never decided about', async () => {
+    const worker = parkedWithQueuedAnswer();
+    (worker.task.context as any).answerDelivery = undefined;
+    mockWorkersFindMany.mockReturnValue([worker] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+  });
+
+  it('ignores a delivery record that decided about a different worker', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer({ workerId: 'some-other-worker' })] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+  });
+
+  // The runner can drain the queue in the exact window between the read and the
+  // write. It wins; the sweep does nothing.
+  it('does nothing when the claiming compare-and-swap matches no row', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+    workersUpdateReturning = [];
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
+  it('releases one OAuth seat per degraded worker', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    await cleanupUnresumedAnswers('account-1');
+
+    expect(capturedAccountsSet).not.toBeNull();
+  });
+
+  it('touches no account when nothing was degraded', async () => {
+    mockWorkersFindMany.mockReturnValue([] as any);
+
+    await cleanupUnresumedAnswers('account-1');
+
+    expect(capturedAccountsSet).toBeNull();
   });
 });

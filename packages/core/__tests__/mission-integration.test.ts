@@ -265,6 +265,29 @@ describe('isStackedPhaseBase', () => {
       isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: null }),
     ).toBe(false);
   });
+
+  it('is false for a stray worker-scoped mission branch — not a genuine predecessor', () => {
+    // The runner's checkout guard (PR #2521) diverts a worker onto
+    // `mission/<slug>-w<workerId8>` instead of the shared integration branch.
+    // If that value gets copied into context.baseBranch by a retry/resume
+    // path, it must not be accepted as a stacked-phase predecessor — that was
+    // the mechanism behind a PR landing on a dead branch and stranding
+    // reviewed, CI-green commits.
+    const strayWorkerBranch = 'mission/checkout-arc-w1a2b3c4';
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: strayWorkerBranch, head: HEAD, mission: OPTED_IN }),
+    ).toBe(false);
+  });
+
+  it('is false for another mission’s integration branch used as context.baseBranch', () => {
+    expect(
+      isStackedPhaseBase({
+        contextBaseBranch: 'mission/other-thing-99887766',
+        head: HEAD,
+        mission: OPTED_IN,
+      }),
+    ).toBe(false);
+  });
 });
 
 // ── resolveTaskPrBase: the one answer both the prompt and the guard read ─────
@@ -372,6 +395,30 @@ describe('resolveTaskPrBase', () => {
     });
     expect(got.base).toBe('dev');
     expect(got.source).toBe('workspace');
+  });
+
+  it('re-enforces the integration branch when context.baseBranch is a stray worker-scoped branch', () => {
+    // Regression for the PR #2565 incident: a retry/resume path had copied a
+    // worker-scoped emergency-diversion branch into context.baseBranch, and
+    // isStackedPhaseBase's old exact-match check let it through unenforced as
+    // the PR base. It must instead be rejected as a stacked declaration and
+    // fall through to the mission's real integration branch, enforced.
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: {
+        title: 'Do the thing',
+        taskClass: 'work',
+        context: { baseBranch: 'mission/checkout-arc-w1a2b3c4' },
+      },
+      head: 'buildd/abc12345-do-the-thing',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got).toEqual({
+      base: OPTED_IN.workingBranch,
+      source: 'mission_integration',
+      integrationBase: OPTED_IN.workingBranch,
+      enforced: true,
+    });
   });
 
   // ── the route out, when the integration branch no longer exists ───────────
