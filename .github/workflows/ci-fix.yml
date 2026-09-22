@@ -9,7 +9,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  actions: read
+  actions: write
   id-token: write
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
             echo "is_infrastructure_error=true" >> $GITHUB_OUTPUT
             echo "::warning::Infrastructure error detected: test machine unreachable via Tailscale — will auto-retry instead of attempting code fix"
             # Find which job failed (integration is the only one with Tailscale dependency)
-            FAILED_JOB=$(gh run view $RUN_ID --json jobs -q '.jobs[] | select(.conclusion=="FAILURE") | .name' | head -1)
+            FAILED_JOB=$(gh run view $RUN_ID --json jobs -q '.jobs[] | select(.conclusion=="failure") | .name' | head -1)
             echo "failed_job=$FAILED_JOB" >> $GITHUB_OUTPUT
             echo "Failed job: $FAILED_JOB"
           else
@@ -52,9 +52,15 @@ jobs:
   infra-auto-retry:
     runs-on: ubuntu-latest
     needs: detect-error-type
+    # run_attempt is the attempt number of the Build & Test run that just completed.
+    # Each successful `gh run rerun` bumps it and fires a fresh workflow_run event here,
+    # so this is the only thing capping total retries across separate CI-fix invocations
+    # (the loop below only bounds retries of the rerun API call itself). Once an outage
+    # has survived this many full attempts, infra-retry-exhausted alerts a human instead.
     if: |
       needs.detect-error-type.outputs.is_infrastructure_error == 'true' &&
       github.event.workflow_run.head_branch == 'dev' &&
+      github.event.workflow_run.run_attempt < 3 &&
       !contains(github.event.workflow_run.head_commit.message, 'skip-retry:')
     steps:
       - name: Auto-rerun failed jobs with backoff
@@ -86,6 +92,31 @@ jobs:
               exit 1
             fi
           done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  infra-retry-exhausted:
+    runs-on: ubuntu-latest
+    needs: detect-error-type
+    if: |
+      needs.detect-error-type.outputs.is_infrastructure_error == 'true' &&
+      github.event.workflow_run.head_branch == 'dev' &&
+      github.event.workflow_run.run_attempt >= 3
+    steps:
+      - name: Alert a human — infra retries exhausted
+        run: |
+          RUN_ID=${{ needs.detect-error-type.outputs.run_id }}
+          FAILED_JOB="${{ needs.detect-error-type.outputs.failed_job }}"
+          echo "::warning::Infrastructure error persisted for ${{ github.event.workflow_run.run_attempt }} attempts on run $RUN_ID (job: $FAILED_JOB) — giving up on auto-retry."
+
+          TITLE="CI infra outage: $FAILED_JOB has failed ${{ github.event.workflow_run.run_attempt }}x on dev (run $RUN_ID)"
+          EXISTING=$(gh issue list --state open --search "in:title \"$FAILED_JOB has failed\"" --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Still failing after another auto-retry attempt. Run: https://github.com/${{ github.repository }}/actions/runs/$RUN_ID"
+          else
+            gh issue create --title "$TITLE" \
+              --body "Auto-retry gave up after ${{ github.event.workflow_run.run_attempt }} attempts of the same run — this needs a human. Run: https://github.com/${{ github.repository }}/actions/runs/$RUN_ID"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
