@@ -39,6 +39,7 @@ function comp(over: Partial<CompositionRow> & { taskId: string; ts: Date; arm: '
     workerId: `w-${over.taskId}-${over.buildIndex ?? 0}`,
     buildIndex: 0,
     policyVersion: V,
+    propensity: 1,
     backend: 'claude',
     taskMatchDerivedBy: 'no_match',
     promptBytes: 10_000,
