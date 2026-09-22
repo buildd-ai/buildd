@@ -24,7 +24,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
-import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
+import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
 import { eq, sql } from "drizzle-orm";
 import {
   appendPathManifest,
@@ -517,6 +517,20 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           if (hasDeadlock) {
             result.deadlock = true;
             result.cycle = waiterResult.cycle;
+            // Post a warning for human resolution (best-effort)
+            if (mcpTask.missionId) {
+              try {
+                await db.insert(missionNotes).values({
+                  missionId: mcpTask.missionId,
+                  taskId: taskId,
+                  authorType: 'system',
+                  type: 'warning',
+                  title: 'Deadlock detected in path claims',
+                  body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
+                  status: 'open',
+                });
+              } catch { /* non-fatal */ }
+            }
           }
 
           return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };

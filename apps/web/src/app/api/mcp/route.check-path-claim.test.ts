@@ -311,4 +311,21 @@ describe('check_path_claim MCP handler', () => {
     expect(result.message).toContain('circular wait cycle');
     expect(result.message).toContain('cancel this task');
   });
+
+  it('posts mission note on deadlock with missionId', async () => {
+    mockCheckPathClaimConflict.mockResolvedValue({
+      blockingTaskId: SIBLING_ID,
+      blockingPath: 'src/x.ts',
+    });
+    const cycle = [TASK_ID, SIBLING_ID, TASK_ID];
+    mockRegisterWaiter.mockResolvedValue({ deadlock: true, cycle });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'B', missionId: MISSION_ID });
+
+    const body: any = await callTool({ paths: ['src/x.ts'] });
+    const result = JSON.parse(body.result.content[0].text);
+    expect(result.deadlock).toBe(true);
+    expect(mockInsert).toHaveBeenCalled();
+  });
 });
