@@ -758,6 +758,36 @@ describe('create_task — kind/complexity routing inputs', () => {
     expect(body.complexity).toBeUndefined();
   });
 
+  it('surfaces the routing preview line when the API echoes one back', async () => {
+    mockApi.mockResolvedValue({
+      id: 'task-new',
+      title: 'Test Task',
+      priority: 5,
+      status: 'pending',
+      routing: { tier: 'standard', model: 'claude-sonnet-5', reason: 'no kind/complexity given — defaulted to engineering/normal → standard (Sonnet).' },
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Test Task', description: 'd' },
+      createMockContext(),
+    );
+
+    expect(result.content[0].text).toContain('Model routing: no kind/complexity given');
+  });
+
+  it('omits the routing line when the API returns none', async () => {
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Test Task', description: 'd' },
+      createMockContext(),
+    );
+
+    expect(result.content[0].text).not.toContain('Model routing:');
+  });
+
   it('documents kind and complexity in the create_task params description', () => {
     const description = buildParamsDescription(['create_task']);
     // `kind` deliberately carries NO `?` marker (mission-legibility Rule K2-12).
