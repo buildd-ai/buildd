@@ -2429,4 +2429,27 @@ describe('cleanupUnresumedAnswers', () => {
 
     expect(capturedAccountsSet).toBeNull();
   });
+
+  // AC-AQR-19 — no transactions on neon-http: the worker is superseded and the
+  // continuation is inserted as two separate writes. If the insert throws, the
+  // worker must not be left permanently superseded with the answer discarded —
+  // it has to go back to waiting_input so a later sweep can still recover it.
+  it('restores the worker to waiting_input when the continuation insert fails', async () => {
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => Promise.reject(new Error('insert failed'))) })),
+    } as any);
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    // First write superseded the worker to claim the answer; second write is
+    // the compensation once the insert threw.
+    expect(capturedWorkerUpdates).toHaveLength(2);
+    const restore = capturedWorkerUpdates[1];
+    expect(restore.status).toBe('waiting_input');
+    expect(restore.pendingInstructions).toBe('Use Postgres');
+    // No account seat is released for a worker that was never actually degraded.
+    expect(capturedAccountsSet).toBeNull();
+  });
 });

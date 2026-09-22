@@ -999,6 +999,7 @@ export async function cleanupUnresumedAnswers(
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, pendingInstructions: true, instructionHistory: true,
+      completedAt: true,
     },
     with: { task: true },
   });
@@ -1058,21 +1059,39 @@ export async function cleanupUnresumedAnswers(
     delete coldDelivery.ackDeadlineAt;
 
     if (task?.id) {
-      await db
-        .insert(tasks)
-        .values(buildContinuationTaskValues({
-          task: task as ContinuationParentTask,
-          workspaceId: worker.workspaceId,
-          workerId: worker.id,
-          branch: worker.branch,
-          milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
-          // The question was cleared from `waitingFor` when the answer was
-          // claimed; the delivery record kept a copy precisely for this.
-          question: delivery.question || 'A question the agent asked (not retained)',
-          answer,
-          delivery: coldDelivery,
-        }))
-        .returning({ id: tasks.id });
+      // No transactions on neon-http: compensate by hand so a failed insert
+      // does not leave the worker permanently superseded with the answer
+      // discarded and no continuation task to recover it — the same hazard
+      // `respondByContinuation` guards against for the live-answer path.
+      try {
+        await db
+          .insert(tasks)
+          .values(buildContinuationTaskValues({
+            task: task as ContinuationParentTask,
+            workspaceId: worker.workspaceId,
+            workerId: worker.id,
+            branch: worker.branch,
+            milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
+            // The question was cleared from `waitingFor` when the answer was
+            // claimed; the delivery record kept a copy precisely for this.
+            question: delivery.question || 'A question the agent asked (not retained)',
+            answer,
+            delivery: coldDelivery,
+          }))
+          .returning({ id: tasks.id });
+      } catch (err) {
+        console.error(`[Worker ${worker.id}] Continuation task insert failed, restoring answer:`, err);
+        await db
+          .update(workers)
+          .set({
+            status: 'waiting_input',
+            pendingInstructions: answer,
+            completedAt: worker.completedAt ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(workers.id, worker.id));
+        continue;
+      }
 
       await db
         .update(tasks)
