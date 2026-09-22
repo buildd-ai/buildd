@@ -466,11 +466,20 @@ const defaultRunCommand: CommandRunner = async (command, opts) => {
   }
 };
 
-/** One-line diagnosis from a failed command's streams, trimmed for the report. */
+/**
+ * One-line diagnosis from a failed command's streams, trimmed for the report.
+ *
+ * Takes the FIRST line, not the last. Checkers report content errors as they're
+ * found and only print a trailing summary line afterwards (e.g.
+ * `scripts/check-specs.ts --check` lists every `✖` error, then — only in
+ * `--check` mode, only if the index is also stale — appends a stale-index
+ * notice, then a final `N specs · M error(s)` tally). Taking the last line
+ * surfaced that trailer instead of the actual failure on every real block.
+ */
 function failMessage(out: CommandOutcome): string {
   const stream = (out.stderr || out.stdout || '').trim();
-  const lastLine = stream.split('\n').filter(Boolean).pop() ?? '';
-  const detail = lastLine.slice(0, 200);
+  const firstLine = stream.split('\n').filter(Boolean)[0] ?? '';
+  const detail = firstLine.slice(0, 200);
   return detail ? `exit ${out.code}: ${detail}` : `exit ${out.code}`;
 }
 
