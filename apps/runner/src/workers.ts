@@ -93,7 +93,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -3166,6 +3166,7 @@ export class WorkerManager {
         systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
           project: cbmActivation.cbmProject,
           sharedBaseIndex: cbmActivation.sharedCache,
+          bootstrapState: cbmBootstrapGuidanceState(worker.cbmBootstrapResult),
         });
       }
 
@@ -3511,6 +3512,7 @@ export class WorkerManager {
                 dialect: 'codex',
                 project: cbmActivation.cbmProject,
                 sharedBaseIndex: cbmActivation.sharedCache,
+                bootstrapState: cbmBootstrapGuidanceState(worker.cbmBootstrapResult),
               })
             : undefined;
 

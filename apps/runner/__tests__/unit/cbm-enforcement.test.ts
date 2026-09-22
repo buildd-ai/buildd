@@ -12,6 +12,7 @@ import {
   buildCbmGuidanceBody,
   buildCbmMcpEntry,
   buildCbmSystemPromptBlock,
+  cbmBootstrapGuidanceState,
   ensureCbmRuntimeDir,
   isCbmCodexEnabled,
   resolveCbmOutcome,
@@ -289,6 +290,72 @@ describe('buildCbmGuidanceBody (shared by both backends)', () => {
     const block = buildCbmSystemPromptBlock({ project: 'proj-x' });
     expect(block.startsWith('## Codebase graph (codebase-memory)\n')).toBe(true);
     expect(block).toContain(buildCbmGuidanceBody({ dialect: 'claude', project: 'proj-x' }));
+  });
+
+  test('defaults to claiming warmth when bootstrapState is omitted (backward compatible)', () => {
+    const body = buildCbmGuidanceBody({ dialect: 'claude' });
+    expect(body).toContain('the graph is warm before your first turn');
+  });
+});
+
+describe('buildCbmGuidanceBody — truthful bootstrap state', () => {
+  // A worker whose index build was handed off to the background, or that failed
+  // outright, must never be told the graph is warm — that assertion was false
+  // for 44.5% of indexing attempts (measured over 23 days) and every one of
+  // those sessions got told the opposite of what actually happened.
+  test('a backgrounded build is NOT reported as warm, in either dialect', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      const body = buildCbmGuidanceBody({ dialect, bootstrapState: 'building' });
+      expect(body).not.toContain('the graph is warm before your first turn');
+      expect(body).not.toContain('already indexed');
+      expect(body).toMatch(/background|not ready|still (being )?indexing/i);
+    }
+  });
+
+  test('a failed build is NOT reported as warm, in either dialect', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      const body = buildCbmGuidanceBody({ dialect, bootstrapState: 'unavailable' });
+      expect(body).not.toContain('the graph is warm before your first turn');
+      expect(body).not.toContain('already indexed');
+      expect(body).toMatch(/failed|not (be )?available|unavailable/i);
+    }
+  });
+
+  test('the ordered navigation procedure and the not-indexed fallback still appear in every state', () => {
+    // The opening honesty changes; the procedure teaching the agent how to use
+    // the graph (and what to do when a query reports "not indexed") must not be
+    // dropped just because the opening got more cautious.
+    for (const bootstrapState of ['warm', 'building', 'unavailable'] as const) {
+      const body = buildCbmGuidanceBody({ dialect: 'claude', bootstrapState });
+      expect(body).toContain('make a graph call your FIRST navigation step');
+      expect(body).toContain('If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.');
+    }
+  });
+
+  test('warm stays warm regardless of dialect', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      const body = buildCbmGuidanceBody({ dialect, bootstrapState: 'warm' });
+      expect(body).toMatch(/already indexed|warm before your first turn/);
+    }
+  });
+});
+
+describe('cbmBootstrapGuidanceState — maps the persisted outcome to what the agent is told', () => {
+  test('ok and skipped_warm are warm', () => {
+    expect(cbmBootstrapGuidanceState('ok')).toBe('warm');
+    expect(cbmBootstrapGuidanceState('skipped_warm')).toBe('warm');
+  });
+
+  test('backgrounded is building', () => {
+    expect(cbmBootstrapGuidanceState('backgrounded')).toBe('building');
+  });
+
+  test('failed is unavailable', () => {
+    expect(cbmBootstrapGuidanceState('failed')).toBe('unavailable');
+  });
+
+  test('an unset outcome defaults to warm — the pre-existing shared-cache-hit call site never set it explicitly', () => {
+    expect(cbmBootstrapGuidanceState(undefined)).toBe('warm');
   });
 });
 

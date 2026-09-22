@@ -190,9 +190,10 @@ mock.module('../../src/cbm-enforcement', () => ({
 // indexer. A stub that enumerates exports instead fails the WHOLE file at parse
 // time the moment the module gains one ("Export named 'x' not found in module"),
 // which is a CI break in a file that has nothing to do with the new export.
+let bootstrapOutcome: any = { ok: true, durationMs: 1 };
 mock.module('../../src/cbm-bootstrap.js', () => ({
   ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
+  runCbmBootstrap: async () => bootstrapOutcome,
 }));
 
 // Drives the mount-unavailable branch, which is what sets cbmMountBlocked.
@@ -262,6 +263,7 @@ describe('assembled system prompt: CBM steering block', () => {
     cbmActivation = { enforced: false };
     bwrapWrap = false;
     bwrapThrows = false;
+    bootstrapOutcome = { ok: true, durationMs: 1 };
   });
 
   afterEach(() => {
@@ -326,5 +328,61 @@ describe('assembled system prompt: CBM steering block', () => {
     manager = new WorkerManager(makeConfig());
     const append = await runTask(manager, 'w-cbm-4');
     expect(countOccurrences(append, HEADING)).toBe(0);
+  });
+
+  // These three pin the actual defect: the guidance text used to hard-code
+  // "the graph is warm before your first turn" regardless of what the bootstrap
+  // that ran a moment earlier actually reported. The server was appended
+  // AFTER the bootstrap resolved (see the source-shape test above), but nothing
+  // read its outcome.
+  test('a backgrounded build is reported as building, not warm', async () => {
+    cbmActivation = {
+      enforced: true,
+      cbmBinaryPath: '/usr/local/bin/cbm',
+      cbmCacheDir: '/tmp/cbm-cache',
+      cbmRuntimeDir: '/tmp/cbm-runtime',
+      sharedCache: false,
+    };
+    bootstrapOutcome = { ok: false, backgrounded: true, reason: 'still indexing after 20000ms — continuing in the background' };
+    manager = new WorkerManager(makeConfig());
+    const append = await runTask(manager, 'w-cbm-5');
+
+    expect(countOccurrences(append, HEADING)).toBe(1);
+    expect(append).not.toContain('the graph is warm before your first turn');
+    expect(append).not.toContain('This worktree is already indexed');
+    expect(append).toMatch(/background/i);
+  });
+
+  test('a failed build is reported as unavailable, not warm', async () => {
+    cbmActivation = {
+      enforced: true,
+      cbmBinaryPath: '/usr/local/bin/cbm',
+      cbmCacheDir: '/tmp/cbm-cache',
+      cbmRuntimeDir: '/tmp/cbm-runtime',
+      sharedCache: false,
+    };
+    bootstrapOutcome = { ok: false, reason: 'process exited with code 1' };
+    manager = new WorkerManager(makeConfig());
+    const append = await runTask(manager, 'w-cbm-6');
+
+    expect(countOccurrences(append, HEADING)).toBe(1);
+    expect(append).not.toContain('the graph is warm before your first turn');
+    expect(append).not.toContain('This worktree is already indexed');
+    expect(append).toMatch(/failed/i);
+  });
+
+  test('a build that finished in time is still reported as warm', async () => {
+    cbmActivation = {
+      enforced: true,
+      cbmBinaryPath: '/usr/local/bin/cbm',
+      cbmCacheDir: '/tmp/cbm-cache',
+      cbmRuntimeDir: '/tmp/cbm-runtime',
+      sharedCache: false,
+    };
+    bootstrapOutcome = { ok: true, durationMs: 500 };
+    manager = new WorkerManager(makeConfig());
+    const append = await runTask(manager, 'w-cbm-7');
+
+    expect(append).toContain('This worktree is already indexed');
   });
 });
