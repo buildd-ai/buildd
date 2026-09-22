@@ -848,6 +848,54 @@ function openSeedLogFd(): number | null {
   }
 }
 
+/** One structured seed-run outcome, as recorded in and read back from `seed.log`. */
+export interface SeedOutcomeEntry {
+  repoPath: string;
+  baseRef: string | null;
+  code: number | null;
+  exitedAt: string;
+}
+
+const SEED_OUTCOME_PREFIX = 'SEED_OUTCOME ';
+
+/**
+ * Append one structured outcome line to `seed.log`, alongside the seeder's own
+ * raw stdout/stderr. Previously a run's fate was only ever a `console.warn` on
+ * failure (nothing on success) — undeterminable without a human tailing a file
+ * on a specific runner host. Never throws: an outcome we failed to record must
+ * not affect the seed itself.
+ */
+function recordSeedOutcome(entry: SeedOutcomeEntry): void {
+  try {
+    const { appendFileSync, mkdirSync } = require('fs') as typeof import('fs');
+    const { dirname } = require('path') as typeof import('path');
+    const path = cbmSeedLogPath();
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${SEED_OUTCOME_PREFIX}${JSON.stringify(entry)}\n`);
+  } catch {
+    // no log is survivable — never let observability break seeding itself
+  }
+}
+
+/**
+ * Parse every structured outcome line out of `seed.log`'s text. A malformed or
+ * foreign line (the seeder's own log noise) is skipped, not fatal — one bad
+ * line must not lose every other run's outcome. Consumed by `doctor.ts`'s
+ * `checkCbmSeedHealth`.
+ */
+export function parseSeedOutcomes(logText: string): SeedOutcomeEntry[] {
+  const out: SeedOutcomeEntry[] = [];
+  for (const line of logText.split('\n')) {
+    if (!line.startsWith(SEED_OUTCOME_PREFIX)) continue;
+    try {
+      out.push(JSON.parse(line.slice(SEED_OUTCOME_PREFIX.length)));
+    } catch {
+      // one malformed line must not lose every other run's outcome
+    }
+  }
+  return out;
+}
+
 export function spawnCbmSeedRefresh(
   repoPath: string,
   deps: {
@@ -930,6 +978,12 @@ export function spawnCbmSeedRefresh(
       // else's is the mirror-image bug: a wedged child exiting long after its
       // lease lapsed would hand the key to a second concurrent seeder.
       releaseSeedRecord(seedRefreshInFlight, key, token);
+      recordSeedOutcome({
+        repoPath,
+        baseRef: deps.baseRef ?? null,
+        code,
+        exitedAt: new Date().toISOString(),
+      });
       if (code !== 0) {
         // Same rule for the cooldown: clearing it must not clear a newer
         // caller's, or one wedged child re-opens the burst window.
