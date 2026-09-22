@@ -449,7 +449,7 @@ export async function POST(req: NextRequest) {
     // would change which error a doubly-invalid request gets back).
     if (rawKind !== undefined && !TASK_KINDS.includes(rawKind)) {
       const error = `kind must be one of: ${TASK_KINDS.join(', ')}`;
-      fireGateEventForWorkspaceRef(rawWorkspaceId, {
+      const frictionSignature = fireGateEventForWorkspaceRef(rawWorkspaceId, {
         gate: GATE_SLUGS.TASK_PARAM_VOCABULARY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -457,11 +457,11 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { param: 'kind', value: String(rawKind).slice(0, 80) },
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
     if (rawComplexity !== undefined && !TASK_COMPLEXITIES.includes(rawComplexity)) {
       const error = `complexity must be one of: ${TASK_COMPLEXITIES.join(', ')}`;
-      fireGateEventForWorkspaceRef(rawWorkspaceId, {
+      const frictionSignature = fireGateEventForWorkspaceRef(rawWorkspaceId, {
         gate: GATE_SLUGS.TASK_PARAM_VOCABULARY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -469,7 +469,7 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { param: 'complexity', value: String(rawComplexity).slice(0, 80) },
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
 
     // Prose-gate lint: advisory only. If description declares a dependency gate in prose
@@ -557,7 +557,7 @@ export async function POST(req: NextRequest) {
     if (emitsPlan && (!pathManifest || pathManifest.length === 0)) {
       const error =
         "a spec task (emitsPlan: true) must declare pathManifest naming the spec document it authors";
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.EMITS_PLAN_MANIFEST_REQUIRED,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -566,7 +566,7 @@ export async function POST(req: NextRequest) {
         missionId,
         callerOrigin: gateCaller,
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
 
     // Dedup gate for friction tasks.
@@ -996,7 +996,7 @@ export async function POST(req: NextRequest) {
       const error =
         'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
         "If this task won't produce a PR, set outputRequirement: 'none' instead.";
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.MANIFEST_REQUIRED,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -1011,7 +1011,7 @@ export async function POST(req: NextRequest) {
           manifest: pathManifest ? 'wildcard' : 'absent',
         },
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
 
     // Advisory kind gate: a mission task with no `kind` is unlabelled on every
@@ -1354,7 +1354,7 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
       const message = 'fileAnywayReason must be nonblank';
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.FILE_ANYWAY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -1363,11 +1363,11 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { origin: subjectOriginForError ?? null },
       });
-      return NextResponse.json({ error: message }, { status: 400 });
+      return NextResponse.json({ error: message, frictionSignature }, { status: 400 });
     }
     if (error instanceof Error && error.message === 'file_anyway_not_allowed') {
       const message = `fileAnywayReason is not allowed for origin "${subjectOriginForError}" filings (only dashboard, api, mcp, and friction filings may bypass).`;
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.FILE_ANYWAY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -1376,7 +1376,7 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { origin: subjectOriginForError ?? null },
       });
-      return NextResponse.json({ error: message }, { status: 400 });
+      return NextResponse.json({ error: message, frictionSignature }, { status: 400 });
     }
     if (error instanceof Error && error.message === 'active_planning_task_conflict') {
       const message = 'This mission already has an active planning task in progress — wait for it to complete, or approve/reject it, before creating another.';

@@ -3060,6 +3060,40 @@ describe('PATCH /api/workers/[id]', () => {
       expect(body.hint).toBe('create_pr');
     });
 
+    // A gate refusal never becomes a worker failure — get_failure_analytics has
+    // nothing to hand back for it — so this frictionSignature is the ONLY
+    // stable dedupe key an agent filing a `[friction]` report for this refusal
+    // can get. Two workers hitting the identical refusal must get the identical
+    // key back, or the friction dedupe in POST /api/tasks can never collapse them.
+    it('carries a frictionSignature on the pr_required refusal, stable across repeats', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+
+      const makeRequest = () => createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+
+      const first = await (await PATCH(makeRequest(), { params: mockParams })).json();
+      const second = await (await PATCH(makeRequest(), { params: mockParams })).json();
+
+      expect(first.frictionSignature).toMatch(/^gate:output_requirement_[a-z0-9_]*[0-9a-f]{6}$/);
+      expect(first.frictionSignature).toBe(second.frictionSignature);
+    });
+
     it('echoes the gate slug in the auto-mode refusal body', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
