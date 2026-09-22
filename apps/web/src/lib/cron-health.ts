@@ -16,7 +16,18 @@
  * testable without mocking a query builder.
  */
 
-/** Runs needed before a trend is a trend. One bad run is a blip. */
+import type { CronChangedPolarity } from '@buildd/core/signal-registry';
+
+/**
+ * Runs needed before a trend is a trend. One bad run is a blip.
+ *
+ * Also reused, unchanged, as the sustain length for the `findings`-polarity
+ * alarm below: one shared definition of "how many runs make a trend" rather
+ * than a second magic number to independently justify. Both queue-stall
+ * scopes — the only `findings` jobs registered today — run hourly, so this is
+ * ~3 hours of continuous findings before paging: well inside "most of a
+ * night" and short enough to page the same working day it starts.
+ */
 export const MIN_RUNS_FOR_ALARM = 3;
 
 /** How long one alert buys silence, so a dead sweep does not page hourly. */
@@ -55,17 +66,35 @@ function failed(r: CronRunSummary): boolean {
 /**
  * Judge a job from its recent runs (any order).
  *
- * Alarms only on "consistently failing AND accomplishing nothing". Both halves
- * matter. A sweep with nothing to do reports the same processed=0/changed=0 as
- * a sweep that cannot do anything, so `errors` is what separates healthy idle
- * from total failure — and a sweep still landing real changes is degraded, not
- * dead, which is not worth waking someone for.
+ * `polarity` names what this job's `changed` count means (see
+ * `packages/core/signal-registry.ts#CronChangedPolarity`) and defaults to
+ * `'work'` — the meaning every job had before this parameter existed, so an
+ * unlabelled job's behaviour is unchanged.
+ *
+ * `'work'` (unchanged): alarms only on "consistently failing AND
+ * accomplishing nothing". Both halves matter. A sweep with nothing to do
+ * reports the same processed=0/changed=0 as a sweep that cannot do anything,
+ * so `errors` is what separates healthy idle from total failure — and a
+ * sweep still landing real changes is degraded, not dead, which is not worth
+ * waking someone for.
+ *
+ * `'findings'`: `changed` counts problems FOUND, not work performed, so
+ * nonzero `changed` can no longer read as the all-clear — a detector finding
+ * a real, ongoing outage every run would otherwise report the same "healthy"
+ * verdict a maximally productive worker sweep does, and read healthier the
+ * worse the outage gets. The alarm inverts: the job's most recent
+ * `MIN_RUNS_FOR_ALARM` judged runs all completing successfully AND all
+ * finding something IS the alarm — a condition this detector keeps tripping
+ * on and nothing has cleared. This runs alongside, not instead of, the
+ * `'work'` crash/no-op check above: a `findings` job that is actually
+ * throwing on every run is still broken and still pages for that.
  */
 export function evaluateCronHealth(
   runs: CronRunSummary[],
   now: Date,
+  polarity: CronChangedPolarity = 'work',
 ): CronHealthVerdict {
-  const quiet = { alarm: false, reason: null };
+  const quiet: CronHealthVerdict = { alarm: false, reason: null };
 
   // A route that reports nothing gets a heartbeat row and no opinion. Judging
   // on those would either invent failures or mask them.
@@ -78,17 +107,36 @@ export function evaluateCronHealth(
   );
   if (suppressed) return quiet;
 
-  if (!judged.every(failed)) return quiet;
+  // ── Crash / total-no-op alarm — applies regardless of polarity ────────────
+  if (judged.every(failed)) {
+    const totalChanged = judged.reduce((sum, r) => sum + (r.changed ?? 0), 0);
+    if (totalChanged === 0) {
+      const totalErrors = judged.reduce((sum, r) => sum + (r.errors ?? 0), 0);
+      const allThrew = judged.every(r => !r.ok);
+      const reason = allThrew
+        ? `${judged.length} runs did not finish (handler threw every time), 0 changed`
+        : `${judged.length} runs, ${totalErrors} errors, 0 changed`;
+      return { alarm: true, reason };
+    }
+  }
 
-  const totalChanged = judged.reduce((sum, r) => sum + (r.changed ?? 0), 0);
-  if (totalChanged > 0) return quiet;
+  // ── Sustained-findings alarm — only for polarity: 'findings' ──────────────
+  if (polarity === 'findings') {
+    const recent = [...judged]
+      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+      .slice(0, MIN_RUNS_FOR_ALARM);
+    const sustained =
+      recent.length >= MIN_RUNS_FOR_ALARM && recent.every(r => r.ok && (r.changed ?? 0) > 0);
+    if (sustained) {
+      const totalChanged = recent.reduce((sum, r) => sum + (r.changed ?? 0), 0);
+      return {
+        alarm: true,
+        reason:
+          `${recent.length} consecutive runs all reported findings (total ${totalChanged}) — ` +
+          `this condition is not clearing on its own`,
+      };
+    }
+  }
 
-  const totalErrors = judged.reduce((sum, r) => sum + (r.errors ?? 0), 0);
-  const allThrew = judged.every(r => !r.ok);
-
-  const reason = allThrew
-    ? `${judged.length} runs did not finish (handler threw every time), 0 changed`
-    : `${judged.length} runs, ${totalErrors} errors, 0 changed`;
-
-  return { alarm: true, reason };
+  return quiet;
 }

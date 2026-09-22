@@ -39,6 +39,21 @@ describe('reportOps', () => {
     expect(fetchCalls.length).toBe(0);
   });
 
+  it('force:true sends even when OPS_ALERTS_ENABLED is unset', async () => {
+    delete process.env.OPS_ALERTS_ENABLED;
+    const ok = await reportOps({ source: 'fleet-idle', message: 'm', force: true });
+    expect(ok).toBe(true);
+    expect(fetchCalls.length).toBe(1);
+  });
+
+  it('force:true still respects the dedup slot', async () => {
+    delete process.env.OPS_ALERTS_ENABLED;
+    dbState.returning = () => Promise.resolve([]); // slot still held
+    const ok = await reportOps({ source: 'fleet-idle', message: 'm', force: true });
+    expect(ok).toBe(false);
+    expect(fetchCalls.length).toBe(0);
+  });
+
   it('sends on first occurrence (slot won)', async () => {
     const ok = await reportOps({ source: 'routing-analytics', message: 'recordTaskOutcome failed', detail: 'boom' });
     expect(ok).toBe(true);

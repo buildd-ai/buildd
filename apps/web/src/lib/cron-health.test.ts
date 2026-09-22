@@ -103,3 +103,55 @@ describe('evaluateCronHealth', () => {
     expect(verdict.reason).toMatch(/120 error/); // 40 per run, summed
   });
 });
+
+/**
+ * A `findings`-polarity job's `changed` counts problems FOUND, not work done.
+ * The queue-stall detector ran hourly, correctly finding a real outage every
+ * single run, and reported the same nonzero `changed` a maximally productive
+ * `work` job would — which read as maximally healthy while the outage was at
+ * its worst. This is the inverted alarm that closes that gap.
+ */
+describe('evaluateCronHealth — findings polarity', () => {
+  const finding = (agoHours: number, changed = 1) => run({ agoHours, errors: 0, changed });
+
+  it('alarms when the job keeps finding something, run after run', () => {
+    const verdict = evaluateCronHealth([finding(1), finding(2), finding(3)], NOW, 'findings');
+    expect(verdict.alarm).toBe(true);
+    expect(verdict.reason).toContain('consecutive runs');
+    expect(verdict.reason).toContain('not clearing on its own');
+  });
+
+  it('does NOT alarm once findings clear — the most recent run reporting zero self-clears it', () => {
+    const runs = [run({ agoHours: 1, changed: 0 }), finding(2), finding(3)];
+    expect(evaluateCronHealth(runs, NOW, 'findings').alarm).toBe(false);
+  });
+
+  it('does NOT alarm on a healthy detector with nothing to find', () => {
+    const runs = [run({ agoHours: 1 }), run({ agoHours: 2 }), run({ agoHours: 3 })];
+    expect(evaluateCronHealth(runs, NOW, 'findings').alarm).toBe(false);
+  });
+
+  it('a `work` job with the identical run history stays quiet — polarity, not data, decides', () => {
+    // Same three runs that alarm above under 'findings' must NOT alarm under
+    // the default 'work' polarity: nonzero `changed` still reads as health.
+    const runs = [finding(1), finding(2), finding(3)];
+    expect(evaluateCronHealth(runs, NOW).alarm).toBe(false);
+    expect(evaluateCronHealth(runs, NOW, 'work').alarm).toBe(false);
+  });
+
+  it('still alarms on a findings job that is actually crashing every run (the work-style check still applies)', () => {
+    const verdict = evaluateCronHealth([deadRun(1), deadRun(2), deadRun(3)], NOW, 'findings');
+    expect(verdict.alarm).toBe(true);
+    expect(verdict.reason).toContain('0 changed');
+  });
+
+  it('stays quiet after a recent alert instead of paging every hour', () => {
+    const runs = [finding(1), finding(2), { ...finding(3), alertedAt: new Date(NOW.getTime() - 2 * HOUR) }];
+    expect(evaluateCronHealth(runs, NOW, 'findings').alarm).toBe(false);
+  });
+
+  it('does not judge on too few runs', () => {
+    const runs = Array.from({ length: MIN_RUNS_FOR_ALARM - 1 }, (_, i) => finding(i + 1));
+    expect(evaluateCronHealth(runs, NOW, 'findings').alarm).toBe(false);
+  });
+});
