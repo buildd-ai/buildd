@@ -38,3 +38,6 @@ scripts/signal-fire-coverage.test.ts
 scripts/cron-job-notify-coverage.test.ts
 scripts/skills-listed.test.ts
 scripts/workflow-safety.test.ts
+# Enumerates every tracked schema file to check that hand-built sql
+# renders correctly and matches no broken patterns.
+scripts/sql-render-coverage.test.ts

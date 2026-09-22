@@ -161,6 +161,16 @@ jobs:
           bun run scripts/lint-model-ids.ts --self-test
           bun run scripts/lint-model-ids.ts
 
+      - name: Lint hand-built SQL
+        # Same self-test-first shape as the model-ID lint above, replaying the
+        # two historical defects (ANY(${array}) as a param list; a bare
+        # camelCase property Postgres folds to a nonexistent column) as
+        # fixtures that must fail, alongside fixed/clean forms that must pass.
+        # See scripts/lint-hand-built-sql.ts for the incidents this traces to.
+        run: |
+          bun run scripts/lint-hand-built-sql.ts --self-test
+          bun run scripts/lint-hand-built-sql.ts
+
       - name: Type check
         run: bun run type-check
 
