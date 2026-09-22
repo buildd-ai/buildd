@@ -193,12 +193,37 @@ describe('executeSteps', () => {
     expect(results[1].message).toContain('earlier phase failed');
   });
 
-  it('summarizes a failing command with its exit code and last error line', async () => {
+  it('summarizes a failing command with its exit code and first error line', async () => {
     const results = await executeSteps(planSteps({ install: { command: 'bun install' } }), {
       root: '/r', env: {}, runCommand: fakeRunner(/bun install/), now,
     });
     expect(results[0].message).toContain('exit 1');
-    expect(results[0].message).toContain('last line of error');
+    expect(results[0].message).toContain('boom: bun install');
+  });
+
+  it('reports the first real error, not a trailing summary line (regression: check-specs.ts prints its summary last)', async () => {
+    // Mirrors scripts/check-specs.ts --check: every real content error is
+    // printed as it's found, and only afterwards — if the ONLY remaining
+    // problem is a stale generated index — does a summary/trailer line get
+    // appended. failMessage used to take the LAST stderr line, so a real
+    // content error sitting earlier in the stream was masked by whatever
+    // trailed it.
+    const specLintRunner: CommandRunner = () => ({
+      code: 1,
+      stdout: '',
+      stderr: [
+        '✖ docs/specs/foo.md: frontmatter missing `summary`',
+        '✖ docs/specs/foo.md: code surface path does not exist: apps/web/src/lib/gone.ts',
+        '✖ docs/specs/INDEX.md is stale — run `bun run specs:check` to regenerate',
+        '21 specs · 3 error(s) · 0 warning(s)',
+      ].join('\n'),
+    });
+    const steps = planSteps({ readiness: { command: 'bun run scripts/check-specs.ts --check' } });
+    const [r] = await executeSteps(steps, { root: '/r', env: {}, runCommand: specLintRunner, now });
+    expect(r.status).toBe('fail');
+    expect(r.message).toContain('frontmatter missing `summary`');
+    expect(r.message).not.toContain('is stale');
+    expect(r.message).not.toContain('3 error(s)');
   });
 
   it('readiness exit code 2 is a non-blocking warn, not a fail', async () => {

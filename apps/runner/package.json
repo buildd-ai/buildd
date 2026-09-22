@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.218.0",
+  "version": "0.218.1",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
@@ -18,12 +18,12 @@
     "@buildd/core": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@openai/codex-sdk": "^0.155.0",
+    "@sourcegraph/scip-typescript": "^0.4.0",
     "marked": "^18.0.0",
     "pusher-js": "^8.4.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@sourcegraph/scip-typescript": "^0.4.0",
     "@tailwindcss/cli": "^4.0.0",
     "@types/bun": "^1.3.9",
     "playwright": "^1.52.0",

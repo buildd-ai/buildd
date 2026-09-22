@@ -1226,6 +1226,10 @@ export async function PUT(req: NextRequest) {
         workspaceId: workspace.id,
         prNumber,
         headSha,
+        surface: 'PUT /api/github/pr',
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
       });
       if (reviewGate.blocks) {
         recordMergeGate(

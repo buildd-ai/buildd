@@ -53,6 +53,7 @@ export type PrActivityKind =
   | 'review_approved_awaiting_human'
   | 'review_changes_requested'
   | 'review_escalated'
+  | 'review_failed'
   | 'lede_corrected'
   | 'human_review_required'
   | 'ci_fixing'
@@ -118,6 +119,18 @@ const PRESENTATION: Record<PrActivityKind, Presentation> = {
     working: false,
     label: 'Escalated to a human',
     status: 'The reviewer stopped and handed this PR to a human.',
+  },
+  // Distinct from `review_escalated`: that kind means the reviewer looked and
+  // raised a finding. This means the reviewer session died or returned prose
+  // instead of a verdict — there is no finding, and nothing here blocks a
+  // merge, but no review actually happened either. Without this entry the
+  // comment stops at "🔍 Reviewing changes" forever, which reads as "still in
+  // progress" rather than "gave up" to anyone watching the PR.
+  review_failed: {
+    icon: '🚨',
+    working: false,
+    label: 'Review never completed',
+    status: 'The reviewer never returned a verdict. Nothing here blocks merging, but no review actually happened — a human should look before merging.',
   },
   // Not a lifecycle state — the review carries on either side of it — so this
   // keeps `working: true` and never stops the spinner on its own.

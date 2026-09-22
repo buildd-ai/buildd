@@ -2698,6 +2698,7 @@ export async function PATCH(
             repoFullName: String(reviewTaskCtx.repoFullName ?? ''),
             prNumber: Number(reviewTaskCtx.prNumber ?? 0),
             headSha: String(reviewTaskCtx.headSha ?? ''),
+            installationId: Number(reviewTaskCtx.installationId ?? 0),
           }).catch((err) => console.error(
             `[review-contract-enforcement] escalation failed for task ${worker.taskId}:`, err,
           ));

@@ -308,6 +308,13 @@ could not be refreshed. A revoked credential never reaches the gates.
 - The sweep MUST be idempotent: once it has written `answerDelivery.path:
   'cold_continuation'` and superseded the worker, a second pass creates no
   second continuation.
+- There are no transactions on neon-http, so the worker is superseded and the
+  continuation task is inserted as two separate writes. If the insert fails,
+  the sweep MUST restore the worker to `waiting_input` with the answer back on
+  `pendingInstructions` rather than leaving it permanently `superseded` with
+  the answer discarded — the same compensation `respondByContinuation` (in
+  `apps/web/src/app/api/workers/[id]/respond/route.ts`) performs for the
+  live-answer path. A restored worker is picked up by a later sweep.
 
 **Acceptance criteria**:
 - AC-AQR-14: GIVEN an answer that falls back for any reason WHEN `POST
@@ -326,6 +333,10 @@ could not be refreshed. A revoked credential never reaches the gates.
 - AC-AQR-18: GIVEN a worker whose queued answer WAS acknowledged (its
   `instructionHistory` entry reads `delivered` and `pendingInstructions` is
   null) WHEN `cleanupUnresumedAnswers` runs THEN it is left alone.
+- AC-AQR-19: GIVEN the continuation task insert throws WHEN
+  `cleanupUnresumedAnswers` runs THEN the worker is restored to
+  `waiting_input` with the answer back on `pendingInstructions`, no task is
+  created, and a later sweep still has the chance to recover the answer.
 
 **Code surface**:
 - `apps/web/src/lib/answer-resume.ts` — `buildContinuationTaskValues`,

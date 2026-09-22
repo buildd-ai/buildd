@@ -102,19 +102,59 @@ export async function runScipGraph(opts: ScipRunnerOptions): Promise<ScipRunResu
 
 // ── Defaults (real side effects) ──────────────────────────────────────────────
 
+interface InvokeAttempt {
+  cmd: string;
+  argv: string[];
+  label: string;
+}
+
+/**
+ * Every way `defaultInvoke` will try to run scip-typescript, in resolution
+ * order. Pure and exported so the fallback chain — previously untested,
+ * since every existing test injects `invoke` directly — is unit-testable
+ * without mocking `execFileSync`.
+ */
+export function invokeAttempts(
+  env: NodeJS.ProcessEnv,
+  localBin: string | null,
+  indexArgs: string[],
+): InvokeAttempt[] {
+  const attempts: InvokeAttempt[] = [];
+  // 1. Explicit override (deployment sets this to the installed binary).
+  if (env.SCIP_TYPESCRIPT_BIN)
+    attempts.push({ cmd: env.SCIP_TYPESCRIPT_BIN, argv: indexArgs, label: `SCIP_TYPESCRIPT_BIN override (${env.SCIP_TYPESCRIPT_BIN})` });
+  // 2. A node_modules/.bin binary hoisted somewhere above this module (monorepo).
+  if (localBin) attempts.push({ cmd: localBin, argv: indexArgs, label: `hoisted node_modules/.bin (${localBin})` });
+  // 3. On PATH (globally installed), then npx without an implicit install — a
+  // LAST resort, not the primary path: it needs registry access this runner's
+  // sandbox may not have, which is why @sourcegraph/scip-typescript is now a
+  // real `dependencies` entry in apps/runner/package.json rather than relying
+  // on this fallback to cover a devDependency a production install drops.
+  attempts.push({ cmd: 'scip-typescript', argv: indexArgs, label: 'scip-typescript on PATH' });
+  attempts.push({
+    cmd: 'npx',
+    argv: ['--no-install', '@sourcegraph/scip-typescript', ...indexArgs],
+    label: 'npx --no-install @sourcegraph/scip-typescript (last resort)',
+  });
+  return attempts;
+}
+
+/**
+ * The message used for the thrown Error when every attempt fails — becomes
+ * `ScipRunResult.skippedReason`, which `full-ingest.ts` threads onto the job's
+ * `stats.scip`. Names every attempt tried and its own failure, not just the
+ * last one, so a skip is diagnosable instead of collapsing to one generic
+ * "unavailable or failed".
+ */
+export function formatInvokeFailure(attempts: InvokeAttempt[], failures: string[]): string {
+  return `scip-typescript unavailable after ${attempts.length} resolution attempt(s): ${failures.join(' | ')}`;
+}
+
 function defaultInvoke(args: { repoPath: string; outputPath: string; timeoutMs: number }): void {
   const indexArgs = ['index', '--output', args.outputPath];
-  const attempts: Array<{ cmd: string; argv: string[] }> = [];
-  // 1. Explicit override (deployment sets this to the installed binary).
-  if (process.env.SCIP_TYPESCRIPT_BIN) attempts.push({ cmd: process.env.SCIP_TYPESCRIPT_BIN, argv: indexArgs });
-  // 2. A node_modules/.bin binary hoisted somewhere above this module (monorepo).
-  const localBin = findLocalBin();
-  if (localBin) attempts.push({ cmd: localBin, argv: indexArgs });
-  // 3. On PATH (globally installed), then npx without an implicit install.
-  attempts.push({ cmd: 'scip-typescript', argv: indexArgs });
-  attempts.push({ cmd: 'npx', argv: ['--no-install', '@sourcegraph/scip-typescript', ...indexArgs] });
+  const attempts = invokeAttempts(process.env, findLocalBin(), indexArgs);
 
-  let lastErr: unknown;
+  const failures: string[] = [];
   for (const attempt of attempts) {
     try {
       execFileSync(attempt.cmd, attempt.argv, {
@@ -125,12 +165,10 @@ function defaultInvoke(args: { repoPath: string; outputPath: string; timeoutMs: 
       });
       return; // succeeded
     } catch (err) {
-      lastErr = err;
+      failures.push(`${attempt.label}: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
     }
   }
-  throw new Error(
-    `scip-typescript unavailable or failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
-  );
+  throw new Error(formatInvokeFailure(attempts, failures));
 }
 
 /** Walk up from this module looking for a hoisted scip-typescript binary. */

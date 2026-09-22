@@ -32,6 +32,7 @@ import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -451,6 +452,10 @@ export async function tryAutoMergeWorkerPr(params: {
       workspaceId: reviewWorkspaceId,
       prNumber,
       headSha,
+      surface: 'auto-merge',
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      callerOrigin: 'system',
     });
     if (reviewGate.blocks) {
       const reason = `${reviewGate.reason}. ${reviewGate.clearedBy}`;
@@ -728,18 +733,26 @@ export async function escalateReviewerExhaustion(
  * Idempotent: CAS on tasks.context.reviewContractFailureEscalated — fires at
  * most once per task (this is a single-shot terminal failure, not a per-head
  * -SHA retry loop like escalateReviewerExhaustion above).
+ *
+ * Also posts a `review_failed` entry to the PR's own activity comment. Before
+ * this, the comment stopped at "🔍 Reviewing changes" forever — the ONLY
+ * places this failure was recorded were a mission note (skipped entirely for
+ * a mission-less task) and a Pushover alert a human could easily miss. A
+ * human watching the PR itself, with no indication the review had already
+ * died, had every reason to just merge it by hand.
  */
 export async function escalateReviewContractFailure(params: {
   taskId: string;
   repoFullName: string;
   prNumber: number;
   headSha: string;
+  installationId: number;
 }): Promise<void> {
-  const { taskId, repoFullName, prNumber, headSha } = params;
+  const { taskId, repoFullName, prNumber, headSha, installationId } = params;
 
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { id: true, missionId: true, title: true },
+    columns: { id: true, missionId: true, title: true, workspaceId: true },
   });
   if (!task) return;
 
@@ -785,6 +798,29 @@ export async function escalateReviewContractFailure(params: {
     url: taskUrl,
     urlTitle: 'View task',
     priority: 0,
+  });
+
+  if (prNumber && repoFullName && installationId) {
+    await appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'review_failed' },
+      workspaceId: task.workspaceId ?? null,
+    }).catch((err) => console.error(
+      `[reviewer] failed to post review_failed activity for PR #${prNumber}:`, err,
+    ));
+  }
+
+  fireGateEvent({
+    gate: GATE_SLUGS.REVIEW_VERDICT,
+    surface: 'review-contract-guard',
+    outcome: 'warned',
+    reason: 'the reviewer permanently failed to produce a verdict for this PR — retries exhausted, escalated to a human',
+    workspaceId: task.workspaceId ?? null,
+    taskId,
+    callerOrigin: 'system',
+    detail: { prNumber, headSha: headSha || null },
   });
 
   console.log(`[reviewer] contract-failure escalated${prNumber ? ` PR #${prNumber}` : ''}@${headSha ? headSha.slice(0, 7) : '?'} for task ${taskId}`);

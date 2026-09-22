@@ -584,29 +584,42 @@ describe('cleanupStaleWorkers — reviewer lease expiry', () => {
       .mockResolvedValueOnce([]);
     mockTasksFindMany.mockResolvedValue([{ id: 'review-task', workspaceId: 'ws-1' }]);
     mockTasksFindFirst
+      // resolveStaleTask's own "is this cancelled?" read.
       .mockResolvedValueOnce({
         status: 'assigned',
         category: 'review',
         context: { reviewerFor: 'original-task', prNumber: 42 },
       })
-      .mockResolvedValueOnce({ missionId: 'mission-1' })
+      // escalateReviewContractFailure's own read, keyed on the review task's
+      // own id — it already carries the original task's missionId (copied at
+      // creation), so no separate "original task" lookup is needed any more.
+      .mockResolvedValueOnce({ id: 'review-task', missionId: 'mission-1', title: 'Review PR #42', workspaceId: 'ws-1' })
       .mockResolvedValueOnce({ parentTaskId: null });
 
     const taskUpdates: any[] = [];
     mockTasksUpdate.mockReturnValue({
       set: mock((values: any) => {
         taskUpdates.push(values);
-        return { where: mock(() => Promise.resolve()) };
+        return {
+          where: mock(() => Object.assign(Promise.resolve(), {
+            // The CAS dedup in escalateReviewContractFailure claims via
+            // .returning() — simulate a successful (unclaimed-until-now) claim.
+            returning: () => Promise.resolve([{ id: 'review-task' }]),
+          })),
+        };
       }),
     });
 
     await cleanupStaleWorkers('account-1');
 
-    expect(taskUpdates).toHaveLength(1);
-    expect(taskUpdates[0].status).toBe('failed');
-    expect(taskUpdates[0].result.error).toContain('agent review timed out');
+    // Two updates now: escalateReviewContractFailure's CAS claim on `context`,
+    // then this function's own status:'failed' update.
+    expect(taskUpdates).toHaveLength(2);
+    expect(taskUpdates[0].context).toBeDefined();
+    expect(taskUpdates[1].status).toBe('failed');
+    expect(taskUpdates[1].result.error).toContain('agent review timed out');
     expect(capturedInsertValues.type).toBe('reviewer_escalated');
-    expect(capturedInsertValues.title).toContain('agent review timed out');
+    expect(capturedInsertValues.title).toContain('review never produced a verdict');
   });
 });
 
@@ -2427,6 +2440,29 @@ describe('cleanupUnresumedAnswers', () => {
 
     await cleanupUnresumedAnswers('account-1');
 
+    expect(capturedAccountsSet).toBeNull();
+  });
+
+  // AC-AQR-19 — no transactions on neon-http: the worker is superseded and the
+  // continuation is inserted as two separate writes. If the insert throws, the
+  // worker must not be left permanently superseded with the answer discarded —
+  // it has to go back to waiting_input so a later sweep can still recover it.
+  it('restores the worker to waiting_input when the continuation insert fails', async () => {
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => Promise.reject(new Error('insert failed'))) })),
+    } as any);
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    // First write superseded the worker to claim the answer; second write is
+    // the compensation once the insert threw.
+    expect(capturedWorkerUpdates).toHaveLength(2);
+    const restore = capturedWorkerUpdates[1];
+    expect(restore.status).toBe('waiting_input');
+    expect(restore.pendingInstructions).toBe('Use Postgres');
+    // No account seat is released for a worker that was never actually degraded.
     expect(capturedAccountsSet).toBeNull();
   });
 });
