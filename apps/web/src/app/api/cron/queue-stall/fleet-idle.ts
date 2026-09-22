@@ -414,6 +414,12 @@ export async function detectFleetIdle(now: Date = new Date()): Promise<FleetIdle
     await reportOps({
       source: 'fleet-idle',
       severity: 'error',
+      // This detector exists specifically because an outage ran a full night
+      // with everything else reading healthy — it must not depend on the
+      // OPS_ALERTS_ENABLED opt-in flag being remembered in every environment.
+      // The sibling gate-ladder pass (`runCronJob` in route.ts) already pages
+      // unconditionally via notify(); force keeps the two passes at parity.
+      force: true,
       message:
         `Fleet alive but claiming nothing — ${reachable.length} claimable task(s) queued, ` +
         (idleMinutes === null

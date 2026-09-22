@@ -25,7 +25,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId } from '@/lib/team-access';
 import { resolveAnthropicAuth } from '@/lib/claude-credential';
-import { resolveAllTiers, TIERS, type Tier } from '@buildd/core/model-tier-registry';
+import { resolveAllTiers, TIERS, type Tier, type TierEntry } from '@buildd/core/model-tier-registry';
 import { auditTierModels } from '@buildd/core/model-tier-liveness';
 import { fetchOpenRouterCatalog, type CatalogEntry } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
@@ -61,14 +61,20 @@ export function _resetCache() {
   publicCatalog = null;
 }
 
+interface RegistryModels {
+  models: ModelEntry[];
+  /** Per-tier resolution source — used to scope the "superseded" audit below. */
+  sources: Partial<Record<Tier, TierEntry['source']>>;
+}
+
 /**
  * The team's configured tier models. Zero credentials, zero network — this is why
  * the route can no longer fail closed.
  */
-async function registryModels(teamId: string): Promise<ModelEntry[]> {
+async function registryModels(teamId: string): Promise<RegistryModels> {
   try {
     const tiers = await resolveAllTiers(teamId);
-    return TIER_ORDER.map(tier => {
+    const models = TIER_ORDER.map(tier => {
       const entry = tiers[tier];
       return {
         id: entry.model,
@@ -77,9 +83,13 @@ async function registryModels(teamId: string): Promise<ModelEntry[]> {
         tier,
       };
     });
+    const sources = Object.fromEntries(
+      TIER_ORDER.map(tier => [tier, tiers[tier].source]),
+    ) as Partial<Record<Tier, TierEntry['source']>>;
+    return { models, sources };
   } catch (e) {
     console.error('[api/models] tier registry read failed:', e);
-    return [];
+    return { models: [], sources: {} };
   }
 }
 
@@ -172,7 +182,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ models: [], catalogComplete: false });
   }
 
-  const [tierEntries, catalog, publicEntries] = await Promise.all([
+  const [{ models: tierEntries, sources: tierSources }, catalog, publicEntries] = await Promise.all([
     registryModels(teamId),
     getCachedCatalog(teamId),
     getPublicCatalog(),
@@ -215,6 +225,14 @@ export async function GET(req: NextRequest) {
     ),
     auditList,
   );
+  // "Superseded" only means something for an operator-set pin (workspace/team
+  // registry row): the default/catalog path already resolves to the newest
+  // in-band release on its own, so flagging it here would warn about a tier
+  // that just self-healed.
+  tierAudit.superseded = tierAudit.superseded.filter((s) => {
+    const source = tierSources[s.tier as Tier];
+    return source === 'workspace' || source === 'team';
+  });
   for (const { tier, model } of tierAudit.unknown) {
     console.warn(`[api/models] tier "${tier}" is pinned to ${model}, which the models API does not return — retired, renamed, or a typo`);
   }

@@ -120,6 +120,13 @@
       "path": "/api/cron/release-health-check",
       "schedule": "5 * * * *",
       "method": "GET"
+    },
+    {
+      "$comment": "Standing post-ship guardrail monitor for the workspace-memory-digest experiment (task_scoped shipped 2026-09-18 with the failure-rate guardrail recorded as an accepted caveat — 'ship it and watch the failure rate'). The readout cron that could have watched it was correctly retired with the experiment (PR #2466), which left the accepted arm with no owner; this route is the owner. Compares the shipped arm's rolling 7-day failure rate against the ship-time baseline (Agresti–Caffo risk difference, same interval the terminal readout used for the guardrail itself) and pages via reportOps only when the interval excludes zero — credibly worse, not just noisier. Daily is enough: the window is 7d and nothing here needs sub-daily resolution. Offset to 9:05 EST to land inside the wake window the PR Reconcile job at 0 9 already opens, rather than spending a second Neon wake for a job this infrequent.",
+      "title": "Buildd: Memory Digest Guardrail Monitor",
+      "path": "/api/cron/memory-digest-guardrail",
+      "schedule": "5 9 * * *",
+      "method": "POST"
     }
   ]
 }

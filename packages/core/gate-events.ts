@@ -39,6 +39,11 @@ export const GATE_OUTCOMES: readonly GateOutcome[] = ['rejected', 'deferred', 'b
 export { GATE_SLUGS } from './gate-slugs';
 export type { GateSlug } from './gate-slugs';
 
+// Same reasoning as the GATE_SLUGS re-export above: dependency-free, so
+// re-exported here for callers that already `import ... from
+// '@buildd/core/gate-events'` rather than reaching into a second module.
+export { gateFrictionSignature } from './gate-friction-signature';
+
 export interface RecordGateEventInput {
   /** Stable rule slug — use a GATE_SLUGS constant. */
   gate: string;

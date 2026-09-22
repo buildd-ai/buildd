@@ -128,6 +128,17 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// resolveTierEntry's registry lookup already fails closed here (no
+// DATABASE_URL in the test env — see the '@buildd/core/db' mock above, which
+// only covers the barrel import, not model-tier-registry's own `./db/client`
+// relative import). Without this mock its NEW catalog-fallback step would
+// reach model-catalog-cache's own DB miss and then perform a REAL network
+// fetch to OpenRouter on every claim test. Empty catalog reproduces the exact
+// pre-existing behavior (falls through to TIER_DEFAULTS).
+mock.module('@buildd/core/model-catalog-cache', () => ({
+  getCachedOpenRouterCatalog: mock(() => Promise.resolve([] as any[])),
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),

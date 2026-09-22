@@ -160,6 +160,7 @@ import {
   compositionCohortScope,
   deliveredVerdictScope,
   findDeliveredVerdict,
+  guardrailWindowScope,
   modalCohortWorkspaceId,
   notifiedKey,
   readoutArtifactKey,
@@ -291,6 +292,36 @@ describe('compositionCohortScope', () => {
     const { params } = dialect.sqlToQuery(compositionCohortScope('memory-digest-v4') as any);
     expect(params).toContain('memory-digest-v4');
     expect(render(compositionCohortScope('memory-digest-v4'))).not.toContain('memory-digest-v4');
+  });
+});
+
+describe('guardrailWindowScope', () => {
+  const start = new Date('2026-09-15T00:00:00.000Z');
+  const now = new Date('2026-09-22T00:00:00.000Z');
+  const sql = render(guardrailWindowScope(start, now, 'memory-digest-v4'));
+
+  it('scopes to the shipped arm only, not the pre-flip randomised cohort', () => {
+    expect(sql).toContain('"arm" = $');
+    expect(sql).toContain('"propensity" = $');
+    const { params } = dialect.sqlToQuery(guardrailWindowScope(start, now, 'memory-digest-v4') as any);
+    expect(params).toContain('task_scoped');
+    // Bound as '1', matching the shipped, unconditional-rendering rows — a
+    // pre-flip randomised row (propensity 0.5) can never match this.
+    expect(params).toContain('1');
+  });
+
+  it('bounds the window on both ends', () => {
+    expect(sql).toMatch(/"ts" >= \$\d/);
+    expect(sql).toMatch(/"ts" <= \$\d/);
+  });
+
+  it('still requires a task id and the given policy version, like the readout cohort', () => {
+    expect(sql).toContain('"task_id" is not null');
+    expect(sql).toContain('"policy_version" = $');
+  });
+
+  it('does NOT filter backend in SQL — same segmentation discipline as compositionCohortScope', () => {
+    expect(sql).not.toContain('"backend"');
   });
 });
 

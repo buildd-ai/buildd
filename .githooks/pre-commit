@@ -43,3 +43,24 @@ if [ -f packages/core/__tests__/migration-journal-ordering.test.ts ]; then
     exit 1
   fi
 fi
+
+# No Production Data gate, reproduced locally. This is this repo's single
+# most common CI failure. It diffs origin/dev against HEAD, same as CI does
+# against the PR base — so it checks commits already made on this branch, not
+# the one about to be created here; that one is caught on your *next* commit,
+# or explicitly via `bun run no-prod-data:check` right before you push/open
+# the PR. Never blocks on a missing base ref or missing python3: this hook
+# must not turn "offline" or "no dev remote" into a blocked commit.
+if command -v python3 >/dev/null 2>&1 && [ -f scripts/check_no_prod_data.py ]; then
+  if ! bash scripts/check-no-prod-data-local.sh >/tmp/no-prod-data-precommit.log 2>&1; then
+    echo "" >&2
+    echo "✖ no-prod-data check failed (see .github/workflows/no-prod-data.yml)." >&2
+    cat /tmp/no-prod-data-precommit.log >&2
+    echo "" >&2
+    echo "  This does not check PR title/body or the handle/private-repo secret" >&2
+    echo "  — see scripts/check-no-prod-data-local.sh for what it can and can't" >&2
+    echo "  see locally. Fix the line above, or add 'no-prod-data: allow <reason>'" >&2
+    echo "  to the PR body once one exists." >&2
+    exit 1
+  fi
+fi

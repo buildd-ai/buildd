@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.218.1",
+  "version": "0.219.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -16,6 +16,7 @@
     "./prior-work-render": "./prior-work-render.ts",
     "./model-aliases": "./model-aliases.ts",
     "./model-catalog": "./model-catalog.ts",
+    "./model-catalog-cache": "./model-catalog-cache.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
@@ -39,6 +40,7 @@
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",
     "./memory-digest-readout-source": "./memory-digest-readout-source.ts",
+    "./memory-digest-guardrail-monitor": "./memory-digest-guardrail-monitor.ts",
     "./experiment-cleanup": "./experiment-cleanup.ts",
     "./experiment-randomizer": "./experiment-randomizer.ts",
     "./task-path-inference": "./task-path-inference.ts",
@@ -100,11 +102,13 @@
     "./error-signature": "./error-signature.ts",
     "./gate-events": "./gate-events.ts",
     "./gate-slugs": "./gate-slugs.ts",
+    "./gate-friction-signature": "./gate-friction-signature.ts",
     "./gate-analytics": "./gate-analytics.ts",
     "./terminal-records": "./terminal-records.ts",
     "./terminal-records-query": "./terminal-records-query.ts",
     "./release-baseline": "./release-baseline.ts",
-    "./initiative-metric-registry": "./initiative-metric-registry.ts"
+    "./initiative-metric-registry": "./initiative-metric-registry.ts",
+    "./signal-registry": "./signal-registry.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.272",

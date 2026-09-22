@@ -7,6 +7,7 @@
  * false-positive) unattributable and therefore invisible all over again.
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
 
 interface Recorded {
   gate: string;
@@ -22,6 +23,7 @@ let recordShouldReject = false;
 
 mock.module('@buildd/core/gate-events', () => ({
   GATE_SLUGS: { PROSE_GATE: 'prose_gate', TASK_PARAM_VOCABULARY: 'task_param_vocabulary', CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral' },
+  gateFrictionSignature,
   recordGateEvent: async (input: Recorded) => {
     if (recordShouldReject) throw new Error('ledger exploded');
     recorded.push(input);
@@ -86,6 +88,11 @@ describe('fireGateEvent', () => {
     expect(recorded[0].outcome).toBe('warned');
   });
 
+  it('returns the gateFrictionSignature synchronously, so a caller can fold it into a 400 body', () => {
+    const sig = fireGateEvent({ gate: 'prose_gate', surface: 'POST /api/tasks', outcome: 'rejected', reason: 'x' });
+    expect(sig).toBe(gateFrictionSignature('prose_gate', 'x'));
+  });
+
   it('does not produce an unhandled rejection when the writer itself throws', async () => {
     recordShouldReject = true;
     // Synchronous return is the contract: the route continues to its response
@@ -144,5 +151,10 @@ describe('fireGateEventForWorkspaceRef', () => {
     await settle();
     expect(recorded).toHaveLength(1);
     expect(recorded[0].detail).toBeUndefined();
+  });
+
+  it('returns the gateFrictionSignature synchronously, without waiting on the background resolution', () => {
+    const sig = fireGateEventForWorkspaceRef('buildd', input);
+    expect(sig).toBe(gateFrictionSignature(input.gate, input.reason));
   });
 });

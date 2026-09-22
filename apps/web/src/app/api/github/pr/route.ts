@@ -226,7 +226,15 @@ export async function POST(req: NextRequest) {
     // the `create_pr` action) leads the record buildd stores instead, and the
     // adoption itself never fails for want of a lede.
     if (existingPrUrl) {
-      if (worker.prUrl && worker.prNumber) {
+      // Only short-circuit when the caller is re-asserting the SAME PR already
+      // recorded on this worker — a true idempotent retry. A caller passing a
+      // DIFFERENT prUrl is explicitly overriding the stored value (e.g. the
+      // worker's stored PR was wrong, or came from an earlier misdirected
+      // call), and blindly returning the stale stored PR here silently drops
+      // the caller's correction: `create_pr` would report success while
+      // pointing at a PR the caller never asked for. Fall through so the new
+      // URL goes through the same legality checks and gets recorded below.
+      if (worker.prUrl && worker.prNumber && worker.prUrl === existingPrUrl) {
         await db
           .update(workers)
           .set({ updatedAt: new Date() })
@@ -1257,7 +1265,12 @@ export async function PUT(req: NextRequest) {
         prNumber,
         headSha,
         policy,
-        { releaseConfig: workspace.releaseConfig },
+        {
+          releaseConfig: workspace.releaseConfig,
+          workspaceId: workspace.id,
+          taskId: worker.taskId ?? null,
+          workerId: worker.id ?? null,
+        },
       );
       if (!safety.ok) {
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });

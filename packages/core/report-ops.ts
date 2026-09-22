@@ -18,10 +18,19 @@
  *
  * Env:
  *   OPS_ALERTS_ENABLED   — must be truthy, else reportOps is a no-op (keeps it
- *                          dark for deploys/runners that haven't opted in)
+ *                          dark for deploys/runners that haven't opted in),
+ *                          UNLESS the call passes `force: true` (see below)
  *   PUSHOVER_USER        — owner user key (shared with pushover.ts)
  *   PUSHOVER_TOKEN_ALERT — "alerts" app token (falls back to PUSHOVER_TOKEN)
  *   OPS_THROTTLE_MS      — dedup window per source+message (default 1h)
+ *
+ * `force: true` bypasses the OPS_ALERTS_ENABLED opt-in gate — everything else
+ * (dedup, throttle, severity→priority mapping) is unchanged. Reserved for a
+ * detector whose entire job is paging a human about a condition nothing else
+ * watches: an incident ran a full night undetected because the one caller that
+ * needed to page unconditionally was silently gated behind an opt-in flag that
+ * happened to be unset. Do not reach for this on a routine best-effort alert —
+ * the opt-in default exists on purpose for those.
  *
  * Severity → Pushover priority: warning = -2 (badge only, no notification),
  * error = 0 (normal notification), critical = 1 (high-priority, bypasses the
@@ -55,6 +64,8 @@ export interface ReportOpsInput {
   detail?: string;
   /** Override the auto dedup key (source|message) for coarser/finer grouping. */
   dedupeKey?: string;
+  /** Bypass the OPS_ALERTS_ENABLED opt-in gate. See the file header before using this. */
+  force?: boolean;
 }
 
 const DEFAULT_THROTTLE_MS = 60 * 60 * 1000; // 1h
@@ -106,7 +117,7 @@ async function sendPushover(title: string, message: string, priority: -2 | 0 | 1
  */
 export async function reportOps(input: ReportOpsInput): Promise<boolean> {
   try {
-    if (!isEnabled()) return false;
+    if (!input.force && !isEnabled()) return false;
 
     const severity: OpsSeverity = input.severity ?? 'warning';
     const dedupeBasis = input.dedupeKey ?? `${input.source}|${input.message}`;

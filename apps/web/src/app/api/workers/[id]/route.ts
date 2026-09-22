@@ -1286,7 +1286,7 @@ export async function PATCH(
         } catch { /* non-fatal — fall through to normal validation */ }
       }
       if (autoDetectRefusal) {
-        fireGateEvent({
+        const frictionSignature = fireGateEvent({
           gate: GATE_SLUGS.MISSION_BASE_ADOPTION,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
@@ -1297,7 +1297,7 @@ export async function PATCH(
           workerId: worker.id,
           callerOrigin: 'worker',
         });
-        return NextResponse.json(autoDetectRefusal, { status: 400 });
+        return NextResponse.json({ ...autoDetectRefusal, gate: GATE_SLUGS.MISSION_BASE_ADOPTION, frictionSignature }, { status: 400 });
       }
 
       // pr_required fallback: a task scoped as "rebase/merge PR #N" can lose
@@ -1337,7 +1337,7 @@ export async function PATCH(
       // runner's logs. Write what the agent actually sent onto this worker
       // row before refusing it; each rejection is its own worker row, so
       // there is nothing to reconcile against a later, successful attempt.
-      const persistRejectedCompletionPayload = async (reason: string) => {
+      const persistRejectedCompletionPayload = async (reason: string): Promise<string> => {
         // Salvage measurement before refusing the status write. `body` still
         // carries the full completion payload (costUsd, tokens, turns, git
         // stats, resultMeta) at this point — the gate returns 400 below without
@@ -1352,7 +1352,7 @@ export async function PATCH(
         // place on purpose: every arm of this gate refuses through here, so a
         // future arm cannot be added that persists the payload and forgets the
         // ledger (or the reverse).
-        fireGateEvent({
+        const frictionSignature = fireGateEvent({
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
@@ -1427,11 +1427,13 @@ export async function PATCH(
           summaryProvenance: rejectedSummarySource === 'agent' || rejectedSummarySource === 'fallback' ? rejectedSummarySource : null,
           detail: { outputRequirement: reason, salvagedArtifactId },
         });
+
+        return frictionSignature;
       };
 
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR) {
-        await persistRejectedCompletionPayload('pr_required');
+        const frictionSignature = await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
           hint: 'create_pr',
@@ -1440,13 +1442,14 @@ export async function PATCH(
           // its crash handler. Same slug the gate_events row above carries —
           // one vocabulary, not two.
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
         }, { status: 400 });
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
       if (outputReq === 'artifact_required' && !hasPR) {
         if (!(await hasDeliverableArtifact())) {
-          await persistRejectedCompletionPayload('artifact_required');
+          const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
             error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',
             hint: 'create_pr or create_artifact',
@@ -1455,6 +1458,7 @@ export async function PATCH(
             // its crash handler. Same slug the gate_events row above carries —
             // one vocabulary, not two.
             gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
           }, { status: 400 });
         }
         // Artifact is the satisfier (no PR). Nothing was committed/pushed to the
@@ -1501,7 +1505,7 @@ export async function PATCH(
       // confirmed deliverable just because the session's own complete_task
       // call never landed.
       if (isBookkeepingTask && isFallbackSummary && !hasPR && !(await hasDeliverableArtifact())) {
-        await persistRejectedCompletionPayload('bookkeeping_no_report');
+        const frictionSignature = await persistRejectedCompletionPayload('bookkeeping_no_report');
         return NextResponse.json({
           error: 'Task has no confirmed outcome — the session ended without the agent calling complete_task to report its status. This is a bookkeeping/organizer task: report the outcome via complete_task (summary or structuredOutput), not a pull request or artifact.',
           hint: 'organizer_did_not_report',
@@ -1510,6 +1514,7 @@ export async function PATCH(
           // its crash handler. Same slug the gate_events row above carries —
           // one vocabulary, not two.
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
         }, { status: 400 });
       }
 
@@ -1533,7 +1538,7 @@ export async function PATCH(
             : effectiveDirtyWorktree
               ? 'uncommitted changes in the worktree'
               : 'no confirmed outcome — the session ended without the agent calling complete_task';
-          await persistRejectedCompletionPayload('auto');
+          const frictionSignature = await persistRejectedCompletionPayload('auto');
           return NextResponse.json({
             error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
@@ -1542,6 +1547,7 @@ export async function PATCH(
             // its crash handler. Same slug the gate_events row above carries —
             // one vocabulary, not two.
             gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
           }, { status: 400 });
         }
         // `discardEdits` is the caller talking the gate out of a refusal it
@@ -1595,7 +1601,7 @@ export async function PATCH(
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
             : 'uncommitted changes in the worktree';
-          await persistRejectedCompletionPayload('none');
+          const frictionSignature = await persistRejectedCompletionPayload('none');
           return NextResponse.json({
             error: `Task has ${workDescription} but no pull request or artifact, and outputRequirement is 'none'. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
@@ -1604,6 +1610,7 @@ export async function PATCH(
             // its crash handler. Same slug the gate_events row above carries —
             // one vocabulary, not two.
             gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
           }, { status: 400 });
         }
         if (discardReason && !hasCrossBranchDeliverable) {
@@ -1648,7 +1655,7 @@ export async function PATCH(
 
           if (isEmptyHandoff) {
             await persistRejectedCompletionPayload('handoff_required');
-            fireGateEvent({
+            const frictionSignature = fireGateEvent({
               gate: GATE_SLUGS.HANDOFF_REQUIRED,
               surface: 'PATCH /api/workers/[id]',
               outcome: 'rejected',
@@ -1666,6 +1673,8 @@ export async function PATCH(
             return NextResponse.json({
               error: 'This task has dependent(s) waiting on it. You must include `handoff.delivered` in your structured output (`structuredOutput.handoff.delivered`) with a one-line summary of what you delivered before completing.',
               hint: 'handoff_required',
+              gate: GATE_SLUGS.HANDOFF_REQUIRED,
+              frictionSignature,
             }, { status: 400 });
           }
         }

@@ -73,6 +73,12 @@ had to do. Low priority is fine — this is background signal, not a blocker.
   `get_failure_analytics` with `error: '<your error text>'` first — it tells
   you whether the failure is an already-known pattern (with count and
   first/last seen) and returns a ready-to-use `frictionSignature`.
+- If the friction is a **gate refusal** — a 400 from `create_task` or from
+  completing a task (`pr_required`/`artifact_required` unmet, a manifest or
+  param-vocabulary rejection, etc.) — it never becomes a worker failure, so
+  `get_failure_analytics` has nothing to look up. Read `frictionSignature`
+  straight off the 400 body instead (every gate refusal carries one) and
+  forward it as-is. Do not hand-construct or reformat it.
 - Either way, pass the result into `create_task` as
   `context: { frictionSignature: '<slug>', frictionExcerpt: '<first line>' }`.
   The server deduplicates friction tasks by `(frictionSignature, workspace)`

@@ -128,6 +128,16 @@ export interface CompositionRow {
   ts: Date;
   policyVersion: string;
   arm: MemoryDigestArm;
+  /**
+   * Probability this row's task would have drawn `task_scoped`, as recorded at
+   * assignment time. 1 marks a row written after the ship flip (unconditional
+   * rendering, no draw); anything else is a row from the pre-flip randomised
+   * cohort. The terminal readout never reads this column — the boundary it
+   * cares about is the contamination marker, not the flip — but the post-ship
+   * guardrail monitor (`memory-digest-guardrail-monitor.ts`) needs it to keep
+   * the two cohorts apart.
+   */
+  propensity: number;
   /** NULL = written by a runner predating the column. Never imputed. */
   taskMatchDerivedBy: string | null;
   /** NULL = predates the column. Rows must be segmented by backend, not pooled. */
@@ -357,8 +367,15 @@ export interface TaskObservation {
   calledRecall: boolean | null;
 }
 
-/** Worker statuses that count as a catastrophe for the guardrail. */
-const FAILED_STATUSES = new Set(['failed', 'error']);
+/**
+ * Worker statuses that count as a catastrophe for the guardrail.
+ *
+ * Exported so the standing post-ship guardrail monitor
+ * (`memory-digest-guardrail-monitor.ts`) applies the identical definition of
+ * "failed" rather than a second copy that can silently drift from the one the
+ * terminal readout was judged on.
+ */
+export const FAILED_STATUSES = new Set(['failed', 'error']);
 
 /**
  * The contamination boundary: the first moment the marker value appears.
