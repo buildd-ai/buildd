@@ -25,6 +25,7 @@ import {
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
+import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
@@ -1452,6 +1453,14 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Model-routing experiment (docs/design/model-routing-experiment.md). Null —
+    // and a no-op below — unless the team has a `running` experiment row and
+    // this task is eligible or inherits an arm. Never throws, never defers.
+    const experimentDraw = await drawModelRoutingArm({
+      teamId: taskTeamId, task: task as any, explicitModel: explicit, routerReason: routingDecision.reason,
+      routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
+    });
+
     // Resolve the concrete model ID via the tier registry.
     // - explicit override: bypass registry, pass full ID to runner as-is.
     // - tier path: task.tier → router alias → registry → full model ID.
@@ -1475,6 +1484,17 @@ export async function POST(req: NextRequest) {
         );
         resolvedModel = entry.model;
         resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+        if (experimentDraw) {
+          const treatment = await applyModelRoutingTreatment(experimentDraw, {
+            controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
+            resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId),
+            clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
+          });
+          if (treatment) {
+            resolvedModel = treatment.model;
+            resolvedTierMeta = { tier: treatment.tier, provider: treatment.provider, source: treatment.source };
+          }
+        }
       } else {
         // No team — fall back to router alias (resolver would fail without teamId)
         resolvedModel = routingDecision.model;
@@ -1533,6 +1553,10 @@ export async function POST(req: NextRequest) {
       .returning({ id: tasks.id });
 
     if (updated.length === 0) continue; // Already claimed by another request
+
+    if (experimentDraw) {
+      await recordModelRoutingAssignment(experimentDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
+    }
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
