@@ -13,12 +13,90 @@ permissions:
   id-token: write
 
 jobs:
+  detect-error-type:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure'
+    outputs:
+      error_type: ${{ steps.classify.outputs.error_type }}
+      is_infrastructure_error: ${{ steps.classify.outputs.is_infrastructure_error }}
+      failed_job: ${{ steps.classify.outputs.failed_job }}
+      run_id: ${{ steps.classify.outputs.run_id }}
+    steps:
+      - name: Classify error type
+        id: classify
+        run: |
+          RUN_ID=${{ github.event.workflow_run.id }}
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+
+          # Get failed job logs with full context (don't truncate)
+          LOGS=$(gh run view $RUN_ID --log-failed 2>&1)
+
+          # Detect infrastructure errors that should not trigger code fixes:
+          # 1. Test machine unreachable over Tailscale (network/host infra issue)
+          # 2. Error message explicitly says to run 'sudo tailscale up --ssh' on host
+          if echo "$LOGS" | grep -qE "Test machine.*is unreachable over Tailscale|sudo tailscale up --ssh"; then
+            echo "error_type=tailscale_unreachable" >> $GITHUB_OUTPUT
+            echo "is_infrastructure_error=true" >> $GITHUB_OUTPUT
+            echo "::warning::Infrastructure error detected: test machine unreachable via Tailscale — will auto-retry instead of attempting code fix"
+            # Find which job failed (integration is the only one with Tailscale dependency)
+            FAILED_JOB=$(gh run view $RUN_ID --json jobs -q '.jobs[] | select(.conclusion=="FAILURE") | .name' | head -1)
+            echo "failed_job=$FAILED_JOB" >> $GITHUB_OUTPUT
+            echo "Failed job: $FAILED_JOB"
+          else
+            echo "error_type=code_issue" >> $GITHUB_OUTPUT
+            echo "is_infrastructure_error=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  infra-auto-retry:
+    runs-on: ubuntu-latest
+    needs: detect-error-type
+    if: |
+      needs.detect-error-type.outputs.is_infrastructure_error == 'true' &&
+      github.event.workflow_run.head_branch == 'dev' &&
+      !contains(github.event.workflow_run.head_commit.message, 'skip-retry:')
+    steps:
+      - name: Auto-rerun failed jobs with backoff
+        run: |
+          RUN_ID=${{ needs.detect-error-type.outputs.run_id }}
+          FAILED_JOB=${{ needs.detect-error-type.outputs.failed_job }}
+
+          echo "Detected infrastructure error in job: $FAILED_JOB"
+          echo "Will attempt to auto-rerun the failed job up to 3 times with backoff."
+
+          # Attempt rerun with exponential backoff
+          for attempt in 1 2 3; do
+            echo "Rerun attempt $attempt/3..."
+            if gh run rerun $RUN_ID --failed 2>&1; then
+              echo "✓ Successfully triggered rerun of failed jobs"
+              echo "The job will execute again — if it passes, no code change was needed."
+              echo "If it fails again with the same error, this indicates a persistent infra issue."
+              exit 0
+            fi
+
+            if [ $attempt -lt 3 ]; then
+              # Exponential backoff: 60s, 120s
+              wait_time=$((60 * attempt))
+              echo "Rerun trigger failed, waiting ${wait_time}s before next attempt..."
+              sleep $wait_time
+            else
+              echo "❌ Failed to trigger rerun after 3 attempts"
+              echo "This is unusual — check GitHub Actions API status"
+              exit 1
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   auto-fix:
     runs-on: ubuntu-latest
+    needs: detect-error-type
     if: >
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.head_branch == 'dev' &&
-      !contains(github.event.workflow_run.head_commit.message, 'autofix:')
+      !contains(github.event.workflow_run.head_commit.message, 'autofix:') &&
+      needs.detect-error-type.outputs.is_infrastructure_error == 'false'
     steps:
       # Mint a token for the release App so the autofix push to dev is authored
       # by the App, not the default GITHUB_TOKEN. Pushes made with GITHUB_TOKEN
