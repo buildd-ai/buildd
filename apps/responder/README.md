@@ -89,7 +89,7 @@ No default points at production. Every address is explicit.
 | `BUILDD_RESPONDER_INTERVAL_SECONDS` | no | Default 60 |
 | `BUILDD_RESPONDER_RENOTIFY_HOURS` | no | Default 24, matching `queue-stall`'s `RENOTIFY_HOURS` |
 | `BUILDD_RESPONDER_SAMPLE_RETENTION_HOURS` | no | Default 6 |
-| `BUILDD_RESPONDER_NARRATIVE_MODEL` | no | Default `claude-opus-5` |
+| `BUILDD_RESPONDER_NARRATIVE_MODEL` | no | Default: the premium tier model (`TIER_DEFAULTS.premium` in `packages/core/model-tier-defaults.ts`) |
 | `BUILDD_RESPONDER_NARRATIVE_TIMEOUT_MS` | no | Default 20000 |
 
 `DATABASE_URL` is **not** read. The feed has its own variable so the

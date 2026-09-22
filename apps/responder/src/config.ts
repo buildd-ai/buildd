@@ -26,6 +26,11 @@
 
 import { homedir } from 'os';
 import { join } from 'path';
+// Pure constants, no imports of its own — so this shares no module graph with
+// the web app (the reason `@buildd/core/db` is off limits; see
+// probes/cron-runs-feed.ts). Reading the tier default instead of a literal
+// model ID keeps the narrative on the fleet's current premium generation.
+import { TIER_DEFAULTS } from '../../../packages/core/model-tier-defaults';
 
 export const MISSING_NOTIFY_MESSAGE =
   'No notification path configured: set PUSHOVER_USER and PUSHOVER_TOKEN ' +
@@ -136,6 +141,6 @@ export function loadConfig(env: Env = process.env): ResponderConfig {
     renotifyHours: positiveInt(env, 'BUILDD_RESPONDER_RENOTIFY_HOURS', 24),
     sampleRetentionHours: positiveInt(env, 'BUILDD_RESPONDER_SAMPLE_RETENTION_HOURS', 6),
     narrativeTimeoutMs: positiveInt(env, 'BUILDD_RESPONDER_NARRATIVE_TIMEOUT_MS', 20_000),
-    narrativeModel: optional(env, 'BUILDD_RESPONDER_NARRATIVE_MODEL') ?? 'claude-opus-5',
+    narrativeModel: optional(env, 'BUILDD_RESPONDER_NARRATIVE_MODEL') ?? TIER_DEFAULTS.premium.model,
   };
 }

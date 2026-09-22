@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig, MISSING_NOTIFY_MESSAGE } from './config';
+import { TIER_DEFAULTS } from '../../../packages/core/model-tier-defaults';
 
 const MINIMAL = {
   BUILDD_RESPONDER_STATE_DIR: '/tmp/responder-test',
@@ -43,6 +44,16 @@ describe('loadConfig', () => {
       ANTHROPIC_API_KEY: 'illustrative-api-key',
     });
     expect(cfg.narrative?.kind).toBe('oauth');
+  });
+
+  test('the narrative model defaults to the premium tier, not a pinned ID', () => {
+    // A literal here goes stale silently when the tier moves a generation.
+    expect(loadConfig(MINIMAL).narrativeModel).toBe(TIER_DEFAULTS.premium.model);
+  });
+
+  test('the narrative model can be overridden', () => {
+    const cfg = loadConfig({ ...MINIMAL, BUILDD_RESPONDER_NARRATIVE_MODEL: 'override-model' });
+    expect(cfg.narrativeModel).toBe('override-model');
   });
 
   test('the cron_runs feed is optional and absent by default', () => {
