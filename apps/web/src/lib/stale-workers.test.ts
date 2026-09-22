@@ -2355,6 +2355,33 @@ describe('cleanupUnresumedAnswers', () => {
     expect(insertedValues[0].description).toContain('Which database?');
   });
 
+  // neon-http has no transactions: the worker was already CAS-updated to
+  // `superseded` before this insert runs, so a rejection here must be
+  // compensated by hand or the worker is stuck `superseded` forever with the
+  // human's answer gone and no continuation to pick it up.
+  it('restores the worker to waiting_input with the answer requeued when the continuation insert fails', async () => {
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => { throw new Error('insert failed'); }),
+      })),
+    } as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    // First write is the supersede CAS; second is the rollback this test cares about.
+    expect(capturedWorkerUpdates).toHaveLength(2);
+    const rollback = capturedWorkerUpdates[1];
+    expect(rollback.status).toBe('waiting_input');
+    expect(rollback.pendingInstructions).toBe('Use Postgres');
+    expect(rollback.completedAt).toBeNull();
+    // No compensating task, no note, no seat release — the answer is still
+    // queued on the worker for a later sweep to retry.
+    expect(capturedInsertValues).toBeNull();
+    expect(capturedAccountsSet).toBeNull();
+  });
+
   it('posts one warning note naming the failure to deliver', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
