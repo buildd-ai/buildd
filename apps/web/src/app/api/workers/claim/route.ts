@@ -56,6 +56,7 @@ import {
   predictTaskAreas,
 } from './context-injection';
 import { attachMissionHandoff } from './mission-handoff-injection';
+import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
   attachClaudeCredentials,
   attachCodexCredentials,
@@ -1814,16 +1815,31 @@ export async function POST(req: NextRequest) {
   const claimedTaskIds = claimedWorkers.map(cw => cw.taskId);
   if (claimedTaskIds.length > 0) {
     const dependentCounts = new Map<string, number>();
-    const dependentRows = await db.execute(sql`
-      SELECT dep_id AS "taskId", count(*)::integer AS "dependentCount"
-      FROM ${tasks}, jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
-      WHERE dep_id = ANY(${claimedTaskIds})
-        AND ${tasks.status} != 'cancelled'
-      GROUP BY dep_id
-    `);
-
-    for (const row of dependentRows.rows as any[]) {
-      dependentCounts.set(row.taskId, Number(row.dependentCount) ?? 0);
+    // This runs AFTER the claim has been committed, so it must never be able to
+    // fail the claim. It did: the predicate interpolated a JS array into a
+    // template fragment, which renders as a parameter list rather than an
+    // array, so `ANY(($1, $2))` was rejected by Postgres on every execution —
+    // turning every successful claim into a 500 the runner threw on and leaving
+    // the worker rows it had just created for the stale sweep to reap. Work
+    // committed, then silently discarded.
+    //
+    // Two independent fixes, because either alone leaves a trap:
+    //   1. the predicate is built by dependentCountQuery, whose rendered SQL is
+    //      asserted in a test (the route's own suite stubs drizzle-orm, so no
+    //      test here can see a malformed fragment);
+    //   2. a failure degrades the handoff ANNOUNCEMENT, which is advisory, and
+    //      never the dispatch. An enrichment query has no business deciding
+    //      whether a runner learns it has work.
+    try {
+      const dependentRows = await db.execute(dependentCountQuery(claimedTaskIds));
+      for (const row of dependentRows.rows as any[]) {
+        dependentCounts.set(row.taskId, Number(row.dependentCount) ?? 0);
+      }
+    } catch (err) {
+      console.error(
+        '[claim] dependent-count query failed; handoff announcement degraded, dispatch unaffected:',
+        err,
+      );
     }
 
     for (const cw of claimedWorkers) {
