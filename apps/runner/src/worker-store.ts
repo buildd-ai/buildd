@@ -18,7 +18,32 @@ function teardownCodexHomeForExpired(data: { id?: unknown; taskBackend?: unknown
   }
 }
 
-const WORKERS_DIR = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'workers');
+/**
+ * Store root, resolved once on FIRST USE — not at module load.
+ *
+ * Module-load resolution made this module unredirectable from a test: a
+ * `BUILDD_HOME` set in a `beforeAll` (or injected by a test runner that imports
+ * the module transitively) arrived after the import had already baked the path
+ * in. The unit suite therefore wrote its fixture records into the operator's
+ * real `~/.buildd/workers`, where they were indistinguishable from fleet data.
+ *
+ * Memoised because this sits on the persist hot path, and because prod
+ * behaviour must stay byte-identical: same precedence, same value, resolved
+ * once. `__resetWorkerStoreRoot` is test-only.
+ */
+let workersDirCache: string | null = null;
+
+function workersDir(): string {
+  if (workersDirCache === null) {
+    workersDirCache = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'workers');
+  }
+  return workersDirCache;
+}
+
+/** Test-only: forget the memoised root so a new BUILDD_HOME takes effect. */
+export function __resetWorkerStoreRoot(): void {
+  workersDirCache = null;
+}
 
 // Fields to persist (excludes transient UI state)
 const PERSISTED_FIELDS = [
@@ -44,18 +69,38 @@ interface PersistedWorker {
   [key: string]: unknown;
 }
 
+/**
+ * Age reference for the TTL: when the worker last DID something, not when its
+ * file was last written.
+ *
+ * `_savedAt` is re-stamped by `saveWorker` on every persist, and both the
+ * batched dirty-flush and the `killedByRestart` rewrite below persist records
+ * that have done nothing for days — so a `_savedAt` TTL renewed itself on every
+ * contact and nothing ever expired. `MAX_AGE_MS` and the "24h history" the
+ * runner advertises both mean activity age, so measure that.
+ *
+ * `_savedAt` stays as the fallback for legacy files written before
+ * `completedAt`/`lastActivity` were persisted — the same precedence
+ * `history-store.ts` already uses.
+ */
+export function activityAt(data: Partial<PersistedWorker>): number {
+  const completed = typeof data.completedAt === 'number' ? data.completedAt : 0;
+  const active = typeof data.lastActivity === 'number' ? data.lastActivity : 0;
+  return Math.max(completed, active) || (typeof data._savedAt === 'number' ? data._savedAt : 0);
+}
+
 function ensureDir() {
-  if (!existsSync(WORKERS_DIR)) {
-    mkdirSync(WORKERS_DIR, { recursive: true });
+  if (!existsSync(workersDir())) {
+    mkdirSync(workersDir(), { recursive: true });
   }
 }
 
 function workerPath(workerId: string): string {
-  return join(WORKERS_DIR, `${workerId}.json`);
+  return join(workersDir(), `${workerId}.json`);
 }
 
 function tmpPath(workerId: string): string {
-  return join(WORKERS_DIR, `${workerId}.json.tmp`);
+  return join(workersDir(), `${workerId}.json.tmp`);
 }
 
 // Workers whose terminal error has already been written to their own session
@@ -140,20 +185,20 @@ export function saveWorker(worker: LocalWorker): void {
 
 /** Load all persisted workers from disk */
 export function loadAllWorkers(): LocalWorker[] {
-  if (!existsSync(WORKERS_DIR)) return [];
+  if (!existsSync(workersDir())) return [];
 
   const workers: LocalWorker[] = [];
   const now = Date.now();
   let files: string[];
 
   try {
-    files = readdirSync(WORKERS_DIR);
+    files = readdirSync(workersDir());
   } catch {
     return [];
   }
 
   for (const file of files) {
-    const filePath = join(WORKERS_DIR, file);
+    const filePath = join(workersDir(), file);
 
     // Clean up orphaned .tmp files
     if (file.endsWith('.tmp')) {
@@ -167,8 +212,9 @@ export function loadAllWorkers(): LocalWorker[] {
       const raw = readFileSync(filePath, 'utf-8');
       const data = JSON.parse(raw) as PersistedWorker;
 
-      // Skip files older than 24h
-      if (data._savedAt && now - data._savedAt > MAX_AGE_MS) {
+      // Skip files whose last ACTIVITY is older than 24h
+      const age = activityAt(data);
+      if (age && now - age > MAX_AGE_MS) {
         try { unlinkSync(filePath); } catch {}
         teardownCodexHomeForExpired(data);
         continue;
@@ -189,7 +235,9 @@ export function loadAllWorkers(): LocalWorker[] {
       if (data.status === 'working') {
         data.status = 'error';
         data.error = 'Killed: runner restarted, in-flight session terminated';
-        data._savedAt = now;
+        // `_savedAt` deliberately NOT bumped: this is a status correction, not
+        // activity. Bumping it renewed the 24h TTL on every runner restart,
+        // which is how records (including leaked test fixtures) became immortal.
         killedByRestart = true;
         try {
           writeFileSync(filePath, JSON.stringify(data, null, 2));
@@ -260,8 +308,9 @@ export function loadWorker(workerId: string): LocalWorker | null {
     const raw = readFileSync(filePath, 'utf-8');
     const data = JSON.parse(raw) as PersistedWorker;
 
-    // Skip if expired
-    if (data._savedAt && Date.now() - data._savedAt > MAX_AGE_MS) {
+    // Skip if expired (activity age, not write age — see activityAt)
+    const age = activityAt(data);
+    if (age && Date.now() - age > MAX_AGE_MS) {
       try { unlinkSync(filePath); } catch {}
       teardownCodexHomeForExpired(data);
       return null;

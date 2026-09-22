@@ -184,6 +184,53 @@ is indistinguishable from a passing one, so
 either collected or named in its exclusion table with the command that does run
 it. When you add a test directory, add it to the roots.
 
+### Process isolation also means a throwaway `BUILDD_HOME`
+
+`runTestFile` gives every test process its own `BUILDD_HOME` under `tmpdir()`
+and deletes it afterwards. Seven runner modules resolve that variable when they
+are first imported (`worker-store`, `history-store`, `session-logger`,
+`outbox`, `doctor`, `updater`, `index`), so a test that sets it in a `beforeAll` is
+already too late — injecting it at the spawn point is the only place that
+covers all of them.
+
+This is not hygiene, it is measurement. Before it existed, one test file built
+its store path from the home directory and called the real `saveWorker` /
+`loadAllWorkers`, so `bun run test` wrote fixture records into the operator's
+live runner store. There they were indistinguishable from fleet data: the store
+rewrites any `working` record to `error` on load, so the fixtures read back as
+failed workers, and the running runner logged a bogus "not found remotely"
+reconcile line for each of them. Analyses built on that store had to be
+retracted. The suite was green the whole time, because writing to the wrong
+place is not a test failure.
+
+Three layers keep it that way, weakest to strongest:
+
+| layer | where | what it catches |
+|---|---|---|
+| injection | `runTestFile` | any module reading `BUILDD_HOME`, whenever it reads it |
+| corpus lint | `scripts/test-home-isolation.test.ts` | a tracked test file referencing `homedir()` / `process.env.HOME` outside its allow-list |
+| run tripwire | `scripts/run-unit-tests.ts` | the real store changing at all across a run, on a quiescent host |
+
+The tripwire snapshots `~/.buildd/workers` before the first spawn and after the
+last, and names the changed entries. A missing directory snapshots as `null`
+and must stay `null` — the suite *creating* it is itself the failure, not a
+clean slate.
+
+It fails the build on CI (directory absent) and on an idle developer machine,
+where nothing else could have touched the store. On the runner host the same
+directory is the live runner's own store, and a co-resident session can be
+rewriting heartbeat/activity records in it the whole time the suite runs — a
+byte-diff can't tell that apart from a leak; one measurement (idle, zero tests
+running) saw ~370 of 417 real worker files "change" in 8 seconds from live
+traffic alone. So the tripwire first checks whether the store already shows
+activity from *before* any test process spawned (`isStoreLikelyLive`, in
+`storeBefore`); if so, a later diff is reported but does not fail the build
+(`storeDiffIsFatal`) — the injection and corpus-lint layers above are what
+still gate a real regression there.
+
+If you need real store I/O in a test, write under `process.env.BUILDD_HOME` and
+call `__resetWorkerStoreRoot()` after changing it. Never `homedir()`.
+
 ### Why isolation is mandatory
 
 `mock.module(path, factory)` replaces a module **globally for the whole process**.
