@@ -310,6 +310,9 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     const body = await res.json();
     expect(body.deadlock).toBe(true);
     expect(body.cycle).toEqual(cycleTaskIds);
+    expect(body.message).toContain('DEADLOCK DETECTED');
+    expect(body.message).toContain('circular wait cycle');
+    expect(body.message).toContain('cancel this task');
   });
 
   it('cross-mission 409 message differs from same-mission', async () => {
