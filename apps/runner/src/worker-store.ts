@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import type { LocalWorker, CheckpointEventType } from './types';
 import { teardownStableCodexHome } from './codex-auth';
+import { sessionLog } from './session-logger';
 
 /**
  * Best-effort terminal teardown of a Codex worker's stable CODEX_HOME when its
@@ -56,6 +57,17 @@ function workerPath(workerId: string): string {
 function tmpPath(workerId: string): string {
   return join(WORKERS_DIR, `${workerId}.json.tmp`);
 }
+
+// Workers whose terminal error has already been written to their own session
+// log — 59% of failed workers had NO error-level entry in their own log
+// (the reason lived only in this state file), and the two files shared no
+// correlation key. Hooking this single choke point (rather than the ~25
+// `worker.error = ...` assignment sites scattered across workers.ts,
+// recovery.ts, hook-factory.ts, pusher-manager.ts and worker-sync.ts) means
+// it fires exactly when the state file holding the reason is written, and
+// the guard here keeps a worker that gets saved repeatedly in the same
+// terminal state from duplicating the entry.
+const loggedTerminalErrors = new Set<string>();
 
 /** Truncate tool call inputs to limit file size */
 function truncateToolCalls(toolCalls: Array<{ name: string; timestamp: number; input?: any }>): Array<{ name: string; timestamp: number; input?: any }> {
@@ -112,6 +124,17 @@ export function saveWorker(worker: LocalWorker): void {
     console.error(`[WorkerStore] Failed to save worker ${worker.id}:`, err);
     // Clean up temp file if rename failed
     try { unlinkSync(tempPath); } catch {}
+  }
+
+  if (worker.status === 'error' && worker.error) {
+    if (!loggedTerminalErrors.has(worker.id)) {
+      loggedTerminalErrors.add(worker.id);
+      sessionLog(worker.id, 'error', 'terminal_error', worker.error, worker.taskId);
+    }
+  } else {
+    // Left the error state (recovered, or a fresh attempt reusing the id) —
+    // a later terminal error is a new occurrence and should log again.
+    loggedTerminalErrors.delete(worker.id);
   }
 }
 

@@ -6,7 +6,7 @@
  */
 
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { checkBwrapSupport } from './env-scan';
@@ -23,6 +23,10 @@ import {
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const WORKER_STORE_TTL_MS = 24 * 60 * 60 * 1000; // mirrors worker-store MAX_AGE_MS
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
+// Overridable for tests — production always redirects the runner's own
+// stdout/stderr to this fixed path (an external wrapper, not this process).
+const RUNNER_LOG_PATH = process.env.BUILDD_RUNNER_LOG_PATH || '/tmp/buildd.log';
+const RUNNER_LOG_ROTATE_MAX_BYTES = 5 * 1024 * 1024; // 5MB — grows ~0.5MB/day, so this is days of history per rotation
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -369,12 +373,49 @@ function checkConfig(): CheckResult {
   }
 }
 
+export interface RotateResult {
+  rotated: boolean;
+  sizeBefore: number;
+}
+
+/**
+ * Copy-then-truncate rotation, not rename-then-recreate: the log file is
+ * stdout redirected by an external wrapper (`>> logPath`) that holds the fd
+ * open for the runner's whole lifetime. Renaming the path away wouldn't give
+ * that still-running process a new fd at the old name — nothing would exist
+ * there again until the process restarts. Truncating in place is safe for an
+ * O_APPEND writer (every write() re-seeks to EOF first), so the next append
+ * after truncateSync(path, 0) correctly resumes from offset 0 with no gap.
+ *
+ * Keeps exactly one prior rotation (`<path>.1`) rather than a full history —
+ * this is a bound on a single ever-growing file, not the forensic archive
+ * (that's claims.log, which this never touches: different file, different
+ * directory, never passed here).
+ */
+export function rotateLogIfLarge(path: string, maxBytes: number): RotateResult {
+  if (!existsSync(path)) return { rotated: false, sizeBefore: 0 };
+  const sizeBefore = statSync(path).size;
+  if (sizeBefore < maxBytes) return { rotated: false, sizeBefore };
+  try {
+    copyFileSync(path, `${path}.1`);
+    truncateSync(path, 0);
+  } catch {
+    return { rotated: false, sizeBefore };
+  }
+  return { rotated: true, sizeBefore };
+}
+
 function checkRunnerLog(): CheckResult {
-  const logPath = '/tmp/buildd.log';
+  const logPath = RUNNER_LOG_PATH;
   try {
     if (!existsSync(logPath)) {
-      return { name: 'runner-log', status: 'warn', message: 'No runner log at /tmp/buildd.log' };
+      return { name: 'runner-log', status: 'warn', message: `No runner log at ${logPath}` };
     }
+
+    // Proactive, size-triggered rotation on every doctor cycle — decoupled
+    // from the crash/update-loop detection below, which used to be the only
+    // trigger for touching this file (and only "fixed" it by clearing it).
+    rotateLogIfLarge(logPath, RUNNER_LOG_ROTATE_MAX_BYTES);
 
     const tail = execSync(`tail -50 "${logPath}"`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
 
@@ -583,13 +624,20 @@ function fixHistoryDb(): FixResult {
 }
 
 function fixRunnerLog(): FixResult {
-  // If auto-update loop detected, the update retry fix should handle it.
-  // Clear the log to break the visual pattern.
+  // Auto-update/crash loop detection itself is unaffected by this — this only
+  // stops the log from growing unbounded. Previously this cleared the file
+  // outright (`echo ... > logPath`), destroying the forensic record instead
+  // of preserving it; force a rotation now instead, keeping the content in
+  // `<path>.1` rather than discarding it.
   try {
-    execSync('echo "--- doctor cleared log $(date) ---" > /tmp/buildd.log', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
-    return { check: 'runner-log', success: true, message: 'Cleared runner log' };
-  } catch {
-    return { check: 'runner-log', success: false, message: 'Could not clear runner log' };
+    const result = rotateLogIfLarge(RUNNER_LOG_PATH, 0);
+    return {
+      check: 'runner-log',
+      success: true,
+      message: result.rotated ? `Rotated runner log (${result.sizeBefore} bytes preserved in ${RUNNER_LOG_PATH}.1)` : 'Runner log empty, nothing to rotate',
+    };
+  } catch (err: any) {
+    return { check: 'runner-log', success: false, message: err?.message || 'Could not rotate runner log' };
   }
 }
 

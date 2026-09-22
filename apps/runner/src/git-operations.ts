@@ -339,8 +339,14 @@ export async function setupWorktree(
     // Warn if parent repo has sparse checkout enabled. Git worktrees get their
     // own sparse-checkout config so this doesn't directly affect the worktree,
     // but it's worth logging so the pattern is visible if issues recur.
+    //
+    // stdio is fully piped (not the execSync default, which inherits fd 2):
+    // on a non-sparse repo this throws on every single call, and with the
+    // default stdio its stderr text streams straight into the runner's real
+    // log on every worker start. Piping keeps the throw (still caught below)
+    // without the leak.
     try {
-      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000 }).trim();
+      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
       if (sparsePatterns) {
         console.warn(
           `[Worker ${workerId}] Parent repo has sparse checkout enabled. ` +
@@ -523,17 +529,26 @@ export async function setupWorktree(
     // worktree holds — `git branch -D` on those always fails, and the resulting
     // "cannot delete branch 'X' used by worktree" noise used to be the first
     // symptom of this whole class of bug.
+    // stdio piped for the same reason as the sparse-checkout probe above: this
+    // throws on every candidate that isn't already a local branch, which in
+    // practice is nearly always — the default inherited stderr leaked that
+    // "error: branch not found" line on every worker start.
     for (const candidate of candidates) {
       if (branchOwners.has(candidate)) continue;
       try {
-        execSync(`git branch -D "${candidate}"`, execOpts);
+        execSync(`git branch -D "${candidate}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch {
         // Branch doesn't exist locally — that's fine
       }
     }
 
+    // stdio piped: git prints its own status line to stderr on a SUCCESSFUL
+    // `worktree add` too, which duplicated the console.log the runner already
+    // emits right after this call on every successful worker start. The
+    // failure branch below still gets full stderr text via err.message —
+    // piping only stops it from also going to the real log stream.
     try {
-      execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, execOpts);
+      execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
       // Make the failure legible: name the branch and, when the branch namespace
       // is the cause, the worktree that holds it. Re-probe rather than trusting
