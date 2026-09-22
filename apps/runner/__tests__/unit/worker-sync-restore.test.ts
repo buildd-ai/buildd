@@ -182,3 +182,82 @@ describe('WorkerSync.restoreWorkersFromDisk — restart orphan notification', ()
     expect(update.resultMeta).toBeUndefined();
   });
 });
+
+describe('WorkerSync.restoreWorkersFromDisk — already-terminal records are left on disk', () => {
+  beforeEach(() => {
+    mockUpdateWorker.mockClear();
+    diskWorkers = [];
+  });
+
+  test('a worker that was already done before this restart is not loaded into memory', () => {
+    diskWorkers = [restartKilledFromDisk({
+      id: 'w-done',
+      status: 'done',
+      error: undefined,
+      killedByRestart: undefined,
+    })];
+    const { sync, ctx } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    // getWorkers() merges done/error disk history separately (loadTerminalWorkersCached) —
+    // loading it into ctx.workers too just means evictCompletedWorkers deletes it
+    // again on the very next tick. That churn is the bug: worker_evicted was 37.7%
+    // of all per-worker log entries, almost entirely restart-reload-then-evict.
+    expect(ctx.workers.has('w-done')).toBe(false);
+  });
+
+  test('a worker that was already error before this restart (not killed by this one) is not loaded into memory', () => {
+    diskWorkers = [restartKilledFromDisk({
+      id: 'w-old-error',
+      status: 'error',
+      error: 'Task failed three restarts ago',
+      killedByRestart: undefined,
+    })];
+    const { sync, ctx } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    expect(ctx.workers.has('w-old-error')).toBe(false);
+    // Old terminal records need no reconciliation — they already reported.
+    expect(mockUpdateWorker).not.toHaveBeenCalled();
+  });
+
+  test('a worker THIS restart just killed (working -> error) is still loaded into memory', () => {
+    diskWorkers = [restartKilledFromDisk()]; // id: w-restart, killedByRestart: true
+    const { sync, ctx } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    expect(ctx.workers.has('w-restart')).toBe(true);
+    expect(ctx.workers.get('w-restart')?.status).toBe('error');
+  });
+
+  test('a waiting worker is still loaded into memory (resumable)', () => {
+    diskWorkers = [restartKilledFromDisk({
+      id: 'w-waiting',
+      status: 'waiting',
+      error: undefined,
+      killedByRestart: undefined,
+    })];
+    const { sync, ctx } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    expect(ctx.workers.has('w-waiting')).toBe(true);
+  });
+
+  test('a mix of terminal and live records only loads the live ones', () => {
+    diskWorkers = [
+      restartKilledFromDisk({ id: 'w-done-1', status: 'done', error: undefined, killedByRestart: undefined }),
+      restartKilledFromDisk({ id: 'w-done-2', status: 'error', error: 'old', killedByRestart: undefined }),
+      restartKilledFromDisk({ id: 'w-waiting-1', status: 'waiting', error: undefined, killedByRestart: undefined }),
+      restartKilledFromDisk({ id: 'w-killed-1' }), // killedByRestart: true
+    ];
+    const { sync, ctx } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    expect([...ctx.workers.keys()].sort()).toEqual(['w-killed-1', 'w-waiting-1']);
+  });
+});
