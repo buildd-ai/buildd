@@ -48,8 +48,14 @@ function fnv1a(input: string): string {
  *
  *   "Stale worker expired (no update for <n>+ minutes)"
  *     → "worker-failure:stale_worker_expired_no_update_for_n_min_1a2b3c"
+ *
+ * `namespace` defaults to `FRICTION_SIGNATURE_NAMESPACE` (worker failures, the
+ * original and still most common caller). A different refusal family that is
+ * never a worker failure — a gate 400, say — passes its own namespace so its
+ * keys read as what they are instead of borrowing `worker-failure:` for a
+ * refusal that was never a worker, let alone a failure.
  */
-export function toFrictionSignature(normalizedSignature: string): string {
+export function toFrictionSignature(normalizedSignature: string, namespace: string = FRICTION_SIGNATURE_NAMESPACE): string {
   const source = typeof normalizedSignature === 'string' ? normalizedSignature : '';
   const hash = fnv1a(source);
 
@@ -62,5 +68,5 @@ export function toFrictionSignature(normalizedSignature: string): string {
     .slice(0, STEM_MAX)
     .replace(/_+$/g, '');
 
-  return `${FRICTION_SIGNATURE_NAMESPACE}:${stem || 'unknown'}_${hash}`;
+  return `${namespace}:${stem || 'unknown'}_${hash}`;
 }
