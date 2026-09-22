@@ -208,6 +208,11 @@ export class BuilddClient {
     budgetExhausted?: boolean;
     // Steering-delivery crash: classify as infra_failure (must not consume retry)
     steeringDelivery?: boolean;
+    // Set by restoreWorkersFromDisk when this 'failed' write reconciles a
+    // session whose process died without ever reporting a terminal status —
+    // never sent by a live session. Tells the server's terminal-record ledger
+    // to classify this outcome as 'crashed' rather than an ordinary failure.
+    crashReconciled?: boolean;
     // Deliberate resume of a terminal worker (sendMessage follow-up). The server
     // reactivates a completed/failed/error worker ONLY when this is true — the
     // periodic keepalive sync sends an identical status:'running' payload and

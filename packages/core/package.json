@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.217.2",
+  "version": "0.217.3",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -100,6 +100,8 @@
     "./error-signature": "./error-signature.ts",
     "./gate-events": "./gate-events.ts",
     "./gate-analytics": "./gate-analytics.ts",
+    "./terminal-records": "./terminal-records.ts",
+    "./terminal-records-query": "./terminal-records-query.ts",
     "./release-baseline": "./release-baseline.ts",
     "./initiative-metric-registry": "./initiative-metric-registry.ts"
   },

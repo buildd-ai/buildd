@@ -498,6 +498,18 @@ mock.module('@buildd/core/path-claim', () => ({
   rearmWaiter: mockRearmWaiter,
 }));
 
+// The terminal-record ledger is fire-and-forget over a real db client
+// (`packages/core/db/client`, same reason path-claim is stubbed above), so it
+// is mocked directly here rather than left to reach the network and be
+// swallowed by its own try/catch — that would make every terminal-record
+// assertion below unobservable.
+let firedTerminalRecords: any[] = [];
+const mockFireTerminalRecord = mock((input: any) => { firedTerminalRecords.push(input); });
+mock.module('@/lib/terminal-record-ledger', () => ({
+  fireTerminalRecord: mockFireTerminalRecord,
+  TERMINAL_OUTCOMES: ['completed', 'failed', 'refused', 'crashed'],
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -9283,6 +9295,204 @@ describe('PATCH /api/workers/[id] — activeSessions seat release', () => {
       v => v.activeSessions != null
     );
     expect(decrementCall).toBeUndefined();
+  });
+});
+
+// ── Terminal-record ledger: one row for every session end ──────────────────
+// Regression: ~23% of started sessions emitted no terminal signal at all
+// (gate refusal / crashed process), so every rollup was computed over a
+// biased sample. See packages/core/terminal-records.ts.
+describe('terminal-record ledger', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockArtifactsFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockTriggerEvent.mockReset();
+    mockGenericInsert.mockClear();
+    firedTerminalRecords = [];
+    mockFireTerminalRecord.mockClear();
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api' });
+    mockTasksFindFirst.mockResolvedValue(null); // outputRequirement defaults to 'auto'
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+    // mockReset() above clears the module-level default implementation too
+    // (not just call history), so every test needs its own — tests that care
+    // about the returned row override this afterward.
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({ returning: mock(() => []) })),
+      })),
+    });
+  });
+
+  it('salvages cost/token/turn measurement and records outcome:refused when the output-requirement gate refuses a completion', async () => {
+    // 'auto' gate: commits with neither a PR nor an artifact refuses. No
+    // `branch` on the worker, so the GitHub PR auto-detect block is skipped.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+      commitCount: 0,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'completed',
+        summary: 'Did the work',
+        commitCount: 3,
+        costUsd: 1.5,
+        inputTokens: 500,
+        outputTokens: 100,
+        turns: 10,
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(400);
+    // The refusal must not have discarded the measurement carried on this
+    // same request — this is the fix for the "cost payload is structurally
+    // dropped" defect: persistTerminalMetrics was gated on abort===true, and
+    // on this path the PATCH never even reaches that gate.
+    expect(firedTerminalRecords).toHaveLength(1);
+    expect(firedTerminalRecords[0].outcome).toBe('refused');
+    expect(firedTerminalRecords[0].workerId).toBe('worker-1');
+    expect(firedTerminalRecords[0].costUsd).toBe(1.5);
+    expect(firedTerminalRecords[0].inputTokens).toBe(500);
+    expect(firedTerminalRecords[0].outputTokens).toBe(100);
+    expect(firedTerminalRecords[0].turns).toBe(10);
+    expect(firedTerminalRecords[0].shipped).toBe(false);
+  });
+
+  it('records outcome:completed with shipped:true when a completion with a PR lands', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/1',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{
+            id: 'worker-1', status: 'completed', turns: 8,
+            inputTokens: 200, outputTokens: 50, costUsd: '0.10', error: null,
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done', summarySource: 'agent' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(firedTerminalRecords).toHaveLength(1);
+    expect(firedTerminalRecords[0].outcome).toBe('completed');
+    expect(firedTerminalRecords[0].shipped).toBe(true);
+    expect(firedTerminalRecords[0].turns).toBe(8);
+    expect(firedTerminalRecords[0].costUsd).toBe(0.1);
+    expect(firedTerminalRecords[0].summaryProvenance).toBe('agent');
+  });
+
+  it('records outcome:failed for an ordinary agent-reported failure', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'failed', error: 'Something broke', turns: 3 }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'failed', error: 'Something broke' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(firedTerminalRecords).toHaveLength(1);
+    expect(firedTerminalRecords[0].outcome).toBe('failed');
+    expect(firedTerminalRecords[0].exitCause).toBe('Something broke');
+  });
+
+  it('records outcome:crashed (not failed) when the runner marks a reconciliation write with crashReconciled', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'failed', error: 'Process restarted' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'failed', error: 'Process restarted', crashReconciled: true },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(firedTerminalRecords).toHaveLength(1);
+    expect(firedTerminalRecords[0].outcome).toBe('crashed');
+  });
+
+  it('does not fire a terminal record for a non-terminal progress update', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'running' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { currentAction: 'Working on it' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(firedTerminalRecords).toHaveLength(0);
   });
 });
 

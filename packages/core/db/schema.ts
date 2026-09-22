@@ -3351,6 +3351,59 @@ export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
 export type GateEvent = typeof gateEvents.$inferSelect;
 export type NewGateEvent = typeof gateEvents.$inferInsert;
 
+/**
+ * One row per worker session end, on every path — completed, failed, the
+ * output-requirement gate refusing a completion, and a runner process death
+ * reconciled at the next startup. See packages/core/terminal-records.ts.
+ *
+ * `workerId` is unique: a worker's session ends exactly once, so a second write
+ * for the same worker (a retried reconciliation, a duplicate refusal) is a
+ * dedupe, not a new event — recordSessionTerminal upserts via
+ * onConflictDoNothing rather than allowing the row to fork.
+ */
+export const workerTerminalRecords = pgTable('worker_terminal_records', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  workerId: uuid('worker_id').notNull().references(() => workers.id, { onDelete: 'cascade' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  // 'completed' | 'failed' | 'refused' | 'crashed' — see TERMINAL_OUTCOMES in
+  // packages/core/terminal-records.ts. 'refused' and 'crashed' are not worker
+  // statuses (the worker row itself still lands on 'completed'/'failed') — they
+  // are the two SESSION shapes a plain status can't tell apart: a completion
+  // the output-requirement gate refused, and a process that died without ever
+  // reporting.
+  outcome: text('outcome').notNull().$type<'completed' | 'failed' | 'refused' | 'crashed'>(),
+  // normalizeErrorSignature() of the exit cause — the SAME normalizer
+  // gate_events.reason and get_failure_analytics use, so one failure family is
+  // one signature everywhere, never re-normalized downstream.
+  exitCause: text('exit_cause'),
+  turns: integer('turns'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  costUsd: decimal('cost_usd', { precision: 10, scale: 6 }),
+  durationMs: integer('duration_ms'),
+  // Whether a PR or artifact shipped from this session — the "was there
+  // anything to show" bit orphan-rate and refusal audits need without a join.
+  shipped: boolean('shipped').notNull().default(false),
+  // 'agent' | 'fallback' | null — same vocabulary as workers.summarySource.
+  summaryProvenance: text('summary_provenance'),
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workerIdx: uniqueIndex('worker_terminal_records_worker_idx').on(t.workerId),
+  workspaceOccurredIdx: index('worker_terminal_records_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+  outcomeOccurredIdx: index('worker_terminal_records_outcome_occurred_idx').on(t.outcome, t.occurredAt),
+}));
+
+export const workerTerminalRecordsRelations = relations(workerTerminalRecords, ({ one }) => ({
+  worker: one(workers, { fields: [workerTerminalRecords.workerId], references: [workers.id] }),
+  task: one(tasks, { fields: [workerTerminalRecords.taskId], references: [tasks.id] }),
+  workspace: one(workspaces, { fields: [workerTerminalRecords.workspaceId], references: [workspaces.id] }),
+}));
+
+export type WorkerTerminalRecord = typeof workerTerminalRecords.$inferSelect;
+export type NewWorkerTerminalRecord = typeof workerTerminalRecords.$inferInsert;
+
 // smoke-test-3-ci-retry-1 20260725
 
 export type CronRun = typeof cronRuns.$inferSelect;

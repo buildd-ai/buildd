@@ -1,10 +1,10 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-09-14
-**Previous scan**: 2026-09-07
-**Current SDK version in Buildd**: `^0.3.231` (needs bump to ^0.3.270 — 39 versions behind; verify the TodoWrite/Task-tools breaking change from v0.3.233 before bumping, see URGENT below)
-**Python SDK**: v0.2.152 (unchanged since Sep 7 — no new PyPI releases this window; bundled CLI still 2.1.259, now 11 CLI versions behind the TS SDK)
-**Claude Code CLI**: v2.1.270 (released ~September 12, 2026)
+**Last updated**: 2026-09-21
+**Previous scan**: 2026-09-14
+**Current SDK version in Buildd**: `^0.3.272` (bumped from `^0.3.231` sometime this week — resolved to exactly `0.3.272` in `bun.lock`, parity with CLI v2.1.272. **The TodoWrite/Task-tools pre-condition flagged for three prior scans was NOT applied before this bump — see URGENT below, this is now a live issue, not a future risk.**)
+**Python SDK**: v0.2.156 (bundles CLI v2.1.276 — 2 CLI versions behind the TS SDK/CLI head)
+**Claude Code CLI**: v2.1.278 (released September 19, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
 
@@ -20,13 +20,171 @@
 
 **Sonnet 5 pricing permanently frozen at $2/$10/MTok (announced August 10, 2026).** The scheduled September 1 reversion to $3/$15 will not occur. Any billing alerts or role card estimates set against the higher rate can be removed — the intro rate is now the standard rate. Note: the new tokenizer still generates ~30% more tokens for the same text vs Sonnet 4.6, so effective costs may still be higher even at frozen prices.
 
-### September 1, 2026: Cache-read pricing cut 75% ($1.00 → $0.25/MTok) — ⚠️ STILL NOT ACTIONED (verified in code, Sep 14)
+### September 1, 2026: Cache-read pricing cut 75% ($1.00 → $0.25/MTok) — 🔧 RESOLVED ARCHITECTURALLY (verified in code, Sep 21)
 
-Applies to Fable 5.1/Mythos 5.1 (and per reporting, cache-read pricing broadly). Flagged as high-priority recommendation #1 on Sep 7; **confirmed this week by direct code inspection that it was never applied**: `packages/core/model-prices.ts:42` still hardcodes `fable: { ..., cacheRead: 1, ... }` — the old $1.00/MTok rate, not the current $0.25/MTok rate. `claude-fable-5-1` itself *was* correctly added as the `premium-plus` tier default (`packages/core/model-tier-defaults.ts:32`) — only the price table update was missed. Every Fable/Mythos cache-read token costed in Buildd's budget forecasts and role cost estimates is currently overstated ~4x. Effort: Trivial (one-line fix). Priority: High — carried forward as recommendation #1 again this week.
+Flagged as overstated ~4x for three straight scans (Sep 7, Sep 14). This week's code inspection found it's no longer the live-path problem it was: commit `de547e7e` (Sep 4, "resolve tiers from a keyless live catalog") added `packages/core/model-catalog.ts`, which sources real-time pricing — including `cacheRead` — from OpenRouter's public `/api/v1/models` endpoint (`priceFromCatalog`, `model-catalog.ts:183`) and prefers it over the static table everywhere `priceForModel()` is called. The static fallback in `model-prices.ts:42` still hardcodes the stale `cacheRead: 1` for the `fable` tier, but it's now only consulted when the catalog hasn't loaded yet (runner cold start) — not the steady-state figure feeding budget forecasts. Residual action: update the one-line static constant to `0.25` for cold-start accuracy, but this is no longer urgent — downgraded out of URGENT this week, tracked as a low-priority cleanup in Recommendations.
 
-### ⚠️ NEW: Verify TodoWrite/Task-tools opt-in before bumping past SDK v0.3.233
+### 🚨 ACTIVE NOW: TodoWrite/Task-tools missing on Sonnet 5 / Fable / Opus 4.8+ workers
 
-Confirmed by code inspection (Sep 14): `apps/runner/src/workers.ts` never sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and never explicitly lists `TodoWrite`/`Task*` in `tools`/`allowedTools`. SDK v0.3.233 (shipped Aug 14) removed these tools from the default surface on Opus 4.8+, Sonnet 5, Fable 5/5.1, and Mythos — Buildd's primary model tiers. Buildd is currently pinned below that version (`^0.3.231`), so this hasn't bitten yet, but **the moment SDK is bumped to `^0.3.263`+ per the recommendation above, every worker on those models silently loses todo/task-tracking tools** unless this is fixed first. This has been carried in "Still Relevant" for three straight weekly scans (since Aug 24) without anyone applying it — see recommendation #1 below, now escalated to co-lead with the cache-read fix since it's a blocking pre-condition for the overdue SDK bump.
+This was flagged as a **pre-condition to check before bumping the SDK** in the last three scans (Aug 24, Sep 7, Sep 14) — nobody applied it, and the SDK bump happened anyway. `bun.lock` now resolves `@anthropic-ai/claude-agent-sdk` to exactly `0.3.272` (parity with CLI v2.1.272), well past the `v0.3.233` threshold where SDK v0.3.233 removed `TodoWrite`/`TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList` from the default tool surface on Opus 4.8+, Sonnet 5, Fable 5/5.1, and Mythos. `apps/runner/src/workers.ts` still never sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and never explicitly lists `TodoWrite`/`Task*` in `tools`/`allowedTools` (confirmed by grep, Sep 21 — zero hits repo-wide). **Every Buildd worker running one of those model tiers today is silently missing todo/task-tracking tools** — this is no longer a risk to avoid, it is the current production state. Fix: set `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in the worker spawn env in `apps/runner/src/workers.ts` (near where `allowedTools` is built, ~line 2600–3008). Effort: Low. Priority: **Highest — apply this week.**
+
+### 🚨 NEW: GitSpawn (CVE-2026-55607) — verify the `ultrareview` code path before reviewing untrusted PRs
+
+Publicly disclosed Sept 1–2 (widely reported Sept 2026, e.g. [The Hacker News](https://thehackernews.com/2026/09/malicious-git-configs-can-make-claude.html)): a malicious `.git/config` can abuse Git's `core.fsmonitor` hook — which AI coding agents run as a background operation with no user-approval prompt — to achieve arbitrary code execution with the user's privileges outside sandbox protection. Affects Claude Code, Codex, Cursor, goose, and others; exploitable from any repo with an intact `.git` directory (archive, shared drive, clone), no push access needed. **Status for Claude Code specifically**: the primary `core.fsmonitor` / worktree-confusion path (CVE-2026-55607, versions 2.1.38–2.1.162) was fixed in **2.1.163** — long superseded by Buildd's current 2.1.278. But reporting also names a **second, separately-triggered variant in the `claude ultrareview` path**, using a different git-config execution sink, confirmed still live on **2.1.252** — no source found this week confirming that variant is fixed in any later release. Buildd's own `/code-review ultra` command (documented in this repo's `CLAUDE.md`) invokes exactly that path, and ultrareview is specifically pitched for reviewing PRs — i.e. untrusted, externally-supplied repository content is exactly its use case. Action: before relying on `/code-review ultra` / `ultrareview` against a PR from an untrusted fork or branch, confirm with Anthropic support or a fresh CVE lookup whether the ultrareview-path variant has since been patched; if unconfirmed, treat ultrareview on untrusted branches as a sandbox-escape risk in the interim. Effort: Low (verification first). Priority: High — security.
+
+---
+
+## SDK Releases (September 15 – September 21, 2026)
+
+8 CLI releases (v2.1.271–v2.1.278), 8 TypeScript SDK releases (v0.3.271–v0.3.278), 4 Python SDK releases (v0.2.153–v0.2.156, bundling CLI up to v2.1.276) this week.
+
+### TypeScript SDK v0.3.271 – v0.3.278
+
+| Version | Key Changes |
+|---------|-------------|
+| **v0.3.271** | `omitClaudeMd` on `AgentDefinition` in the `agents` option — a subagent can skip user/project/local CLAUDE.md (managed policy files still load); parity with CLI v2.1.271 |
+| **v0.3.272** | Parity with CLI v2.1.272 (this is the version Buildd resolved to) |
+| **v0.3.273** | New `usage_report` sibling (`SDKUsageReport`) on the assistant message delivering a headless `/usage` result; `reason: "worker_restart"` on `task_notification` when a background task was killed by a worker-process restart; one-line transcript notice when a `Stop`/`SessionStart` hook callback times out |
+| **v0.3.274** | `mcpServer: {name, source}` added to `canUseTool` options + tool hook inputs, so hosts can key trust on `source === "sdk"`; `CLAUDE_CODE_MCP_STARTUP_WAIT_MS` to bound/disable the first-turn MCP connection wait; `CLAUDE_CODE_EMIT_STARTUP_TIMING=1` for stream-json hosts |
+| **v0.3.275** | Fixed a deferred tool call's result carrying internal key names (`toolUseResult`) instead of the public `tool_use_result` shape when the tool re-runs at the start of a resumed turn; `getSessionMessages()`/`forkSession()` fixes for missing turns and rejected fork points |
+| **v0.3.276** | Parity with CLI v2.1.276 |
+| **v0.3.277** | `pasted_content` on `SDKUserMessage` (text the user pasted vs. typed); optional remote-session latency fields on the success result message; `'userSettings'` as an `updateSettings()` source (persists `effortLevel` the way `/effort` does) |
+| **v0.3.278** | Parity with CLI v2.1.278 |
+
+### Python SDK v0.2.153 – v0.2.156
+
+| Version | Key Changes |
+|---------|-------------|
+| **v0.2.153** | `snapshot` field added to `SystemPromptPreset` + new `SystemPromptCustom` typed dict — when `True`, the system prompt recorded on the session's first request stays fixed across resumes (better prompt-cache reuse); bundles CLI v2.1.273 |
+| **v0.2.154–156** | CLI bundle bumps only, tracking v2.1.274 → v2.1.276 |
+
+### CLI v2.1.271 – v2.1.278
+
+| Version | Key Changes |
+|---------|--------------|
+| **v2.1.271** | Fast mode in Remote sessions (cloud + self-hosted runners); mouse support in `/config` fullscreen; `claude self-hosted-runner --drain-marker-file`; per-command `allowed_domains` for Bash/PowerShell/Monitor in auto mode; `omitClaudeMd` in agent frontmatter; `multiplier` up to 10 in the `modelPricing` managed setting; VS Code: agent map, Hooks dialog, Permission rules dialog |
+| **v2.1.272** | Bug fixes and reliability improvements |
+| **v2.1.273** | New LLM-gateway request headers (`x-claude-code-request-class`, `x-claude-code-agent-type`, etc., opt-in via `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`); MCP server disconnection notice pointing to `/mcp`; session forking for `--remote-control` sessions |
+| **v2.1.274** | Critical-memory-usage warning banner; `CLAUDE_CODE_MCP_STARTUP_WAIT_MS`; `effort` attribute on the `claude_code.llm_request` OTel span; `claude_code.managed_settings_resolved` OTel event |
+| **v2.1.275** | `claude.ai` skills/plugins sync to terminal sessions (opt out via `syncClaudeAiSkills`/`syncClaudeAiPlugins: false`); `/plugin install <plugin> --marketplace <source>`; send-now key (ctrl+enter) to interrupt and send queued messages; **regression**: broke every request on `ANTHROPIC_BASE_URL` proxy/gateway setups with `400 … Input tag 'advisor_20260301'` |
+| **v2.1.276** | Hotfix for the v2.1.275 gateway/proxy regression above |
+| **v2.1.277** | **`AGENTS.md` support**: in a project with no `CLAUDE.md`, Claude Code now reads `AGENTS.md` instead — the open instruction-file standard already read by Codex, Cursor, Copilot, Aider, and 60,000+ open-source projects; 100+ other changes (60+ bug fixes) |
+| **v2.1.278** | **Auto mode now defaults to the server-side classifier** for Claude API, Enterprise, Bedrock, Vertex, Foundry, and gateway users — no client-side classifier billing overhead (`CLAUDE_CODE_AUTO_MODE_SERVER=0` opts out); new `/status` row shows whether the session's classifier is running server-side |
+
+---
+
+## New Platform Features (September 15–21, 2026)
+
+### `AGENTS.md` interoperability (CLI v2.1.277, September 18)
+
+Claude Code adopted the open `AGENTS.md` standard: when a project has no `CLAUDE.md`, Claude Code reads `AGENTS.md` instead (if `CLAUDE.md` exists, it still wins, unchanged). This is Anthropic explicitly supporting a competitor-originated format (OpenAI's Codex popularized it) to reduce duplicate instruction files for teams running more than one coding agent against the same repo.
+
+**Relevance for Buildd**: No action needed — every Buildd repo already ships a `CLAUDE.md`, which continues to take priority. Worth knowing for `task.backend: codex` workers or any external repo Buildd might work against that ships `AGENTS.md` but no `CLAUDE.md`: those now get real instructions instead of none. No engineering action.
+
+### Auto mode: server-side classifier by default (CLI v2.1.278, September 19)
+
+Auto mode's per-call allow/deny/pause classification (previously always run client-side, consuming context and, on some billing paths, tokens) now defaults to running server-side for API/Enterprise/Bedrock/Vertex/Foundry/gateway users, with no classifier billing overhead. `CLAUDE_CODE_AUTO_MODE_SERVER=0` opts back to client-side.
+
+**Relevance for Buildd**: Worth checking whether any Buildd role or worker config uses Claude Code's `autoMode`/`classifyAllShell` settings (tracked as older recommendation #22, `PostToolUse` `classifierContext`) — if so, this is a straightforward cost reduction with no behavior change, since it's on by default for eligible auth types. Verify Buildd's worker auth type (OAuth vs. API key) is one of the eligible paths before assuming it's already applied. Effort: Low (verification).
+
+### VS Code: Agent Map, Hooks Dialog, Permission Rules Dialog (CLI v2.1.271, carried into this week's stabilization releases)
+
+Visual/GUI equivalents of configuration Buildd already exposes server-side: the agent map mirrors Buildd's task/worker hierarchy view, the Hooks dialog mirrors role hook config, and the Permission Rules dialog mirrors `allowedTools`/`Tool(param:value)` rules already in `role-config.ts`. No functional gap for Buildd to close — these are IDE-side conveniences for solo Claude Code users, not something Buildd's own dashboard is missing. No action.
+
+---
+
+## Anthropic Business News (September 15–21, 2026)
+
+### IPO: Nasdaq targeted for October 2026, valuation chatter reaches $2T
+
+Reporting this week (BusinessToday, KuCoin, others) has Anthropic setting sights on Nasdaq for a potential October 2026 listing, with valuation chatter as high as ~$2T — up from the ~$965B figure carried in earlier scans. No official price range set yet; underwriters (Morgan Stanley, Goldman Sachs, JPMorgan, others) are engaged. Annualized revenue run rate is reported north of $65B, up 7x from end-of-2025. No new information changes any prior Buildd recommendation — tracked for the eventual "Anthropic is now a public company" positioning/compliance angle, no action yet.
+
+### Claude reported to be doing 26% of Anthropic's own model R&D
+
+Anthropic stated Claude now leads roughly 26% of the company's own model research and development, completing most of those tasks end-to-end from a high-level prompt under human supervision, with ~90% of R&D done in some form of collaboration with Claude. Notable as an eat-your-own-dogfood data point (agentic coding driving frontier model development itself) but not actionable for Buildd — informational only.
+
+### Smart Reports GA push continues; advisor plugin for registered investment advisers
+
+Coverage this week reiterates last week's Smart Reports Enterprise beta and adds a new advisor plugin for registered investment advisers (Enterprise plans recommended for audit logs). No change to the "complementary, not competing, with Buildd's mission/task health surfaces" read from last week.
+
+---
+
+## New Ecosystem Projects (Since September 14, 2026)
+
+| Project | Stars | Description |
+|---------|-------|--------------|
+| **obra/superpowers** | ~290K+ (continued growth from ~285.6K on Sep 14) | Still the highest-velocity repo in the ecosystem; notably, [issue #2177](https://github.com/obra/superpowers/issues/2177) documents four of its own bundled skills still instructing `TodoWrite` use after Claude Code 2.1.233 removed it by default — direct community evidence of the same breaking change flagged as ACTIVE NOW above. |
+| **rohitg00/awesome-claude-code-toolkit** | New, trending | Aggregator: 135 agents, 35 curated skills, 42 commands, 176+ plugins, 20 hooks, 15 rules, 7 templates, 14 MCP configs, 26 companion apps, 52 ecosystem entries — a single-repo index of the ecosystem's breadth, itself a signal of how fragmented plugin discovery has become. |
+| Several unnamed high-star plugins (94K–143K★) | 88.9K–143K | This week's trending list (per aggregator coverage) is dominated by context-management and "anti-slop" tooling: a persistent-cross-session-context plugin (~94.4K★), a "think like the laziest senior dev" plugin (~143K★), and a taste/anti-genericism skill (~88.9K★). Ecosystem trend: agents that resist over-engineering and context loss are now a bigger draw than new agent frameworks themselves. |
+
+**Ecosystem trend this week**: the superpowers `TodoWrite` issue (#2177) is a useful independent confirmation that the SDK v0.3.233 tool-removal breaking change is a live, felt problem across the ecosystem — not a theoretical one Buildd is alone in worrying about.
+
+---
+
+## Recommendations for Buildd
+
+### This Week (September 21, 2026)
+
+**#1 — 🚨 Set `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in worker spawn env — active bug, not a future risk**
+Confirmed: SDK is now at `0.3.272` (past the `v0.3.233` threshold) and `apps/runner/src/workers.ts` still never sets this env var or explicitly allows `TodoWrite`/`Task*`. Every worker running Sonnet 5, Fable 5/5.1, Opus 4.8+, or Mythos is silently missing todo/task-tracking tools right now. This item sat unapplied through four prior scans as a "check before bumping" caution; the bump happened without it. Location: `apps/runner/src/workers.ts` (~line 2600–3008, where `allowedTools`/env are built). Effort: Low. Priority: **highest — this week.**
+
+**#2 — Verify `claude ultrareview` safety before reviewing untrusted-branch PRs (GitSpawn / CVE-2026-55607)**
+A second, separately-triggered variant of the GitSpawn git-config RCE class was reported still live in the `claude ultrareview` path as of CLI 2.1.252 (vs. the main fsmonitor/worktree variant, fixed in 2.1.163). No source found this week confirms the ultrareview variant is fixed in any release since, including Buildd's current 2.1.278. Buildd's own `/code-review ultra` documented in `CLAUDE.md` calls exactly this path, against exactly its intended use case (reviewing a PR — untrusted content). Action: confirm patch status with Anthropic before treating ultrareview against an untrusted fork/branch as safe; document the finding either way. Effort: Low (verification). Priority: High — security.
+
+**#3 — Trivial cleanup: update the stale Fable `cacheRead: 1` static fallback to `0.25`**
+Downgraded from URGENT: the live OpenRouter-backed catalog (`model-catalog.ts`, shipped Sep 4) already prices Fable/Mythos cache-read tokens correctly in steady state, so this only affects cold-start estimates before the catalog loads. Still worth a one-line fix for correctness. Location: `packages/core/model-prices.ts:42`. Effort: Trivial. Priority: Low.
+
+**#4 — Verify Buildd's worker auth path gets the new server-side auto-mode classifier for free**
+CLI v2.1.278 defaults Claude API/Enterprise/Bedrock/Vertex/Foundry/gateway auth to a server-side auto-mode classifier with no billing overhead. If Buildd workers use Claude Code's `autoMode` and are on one of those auth paths, this is a cost reduction with zero code change required — just confirm eligibility. Effort: Low (verification). Priority: Medium.
+
+**#5 — No action: `AGENTS.md` support (informational)**
+Every Buildd repo ships `CLAUDE.md`, which still wins. No gap to close; noted for awareness only.
+
+### Still Relevant (From September 14, 2026)
+
+**#6 — Track `claude plugin eval` as a model for a Buildd skill-quality gate** (CLI v2.1.269)
+**#7 — Note Managed Agents "auto mode" as a compare-point for the gate ledger, not an adoption target**
+**#8 — Position the GitSpawn/threat-intelligence findings alongside Buildd's sandbox-isolation boundary** (broadened this week to include GitSpawn specifically, not just the earlier sandbox-escape disclosure)
+**#9 — Track DeepSeek Harness's "harness-as-swappable-shell" model against Buildd's own multi-backend positioning**
+
+### Still Relevant (From September 7, 2026)
+
+**#10 — Verify worker output-capture limits against `bashOutputMaxChars`/`taskOutputMaxChars` (128K)**
+**#11 — Evaluate `--permission-prompts none` for worker launch (replaces broad `bypassPermissions`?)**
+**#12 — Build a `/skill-doctor`-equivalent audit for workspace skills**
+**#13 — Track Enterprise Frontier Safeguards (EFS) as a co-messaging opportunity**
+**#14 — Investigate `managedMcpServers` for org-enforced role MCP config**
+**#15 — Track Managed Agents / `ant apply` maturity as a potential alternate worker backend**
+
+### Still Relevant (From August 24–31, 2026)
+
+**#16 — Wire `PreModelSwitch`/`PostModelSwitch` hooks for a model-switch audit trail** (SDK v0.3.251)
+**#17 — Use `--restricted` flag for reviewer/read-only roles** (CLI v2.1.248)
+**#18 — Use `modelUsage[*].costBasis` for Managed Agents billing accuracy** (SDK v0.3.246)
+**#19 — Hide `ambient` tasks from mission task views** (SDK v0.3.247)
+**#20 — Use `experimental.cacheTtl` for long-running batch workers** (CLI v2.1.248)
+**#21 — Track Claudeforce for enterprise CRM integration opportunity**
+**#22 — Use `perTaskStopAffordance` for graceful interrupt on long tasks** (SDK v0.3.246)
+**#23 — Enable cross-session messaging on Bedrock/Vertex/Foundry workers** (CLI v2.1.248)
+
+### Still Relevant (From August 17–24, 2026)
+
+**#24 — Use `PostToolUse` `classifierContext` for auto-mode decisions** (SDK v0.3.236)
+**#25 — Use `SDKContextUsage` from `/context` for context monitoring** (SDK v0.3.232)
+**#26 — Wire cross-session @mentions and `/hold`/`/refuse` for peer worker messaging** (CLI v2.1.232)
+**#27 — Pass GitLab MR URLs directly to `--worktree`** (CLI v2.1.232/v2.1.233; GitLab support keeps expanding)
+**#28 — Audit MCP server compatibility with MCP 2026-07-28 spec**
+
+### Still Relevant (Older)
+
+**#29 — Fix Python SDK skill-name injection** (v0.2.129 security fix) — still critical if unresolved
+**#30 — Investigate `claude self-hosted-runner` as a Buildd Enterprise deployment mode**
+**#31 — Expose `sandbox.filesystem.disabled` in role configuration**
+**#32 — Surface `api_error_status: 529` in task error UI**
+**#33 — Evaluate `codebase-memory-mcp` for token reduction** (32K-star project — now superseded in relevance since Buildd itself runs on `codebase-memory` MCP; verify this is still an open item or close it out)
+**#34 — Use `agentProgressSummaries` for live task visibility** (v0.3.162+)
+**#35 — OpenTelemetry worker observability**
+**#36 — `SessionStore` for transcript persistence** (alpha)
 
 ---
 

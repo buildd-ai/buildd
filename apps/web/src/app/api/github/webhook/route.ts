@@ -734,9 +734,16 @@ async function handlePullRequestEvent(event: {
     !pr.merged &&
     (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize')
   ) {
+    // A PR under an active request-changes retry loop can have more than one
+    // worker row stamped with the same (prNumber, prUrl) — the original
+    // worker and each retry ("attempt") task's own worker, since a retry
+    // continues on the SAME branch/PR rather than opening a new one. Order by
+    // newest so re-review dispatch (below) reads the retry's iteration
+    // context, not the original task's stale one.
     const openWorker = await db.query.workers.findFirst({
       where: workerOwnsPr(repository.full_name, pr.number),
       columns: { id: true, workspaceId: true, taskId: true, branch: true },
+      orderBy: [desc(workers.createdAt)],
     });
     if (openWorker) {
       // Detect merge conflicts: when GitHub explicitly reports mergeable=false, stamp
@@ -805,6 +812,19 @@ async function handlePullRequestEvent(event: {
         maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, false).catch(() => {});
         return;
       }
+    }
+
+    // A push to an already-open PR: if the PR carries an existing terminal,
+    // non-approving verdict (changes_requested/escalated), re-dispatch a
+    // reviewer against the new head. Without this the review loop never
+    // closes — see maybeReDispatchReviewer's doc comment.
+    if (!pr.draft && event.installation && action === 'synchronize' && openWorker?.taskId) {
+      await maybeReDispatchReviewer(
+        event.installation.id,
+        repository.full_name,
+        pr,
+        openWorker as typeof openWorker & { taskId: string },
+      );
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
@@ -1945,6 +1965,157 @@ async function maybeDispatchReviewer(
   } catch (err) {
     console.error(`[reviewer] maybeDispatchReviewer failed for PR #${pr.number}:`, err);
     return false;
+  }
+}
+
+/**
+ * On a push to an already-open PR (`synchronize`), re-dispatch a reviewer
+ * when the PR's current review verdict is a TERMINAL, NON-APPROVING one
+ * (`changes_requested` / `escalated`) made against a commit the push has now
+ * superseded.
+ *
+ * Closes the gap `maybeDispatchReviewer` leaves: that function only ever
+ * fires on `action === 'opened'`, so the fix a retry task pushes after a
+ * request-changes verdict was never re-reviewed — the review loop opened and
+ * never closed (see review-verdict-gate.ts's module doc for the other half
+ * of that bug, the gate's own stale-SHA handling).
+ *
+ * An `approved` verdict is deliberately NOT re-dispatched here — see
+ * review-verdict-gate.ts: a push after an approval makes the gate itself
+ * treat that approval as stale (blocking) rather than this function firing a
+ * fresh agent review on every push after every approval, which is by far the
+ * common case and usually merges before another push ever lands.
+ *
+ * Single-flight: skips when a review round is already `queued`/`reviewing`
+ * for this PR — the same one-reviewer-per-PR-at-a-time rule the manual
+ * `POST /api/prs/[prNumber]/re-review` route and the MCP `request_pr_review`
+ * force path apply, so a rapid run of pushes dispatches at most one reviewer.
+ * `createReviewerTask`'s own (workspace, PR, headSha) dedup guard is a
+ * second, independent backstop against a redelivered webhook.
+ *
+ * The dispatched round inherits the SAME iteration/maxIterations the request-
+ * changes retry loop already tracks on whichever task currently owns the PR
+ * (the original task, or the newest retry) — so the existing cap in
+ * `handleReviewerOutcomeIfNeeded` (apps/web/src/app/api/workers/[id]/route.ts,
+ * default 3) keeps capping the round count and escalating on exhaustion; this
+ * function does not need a cap of its own.
+ */
+async function maybeReDispatchReviewer(
+  installationId: number,
+  repoFullName: string,
+  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null },
+  openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
+): Promise<void> {
+  try {
+    const status = await readPrReviewStatus({ workspaceId: openWorker.workspaceId, prNumber: pr.number });
+
+    if (status.state === 'queued' || status.state === 'reviewing') {
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEWER_SINGLE_FLIGHT,
+        surface: 'webhook synchronize',
+        outcome: 'deferred',
+        reason: 'a reviewer is already working this PR',
+        workspaceId: openWorker.workspaceId,
+        taskId: openWorker.taskId,
+        workerId: openWorker.id,
+        callerOrigin: 'system',
+        detail: { prNumber: pr.number, reviewTaskId: status.reviewTaskId },
+      });
+      return;
+    }
+
+    if (status.state !== 'changes_requested' && status.state !== 'escalated') return;
+    const priorVerdictKind = status.verdict;
+    if (priorVerdictKind !== 'request-changes' && priorVerdictKind !== 'escalate') return;
+    // No recorded SHA, or the head hasn't actually moved since the verdict
+    // (a redelivered/duplicate synchronize) — nothing to re-review.
+    const priorHeadSha = status.reviewHeadSha;
+    if (!priorHeadSha || priorHeadSha === pr.head.sha) return;
+
+    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, openWorker.workspaceId) });
+    if (!workspace) return;
+
+    const task = await db.query.tasks.findFirst({
+      where: eq(tasks.id, openWorker.taskId),
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
+    });
+    if (!task) return;
+
+    let mission: {
+      mergePolicy?: import('@buildd/shared').MergePolicy | null;
+      requiresReview?: boolean;
+      workingBranch?: string | null;
+      integrationBranchEnabled?: boolean;
+    } | null = null;
+    if (task.missionId) {
+      const row = await db.query.missions.findFirst({
+        where: eq(missions.id, task.missionId),
+        columns: RESOLVE_POLICY_MISSION_COLUMNS,
+      });
+      if (row) mission = row;
+    }
+    const policy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
+    // The PR was already dispatched to a reviewer once under this policy — a
+    // tier change since then (workspace policy edited mid-review) means the
+    // workspace no longer wants an agent re-reviewing it.
+    if (policy.tier !== 'agent-review') return;
+
+    const taskCtx = (task.context ?? {}) as Record<string, unknown>;
+    const originalTask = {
+      title: task.title,
+      description: task.description,
+      backend: task.backend,
+      missionId: task.missionId ?? null,
+      pathManifest: task.pathManifest as string[] | null ?? null,
+      iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
+      maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
+    };
+
+    const reviewerTask = await createReviewerTask({
+      workspaceId: openWorker.workspaceId,
+      originalTaskId: task.id,
+      originalTask,
+      worker: { branch: openWorker.branch },
+      prNumber: pr.number,
+      prUrl: pr.html_url,
+      headSha: pr.head.sha,
+      reviewerRole: policy.agentReview!.reviewerRole,
+      installationId,
+      repoFullName,
+      policyConfig: workspace.gitConfig?.policyConfig ?? undefined,
+      priorVerdict: {
+        headSha: priorHeadSha,
+        verdict: priorVerdictKind,
+        confidence: status.confidence ?? 0,
+        summary: status.summary ?? '',
+        feedback: status.feedback,
+        escalationReason: status.escalationReason,
+      },
+    });
+
+    if (!reviewerTask || reviewerTask.deduplicated) return;
+
+    const reviewerTaskFull = {
+      id: reviewerTask.id,
+      title: reviewerTitle(pr.number, task.title),
+      description: null as null,
+      workspaceId: openWorker.workspaceId,
+      missionId: task.missionId ?? null,
+    };
+    await dispatchNewTask(reviewerTaskFull, workspace);
+    console.log(`[reviewer] Re-dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName} (was ${status.state} at ${priorHeadSha.slice(0, 7)})`);
+    await appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber: pr.number,
+      entry: {
+        kind: 'reviewing',
+        detail: `reviewer role \`${policy.agentReview!.reviewerRole}\` — re-review dispatched after a push superseded the ${status.state === 'escalated' ? 'escalated' : 'request-changes'} verdict`,
+      },
+      workspaceId: openWorker.workspaceId,
+    });
+  } catch (err) {
+    console.error(`[reviewer] maybeReDispatchReviewer failed for PR #${pr.number}:`, err);
   }
 }
 

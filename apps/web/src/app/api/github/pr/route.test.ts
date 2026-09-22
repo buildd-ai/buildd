@@ -3619,7 +3619,15 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
-    it('merges once a push has superseded the verdict', async () => {
+    // Regression: a push used to be treated as automatic proof that a fix
+    // was re-reviewed, so the gate passed on ANY head-SHA mismatch. Nothing
+    // re-reviewed it — the webhook only ever dispatched a reviewer on
+    // `opened` — so this is the exact pre-fix incident shape: merge lands on
+    // a commit whose only recorded verdict is a rejection of an earlier one.
+    // A reviewer is now re-dispatched automatically on `synchronize`
+    // (maybeReDispatchReviewer), and the gate blocks until THAT round
+    // resolves rather than trusting the push on its own.
+    it('still refuses the merge after a push — a push alone does not clear a request-changes verdict', async () => {
       autoThresholdWorker();
       mockReadPrReviewStatus.mockResolvedValue({
         state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
@@ -3627,9 +3635,6 @@ describe('PUT /api/github/pr', () => {
         iteration: 1, maxIterations: 3, reviewHeadSha: 'a'.repeat(40),
         prState: 'open', merged: false, mergeBlocked: null,
       } as any);
-      // The default PR fixture reports head sha `sha-42`, which is not the
-      // 40-hex the verdict was made against — but neither is a valid SHA pair,
-      // so state an explicit one to make the supersession real.
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
         if (/\/check-runs$/.test(path)) {
           return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
@@ -3640,8 +3645,9 @@ describe('PUT /api/github/pr', () => {
 
       const res = await put();
 
-      expect(res.status).toBe(200);
-      expect(mockMergePullRequest).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('requested changes');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
     it('an admin force still bypasses it, and the bypass is already recorded', async () => {
