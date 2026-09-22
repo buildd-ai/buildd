@@ -42,6 +42,14 @@ instead of aborting, so a whole batch survives one bad column name.
 | Mission rollup | `missions` + `tasks.mission_id` + `workers.task_id`; `missions.integration_branch_enabled`, `merge_policy` |
 
 Gotchas:
+- **Four PR columns are effectively unpopulated — do not build a metric on
+  them** (verified across ~1.6k PR rows, all-time, 2026-09-21):
+  `conflict_detected_at` ~15 rows, `pr_unresolvable_reason` **1 row
+  table-wide**, `pr_check_failure_count > 0` ~14 rows, and `files_changed` zero
+  on every integration PR while GitHub reports real sizes. So the
+  `pr_unresolvable_reason` *mix* is not determinable from the DB at all.
+  Dense substitutes: remediation dispatch (`tasks.*_retry_pr_number`) for
+  "went red / conflicted", the Actions API for CI outcomes, and `gh` for PR size.
 - `worker_error_traces` has **no `created_at`** — check
   `information_schema.columns` before writing a windowed query.
 - Retry-task *status* matters as much as count: a large `cancelled` share means
@@ -107,11 +115,30 @@ title. `claims.log` is real signal for starvation (`diagnosticReason`).
   number, e.g. `DEFAULT_MAX_CI_RETRIES` in `apps/web/src/lib/ci-retry.ts`,
   `classifyMergeFailure` / `dispatchConflictRetry` in `conflict-retry.ts`.
 
-## 5. Base drift — the derived metric worth computing
+## 5. Base drift — measured, and it does NOT predict merge
 
-Neither source stores it, and it predicts merge probability better than anything
-that is stored. For each PR, count how many *other* PRs merged into its base
-while it was open, then bucket. Script:
+**Corrected 2026-09-21 by direct measurement; the earlier claim here was wrong.**
+Base drift does not predict merge probability on this repo. Measured
+non-circularly (drift in a PR's first 6h, so the window does not depend on the
+outcome), merge probability *rises* 88% → 97% as drift climbs, and deciles are
+flat at 84–100%. The apparent cliff above 50 drift events is 6 PRs and is an
+**artifact of measuring to `now()` for still-open PRs** — a still-open PR
+accumulates drift precisely because it has not merged, so naive drift is
+circular. If you compute drift, bound the window independently of the outcome.
+
+The arithmetic explains why: at ~20 merges/day on `dev` and a *median
+time-to-merge of ~18 minutes*, a typical PR sees its base move 0.25 times. Drift
+cannot drive an outcome it never gets the chance to touch.
+
+**Use PR size instead** — it separates cleanly: OPEN p50 ≈ 15 changed files vs
+MERGED p50 ≈ 5.
+
+Drift is still worth computing for one narrower question: comparing *branch
+strategies*. An integration branch has a slower-moving base than trunk
+(measured p90 drift 2 vs 8), and that does track a lower conflict-retry rate —
+conflict-retry, not final merge, since most conflicted PRs merge anyway.
+
+Script (keep the outcome-independent window in mind):
 
 ```bash
 bun .claude/skills/delivery-forensics/scripts/base-drift.ts $S/prs.json
