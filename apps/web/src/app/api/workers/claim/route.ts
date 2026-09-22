@@ -24,6 +24,7 @@ import {
 } from '@buildd/core/oauth-budget';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
+import { readModelPin } from '@buildd/core/model-pin';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
@@ -1419,7 +1420,9 @@ export async function POST(req: NextRequest) {
     // 'paused'. The resulting model is written to task.predictedModel and
     // injected into task.context.model so worker-runner picks it up.
     const roleSlug = (task as any).roleSlug as string | null;
-    const explicit = (taskContext?.model as string | undefined) || null;
+    // Only a caller PIN counts as explicit — not the model a previous claim of
+    // this task wrote into context.model (a requeue keeps it). See model-pin.ts.
+    const explicit = readModelPin(taskContext);
     const TIER_ALIASES = new Set<string>(['haiku', 'sonnet', 'opus', 'inherit', ...TIERS]);
     const roleModel = roleSlug ? (roleFloorMap.get(roleSlug) ?? null) : null;
     const roleIsFullId = roleModel !== null && !TIER_ALIASES.has(roleModel);
@@ -1502,9 +1505,15 @@ export async function POST(req: NextRequest) {
     // budget downshift (a surprisingly cheap model) looks like a deliberate
     // choice. Fill-forward: rows claimed before this shipped have no reason and
     // must be reported as unknown rather than guessed at.
+    //
+    // `modelPinned` records whether `model` is a caller pin or this claim's
+    // routed output, so the next claim after a requeue routes afresh instead of
+    // replaying this result as an override. A role full-id pin is not a task
+    // pin: it is re-read from the role on every claim.
     const patchedContext = {
       ...(taskContext || {}),
       model: resolvedModel,
+      modelPinned: explicit !== null,
       routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };

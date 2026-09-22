@@ -822,10 +822,8 @@ describe('OAuth budget pacing', () => {
   });
 
   it('does not blame pacing for a task carrying an explicit model', async () => {
-    // The router returns `explicit_override` before the pause gate, so such a
-    // task can never be paced. The claim route writes `context.model` onto every
-    // task it claims and the requeue paths do not clear it, so this is the
-    // common re-queued-task shape — not an exotic one.
+    // The router returns `explicit_override` before the pause gate, so a
+    // caller-pinned task can never be paced.
     candidateTasks = [task({ roleSlug: 'builder', priority: 0, context: { model: 'claude-opus-4-6' } })];
     pacingVerdict = { pct: 0.97 };
 
@@ -833,6 +831,23 @@ describe('OAuth budget pacing', () => {
 
     const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
     expect(arg.explicitModel).toBe('claude-opus-4-6');
+  });
+
+  it('treats a requeued task\'s routed model as routable, not as a pin', async () => {
+    // The claim route writes its routed model into context.model and a requeue
+    // keeps it. The next claim routes afresh (model-pin.ts), so pacing CAN
+    // pause it — passing it as explicit would hide the real gate.
+    candidateTasks = [task({
+      roleSlug: 'builder',
+      priority: 0,
+      context: { model: 'claude-opus-4-6', routingReason: 'baseline', modelPinned: false },
+    })];
+    pacingVerdict = { pct: 0.97 };
+
+    await (await POST(makeRequest())).json();
+
+    const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
+    expect(arg.explicitModel).toBeNull();
   });
 
   it('does not assert pacing as the sole cause of an hours-old stall', async () => {

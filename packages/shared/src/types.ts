@@ -995,6 +995,33 @@ export interface CreateTaskInput {
   emitsPlan?: boolean;
 }
 
+/** Task model tier vocabulary (mirrors @buildd/core model-tier-defaults TIERS). */
+export type TaskModelTier = 'premium-plus' | 'premium' | 'standard' | 'budget';
+
+/**
+ * Body of PATCH /api/tasks/[id] (MCP `update_task`). Every field is optional;
+ * `null` clears an override.
+ */
+export interface UpdateTaskInput {
+  title?: string;
+  description?: string;
+  priority?: number;
+  project?: string | null;
+  status?: 'pending' | 'completed' | 'failed' | 'cancelled';
+  backend?: AgentBackend | null;
+  /**
+   * Tier pin for the NEXT claim or retry (never the running session). Setting
+   * a tier without `model` also drops an existing model pin.
+   */
+  tier?: TaskModelTier | null;
+  /**
+   * Exact model pin (Anthropic id) for the NEXT claim or retry; stored as
+   * `context.model` with `context.modelPinned: true`. Outranks `tier`.
+   */
+  model?: string | null;
+  maxLoops?: number;
+}
+
 export interface CreateMissionInput {
   title: string;
   description?: string;

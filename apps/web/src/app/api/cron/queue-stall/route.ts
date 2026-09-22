@@ -86,6 +86,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 // module: it shares no code path with the gate ladder and must not be able to
 // reach one.
 import { detectFleetIdle } from './fleet-idle';
+import { readModelPin } from '@buildd/core/model-pin';
 
 export const maxDuration = 60;
 
@@ -422,7 +423,7 @@ async function resolveStallGate(
       teamId: task.workspace?.teamId ?? null,
       priority: task.priority,
       kind: task.kind,
-      explicitModel: typeof ctx.model === 'string' ? ctx.model : null,
+      explicitModel: readModelPin(ctx),
     });
     if (paced) {
       return {
