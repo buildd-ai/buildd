@@ -103,6 +103,10 @@ export async function evaluateAutoMergeSafety(
     mission?: MissionIntegrationFields | null;
     bound?: ModelApproveBound;
     releaseConfig?: WorkspaceReleaseConfig | null;
+    /** Gate-ledger attribution for the freshness check below. All optional — omitting them still runs the check, just without workspace/task attribution on the ledger row. */
+    workspaceId?: string | null;
+    taskId?: string | null;
+    workerId?: string | null;
   },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
@@ -303,6 +307,68 @@ export async function evaluateAutoMergeSafety(
     return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
   }
 
+  // Base freshness — CI proof is a claim about headSha, not about "this PR is
+  // safe to merge right now". `dev` has no GitHub-side branch protection, so
+  // `mergeable_state` never reports `behind` here (that value only appears
+  // under a "require branches up to date" rule) — this is the only signal
+  // that catches a base which has moved since headSha's checks ran. Compare
+  // by SHA ancestry, not by timestamp: if headSha is behind the base branch's
+  // current tip, then no run against headSha — however recent — has ever
+  // seen the commits now on base, and "green" proves nothing about the tree
+  // this merge would actually produce.
+  //
+  // Phrased with the same "needs rebase" suffix `dirty` uses above so
+  // `classifyMergeFailure` routes this refusal through the identical
+  // conflict-retry path: a same-branch task merges the base in (a clean
+  // fast-forward here, same mechanics as a real conflict) and pushes, which
+  // re-triggers CI on a head that is fresh — the PR converges on its own
+  // instead of sitting refused for a human to notice.
+  if (prData?.base?.ref) {
+    let freshness: { behind_by?: number } | null = null;
+    let freshnessError: unknown = null;
+    try {
+      freshness = await githubApi(
+        installationId,
+        `/repos/${repoFullName}/compare/${encodeURIComponent(prData.base.ref)}...${headSha}`,
+      );
+    } catch (err) {
+      freshnessError = err;
+      console.warn(`[auto-merge] could not verify base freshness for ${repoFullName}#${prNumber}:`, err);
+    }
+    if (freshness && typeof freshness.behind_by === 'number' && freshness.behind_by > 0) {
+      const reason =
+        `PR is ${freshness.behind_by} commit${freshness.behind_by === 1 ? '' : 's'} behind ` +
+        `${prData.base.ref} — the green CI result was measured against a base that no longer ` +
+        `exists, needs rebase onto base branch`;
+      fireGateEvent({
+        gate: GATE_SLUGS.MERGE_BASE_FRESHNESS,
+        surface: 'auto-merge',
+        outcome: 'rejected',
+        reason,
+        workspaceId: opts?.workspaceId ?? null,
+        taskId: opts?.taskId ?? null,
+        workerId: opts?.workerId ?? null,
+        callerOrigin: 'system',
+        detail: { prNumber, headSha, baseRef: prData.base.ref, behindBy: freshness.behind_by },
+      });
+      return { ok: false, reason };
+    }
+    if (!freshness && freshnessError) {
+      // Fail closed like the CI-check read above — but NOT phrased with
+      // "needs rebase": we don't actually know the base moved, only that we
+      // could not check, so routing this into the conflict-retry rebase flow
+      // would waste an iteration on a PR that may already be current. It
+      // parks for the next webhook to re-evaluate, same as any other
+      // transient GitHub read failure in this function.
+      return {
+        ok: false,
+        reason: `could not verify base freshness — GitHub compare lookup failed: ${
+          freshnessError instanceof Error ? freshnessError.message : String(freshnessError)
+        }`,
+      };
+    }
+  }
+
   if (opts?.bound) {
     if (!prData) {
       // Fail closed: without the base ref there is no bound to enforce, and an
@@ -377,7 +443,7 @@ export async function tryAutoMergeWorkerPr(params: {
     prNumber,
     headSha,
     policy,
-    { mission, bound },
+    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id },
   );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);

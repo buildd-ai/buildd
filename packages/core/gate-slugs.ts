@@ -74,6 +74,13 @@ export const GATE_SLUGS = {
   CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral',
   /** Mission goal-criteria evaluation resolving to NOT_EVALUATED/UNVERIFIED instead of a real verdict. */
   CRITERIA_NOT_EVALUATED: 'criteria_not_evaluated',
+  /**
+   * Every merge door (via `evaluateAutoMergeSafety`) — the PR's newest CI
+   * result predates the current base tip. A green measured against a base
+   * that has since moved is not proof the merge result is green; refusing
+   * routes the PR through the same rebase-and-retest path as a real conflict.
+   */
+  MERGE_BASE_FRESHNESS: 'merge_base_freshness',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

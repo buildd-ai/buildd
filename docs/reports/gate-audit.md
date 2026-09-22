@@ -171,3 +171,23 @@ present. Nothing unattended may override a verdict.
 | 49 | `prs/[prNumber]/merge/route.ts` | `review_verdict` | rejected | dashboard merge with no `override` |
 | 50 | `prs/[prNumber]/merge/route.ts` | `review_verdict` | bypassed | `override: true` — an explicit human decision, recorded rather than passing unmarked |
 | 51 | `webhook/route.ts:handleReleasePrCiSuccess` | `review_verdict` | deferred | release promotion held by a verdict on the release PR itself |
+
+### Base-freshness gate — every merge door (`evaluateAutoMergeSafety`)
+
+`dev` has no GitHub-side branch protection, so a PR's CI result is proof about
+its head SHA only — nothing already checked whether the base branch had moved
+past that SHA since. `evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts`
+compares the head against the PR's live base ref via GitHub's compare API and
+refuses when the head is behind. Every caller of `evaluateAutoMergeSafety`
+inherits this for free — same shared-function shape as the review-verdict gate
+above.
+
+The refusal reason ends in "needs rebase onto base branch", the same suffix
+`mergeable_state: dirty` uses, so `classifyMergeFailure` routes it through the
+identical conflict-retry dispatch: a same-branch retry task merges the base in
+and pushes, which re-triggers CI on a head that is fresh. The PR converges
+without a human, the same way a real conflict does.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 52 | `auto-merge.ts:evaluateAutoMergeSafety` | `merge_base_freshness` | rejected | head is N commits behind the base branch's current tip — CI never ran against those commits |
