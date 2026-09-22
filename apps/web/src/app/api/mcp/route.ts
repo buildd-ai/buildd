@@ -496,9 +496,15 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             mcpTask.missionId !== null && mcpTask.missionId !== undefined &&
             blocker?.missionId !== mcpTask.missionId;
 
-          const message = isCrossMission
+          const hasDeadlock = 'deadlock' in waiterResult && waiterResult.deadlock;
+
+          let message = isCrossMission
             ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`
             : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
+
+          if (hasDeadlock) {
+            message += ` DEADLOCK DETECTED: A circular wait cycle exists (${waiterResult.cycle.length} tasks involved). A waiter will never be notified. You must either: (1) cancel this task and retry later, (2) have the blocking task cancel, or (3) use mission-level maxConcurrentTasks=1 to serialize conflicting tasks.`;
+          }
 
           const result: Record<string, unknown> = {
             claimed: false,
@@ -508,7 +514,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             message,
           };
 
-          if ('deadlock' in waiterResult && waiterResult.deadlock) {
+          if (hasDeadlock) {
             result.deadlock = true;
             result.cycle = waiterResult.cycle;
           }

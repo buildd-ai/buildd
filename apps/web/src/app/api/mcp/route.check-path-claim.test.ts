@@ -307,5 +307,8 @@ describe('check_path_claim MCP handler', () => {
     const result = JSON.parse(body.result.content[0].text);
     expect(result.deadlock).toBe(true);
     expect(result.cycle).toEqual(cycle);
+    expect(result.message).toContain('DEADLOCK DETECTED');
+    expect(result.message).toContain('circular wait cycle');
+    expect(result.message).toContain('cancel this task');
   });
 });

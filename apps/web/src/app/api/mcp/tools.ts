@@ -84,6 +84,7 @@ export function listMcpTools({ accountLevel, isSensitive }: ListMcpToolsOptions)
 
 If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
 If the path is already claimed by a sibling task, you receive blockingTaskId and must report blocked so a dependsOn edge can be added.
+If a deadlock cycle is detected (the blocking task is transitively waiting on you), deadlock=true is returned with a cycle array and actionable guidance on how to break it: cancel and retry, escalate to the blocking task's owner, or use mission-level maxConcurrentTasks=1.
 
 Requires a worker context (?worker=<workerId> in the MCP URL).`,
       annotations: {
