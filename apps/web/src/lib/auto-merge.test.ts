@@ -91,7 +91,7 @@ mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardR
 const mockFireGateEvent = mock((_input: any) => {});
 mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
-  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict' },
+  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict', MERGE_BASE_FRESHNESS: 'merge_base_freshness' },
 }));
 const mockAppendPrActivity = mock((_input: any) => Promise.resolve({ action: 'updated', commentId: 1 }));
 mock.module('@/lib/pr-activity-comment', () => ({
@@ -205,6 +205,100 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
     ).resolves.toEqual({ ok: true });
+  });
+});
+
+// A green CI result is a claim about headSha only. `dev` carries no GitHub-side
+// branch protection, so `mergeable_state` never reports `behind` — this gate is
+// the only thing that catches a base which moved on since headSha's checks ran.
+describe('evaluateAutoMergeSafety base freshness check', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFireGateEvent.mockReset();
+  });
+
+  it('refuses the merge when headSha is behind the base branch\'s current tip', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })                                          // check-runs
+      .mockResolvedValueOnce([])                                                           // files
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } }) // PR state
+      .mockResolvedValueOnce({ ahead_by: 0, behind_by: 3 });                                // compare
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('needs rebase onto base branch'),
+    });
+  });
+
+  it('writes a distinct merge_base_freshness gate-ledger row on refusal', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ ahead_by: 0, behind_by: 2 });
+
+    await evaluateAutoMergeSafety(
+      1, 'buildd-ai/buildd', 42, 'head-sha', autoThresholdPolicy,
+      { workspaceId: 'ws-1', taskId: 'task-1', workerId: 'worker-1' },
+    );
+
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    const gateCall = mockFireGateEvent.mock.calls[0][0] as any;
+    expect(gateCall.gate).toBe('merge_base_freshness');
+    expect(gateCall.outcome).toBe('rejected');
+    expect(gateCall.workspaceId).toBe('ws-1');
+    expect(gateCall.taskId).toBe('task-1');
+    expect(gateCall.workerId).toBe('worker-1');
+    expect(gateCall.detail.behindBy).toBe(2);
+  });
+
+  it('passes when headSha is level with the base branch\'s current tip', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ ahead_by: 2, behind_by: 0 });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: true });
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
+  });
+
+  it('fails closed, but without the rebase phrasing, when the compare lookup errors', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } })
+      .mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+
+    const result = await evaluateAutoMergeSafety(...params, autoThresholdPolicy);
+    expect(result).toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not verify base freshness'),
+    });
+    // Unlike a confirmed stale base, an unverifiable read must not be routed
+    // into the conflict-retry rebase path — we don't know the base moved.
+    expect((result as { reason: string }).reason).not.toContain('needs rebase');
+  });
+
+  it('skips the check entirely when the PR read did not return a base ref', async () => {
+    // Same shape as the pre-existing "mergeable_state is clean" test above —
+    // no base.ref means no freshness call is made, and no behaviour changes
+    // for a caller that never populated it.
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: true });
+    expect(mockGithubApi).toHaveBeenCalledTimes(3);
   });
 });
 

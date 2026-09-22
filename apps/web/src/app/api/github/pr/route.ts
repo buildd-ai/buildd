@@ -1257,7 +1257,12 @@ export async function PUT(req: NextRequest) {
         prNumber,
         headSha,
         policy,
-        { releaseConfig: workspace.releaseConfig },
+        {
+          releaseConfig: workspace.releaseConfig,
+          workspaceId: workspace.id,
+          taskId: worker.taskId ?? null,
+          workerId: worker.id ?? null,
+        },
       );
       if (!safety.ok) {
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });

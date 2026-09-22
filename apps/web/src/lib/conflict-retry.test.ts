@@ -69,6 +69,19 @@ describe('classifyMergeFailure', () => {
     expect(classifyMergeFailure('unresolvable conflicts')).toBe('conflict');
   });
 
+  it('classifies the base-freshness refusal as conflict — same rebase-and-retest remedy as a real conflict', () => {
+    // Exact reason shape evaluateAutoMergeSafety's freshness check returns
+    // (apps/web/src/lib/auto-merge.ts) when headSha is behind the base
+    // branch's current tip. Routing it through 'conflict' is what makes a
+    // stale-but-refused PR converge on its own via dispatchConflictRetry
+    // instead of sitting parked for a human.
+    expect(
+      classifyMergeFailure(
+        'PR is 3 commits behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+      ),
+    ).toBe('conflict');
+  });
+
   it('is case-insensitive', () => {
     expect(classifyMergeFailure('PULL REQUEST HAS MERGE CONFLICTS')).toBe('conflict');
     expect(classifyMergeFailure('Mergeable_State: Dirty')).toBe('conflict');
