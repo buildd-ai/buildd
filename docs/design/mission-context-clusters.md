@@ -576,6 +576,19 @@ raw line for a symbol key to exist.
   pruned and aggregates kept — but the window is a cost question I do not have
   numbers for. Note that pruning assembly detail and pruning chunks are
   independent clocks and analysis needs both.
+- **The fan-out denominator now has arms of its own.** Task-area prediction
+  (PR #2519) landed after this doc: when a task declares no `pathManifest`, the
+  treatment arm's fan-out query gets predicted paths as its filter
+  (`context-injection.ts:331`), and the control arm's does not. The recipe path
+  is untouched — the prediction reaches only the `buildKnowledgeContext` branch,
+  and `buildFanOutAssembly` records no per-item provenance, so no `derived_by`
+  value is being claimed for a predicted path and the vocabulary invariant
+  holds. But the *comparison* is affected: a recipe-vs-fan-out cohort now
+  compares against a fan-out that is itself two arms, which is the
+  differ-on-two-axes confound this design refused for graph expansion. Either
+  segment the fan-out cohort by task-area arm or restrict the comparison to
+  tasks with a declared manifest. I lean segment, since restricting drops the
+  majority of tasks.
 - **Non-repo-relative paths in derived keys.** Dropping them looks strictly
   better — useless as search keys, and they put host layout in the log — but it
   changes `path_manifest` inference for every friction task, so it wants its own

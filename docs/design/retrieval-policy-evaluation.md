@@ -6,6 +6,9 @@
 - `packages/core/retrieval-clusters.ts` — the recipe registry and the closed vocabulary
 - `packages/core/knowledge-store/pg-vector-store.ts` — `_finalize`, `_graphExpand`, and the missing time filter
 - `packages/core/db/schema.ts` → `knowledgeIngestJobs.changedFiles` — per-ingest diff paths, keyed by prNumber and sha
+- `docs/design/experiment-lifecycle.md` — the registry that would own stage 2's declaration, stopping rule and recorded decision
+- `docs/design/task-area-prediction.md` — the rail that now persists the touched-path label (Current state, gap 4)
+- `apps/runner/src/experiment-randomizer.ts` — the assignment primitive stage 2 randomizes through, already extracted
 
 ---
 
@@ -65,12 +68,21 @@ the paths in each merged-PR diff ingest, keyed by `prNumber` and `sha`.
    the current tree, so those namespaces are HEAD-shaped by construction. There
    is no corpus state to replay against for an old commit; files deleted since
    are simply gone.
-4. **`workers.observedTouches`** — the per-worker list of files actually touched
-   — is cleared on terminal worker status (`workers/[id]/route.ts:840`), so it
-   does not survive for historical tasks.
+4. **`workers.observedTouches` does not survive, for tasks that ran before the
+   task-area rail.** The column — the per-worker list of files the runner
+   actually saw in `git diff --name-only` — is cleared on terminal worker
+   status (`workers/[id]/route.ts:1099`). Since PR #2519 the clear is preceded
+   by `recordTaskAreaOutcome`, which copies the accumulated list into
+   `task_area_prediction_events.actual_paths`
+   (`packages/core/task-area-prediction-source.ts:353`) precisely because "there
+   is no other durable per-task file list". So the touched-path label now
+   *does* persist — but only **prospectively**, only while the task-area
+   experiment is enabled, and only for tasks that have a prediction row to
+   update. It is the label to use going forward and is unavailable for exactly
+   the historical population a replay would draw from.
 
 `source_ts` is the one real event timestamp, and it is populated where a chunk
-was mirrored from a dated event (`mcp-tools.ts:1441`, `:1478`) rather than from a
+was mirrored from a dated event (`mcp-tools.ts:1674`, `:1802`) rather than from a
 file.
 
 ## Proposal
@@ -135,7 +147,7 @@ stage that measures anything real, which the retrieval-only version did not.
 version cannot, because a task's own outcome is in the corpus.**
 
 On task completion, `mirrorWorkProduct` writes the task's summary into the
-`task` corpus (`mcp-tools.ts:1444`) and its PR into the `pr` corpus (`:1549`).
+`task` corpus (`mcp-tools.ts:1677`) and its PR into the `pr` corpus (`:1803`).
 So restoring task T's starting state and letting its replay run query today's
 namespaces can retrieve **T's own completion summary and T's own PR** — the
 outcome the counterfactual comparison exists to test. Every policy then looks
@@ -214,6 +226,17 @@ argument. It is also the first that can hurt production, so it needs the ordinar
 protections: an eligibility predicate narrow enough to reason about, an arm that
 is exactly today's behaviour, and a kill switch that returns every claim to the
 fan-out.
+
+Nothing here needs a new randomizer. `apps/runner/src/experiment-randomizer.ts`
+already provides per-unit assignment salted on `${experimentId}:${policyVersion}
+:${unitId}` — per-unit so a retry cannot switch arms, version-salted so a bump
+re-randomizes — plus a fraction resolver that rejects out-of-range values rather
+than clamping. What stage 2 still lacks is everything *around* the draw: a
+declared hypothesis, a stopping rule, an owner, and a recorded decision. That is
+the gap `docs/design/experiment-lifecycle.md` proposes to close generically, and
+a retrieval arm should register there rather than grow its own. It also needs its
+own payload rail: `worker_prompt_composition_events` is memory-digest-shaped by
+construction, and the assembly record is where a retrieval arm's payload belongs.
 
 ### Stage 3 — contextual bandit
 
