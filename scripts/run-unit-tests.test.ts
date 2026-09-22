@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import {
+  attributeStoreReaches,
+  storeGuardPath,
+  STORE_REACH_MARKER,
   diffStoreSnapshots,
   discoverHiddenDirTests,
   formatHiddenDirTestReport,
@@ -127,7 +130,13 @@ describe('runTestFile', () => {
       throw new Error("ENOENT: posix_spawn 'bun'");
     });
 
-    expect(command).toEqual([process.execPath, 'test', 'example.test.ts']);
+    expect(command).toEqual([
+      process.execPath,
+      'test',
+      '--preload',
+      storeGuardPath(),
+      'example.test.ts',
+    ]);
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("Failed to launch Bun");
     expect(result.output).toContain("ENOENT: posix_spawn 'bun'");
@@ -354,6 +363,99 @@ describe('formatStoreTripwireReport advisory mode', () => {
     expect(report).toContain('w-1.json');
     expect(report).toContain('live runner is active on this host');
     expect(report).toContain('Not failing the build');
+  });
+
+  it('still gates, with attribution, when the guard named a culprit on a live host', () => {
+    // A refused write belongs to one process, so co-resident churn cannot
+    // explain it: the live-host carve-out must not swallow it.
+    const report = formatStoreTripwireReport('/some/store', ['modified: w-1.json'], {
+      advisory: true,
+      culprits: ['apps/runner/__tests__/unit/offender.test.ts'],
+    });
+    expect(report).toContain('::error::');
+    expect(report).toContain('offender.test.ts');
+    expect(report).not.toContain('Not failing the build');
+  });
+});
+
+/**
+ * The tripwire above proves the store moved; it cannot say which of 800+
+ * concurrently-running files moved it, which is a full bisect for whoever
+ * reads the failure. `test-store-guard.ts` is preloaded into every child so
+ * the reach is refused and named in the process that attempts it.
+ */
+describe('real-home reach attribution', () => {
+  it('keeps its marker literal in step with the guard module', () => {
+    const guard = readFileSync(storeGuardPath(), 'utf8');
+    expect(guard).toContain(`STORE_REACH_MARKER = '${STORE_REACH_MARKER}'`);
+  });
+
+  it('names the files whose output carries the marker, and only those', () => {
+    expect(attributeStoreReaches([
+      { file: 'b.test.ts', output: `boom ${STORE_REACH_MARKER} /home/u/.buildd/workers/w.json` },
+      { file: 'a.test.ts', output: 'ordinary failure' },
+      { file: 'c.test.ts', output: `${STORE_REACH_MARKER} again` },
+    ])).toEqual(['b.test.ts', 'c.test.ts']);
+  });
+
+  it('attributes a passing file too, because the persist paths swallow the throw', () => {
+    expect(attributeStoreReaches([
+      { file: 'green.test.ts', output: `1 pass 0 fail ${STORE_REACH_MARKER} /home/u/.buildd/x` },
+    ])).toEqual(['green.test.ts']);
+  });
+
+  it('puts the culprit in the report instead of leaving the reader to bisect', () => {
+    const report = formatStoreTripwireReport(
+      '/some/store',
+      ['modified: worker-1.json'],
+      { culprits: ['apps/runner/__tests__/unit/offender.test.ts'] },
+    );
+    expect(report).toContain('Attributed to:');
+    expect(report).toContain('apps/runner/__tests__/unit/offender.test.ts');
+    expect(report).toContain('modified: worker-1.json');
+  });
+
+  it('says so plainly when nothing could be attributed', () => {
+    const report = formatStoreTripwireReport('/some/store', ['modified: worker-1.json']);
+    expect(report).toContain('No test file could be attributed');
+    expect(report).not.toContain('Attributed to:');
+  });
+
+  it('reports a refused write without claiming the store changed', () => {
+    const report = formatStoreTripwireReport('/some/store', [], { culprits: ['offender.test.ts'] });
+    expect(report).toContain('tried to write inside the REAL runner home');
+    expect(report).toContain('the store itself is unchanged');
+    expect(report).not.toContain('The unit suite changed');
+    expect(report).toContain('offender.test.ts');
+  });
+
+  it('refuses a write under the real home from inside a child, and allows one outside it', async () => {
+    const probe = mkdtempSync(join(tmpdir(), 'buildd-guard-probe-'));
+    try {
+      const testFile = join(probe, 'probe.test.ts');
+      // Written as a real child so the assertion covers the preload wiring --
+      // the patch has to be installed before the module under test imports fs.
+      writeFileSync(testFile, [
+        "import { test, expect } from 'bun:test';",
+        "import { writeFileSync } from 'fs';",
+        "import { homedir, tmpdir } from 'os';",
+        "import { join } from 'path';",
+        "test('reaching the real home throws', () => {",
+        "  expect(() => writeFileSync(join(homedir(), '.buildd', 'workers', 'probe.json'), '{}')).toThrow();",
+        '});',
+        "test('writing under tmpdir is untouched', () => {",
+        "  const p = join(tmpdir(), 'buildd-guard-allowed.json');",
+        "  expect(() => writeFileSync(p, '{}')).not.toThrow();",
+        '});',
+      ].join('\n'));
+
+      const result = await runTestFile(testFile);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain('2 pass');
+    } finally {
+      rmSync(probe, { recursive: true, force: true });
+    }
   });
 });
 

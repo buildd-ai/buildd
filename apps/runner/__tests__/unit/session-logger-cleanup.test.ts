@@ -14,6 +14,11 @@ import { mkdtempSync, rmSync, writeFileSync, utimesSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+// Kept so the hook below can put it back. `runTestFile` injects a throwaway
+// BUILDD_HOME into every test process; deleting it rather than restoring it
+// would leave anything that resolves a store path afterwards pointing at the
+// operator's real ~/.buildd.
+const injectedHome = process.env.BUILDD_HOME;
 const home = mkdtempSync(join(tmpdir(), 'buildd-home-cleanup-'));
 process.env.BUILDD_HOME = home;
 
@@ -23,7 +28,8 @@ const { cleanupOldLogs } = require('../../src/session-logger');
 const logsDir = join(home, 'logs');
 
 afterAll(() => {
-  delete process.env.BUILDD_HOME;
+  if (injectedHome === undefined) delete process.env.BUILDD_HOME;
+  else process.env.BUILDD_HOME = injectedHome;
   rmSync(home, { recursive: true, force: true });
 });
 
