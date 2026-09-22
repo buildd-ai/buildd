@@ -57,6 +57,7 @@ import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
 import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
+import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { claimObservedPaths } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
@@ -1571,13 +1572,12 @@ export async function PATCH(
       // because it refuses through the same persistRejectedCompletionPayload
       // ledger every other gate arm here uses.
       try {
-        // Check if this task has any dependents (other tasks with dependsOn naming this id)
-        const hasDependent = await db.query.tasks.findFirst({
-          where: and(
-            sql`dependsOn @> ${sql.raw(`'"${worker.taskId}"'`)}`,
-            not(inArray(tasks.status, ['cancelled']))
-          ),
-        });
+        // Check if this task has any dependents (other tasks whose depends_on names this id).
+        // The predicate lives in @/lib/handoff-gate so it can be rendered and
+        // asserted on — this file's tests stub `drizzle-orm` outright, and the
+        // fail-open catch below makes a malformed one indistinguishable from
+        // "no dependents".
+        const hasDependent = await hasUnfinishedDependent(worker.taskId);
 
         if (hasDependent) {
           const structuredOutput = body.structuredOutput as { handoff?: TaskHandoff } | null;

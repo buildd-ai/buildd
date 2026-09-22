@@ -292,6 +292,16 @@ mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mockHasCodexCredential,
 }));
 
+// Handoff gate's dependents lookup. Mocked as its own question rather than
+// riding on the shared `tasks.findFirst` mock, which answers every task lookup
+// in the completion handler with the same row and would therefore claim a
+// dependent exists for every completion in this file. Defaults to false: a
+// task with downstream dependents is the exception these tests opt into.
+const mockHasUnfinishedDependent = mock(() => Promise.resolve(false));
+mock.module('@/lib/handoff-gate', () => ({
+  hasUnfinishedDependent: mockHasUnfinishedDependent,
+}));
+
 // Override webhook/route.test.ts's merge-policy module mock when Bun runs the
 // entire web suite in one process. Bun module mocks leak across test files.
 mock.module('@/lib/merge-policy', () => ({
@@ -599,6 +609,8 @@ describe('PATCH /api/workers/[id]', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockTasksFindFirst.mockReset();
+    mockHasUnfinishedDependent.mockReset();
+    mockHasUnfinishedDependent.mockResolvedValue(false);
     mockArtifactsFindMany.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockGithubReposFindFirst.mockReset();
@@ -2129,6 +2141,82 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.phases[1].label).toBe('Running tests');
     expect(capturedTaskSet.result.phases[1].toolCount).toBe(2);
     expect(capturedTaskSet.result.lastQuestion).toBe('Which auth method?');
+  });
+
+  describe('handoff gate (task has downstream dependents)', () => {
+    function setupDependentCompletion() {
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        milestones: [],
+        pendingInstructions: null,
+      });
+      // outputRequirement: 'none' so nothing but the handoff gate can refuse.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
+      mockHasUnfinishedDependent.mockResolvedValue(true);
+    }
+
+    const completionRequest = (body: Record<string, unknown>) => createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Did the upstream work.', ...body },
+    });
+
+    it('refuses a completion that omits handoff.delivered', async () => {
+      setupDependentCompletion();
+
+      const res = await PATCH(completionRequest({}), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('handoff_required');
+    });
+
+    it('refuses a handoff.delivered that is only whitespace', async () => {
+      setupDependentCompletion();
+
+      const res = await PATCH(
+        completionRequest({ structuredOutput: { handoff: { delivered: '   ' } } }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('handoff_required');
+    });
+
+    it('accepts a completion carrying handoff.delivered', async () => {
+      setupDependentCompletion();
+
+      const res = await PATCH(
+        completionRequest({ structuredOutput: { handoff: { delivered: 'Added the retry column and backfilled it.' } } }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it('does not ask for a handoff when nothing depends on the task', async () => {
+      setupDependentCompletion();
+      mockHasUnfinishedDependent.mockResolvedValue(false);
+
+      const res = await PATCH(completionRequest({}), { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
   });
 
   describe('summarySource provenance', () => {
