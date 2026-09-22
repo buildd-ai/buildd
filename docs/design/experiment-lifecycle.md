@@ -125,8 +125,10 @@ DB row and a comment at `cbm-enforcement.ts:183`.
 **6. Documentation drifts because nothing forces it not to.**
 `docs/design/workspace-memory-digest-arm.md` carried "where does the record
 durably land" as an open question long after a migration answered it, and its
-`**Related:**` line still cites `docs/design/retrieval-policy-evaluation.md`,
-which does not exist.
+`**Related:**` line cited `docs/design/retrieval-policy-evaluation.md` for
+months while no such file existed. Both have since been repaired by hand — the
+dangling link by that doc dropping it, the file by its design landing — which is
+the point: each repair took someone noticing.
 
 So the two experiments buildd actually has are **exactly complementary
 failures**: the memory-digest arm has sound randomised assignment and no
