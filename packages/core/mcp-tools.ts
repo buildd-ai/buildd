@@ -210,7 +210,16 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
+  // Split by sub-action: list/get/readout are worker level (and only return
+  // visibility='team' experiments below admin — the API 404s the rest); every
+  // write sub-action (EXPERIMENT_WRITE_OPS) is admin level, checked in the
+  // handler with the same structured forbidden result requireAdminLevel gives.
+  'manage_experiments',
 ] as const;
+
+/** manage_experiments sub-actions that write, and so require an admin token. */
+export const EXPERIMENT_WRITE_OPS = ['create', 'update', 'start', 'pause', 'conclude'] as const;
+export const EXPERIMENT_READ_OPS = ['list', 'get', 'readout'] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
 // admins inherit them via allActions = [...workerActions, ...adminActions].
@@ -383,6 +392,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist in the same repo and already be MERGED, and must differ from the PR being superseded; a 404/409 names which check failed. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
+    manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (object: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments comparing model routing. create makes a draft; nothing enrolls until start. start: from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one model-routing experiment can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -4981,6 +4991,125 @@ export async function handleBuilddAction(
         `${acceptedLine}${promotedLine}\n\n` +
         `Evidence (the exact read that produced this verdict):\n${JSON.stringify(d.evidence, null, 2)}`
       );
+    }
+
+    case 'manage_experiments': {
+      const op = params.action as string;
+      const ops = [...EXPERIMENT_READ_OPS, ...EXPERIMENT_WRITE_OPS] as readonly string[];
+      if (!op || !ops.includes(op)) {
+        throw new Error(`action must be one of: ${ops.join(', ')}`);
+      }
+      if ((EXPERIMENT_WRITE_OPS as readonly string[]).includes(op)) {
+        const level = await ctx.getLevel();
+        if (level !== 'admin') {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: 'forbidden',
+                reason: `manage_experiments action '${op}' requires admin token level`,
+                tokenLevel: level,
+                requiredLevel: 'admin',
+              }),
+            }],
+            isError: true,
+          };
+        }
+      }
+
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : await ctx.getWorkspaceId();
+      const qs = new URLSearchParams();
+      if (wsId) qs.set('workspaceId', wsId);
+      const q = qs.toString() ? `?${qs}` : '';
+
+      const pct = (v: number | null | undefined) => (v == null ? 'n/a' : `${(v * 100).toFixed(1)}%`);
+      const line = (e: any) =>
+        `- ${e.key} [${e.status}] "${e.title}" — treatment ${pct(e.treatmentFraction)}, policy v${e.policyVersion}, ` +
+        `visibility ${e.visibility}${e.startedAt ? `, started ${e.startedAt}` : ''} (id: ${e.id})`;
+
+      if (op === 'list') {
+        const data = await api(`/api/experiments${q}`);
+        const list = (data?.experiments ?? []) as any[];
+        if (list.length === 0) {
+          return text('No experiments visible to this token on this team.' + (data?.canManage ? ' Create one with manage_experiments action=create.' : ''));
+        }
+        return text(`Experiments (${list.length}):\n${list.map(line).join('\n')}`);
+      }
+
+      if (op === 'create') {
+        if (!params.key || !params.title) throw new Error('key and title are required for create');
+        const body: Record<string, unknown> = { key: params.key, title: params.title };
+        for (const f of ['hypothesis', 'treatmentFraction', 'config', 'visibility'] as const) {
+          if (params[f] !== undefined) body[f] = params[f];
+        }
+        const data = await api(`/api/experiments${q}`, { method: 'POST', body: JSON.stringify(body) });
+        return text(
+          `Created draft experiment:\n${line(data.experiment)}\n\n` +
+          `Nothing enrolls until you run manage_experiments action=start experimentId=${data.experiment.id}.`
+        );
+      }
+
+      const id = requireFullUuid(params.experimentId, 'experimentId');
+
+      if (op === 'get') {
+        const data = await api(`/api/experiments/${id}${q}`);
+        const e = data.experiment;
+        return text(
+          `${line(e)}\n` +
+          (e.hypothesis ? `Hypothesis: ${e.hypothesis}\n` : '') +
+          `Config: ${JSON.stringify(e.config)}\n` +
+          (e.decision ? `Decision: ${e.decision}\n` : '')
+        );
+      }
+
+      if (op === 'readout') {
+        const rq = new URLSearchParams(qs);
+        if (params.policyVersion !== undefined) rq.set('policyVersion', String(params.policyVersion));
+        const data = await api(`/api/experiments/${id}/readout${rq.toString() ? `?${rq}` : ''}`);
+        const r = data.readout;
+        const arm = (name: string, a: any) =>
+          `  ${name}: n=${a.n} resolved (${a.assigned} assigned, ${a.pending} pending), clean ${pct(a.cleanRate)} ` +
+          `[95% ${pct(a.cleanInterval?.lower)}–${pct(a.cleanInterval?.upper)}], served ${pct(a.servedRate)}`;
+        const d = r.difference;
+        const verdict = r.verdict === 'insufficient_n'
+          ? `insufficient data — fewer than ${r.minSamplePerArm} resolved tasks in at least one arm`
+          : r.verdict.replace(/_/g, ' ');
+        return text(
+          `Readout for ${data.experiment.key} (policy v${data.policyVersion}, intent-to-treat):\n` +
+          `${arm('control', r.control)}\n${arm('treatment', r.treatment)}\n` +
+          `  difference (treatment − control): ${d ? `${pct(d.difference)} [95% ${pct(d.lower)} to ${pct(d.upper)}]` : 'n/a'}\n` +
+          `  verdict: ${verdict}\n` +
+          (r.inheritedExcluded ? `  ${r.inheritedExcluded} inherited attempt rows excluded from the unit count\n` : '')
+        );
+      }
+
+      let patch: Record<string, unknown>;
+      if (op === 'start') patch = { status: 'running' };
+      else if (op === 'pause') patch = { status: 'paused' };
+      else if (op === 'conclude') {
+        if (typeof params.decision !== 'string' || !params.decision.trim()) {
+          throw new Error('decision is required for conclude: what was decided and why');
+        }
+        patch = { status: 'concluded', decision: params.decision };
+      } else {
+        patch = {};
+        for (const f of ['title', 'hypothesis', 'treatmentFraction', 'config', 'visibility'] as const) {
+          if (params[f] !== undefined) patch[f] = params[f];
+        }
+        if (Object.keys(patch).length === 0) {
+          throw new Error('update needs at least one of: title, hypothesis, treatmentFraction, config, visibility');
+        }
+      }
+      const data = await api(`/api/experiments/${id}${q}`, { method: 'PATCH', body: JSON.stringify(patch) });
+      const note =
+        op === 'start' ? '\nFrom the next claim, eligible tasks are randomly split between control and treatment (the claim-side cache refreshes within a minute).'
+        : op === 'pause' ? '\nNew enrolment stops within a minute; existing assignments are kept.'
+        : op === 'conclude' ? '\nConcluded is final.'
+        : data.policyVersionBumped ? `\npolicyVersion bumped to v${data.experiment.policyVersion}: new draws are analysed separately from earlier ones.`
+        : '';
+      return text(`Experiment updated:\n${line(data.experiment)}${note}`);
     }
 
     case 'manage_model_tiers': {
