@@ -92,6 +92,11 @@ function createApi(apiKey: string): ApiFn {
   return async (endpoint, options = {}) => {
     const response = await fetch(`${baseUrl}${endpoint}`, {
       ...options,
+      // Disable Next.js fetch caching for all API calls. POST/PATCH/PUT/DELETE
+      // requests should never use cached responses, and GET requests to these
+      // dynamic endpoints (workers, PRs, tasks) should always hit fresh data,
+      // not edge-cached stale responses from prior requests with different bodies.
+      cache: 'no-store',
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
