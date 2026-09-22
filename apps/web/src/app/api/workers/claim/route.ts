@@ -1470,7 +1470,12 @@ export async function POST(req: NextRequest) {
       const derivedTier = taskTier ?? mapRouterAlias(routingDecision.model);
 
       if (taskTeamId) {
-        const entry = await resolveTierEntry(derivedTier, taskTeamId, task.workspaceId);
+        const entry = await resolveTierEntry(
+          derivedTier,
+          taskTeamId,
+          task.workspaceId,
+          body.environment?.claudeCliVersion,
+        );
         resolvedModel = entry.model;
         resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
       } else {

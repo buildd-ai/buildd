@@ -561,10 +561,11 @@ initCurrentCommit().then(() => {
 // Cached models from Anthropic API (auto-refreshes every hour)
 let modelsCache: { models: { id: string; name: string }[]; fetchedAt: number } | null = null;
 const MODELS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
-// Used only when GET /v1/models cannot be read (no key, API error). It is
-// hand-maintained, so it drifts: it listed neither Opus 5 nor Sonnet 5 while
-// TIER_DEFAULTS pointed at both, meaning a failed catalog read hid the models
-// this fleet actually routes to. Keep the current generation at the top.
+// Last-resort floor when NEITHER the keyed Anthropic endpoint NOR the public
+// catalog (see `loadModelCatalog` below) can be read — no key, no network at
+// all. It is hand-maintained, so it drifts on its own: it once listed neither
+// Opus 5 nor Sonnet 5 while TIER_DEFAULTS pointed at both. `catalogOrFallback`
+// is what keeps this from being the only source most runners ever see.
 const FALLBACK_MODELS = [
   { id: 'claude-opus-5', name: 'Claude Opus 5' },
   { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
@@ -576,9 +577,23 @@ const FALLBACK_MODELS = [
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
 ];
 
+// Populated by `loadModelCatalog` (below), which every runner already fetches
+// — no key, no DB — for cost math. Reusing it here means the picker list
+// derives from the same live source instead of a second hand-maintained one.
+let publicCatalogEntries: import('@buildd/core/model-catalog').CatalogEntry[] = [];
+
+/** The live catalog's Anthropic models, newest first, or the static floor if it's empty. */
+function catalogOrFallback(): { id: string; name: string }[] {
+  const fromCatalog = publicCatalogEntries
+    .filter((e) => e.provider === 'anthropic')
+    .sort((a, b) => b.created - a.created)
+    .map((e) => ({ id: e.id, name: e.displayName }));
+  return fromCatalog.length > 0 ? fromCatalog : FALLBACK_MODELS;
+}
+
 async function fetchAnthropicModels(): Promise<{ id: string; name: string }[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return FALLBACK_MODELS;
+  if (!apiKey) return catalogOrFallback();
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
@@ -587,16 +602,16 @@ async function fetchAnthropicModels(): Promise<{ id: string; name: string }[]> {
         'anthropic-version': '2023-06-01',
       },
     });
-    if (!res.ok) return FALLBACK_MODELS;
+    if (!res.ok) return catalogOrFallback();
 
     const data = await res.json() as { data?: { id: string; display_name?: string }[] };
     const models = (data.data || [])
       .filter((m) => m.id.startsWith('claude-') && !m.id.includes('claude-2') && !m.id.includes('claude-3'))
       .map((m) => ({ id: m.id, name: m.display_name || m.id }));
 
-    return models.length > 0 ? models : FALLBACK_MODELS;
+    return models.length > 0 ? models : catalogOrFallback();
   } catch {
-    return FALLBACK_MODELS;
+    return catalogOrFallback();
   }
 }
 
@@ -983,6 +998,7 @@ async function loadModelCatalog() {
   const entries = await fetchOpenRouterCatalog();
   if (entries.length > 0) {
     setCatalogPrices(entries);
+    publicCatalogEntries = entries;
     console.log(`[runner] Loaded ${entries.length} models from the public catalog for cost math`);
   }
 }
