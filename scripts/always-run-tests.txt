@@ -32,5 +32,9 @@ scripts/test-home-isolation.test.ts
 # it can fire. The signal that breaks it is defined anywhere, so the same
 # reasoning applies: this must run even when nothing near it changed.
 scripts/signal-fire-coverage.test.ts
+# Enumerates the cron job registry to check that every findings-polarity job
+# has a test proving it can notify a human. Same reasoning as the signal
+# registry above: the job that breaks it can be declared anywhere.
+scripts/cron-job-notify-coverage.test.ts
 scripts/skills-listed.test.ts
 scripts/workflow-safety.test.ts
