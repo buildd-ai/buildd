@@ -43,6 +43,7 @@
     "specs:conformance": "bun run scripts/check-spec-conformance.ts",
     "specs:discrepancies": "bun run packages/core/scripts/write-spec-discrepancies.ts",
     "specs:conformance-gate": "bun run scripts/spec-conformance-delta-gate.ts",
+    "no-prod-data:check": "bash scripts/check-no-prod-data-local.sh",
     "cron:plan": "bun run scripts/sync-crons.ts --dry-run",
     "cron:sync": "bun run scripts/sync-crons.ts",
     "cron:check": "bun run scripts/sync-crons.ts --check",
