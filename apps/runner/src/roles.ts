@@ -101,31 +101,48 @@ export async function syncRoleToLocal(roleConfig: RoleConfig): Promise<{ cwd: st
   return { cwd: roleDir };
 }
 
+export interface ResolveRoleEnvResult {
+  /** Successfully resolved key → value pairs, ready to merge into the session env. */
+  resolved: Record<string, string>;
+  /**
+   * Role-declared keys whose secret label had no match in processEnv. Non-empty
+   * means the role's declared requirement was NOT met — the caller must not
+   * treat this the same as "role declared nothing" (see workers.ts, which
+   * records a degraded milestone rather than starting silently).
+   */
+  missing: string[];
+}
+
 /**
  * Resolve env var labels from env-mapping.json against actual environment values.
- * Labels not found in processEnv are skipped with a warning.
+ *
+ * A label not found in processEnv is reported via `missing`, not just a
+ * console warning — a missing declared var used to vanish into runner logs
+ * while the session started as if nothing had been requested at all.
  */
 export async function resolveRoleEnv(
   roleDir: string,
   processEnv: Record<string, string>,
-): Promise<Record<string, string>> {
+): Promise<ResolveRoleEnvResult> {
   let mapping: Record<string, string>;
   try {
     const raw = await readFile(join(roleDir, 'env-mapping.json'), 'utf-8');
     mapping = JSON.parse(raw);
   } catch {
-    return {};
+    return { resolved: {}, missing: [] };
   }
 
   const resolved: Record<string, string> = {};
+  const missing: string[] = [];
   for (const [key, secretLabel] of Object.entries(mapping)) {
     if (secretLabel in processEnv) {
       resolved[key] = processEnv[secretLabel];
     } else {
+      missing.push(key);
       console.warn(`[roles] env label "${secretLabel}" for ${key} not found in process env — skipping`);
     }
   }
-  return resolved;
+  return { resolved, missing };
 }
 
 /**

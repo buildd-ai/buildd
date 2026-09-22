@@ -2617,12 +2617,21 @@ export class WorkerManager {
       // Resolve role env vars (secret labels → actual values)
       if (worker.roleConfig) {
         try {
-          const roleEnv = await resolveRoleEnv(
+          const { resolved: roleEnv, missing } = await resolveRoleEnv(
             getRoleDir(worker.roleConfig.slug),
             process.env as Record<string, string>,
           );
           Object.assign(cleanEnv, roleEnv);
           console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
+          if (missing.length > 0) {
+            // A role that declares a requirement and loses it is worse than one
+            // that declares nothing — record it as a visible degraded milestone
+            // instead of letting the session start looking identical to a role
+            // with no requirements at all.
+            const label = `Role env degraded: ${worker.roleConfig.slug} missing ${missing.join(', ')}`;
+            console.warn(`[Worker ${worker.id}] ${label}`);
+            this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          }
         } catch (err) {
           console.error(`[Worker ${worker.id}] Failed to resolve role env:`, err);
         }
@@ -2660,7 +2669,8 @@ export class WorkerManager {
         const gate = await runProvisionGate({ root: cwd, env: cleanEnv, commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
-            console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
+            const dur = s.durationMs != null ? ` (${s.durationMs}ms)` : '';
+            console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}${dur}`);
           }
           if (!gate.ok) {
             this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
