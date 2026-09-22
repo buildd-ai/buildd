@@ -8,6 +8,7 @@ import {
   formatHiddenDirTestReport,
   formatStoreTripwireReport,
   hiddenDirSegment,
+  isStoreLikelyLive,
   realWorkerStoreDir,
   selectTestFiles,
   extractFailureDigest,
@@ -17,6 +18,7 @@ import {
   runTestFile,
   runWithConcurrency,
   snapshotStore,
+  storeDiffIsFatal,
 } from './run-unit-tests';
 
 describe('isUnitTestFile', () => {
@@ -283,6 +285,75 @@ describe('real-worker-store tripwire', () => {
 
   it('watches the store the runner actually uses', () => {
     expect(realWorkerStoreDir()).toBe(join(homedir(), '.buildd', 'workers'));
+  });
+});
+
+/**
+ * On a live buildd runner host, the store the tripwire watches is also the
+ * live runner's own store — a co-resident session can be rewriting
+ * heartbeat/activity records in it for the whole run, and a byte-diff cannot
+ * tell that apart from an isolation leak. `isStoreLikelyLive` is the signal
+ * that lets the tripwire downgrade to advisory there instead of failing the
+ * build on someone else's traffic.
+ */
+describe('isStoreLikelyLive', () => {
+  it('is false for a missing store', () => {
+    expect(isStoreLikelyLive(null)).toBe(false);
+  });
+
+  it('is false when every entry is old relative to the snapshot time', () => {
+    const now = 1_000_000;
+    const snapshot = { 'a.json': `120@${now - 5 * 60_000}`, 'b.json': `80@${now - 10 * 60_000}` };
+    expect(isStoreLikelyLive(snapshot, now)).toBe(false);
+  });
+
+  it('is true when an entry changed within the freshness window', () => {
+    const now = 1_000_000;
+    const snapshot = { 'a.json': `120@${now - 5 * 60_000}`, 'b.json': `80@${now - 1_000}` };
+    expect(isStoreLikelyLive(snapshot, now)).toBe(true);
+  });
+
+  it('is true for an entry that raced a mid-scan stat, regardless of age', () => {
+    const now = 1_000_000;
+    expect(isStoreLikelyLive({ 'a.json': 'unreadable' }, now)).toBe(true);
+  });
+
+  it('respects a custom freshness window', () => {
+    const now = 1_000_000;
+    const snapshot = { 'a.json': `120@${now - 5_000}` };
+    expect(isStoreLikelyLive(snapshot, now, 1_000)).toBe(false);
+    expect(isStoreLikelyLive(snapshot, now, 10_000)).toBe(true);
+  });
+});
+
+describe('storeDiffIsFatal', () => {
+  it('is false when nothing changed, live or not', () => {
+    expect(storeDiffIsFatal([], false)).toBe(false);
+    expect(storeDiffIsFatal([], true)).toBe(false);
+  });
+
+  it('fails the build for a diff on a quiescent host', () => {
+    expect(storeDiffIsFatal(['added: leaked.json'], false)).toBe(true);
+  });
+
+  it('does not fail the build for a diff the host was already live for', () => {
+    expect(storeDiffIsFatal(['modified: w-1.json'], true)).toBe(false);
+  });
+});
+
+describe('formatStoreTripwireReport advisory mode', () => {
+  it('defaults to the fatal ::error:: report', () => {
+    const report = formatStoreTripwireReport('/some/store', ['added: leaked.json']);
+    expect(report).toContain('::error::');
+    expect(report).toContain('leaked.json');
+  });
+
+  it('explains the live-host carve-out and omits ::error:: when advisory', () => {
+    const report = formatStoreTripwireReport('/some/store', ['modified: w-1.json'], { advisory: true });
+    expect(report).not.toContain('::error::');
+    expect(report).toContain('w-1.json');
+    expect(report).toContain('live runner is active on this host');
+    expect(report).toContain('Not failing the build');
   });
 });
 

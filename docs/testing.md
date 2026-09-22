@@ -209,13 +209,24 @@ Three layers keep it that way, weakest to strongest:
 |---|---|---|
 | injection | `runTestFile` | any module reading `BUILDD_HOME`, whenever it reads it |
 | corpus lint | `scripts/test-home-isolation.test.ts` | a tracked test file referencing `homedir()` / `process.env.HOME` outside its allow-list |
-| run tripwire | `scripts/run-unit-tests.ts` | the real store changing at all across a run, however it happened |
+| run tripwire | `scripts/run-unit-tests.ts` | the real store changing at all across a run, on a quiescent host |
 
 The tripwire snapshots `~/.buildd/workers` before the first spawn and after the
-last, and fails the run naming the changed entries. A missing directory
-snapshots as `null` and must stay `null` — the suite *creating* it is itself the
-failure, not a clean slate. It works on CI (directory absent) and on a developer
-machine or the runner host (directory present and live).
+last, and names the changed entries. A missing directory snapshots as `null`
+and must stay `null` — the suite *creating* it is itself the failure, not a
+clean slate.
+
+It fails the build on CI (directory absent) and on an idle developer machine,
+where nothing else could have touched the store. On the runner host the same
+directory is the live runner's own store, and a co-resident session can be
+rewriting heartbeat/activity records in it the whole time the suite runs — a
+byte-diff can't tell that apart from a leak; one measurement (idle, zero tests
+running) saw ~370 of 417 real worker files "change" in 8 seconds from live
+traffic alone. So the tripwire first checks whether the store already shows
+activity from *before* any test process spawned (`isStoreLikelyLive`, in
+`storeBefore`); if so, a later diff is reported but does not fail the build
+(`storeDiffIsFatal`) — the injection and corpus-lint layers above are what
+still gate a real regression there.
 
 If you need real store I/O in a test, write under `process.env.BUILDD_HOME` and
 call `__resetWorkerStoreRoot()` after changing it. Never `homedir()`.
