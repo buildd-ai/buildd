@@ -235,7 +235,22 @@ Ordered, load-bearing first.
 3. Responder skeleton in observe-only mode: inputs, evidence record, notification.
    No actions.
 4. The two detectors this incident justifies: dispatch stall (claims attempted,
-   none claimed, queue non-empty, sustained) and claim-endpoint error rate.
+   none claimed, queue non-empty, sustained) and claim-endpoint **5xx-and-unreachable**
+   rate.
+
+   Not "non-2xx rate", which an earlier draft of this doc specified and which is
+   wrong: the health probe must be structurally incapable of claiming work, so it
+   sends a request the route is guaranteed to reject and `400` is the *healthy*
+   response. A non-2xx rate therefore sits at 100% permanently — a green light
+   wired to a signal that cannot change, which is the same defect class this
+   document diagnoses. Caught during implementation (#2597); recorded here rather
+   than quietly fixed, because the mistake is instructive: a probe's healthy
+   response is whatever its own construction forces, not whatever HTTP convention
+   suggests.
+
+   A `2xx` from that probe is a **defect**, not a success: it means the guard that
+   makes the probe unclaimable is gone, and something may have claimed work on
+   behalf of a runner that will never attach.
 5. Actions, one at a time, each behind its own flag and its own bound: runner
    restart, then orphan terminalization, then release rollback last — it is the
    most powerful and the easiest to get wrong.
