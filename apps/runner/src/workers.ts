@@ -10,7 +10,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSyn
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
-import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
+import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import {
@@ -23,7 +23,7 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
-import { buildRetryContinuitySection } from './worktree-utils';
+import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -2622,15 +2622,32 @@ export class WorkerManager {
         let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
         let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
 
+        let claudeTokenFromBroker = false;
+
         if (worker.claudeCredentialId && !isCodexTask) {
           const brokerToken = await fetchTokenFromBroker(worker.claudeCredentialId, getBrokerSocketPath());
           if (brokerToken) {
             claudeTokenForSession = brokerToken.accessToken;
             claudeTokenExpiry = brokerToken.expiresAt ? new Date(brokerToken.expiresAt) : null;
+            claudeTokenFromBroker = true;
             console.log(`[Worker ${worker.id}] Using broker-fetched Claude token (Phase 2)`);
           } else {
             console.log(`[Worker ${worker.id}] Broker not ready — falling back to claim-delivered claudeAccessToken`);
           }
+        }
+
+        // A resume — a parked question answered, or a crash recovery — can be
+        // hours after the claim, and the claim-delivered token is exactly that
+        // old. Fail loudly here rather than spawning a session that dies "not
+        // logged in" with the human's answer already in flight.
+        const staleResume = staleResumeCredentialError({
+          isResume: !!resumeSessionId,
+          fromBroker: claudeTokenFromBroker,
+          tokenExpiresAt: claudeTokenExpiry,
+        });
+        if (staleResume) {
+          sessionLog(worker.id, 'error', 'resume_credential_stale', staleResume, task.id);
+          throw new Error(staleResume);
         }
 
         if (claudeTokenForSession) {
@@ -4197,13 +4214,22 @@ export class WorkerManager {
       if (session) {
         session.inputStream.end();
 
-        // Only clean up worktree immediately on error/abort — completed and waiting
-        // workers keep worktree alive for session resume (follow-up messages / user answers).
-        // Worktrees for these workers get cleaned up during eviction.
-        // Exception: e2e test worktrees are always cleaned up immediately (ephemeral).
-        // bwrap retry: preserve the worktree so the restarted session can reuse it.
-        const isEphemeral = isEphemeralTestBranch(worker.branch);
-        if (!bwrapRetryAfterCleanup && worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
+        // Only clean up the worktree immediately on error/abort — completed and
+        // waiting workers keep theirs alive for session resume (follow-up
+        // messages, answered questions), including the unpushed commits and
+        // uncommitted changes a parked question leaves behind. The eviction
+        // sweep reclaims them later. The rule itself lives in
+        // shouldPreserveWorktreeOnSessionEnd so it is testable on its own.
+        //
+        // WHETHER to remove and HOW to remove are separate decisions: the rule
+        // below decides whether, and removeWorktreeIfUnowned still refuses to
+        // touch a directory another live worker owns.
+        const preserveWorktree = shouldPreserveWorktreeOnSessionEnd({
+          status: worker.status,
+          isEphemeralBranch: isEphemeralTestBranch(worker.branch),
+          bwrapRetryPending: bwrapRetryAfterCleanup,
+        });
+        if (!preserveWorktree && worker.worktreePath) {
           await removeWorktreeIfUnowned({
             repoPath: session.repoPath,
             worktreePath: worker.worktreePath,

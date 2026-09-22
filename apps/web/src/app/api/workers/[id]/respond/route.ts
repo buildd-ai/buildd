@@ -1,13 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, secrets as secretsTable } from '@buildd/core/db/schema';
+import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { getActiveClaudeSecretId } from '@/lib/credential-health';
+import { triggerEvent, channels, events } from '@/lib/pusher';
+import {
+  appendInstructionHistory,
+  enqueuePendingInstruction,
+} from '@/lib/worker-instructions';
+import {
+  evaluateAnswerPath,
+  describeAnswerPath,
+  buildAnswerDeliveryRecord,
+  buildContinuationTaskValues,
+  type AnswerPathDecision,
+} from '@/lib/answer-resume';
+import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
 
-// POST /api/workers/[id]/respond - Respond to a worker's question, creating a retry task
+// POST /api/workers/[id]/respond - Answer a worker's question.
+//
+// A worker parked on a question is a HEALTHY session: nothing failed, it
+// correctly stopped to ask a human. So this route does NOT unconditionally end
+// it. It takes one recorded decision (see lib/answer-resume.ts and
+// docs/specs/answered-question-resume.md):
+//
+//  - RESUME  — the parked worker's own session is resumed with the answer, in
+//              the worktree it left (unpushed commits and all), keeping the
+//              same task, the same worker row and the same conversation.
+//  - COLD    — the pre-existing behaviour: supersede the worker and insert a
+//              `Continue:` task. Correct when the session is genuinely gone,
+//              and never silent — the reason is recorded and shown.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -27,7 +51,7 @@ export async function POST(
   // Load worker with its task
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    with: { workspace: true, task: true },
+    with: { workspace: true, task: true, account: true },
   });
 
   if (!worker) {
@@ -65,66 +89,194 @@ export async function POST(
   }
 
   const task = (worker as any).task;
-
-  // A credential already known-revoked at answer time will kill the
-  // continuation exactly as it killed (or will kill) this session — the only
-  // difference is WHEN the owner finds out. Refuse here, before the worker is
-  // claimed and the continuation is created, so the answer is not lost: the
-  // question stays open (waitingFor untouched) and the owner can resubmit
-  // once the credential is reconnected. This mirrors the classification
-  // credential-health.ts already runs on a live PATCH — it does not add a new
-  // policy, it just runs the existing one one step earlier.
-  const workspaceForHealth = (worker as any).workspace as { teamId?: string } | undefined;
-  const teamId = workspaceForHealth?.teamId;
-  if (teamId) {
-    const backend = (task?.backend as string | undefined) ?? 'claude';
-    const secretId = backend === 'codex'
-      ? (await db.query.secrets.findFirst({
-          where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
-          columns: { id: true },
-        }))?.id ?? null
-      : await getActiveClaudeSecretId(teamId, worker.workspaceId);
-
-    if (secretId) {
-      const secretRow = await db.query.secrets.findFirst({
-        where: eq(secretsTable.id, secretId),
-        columns: { healthStatus: true, lastFailureMessage: true },
-      });
-      if (secretRow?.healthStatus === 'revoked') {
-        return NextResponse.json({
-          error: `Backend credential (${backend}) is revoked — reconnect it in Settings → Agent Backends before continuing.`
-            + (secretRow.lastFailureMessage ? ` Last error: ${secretRow.lastFailureMessage.slice(0, 200)}` : ''),
-          credentialRevoked: true,
-          backend,
-        }, { status: 409 });
-      }
-    }
-  }
-
+  const isSensitive = (worker as any).workspace?.dataClass === 'sensitive';
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
   const milestones = (worker.milestones as Array<{ type?: string; label?: string; timestamp: number }>) || [];
   const question = (worker.waitingFor as { prompt: string }).prompt;
-  const taskContext = (task?.context as Record<string, unknown>) || {};
-  const currentIteration = (taskContext.iteration as number) || 1;
 
-  // Build structured description
-  const milestonesText = milestones.length > 0
-    ? milestones.map(m => `- ${m.label || m.type || 'activity'}`).join('\n')
-    : 'No milestones recorded';
+  // ── The decision ──────────────────────────────────────────────────────────
+  //
+  // Credential health is checked BEFORE choosing a path, not after resuming
+  // into an auth failure: a parked question can sit for hours, and the runner
+  // released this worker's credential file when it parked.
+  const backend = task?.backend === 'codex' ? 'codex' : 'claude';
+  const preflight = await preflightBackendCredential({
+    // Both `workspaces` and `accounts` carry the owning teamId and they agree;
+    // read whichever relation the row actually loaded.
+    teamId: (worker as any).workspace?.teamId ?? (worker as any).account?.teamId ?? null,
+    workspaceId: worker.workspaceId,
+    backend,
+  });
 
-  const description = [
-    '## Original Task',
-    task?.description || '',
-    '',
-    '## What Was Accomplished',
-    milestonesText,
-    '',
-    '## Question Asked',
-    question,
-    '',
-    '## User Response',
+  // A REVOKED credential is refused outright rather than routed down either
+  // path — the behaviour #2528 shipped, and it is the right one for this case
+  // for a reason that sharpens under resume: the continuation could not run
+  // either (the claim rail declines to inject a revoked credential), while
+  // superseding the worker would destroy the transcript and the worktree that
+  // make a resume possible at all. Refusing keeps the question parked, so the
+  // re-answer after reconnecting can still take the RESUME path. `waitingFor`
+  // is untouched and nothing is written.
+  //
+  // An EXPIRED-and-unrefreshable credential is different and falls through to
+  // gate G5 below: it is recoverable without human action, so the answer is
+  // recorded durably as a cold continuation instead of being bounced.
+  if (preflight.revoked) {
+    return NextResponse.json({
+      error: `Backend credential (${backend}) is revoked — reconnect it in Settings → Agent Backends before continuing.`
+        + (preflight.lastFailureMessage ? ` Last error: ${preflight.lastFailureMessage.slice(0, 200)}` : ''),
+      credentialRevoked: true,
+      backend,
+    }, { status: 409 });
+  }
+
+  const decision = evaluateAnswerPath({
+    workerStatus: worker.status,
+    workerUpdatedAt: worker.updatedAt,
+    workerTurns: worker.turns,
+    supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true,
+    credentialPreflight: preflight.state,
+  });
+
+  const deliveryRecord = buildAnswerDeliveryRecord({
+    decision,
+    workerId: worker.id,
+    question: isSensitive ? null : question,
+  });
+
+  if (decision.path === 'resume') {
+    return respondByResume({
+      workerId: id,
+      worker,
+      task,
+      message,
+      isSensitive,
+      decision,
+      deliveryRecord,
+    });
+  }
+
+  return respondByContinuation({
+    workerId: id,
+    worker,
+    task,
     message,
-  ].join('\n');
+    question,
+    milestones,
+    decision,
+    deliveryRecord,
+    credentialDetail: preflight.state === 'unhealthy' ? preflight.detail : undefined,
+  });
+}
+
+type DeliveryRecord = ReturnType<typeof buildAnswerDeliveryRecord>;
+
+/**
+ * Resume path: the answer is queued on the SAME worker row, which the runner
+ * holding this session drains on its next sync and injects into a resumed
+ * session (`sendMessage` → `resumeSession`, Claude by session id / Codex by
+ * thread id, in the preserved worktree).
+ *
+ * No `Continue:` task, no `superseded`, no second worker row: one continuous
+ * record of turns, cost and feed, which a parent-plus-child split destroys
+ * irrecoverably.
+ */
+async function respondByResume(args: {
+  workerId: string;
+  worker: any;
+  task: any;
+  message: string;
+  isSensitive: boolean;
+  decision: AnswerPathDecision;
+  deliveryRecord: DeliveryRecord;
+}) {
+  const { workerId, worker, task, message, isSensitive, decision, deliveryRecord } = args;
+
+  // One atomic write claims the answer AND queues it. Gating on the question
+  // still being open is what stops two humans (or one double-submit) from
+  // answering twice; doing both in one UPDATE means a loser leaves nothing
+  // behind and there is no window in which the question is claimed but the
+  // answer is not yet queued.
+  //
+  // `status` is deliberately untouched. It stays `waiting_input` until the
+  // runner reports `running` for the resumed session — writing `running` here
+  // would claim a session start that has not happened.
+  const [claimed] = await db
+    .update(workers)
+    .set({
+      waitingFor: null,
+      pendingInstructions: enqueuePendingInstruction(worker.pendingInstructions, message),
+      instructionHistory: appendInstructionHistory(worker.instructionHistory, {
+        message,
+        isSensitive,
+        // Only the runner's acknowledgement may write 'delivered'. An
+        // unacknowledged answer is what `cleanupUnresumedAnswers` later
+        // degrades to a cold continuation.
+        deliveryState: 'pending',
+      }),
+      currentAction: 'Answer received — resuming session',
+      updatedAt: new Date(),
+    })
+    .where(and(eq(workers.id, workerId), isNotNull(workers.waitingFor)))
+    .returning();
+
+  if (!claimed) {
+    return NextResponse.json(
+      { error: 'Question was already answered' },
+      { status: 409 },
+    );
+  }
+
+  if (task?.id) {
+    await recordAnswerDelivery(task.id, task.context, deliveryRecord);
+  }
+
+  // Urgent push so a subscribed runner acts now rather than on its next 10s
+  // sync. Both transports are used here — normally forbidden, because an older
+  // runner would inject the pushed copy AND the queued one — but gate G3 has
+  // already established this runner speaks the acknowledgement protocol, which
+  // is exactly the runner that de-duplicates. The queue is the durable half: a
+  // push that reaches nobody is still recoverable on the next sync.
+  await triggerEvent(
+    channels.worker(workerId),
+    events.WORKER_COMMAND,
+    { action: 'message', text: message, timestamp: Date.now() },
+  ).catch(() => { /* durable queue is the contract; the push is an accelerator */ });
+
+  await postAnswerNote({
+    task,
+    workerId,
+    type: 'update',
+    title: 'Answer delivered to the running session',
+    body: describeAnswerPath(decision),
+  });
+
+  return NextResponse.json({
+    path: 'resume',
+    reasonCode: decision.reasonCode,
+    // Same task — the resumed worker continues under it. Callers navigate here.
+    taskId: task?.id ?? null,
+    workerId,
+    message: describeAnswerPath(decision),
+  });
+}
+
+/**
+ * Cold path: the session cannot be resumed, so the answer becomes a new task.
+ * This is the behaviour that shipped before resume existed, unchanged except
+ * that it now says WHY it ran.
+ */
+async function respondByContinuation(args: {
+  workerId: string;
+  worker: any;
+  task: any;
+  message: string;
+  question: string;
+  milestones: Array<{ type?: string; label?: string; timestamp: number }>;
+  decision: AnswerPathDecision;
+  deliveryRecord: DeliveryRecord;
+  credentialDetail?: string;
+}) {
+  const { workerId, worker, task, message, question, milestones, decision, deliveryRecord } = args;
 
   // Claim the answer FIRST, atomically. `worker.waitingFor` was read outside the
   // write, so two humans answering the same question (or one double-submitting)
@@ -141,6 +293,10 @@ export async function POST(
   // (see IN_FLIGHT_WORKER_STATUSES in lib/failure-analytics.ts) and is included
   // in TERMINAL_WORKER_STATUSES (workers/[id]/route.ts) so a later PATCH from
   // the runner for this same worker is rejected instead of resurrecting it.
+  //
+  // This is correct for THIS path only. On the resume path the same worker row
+  // goes on to reach a real terminal state, so superseding it there would hide
+  // a genuine success or failure behind an exclusion.
   //
   // Known residual race, deliberately not closed here: this write and an
   // in-flight runner PATCH for the same worker use independent, uncoordinated
@@ -162,7 +318,7 @@ export async function POST(
       completedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(and(eq(workers.id, id), isNotNull(workers.waitingFor)))
+    .where(and(eq(workers.id, workerId), isNotNull(workers.waitingFor)))
     .returning();
 
   if (!claimed) {
@@ -172,92 +328,30 @@ export async function POST(
     );
   }
 
-  // Create the new retry task.
-  //
-  // Field-by-field decision on what carries over from the original task —
-  // deliberate per field, not a blanket copy:
-  //
-  //  - mode, taskClass: COPY. The continuation's job is the ORIGINAL task's
-  //    job, now armed with an answer — not a new kind of task. When mode was
-  //    'planning' (the parent's deliverable IS a structured plan, e.g. a
-  //    mission organizer cycle that asked a clarifying question mid-decompose),
-  //    the continuation still owes that same plan; the SDK's outputFormat
-  //    constraint (resolveOutputFormat, keyed on mode) applies identically to
-  //    it, and the planning-contract guard's mode==='planning' clause
-  //    (workers/[id]/route.ts) fires the same way regardless of scheduleId or
-  //    creationSource — those only gate the guard's separate orchestrator-
-  //    fallback clause, which this route's continuations never hit since
-  //    creationSource here always defaults to 'api' (see below).
-  //  - priority, outputRequirement, outputSchema, category, pathManifest,
-  //    backend: COPY. None of these describe *how* the task was created —
-  //    they describe what it must deliver and how, which does not change
-  //    because a question was asked. Dropping outputSchema in particular used
-  //    to silently swap a custom contract (e.g. a reviewer verdict schema) for
-  //    either the default planning schema or no schema at all. Dropping
-  //    priority sent a priority-9 task's continuation to the back of the
-  //    queue. Dropping pathManifest lost the conflict-serialization edges
-  //    against sibling tasks touching the same files.
-  //  - dependsOn: NOT copied. Those edges gated the ORIGINAL task's claim on
-  //    prerequisites that were already satisfied before it could run in the
-  //    first place — the continuation isn't blocked on them again.
-  //  - subjectAnchor: NOT copied. It drives the subject-dedup/supersession
-  //    gate for auto-filed tasks (friction/webhook/CI-retry); copying it onto
-  //    a new task id under a human-answered flow isn't a case that subsystem
-  //    is designed for.
-  //  - creationSource: NOT copied (defaults to 'api'). It records who/what
-  //    created the row; this row was created by a human or API caller
-  //    answering a question via this route, which 'api' describes accurately.
+  // Create the new retry task. The field-by-field inheritance rules live with
+  // buildContinuationTaskValues so this path and the unacknowledged-resume
+  // sweep cannot drift into building different rows for the same event.
   let newTask;
   try {
     [newTask] = await db
       .insert(tasks)
-      .values({
-        workspaceId: worker.workspaceId,
-        title: `Continue: ${task?.title || 'Unknown task'}`,
-        description,
-        status: 'pending',
-        parentTaskId: task?.id,
-        missionId: task?.missionId,
-        roleSlug: task?.roleSlug,
-        mode: task?.mode,
-        taskClass: (task?.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
-        priority: task?.priority,
-        outputRequirement: task?.outputRequirement,
-        outputSchema: task?.outputSchema,
-        category: task?.category,
-        pathManifest: task?.pathManifest,
-        backend: task?.backend,
-        context: {
-          // Honored by the runner's setupWorktree/resolveWorktreeBase — but
-          // only when `worker.branch` already exists on the remote (verified
-          // by fetching and probing `origin/<branch>`). If the original
-          // worker was blocked before ever pushing (the common case: a
-          // question asked mid-task, before create_pr), no such branch
-          // exists, and the runner silently falls back to a fresh worktree
-          // from the default branch — the "resumes the existing worktree"
-          // claim this route's callers make does NOT hold in that case, and
-          // nothing here can verify at request time which case applies.
-          baseBranch: worker.branch,
-          // Explicit continuity marker (same value; this is what the runner's
-          // resumeCandidate logic actually keys resume-vs-cut-from-base on —
-          // baseBranch alone is ambiguous with a mission-branch task's declared
-          // base, which must never be checked out directly).
-          resumeBranch: worker.branch,
-          userInput: message,
-          previousAttempt: {
-            question,
-            milestones,
-            branch: worker.branch,
-            workerId: worker.id,
-          },
-          iteration: currentIteration + 1,
-        },
-      })
+      .values(
+        buildContinuationTaskValues({
+          task,
+          workspaceId: worker.workspaceId,
+          workerId: worker.id,
+          branch: worker.branch,
+          milestones,
+          question,
+          answer: message,
+          delivery: deliveryRecord,
+        }),
+      )
       .returning();
   } catch (err) {
     // No transactions on neon-http: compensate by hand so a failed insert does
     // not leave the worker completed with the question gone and no retry task.
-    console.error(`[Worker ${id}] Retry task insert failed, restoring question:`, err);
+    console.error(`[Worker ${workerId}] Retry task insert failed, restoring question:`, err);
     await db
       .update(workers)
       .set({
@@ -266,28 +360,96 @@ export async function POST(
         completedAt: worker.completedAt ?? null,
         updatedAt: new Date(),
       })
-      .where(eq(workers.id, id));
+      .where(eq(workers.id, workerId));
     return NextResponse.json(
       { error: 'Failed to record response' },
       { status: 500 },
     );
   }
 
-  // Best-effort back-reference from the answered worker to its continuation,
-  // so a later reader of THIS worker's row (a task-detail page opened from a
-  // stale link, a post-supersession error report — see workers/[id]/route.ts)
-  // can point at where the work actually continued without reconstructing it
-  // from tasks.context.previousAttempt.workerId. The answer already
-  // succeeded by this point (the task exists); a failure here only means the
-  // link is missing, not that anything was lost.
+  if (task?.id) {
+    await recordAnswerDelivery(task.id, task.context, deliveryRecord);
+  }
+
+  // Best-effort back-reference from the answered worker to its continuation, so
+  // a later reader of THIS worker's row (a task-detail page opened from a stale
+  // link, a post-supersession error report — see workers/[id]/route.ts) can
+  // point at where the work actually continued without reconstructing it from
+  // tasks.context.previousAttempt.workerId. Cold path only: on the resume path
+  // there is no second task, and writing this worker's OWN task id here would
+  // assert a supersession that did not happen. The answer already succeeded by
+  // this point, so a failure here only means the link is missing.
   try {
     await db
       .update(workers)
       .set({ continuationTaskId: newTask.id })
-      .where(eq(workers.id, id));
+      .where(eq(workers.id, workerId));
   } catch (err) {
-    console.error(`[Worker ${id}] Failed to record continuation task link:`, err);
+    console.error(`[Worker ${workerId}] Failed to record continuation task link:`, err);
   }
 
-  return NextResponse.json({ taskId: newTask.id });
+  await postAnswerNote({
+    task,
+    workerId,
+    type: args.credentialDetail ? 'warning' : 'update',
+    title: args.credentialDetail
+      ? 'Answer recorded, but the agent credential needs attention'
+      : 'Answer started a fresh continuation',
+    body: args.credentialDetail
+      ? `${describeAnswerPath(decision)} Specifically, ${args.credentialDetail}. `
+        + 'The continuation will not be able to run until it is reconnected.'
+      : describeAnswerPath(decision),
+  });
+
+  return NextResponse.json({
+    path: 'cold_continuation',
+    reasonCode: decision.reasonCode,
+    taskId: newTask.id,
+    workerId,
+    message: describeAnswerPath(decision),
+  });
+}
+
+/** Stamp the decision on the answered task so the path taken is queryable. */
+async function recordAnswerDelivery(
+  taskId: string,
+  currentContext: unknown,
+  record: DeliveryRecord,
+) {
+  const context = (currentContext as Record<string, unknown>) || {};
+  await db
+    .update(tasks)
+    .set({ context: { ...context, answerDelivery: record }, updatedAt: new Date() })
+    .where(eq(tasks.id, taskId))
+    .catch((err) => {
+      // The path already ran; losing its record is bad but not worth failing
+      // the answer over. Log loudly so it is not invisible twice.
+      console.error(`[Task ${taskId}] Failed to record answerDelivery:`, err);
+    });
+}
+
+/** One feed note naming which path ran and, when it degraded, why. */
+async function postAnswerNote(args: {
+  task: any;
+  workerId: string;
+  type: 'update' | 'warning';
+  title: string;
+  body: string;
+}) {
+  if (!args.task?.id) return;
+  await db
+    .insert(missionNotes)
+    .values({
+      missionId: args.task.missionId ?? null,
+      taskId: args.task.id,
+      workerId: args.workerId,
+      authorType: 'system',
+      type: args.type,
+      title: args.title,
+      body: args.body,
+      status: 'open',
+    })
+    .catch((err) => {
+      console.error(`[Task ${args.task.id}] Failed to post answer-path note:`, err);
+    });
 }

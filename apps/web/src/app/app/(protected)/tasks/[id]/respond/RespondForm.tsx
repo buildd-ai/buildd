@@ -29,7 +29,12 @@ export default function RespondForm({ workerId, options }: Props) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to send answer');
-      router.push(`/app/tasks/${data.taskId}`);
+      // On a resume this is the SAME task (the resumed worker continues under
+      // it); on a cold continuation it is the new one. Either way it is where
+      // the work now is. A task-less worker returns null — stay put rather than
+      // navigating to a page that cannot exist.
+      if (data.taskId) router.push(`/app/tasks/${data.taskId}`);
+      else router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send answer');
       setSending(null);
