@@ -4,6 +4,7 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -621,9 +622,10 @@ export async function completeMissionIfVerified(
 
   // Atomic active → completed. Concurrent callers race here; exactly one wins,
   // and only the winner disables the schedule and announces completion.
+  const completedAt = new Date();
   const [claimed] = await db
     .update(missions)
-    .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'completed', completedAt, updatedAt: completedAt })
     .where(and(eq(missions.id, missionId), eq(missions.status, 'active')))
     .returning({ id: missions.id, scheduleId: missions.scheduleId });
 
@@ -645,6 +647,16 @@ export async function completeMissionIfVerified(
       .set({ enabled: false, updatedAt: new Date() })
       .where(eq(taskSchedules.id, claimed.scheduleId));
   }
+
+  // Rule P-1's write side (docs/design/mission-flight-strip.md): the winner of
+  // the claim above is the one caller that knows this transition really
+  // happened, so it's the one that computes and stores the strip. Fire-and-
+  // forget like the other post-completion side effects below — a failure here
+  // must not un-complete the mission; the list page just falls back to
+  // rendering rail-less/absent for this mission until a backfill run fixes it.
+  computeAndStoreFlightStripCache(missionId, { missionCompletedAt: completedAt }).catch(e =>
+    console.error(`[mission-completion] flight-strip cache compute failed for ${missionId}:`, e)
+  );
 
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({

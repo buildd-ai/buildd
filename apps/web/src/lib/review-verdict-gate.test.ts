@@ -77,15 +77,30 @@ describe('evaluateReviewVerdictGate', () => {
     }
   });
 
-  it('passes a request-changes verdict that a later push superseded', () => {
-    // The retry pushed its fix: the PR head moved, so the verdict is about code
-    // that is no longer what merges. Nothing re-reviews an existing head SHA,
-    // so blocking here would deadlock the PR permanently.
+  it('regression: a push no longer clears a request-changes verdict on its own', () => {
+    // Pre-fix behaviour: a later push made the gate PASS unconditionally,
+    // trusting that *something* must have re-reviewed the new commit. Nothing
+    // did — the webhook only ever dispatched a reviewer on `opened`. A
+    // reviewer is now re-dispatched automatically on `synchronize` (see
+    // maybeReDispatchReviewer), and the gate blocks until THAT round reaches
+    // a terminal state (readPrReviewStatus reads the newest review task, so a
+    // fresh round simply replaces this stale one) — not merely because a push
+    // happened.
     const result = evaluateReviewVerdictGate(
       status({ state: 'changes_requested', verdict: 'request-changes', reviewHeadSha: SHA_A }),
       SHA_B,
     );
-    expect(result.blocks).toBe(false);
+    expect(result.blocks).toBe(true);
+    expect(result.kind).toBe('changes_requested');
+  });
+
+  it('regression: a push no longer clears an escalated verdict on its own', () => {
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'escalated', verdict: 'escalate', reviewHeadSha: SHA_A }),
+      SHA_B,
+    );
+    expect(result.blocks).toBe(true);
+    expect(result.kind).toBe('escalated');
   });
 
   it('passes an approve that follows a previous request-changes', () => {
@@ -96,6 +111,51 @@ describe('evaluateReviewVerdictGate', () => {
       SHA_A,
     );
     expect(result.blocks).toBe(false);
+  });
+
+  it('blocks a stale approval — a later push moved the head past what was approved', () => {
+    // Unlike changes_requested/escalated, an approval does not get a reviewer
+    // auto re-dispatched on every push (see the module doc) — the gate itself
+    // is the thing that stops silently trusting it.
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'approved', verdict: 'approve', confidence: 0.9, reviewHeadSha: SHA_A, summary: 'LGTM' }),
+      SHA_B,
+    );
+    expect(result.blocks).toBe(true);
+    expect(result.kind).toBe('stale_approval');
+    expect(result.reason).toContain(SHA_B.slice(0, 7));
+    expect(result.clearedBy).toBeTruthy();
+  });
+
+  it('passes an approve with no recorded SHA — cannot prove staleness', () => {
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'approved', verdict: 'approve', confidence: 0.9, reviewHeadSha: null }),
+      SHA_B,
+    );
+    expect(result.blocks).toBe(false);
+  });
+
+  it('passes an approve when the commit being merged is unknown — cannot prove staleness', () => {
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'approved', verdict: 'approve', confidence: 0.9, reviewHeadSha: SHA_A }),
+      null,
+    );
+    expect(result.blocks).toBe(false);
+  });
+
+  it('compares commits case-insensitively for a stale approval', () => {
+    expect(
+      evaluateReviewVerdictGate(
+        status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A.toUpperCase() }),
+        SHA_A,
+      ).blocks,
+    ).toBe(false);
+    expect(
+      evaluateReviewVerdictGate(
+        status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A }),
+        SHA_B.toUpperCase(),
+      ).blocks,
+    ).toBe(true);
   });
 
   it('passes when no review was ever requested', () => {
@@ -133,15 +193,15 @@ describe('evaluateReviewVerdictGate', () => {
     expect(result.blocks).toBe(true);
   });
 
-  it('compares commits case-insensitively and ignores non-SHA noise', () => {
+  it('blocks regardless of SHA casing or abbreviation — changes_requested has no pass escape', () => {
     expect(
       evaluateReviewVerdictGate(
         status({ state: 'changes_requested', reviewHeadSha: SHA_A.toUpperCase() }),
         SHA_A,
       ).blocks,
     ).toBe(true);
-    // An abbreviated sha cannot establish identity — fail closed rather than
-    // guessing that a 7-char prefix means the same commit.
+    // An abbreviated sha cannot establish identity either way, but it no
+    // longer matters here — changes_requested blocks unconditionally now.
     expect(
       evaluateReviewVerdictGate(
         status({ state: 'changes_requested', reviewHeadSha: SHA_A }),

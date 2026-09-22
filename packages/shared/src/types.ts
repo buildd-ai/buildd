@@ -660,7 +660,19 @@ export type WorkerExitCause =
    * code defect. Excluded from the failure rate and failure-signature ranking,
    * but still queryable by this exit cause.
    */
-  | 'needs_input';
+  | 'needs_input'
+  /**
+   * This server refused a mutation from the session (a 4xx, or an unqueueable
+   * 5xx) rather than the session crashing. Describes the REQUEST, not the work
+   * — not charged against the task's retry budget, but bounded by the PATCH
+   * route's infraRetryCount budget so the exemption cannot loop forever.
+   */
+  | 'server_refused'
+  /**
+   * A declared output gate refused the completion: the session ran and shipped
+   * nothing reviewable. Charged — but not as a code failure.
+   */
+  | 'output_unmet';
 
 export interface Worker {
   id: string;

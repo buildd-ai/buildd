@@ -1,7 +1,15 @@
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
 import { teamMembers, workspaces, accountWorkspaces, teams } from '@buildd/core/db/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, or, inArray, sql } from 'drizzle-orm';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+
+/**
+ * Builds the two scope subqueries below without a db handle, so the predicate
+ * is renderable (and therefore assertable) independently of any connection —
+ * see team-access-workspace-scope.test.ts.
+ */
+const qb = new QueryBuilder();
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -14,12 +22,14 @@ const ROLE_HIERARCHY: Record<TeamRole, number> = {
 /**
  * Verify a user has access to a workspace via team membership.
  * Optionally checks for a minimum role level.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
  */
-export async function verifyWorkspaceAccess(
+export const verifyWorkspaceAccess = cache(async (
   userId: string,
   workspaceId: string,
   requiredRole?: TeamRole
-): Promise<{ teamId: string; role: TeamRole } | null> {
+): Promise<{ teamId: string; role: TeamRole } | null> => {
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     columns: { teamId: true, accessMode: true },
@@ -48,17 +58,19 @@ export async function verifyWorkspaceAccess(
   }
 
   return { teamId: workspace.teamId, role };
-}
+});
 
 /**
  * Verify an API key account has access to a workspace.
  * Checks accountWorkspaces link or workspace accessMode === 'open'.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
  */
-export async function verifyAccountWorkspaceAccess(
+export const verifyAccountWorkspaceAccess = cache(async (
   accountId: string,
   workspaceId: string,
   permission?: 'canClaim' | 'canCreate'
-): Promise<boolean> {
+): Promise<boolean> => {
   // Check workspace access mode first
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
@@ -83,86 +95,113 @@ export async function verifyAccountWorkspaceAccess(
   if (permission === 'canCreate' && !link.canCreate) return false;
 
   return true;
-}
+});
 
 /**
  * Get all workspace IDs accessible to a user via their team memberships.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
+ * Both the protected layout and the page it renders resolve this scope, and it
+ * is re-resolved on every Pusher-driven router.refresh().
+ *
+ * One statement, deliberately. This used to be four strictly sequential
+ * queries — personal team by slug, that team's workspaces, the user's
+ * memberships, those teams' workspaces — and neon-http has no pooling, so each
+ * one cost a separate HTTP round trip for a predicate Postgres can evaluate in
+ * a single pass. The two arms are unchanged and still OR'd:
+ *
+ *   1. the personal team (slug = personal-{userId}), which is the fallback for
+ *      accounts predating teamMembers enforcement; and
+ *   2. every team the user actually has a teamMembers row for.
+ *
+ * SELECT DISTINCT does the set union the old Set<string> accumulator did.
+ * `accountWorkspaces` is intentionally not consulted here — that is the API-key
+ * account path (verifyAccountWorkspaceAccess), not the session-user path.
+ *
+ * Two invariants this leans on. `teams.slug` is UNIQUE (schema.ts), so the
+ * personal-team subquery matches at most one row — exactly what the old
+ * findFirst did, not a widening. And the return value is an unordered set, as
+ * it always was: neither of the old findMany calls carried an ORDER BY either.
  */
-export async function getUserWorkspaceIds(userId: string): Promise<string[]> {
-  const ids = new Set<string>();
+export const getUserWorkspaceIds = cache(async (userId: string): Promise<string[]> => {
+  const rows = await db
+    .selectDistinct({ id: workspaces.id })
+    .from(workspaces)
+    .where(
+      or(
+        // 1. Workspaces via personal team (for users missing team_members rows)
+        inArray(
+          workspaces.teamId,
+          qb.select({ id: teams.id }).from(teams).where(eq(teams.slug, `personal-${userId}`)),
+        ),
+        // 2. Workspaces via team membership
+        inArray(
+          workspaces.teamId,
+          qb.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, userId)),
+        ),
+      ),
+    );
 
-  // 1. Workspaces via personal team (for users missing team_members rows)
-  const personalTeam = await db.query.teams.findFirst({
-    where: eq(teams.slug, `personal-${userId}`),
-    columns: { id: true },
-  });
-  if (personalTeam) {
-    const personalWorkspaces = await db.query.workspaces.findMany({
-      where: eq(workspaces.teamId, personalTeam.id),
-      columns: { id: true },
-    });
-    for (const w of personalWorkspaces) ids.add(w.id);
-  }
-
-  // 2. Workspaces via team membership
-  const memberships = await db.query.teamMembers.findMany({
-    where: eq(teamMembers.userId, userId),
-    columns: { teamId: true },
-  });
-
-  if (memberships.length > 0) {
-    const teamIds = memberships.map(m => m.teamId);
-    const teamWorkspaces = await db.query.workspaces.findMany({
-      where: inArray(workspaces.teamId, teamIds),
-      columns: { id: true },
-    });
-    for (const w of teamWorkspaces) ids.add(w.id);
-  }
-
-  return [...ids];
-}
+  // DISTINCT already dedupes in Postgres; the Set keeps the contract explicit
+  // and independent of the query shape.
+  return [...new Set(rows.map(r => r.id))];
+});
 
 /**
  * Get all workspace IDs that belong to a team.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
  */
-export async function getTeamWorkspaceIds(teamId: string): Promise<string[]> {
+export const getTeamWorkspaceIds = cache(async (teamId: string): Promise<string[]> => {
   const ws = await db.query.workspaces.findMany({
     where: eq(workspaces.teamId, teamId),
     columns: { id: true },
   });
   return ws.map((w) => w.id);
-}
+});
 
 /**
  * Get all team IDs a user belongs to, including their personal team.
  * Falls back to the personal team (slug = personal-{userId}) so that
  * accounts created before teamMembers enforcement still resolve their
  * own missions and workspaces — mirrors the getUserWorkspaceIds fallback.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
+ * resolveActiveTeamId calls this too, so a page that resolves both pays once.
  */
-export async function getUserTeamIds(userId: string): Promise<string[]> {
-  const memberships = await db.query.teamMembers.findMany({
-    where: eq(teamMembers.userId, userId),
-    columns: { teamId: true },
-  });
+export const getUserTeamIds = cache(async (userId: string): Promise<string[]> => {
+  // The two reads share no inputs, so they go out together — neon-http bills a
+  // full HTTP round trip per statement, and this helper is on the critical path
+  // of every team-scoped surface.
+  const [memberships, personalTeam] = await Promise.all([
+    db.query.teamMembers.findMany({
+      where: eq(teamMembers.userId, userId),
+      columns: { teamId: true },
+    }),
+    // Personal-team fallback for accounts missing a teamMembers row
+    db.query.teams.findFirst({
+      where: eq(teams.slug, `personal-${userId}`),
+      columns: { id: true },
+    }),
+  ]);
 
   const ids = new Set(memberships.map(m => m.teamId));
-
-  // Personal-team fallback for accounts missing a teamMembers row
-  const personalTeam = await db.query.teams.findFirst({
-    where: eq(teams.slug, `personal-${userId}`),
-    columns: { id: true },
-  });
   if (personalTeam) {
     ids.add(personalTeam.id);
   }
 
   return [...ids];
-}
+});
 
 /**
  * Resolve all team IDs accessible to an API account or session user.
  * Handles personal teams (no teamMembers rows) by extracting userId from
  * the team slug and resolving through teamMembers.
+ *
+ * NOT React cache()-wrapped, unlike its siblings: both parameters are objects,
+ * and cache() keys non-primitives on referential identity — fresh object
+ * literals at the call site would miss every time and only grow the cache. Its
+ * inner getUserTeamIds call is cached, which is where the round trips are.
  */
 export async function resolveAccountTeamIds(
   user: { id: string } | null | undefined,
@@ -197,15 +236,17 @@ export async function resolveAccountTeamIds(
 /**
  * Get the user's default (personal) team ID.
  * This is the team with slug 'personal-{userId}'.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
  */
-export async function getUserDefaultTeamId(userId: string): Promise<string | null> {
+export const getUserDefaultTeamId = cache(async (userId: string): Promise<string | null> => {
   const team = await db.query.teams.findFirst({
     where: eq(teams.slug, `personal-${userId}`),
     columns: { id: true },
   });
 
   return team?.id || null;
-}
+});
 
 /**
  * Resolve the single "active team" for a session from the `buildd-team` cookie.
@@ -215,11 +256,13 @@ export async function getUserDefaultTeamId(userId: string): Promise<string | nul
  * team. Returns null only when the user belongs to no team. This is the single
  * source of truth for team-scoped (namespaced) views — see
  * docs/specs/team-namespace-scoping.md.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
  */
-export async function resolveActiveTeamId(
+export const resolveActiveTeamId = cache(async (
   userId: string,
   cookieValue: string | null | undefined,
-): Promise<string | null> {
+): Promise<string | null> => {
   const teamIds = await getUserTeamIds(userId);
   if (teamIds.length === 0) return null;
   if (cookieValue && teamIds.includes(cookieValue)) return cookieValue;
@@ -228,7 +271,7 @@ export async function resolveActiveTeamId(
   if (personalId && teamIds.includes(personalId)) return personalId;
 
   return teamIds[0];
-}
+});
 
 export type UserTeam = {
   id: string;

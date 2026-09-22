@@ -306,7 +306,7 @@ describe('PII_PATTERNS', () => {
 
 // ── createSecretRedactor ──────────────────────────────────────────────────────
 
-import { createSecretRedactor, redactSecretsInBody, SECRET_SCAN_FIELDS } from '../redaction';
+import { createSecretRedactor, redactSecretsInBody, redactTranscriptMessages, SECRET_SCAN_FIELDS } from '../redaction';
 
 describe('createSecretRedactor', () => {
   it('preserves the registered secret label', () => {
@@ -520,5 +520,203 @@ describe('redactSecretsInBody', () => {
     expect(JSON.stringify(result)).not.toContain('mysupersecretkey');
     expect(result.toolCalls[0].output).toBe('[REDACTED:CUE_SECRET]');
     expect(result.taskProgress.message).toBe('using [REDACTED:CUE_SECRET]');
+  });
+});
+
+// ── String-escaping safety of the generic patterns ────────────────────────────
+
+describe('generic secret patterns and string escaping', () => {
+  // A backslash is a boundary for these patterns in both directions: a match
+  // may neither consume one nor begin immediately after one. Both halves of
+  // that rule are string-level correctness — a replacement that takes half of
+  // a two-character escape sequence rewrites the meaning of the text around
+  // it, and for JSON-serialized text it makes the text unparseable.
+
+  it('does not consume the backslash that escapes a quote', () => {
+    const redact = createSecretRedactor([]);
+    // Raw text: ...abc123def, backslash, quote. The Authorization pattern's
+    // trailing character class stops at the quote, so it used to swallow the
+    // backslash in front of it.
+    const text = `curl -H 'Authorization: Bearer abc123def\\" rest'`;
+    const result = redact(text);
+    expect(result).toContain('Authorization: [REDACTED:authorization]');
+    expect(result).toContain('\\"');
+  });
+
+  it('keeps serialized text parseable when a value contains an escaped quote', () => {
+    const redact = createSecretRedactor([]);
+    const fixture = { command: `curl -H 'Authorization: Bearer abc123def\\" \\\\x' https://example.test` };
+    const roundTripped = JSON.parse(redact(JSON.stringify(fixture))) as typeof fixture;
+    expect(roundTripped.command).toContain('[REDACTED:authorization]');
+    expect(roundTripped.command).toContain(`\\" \\\\x`);
+  });
+
+  it('does not begin a match immediately after a backslash', () => {
+    const redact = createSecretRedactor([]);
+    // A hex-shaped run directly after a backslash: redacting from the first
+    // hex character leaves the backslash dangling in front of the marker.
+    const text = `id:\\${'b'.repeat(48)}`;
+    expect(redact(text)).toBe(text);
+  });
+
+  it('keeps serialized text parseable when a value contains a two-character escape', () => {
+    const redact = createSecretRedactor([]);
+    // JSON writes a backspace as \b, and `b` is a hex digit, so the hex rule
+    // used to match from immediately after the backslash.
+    const fixture = { text: `id:\b${'b'.repeat(47)}` };
+    expect(JSON.parse(redact(JSON.stringify(fixture)))).toEqual(fixture);
+  });
+});
+
+// ── Field-targeted redaction from a redactor closure ──────────────────────────
+
+describe('createSecretRedactor().body — field-targeted redaction', () => {
+  // A long kebab/snake identifier containing letters and digits is
+  // credential-shaped to the generic patterns. Only the field name
+  // distinguishes it, so a caller holding a parsed structure must redact by
+  // field instead of by regex over the serialized form.
+  const STRUCTURAL_IDENTIFIER = 'mission/synthetic-placeholder-identifier-0000aaaa-w1111bbbb';
+  // Mixed case, so the generic heuristic still treats it as credential-shaped.
+  // The all-lowercase identifier above no longer is — see the mixed-case
+  // requirement on the base64url rule — so it cannot carry this test's point
+  // any more, while field scoping still has to hold for the ones that do.
+  const MIXED_CASE_STRUCTURAL = 'mission/Synthetic-Placeholder-Identifier-0000AAAA-w1111BBBB';
+
+  it('preserves a structural identifier that the free-text redactor rewrites', () => {
+    const redact = createSecretRedactor([]);
+    // Documents why .body exists: as free text the same value is credential-shaped.
+    expect(redact(MIXED_CASE_STRUCTURAL)).toBe('[REDACTED:credential]');
+    expect(redact.body({ branch: MIXED_CASE_STRUCTURAL }).branch).toBe(MIXED_CASE_STRUCTURAL);
+  });
+
+  it('leaves a lowercase structural identifier alone on both paths', () => {
+    const redact = createSecretRedactor([]);
+    expect(redact(STRUCTURAL_IDENTIFIER)).toBe(STRUCTURAL_IDENTIFIER);
+    expect(redact.body({ branch: STRUCTURAL_IDENTIFIER }).branch).toBe(STRUCTURAL_IDENTIFIER);
+  });
+
+  it('still applies generic patterns to scan-listed fields', () => {
+    const redact = createSecretRedactor([]);
+    const result = redact.body({ command: `echo ${'a1'.repeat(24)}` });
+    expect(result.command).toBe('echo [REDACTED:credential]');
+  });
+
+  it('redacts known secret values in fields that are not scan-listed', () => {
+    const redact = createSecretRedactor([{ label: 'SYNTHETIC_PLACEHOLDER', value: 'placeholder-secret-0000' }]);
+    expect(redact.body({ branch: 'wip/placeholder-secret-0000' }).branch)
+      .toBe('wip/[REDACTED:SYNTHETIC_PLACEHOLDER]');
+  });
+
+  it('does not mutate the structure it is given', () => {
+    const redact = createSecretRedactor([{ label: 'SYNTHETIC_PLACEHOLDER', value: 'placeholder-secret-0000' }]);
+    const body = { command: 'echo placeholder-secret-0000' };
+    redact.body(body);
+    expect(body.command).toBe('echo placeholder-secret-0000');
+  });
+});
+
+describe('a secret value containing a character that JSON escapes', () => {
+  // Exact-value matching is a plain substring replace, and the escaped form of
+  // a value is a different string from the raw value — so the value has to be
+  // matchable in whichever form the caller is holding.
+  const SECRET = 'placeholder"secret-0000';
+  const secrets = [{ label: 'SYNTHETIC_PLACEHOLDER', value: SECRET }];
+
+  it('is redacted when the parsed structure is walked', () => {
+    const redact = createSecretRedactor(secrets);
+    expect(redact.body({ command: `echo ${SECRET}` }).command)
+      .toBe('echo [REDACTED:SYNTHETIC_PLACEHOLDER]');
+  });
+
+  it('is redacted in its escaped form too, for callers handling serialized text', () => {
+    const redact = createSecretRedactor(secrets);
+    const serialized = JSON.stringify({ command: `echo ${SECRET}` });
+    const result = redact(serialized);
+    expect(result).not.toContain('placeholder"');
+    expect(result).not.toContain('placeholder\\"');
+    expect(JSON.parse(result).command).toBe('echo [REDACTED:SYNTHETIC_PLACEHOLDER]');
+  });
+});
+
+// ── Transcript message redaction ──────────────────────────────────────────────
+
+describe('redactTranscriptMessages', () => {
+  const STRUCTURAL_IDENTIFIER = 'mission/synthetic-placeholder-identifier-0000aaaa-w1111bbbb';
+  const redact = createSecretRedactor([{ label: 'SYNTHETIC_PLACEHOLDER', value: 'placeholder-secret-0000' }]);
+
+  it('redacts text content as free text', () => {
+    const [message] = redactTranscriptMessages(
+      [{ type: 'text', content: 'used placeholder-secret-0000 here' }],
+      redact,
+    );
+    expect((message as { content: string }).content).toBe('used [REDACTED:SYNTHETIC_PLACEHOLDER] here');
+  });
+
+  it('redacts tool_use inputs by field, preserving structural values', () => {
+    const [message] = redactTranscriptMessages(
+      [{
+        type: 'tool_use',
+        name: 'create_pr',
+        input: { head: STRUCTURAL_IDENTIFIER, body: 'token placeholder-secret-0000' },
+      }],
+      redact,
+    );
+    const input = (message as { input: Record<string, string> }).input;
+    expect(input.head).toBe(STRUCTURAL_IDENTIFIER);
+    expect(input.body).toBe('token [REDACTED:SYNTHETIC_PLACEHOLDER]');
+  });
+
+  it('leaves non-string leaves and unknown message types untouched', () => {
+    const messages = [
+      { type: 'tool_use', name: 'bash', input: { timeout: 5000, background: false } },
+      { type: 'result', subtype: 'success' },
+    ];
+    expect(redactTranscriptMessages(messages, redact)).toEqual(messages);
+  });
+});
+
+// ── The base64url heuristic must not eat a branch name in a scanned field ────
+
+describe('generic credential heuristic — mixed case requirement', () => {
+  // Field scoping keeps a branch name safe under a STRUCTURAL key, but a branch
+  // quoted inside a scanned free-text field (`command`) is still candidate text,
+  // and `/` is in the base64url class, so the whole `mission/<slug>-<id8>-w<id8>`
+  // path is one 48+ char run. Requiring mixed case separates it from base64 of
+  // random bytes, which is never lowercase-only at this length.
+
+  const SYNTHETIC_BRANCH = 'mission/synthetic-placeholder-identifier-0000aaaa-w1111bbbb';
+
+  it('preserves a lowercase branch path quoted inside a scanned free-text field', () => {
+    const redact = createSecretRedactor([]);
+    const result = redact(`git push origin ${SYNTHETIC_BRANCH}`);
+    expect(result).toBe(`git push origin ${SYNTHETIC_BRANCH}`);
+    expect(result).not.toContain('[REDACTED');
+  });
+
+  it('still redacts a mixed-case base64url run of credential length', () => {
+    const redact = createSecretRedactor([]);
+    // Synthetic, hand-written: lower + UPPER + digits, 48+ chars, no real secret.
+    const candidate = 'Aa0Bb1Cc2Dd3Ee4Ff5Gg6Hh7Ii8Jj9Kk0Ll1Mm2Nn3Oo4Pp5Qq6';
+    expect(candidate.length).toBeGreaterThanOrEqual(48);
+    // Separate with a space, not `=`: `=` is itself in the base64url class, so
+    // `token=<candidate>` is one run and the prefix is redacted along with it.
+    expect(redact(`token ${candidate}`)).toBe('token [REDACTED:credential]');
+  });
+
+  it('still redacts a long lowercase hex run via the hex rule', () => {
+    const redact = createSecretRedactor([]);
+    // Lowercase-only, so the base64url rule now declines it — the separate hex
+    // rule must still cover it, which is why that rule was left unchanged.
+    const hex = 'a3f19b'.repeat(11);
+    expect(hex.length).toBeGreaterThanOrEqual(48);
+    expect(redact(`sig=${hex}`)).toBe('sig=[REDACTED:credential]');
+  });
+
+  it('redacts a branch-shaped string that is actually mixed case', () => {
+    const redact = createSecretRedactor([]);
+    // Guard against the fix over-reaching into a "looks like a branch" test:
+    // the discriminator is character class, not the presence of slashes.
+    const mixed = 'mission/Synthetic-Placeholder-Identifier-0000AAAA-w1111BBBB';
+    expect(redact(`git push origin ${mixed}`)).toContain('[REDACTED:credential]');
   });
 });

@@ -24,5 +24,13 @@ packages/core/__tests__/gate-slug-coverage.test.ts
 # enumerating the repo, so the ls-files heuristic does not flag it — but a change
 # to that workflow still selects no test beside it, which is the same hole.
 scripts/release-tag-workflow.test.ts
+# Enumerates every tracked test file to check that none reaches the operator's
+# real home directory. The file that breaks it is a test file anywhere in the
+# repo, which is never the file next to this one.
+scripts/test-home-isolation.test.ts
+# Enumerates the signal registry to check that every signal has a test proving
+# it can fire. The signal that breaks it is defined anywhere, so the same
+# reasoning applies: this must run even when nothing near it changed.
+scripts/signal-fire-coverage.test.ts
 scripts/skills-listed.test.ts
 scripts/workflow-safety.test.ts

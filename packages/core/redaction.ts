@@ -270,24 +270,50 @@ export interface SecretRedactionValue {
 
 type SecretInput = string | SecretRedactionValue;
 
+// A backslash is a hard boundary for every pattern in this array, in both
+// directions: a match may neither CONSUME one nor BEGIN immediately after one.
+// Both halves are string-escaping correctness, not a heuristic tweak:
+//
+//   - Consuming one takes the first half of a two-character escape sequence.
+//     The Authorization pattern's trailing class excluded `"` but not `\`, so
+//     on text containing `\"` it swallowed the backslash and left the quote —
+//     which, in JSON-serialized text, closes the string early and leaves the
+//     next literal backslash as a top-level token (unparseable).
+//   - Beginning immediately after one takes the second half. JSON writes a
+//     backspace as `\b` and `b` is a hex digit, so the hex-credential rule
+//     matched from just after the backslash and left `\` in front of the
+//     replacement marker (an invalid escape).
+//
+// Hence `(?<!\\)` on every entry and no `\` inside any open-ended character
+// class. The cost is that a credential abutting a backslash with no separator
+// is not matched by these heuristics; exact-value matching still covers it,
+// and unlike corruption a miss here cannot make the surrounding text mean
+// something different. Callers holding a structure must use redactSecretsInBody
+// or SecretRedactor.body so escaping cannot participate at all.
 const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
-  { pattern: /\bAuthorization\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9][^\s,;"']*/gi, replacement: 'Authorization: [REDACTED:authorization]' },
-  { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: '[REDACTED:jwt]' },
-  { pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
-  { pattern: /\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
-  { pattern: /\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
-  // Full base64/base64url alphabet, including `-`/`_`. Those two chars are also
-  // every kebab-case/snake-case identifier's word separator, and this codebase
-  // mints plenty of long ones (mission branch names like
-  // `mission/<slug>-<missionId8>-w<workerId8>` easily clear 48 chars of
-  // lowercase letters, digits, and hyphens) — matching them here would corrupt
-  // structural fields like `branch` or `lastCommitSha`. Rather than narrowing
-  // the alphabet (which silently drops coverage for real base64url secrets
-  // pasted into free-text fields), generic patterns in this array are only
-  // applied to fields on the SECRET_SCAN_FIELDS allowlist by
-  // redactSecretsInBody — structural fields get exact-value matching only.
-  // See PR #2305 / its follow-up for the incident this guards against.
-  { pattern: /\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
+  { pattern: /(?<!\\)\bAuthorization\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9][^\s,;"'\\]*/gi, replacement: 'Authorization: [REDACTED:authorization]' },
+  { pattern: /(?<!\\)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: '[REDACTED:jwt]' },
+  { pattern: /(?<!\\)\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
+  { pattern: /(?<!\\)\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
+  { pattern: /(?<!\\)\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
+  // Full base64/base64url alphabet, including `-`/`_` — and `/`, which makes a
+  // branch *path* one candidate run: `mission/<slug>-<missionId8>-w<workerId8>`
+  // clears 48 chars without a break. Field scoping (SECRET_SCAN_FIELDS, below)
+  // keeps structural keys like `branch` safe, but a branch name quoted inside a
+  // scanned free-text field — `command`, say, as `git push origin <branch>` —
+  // is still a candidate, and rewriting it to a redaction marker corrupts the
+  // very identifier a reader needs.
+  //
+  // So require mixed case as well as a digit. A kebab/snake identifier minted
+  // in this codebase is lowercase; base64 of random bytes is not. Measured over
+  // 200k random 48-char base64 runs, zero lacked an uppercase letter, so the
+  // coverage this gives up is a lowercase-only 48+ char secret that is also
+  // absent from the exact-value table — while lowercase hex keys stay covered
+  // by the hex rule above, which is unchanged.
+  //
+  // Narrowing the alphabet instead was considered and rejected: it drops real
+  // base64url coverage. See PR #2305 / its follow-up for the original incident.
+  { pattern: /(?<!\\)\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[a-z])(?=[A-Za-z0-9+/=_-]*[A-Z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
 ];
 
 /**
@@ -317,10 +343,27 @@ export const SECRET_SCAN_FIELDS = new Set([
 ]);
 
 /**
+ * The JSON string-literal body of `value` — i.e. what JSON.stringify writes
+ * between the quotes. Returns null when the value needs no escaping.
+ */
+function jsonEscapedForm(value: string): string | null {
+  const escaped = JSON.stringify(value).slice(1, -1);
+  return escaped === value ? null : escaped;
+}
+
+/**
  * Build the exact-value lookup for a set of known secret values.
  * Values shorter than 8 chars or empty are skipped.
  * Longer secrets sort first to prevent partial matches (if secretA is a
  * prefix of secretB, secretB is replaced first).
+ *
+ * Matching is a plain substring replace, so the raw and escaped forms of a
+ * value are two different strings: a value containing `"`, `\`, or a control
+ * character is not a substring of the serialized form of the structure that
+ * holds it. Both forms are therefore registered under the same label, so the
+ * value matches whichever form the caller is holding. Callers holding a
+ * structure should still walk it (SecretRedactor.body / redactSecretsInBody);
+ * this only keeps the text form correct about escaping.
  */
 function buildExactValueTable(secrets: SecretInput[]): Array<[string, string | null]> {
   const byValue = new Map<string, string | null>();
@@ -330,6 +373,8 @@ function buildExactValueTable(secrets: SecretInput[]): Array<[string, string | n
     const rawLabel = typeof secret === 'string' ? null : secret.label;
     const label = rawLabel?.replace(/[^A-Za-z0-9_.-]/g, '_') || null;
     byValue.set(value, label);
+    const escaped = jsonEscapedForm(value);
+    if (escaped) byValue.set(escaped, label);
   }
   return [...byValue.entries()].sort(([a], [b]) => b.length - a.length);
 }
@@ -356,18 +401,65 @@ function redactSecretPatterns(text: string): string {
 }
 
 /**
- * Build a redactor function for a set of known secret values.
+ * A free-text redactor with a field-targeted companion for parsed structures.
+ *
+ * Calling it redacts free text. `.body()` redacts an already-parsed structure
+ * by field, exactly like redactSecretsInBody, without the caller needing to
+ * hold the secret values — so a caller that has a structure never has to
+ * serialize it to reach a redactor.
+ */
+export type SecretRedactor = ((text: string) => string) & {
+  body: <T extends Record<string, unknown>>(body: T) => T;
+};
+
+/**
+ * Build a redactor for a set of known secret values.
  * Applies exact-value matching plus the generic credential-shaped patterns.
  * Intended for callers that already know they're handling free text (e.g. a
  * milestone label, a tool-call log line) — not for scanning an arbitrary body
- * with structural fields. Use redactSecretsInBody for that.
+ * with structural fields. Use `.body()` (or redactSecretsInBody) for that.
+ *
+ * NEVER hand the text form a serialized structure. Redacting JSON text is
+ * wrong in both directions: the generic patterns operate on escape sequences
+ * they cannot interpret (see SECRET_PATTERNS), and every structural field is
+ * exposed to heuristics SECRET_SCAN_FIELDS exists to withhold from them, so a
+ * long branch-shaped identifier comes back as "[REDACTED:credential]" and
+ * breaks whatever reads it downstream. `.body()` is the same redactor applied
+ * to the parsed form, which is what the field allowlist needs to work.
  */
-export function createSecretRedactor(secrets: SecretInput[]): (text: string) => string {
+export function createSecretRedactor(secrets: SecretInput[]): SecretRedactor {
   const table = buildExactValueTable(secrets);
-  return (text: string): string => {
+  const redact = ((text: string): string => {
     if (!text) return text;
     return redactSecretPatterns(redactExactValues(text, table));
-  };
+  }) as SecretRedactor;
+  redact.body = <T extends Record<string, unknown>>(body: T): T => redactBodyWithTable(body, table);
+  return redact;
+}
+
+/**
+ * Redact the fields of an archived/streamed transcript message list.
+ *
+ * `text` content is free text and gets the full redactor. A `tool_use` input is
+ * a STRUCTURE whose field names carry the only signal that distinguishes a
+ * credential from a structural identifier, so it is walked by field — never
+ * serialized, and never handed string-first to the generic patterns.
+ *
+ * Messages are copied, not mutated; unknown message types and non-string
+ * leaves pass through untouched.
+ */
+export function redactTranscriptMessages<M>(messages: M[], redact: SecretRedactor): M[] {
+  return messages.map((message) => {
+    if (!message || typeof message !== 'object') return message;
+    const m = message as { type?: unknown; content?: unknown; input?: unknown };
+    if (m.type === 'text' && typeof m.content === 'string') {
+      return { ...message, content: redact(m.content) };
+    }
+    if (m.type === 'tool_use' && m.input && typeof m.input === 'object') {
+      return { ...message, input: redact.body(m.input as Record<string, unknown>) };
+    }
+    return message;
+  });
 }
 
 /**
@@ -389,7 +481,18 @@ export function redactSecretsInBody<T extends Record<string, unknown>>(
   body: T,
   secrets: SecretInput[],
 ): T {
-  const table = buildExactValueTable(secrets);
+  return redactBodyWithTable(body, buildExactValueTable(secrets));
+}
+
+/**
+ * The field-targeted walk itself, over a prepared exact-value table. Shared by
+ * redactSecretsInBody and SecretRedactor.body so both apply one policy: exact
+ * values everywhere, generic patterns on SECRET_SCAN_FIELDS only.
+ */
+function redactBodyWithTable<T extends Record<string, unknown>>(
+  body: T,
+  table: Array<[string, string | null]>,
+): T {
   const visit = (value: unknown, field?: string): unknown => {
     if (typeof value === 'string') {
       if (!value) return value;

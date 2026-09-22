@@ -223,15 +223,113 @@ export const WAITING_WORKTREE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Idle threshold before a leftover worktree is considered stale/removable. */
 export const STALE_WORKTREE_IDLE_MS = 60 * 60 * 1000;
 
+/** The minimal in-memory worker shape the ownership check needs. */
+export interface WorktreeOwnershipRecord {
+  worktreePath?: string;
+  status?: string;
+}
+
 /**
- * Does this branch name identify a per-task buildd worktree branch?
- * Matches the `buildd/<slug>` task branches and the `--e2e-test-` ephemeral
- * pattern. Branches outside this set (e.g. `main`, human feature branches) are
- * never touched by the sweep.
+ * Is `worktreePath` currently owned by a LIVE worker other than
+ * `excludeWorkerId`?
+ *
+ * Worktree paths used to be keyed on the REQUESTED branch (see setupWorktree),
+ * so a mission's tasks — all handed the same shared head branch by
+ * `generateTaskBranchName` — computed one directory while holding N distinct
+ * branches. A retry on the same task computes the identical path too. Any
+ * removal must therefore consult this first: `git worktree remove --force`
+ * exits 0 *after* deleting another worker's work, so there is no second line of
+ * defence, and a clean `git status` does not mean idle — an agent that has
+ * committed (common: commit early, push late) reads clean while its SDK session
+ * still has that path as `cwd`.
+ *
+ * "Live" is anything short of the two terminal statuses: `stale` and `waiting`
+ * workers can still resume into the same session and the same worktree.
+ *
+ * Matching is exact, deliberately. Prefix matching would also protect every
+ * `-w<id8>` diversion hanging off the same stem, which is the population the
+ * reaper exists to reclaim.
  */
-export function isBuilddTaskBranch(branch: string | null | undefined): boolean {
-  if (!branch) return false;
-  return branch.startsWith('buildd/') || branch.includes('--e2e-test-');
+export function isWorktreePathOwnedByOtherLiveWorker(
+  workers: Iterable<[string, WorktreeOwnershipRecord]>,
+  worktreePath: string,
+  excludeWorkerId: string,
+): boolean {
+  for (const [id, other] of workers) {
+    if (id === excludeWorkerId) continue;
+    if (other.worktreePath === worktreePath && other.status !== 'done' && other.status !== 'error') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The directory every runner-created worktree lives under, inside its repo. */
+export const WORKTREE_DIR_MARKER = '.buildd-worktrees';
+
+/**
+ * Is this path a worktree the RUNNER created?
+ *
+ * Location, not branch name. `setupWorktree` always builds under
+ * `<repo>/.buildd-worktrees/`, so the path is authoritative; branch-name
+ * prefixes are not. The sweep used to gate on `isBuilddTaskBranch`, which made
+ * every other shape the runner creates invisible to it — `mission/…`,
+ * `mission/…-w<id8>`, `task-<id8>` (the `branchingStrategy: 'none'` shape), a
+ * workspace `branchPrefix`, and `<default>-w<id8>`. Those are exactly the
+ * shapes that collided and leaked, so the sweeper was structurally blind to its
+ * own backlog.
+ *
+ * It must also stay NARROW: a worktree outside this directory (a human feature
+ * branch, or an SDK `isolation: 'worktree'` subagent tree) is not ours to reap.
+ */
+export function isRunnerWorktreePath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  return path.includes(`/${WORKTREE_DIR_MARKER}/`) || path.endsWith(`/${WORKTREE_DIR_MARKER}`);
+}
+
+// `isBuilddTaskBranch` used to live here as the sweep's eligibility gate. It is
+// gone rather than deprecated: it had exactly one caller, its branch-prefix test
+// was the bug, and keeping it would leave a tested predicate that decides
+// nothing. The branch-shaped signal that IS still load-bearing —
+// `--e2e-test-` ephemerality — lives in worker-sync.ts's
+// `isEphemeralTestBranch`.
+
+/** Per-tick worktree inventory, for the always-emitted telemetry line. */
+export interface WorktreeTelemetry {
+  repos: number;
+  worktrees: number;
+  live: number;
+  terminal: number;
+  orphan: number;
+  /** Passed every safety gate this tick. */
+  removable: number;
+  diskMB: number;
+  reaped: number;
+  /** Refused because a live worker owns the path. */
+  skippedOwned: number;
+}
+
+/** Above these, a runner is leaking or bloating and the line says so inline. */
+const TELEMETRY_WARN_DISK_MB = 5000;
+const TELEMETRY_WARN_ORPHANS = 10;
+
+/**
+ * One greppable, chartable line per cleanup tick — emitted unconditionally,
+ * including the all-zero case.
+ *
+ * `runCleanup` used to log the sweep's message only when it did not start with
+ * "No stale". Combined with the branch-prefix eligibility filter, a runner that
+ * was leaking but whose leaks were all filtered out logged nothing at all.
+ */
+export function formatWorktreeTelemetry(t: WorktreeTelemetry): string {
+  const warn = t.diskMB > TELEMETRY_WARN_DISK_MB || t.orphan > TELEMETRY_WARN_ORPHANS
+    ? ` WARN(disk>${TELEMETRY_WARN_DISK_MB}MB or orphans>${TELEMETRY_WARN_ORPHANS})`
+    : '';
+  return (
+    `[worktree-telemetry] repos=${t.repos} worktrees=${t.worktrees} live=${t.live} ` +
+    `terminal=${t.terminal} orphan=${t.orphan} removable=${t.removable} ` +
+    `diskMB=${t.diskMB} reaped=${t.reaped} skipped_owned=${t.skippedOwned}${warn}`
+  );
 }
 
 /**

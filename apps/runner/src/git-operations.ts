@@ -6,8 +6,17 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import { join } from 'path';
-import { resolveWorktreeBase, clearResumeContext, parseWorktreeList, BranchFetchResult } from './worktree-utils';
+import {
+  resolveWorktreeBase,
+  clearResumeContext,
+  parseWorktreeList,
+  isWorktreePathOwnedByOtherLiveWorker,
+  type BranchFetchResult,
+  type WorktreeOwnershipRecord,
+} from './worktree-utils';
+import { sessionLog as realSessionLog } from './session-logger';
 import { isGeneratedPath } from '@buildd/shared';
+import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
@@ -24,6 +33,13 @@ let mkdirSync = fs.mkdirSync;
 let appendFileSync = fs.appendFileSync;
 let readFileSync = fs.readFileSync;
 let rmSync = fs.rmSync;
+// Used only by the install-plan probe (which directories under the worktree
+// hold a manifest). Injectable so that test drives the detector without a
+// temp-dir fixture.
+let readdirSync = fs.readdirSync;
+// Injected so unit tests do not append to the host's ~/.buildd/logs while
+// exercising the removal guard.
+let sessionLog: typeof realSessionLog = realSessionLog;
 // Optional spy for cleanupWorktree — set via __setGitOpsDeps to avoid mock.module pollution
 let _cleanupSpy: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null = null;
 
@@ -35,6 +51,10 @@ export interface GitOpsDeps {
   appendFileSync: typeof fs.appendFileSync;
   readFileSync: typeof fs.readFileSync;
   rmSync: typeof fs.rmSync;
+  /** Optional: drive the install-plan directory walk without a temp dir. */
+  readdirSync?: typeof fs.readdirSync;
+  /** Optional: keep session-log writes out of the host log dir in tests. */
+  sessionLog?: typeof realSessionLog;
   // Optional spy that intercepts cleanupWorktree calls (used by eviction tests)
   cleanupSpy?: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null;
 }
@@ -48,6 +68,8 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   appendFileSync = mocks.appendFileSync;
   readFileSync = mocks.readFileSync;
   rmSync = mocks.rmSync;
+  readdirSync = mocks.readdirSync ?? fs.readdirSync;
+  sessionLog = mocks.sessionLog ?? realSessionLog;
   if (mocks.cleanupSpy !== undefined) _cleanupSpy = mocks.cleanupSpy;
 }
 
@@ -60,6 +82,8 @@ export function __resetGitOpsDeps(): void {
   appendFileSync = fs.appendFileSync;
   readFileSync = fs.readFileSync;
   rmSync = fs.rmSync;
+  readdirSync = fs.readdirSync;
+  sessionLog = realSessionLog;
   _cleanupSpy = null;
 }
 
@@ -75,51 +99,154 @@ export interface GitStats {
 }
 
 /**
- * Install workspace dependencies into a freshly-created worktree so Bun's nested
- * node_modules symlinks (@buildd/core, @buildd/shared, …) exist locally — without
- * them, deep imports like '@buildd/core/db' fail with "Cannot find module".
- *
- * Runs ASYNCHRONOUSLY (execFile, not execSync): even a warm-cache install takes a
- * few seconds, and a synchronous call would freeze the runner's single event loop
- * for the whole duration — starving heartbeats, the 30s stale-check and the 10s
- * server sync, which can get an active worker wrongly flagged stale.
- *
- * `--frozen-lockfile` keeps the common path fast and deterministic (no re-resolution,
- * no lockfile mutation). If the branch's lockfile has drifted, frozen install fails,
- * so we retry unfrozen — node_modules gets created either way. Both attempts are
- * non-fatal: a total failure only warns (deep @buildd/* imports may then break, and
- * the caller falls back to the main repo).
+ * Why an install failed, in the terms a caller can act on. The split that
+ * matters is structural-host-fault (`registry-auth`, `toolchain-missing` — the
+ * agent cannot fix these and they hit every task on the host) versus everything
+ * else. "Nothing to install" is not in here: that is a `skipped` outcome, not a
+ * failure, and treating it as one is what produced the old false alarms.
  */
-async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<void> {
-  const opts = { cwd: worktreePath, timeout: 120_000, encoding: 'utf-8' as const };
+export type InstallFailureClass =
+  | 'registry-auth'
+  | 'toolchain-missing'
+  | 'lockfile-drift'
+  | 'timeout'
+  | 'unknown';
 
-  // Use new Promise + execFile directly instead of util.promisify so that mock
-  // injection via __setGitOpsDeps works consistently across bun versions.
-  const run = (args: string[]) => new Promise<void>((resolve, reject) => {
-    execFile('bun', args, opts, (err) => { if (err) reject(err); else resolve(); });
+/** The outcome of the runner's own dependency install for a worktree. */
+export type InstallOutcome =
+  | { status: 'ok'; dirs: string[]; unfrozen?: boolean }
+  | { status: 'skipped'; reason: 'no-manifest' | 'non-bun-toolchain' | 'declared-manifest' }
+  | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string };
+
+const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Classify a failed `bun install` from its output.
+ *
+ * This exists so the unfrozen retry stops firing blind. Measured: the retry
+ * rescued roughly one failure in a hundred and never a non-drift one, while on
+ * a registry 401 it doubled the stall and then reported "lockfile may have
+ * drifted" — the wrong cause, attributed to the wrong owner.
+ */
+export function classifyInstallFailure(err: unknown): InstallFailureClass {
+  const text = errMessage(err).toLowerCase();
+  if (/\b(401|403)\b|unauthorized|forbidden|authentication|incorrect or missing password/.test(text)) {
+    return 'registry-auth';
+  }
+  if (/enoent|command not found|no such file or directory|not found in \$path/.test(text)) {
+    return 'toolchain-missing';
+  }
+  if (/etimedout|timed out|timeout/.test(text)) return 'timeout';
+  // Deliberately NOT matching the bare flag name `--frozen-lockfile`: every
+  // failure of the frozen attempt echoes the command line, so that pattern
+  // classifies *anything* as drift — which is the same misattribution the old
+  // "lockfile may have drifted" warning made, one layer down. Only a message
+  // that says the lockfile itself was rejected counts.
+  if (/lockfile had changes|lockfile is frozen|lockfile is outdated|outdated_lockfile|lockfile needs to be updated|lockfile would be (modified|updated)/.test(text)) {
+    return 'lockfile-drift';
+  }
+  return 'unknown';
+}
+
+/**
+ * Install dependencies into a freshly-created worktree so Bun's nested
+ * node_modules symlinks (@buildd/core, @buildd/shared, …) exist locally —
+ * without them, deep imports like '@buildd/core/db' fail with "Cannot find
+ * module".
+ *
+ * Runs ASYNCHRONOUSLY (execFile, not execSync): even a warm-cache install takes
+ * a few seconds, and a synchronous call would freeze the runner's single event
+ * loop for the whole duration — starving heartbeats, the 30s stale-check and the
+ * 10s server sync, which can get an active worker wrongly flagged stale.
+ *
+ * WHERE it installs is now detected rather than assumed. It used to hardcode
+ * `cwd: worktreePath`, so a repo whose manifest lives in a subdirectory failed
+ * every time with "Bun could not find a package.json file to install from" —
+ * and, because the return type was `void`, nobody found out.
+ *
+ * Stays BUN-ONLY for the auto-detected path: it exists to create bun's nested
+ * workspace symlinks. Having worktree setup start running `npm ci`/`cargo
+ * fetch`/`go mod download` for every clone is a different feature with a
+ * different risk profile. A non-bun lockfile yields
+ * `{status:'skipped', reason:'non-bun-toolchain'}` — honest, and recorded. Repos
+ * that need it declare `.buildd/env.yaml` and the provision gate owns it.
+ */
+async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<InstallOutcome> {
+  const plans = detectInstallPlans(worktreePath, {
+    exists: (rel) => existsSync(join(worktreePath, rel)),
+    listDirs: (rel) => {
+      try {
+        return readdirSync(join(worktreePath, rel), { withFileTypes: true })
+          .filter(e => e.isDirectory())
+          .map(e => e.name);
+      } catch {
+        return [];
+      }
+    },
   });
 
-  console.log(`[Worker ${workerId}] Running bun install in worktree (frozen lockfile)...`);
-  try {
-    await run(['install', '--frozen-lockfile']);
-    console.log(`[Worker ${workerId}] Workspace packages linked`);
-    return;
-  } catch (err) {
-    console.warn(
-      `[Worker ${workerId}] Frozen bun install failed (lockfile may have drifted), retrying unfrozen:`,
-      err instanceof Error ? err.message : err,
-    );
+  if (plans.length === 0) {
+    // NOT a degradation: a tree with no manifest has no dependencies to break.
+    // This is the population that used to invoke bun anyway and then blame the
+    // lockfile for a missing package.json.
+    console.log(`[Worker ${workerId}] No package manifest in worktree — skipping install`);
+    return { status: 'skipped', reason: 'no-manifest' };
   }
 
-  try {
-    await run(['install']);
-    console.log(`[Worker ${workerId}] Workspace packages linked (unfrozen)`);
-  } catch (err) {
-    console.warn(
-      `[Worker ${workerId}] bun install in worktree failed — @buildd/* imports may break:`,
-      err instanceof Error ? err.message : err,
+  const bunPlans = plans.filter(p => p.runtime === 'bun');
+  if (bunPlans.length === 0) {
+    console.log(
+      `[Worker ${workerId}] Worktree uses a non-bun toolchain (${plans.map(p => p.runtime).join(', ')}) ` +
+      `— skipping install; declare ${MANIFEST_PATH} to have the provision gate run it`,
     );
+    return { status: 'skipped', reason: 'non-bun-toolchain' };
   }
+
+  const dirs: string[] = [];
+  let usedUnfrozen = false;
+
+  for (const plan of bunPlans) {
+    const cwd = plan.dir === '.' ? worktreePath : join(worktreePath, plan.dir);
+    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const };
+    // new Promise + execFile directly rather than util.promisify, so mock
+    // injection via __setGitOpsDeps works consistently across bun versions.
+    const run = (args: string[]) => new Promise<void>((resolve, reject) => {
+      execFile('bun', args, opts, (err) => { if (err) reject(err); else resolve(); });
+    });
+
+    console.log(`[Worker ${workerId}] Running bun install in ${plan.dir} (frozen lockfile)...`);
+    try {
+      await run(['install', '--frozen-lockfile']);
+      dirs.push(plan.dir);
+      continue;
+    } catch (err) {
+      const failure = classifyInstallFailure(err);
+      if (failure !== 'lockfile-drift') {
+        console.warn(
+          `[Worker ${workerId}] bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
+        );
+        return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+      }
+      console.warn(
+        `[Worker ${workerId}] Frozen bun install in ${plan.dir} rejected the lockfile, retrying unfrozen: ${errMessage(err)}`,
+      );
+    }
+
+    try {
+      await run(['install']);
+      dirs.push(plan.dir);
+      usedUnfrozen = true;
+    } catch (err) {
+      const failure = classifyInstallFailure(err);
+      console.warn(
+        `[Worker ${workerId}] Unfrozen bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
+      );
+      return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+    }
+  }
+
+  console.log(`[Worker ${workerId}] Workspace packages linked in: ${dirs.join(', ')}`);
+  return { status: 'ok', dirs, ...(usedUnfrozen ? { unfrozen: true } : {}) };
 }
 
 /**
@@ -215,6 +342,13 @@ export interface SetupWorktreeResult {
    * a predicted ref that never existed, failing silently.
    */
   base: string;
+  /**
+   * What the runner's own dependency install did. Previously `void`: install
+   * failed silently at the wrong path and workers finished `done` with broken
+   * workspace imports. The caller must inspect this — see the surfacing block
+   * in workers.ts next to the `fallback` handling.
+   */
+  install: InstallOutcome;
   /** Set when resume candidate was requested but not usable (missing/diverged),
    *  causing a fresh start from the default branch.  Callers should surface
    *  this as a visible warning rather than silently degrading. */
@@ -232,23 +366,35 @@ export interface SetupWorktreeResult {
   };
 }
 
+/** Branch name → directory name. The only place this mapping is spelled. */
+function safeWorktreeDirName(branch: string): string {
+  return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 export async function setupWorktree(
   repoPath: string,
   branch: string,
   defaultBranch: string,
   workerId: string,
   taskContext?: Record<string, unknown>,
+  /**
+   * Live-worker view, for the ownership guard on path reclaim. Omit and the
+   * guard degrades to the clean-tree probe alone (CLI / doctor callers, which
+   * have no in-memory map).
+   */
+  liveWorkers?: Iterable<[string, WorktreeOwnershipRecord]>,
 ): Promise<SetupWorktreeResult | null> {
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
   // Worktrees live in .buildd-worktrees/ inside the repo
   const worktreeBase = join(repoPath, '.buildd-worktrees');
-  const safeBranch = branch.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeBranch = safeWorktreeDirName(branch);
   // Keyed on the REQUESTED branch, so two workers asking for the same branch
   // (a mission carrying a stable `headBranch`, a shared base) compute the same
   // directory even though the shared-branch guard below gives them distinct
-  // branches. Reassigned below when that path turns out to be occupied by a
-  // worktree with live, uncommitted work.
+  // branches. Recomputed from the RESOLVED branch after the candidate ladder
+  // below, which is what closes that collision at the source; also reassigned
+  // when this path turns out to be occupied.
   let worktreePath = join(worktreeBase, safeBranch);
 
   try {
@@ -282,36 +428,51 @@ export async function setupWorktree(
     // (plain leftover directory) or registered with a clean tree. Otherwise
     // leave it to its owner and take a worker-scoped path instead — unique per
     // attempt by construction, the same escape the branch ladder below uses.
-    if (existsSync(worktreePath)) {
-      const registered = listWorktreeEntries(execOpts).some(e => e.path === worktreePath);
-      if (registered && !worktreeIsReclaimable(worktreePath, execOpts)) {
-        const diverted = `${worktreePath}-w${workerId.slice(0, 8)}`;
+    /**
+     * Free `candidate` for our own use, or return a worker-scoped path to use
+     * instead. The single place this decision is made — P4 below reuses it for
+     * the post-ladder path so the recompute cannot reintroduce an unguarded
+     * force-remove one line further down.
+     */
+    const reclaimOrDivert = (candidate: string): string => {
+      if (!existsSync(candidate)) return candidate;
+      const registered = listWorktreeEntries(execOpts).some(e => e.path === candidate);
+      // Ownership FIRST: a live worker that has committed its work reads clean,
+      // so worktreeIsReclaimable() alone happily deletes an active session's cwd.
+      const ownedByLive = liveWorkers
+        ? isWorktreePathOwnedByOtherLiveWorker(liveWorkers, candidate, workerId)
+        : false;
+      if (ownedByLive || (registered && !worktreeIsReclaimable(candidate, execOpts))) {
+        const diverted = `${candidate}-w${workerId.slice(0, 8)}`;
+        const why = ownedByLive
+          ? 'owned by another live worker'
+          : 'a registered worktree that is not provably clean';
         console.warn(
-          `[Worker ${workerId}] Worktree path ${worktreePath} is a registered worktree that is ` +
-          `not provably clean — refusing to force-remove it (that deletes another worker's ` +
-          `uncommitted work and still exits 0). Using ${diverted} instead.`,
+          `[Worker ${workerId}] Worktree path ${candidate} is ${why} — refusing to force-remove ` +
+          `it (that deletes another worker's work and still exits 0). Using ${diverted} instead.`,
         );
-        worktreePath = diverted;
-        if (existsSync(worktreePath)) {
-          // Our own leftover from a previous attempt with this worker id.
-          try {
-            execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-          } catch {
-            rmSync(worktreePath, { recursive: true, force: true });
-            try { execSync('git worktree prune', execOpts); } catch {}
-          }
+        sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned',
+          `Diverted to ${diverted}: ${candidate} is ${why}`);
+        if (existsSync(diverted)) {
+          // Scoped to our own worker id, so any leftover here is our own from a
+          // previous attempt. Still recursed through this same guard rather than
+          // force-removed inline.
+          return reclaimOrDivert(diverted);
         }
-      } else {
-        console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
-        try {
-          execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-        } catch {
-          // Force-remove the directory if git worktree remove fails
-          rmSync(worktreePath, { recursive: true, force: true });
-          try { execSync('git worktree prune', execOpts); } catch {}
-        }
+        return diverted;
       }
-    }
+      console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${candidate}`);
+      try {
+        execSync(`git worktree remove --force "${candidate}"`, execOpts);
+      } catch {
+        // Force-remove the directory if git worktree remove fails
+        rmSync(candidate, { recursive: true, force: true });
+        try { execSync('git worktree prune', execOpts); } catch {}
+      }
+      return candidate;
+    };
+
+    worktreePath = reclaimOrDivert(worktreePath);
 
     // Determine if there is a resume candidate from prior attempt context —
     // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to
@@ -339,8 +500,14 @@ export async function setupWorktree(
     // Warn if parent repo has sparse checkout enabled. Git worktrees get their
     // own sparse-checkout config so this doesn't directly affect the worktree,
     // but it's worth logging so the pattern is visible if issues recur.
+    //
+    // stdio is fully piped (not the execSync default, which inherits fd 2):
+    // on a non-sparse repo this throws on every single call, and with the
+    // default stdio its stderr text streams straight into the runner's real
+    // log on every worker start. Piping keeps the throw (still caught below)
+    // without the leak.
     try {
-      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000 }).trim();
+      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
       if (sparsePatterns) {
         console.warn(
           `[Worker ${workerId}] Parent repo has sparse checkout enabled. ` +
@@ -517,23 +684,58 @@ export async function setupWorktree(
       );
     }
 
+    // THE PATH MUST FOLLOW THE BRANCH THAT IS ACTUALLY CHECKED OUT.
+    //
+    // `worktreePath` above is keyed on the REQUESTED branch. When the ladder
+    // diverts to `uniqueBranch`, that mismatch is the whole worktree-collision
+    // bug: a mission hands every one of its tasks the same shared head branch
+    // (branch-names.ts, `sharedHeadBranch` precedence), the ladder then rejects
+    // every candidate derived from it — `looksLikeMissionIntegrationBranch` is a
+    // bare `startsWith('mission/')` test, so even `<branch>-w<id8>` is flagged —
+    // and `actualBranch` keeps its per-worker default. N distinct branches, one
+    // directory, and each new worker reclaimed the previous one's cwd. Same
+    // shape for a task whose branch IS the repo default branch.
+    //
+    // Only the `uniqueBranch` landing recomputes. A resume landing
+    // (`actualBranch === requestedBranch`) must NOT: a resume branch is shared
+    // across the attempts that resume it, so keying the directory on it would
+    // reintroduce the same collision from the other side. `uniqueBranch` embeds
+    // the worker id, so it is unique per attempt by construction.
+    if (actualBranch === uniqueBranch && uniqueBranch !== branch) {
+      const divertedPath = join(worktreeBase, safeWorktreeDirName(actualBranch));
+      if (divertedPath !== worktreePath) {
+        // Through the same guard as the first reclaim — a recompute must not
+        // grow a second, unguarded force-remove.
+        worktreePath = reclaimOrDivert(divertedPath);
+      }
+    }
+
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
 
     // Delete stale local branches from a previous run. Skip any branch a live
     // worktree holds — `git branch -D` on those always fails, and the resulting
     // "cannot delete branch 'X' used by worktree" noise used to be the first
     // symptom of this whole class of bug.
+    // stdio piped for the same reason as the sparse-checkout probe above: this
+    // throws on every candidate that isn't already a local branch, which in
+    // practice is nearly always — the default inherited stderr leaked that
+    // "error: branch not found" line on every worker start.
     for (const candidate of candidates) {
       if (branchOwners.has(candidate)) continue;
       try {
-        execSync(`git branch -D "${candidate}"`, execOpts);
+        execSync(`git branch -D "${candidate}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch {
         // Branch doesn't exist locally — that's fine
       }
     }
 
+    // stdio piped: git prints its own status line to stderr on a SUCCESSFUL
+    // `worktree add` too, which duplicated the console.log the runner already
+    // emits right after this call on every successful worker start. The
+    // failure branch below still gets full stderr text via err.message —
+    // piping only stops it from also going to the real log stream.
     try {
-      execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, execOpts);
+      execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
       // Make the failure legible: name the branch and, when the branch namespace
       // is the cause, the worktree that holds it. Re-probe rather than trusting
@@ -567,13 +769,26 @@ export async function setupWorktree(
     // module resolution from the worktree tree never finds the symlinks that exist in the
     // parent repo — causing '@buildd/core/db' (and similar deep imports) to fail with
     // "Cannot find module". Running bun install creates the links in-place.
-    await installWorkspaceDeps(worktreePath, workerId);
+    //
+    // A repo that DECLARES an install command in `.buildd/env.yaml` owns its own
+    // install via the provision gate, which enforces and blocks. One owner each:
+    // declared repos → the gate; undeclared repos → this tolerant install, which
+    // degrades. Running both would install twice for every declared repo.
+    const declared = resolveManifest(worktreePath, {
+      exists: (rel) => existsSync(join(worktreePath, rel)),
+      read: (rel) => String(readFileSync(join(worktreePath, rel), 'utf-8')),
+    });
+    const install: InstallOutcome =
+      declared.source === 'manifest' && declared.manifest?.install?.command
+        ? { status: 'skipped', reason: 'declared-manifest' }
+        : await installWorkspaceDeps(worktreePath, workerId);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return {
       path: worktreePath,
       branch: actualBranch,
       base,
+      install,
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
     };
@@ -608,6 +823,102 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
       execSync('git worktree prune', execOpts);
     } catch {}
   }
+}
+
+/** Why a worktree removal was refused, when it was. */
+export type WorktreeRemovalOutcome =
+  | { removed: true }
+  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' };
+
+export interface RemoveWorktreeOptions {
+  repoPath: string;
+  worktreePath: string;
+  workerId: string;
+  /** Live-worker view — the runner passes `this.workers` straight in. */
+  workers: Iterable<[string, WorktreeOwnershipRecord]>;
+  /** Branch checked out at `worktreePath`; required for `protectUnpushed`. */
+  branch?: string;
+  /** Default false. When true, also refuse a tree holding commits not on origin. */
+  protectUnpushed?: boolean;
+}
+
+/**
+ * Does `branch` hold commits that are not on `origin/<branch>`?
+ *
+ * Fail-CLOSED: an inconclusive probe (no remote branch, git error, timeout)
+ * counts as unpushed. Mirrors doctor.ts's `isBranchPushed`, inverted — the cost
+ * of being wrong here is a leaked directory the reaper collects, versus commits
+ * that exist nowhere else.
+ */
+function hasUnpushedCommits(repoPath: string, branch: string | undefined): boolean {
+  if (!branch) return true;
+  const opts = { cwd: repoPath, timeout: 5000, encoding: 'utf-8' as const };
+  try {
+    const count = String(
+      execSync(`git rev-list --count "origin/${branch}..${branch}"`, opts) ?? '',
+    ).trim();
+    const n = parseInt(count, 10);
+    return isNaN(n) ? true : n > 0;
+  } catch {
+    return true;
+  }
+}
+
+/** Shared gate for both the async and sync removal entry points. */
+function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
+  const { repoPath, worktreePath, workerId, workers } = opts;
+  if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId)) {
+    const msg = `Refused to remove worktree ${worktreePath}: owned by another live worker`;
+    sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned', msg);
+    console.warn(`[Worker ${workerId}] ${msg} (force-remove exits 0 after destroying its work)`);
+    return { removed: false, reason: 'owned_by_live_worker' };
+  }
+  if (opts.protectUnpushed && hasUnpushedCommits(repoPath, opts.branch)) {
+    const msg = `Refused to remove worktree ${worktreePath}: commits are not on origin`;
+    sessionLog(workerId, 'warn', 'worktree_removal_skipped_unpushed', msg);
+    console.warn(`[Worker ${workerId}] ${msg}`);
+    return { removed: false, reason: 'unpushed_commits' };
+  }
+  return null;
+}
+
+/**
+ * THE removal entry point for runner-side worktree teardown.
+ *
+ * Refuses to touch a path a live worker owns. `cleanupWorktree` above is the
+ * executor and must not be called directly from a teardown path — the ownership
+ * predicate already existed (privately, in worker-sync.ts) and still covered
+ * only two of six removal sites, which is precisely the failure mode one
+ * exported executor removes. The reaper in doctor.ts is the one legitimate
+ * direct caller: it has its own record-based gates and no in-memory map.
+ */
+export async function removeWorktreeIfUnowned(
+  opts: RemoveWorktreeOptions,
+): Promise<WorktreeRemovalOutcome> {
+  const refusal = removalRefusal(opts);
+  if (refusal) return refusal;
+  await cleanupWorktree(opts.repoPath, opts.worktreePath, opts.workerId);
+  return { removed: true };
+}
+
+/**
+ * Synchronous sibling for `destroy()`, which runs on process teardown with no
+ * event loop left to await on. Shares `removalRefusal` — the predicate is the
+ * part that must never be duplicated.
+ */
+export function removeWorktreeIfUnownedSync(
+  opts: RemoveWorktreeOptions,
+): WorktreeRemovalOutcome {
+  const refusal = removalRefusal(opts);
+  if (refusal) return refusal;
+  const { repoPath, worktreePath, workerId } = opts;
+  try {
+    console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
+    execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, timeout: 5000 });
+  } catch {
+    try { rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+  }
+  return { removed: true };
 }
 
 /**

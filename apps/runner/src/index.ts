@@ -17,6 +17,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrac
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
+import { emitHeartbeatTick } from './heartbeat-log';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -3005,10 +3006,7 @@ const SERVER_CONTACT_STALE_MS = 5 * 60_000;
 setInterval(() => {
   const lastOk = getLastServerContactAt();
   const ageMs = lastOk ? Date.now() - lastOk : Infinity;
-  if (ageMs < SERVER_CONTACT_STALE_MS) {
-    console.log(`[heartbeat] ${new Date().toISOString()} runner alive`);
-  } else {
-    const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
-    console.error(`[heartbeat] ${new Date().toISOString()} DEGRADED — no successful server contact (last: ${since}); claims are failing`);
-  }
+  const degraded = ageMs >= SERVER_CONTACT_STALE_MS;
+  const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
+  emitHeartbeatTick(degraded, `no successful server contact (last: ${since}); claims are failing`);
 }, 60_000);

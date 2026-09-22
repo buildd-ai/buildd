@@ -124,6 +124,34 @@ to `DEFAULT_MERGE_POLICY` rather than throwing. A malformed stored policy must n
 task-level and mission-level `{ tier: 'human' }` overrides respectively. There is no separate branch
 in the merge path; the single `resolvePolicy()` call drives all merge decisions.
 
+### 1.5 `threshold` belongs to `auto-threshold` — it is not inherited by other tiers
+
+`threshold` (and its `maxLines` / `maxSourceLines` / `denyPaths`) is **Tier 1 config**. A workspace
+or mission on `agent-review` or `human` declares no `threshold` at all — see the Tier 2 shape in
+§1.2, which has no `maxLines` field, and §4, which has no config beyond `stallNotifyMinutes`.
+
+Before this section existed, `evaluateAutoMergeSafety` read `policy.threshold?.maxLines ?? 800`
+unconditionally, so an `agent-review` workspace that declared no `threshold` at all silently
+inherited the `auto-threshold` default anyway — a PR the reviewer had already terminal-approved
+under `gateCondition: 'approve-and-merge'` could still be refused by an 800-line cap nobody had
+configured for that tier (see PR #2540). **`evaluateAutoMergeSafety` now runs the aggregate
+line-count check only when the resolved policy's `tier` is `auto-threshold`.** Every other check —
+CI status, `threshold.denyPaths` / `agentReview.escalateToPaths`, the migration operation-class
+inspector, and the conflict / `mergeable_state` check — still runs at every tier; see the table in
+§2.1.
+
+One existing, deliberate exception, not documented elsewhere in this spec: `resolvePolicy()`'s
+Option A′ branch (mission integration-branch handling — see the doc comment on `resolvePolicy` in
+`apps/web/src/lib/merge-policy.ts`) may carry a `threshold` value through from a workspace/mission
+policy configured on `agent-review` or `human`, for use ONLY once that policy's tier is dropped to
+`auto-threshold` by the integration-branch rule. That carried value is never read by a
+non-`auto-threshold` evaluation — by the time `evaluateAutoMergeSafety` sees it, the resolved
+`tier` is already `auto-threshold`. A write-time schema that rejected `threshold` on any
+non-`auto-threshold` policy would break this carry-through (confirmed by running the existing
+`resolvePolicy — mission integration branch (Option A′) > preserves the resolved threshold when
+dropping the tier` test against such a schema), so validation was deliberately left as-is; the
+tier gate inside `evaluateAutoMergeSafety` is what actually closes the bug.
+
 ---
 
 ## 2. Tier 1 — auto-threshold
@@ -140,11 +168,36 @@ Gates (in order):
 1. All CI check suites passed
 2. `mergeable_state` not `dirty` (conflict → attempt rebase; if rebase fails, escalate)
 3. No touched file starts with a `denyPaths` prefix
-4. `additions + deletions` ≤ `maxLines` (or `source lines` ≤ `maxSourceLines` when both set)
+4. `additions + deletions` ≤ `maxLines` (or `source lines` ≤ `maxSourceLines` when both set) — **`auto-threshold` only**, see §1.5 and the table below
 
 When all gates pass: squash-merge + branch delete.
 
 When any gate blocks: emit `MERGE_POLICY_BLOCKED` mission-feed event with reason, send Pushover.
+
+#### Safety checks run per tier
+
+`evaluateAutoMergeSafety` is the shared safety-rail function for every merge path (unattended
+auto-merge, the agent-review approve-and-merge path, and the `merge_pr` self-merge path). It is
+never called at all for `human` (§4). The checks it runs differ only in the aggregate line-count
+gate and in which path list gates paths:
+
+| Check | `auto-threshold` | `agent-review` | `human` |
+|---|---|---|---|
+| CI status green | ✅ | ✅ | function not called |
+| Deny/escalate paths (`threshold.denyPaths` / `agentReview.escalateToPaths`) | ✅ | ✅ | function not called |
+| Migration operation-class inspector (EXPAND passes, CONTRACT escalates) | ✅ | ✅ | function not called |
+| Conflict / `mergeable_state` check | ✅ | ✅ | function not called |
+| **Aggregate line-count cap (`threshold.maxLines`, default 800)** | ✅ | **not run** | function not called |
+
+Mission-integration-PR and release-PR are exemptions from that one aggregate line-count row
+itself (see the doc comment on `evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts`),
+layered on top of the tier scoping above — both are implemented as extra conditions inside the
+`auto-threshold` branch of the check, not as a separate tier. §6.2 predates both exemptions and
+should be read as describing the release *trigger* policy (`releaseConfig.trigger`), not this
+check. Under `agent-review` the aggregate row already never runs, so the release-PR exemption
+added in PR #2414 is redundant there — an `agent-review` workspace's release PR was never going to
+hit the aggregate cap in the first place. The exemption remains load-bearing for `auto-threshold`
+workspaces, which is the only tier it changes anything for.
 
 ### 2.2 Deny-path escalation
 

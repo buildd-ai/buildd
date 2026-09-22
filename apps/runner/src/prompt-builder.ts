@@ -181,11 +181,22 @@ export function discoverModelCapabilities(
 ): void {
   // Fire-and-forget — capability discovery should not block the worker
   queryInstance.supportedModels().then((models: any[]) => {
-    const currentModel = models.find((m: any) => m.value === modelId);
+    // `ModelInfo.value` is the model ALIAS (e.g. 'sonnet'); `resolvedModel` is
+    // the canonical wire id it resolves to (e.g. 'claude-sonnet-5') — see the
+    // SDK's own ModelInfo doc comment. Tasks are configured with exact wire
+    // ids far more often than bare aliases, so matching on `value` alone
+    // missed every lookup in the fleet: this comparison must accept a match
+    // on either field.
+    const currentModel = models.find((m: any) => m.value === modelId || m.resolvedModel === modelId);
 
     if (!currentModel) {
-      console.warn(`[Worker ${worker.id}] Model "${modelId}" not found in supportedModels() — capability validation skipped`);
-      worker.modelCapabilities = { warnings: [`Model "${modelId}" not found in supported models list`] };
+      const warning = `Model "${modelId}" not found in supported models list`;
+      console.warn(`[Worker ${worker.id}] ${warning}`);
+      // This branch used to be the only warning path in this function that
+      // skipped sessionLog — console-only, so the one warning actually able
+      // to fire left no durable record.
+      sessionLog(worker.id, 'warn', 'model_capability', warning, worker.taskId);
+      worker.modelCapabilities = { warnings: [warning] };
       emit('event');
       return;
     }
@@ -296,12 +307,6 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       gitContext.push(`- Branch naming: buildd/<task-id>-<task-name>`);
     }
 
-    // Tell the worker their branch is already set up (worktree mode)
-    if (worker.worktreePath) {
-      gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${gitConfig.defaultBranch}\``);
-      gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
-    }
-
     // THE base this task's PR takes, from the same function `create_pr` derives
     // it with (@buildd/core/mission-integration). This block used to read
     // `gitConfig.targetBranch` directly — it never looked at the mission — so a
@@ -315,6 +320,23 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       fallbacks: [gitConfig.targetBranch, gitConfig.defaultBranch],
     });
     const prTarget = prBaseResolution.base || gitConfig.targetBranch || gitConfig.defaultBranch;
+
+    // Tell the worker their branch is already set up (worktree mode). Named
+    // after the SAME base `prBaseResolution` derived above — this used to
+    // unconditionally claim `origin/<defaultBranch>`, which is wrong for a
+    // mission-integration task: `worktree-utils.ts`'s `resolveWorktreeBase`
+    // actually cuts the worktree from `context.baseBranch` (the integration
+    // branch, or a stacked predecessor), not the default branch. Claiming
+    // "latest" from a ref the worktree was never cut from cost a real
+    // collision: an agent that believed it had dev's latest Drizzle migration
+    // index skipped checking dev before generating one, and reused an index
+    // dev had since occupied (task 3075cfe5).
+    if (worker.worktreePath) {
+      const checkedOutFrom = prBaseResolution.base || gitConfig.defaultBranch;
+      gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${checkedOutFrom}\``);
+      gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
+    }
+
     if (gitConfig.requiresPR) {
       gitContext.push(`- Changes require PR to \`${prTarget}\``);
       if (prBaseResolution.source === 'mission_integration') {
@@ -322,6 +344,11 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
           `- \`${prTarget}\` is this mission's integration branch, NOT trunk — the mission reaches `
           + `trunk through a single PR from that branch. Do not retarget your PR at trunk; `
           + `\`create_pr\` derives this base for you, so omit \`base\` entirely.`,
+        );
+        gitContext.push(
+          `- This branch can lag \`origin/${gitConfig.defaultBranch}\` on files with sequential indices `
+          + `(e.g. numbered migrations) — before adding one, compare your latest index against `
+          + `\`origin/${gitConfig.defaultBranch}\`'s to avoid a collision.`,
         );
       }
       if (gitConfig.autoCreatePR) {

@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "flight_strip_cache" jsonb;

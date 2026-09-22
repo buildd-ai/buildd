@@ -9,7 +9,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeMissionSkyline, computeMissionAuthorshipHealth, deriveCriteriaGatePresentation, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeMissionFlightStrip, computeMissionAuthorshipHealth, deriveCriteriaGatePresentation, isDeliverableTask, type MissionFlightStripData } from '@buildd/core/mission-helpers';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
@@ -19,15 +19,24 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { MissionGrid } from './MissionGrid';
 import { countBlockedByPR, type BlockingTask } from '@/lib/initiative-pulse';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import {
+  COMPLETED_MISSIONS_PAGE_SIZE,
+  adaptFlightStripInputs,
+  buildActiveMissionsQueryArgs,
+  buildCompletedMissionsQueryArgs,
+  decodeCompletedCursor,
+  paginateCompletedMissions,
+} from '@/lib/missions-query';
+import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
 
 export const dynamic = 'force-dynamic';
 
 export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string }>;
+  searchParams: Promise<{ workspace?: string; completedCursor?: string }>;
 }) {
-  const { workspace: wsFilter } = await searchParams;
+  const { workspace: wsFilter, completedCursor: completedCursorParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -54,55 +63,6 @@ export default async function MissionsPage({
     (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
   const scopedTeamIds = [activeTeamId];
 
-  // Query seat utilization across the active team's accounts
-  const teamAccounts = await db.query.accounts.findMany({
-    where: inArray(accounts.teamId, scopedTeamIds),
-    columns: { id: true, maxConcurrentWorkers: true },
-  });
-  const maxSeats = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
-  let activeSeats = 0;
-  if (teamAccounts.length > 0) {
-    const accountIds = teamAccounts.map(a => a.id);
-    const [row] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(workers)
-      .where(and(
-        inArray(workers.accountId, accountIds),
-        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-      ));
-    activeSeats = row?.count ?? 0;
-  }
-
-  // Build team name map for display (only when user has multiple teams)
-  const teamNameMap = new Map<string, string>();
-  if (teamIds.length > 1) {
-    const teamRows = await db.query.teams.findMany({
-      where: inArray(teams.id, teamIds),
-      columns: { id: true, name: true, slug: true },
-    });
-    teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
-  }
-
-  // Load active team's workspaces for the filter dropdown
-  const teamWorkspaces = await db
-    .select({ id: workspaces.id, name: workspaces.name })
-    .from(workspaces)
-    .where(eq(workspaces.teamId, activeTeamId));
-
-  // Query roles for display
-  const wsIds = await getUserWorkspaceIds(user.id);
-  const rolesMap = new Map<string, { name: string; color: string }>();
-  if (wsIds.length > 0) {
-    const roles = await db.query.workspaceSkills.findMany({
-      where: and(
-        inArray(workspaceSkills.workspaceId, wsIds),
-        eq(workspaceSkills.enabled, true),
-      ),
-      columns: { slug: true, name: true, color: true },
-    });
-    roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
-  }
-
   // Missions filter: when workspace is selected, show missions anchored to that
   // workspace OR team-level missions (workspaceId IS NULL). Team-level missions
   // are never excluded — they belong to the team, not any one workspace.
@@ -113,26 +73,85 @@ export default async function MissionsPage({
       )
     : eq(missions.teamId, activeTeamId);
 
-  const allMissions = await db.query.missions.findMany({
-    where: missionsWhere,
-    orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true },
-    with: {
-      workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
-      initiative: { columns: { id: true, title: true } },
-      tasks: {
-        columns: { id: true, title: true, status: true, result: true, createdAt: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true, createdByWorkerId: true, createdByAccountId: true },
-        orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
-        with: {
-          workers: {
-            columns: { id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true },
-            limit: 5,
-          },
-        },
-      },
-      schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
-    },
-  });
+  // Rule P-4: the completed portion is bounded + keyset-paginated; the
+  // active/scheduled portion stays unbounded (Rule P-3 already governs it via
+  // workspace maxConcurrentTasks). Rule P-2: the completed query's `with`
+  // shape omits roleSlug/exitCause by construction — see missions-query.ts.
+  const completedCursor = decodeCompletedCursor(completedCursorParam);
+
+  // Everything below needs only `activeTeamId`, `teamIds` and the URL filter,
+  // all of which are already resolved — so none of these depend on each other
+  // and they used to run as one long serial chain of neon-http round trips.
+  // The two chains that *are* dependent (accounts -> live-seat count, workspace
+  // scope -> roles) stay chained inside their own entry.
+  const [
+    seats,
+    teamRows,
+    teamWorkspaces,
+    rolesResult,
+    activeRows,
+    completedRowsPage,
+  ] = await Promise.all([
+    // Seat utilization across the active team's accounts. The live-seat count
+    // needs the account ids, so it genuinely follows the accounts read.
+    (async () => {
+      const teamAccounts = await db.query.accounts.findMany({
+        where: inArray(accounts.teamId, scopedTeamIds),
+        columns: { id: true, maxConcurrentWorkers: true },
+      });
+      const max = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
+      if (teamAccounts.length === 0) return { maxSeats: max, activeSeats: 0 };
+      const accountIds = teamAccounts.map(a => a.id);
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(workers)
+        .where(and(
+          inArray(workers.accountId, accountIds),
+          inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+        ));
+      return { maxSeats: max, activeSeats: row?.count ?? 0 };
+    })(),
+    // Team name map for display (only when the user has multiple teams)
+    teamIds.length > 1
+      ? db.query.teams.findMany({
+          where: inArray(teams.id, teamIds),
+          columns: { id: true, name: true, slug: true },
+        })
+      : Promise.resolve([] as { id: string; name: string; slug: string }[]),
+    // Active team's workspaces for the filter dropdown
+    db
+      .select({ id: workspaces.id, name: workspaces.name })
+      .from(workspaces)
+      .where(eq(workspaces.teamId, activeTeamId)),
+    // Roles for display. getUserWorkspaceIds is React cache()-wrapped, so on a
+    // normal navigation the layout has already resolved this scope and only the
+    // workspaceSkills read is a new round trip.
+    (async () => {
+      const wsIds = await getUserWorkspaceIds(user.id);
+      if (wsIds.length === 0) return [] as { slug: string; name: string; color: string }[];
+      return db.query.workspaceSkills.findMany({
+        where: and(
+          inArray(workspaceSkills.workspaceId, wsIds),
+          eq(workspaceSkills.enabled, true),
+        ),
+        columns: { slug: true, name: true, color: true },
+      });
+    })(),
+    db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
+    db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
+  ]);
+
+  const { maxSeats, activeSeats } = seats;
+  const teamNameMap = new Map<string, string>();
+  teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
+  const rolesMap = new Map<string, { name: string; color: string }>();
+  rolesResult.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
+  const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
+    completedRowsPage as unknown as Array<{ completedAt: Date | string | null; id: string }>,
+    COMPLETED_MISSIONS_PAGE_SIZE,
+  ) as unknown as { items: typeof completedRowsPage; nextCursor: string | null };
+
+  const allMissions = [...activeRows, ...completedRows] as any[];
 
   const POLICY_TIER_LABEL: Record<string, string> = {
     'auto-threshold': 'Auto',
@@ -158,27 +177,52 @@ export default async function MissionsPage({
     if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
   }
 
-  // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
-  // so the two surfaces cannot disagree about queue depth or deploy state.
+  // These three read from the mission rows above and from nothing each other
+  // produces, so they are one wait rather than three. Previously the steering
+  // marks, the per-workspace release footers and the follow-up batch ran in
+  // sequence, and the release footers are themselves 3 deep per workspace.
   const releaseFooterMap = new Map<string, ReleaseFooterData>();
-  await Promise.all(
-    Array.from(uniqueWorkspaces.values()).map(async (ws) => {
-      releaseFooterMap.set(ws.id, await loadReleaseFooterData({
-        id: ws.id,
-        name: ws.name,
-        gitConfig: ws.gitConfig,
-        releaseConfig: ws.releaseConfig,
-      }));
-    }),
-  );
+  const [steeringMarksByMission, , followupsByMission] = await Promise.all([
+    // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
+    // one batched query across the whole active set, not one per mission.
+    loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
+    // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
+    // so the two surfaces cannot disagree about queue depth or deploy state.
+    Promise.all(
+      Array.from(uniqueWorkspaces.values()).map(async (ws) => {
+        releaseFooterMap.set(ws.id, await loadReleaseFooterData({
+          id: ws.id,
+          name: ws.name,
+          gitConfig: ws.gitConfig,
+          releaseConfig: ws.releaseConfig,
+        }));
+      }),
+    ),
+    // Steering-cost visibility: one batched query for every mission's
+    // post-completion follow-ups, so N missions cost one extra query instead of
+    // N. Missions with no completedAt are skipped inside — their metric renders
+    // `no_baseline`, not zero.
+    loadMissionFollowupTasks(
+      allMissions.map(m => ({ id: m.id, completedAt: (m as any).completedAt ?? null, taskIds: (m.tasks || []).map((t: any) => t.id) })),
+    ),
+  ]);
 
-  // Steering-cost visibility: one batched query for every mission's
-  // post-completion follow-ups, so N missions cost one extra query instead of
-  // N. Missions with no completedAt are skipped inside — their metric renders
-  // `no_baseline`, not zero.
-  const followupsByMission = await loadMissionFollowupTasks(
-    allMissions.map(m => ({ id: m.id, completedAt: (m as any).completedAt ?? null, taskIds: (m.tasks || []).map(t => t.id) })),
-  );
+  // Rule A-1/A-2: live flight-strip compute for every non-completed mission —
+  // the completed-only gate the old skyline had is gone.
+  const flightStripByMission = new Map<string, MissionFlightStripData | null>();
+  for (const obj of activeRows as any[]) {
+    const { tasks: flightTasks, workers: flightWorkers } = adaptFlightStripInputs(obj.tasks || []);
+    flightStripByMission.set(
+      obj.id,
+      computeMissionFlightStrip(flightTasks, flightWorkers, {
+        missionCompletedAt: obj.completedAt ?? null,
+        steeringEvents: steeringMarksByMission.get(obj.id),
+      }),
+    );
+  }
+  for (const obj of completedRows as any[]) {
+    flightStripByMission.set(obj.id, (obj.flightStripCache as MissionFlightStripData | null) ?? null);
+  }
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
@@ -267,21 +311,14 @@ export default async function MissionsPage({
     const effectivePolicyLabel = effectivePolicy ? (POLICY_TIER_LABEL[effectivePolicy.tier] ?? effectivePolicy.tier) : null;
 
     // lastActivityAt: most recent task update or lastTaskStartedAt
-    const taskTimes = (obj.tasks || []).map(t => t.updatedAt ? new Date(t.updatedAt as any).getTime() : 0);
+    const taskTimes = (obj.tasks || []).map((t: any) => t.updatedAt ? new Date(t.updatedAt as any).getTime() : 0);
     const lastTaskStartedMs = (obj as any).lastTaskStartedAt ? new Date((obj as any).lastTaskStartedAt).getTime() : 0;
     const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
     const lastActivityAt = lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null;
 
-    // v1 approximation: updatedAt serves as mission close time for the review-tail
-    // calculation. A dedicated closedAt column would be more precise but requires
-    // a migration. The approximation is wrong only if the mission row is edited
-    // (e.g. title rename) after workers finish but before the row is marked completed.
-    const skyline = obj.status === 'completed'
-      ? computeMissionSkyline(
-          (obj.tasks || []).map((t: any) => ({ workers: t.workers || [] })),
-          { missionCompletedAt: (obj as any).updatedAt },
-        )
-      : null;
+    // Rule P-2/A-1/A-2: cache read for completed, live compute for everything
+    // else — see flightStripByMission above.
+    const flightStrip = flightStripByMission.get(obj.id) ?? null;
 
     // When there's no schedule nextRunAt, use the earliest user-scheduled task
     // time so that sorted SCHEDULED cards still show meaningful timing.
@@ -330,15 +367,15 @@ export default async function MissionsPage({
       health: healthState,
       dependsOnMissionId: obj.dependsOnMissionId ?? null,
       criteriaEscalatedAt: (obj as any).criteriaEscalatedAt ?? null,
-      hasPendingDeliverableWork: deliverables.some(t => !['completed', 'cancelled', 'failed'].includes(t.status)),
+      hasPendingDeliverableWork: deliverables.some((t: any) => !['completed', 'cancelled', 'failed'].includes(t.status)),
       criteriaGate: criteriaGateForCard,
       criteriaItems: (criteriaStateForCard?.criteria ?? []) as any,
       openTasks: deliverables
-        .filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status))
-        .map(t => ({ id: t.id, status: t.status, title: t.title })),
+        .filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status))
+        .map((t: any) => ({ id: t.id, status: t.status, title: t.title })),
       failedTasks: deliverables
-        .filter(t => t.status === 'failed')
-        .map(t => ({ id: t.id, title: t.title, infra: (t.result as any)?.errorType === 'infra_stalled' })),
+        .filter((t: any) => t.status === 'failed')
+        .map((t: any) => ({ id: t.id, title: t.title, infra: (t.result as any)?.errorType === 'infra_stalled' })),
       missionPr: integrationPr && integrationPr.state === 'open'
         ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
         : null,
@@ -386,7 +423,7 @@ export default async function MissionsPage({
       awaitingMergePRCount: unmergedPrs.length,
       healthState,
       situation,
-      inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
+      inFlightTasks: (obj.tasks || []).flatMap((t: any) => (t.workers || []).filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),
       initiativeId: obj.initiativeId || null,
       initiativeName: (obj.initiative as any)?.title || null,
@@ -394,8 +431,7 @@ export default async function MissionsPage({
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
       goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null,
       authorshipHealth,
-      skyline,
-      normalizationSlots: 0, // patched below after all missions are computed
+      flightStrip,
       releaseFooter: obj.workspaceId ? (releaseFooterMap.get(obj.workspaceId) ?? null) : null,
     };
   });
@@ -411,22 +447,6 @@ export default async function MissionsPage({
     const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
     return bTime - aTime;
   });
-
-  // Compute per-initiative normalization slots so sibling missions share a time axis.
-  // For completed missions only (skyline is only shown there).
-  const initNormSlots = new Map<string, number>();
-  for (const m of missionsList) {
-    if (!m.initiativeId || !m.skyline) continue;
-    const prev = initNormSlots.get(m.initiativeId) ?? 0;
-    if (m.skyline.totalSlots > prev) initNormSlots.set(m.initiativeId, m.skyline.totalSlots);
-  }
-  for (const m of missionsList) {
-    if (m.initiativeId && m.skyline) {
-      m.normalizationSlots = initNormSlots.get(m.initiativeId) ?? m.skyline.totalSlots;
-    } else if (m.skyline) {
-      m.normalizationSlots = m.skyline.totalSlots;
-    }
-  }
 
   const activeGroups = FILTER_TO_GROUPS.active ?? [];
   const activeCount = missionsList.filter(
@@ -481,6 +501,22 @@ export default async function MissionsPage({
         </div>
       ) : (
         <MissionGrid missions={missionsList} />
+      )}
+
+      {/* Rule P-4: the completed portion is one bounded page; this is the
+          escape hatch when a workspace has more than that. Replaces the
+          visible completed page rather than appending — keeps the query
+          layer a plain keyset page instead of client-side accumulation
+          state, which nothing else on this list needs yet. */}
+      {nextCompletedCursor && (
+        <div className="mt-4 text-center">
+          <Link
+            href={`/app/missions?${new URLSearchParams({ ...(wsFilter ? { workspace: wsFilter } : {}), completedCursor: nextCompletedCursor }).toString()}`}
+            className="text-[11px] text-text-muted hover:text-text-secondary font-mono"
+          >
+            Load older completed missions ↓
+          </Link>
+        </div>
       )}
     </div>
   );

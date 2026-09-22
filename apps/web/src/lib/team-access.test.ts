@@ -53,6 +53,39 @@ describe('getUserTeamIds', () => {
   });
 });
 
+describe('getUserTeamIds concurrency', () => {
+  beforeEach(() => {
+    mockTeamMembersFindMany.mockReset();
+    mockTeamsFindFirst.mockReset();
+  });
+
+  it('issues both statements concurrently, not one behind the other', async () => {
+    // The memberships read and the personal-team read share no inputs, and
+    // neon-http bills a full HTTP round trip per statement. This is a real
+    // concurrency assertion rather than a shape assertion: the memberships
+    // mock refuses to settle until the personal-team mock has been entered, so
+    // a sequential implementation cannot get past it and the test fails by
+    // timing out on its own bounded wait.
+    let personalTeamStarted = false;
+    mockTeamsFindFirst.mockImplementation(async () => {
+      personalTeamStarted = true;
+      return { id: 'P' };
+    });
+    mockTeamMembersFindMany.mockImplementation(async () => {
+      const deadline = Date.now() + 500;
+      while (!personalTeamStarted) {
+        if (Date.now() > deadline) {
+          throw new Error('personal-team read never started — the two statements are still serialized');
+        }
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      return [{ teamId: 'A' }];
+    });
+
+    expect(new Set(await getUserTeamIds('user-1'))).toEqual(new Set(['A', 'P']));
+  });
+});
+
 describe('getTeamWorkspaceIds', () => {
   beforeEach(() => {
     mockWorkspacesFindMany.mockReset();

@@ -27,36 +27,69 @@
  * `guardMissionPrMerge` (mission-pr.ts), which is called from all three merge
  * routes rather than reimplemented per call site.
  *
- * ## The stale-verdict rule (why this cannot be "block while changes_requested")
+ * ## The stale-verdict rule (why a push no longer clears the gate on its own)
  *
- * A reviewer is dispatched on `pull_request: opened` and nothing re-dispatches
- * one on `synchronize`. So after a request-changes, the retry task pushes its
- * fix and the stored verdict STAYS `changes_requested` forever. A gate keyed on
- * the verdict alone would deadlock every PR that was ever reviewed badly once.
+ * A reviewer is dispatched on `pull_request: opened`, AND (as of the fix this
+ * paragraph documents) re-dispatched on `synchronize` whenever the PR carries
+ * a terminal `changes_requested`/`escalated` verdict — see
+ * `maybeReDispatchReviewer` in the webhook route. Before that fix, nothing
+ * re-dispatched on `synchronize` at all: a request-changes retry pushed its
+ * fix, the stored verdict stayed `changes_requested` forever, and this gate
+ * used to treat ANY head-SHA mismatch as "a push must have superseded it" and
+ * pass — which is also exactly how the incident this gate exists to prevent
+ * happened in the first place (a merge on the very commit the reviewer had
+ * just rejected got waved through because some earlier push, unrelated to the
+ * fix, had already moved the head once).
  *
- * A verdict is a statement about the commit it read. So the gate compares the
- * review round's `headSha` against the commit actually being merged:
+ * Now that re-dispatch is automatic, a verdict at a stale SHA is not evidence
+ * a fix was reviewed — it is evidence a fresh review is either already
+ * running (in which case `readPrReviewStatus` reports the NEW round, not this
+ * stale one — reviewer tasks are read newest-first, so the fresh round simply
+ * replaces the stale verdict as far as this gate is concerned) or has not
+ * been dispatched yet (a redelivery gap, a policy that no longer routes the
+ * PR to a reviewer, a dispatch failure). Passing in that second case is
+ * exactly the bug: a push would clear the gate with nothing having reviewed
+ * it. So a block no longer has a SHA-mismatch escape hatch — it blocks until
+ * a fresh review reaches a terminal state, full stop. The one exception is
+ * `approved` (see `stale_approval` below), which starts from PASS instead of
+ * BLOCK, so the same "does the recorded verdict still describe this commit"
+ * question runs in the opposite direction.
  *
- *   - same commit  → the finding is about this code. Block.
- *   - different    → a push has superseded it. Pass.
+ * ## `stale_approval` — an approve is a claim about a commit too
  *
- * That is also exactly the shape of the incident this gate closes: the merge
- * landed on the same head SHA the reviewer had just rejected, with no push in
- * between.
+ * `approved` used to be a pure pass, unconditionally, verdict-SHA never
+ * examined — an approval on commit A kept authorizing a merge of commit B
+ * forever, with nothing recording that the approval no longer describes what
+ * would actually land. That silently stale approval is closed the same way
+ * as the changes_requested case, just from the other direction: an approve
+ * still passes when its SHA matches (or is unrecorded — legacy data with no
+ * SHA to compare cannot prove staleness, so it defers to the ordinary pass),
+ * but blocks as `stale_approval` when a later push is provably a different
+ * commit. This does not re-dispatch a reviewer on its own — re-dispatching an
+ * agent on every push after every approval would fire far more often than the
+ * request-changes case (approvals are the common terminal state, and most
+ * approved PRs merge before another push ever lands) — it is the "explicit
+ * recorded decision" half of closing the gap: the gate stops silently
+ * trusting a superseded approval, and a human or a fresh `re-review` request
+ * clears it from there.
  *
- * ## Fail closed on an unknown commit
+ * ## Fail closed on an unknown commit — except for `stale_approval`
  *
- * If either SHA is unknown, staleness cannot be proven, and a blocking state is
- * treated as blocking. Same doctrine as `evaluateAutoMergeSafety`'s CI read:
- * refusing parks the PR for a human, which is recoverable — merging past an
- * unread verdict is not.
+ * For every OTHER block kind, if either SHA is unknown, staleness cannot be
+ * proven and refusing (fail closed) is safer: merging past an unread verdict
+ * is unrecoverable, parking the PR for a human is not — same doctrine as
+ * `evaluateAutoMergeSafety`'s CI read. `stale_approval` inverts this
+ * deliberately: it starts from PASS (an approval is normally a clean pass),
+ * so an unknown SHA there means "cannot prove this approval is stale," which
+ * defers to the pass rather than manufacturing a block older data can never
+ * clear.
  */
 
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import type { PrReviewStatus, PrReviewState } from '@/lib/pr-review-status';
 
 /** Which review condition is holding the door. */
-export type ReviewGateBlockKind = 'changes_requested' | 'escalated' | 'in_flight';
+export type ReviewGateBlockKind = 'changes_requested' | 'escalated' | 'in_flight' | 'stale_approval';
 
 export interface ReviewVerdictGateResult {
   blocks: boolean;
@@ -88,14 +121,25 @@ export function evaluateReviewVerdictGate(
   // verdict here would turn every idempotent re-merge into a refusal.
   if (status.merged) return PASS;
 
-  const kind = blockKindFor(status.state);
-  if (!kind) return PASS;
-
-  // Superseded by a push: the round describes code that is no longer what
-  // merges. Both SHAs must be known to make that claim — see "fail closed".
   const reviewSha = normalizeSha(status.reviewHeadSha);
   const headSha = normalizeSha(currentHeadSha);
-  if (reviewSha && headSha && reviewSha !== headSha) return PASS;
+  const provablyDifferent = !!(reviewSha && headSha && reviewSha !== headSha);
+
+  let kind: ReviewGateBlockKind | null;
+  if (status.state === 'approved') {
+    // Starts from PASS, unlike every other kind below — an approval is
+    // normally a clean pass, and only blocks when staleness is PROVABLE. See
+    // the module doc's "stale_approval" section for why this runs in the
+    // opposite direction from the other kinds.
+    if (!provablyDifferent) return PASS;
+    kind = 'stale_approval';
+  } else {
+    kind = blockKindFor(status.state);
+    if (!kind) return PASS;
+    // No SHA-mismatch escape here (see the module doc's "stale-verdict rule"):
+    // a re-review is dispatched automatically now, so a lingering mismatch
+    // means one hasn't landed yet, not that a push already resolved it.
+  }
 
   const shaLabel = headSha ? ` at ${headSha.slice(0, 7)}` : '';
   const detail = firstLine(
@@ -148,6 +192,9 @@ export async function guardReviewVerdict(params: {
   return evaluateReviewVerdictGate(status, params.headSha);
 }
 
+// `approved` is handled directly in evaluateReviewVerdictGate (it starts from
+// PASS, the opposite default from everything here) — it never reaches this
+// function.
 function blockKindFor(state: PrReviewState): ReviewGateBlockKind | null {
   switch (state) {
     case 'changes_requested':
@@ -157,7 +204,7 @@ function blockKindFor(state: PrReviewState): ReviewGateBlockKind | null {
     case 'queued':
     case 'reviewing':
       return 'in_flight';
-    // `approved` and `not_requested` are the ordinary pass cases.
+    // `not_requested` is the ordinary pass case.
     //
     // `review_failed` is deliberately NOT a block: it means the reviewer never
     // produced a verdict, so there is no finding to protect, and it already has
@@ -173,14 +220,17 @@ const REASON: Record<ReviewGateBlockKind, string> = {
   changes_requested: 'the reviewer requested changes on this PR and no later review has cleared that verdict',
   escalated: 'the reviewer escalated this PR to a human',
   in_flight: 'a review round is still in flight on this PR',
+  stale_approval: 'the reviewer\'s approval was made against an earlier commit — a later push has since moved the head',
 };
 
 const CLEARED_BY: Record<ReviewGateBlockKind, string> = {
   changes_requested:
-    'Push the fix — a new commit supersedes the verdict — or re-review the PR and merge on an approve. A human can merge past it with an explicit override, which is recorded as a bypass.',
+    'Push a fix — an agent-review PR is re-reviewed automatically — or request a re-review, then merge on an approve. A human can merge past it with an explicit override, which is recorded as a bypass.',
   escalated:
     'Act on the escalation, or merge past it with an explicit human override, which is recorded as a bypass.',
   in_flight: 'Wait for the verdict, then merge on an approve. A human can merge past it with an explicit override, which is recorded as a bypass.',
+  stale_approval:
+    'Request a re-review of the new commit, or merge past it with an explicit human override, which is recorded as a bypass.',
 };
 
 /** A 40-hex commit id, lowercased, or null for anything that is not one. */

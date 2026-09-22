@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.217.1",
+  "version": "0.217.4",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -48,6 +48,7 @@
     "./task-area-readout-source": "./task-area-readout-source.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
     "./task-title": "./task-title.ts",
@@ -98,7 +99,10 @@
     "./derived-metric": "./derived-metric.ts",
     "./error-signature": "./error-signature.ts",
     "./gate-events": "./gate-events.ts",
+    "./gate-slugs": "./gate-slugs.ts",
     "./gate-analytics": "./gate-analytics.ts",
+    "./terminal-records": "./terminal-records.ts",
+    "./terminal-records-query": "./terminal-records-query.ts",
     "./release-baseline": "./release-baseline.ts",
     "./initiative-metric-registry": "./initiative-metric-registry.ts"
   },

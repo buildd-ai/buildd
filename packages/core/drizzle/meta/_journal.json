@@ -1198,6 +1198,20 @@
       "when": 1789908990000,
       "tag": "0171_rapid_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1789941790089,
+      "tag": "0172_eminent_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1790027795091,
+      "tag": "0173_lucky_mantis",
+      "breakpoints": true
     }
   ]
 }

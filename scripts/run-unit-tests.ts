@@ -1,3 +1,7 @@
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'fs';
+import { homedir, tmpdir } from 'os';
+import { join } from 'path';
+
 // Anything matching one of these prefixes and ending in .test.ts(x) is run.
 //
 // Prefixes, not a file list: the `scripts/` entries used to be enumerated one by
@@ -165,15 +169,37 @@ type SpawnTestProcess = (
   stderr: ReadableStream<Uint8Array>;
 };
 
+/**
+ * Delete a throwaway BUILDD_HOME.
+ *
+ * Refuses anything outside `tmpdir()`: leaking one temp directory is strictly
+ * better than recursively deleting a real one, so the guard fails closed.
+ */
+function discardTestHome(home: string): void {
+  if (!home.startsWith(tmpdir())) return;
+  try {
+    rmSync(home, { recursive: true, force: true });
+  } catch { /* a leaked temp dir is not worth failing a run over */ }
+}
+
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
 ): Promise<TestResult> {
+  // Every test file gets its own throwaway BUILDD_HOME. Seven runner modules
+  // resolve that env var when they are first imported (worker-store,
+  // history-store, session-logger, outbox, doctor, updater, index), so a test
+  // setting it in a `beforeAll` arrives after the path has already been baked in.
+  // Injecting it at the single spawn point covers all of them regardless of
+  // when they read it, and needs no change to 800+ test files. Without it the
+  // suite wrote fixture records into the operator's real ~/.buildd/workers,
+  // where they were counted as fleet data.
+  const testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
   try {
     const child = spawn([process.execPath, 'test', file], {
       stdout: 'pipe',
       stderr: 'pipe',
-      env: process.env,
+      env: { ...process.env, BUILDD_HOME: testHome },
     });
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,
@@ -188,7 +214,155 @@ export async function runTestFile(
       exitCode: 1,
       output: `Failed to launch Bun for ${file}:\n${detail}`,
     };
+  } finally {
+    discardTestHome(testHome);
   }
+}
+
+/**
+ * The store the runner actually persists worker state to. Watched, never
+ * written, by the tripwire below.
+ */
+export function realWorkerStoreDir(): string {
+  return join(homedir(), '.buildd', 'workers');
+}
+
+/**
+ * Entry name -> a fingerprint of its content (size + mtime), or `null` when the
+ * directory does not exist.
+ *
+ * `null` is load-bearing: on CI the store is absent, and the suite *creating*
+ * it is itself the failure, so "absent" must be a distinguishable state rather
+ * than an empty map.
+ */
+export type StoreSnapshot = Record<string, string> | null;
+
+export function snapshotStore(dir: string): StoreSnapshot {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const snapshot: Record<string, string> = {};
+  for (const entry of entries.sort()) {
+    try {
+      const st = statSync(join(dir, entry));
+      snapshot[entry] = `${st.size}@${st.mtimeMs}`;
+    } catch {
+      // Raced with the live runner mid-scan; record the disappearance itself.
+      snapshot[entry] = 'unreadable';
+    }
+  }
+  return snapshot;
+}
+
+/** Human-readable differences between two snapshots; empty means untouched. */
+export function diffStoreSnapshots(before: StoreSnapshot, after: StoreSnapshot): string[] {
+  if (before === null && after === null) return [];
+  if (before === null) {
+    const names = Object.keys(after ?? {});
+    return [`the directory did not exist and was created${names.length ? ` with: ${names.join(', ')}` : ''}`];
+  }
+  if (after === null) return ['the directory existed before the run and is now gone'];
+
+  const diffs: string[] = [];
+  for (const name of Object.keys(after)) {
+    if (!(name in before)) diffs.push(`added: ${name}`);
+    else if (before[name] !== after[name]) diffs.push(`modified: ${name}`);
+  }
+  for (const name of Object.keys(before)) {
+    if (!(name in after)) diffs.push(`removed: ${name}`);
+  }
+  return diffs.sort();
+}
+
+function parseFingerprintMtimeMs(fingerprint: string): number | null {
+  const at = fingerprint.lastIndexOf('@');
+  if (at === -1) return null;
+  const value = Number(fingerprint.slice(at + 1));
+  return Number.isFinite(value) ? value : null;
+}
+
+/** How recently an entry must have changed to count as evidence of a co-resident process. */
+export const LIVE_RUNNER_FRESHNESS_WINDOW_MS = 60_000;
+
+/**
+ * True when `snapshot` already shows activity from something other than us —
+ * an entry written within the freshness window, or one that raced a
+ * mid-directory-listing stat (`'unreadable'`). Meant to be called on
+ * `storeBefore`, taken before any test process has spawned: nothing of ours
+ * has run yet, so only a co-resident process (the live runner) could have
+ * caused that.
+ *
+ * This is what makes the run-level tripwire's byte-diff unattributable on a
+ * runner host: a diff found after the suite could be either an isolation bug
+ * in our own tests or ordinary heartbeat churn from that other process, and
+ * there is no way to tell those apart from the diff alone. Observed directly:
+ * on a live runner host, an 8-second idle wait with zero tests running showed
+ * ~370 of 417 real worker files as "modified".
+ */
+export function isStoreLikelyLive(
+  snapshot: StoreSnapshot,
+  now: number = Date.now(),
+  windowMs: number = LIVE_RUNNER_FRESHNESS_WINDOW_MS,
+): boolean {
+  if (snapshot === null) return false;
+  return Object.values(snapshot).some(fingerprint => {
+    if (fingerprint === 'unreadable') return true;
+    const mtime = parseFingerprintMtimeMs(fingerprint);
+    return mtime !== null && now - mtime < windowMs;
+  });
+}
+
+/**
+ * Whether a store diff should fail the build. Not just `diffs.length > 0`:
+ * when the store was already live before the run started, the diff cannot be
+ * attributed to the test suite, so it is reported but does not gate — the
+ * injection and corpus-lint layers are what still catch a real regression
+ * there. See `isStoreLikelyLive`.
+ */
+export function storeDiffIsFatal(diffs: readonly string[], storeWasLive: boolean): boolean {
+  return diffs.length > 0 && !storeWasLive;
+}
+
+export function formatStoreTripwireReport(
+  dir: string,
+  diffs: readonly string[],
+  opts: { advisory?: boolean } = {},
+): string {
+  if (opts.advisory) {
+    return [
+      '',
+      `The real worker store at ${dir} changed during this run, but it was already`,
+      'changing before the run started — a live runner is active on this host, so',
+      'this byte-diff cannot tell its heartbeat/activity writes apart from a real',
+      'isolation leak. Not failing the build on this alone:',
+      '',
+      ...diffs.map(d => `  ${d}`),
+      '',
+      'The injection (runTestFile) and corpus lint (scripts/test-home-isolation.test.ts)',
+      'layers still gate on a real leak regardless of host activity. If you suspect',
+      'this run actually wrote here, rerun on an idle host or check the entries above',
+      'against what the suite\'s fixtures would have created.',
+      '',
+    ].join('\n');
+  }
+  return [
+    '',
+    `The unit suite changed the REAL worker store at ${dir}:`,
+    '',
+    ...diffs.map(d => `  ${d}`),
+    '',
+    `::error::Unit tests must never touch ${dir}. Every test process gets its own`,
+    'BUILDD_HOME under tmpdir() (see runTestFile). A test that reaches the real',
+    'store is either resolving a path from homedir() directly or importing a',
+    'module that resolved BUILDD_HOME before the injection — both are bugs, and',
+    'both make the runner store useless as a measurement.',
+    'scripts/test-home-isolation.test.ts names the tracked files allowed to',
+    'reference homedir() at all.',
+    '',
+  ].join('\n');
 }
 
 export type FailureDigest = {
@@ -292,6 +466,20 @@ async function main(): Promise<void> {
   const failures: TestResult[] = [];
   let passed = 0;
 
+  // Run-level tripwire. This is the layer that reproduces the original
+  // measurement: on a quiescent host, the operator's worker store must look
+  // identical before and after the run. A green suite that quietly added
+  // fixture records to the live store was indistinguishable from a clean one,
+  // for as long as nobody happened to look. On a runner host where something
+  // else is actively writing the same store, the byte-diff can't tell that
+  // churn apart from a leak, so it downgrades to advisory there instead of
+  // failing the build on noise (see isStoreLikelyLive / storeDiffIsFatal).
+  const storeDir = realWorkerStoreDir();
+  const storeBefore = snapshotStore(storeDir);
+  // Taken from storeBefore, before any test process spawns, so freshness here
+  // can only come from something else running on this host.
+  const storeWasLive = isStoreLikelyLive(storeBefore);
+
   await runWithConcurrency(files, concurrency, async file => {
     const result = await runTestFile(file);
     if (result.exitCode === 0) {
@@ -330,6 +518,15 @@ async function main(): Promise<void> {
   } else {
     console.log(`All ${files.length} unit test files passed in isolated processes.`);
   }
+
+  const storeDiffs = diffStoreSnapshots(storeBefore, snapshotStore(storeDir));
+  if (storeDiffs.length > 0) {
+    console.error(formatStoreTripwireReport(storeDir, storeDiffs, { advisory: storeWasLive }));
+    if (storeDiffIsFatal(storeDiffs, storeWasLive)) {
+      process.exitCode = 1;
+    }
+  }
+
   reportHiddenDirTests();
 }
 

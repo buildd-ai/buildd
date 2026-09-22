@@ -1,21 +1,25 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
+import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
-import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
+import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import MissionSettings from './MissionSettings';
+import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
+import { groupTasksByPhase, selectMissionRecords } from '@/lib/flight-strip-nav';
+import MissionFlightStripNav from './MissionFlightStripNav';
+import MissionVerifiedPill from './MissionVerifiedPill';
+import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
@@ -40,7 +44,6 @@ import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
-import MissionGoalCriteria from './MissionGoalCriteria';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
@@ -149,6 +152,8 @@ export default async function MissionDetailPage({
               turns: true,
               completedAt: true,
               startedAt: true,
+              updatedAt: true,
+              exitCause: true,
               currentAction: true,
               commitCount: true,
               filesChanged: true,
@@ -225,8 +230,8 @@ export default async function MissionDetailPage({
                       id: true, status: true, waitingFor: true, branch: true, prUrl: true,
                       prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
                       supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
-                      turns: true, completedAt: true, startedAt: true, currentAction: true,
-                      commitCount: true, filesChanged: true,
+                      turns: true, completedAt: true, startedAt: true, updatedAt: true, exitCause: true,
+                      currentAction: true, commitCount: true, filesChanged: true,
                     },
                     orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
                     limit: 3,
@@ -251,49 +256,102 @@ export default async function MissionDetailPage({
     }
   }
 
-  // Query roles and workspaces for this user
-  const wsIds = await getUserWorkspaceIds(user.id);
-  let roles: { slug: string; name: string; color: string }[] = [];
-  let teamWorkspaces: { id: string; name: string }[] = [];
-  if (wsIds.length > 0) {
-    const [rolesResult, workspacesResult] = await Promise.all([
-      db.query.workspaceSkills.findMany({
-        where: and(
-          inArray(workspaceSkills.workspaceId, wsIds),
-          eq(workspaceSkills.enabled, true),
-        ),
-        columns: { slug: true, name: true, color: true },
-        orderBy: [desc(workspaceSkills.createdAt)],
-      }),
-      db.query.workspaces.findMany({
-        where: inArray(workspaces.teamId, teamIds),
-        columns: { id: true, name: true },
-      }),
-    ]);
-    roles = rolesResult;
-    teamWorkspaces = workspacesResult;
-  }
-
-  // Fetch reviewer verdict notes for BT-16 (verdict chips)
+  // Everything from here to the merge-policy chip reads off the mission row
+  // that is already in hand, and nothing in the group consumes another entry's
+  // result — so it is one wait instead of five serial neon-http round trips
+  // (roles/workspaces, reviewer notes, steering notes, policy workspace,
+  // follow-ups). The derived, purely-computed values follow the group.
   const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
-  const reviewerNotes = allMissionTaskIds.length > 0
-    ? await db.query.missionNotes.findMany({
-        where: and(
-          inArray(missionNotes.taskId, allMissionTaskIds),
-          inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
-        ),
-        columns: {
-          taskId: true,
-          type: true,
-          title: true,
-          body: true,
-          status: true,
-          supersededByPrNumber: true,
-          createdAt: true,
-        },
-        orderBy: desc(missionNotes.createdAt),
-      })
-    : [];
+
+  const [
+    scopeResult,
+    reviewerNotes,
+    humanSteeringNotes,
+    workspaceForPolicy,
+    missionFollowupTasks,
+  ] = await Promise.all([
+    // Roles and workspaces for this user. getUserWorkspaceIds is React
+    // cache()-wrapped, so the protected layout has normally already resolved
+    // this scope and only the two reads below are new round trips.
+    (async () => {
+      const wsIds = await getUserWorkspaceIds(user.id);
+      if (wsIds.length === 0) {
+        return {
+          roles: [] as { slug: string; name: string; color: string }[],
+          teamWorkspaces: [] as { id: string; name: string }[],
+        };
+      }
+      const [rolesResult, workspacesResult] = await Promise.all([
+        db.query.workspaceSkills.findMany({
+          where: and(
+            inArray(workspaceSkills.workspaceId, wsIds),
+            eq(workspaceSkills.enabled, true),
+          ),
+          columns: { slug: true, name: true, color: true },
+          orderBy: [desc(workspaceSkills.createdAt)],
+        }),
+        db.query.workspaces.findMany({
+          where: inArray(workspaces.teamId, teamIds),
+          columns: { id: true, name: true },
+        }),
+      ]);
+      return { roles: rolesResult, teamWorkspaces: workspacesResult };
+    })(),
+    // Reviewer verdict notes for BT-16 (verdict chips)
+    allMissionTaskIds.length > 0
+      ? db.query.missionNotes.findMany({
+          where: and(
+            inArray(missionNotes.taskId, allMissionTaskIds),
+            inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
+          ),
+          columns: {
+            taskId: true,
+            type: true,
+            title: true,
+            body: true,
+            status: true,
+            supersededByPrNumber: true,
+            createdAt: true,
+          },
+          orderBy: desc(missionNotes.createdAt),
+        })
+      : [],
+    // Human-authored mission notes — the flight-strip steering rail's "human
+    // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
+    // or guidance posted against one task) are written with `missionId: null`
+    // (apps/web/src/app/api/tasks/[id]/notes/route.ts) — a human touch on this
+    // mission's work, so both arms must be read or most human steering marks
+    // would silently vanish from the rail.
+    allMissionTaskIds.length > 0
+      ? db.query.missionNotes.findMany({
+          where: and(
+            or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
+            eq(missionNotes.authorType, 'user'),
+          ),
+          columns: { id: true, authorType: true, createdAt: true },
+        })
+      : db.query.missionNotes.findMany({
+          where: and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user')),
+          columns: { id: true, authorType: true, createdAt: true },
+        }),
+    // BT-21: the workspace row behind the effective merge policy tier.
+    mission.workspaceId
+      ? db.query.workspaces.findFirst({
+          where: eq(workspaces.id, mission.workspaceId),
+          columns: { id: true, gitConfig: true },
+        })
+      : Promise.resolve(null),
+    // Steering-cost visibility: how much of this mission a human had to write
+    // directly, and how much leaked in after it was marked done. One accessor
+    // computes both — see computeMissionAuthorshipHealth's docstring.
+    loadMissionFollowupTasks([{
+      id: mission.id,
+      completedAt: (mission as any).completedAt ?? null,
+      taskIds: (mission.tasks || []).map(t => t.id),
+    }]),
+  ]);
+
+  const { roles, teamWorkspaces } = scopeResult;
 
   // Map taskId → latest reviewer note
   const reviewerNoteMap = new Map<string, {
@@ -310,13 +368,6 @@ export default async function MissionDetailPage({
     }
   }
 
-  // BT-21: resolve effective merge policy tier for mission header chip
-  const workspaceForPolicy = mission.workspaceId
-    ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
-        columns: { id: true, gitConfig: true },
-      })
-    : null;
   const effectivePolicy = resolvePolicy(
     workspaceForPolicy ?? { gitConfig: null },
     { mergePolicy: (mission as any).mergePolicy ?? null },
@@ -348,14 +399,6 @@ export default async function MissionDetailPage({
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
 
-  // Steering-cost visibility: how much of this mission a human had to write
-  // directly, and how much leaked in after it was marked done. One accessor
-  // computes both — see computeMissionAuthorshipHealth's docstring.
-  const missionFollowupTasks = await loadMissionFollowupTasks([{
-    id: mission.id,
-    completedAt: (mission as any).completedAt ?? null,
-    taskIds: (mission.tasks || []).map(t => t.id),
-  }]);
   const authorshipHealth = computeMissionAuthorshipHealth({
     tasks: mission.tasks || [],
     missionCreatedAt: (mission as any).createdAt,
@@ -436,7 +479,18 @@ export default async function MissionDetailPage({
   // answer: this screen's whole defect was that the platform already knew the
   // next action and the screen declined to say it, and a second derivation here
   // would be the same failure with better intentions.
-  const explained = await explainMission(id);
+  // Cost budget is read straight off the mission row, so the spend lookup can
+  // start alongside the explain accessor rather than waiting behind it.
+  const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
+
+  // explainMission, the mission spend and the tracker links share no inputs
+  // beyond the mission id, so they are one wait instead of three.
+  const [explained, spendUsd, trackerLinks] = await Promise.all([
+    explainMission(id),
+    costBudgetUsd != null ? getMissionSpendUsd(id) : Promise.resolve(null),
+    // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
+    getLinksForEntity(db, 'mission', id),
+  ]);
   const missionAnswer = explained?.subjects[0] ?? null;
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
@@ -461,19 +515,12 @@ export default async function MissionDetailPage({
   // Configuration from schedule template
   const configModel = (templateContext?.model as string) || null;
 
-  // Cost budget
-  const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
-  const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
-
   // Settings panel summary — non-default values for the collapsed header
   const configSummaryParts: string[] = [];
   if (configModel) configSummaryParts.push(configModel.replace(/^claude-/, '').replace(/-latest$/, ''));
   if (mission.maxConcurrentTasks != null) configSummaryParts.push(`${mission.maxConcurrentTasks} concurrent`);
   if (costBudgetUsd != null) configSummaryParts.push(`$${parseFloat(costBudgetUsd).toFixed(0)} budget`);
   const configSummary = configSummaryParts.length > 0 ? configSummaryParts.join(', ') : null;
-
-  // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
-  const trackerLinks = await getLinksForEntity(db, 'mission', id);
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -809,41 +856,64 @@ export default async function MissionDetailPage({
     ) || []
   ) || [];
 
+  // ── Flight strip navigator (docs/design/mission-flight-strip.md §7) ────────
+  // Bars come from deliverable (taskClass='work') spans only — an orchestrator
+  // planning task has no lane and would otherwise render as a misclassified
+  // BUILD bar. Steering marks are supplied separately, on the options bag.
+  const flightStripTasks = timelineTasks.map(t => ({
+    id: t.id, status: t.status, taskClass: t.taskClass, roleSlug: t.roleSlug, kind: t.kind, title: t.title,
+  }));
+  const flightStripWorkers = timelineTasks.flatMap(t =>
+    ((t.workers ?? []) as any[]).map(w => ({
+      id: w.id, taskId: t.id, status: w.status, startedAt: w.startedAt, completedAt: w.completedAt,
+      updatedAt: w.updatedAt, exitCause: w.exitCause,
+    }))
+  );
+  const steeringEvents = buildSteeringEvents(
+    allTasks.map(t => ({
+      id: t.id, mode: t.mode, creationSource: t.creationSource,
+      workers: ((t.workers ?? []) as any[]).map(w => ({ turns: w.turns, startedAt: w.startedAt })),
+    })),
+    humanSteeringNotes,
+  );
+  const flightStripData = computeMissionFlightStrip(flightStripTasks, flightStripWorkers, {
+    missionCompletedAt: (mission as any).completedAt ?? null,
+    steeringEvents,
+  });
+  const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
+  const orchestratorTicks = (mission.schedule as any)?.totalChecks ?? 0;
+  const missionRecords = selectMissionRecords(allArtifacts);
+
+  // Goal criteria — hoisted so the header's Verified pill and its bottom
+  // sheet (MissionVerifiedPill) read the same values the removed
+  // always-visible block used to.
+  const goalCriteria = ((mission as any).goalCriteria as GoalCriterion[] | null) ?? [];
+  const goalCriteriaStateFull = (mission as any).goalCriteriaState as GoalCriteriaState | null;
+  const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
+
+  const flightStripNavTasksWithPhase = timelineTasks.map(t => ({
+    id: t.id,
+    title: t.title,
+    href: `/app/tasks/${t.id}`,
+    lane: deriveWorkLane(t),
+    status: t.status,
+    prNumber: ((t.workers as any[])?.[0]?.prNumber as number | null | undefined) ?? null,
+    artifacts: ((t.workers as any[]) ?? []).flatMap(w => (w.artifacts ?? [])).map((a: any) => ({ id: a.id, type: a.type, title: a.title })),
+    missionPhaseIndex: t.missionPhaseIndex ?? null,
+    missionPhaseLabel: t.missionPhaseLabel ?? null,
+  }));
+  const flightStripGroups = groupTasksByPhase(flightStripNavTasksWithPhase).map(g => ({
+    index: g.index,
+    label: g.label,
+    tasks: g.tasks.map(({ missionPhaseIndex, missionPhaseLabel, ...row }) => row),
+  }));
+
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   const missionTaskIds = allTasks.map((t) => t.id);
 
-  // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
-  // so users see the parent initiative even when navigating directly to the mission.
-  const initiativeName = (from === 'initiative' && initiativeId)
-    ? (await db.query.initiatives.findFirst({
-        where: eq(initiatives.id, initiativeId),
-        columns: { title: true },
-      }))?.title
-    : undefined;
-
-  const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
-
-  const breadcrumb = resolveMissionBreadcrumb({
-    from,
-    initiativeId,
-    initiativeName,
-    dbInitiativeId: dbInitiative?.id,
-    dbInitiativeName: dbInitiative?.title,
-    missionTitle: mission.title,
-  });
-
   // Fetch team's active/paused initiatives for the initiative selector
   const isTerminal = ['completed', 'archived'].includes(mission.status);
-  const teamInitiativeOptions: InitiativeOption[] = isTerminal ? [] : await db.query.initiatives.findMany({
-    where: and(
-      inArray(initiatives.teamId, teamIds),
-      inArray(initiatives.status, ['active', 'paused']),
-    ),
-    columns: { id: true, title: true, status: true },
-    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
-    limit: 50,
-  }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 })));
 
   // Release section (§8.5): reads the same workspace-scoped loader as the
   // mission-card footer (lib/release-footer.ts) so the two surfaces cannot
@@ -861,22 +931,64 @@ export default async function MissionDetailPage({
         gitConfig: releaseWorkspace.gitConfig as WorkspaceGitConfig | null,
       })
     : 'none';
-  const releaseFooterData = shouldQueryRelease(releaseArchetype) && releaseWorkspace
-    ? await loadReleaseFooterData({
-        id: releaseWorkspace.id,
-        name: releaseWorkspace.name,
-        gitConfig: releaseWorkspace.gitConfig,
-        releaseConfig: releaseWorkspace.releaseConfig,
-      })
-    : null;
   const releaseStrategy: ReleaseStrategy | null = releaseWorkspace?.releaseConfig?.enabled
     ? (releaseWorkspace.releaseConfig.strategy ?? 'branch_merge')
     : null;
-  let hasVercelToken: boolean | null = null;
-  if (releaseFooterData && releaseStrategy === 'branch_merge') {
-    const secrets = await getSecretsProvider().list(mission.teamId);
-    hasVercelToken = secrets.some((s) => s.purpose === 'vercel_token');
-  }
+
+  // The breadcrumb initiative, the initiative-selector options and the release
+  // block are mutually independent; only the Vercel-token probe depends on
+  // anything in the group, so it stays chained behind the footer load it needs.
+  const [initiativeName, teamInitiativeOptions, releaseBlock] = await Promise.all([
+    // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
+    // so users see the parent initiative even when navigating directly to the mission.
+    (from === 'initiative' && initiativeId)
+      ? db.query.initiatives.findFirst({
+          where: eq(initiatives.id, initiativeId),
+          columns: { title: true },
+        }).then(row => row?.title)
+      : Promise.resolve(undefined),
+    isTerminal
+      ? Promise.resolve([] as InitiativeOption[])
+      : db.query.initiatives.findMany({
+          where: and(
+            inArray(initiatives.teamId, teamIds),
+            inArray(initiatives.status, ['active', 'paused']),
+          ),
+          columns: { id: true, title: true, status: true },
+          orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+          limit: 50,
+        }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }))),
+    (async () => {
+      const footer = shouldQueryRelease(releaseArchetype) && releaseWorkspace
+        ? await loadReleaseFooterData({
+            id: releaseWorkspace.id,
+            name: releaseWorkspace.name,
+            gitConfig: releaseWorkspace.gitConfig,
+            releaseConfig: releaseWorkspace.releaseConfig,
+          })
+        : null;
+      let vercelToken: boolean | null = null;
+      if (footer && releaseStrategy === 'branch_merge') {
+        const secrets = await getSecretsProvider().list(mission.teamId);
+        vercelToken = secrets.some((s) => s.purpose === 'vercel_token');
+      }
+      return { footer, vercelToken };
+    })(),
+  ]);
+
+  const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
+
+  const breadcrumb = resolveMissionBreadcrumb({
+    from,
+    initiativeId,
+    initiativeName,
+    dbInitiativeId: dbInitiative?.id,
+    dbInitiativeName: dbInitiative?.title,
+    missionTitle: mission.title,
+  });
+
+  const releaseFooterData = releaseBlock.footer;
+  const hasVercelToken = releaseBlock.vercelToken;
   const releaseNowState = deriveReleaseNowState({ strategy: releaseStrategy, hasVercelToken });
 
   return (
@@ -895,19 +1007,47 @@ export default async function MissionDetailPage({
       {/* Freshen PR state on open — reconcile only, never a planning pass */}
       <MissionReconcileOnOpen missionId={id} />
 
-      {/* Breadcrumbs */}
-      <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
-        {breadcrumb.links.map((link, i) => (
-          <span key={link.href} className="flex items-center gap-2">
-            {i > 0 && <span>/</span>}
-            <Link href={link.href} className="hover:text-text-secondary transition-colors">
-              {link.label}
-            </Link>
-          </span>
-        ))}
-        <span>/</span>
-        <span className="text-text-secondary truncate">{breadcrumb.currentLabel}</span>
+      {/* Breadcrumbs + overflow menu (MissionSettings relocated behind it) */}
+      <div className="flex items-center justify-between gap-2 mb-5">
+        <div className="flex items-center gap-2 text-[12px] text-text-muted min-w-0">
+          {breadcrumb.links.map((link, i) => (
+            <span key={link.href} className="flex items-center gap-2 shrink-0">
+              {i > 0 && <span>/</span>}
+              <Link href={link.href} className="hover:text-text-secondary transition-colors">
+                {link.label}
+              </Link>
+            </span>
+          ))}
+          <span className="shrink-0">/</span>
+          <span className="text-text-secondary truncate">{breadcrumb.currentLabel}</span>
+        </div>
+        <MissionOverflowMenu
+          missionId={id}
+          currentStatus={mission.status}
+          cronExpression={scheduleCron}
+          workspaceId={mission.workspaceId}
+          roles={roles}
+          hasSchedule={!!scheduleCron}
+          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
+          isHeld={isHeld}
+          displayState={displayState}
+          hasPrimaryAction={hasPrimaryAction}
+        />
       </div>
+
+      {/* ── Flight strip navigator (§7) — pinned under the title. Tapping a bar
+          scrolls to and outlines its task row, and vice versa. Task list
+          grouped by stored mission phase, tagged by lane; goal criteria live
+          in the Verified pill sheet above, not here; MissionSettings lives
+          behind the header's overflow menu, not here either. */}
+      <MissionFlightStripNav
+        data={flightStripData}
+        groups={flightStripGroups}
+        orchestratorPlans={orchestratorPlans}
+        orchestratorTicks={orchestratorTicks}
+        records={missionRecords.map(a => ({ id: a.id, title: a.title, type: a.type }))}
+        recordsHref="#mission-artifacts"
+      />
 
       {/* ── Status Block ── */}
       <div className="mb-6">
@@ -946,6 +1086,15 @@ export default async function MissionDetailPage({
                   {hasPolicyOverride && <span className="opacity-60">·override</span>}
                 </Link>
               )}
+              <MissionVerifiedPill
+                missionId={id}
+                criteria={goalCriteria}
+                criteriaState={goalCriteriaStateFull}
+                autoVerify={autoVerifyFlag}
+                readonly={isTerminal}
+                failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+                overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
+              />
               <MissionAuthorshipStats health={authorshipHealth} />
             </span>
           }
@@ -971,13 +1120,11 @@ export default async function MissionDetailPage({
             (inferCriteriaFailureReading) is the difference between an owner
             editing one line and an owner filing a phantom task. */}
         {displayState === 'waiting_decision' && (() => {
-          const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
-          const goalCriteria = ((mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null) ?? [];
-          const reading = inferCriteriaFailureReading(goalCriteriaState);
+          const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
           const readingCopy = describeCriteriaFailureReading(reading);
           // First non-passing criterion, by its stable `index` — not array
           // position in `criteria`, which can skip entries.
-          const failingState = (goalCriteriaState?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+          const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
           const failingCriterionIndex = failingState ? failingState.index : null;
           const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
           const fileWorkHref = buildFileWorkHref({
@@ -993,7 +1140,7 @@ export default async function MissionDetailPage({
                   Waiting for human decision
                 </span>
                 <span className="text-[12px] text-text-secondary">
-                  {readingCopy} See Goal Criteria below ↓
+                  {readingCopy} See Goal Criteria above ↑
                 </span>
               </div>
               <MissionDecisionSheet
@@ -1289,22 +1436,6 @@ export default async function MissionDetailPage({
         </div>
       )}
 
-      {/* Mission Controls & Quick Task */}
-      <div className="mb-6">
-        <MissionSettings
-          missionId={id}
-          currentStatus={mission.status}
-          cronExpression={scheduleCron}
-          workspaceId={mission.workspaceId}
-          roles={roles}
-          hasSchedule={!!scheduleCron}
-          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
-          isHeld={isHeld}
-          displayState={displayState}
-          hasPrimaryAction={hasPrimaryAction}
-        />
-      </div>
-
       {/* ── Criteria gate ──
           The situation block above the fold now states a criteria hold in the
           same sentence as every other blocker, ranked against them, with the
@@ -1315,7 +1446,7 @@ export default async function MissionDetailPage({
           whose `explain` read failed still sees the gate. */}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
-          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
+          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria above ↑
         </p>
       )}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
@@ -1324,7 +1455,7 @@ export default async function MissionDetailPage({
             {criteriaGate.label}
           </span>
           <span className="text-[12px] text-text-secondary">
-            {criteriaGate.detail ? `${criteriaGate.detail} — ` : ''}see Goal Criteria below ↓
+            {criteriaGate.detail ? `${criteriaGate.detail} — ` : ''}see Goal Criteria above ↑
           </span>
         </div>
       )}
@@ -1384,28 +1515,6 @@ export default async function MissionDetailPage({
         ) : undefined}
       />
 
-
-      {/* ── Goal Criteria — shown when criteria are set (empty = no chrome) ── */}
-      {(() => {
-        const goalCriteria = (mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null;
-        const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
-        const autoVerify = (mission as any).autoVerify as boolean | null;
-        const criteria = goalCriteria ?? [];
-        const isTerminalMission = ['completed', 'archived'].includes(mission.status);
-        if (criteria.length === 0 && isTerminalMission) return null;
-        return (
-          <div className="mb-6" id="mission-goal-criteria">
-            <MissionGoalCriteria
-              missionId={id}
-              criteria={criteria}
-              criteriaState={goalCriteriaState}
-              autoVerify={autoVerify}
-              readonly={isTerminalMission}
-              failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
-            />
-          </div>
-        );
-      })()}
 
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
@@ -1510,22 +1619,24 @@ export default async function MissionDetailPage({
       )}
 
       {/* ── Artifacts ── */}
-      <MissionArtifacts
-        artifacts={allArtifacts.map((a) => ({
-          id: a.id,
-          type: a.type,
-          title: a.title ?? a.key ?? null,
-          content: a.content ?? null,
-          shareToken: a.shareToken ?? null,
-          visibility: (a.visibility as 'private' | 'public') ?? 'private',
-          metadata: (a.metadata as Record<string, unknown>) ?? {},
-          createdAt: String(a.createdAt),
-          taskTitle: a.taskTitle ?? null,
-        }))}
-        baseUrl={baseUrl}
-        missionId={id}
-        initialOpenArtifactId={initialOpenArtifactId}
-      />
+      <div id="mission-artifacts">
+        <MissionArtifacts
+          artifacts={allArtifacts.map((a) => ({
+            id: a.id,
+            type: a.type,
+            title: a.title ?? a.key ?? null,
+            content: a.content ?? null,
+            shareToken: a.shareToken ?? null,
+            visibility: (a.visibility as 'private' | 'public') ?? 'private',
+            metadata: (a.metadata as Record<string, unknown>) ?? {},
+            createdAt: String(a.createdAt),
+            taskTitle: a.taskTitle ?? null,
+          }))}
+          baseUrl={baseUrl}
+          missionId={id}
+          initialOpenArtifactId={initialOpenArtifactId}
+        />
+      </div>
 
     </div>
     </TaskPanelWrapper>

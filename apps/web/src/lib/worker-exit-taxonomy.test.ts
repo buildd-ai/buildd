@@ -195,3 +195,57 @@ describe('consumesRetryAttempt', () => {
     expect(consumesRetryAttempt('silent_start')).toBe(false);
   });
 });
+
+// Regression for the fault-classification bug: the coordination server refusing
+// a runner's PATCH (a 4xx) is a decision WE made, not an exception the session
+// suffered. Until the runner could report it, the refusal unwound to the
+// runner's crash handler, arrived back as a `failed` PATCH whose error was the
+// stringified 4xx body, and landed on this function's code_failure default —
+// charging the task a retry it never earned.
+describe('server refusals', () => {
+  it('classifies an output-gate refusal as output_unmet, and STILL charges the retry', () => {
+    const cause = classifyReportedFailure({
+      budgetLimited: false,
+      sandboxMountGap: false,
+      serverRefused: true,
+      outputGateRefused: true,
+    });
+    expect(cause).toBe('output_unmet');
+    // Deliberate: this refusal only reaches the runner for a session that ended
+    // without calling complete_task and shipped nothing reviewable. A fresh
+    // attempt can plausibly open the PR, so the attempt is chargeable — it is
+    // just not a code defect.
+    expect(consumesRetryAttempt(cause)).toBe(true);
+  });
+
+  it('classifies a non-gate refusal as server_refused, and does NOT charge the retry', () => {
+    const cause = classifyReportedFailure({
+      budgetLimited: false,
+      sandboxMountGap: false,
+      serverRefused: true,
+    });
+    expect(cause).toBe('server_refused');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+
+  it('keeps a refusal report from stealing precedence from a real diagnosis', () => {
+    // Same rule the file already applies to conditionUnmet/needsInput: the
+    // diagnosis beats the bookkeeping.
+    expect(classifyReportedFailure({
+      budgetLimited: true, sandboxMountGap: false, serverRefused: true, outputGateRefused: true,
+    })).toBe('budget_limited');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: true, serverRefused: true,
+    })).toBe('sandbox_mount_gap');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: false, steeringDelivery: true, serverRefused: true,
+    })).toBe('infra_failure');
+  });
+
+  it('does not blanket-exempt every refusal — only the non-gate ones', () => {
+    // The whole point of two causes rather than one: exempting all 4xx would
+    // launder a session that genuinely shipped nothing.
+    expect(consumesRetryAttempt('server_refused')).toBe(false);
+    expect(consumesRetryAttempt('output_unmet')).toBe(true);
+  });
+});

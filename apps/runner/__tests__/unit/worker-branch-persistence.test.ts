@@ -2,10 +2,15 @@ import { describe, expect, mock, test, beforeEach } from 'bun:test';
 
 const CLAIMED_BRANCH = 'mission/example-integration';
 const ACTUAL_BRANCH = 'buildd/example-task';
-const cleanup = mock(async () => {});
+const cleanup = mock(async () => ({ removed: true }));
 const setup = mock(async () => ({ path: '/tmp/example-worktree', branch: ACTUAL_BRANCH, base: `origin/${CLAIMED_BRANCH}` }));
 mock.module('../../src/git-operations', () => ({
-  setupWorktree: setup, cleanupWorktree: cleanup, collectGitStats: async () => ({}),
+  setupWorktree: setup,
+  // workers.ts routes every teardown through the ownership-checked executor.
+  removeWorktreeIfUnowned: cleanup,
+  removeWorktreeIfUnownedSync: mock(() => ({ removed: true })),
+  cleanupWorktree: cleanup,
+  collectGitStats: async () => ({}),
 }));
 mock.module('../../src/worker-store', () => ({
   saveWorker: () => {}, loadAllWorkers: () => [], loadWorker: () => null, deleteWorker: () => {},

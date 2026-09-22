@@ -72,6 +72,11 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
+// Mock path-claim-release
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mockReleaseAndNotify,
+}));
+
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
@@ -1016,6 +1021,42 @@ describe('PATCH /api/tasks/[id]', () => {
       'worker:command',
       expect.objectContaining({ action: 'abort', reason: 'task_cancelled' })
     );
+  });
+
+  it('releases the cancelled task\'s own path claims even with no active/cooperating worker', async () => {
+    // Regression test: a direct cancel used to rely entirely on the best-effort
+    // abort Pusher push reaching a worker that then PATCHes itself terminal
+    // (which is what actually released path_claims). If the worker was already
+    // dead, never assigned, or simply didn't process the abort, the cancelled
+    // task's path_claims rows stayed held forever and deadlocked any sibling
+    // task whose manifest overlapped them (see friction task 4233fd36).
+    const mockTask = {
+      id: TASK_ID,
+      title: 'Test Task',
+      status: 'assigned',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    const updatedTask = { ...mockTask, status: 'cancelled' };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindFirst.mockResolvedValue(null); // no active/cooperating worker
+
+    const mockReturning = mock(() => [updatedTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock(() => ({ where: mockWhere }));
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { status: 'cancelled' },
+    });
+    const response = await callHandler(PATCH, request, TASK_ID);
+
+    expect(response.status).toBe(200);
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith(TASK_ID, 'abandoned');
   });
 
   it('rejects unknown status values', async () => {

@@ -1,6 +1,38 @@
+---
+status: implemented
+# Promoted from `proposed` — the human-editorial call the prior drafting pass
+# deliberately deferred (see git history for that suppression comment). All
+# four assertions below pass against the current tree: Proposal §1
+# (emitsPlan), §2 (forced requiresPlanApproval), §3 (specSource traceability)
+# and §4 (renderSpecConformanceGuidance) are shipped, independently verified
+# by reading the cited files, not inferred from this frontmatter. The doc's
+# own "Current state (recon)" section is retained but annotated as a
+# drafting-time snapshot rather than rewritten, per docs/design/DESIGN-FORMAT.md
+# rule 5. `emits-plan-gate-in-tasks-route` is unsuppressed below now that
+# `implemented` no longer contradicts an all-pass ledger.
+assertions:
+  - id: "emits-plan-gate-in-tasks-route"
+    type: "symbol_reachable"
+    symbol: "emitsPlan"
+    entry: "apps/web/src/app/api/tasks/route.ts"
+    as: "assign"
+  - id: "spec-source-context-type"
+    type: "symbol"
+    name: "SpecSourceContext"
+    path: "apps/web/src/lib/approve-plan.ts"
+  - id: "spec-conformance-reviewer-guidance"
+    type: "symbol"
+    name: "renderSpecConformanceGuidance"
+    path: "apps/web/src/lib/reviewer.ts"
+  - id: "emits-plan-mcp-allowlist"
+    type: "config_key"
+    key: "emitsPlan"
+    file: "packages/core/mcp-tools.ts"
+---
+
 # Spec-to-build as a first-class pattern
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `apps/web/src/lib/approve-plan.ts`, `apps/web/src/lib/task-dependencies.ts`
 (`shouldAutoApprovePlan`/`resolveCompletedTask`), `packages/shared/src/planning.ts`,
 `apps/web/src/app/api/tasks/route.ts`, `packages/core/mcp-tools.ts` (`create_task`),
@@ -13,25 +45,30 @@
 ## Problem
 
 Spec-before-code is doctrine in this workspace — every spec task's brief ends with
-"propose an implementation breakdown, do NOT file those tasks" — but the platform has
-no supported path from "a spec task's proposed breakdown" to "claimable child tasks a
-human approved, that a reviewer later checks the built PR against." Concretely, today:
+"propose an implementation breakdown, do NOT file those tasks" — but until this design
+shipped, the platform had no supported path from "a spec task's proposed breakdown" to
+"claimable child tasks a human approved, that a reviewer later checks the built PR
+against." Concretely, at drafting time:
 
-- A spec task runs as an ordinary `mode: 'execution'` task and its breakdown is prose in
-  a PR body. A human re-types each line into `create_task`.
+- A spec task ran as an ordinary `mode: 'execution'` task and its breakdown was prose in
+  a PR body. A human re-typed each line into `create_task`. (Still true when a caller
+  doesn't opt in — `emitsPlan` defaults `false`, see Proposal §6.)
 - `mode: 'planning'` — the task mode whose completion is auto-materialized into child
-  tasks via `approvePlan` — cannot be requested through the public task-creation surface
-  at all. `POST /api/tasks` hardcodes `mode: 'execution'` on every insert
-  (`apps/web/src/app/api/tasks/route.ts:1077`) and never reads a `mode` field from the
-  request body. The MCP `create_task` tool's own allow-list
-  (`packages/core/mcp-tools.ts:2163-2171`) has no `mode` entry either. There is exactly
-  one generic path into a `mode: 'planning'` task and it is not exposed to callers.
-- Once a plan exists, nothing connects an approved child task back to the spec document
-  that authorized it, except by title text a human wrote.
-- Once a PR opens from that child task, the review pass (`createReviewerTask`,
-  `apps/web/src/lib/reviewer.ts`) checks diff hygiene and path-manifest conformance —
-  it has no way to see the spec the task claims to implement, so "does the PR match what
-  the spec said" is never checked mechanically or by an agent.
+  tasks via `approvePlan` — had no path through the public task-creation surface at all.
+  `POST /api/tasks` hardcoded `mode: 'execution'` on every insert and never read a `mode`
+  field from the request body; the MCP `create_task` tool's own allow-list had no `mode`
+  entry either. **Closed by Proposal §1**: the `emitsPlan` opt-in now provides the one
+  narrow, explicit path (`apps/web/src/app/api/tasks/route.ts`,
+  `packages/core/mcp-tools.ts`). The raw `mode` field itself remains unexposed, by design
+  (Non-goals).
+- Once a plan existed, nothing connected an approved child task back to the spec document
+  that authorized it, except by title text a human wrote. **Closed by Proposal §3**:
+  `context.specSource` (`apps/web/src/lib/approve-plan.ts`).
+- Once a PR opened from that child task, the review pass (`createReviewerTask`,
+  `apps/web/src/lib/reviewer.ts`) checked diff hygiene and path-manifest conformance
+  only — it had no way to see the spec the task claimed to implement, so "does the PR
+  match what the spec said" was never checked mechanically or by an agent. **Closed by
+  Proposal §4**: `renderSpecConformanceGuidance` (`apps/web/src/lib/reviewer.ts`).
 
 The important finding of this recon is that **almost none of this needs to be invented**.
 A structurally identical pattern — a task that emits an optional plan, gated behind the
@@ -43,6 +80,12 @@ work it authorizes — already ships today for one narrow case: reconciling a st
 "one ledger-linked doc fix" to "any spec task," rather than building a second one.
 
 ## Current state (recon, with citations)
+
+*This section is the recon snapshot from drafting time, kept as the evidence trail for
+the Problem statement above — it is not rewritten wholesale post-ship, per
+`docs/design/DESIGN-FORMAT.md` rule 5. Items 1, 3, 5 and 6 describe mechanisms this
+design didn't change and still read as current. Items 2 and 4 describe the blocker this
+design closed; each carries an inline note pointing at what shipped.*
 
 ### 1. `approvePlan` — what persists, what doesn't
 
@@ -75,7 +118,8 @@ What has changed since #2377 was written: **the flag now has one real writer.**
 doc-fixer's optional net-enhancement proposal is never auto-dispatched. The comment at
 `task-dependencies.ts:101` ("Nothing sets this today, so it cannot change existing
 behaviour") is now stale prose, not stale logic — the logic is unaffected, but the claim
-is false. This design's own writer (Proposal §2) becomes the second.
+is false. This design's own writer (Proposal §2) is now the second, live in
+`apps/web/src/app/api/tasks/route.ts`'s `emitsPlan` gate.
 
 Separately: `docs/design/plan-first-missions.md`'s own proposal — flip
 `requiresPlanApproval` on a mission's first organizer cycle from `POST /api/missions` —
@@ -116,7 +160,13 @@ no changes are needed here.
 
 ### 4. Is `mode: 'planning'` reachable from `create_task`? — the primary blocker
 
-No, on both the MCP surface and the REST route underneath it:
+**Resolved by Proposal §1 (shipped).** At drafting time the answer was no, on both
+surfaces cited below; `emitsPlan` (`packages/core/mcp-tools.ts`'s allow-list,
+`apps/web/src/app/api/tasks/route.ts`'s `mode: emitsPlan ? 'planning' : 'execution'`
+ternary) is now the one narrow, explicit path this section's closing paragraph called
+for. The recon below is preserved as the evidence for why the gap existed:
+
+No, on both the MCP surface and the REST route underneath it — at drafting time:
 
 - MCP `create_task`'s `allowedCreateTaskParams` set (`mcp-tools.ts:2163-2171`) has 33
   entries and no `mode`. Passing `mode` throws `Unknown create_task parameter(s): mode`.
@@ -197,6 +247,11 @@ hard prerequisite, independent of this design. Named here, not filed, per the ta
 out-of-scope instruction.
 
 ## Proposal
+
+*Shipped — §1-4 below are all live in the code cited inline; see the assertions in this
+doc's frontmatter and the Implementation sketch below for the mapping. Left in the
+present/imperative tense in which it was drafted rather than rewritten retrospectively,
+per `docs/design/DESIGN-FORMAT.md` rule 5.*
 
 **Crux:** a spec task requests plan-emission through one new, explicit, narrow opt-in —
 `emitsPlan: true` on `create_task` — rather than through a generally-open `mode`
@@ -351,6 +406,9 @@ unwired, across the workspace's own spec-task briefs.
 
 ## Implementation sketch
 
+*Items 1-4 are shipped, verified against the code cited in each. Item 5 is partial —
+see its own note below.*
+
 1. **Load-bearing:** `emitsPlan` param on `create_task` (MCP allow-list +
    `POST /api/tasks` body/insert) — forces `mode: 'planning'`, forces
    `context.requiresPlanApproval = true` unconditionally, requires non-empty
@@ -365,11 +423,16 @@ unwired, across the workspace's own spec-task briefs.
 4. `mission-invariants.ts`: scope `plan_produced_no_children` to
    `!context.requiresPlanApproval`; add the non-resolving, non-auto-dispatching
    visibility invariant for `requiresPlanApproval === true` plans awaiting approval.
-5. Dashboard: `PlanReviewPanel` (already renders `dependsOn`/`requiredCapabilities`/
-   `priority`) needs no new fields for this — `pathManifest` rendering is already on
-   `plan-first-missions.md`'s own implementation list, and `specSource` is only visible
-   on the *children*, after approval, where the existing task detail page already shows
-   `context` fields. No new UI surface required to ship this.
+5. Dashboard: `specSource` shipped — the task detail page renders it via
+   `SpecSourceBlock` (`apps/web/src/app/app/(protected)/tasks/[id]/page.tsx`) on an
+   approved child task, no new UI surface needed. **`pathManifest` rendering on a
+   pending spec plan did not ship**: `PlanReviewPanel`'s local `PlanStep` type
+   (`apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx`) still has no
+   `pathManifest` field and renders none. The assumption this item leaned on —
+   that `plan-first-missions.md` might land that rendering first — did not hold; recon
+   item 2 above confirms that design's own mission-organizer wiring is still unbuilt.
+   This is a real, small gap; see the proposed follow-up in this reconciliation's task
+   output rather than fixed here (docs-only PR).
 
 ## Open questions
 
@@ -415,11 +478,14 @@ unwired, across the workspace's own spec-task briefs.
 - A `metric`-type or `description`-type `goalCriteria` evaluator, mission-legibility
   rendering, or anything about the mobile timeline — untouched by this design.
 
-## Proposed implementation breakdown (not filed — see task brief)
+## Proposed implementation breakdown (historical — items 1-4 shipped, item 5 partial)
 
-The irony is noted: this document's own brief says "propose a breakdown, do NOT file
-those tasks," which is exactly the gap this document exists to close. Obeying it once
-more, here is the breakdown a human would currently have to re-type by hand:
+The irony is noted: this document's own brief said "propose a breakdown, do NOT file
+those tasks," which was exactly the gap this document existed to close. Obeying it once
+more, here is the breakdown that was filed and built by hand, item by item — retained
+as the record of what was proposed rather than rewritten, per
+`docs/design/DESIGN-FORMAT.md` rule 5. See "Implementation sketch" above for the
+shipped/partial verification notes against each item.
 
 1. **`emitsPlan` on `create_task`** (MCP `mcp-tools.ts` + `POST /api/tasks`). Load-bearing
    — nothing else works without it. Files: `packages/core/mcp-tools.ts`,

@@ -1,3 +1,48 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# The gate machinery (requiresPlanApproval, the plan_awaiting_approval invariant,
+# PlanReviewPanel) exists — but shipped for docs/design/spec-to-build-pattern.md's
+# emitsPlan path, not for this doc's own trigger (flipping the flag on a
+# mission's first organizer cycle from POST /api/missions). That specific write
+# is still absent, so this doc's premise "nothing sets requiresPlanApproval" is
+# now stale prose (two other writers exist) even though its own proposal is
+# unbuilt.
+#
+# The first three assertions below genuinely pass — but per §2's per-assertion
+# classification, a passing assertion under a non-terminal declared status
+# (`proposed`) is `code_ahead` regardless of the other assertions in the doc.
+# Status can't flip to Implemented until mission-auto-start-sets-requires-plan-approval
+# also ships, so these three would be reclassified code_ahead and redispatched
+# forever under a non-terminal status. Suppressed below (skip_until) rather than
+# left to redispatch a reconcile-spec task against an already-accurate doc.
+assertions:
+  - id: "plan-review-panel-component"
+    type: "symbol"
+    name: "PlanReviewPanel"
+    path: "apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx"
+    skip_until: "2026-12-19"
+    skip_reason: "PlanReviewPanel genuinely shipped (for spec-to-build-pattern.md's emitsPlan path) — this isn't a false positive — but the doc must stay 'proposed' until mission-auto-start-sets-requires-plan-approval ships, so this assertion will pass forever under a non-terminal status. mission-auto-start-sets-requires-plan-approval is the assertion that tracks real remaining progress."
+  - id: "plan-awaiting-approval-invariant"
+    type: "config_key"
+    key: "plan_awaiting_approval"
+    file: "apps/web/src/lib/mission-invariants.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "plan_awaiting_approval invariant genuinely shipped (for spec-to-build-pattern.md's emitsPlan path) — this isn't a false positive — but the doc must stay 'proposed' until mission-auto-start-sets-requires-plan-approval ships, so this assertion will pass forever under a non-terminal status. mission-auto-start-sets-requires-plan-approval is the assertion that tracks real remaining progress."
+  - id: "requires-plan-approval-gate-read"
+    type: "symbol_reachable"
+    symbol: "requiresPlanApproval"
+    entry: "apps/web/src/lib/task-dependencies.ts"
+    as: "read"
+    skip_until: "2026-12-19"
+    skip_reason: "The requiresPlanApproval read in task-dependencies.ts genuinely shipped (for spec-to-build-pattern.md's emitsPlan path) — this isn't a false positive — but the doc must stay 'proposed' until mission-auto-start-sets-requires-plan-approval ships, so this assertion will pass forever under a non-terminal status. mission-auto-start-sets-requires-plan-approval is the assertion that tracks real remaining progress."
+  - id: "mission-auto-start-sets-requires-plan-approval"
+    type: "symbol_reachable"
+    symbol: "requiresPlanApproval"
+    entry: "apps/web/src/app/api/missions/route.ts"
+    as: "assign"
+---
+
 # Plan-first for account-authored missions
 
 **Status:** Proposed
@@ -9,7 +54,9 @@
 `apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx`,
 `packages/shared/src/planning.ts`, `packages/core/mission-helpers.ts` (`validateGoalCriteria`),
 `apps/web/src/lib/mission-invariants.ts`, `docs/design/mission-goal-criteria.md`,
-PR #1771 (prior-work injection), task `ac3af231` (creation gate — sibling, not yet built)
+`docs/design/spec-to-build-pattern.md` (Implemented — shipped the `requiresPlanApproval`
+scaffolding this doc reuses, for its own `emitsPlan` trigger, not this doc's mission-first-cycle
+one), PR #1771 (prior-work injection), task `ac3af231` (creation gate — shipped, PR #2407)
 
 ## Problem
 
@@ -17,10 +64,10 @@ An account creates a mission via MCP or the dashboard. Today, when the mission i
 `active` + heartbeat-enabled + `orchestrationMode: 'auto'` (the default for
 MCP-created missions), `POST /api/missions` immediately calls
 `runMission(mission.id, { manualRun: true })`
-(`apps/web/src/app/api/missions/route.ts:421-428`). That creates a `mode: 'planning'`
+(`apps/web/src/app/api/missions/route.ts:440-450`). That creates a `mode: 'planning'`
 task, the organizer decomposes it, and `resolveCompletedTask` auto-approves the
 resulting plan into claimable child tasks the moment the planning task completes
-(`apps/web/src/lib/task-dependencies.ts:151-172`, via `shouldAutoApprovePlan`) — no
+(`apps/web/src/lib/task-dependencies.ts:150-194`, via `shouldAutoApprovePlan`) — no
 human ever sees the breakdown before agents start claiming it.
 
 On the missions an owner actually cares about, this is not trusted: per the
@@ -34,9 +81,18 @@ the tasks are already claimable and possibly already claimed.
 
 `approve_plan` / `reject_plan` already exist end to end (MCP actions in
 `packages/core/mcp-tools.ts`, routes above, `shouldAutoApprovePlan`'s
-`context.requiresPlanApproval` escape hatch in `task-dependencies.ts:106-113`) —
-but nothing in the codebase ever sets `requiresPlanApproval`. The gate is wired
-and dead.
+`context.requiresPlanApproval` escape hatch in `task-dependencies.ts:106-113`),
+and by now that escape hatch is exercised in production: `requiresPlanApproval`
+is set by `emitsPlan` on `POST /api/tasks` (`apps/web/src/app/api/tasks/route.ts:1136`)
+and by the spec-discrepancy doc-fix dispatcher
+(`apps/web/src/app/api/discrepancies/[id]/dispatch-doc-fix/route.ts:211`),
+`PlanReviewPanel.tsx` renders the review UI, and `mission-invariants.ts`'s
+`plan_awaiting_approval` invariant watches for a plan stuck on the gate. All of
+that shipped for `docs/design/spec-to-build-pattern.md`'s `emitsPlan` path,
+not for this doc's own trigger — nothing sets `requiresPlanApproval` from a
+mission's auto-start block. For the case this doc actually cares about, an
+account-authored mission's first organizer cycle, the gate is still wired and
+dead.
 
 ## Proposal
 
@@ -54,14 +110,15 @@ around that one flag.
 The gate applies to the mission's first-ever organizer cycle, and only that
 cycle. Concretely: `runMission` is called from four places across three
 files — the create-time auto-start in `POST /api/missions`
-(`apps/web/src/app/api/missions/route.ts:423`), the manual "Run now" endpoint
+(`apps/web/src/app/api/missions/route.ts:440-450`, the `runMission` call itself
+at line 445), the manual "Run now" endpoint
 (`apps/web/src/app/api/missions/[id]/run/route.ts:65`), and two call sites
-inside `apps/web/src/lib/mission-loop.ts`: `maybeRetriggerMission` (line 301,
+inside `apps/web/src/lib/mission-loop.ts`: `maybeRetriggerMission` (line 302,
 fires after a planning task *completes*) and the failure-retry path inside
-`retriggerMissionOnFailure` (line 478, fires after a planning task *fails*).
+`retriggerMissionOnFailure` (line 479, fires after a planning task *fails*).
 The recurring cron dispatcher itself never calls `runMission`
 (`apps/web/src/app/api/cron/schedules/route.ts` creates heartbeat tasks
-directly, comment at `mission-run.ts:279-283` confirms: "cron path creates
+directly, comment at `mission-run.ts:318-323` confirms: "cron path creates
 tasks directly (not via runMission)") — so heartbeat-created tasks are outside
 this code path entirely, independent of the gate.
 
@@ -98,23 +155,23 @@ Existing missions are unaffected because they already have a stored
 No new task type or artifact kind. The existing `mode: 'planning'` task,
 `result.structuredOutput`, and the `approve_plan`/`reject_plan` flow are reused
 verbatim — that machinery already exists and already works
-(`apps/web/src/lib/approve-plan.ts`). Two additions are needed to the contract
-itself, both in `packages/shared/src/planning.ts`:
+(`apps/web/src/lib/approve-plan.ts`). The two contract additions this section
+called for have already shipped, both in `packages/shared/src/planning.ts`:
 
-- `PlanStep.pathManifest?: string[]` (plus the matching `planningOutputSchema`
-  property) — today a `PlanStep` has `dependsOn`, `baseBranch`, `roleSlug`,
-  `requiredCapabilities`, `outputRequirement`, but no path manifest, so an
-  approved plan's children are created without the conflict-serialization
-  metadata `create_task` normally attaches.
-- `PlanningStructuredOutput.goalCriteria?: GoalCriterion[]` — a mission-level
-  (not per-step) field for the organizer's proposed completion gates. Reuses
-  the `GoalCriterion` union already defined in `packages/shared/src/types.ts`
-  for `manage_missions`. Feeds requirement 6.
+- `PlanStep.pathManifest?: string[]` (`planning.ts:42`, with the matching
+  `planningOutputSchema` property) — an approved plan's children now carry the
+  conflict-serialization metadata `create_task` normally attaches.
+- `PlanningStructuredOutput.goalCriteria?: GoalCriterion[]` (`planning.ts:78`)
+  — a mission-level (not per-step) field for the organizer's proposed
+  completion gates, reusing the `GoalCriterion` union from
+  `packages/shared/src/types.ts`. Feeds requirement 6.
 
-`PlanReviewPanel.tsx` renders `dependsOn`/`requiredCapabilities`/`priority`
-today; it needs the same treatment for `pathManifest` (badges, same style as
-`requiredCapabilities`) and a new "Proposed goal criteria" block above the step
-list.
+What hasn't shipped is the consumer: `PlanReviewPanel.tsx`'s own local
+`PlanStep` type (`PlanReviewPanel.tsx:7-15`) doesn't declare `pathManifest` or
+`goalCriteria` at all, and the panel still only renders `dependsOn`/
+`requiredCapabilities`/`priority`. It still needs the same badge treatment for
+`pathManifest` (same style as `requiredCapabilities`) and a new "Proposed goal
+criteria" block above the step list.
 
 ### 3. Approval UX
 
@@ -166,28 +223,41 @@ worse than an unreviewed-but-organizer-authored one, because the pre-feature
 mission at least produces something for the owner to react to later.
 
 **Mechanism — reuse the existing invariant sweep, don't add a new cron.**
-`apps/web/src/lib/mission-invariants.ts` already has a
-`plan_produced_no_children` invariant (2h threshold,
-`PLAN_PRODUCED_NO_CHILDREN_MS`) that detects "planning task completed, plan has
-steps, zero children" — but its remedy text conflates two different causes:
-"the approval path could not act on it (unreadable shape, **or a human gate
-nobody answered**)." Once this ships, the human-gate case becomes the *common*
-one, not a bug, so it needs to split from the genuine-breakage case:
+`apps/web/src/lib/mission-invariants.ts`'s `plan_produced_no_children`
+invariant (2h threshold, `PLAN_PRODUCED_NO_CHILDREN_MS`) is already split the
+way this section called for: it's scoped to `!t.requiresPlanApproval`
+(`mission-invariants.ts:770`), so a plan sitting on a human gate no longer
+counts as the genuine-breakage case.
 
-- Keep `plan_produced_no_children` (2h) scoped to
-  `!context.requiresPlanApproval` — a plan with no gate that still produced no
-  children is still a real bug (the auto-approve path threw, or the shape was
-  rejected).
-- Add a new invariant/threshold keyed on `context.requiresPlanApproval === true`,
-  running in the same `apps/web/src/app/api/cron/mission-invariants/route.ts`
-  sweep: post an escalating warning note at intermediate checkpoints (e.g. 4h,
-  12h — reuse the `missionNotes` `type: 'question'`/`status: 'open'` shape the
-  rejection/question flow already uses) and, at 24h, call
-  `approvePlan(taskId, plan, { autoApproved: true })`. Stamp the resulting
-  children's context (or a mission note) with the reason — e.g.
-  `context.autoApprovedReason: 'timeout'` — so a timeout auto-dispatch is never
-  silently indistinguishable from a real human approval in the mission feed or
-  in `deriveTaskOrigin` (`apps/web/src/lib/task-origin.ts`).
+A second invariant keyed on `requiresPlanApproval === true` also now exists —
+`plan_awaiting_approval` (`mission-invariants.ts:787-825`) — but it was built
+for `docs/design/spec-to-build-pattern.md`'s `emitsPlan` path, not this doc's
+mission-first-cycle case, and it does the opposite of what this section
+proposes: it is **permanently report-only** (`files: false, resolves: false`),
+by explicit design. Its own code comment says it "deliberately does NOT unify
+with `docs/design/plan-first-missions.md`'s 24h auto-dispatch invariant —
+auto-approving a spec's own breakdown is exactly what 'spec before code'
+forbids."
+
+That means this section's mechanism can no longer just "add a new
+invariant/threshold keyed on `context.requiresPlanApproval === true`" — that
+predicate is already claimed by an invariant with incompatible semantics for a
+different origin. Landing the 24h-auto-dispatch behaviour this doc wants now
+requires first distinguishing *why* `requiresPlanApproval` is set — e.g. a
+`context.planApprovalOrigin: 'mission-first-cycle' | 'spec-authored'` tag
+written alongside the flag — so the two invariants can diverge on the same
+underlying gate instead of one silently overriding the other's intent. That
+disambiguation is new scope this section did not originally carry.
+
+Once that split exists, the rest of this section's design is unchanged and
+still unbuilt: post an escalating warning note at intermediate checkpoints
+(e.g. 4h, 12h — reuse the `missionNotes` `type: 'question'`/`status: 'open'`
+shape the rejection/question flow already uses) and, at 24h, call
+`approvePlan(taskId, plan, { autoApproved: true })`. Stamp the resulting
+children's context (or a mission note) with the reason — e.g.
+`context.autoApprovedReason: 'timeout'` — so a timeout auto-dispatch is never
+silently indistinguishable from a real human approval in the mission feed or
+in `deriveTaskOrigin` (`apps/web/src/lib/task-origin.ts`).
 
 24h is a starting point, not a load-bearing constant — see Open Questions.
 
@@ -207,26 +277,30 @@ chose to write anyway.
 
 ### 6. Interaction with the creation gate (`ac3af231`)
 
-`ac3af231` (sibling, not yet built) makes `manage_missions create`/`update`
+`ac3af231` (sibling; shipped, PR #2407) makes `manage_missions create`/`update`
 and the dashboard mission form reject a mission with zero mechanical goal
-criteria. This design's plan carries a *proposed* `goalCriteria` (see #2) that
+criteria — `validateGoalCriteria` (`packages/core/mission-helpers.ts:129-238`)
+now enforces "at least one mechanical criterion" by default
+(`requireMechanical`, default `true`). This design's plan carries a *proposed*
+`goalCriteria` (see #2) that
 becomes the mission's criteria only at approval time — so the same bar has to
 apply there too, or a plan-gated mission could sail past `ac3af231`'s check by
 attaching its criteria after creation instead of before.
 
 Concretely: `POST /api/tasks/[id]/approve-plan` must, before calling
 `approvePlan()`, validate `structuredOutput.goalCriteria` merged with any
-criteria the mission already has, against whatever mechanical-criterion
-predicate `ac3af231` introduces (it will extend `validateGoalCriteria`,
-`packages/core/mission-helpers.ts:124-202`, which today checks shape but not
-"at least one mechanical type"). On failure, refuse with the same 400 shape
-`ac3af231` defines, naming the four accepted mechanical types. The organizer
-prompt should get the same "suggest `all_prs_merged` + `no_open_tasks` as the
-cheap default" guidance `ac3af231` gives human authors, so a plan doesn't
-bounce on the very first approval attempt.
+criteria the mission already has, by calling `validateGoalCriteria`
+(`packages/core/mission-helpers.ts:129-238`) — this route does not call it
+today. On failure, refuse with the same 400 shape `ac3af231` defines, naming
+the mechanical types in `MECHANICAL_CRITERION_TYPES`. The organizer prompt
+should get the same "suggest `all_prs_merged` + `no_open_tasks` as the cheap
+default" guidance `ac3af231` gives human authors, so a plan doesn't bounce on
+the very first approval attempt.
 
-Sequencing: `ac3af231` should land first (or in the same batch) — this reuses
-its predicate rather than defining a second one.
+Sequencing: `ac3af231` already landed (PR #2407) — `validateGoalCriteria`'s
+mechanical-criterion predicate is available to call directly; wiring it into
+`approve-plan` (step 3 below) is this doc's own remaining gap, not a
+dependency it's still waiting on.
 
 ## Open questions
 
@@ -258,17 +332,21 @@ its predicate rather than defining a second one.
 1. **Load-bearing:** `orchestrationMode` union + `runMission`/`POST /api/missions`
    wiring to set `context.requiresPlanApproval: true` on a mission's first
    planning task only. Everything else is inert without this.
-2. `PlanStep.pathManifest` + `PlanningStructuredOutput.goalCriteria` additions
-   in `packages/shared/src/planning.ts` (and the schema the SDK enforces).
+2. ~~`PlanStep.pathManifest` + `PlanningStructuredOutput.goalCriteria`
+   additions in `packages/shared/src/planning.ts`~~ — shipped.
 3. `approve-plan` route: mechanical-criterion gate against
-   `structuredOutput.goalCriteria` (depends on `ac3af231`'s predicate landing
-   first).
+   `structuredOutput.goalCriteria`, calling `validateGoalCriteria` directly —
+   the predicate it depended on (`ac3af231`) has already landed.
 4. `reject-plan` route: `editedPlan` fast-path.
 5. `PlanReviewPanel.tsx` + mission-detail surfacing: render `pathManifest` and
    proposed criteria, render the planning task's `description` (prior-work
    block), link from the mission page.
-6. `mission-invariants.ts`: split `plan_produced_no_children`, add the
-   timeout-to-auto-dispatch invariant with escalation checkpoints.
+6. `mission-invariants.ts`: ~~split `plan_produced_no_children`~~ — shipped,
+   scoped to `!requiresPlanApproval`. Add the timeout-to-auto-dispatch
+   invariant with escalation checkpoints — this now needs the
+   `context.planApprovalOrigin` disambiguation from §4 first, since
+   `requiresPlanApproval === true` alone is no longer unique to this doc's
+   use case.
 7. Update `docs/design/mission-goal-criteria.md` to cross-reference this
    document; flip this doc's `Status` to `Implemented` once shipped.
 
