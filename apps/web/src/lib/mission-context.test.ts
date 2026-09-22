@@ -441,7 +441,7 @@ describe('buildMissionContext', () => {
     mockFindMany.mockResolvedValueOnce(overrides?.tasksWithPRs ?? []);   // tasks with PRs
   }
 
-  it('returns heartbeat context with checklist and protocol', async () => {
+  it('returns heartbeat context with checklist', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-hb',
       title: 'Daily health check',
@@ -462,8 +462,34 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('Check all services');
     expect(result!.description).toContain('## Checklist');
     expect(result!.description).toContain('Check API latency');
-    expect(result!.description).toContain('## Protocol');
-    expect(result!.description).toContain('drive the mission forward');
+  });
+
+  it('does not render the static Protocol/Direct Action text into the description', async () => {
+    // That text is byte-identical across every heartbeat cycle, cause, and
+    // mission, so it is hoisted into HEARTBEAT_PROTOCOL_BLOCK (@buildd/shared)
+    // and injected by the runner instead — see prompt-builder.test.ts. It must
+    // render on exactly one path: NOT here, or every heartbeat prompt would
+    // carry it twice.
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-noproto',
+      title: 'Daily health check',
+      description: 'Check all services',
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: 'sched-1',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-noproto', { triggerSource: 'cron' });
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('## Protocol');
+    expect(result!.description).not.toContain('## Direct Action');
+    expect(result!.description).not.toContain('drive the mission forward');
+    expect(result!.description).not.toContain('Prior-work gate');
   });
 
   it('includes phase assessment in heartbeat context', async () => {
@@ -510,6 +536,47 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('## Mission State');
     expect(result!.description).toContain('Completed: 1 task(s)');
     expect(result!.description).toContain('ws-1');
+  });
+
+  it('prefers structuredOutput.handoff.delivered over the raw summary in Completed Tasks, labelled', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-handoff',
+      title: 'Build app',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-handoff',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check' } },
+    });
+    mockHeartbeatQueries({
+      completedTasks: [
+        {
+          id: 't1',
+          title: 'Implement client',
+          roleSlug: 'builder',
+          result: {
+            summary: 'raw chatter summary',
+            structuredOutput: { handoff: { delivered: 'Implemented the shared HTTP client.' } },
+          },
+          createdAt: new Date(),
+        },
+        {
+          id: 't2',
+          title: 'Draft docs',
+          roleSlug: 'writer',
+          result: { summary: 'Wrote docs' },
+          createdAt: new Date(),
+        },
+      ],
+    });
+
+    const result = await buildMissionContext('obj-hb-handoff', { triggerSource: 'cron' });
+    expect(result!.description).toContain('[handoff] Implemented the shared HTTP client.');
+    expect(result!.description).not.toContain('raw chatter summary');
+    expect(result!.description).toContain('[summary] Wrote docs');
   });
 
   it('includes outputSchema in heartbeat context', async () => {
@@ -1217,28 +1284,12 @@ describe('buildMissionContext', () => {
   });
 
   // ── Prior-work gate ──
-
-  it('heartbeat context includes prior-work gate rule in Protocol section', async () => {
-    mockFindFirst.mockResolvedValueOnce({
-      id: 'obj-hb-gate',
-      title: 'Daily scan',
-      description: 'Check things',
-      status: 'active',
-      priority: 0,
-      workspaceId: null,
-      scheduleId: null,
-    });
-    mockHeartbeatQueries();
-
-    const result = await buildMissionContext('obj-hb-gate', {
-      heartbeat: true,
-      triggerSource: 'cron',
-    });
-    expect(result).not.toBeNull();
-    expect(result!.description).toContain('Prior-work gate');
-    expect(result!.description).toContain('0.82');
-    expect(result!.description).toContain('14 days');
-  });
+  // The heartbeat's prior-work-gate rule now lives in HEARTBEAT_PROTOCOL_BLOCK
+  // (@buildd/shared), injected by the runner — see
+  // apps/runner/src/prompt-builder.test.ts and the negative assertion above
+  // ('does not render the static Protocol/Direct Action text ...'). The
+  // standard (non-heartbeat) planning path below is a separate rendering and
+  // is unaffected by that move.
 
   it('standard planning context includes prior-work gate in Situational Guidance', async () => {
     mockFindFirst.mockResolvedValueOnce({

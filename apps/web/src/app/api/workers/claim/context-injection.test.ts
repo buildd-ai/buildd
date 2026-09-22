@@ -311,3 +311,30 @@ describe('attachKnowledgeContext — fan-out seed query (spec f14a3d02 items A+B
     expect(seedQuery).toBe('Fix the sandbox\nshort body');
   });
 });
+
+describe('attachKnowledgeContext — handoff dedupe threading', () => {
+  // The filtering itself is exercised against a real fixture store in
+  // apps/web/src/lib/knowledge-context.test.ts; this only pins that the set
+  // handoff already rendered actually reaches the executor, on both the
+  // fan-out and the clustered call paths.
+  it('threads handoffExcludedSources into the fan-out call', async () => {
+    const { workers, tasks } = claim({});
+    const excluded = new Set(['task:dep-1', 'pr:42']);
+    await attachKnowledgeContext(workers, tasks, undefined, excluded);
+
+    const opts = mockFanOut.mock.calls[0]![4] as any;
+    expect(opts.excludedSourceIds).toBe(excluded);
+  });
+
+  it('threads handoffExcludedSources into the clustered call', async () => {
+    const { workers, tasks } = claim({
+      subjectKind: 'error',
+      subjectErrorSignature: 'oom_killed',
+    });
+    const excluded = new Set(['task:dep-1']);
+    await attachKnowledgeContext(workers, tasks, undefined, excluded);
+
+    const arg = mockClustered.mock.calls[0]![0] as any;
+    expect(arg.opts.excludedSourceIds).toBe(excluded);
+  });
+});

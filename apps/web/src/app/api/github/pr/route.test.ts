@@ -122,6 +122,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
   missions: { id: 'id', primaryPrNumber: 'primaryPrNumber', primaryPrUrl: 'primaryPrUrl', updatedAt: 'updatedAt' },
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
+  tasks: { id: 'id', parentTaskId: 'parentTaskId', taskClass: 'taskClass' },
 }));
 
 // Mock pr-review-request — the stored-verdict lookup the agent-review
@@ -153,7 +154,7 @@ mock.module('@/lib/pr-review-status', () => ({
 }));
 
 // Import handler AFTER mocks
-import { POST, PATCH, PUT, GET } from './route';
+import { POST, PATCH, PUT, GET, closeAncestorRetryPrs } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 import { extractLede } from '@buildd/core/pr-lede';
 
@@ -4693,5 +4694,77 @@ describe('POST /api/github/pr — lede', () => {
     expect(data.pr.number).toBe(99);
     // buildd does not own that PR's body on GitHub, so it writes nothing to it.
     expect(mockGithubApi.mock.calls.some((c: any[]) => c[2]?.method === 'PATCH')).toBe(false);
+  });
+});
+
+describe('closeAncestorRetryPrs', () => {
+  // parentTaskId is not exclusively a retry-lineage pointer — resolveCreatorContext
+  // (apps/web/src/lib/task-service.ts) auto-sets it to the calling worker's *current*
+  // task whenever a caller creates a task (e.g. filing a [friction] report) without
+  // an explicit parentTaskId. 'friction-task' below models exactly that: it was
+  // auto-parented to 'mission-task' purely as creation provenance, not as a retry of
+  // it. Only a task stamped taskClass: 'attempt' (the marker ci-retry.ts /
+  // conflict-retry.ts / the reviewer-retry path all use) represents genuine retry
+  // lineage worth climbing past.
+  const TASKS: Record<string, { parentTaskId: string | null; taskClass: string }> = {
+    'friction-task': { parentTaskId: 'mission-task', taskClass: 'work' },
+    'mission-task': { parentTaskId: null, taskClass: 'work' },
+    'retry-b': { parentTaskId: 'root-a', taskClass: 'attempt' },
+    'root-a': { parentTaskId: null, taskClass: 'work' },
+  };
+
+  const WORKERS_BY_TASK: Record<string, Array<{ prNumber: number; prUrl: string }>> = {
+    'friction-task': [{ prNumber: 2557, prUrl: 'https://github.com/org/repo/pull/2557' }],
+    'mission-task': [{ prNumber: 2556, prUrl: 'https://github.com/org/repo/pull/2556' }],
+    'retry-b': [{ prNumber: 20, prUrl: 'https://github.com/org/repo/pull/20' }],
+    'root-a': [{ prNumber: 10, prUrl: 'https://github.com/org/repo/pull/10' }],
+  };
+
+  function closedPrNumbers(): number[] {
+    return mockGithubApi.mock.calls
+      .filter((c: any[]) => c[2]?.method === 'PATCH')
+      .map((c: any[]) => Number(String(c[1]).match(/\/pulls\/(\d+)/)?.[1]));
+  }
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({});
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockImplementation(async (args: any) => {
+      const id = args?.where?.value;
+      return TASKS[id] ? { ...TASKS[id] } : null;
+    });
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockImplementation(async (args: any) => {
+      const ids: string[] = args?.where?.conditions?.[0]?.values ?? [];
+      return ids.flatMap((id) => (WORKERS_BY_TASK[id] ?? []).map((w) => ({ ...w })));
+    });
+  });
+
+  it('does not close a sibling task PR reached only via creation-provenance parentTaskId (regression for PR #2556)', async () => {
+    await closeAncestorRetryPrs({
+      parentTaskId: 'friction-task',
+      successorPrNumber: 2558,
+      installationId: 123,
+      repoFullName: 'org/repo',
+    });
+
+    const closed = closedPrNumbers();
+    // #2557 (the friction task's own PR — the direct ancestor being retried) is closed.
+    expect(closed).toContain(2557);
+    // #2556 belongs to 'mission-task', reached only because the friction task was
+    // auto-parented to it at creation time — must NOT be closed as "superseded".
+    expect(closed).not.toContain(2556);
+  });
+
+  it('still closes every PR in a genuine multi-level retry chain', async () => {
+    await closeAncestorRetryPrs({
+      parentTaskId: 'retry-b',
+      successorPrNumber: 30,
+      installationId: 123,
+      repoFullName: 'org/repo',
+    });
+
+    expect(closedPrNumbers().sort()).toEqual([10, 20]);
   });
 });

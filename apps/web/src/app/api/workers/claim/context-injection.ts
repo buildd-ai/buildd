@@ -148,7 +148,7 @@ function deriveErrorClusterKeys(task: {
  * use this — it runs first and assigns, and it only mirrors into an existing
  * task context rather than creating one.
  */
-function appendContextBlock(cw: ClaimTasksResponse['workers'][number], block: string): void {
+export function appendContextBlock(cw: ClaimTasksResponse['workers'][number], block: string): void {
   (cw as any).resolvedContextProviders = [...((cw as any).resolvedContextProviders ?? []), block];
   const taskObj = cw.task as any;
   if (taskObj) {
@@ -278,6 +278,7 @@ export async function attachKnowledgeContext(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   predictions?: ReadonlyMap<string, TaskAreaPrediction>,
+  handoffExcludedSources?: Set<string>,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);
@@ -314,7 +315,7 @@ export async function attachKnowledgeContext(
         teamId,
         trigger,
         chain,
-        opts: { sensitive },
+        opts: { sensitive, excludedSourceIds: handoffExcludedSources },
       });
       parts = clustered;
       recipeAssembly = assembly;
@@ -330,7 +331,11 @@ export async function attachKnowledgeContext(
       const declared = manifestPaths((task as any).pathManifest);
       const hint = declared.length === 0 ? taskAreaHint(predictions?.get(task.id)) : null;
       const paths = declared.length > 0 ? declared : (hint?.paths ?? []);
-      parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, { sensitive, paths });
+      parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, {
+        sensitive,
+        paths,
+        excludedSourceIds: handoffExcludedSources,
+      });
     }
 
     // One record per claim, always — the recipe's when it served the request,
