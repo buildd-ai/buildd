@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
-import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
+import { consumesRetryAttempt, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -7314,6 +7314,55 @@ describe('PATCH /api/workers/[id]', () => {
       expect(consumesRetryAttempt(overridden.exitCause)).toBe(true);
     });
 
+    // A reviewer session that never produced a turn did not write its verdict
+    // as prose — it never wrote anything. It must not spend the one contract
+    // retry that exists for a prose verdict; it rides the infra budget instead.
+    it('silent start: requeues on the infra budget without consuming reviewContractRetryCount', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'reviewer-task-1',
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: '0',
+        pendingInstructions: null,
+      });
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect((requeue?.context as any)?.reviewContractRetryCount).toBeUndefined();
+      expect((requeue?.context as any)?.infraRetryCount).toBe(1);
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden.exitCause).toBe('silent_start');
+      expect(overridden.error).toBe(SILENT_START_ERROR);
+      expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+    });
+
     it('structuredOutput without a verdict key: also treated as a contract violation', async () => {
       setupReviewerTaskCompletion('approve');
       const taskSetCalls: any[] = [];
@@ -9005,6 +9054,88 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(capturedSet.exitCause).toBe('code_failure');
     });
+
+    // On boot the runner reconciles every session its previous process lost
+    // with {failed, 'Process restarted', crashReconciled:true}. That flag only
+    // fed the terminal-record outcome, so the report fell through to
+    // code_failure and a non-mission task (maxRetries 0) was failed permanently
+    // by a single runner self-update.
+    describe('crash-reconciled restart', () => {
+      function setupCrashReconcile(context: Record<string, unknown>) {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            workerSetCalls.push(updates);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'task-1',
+          pendingInstructions: null,
+        });
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      const crashBody = { status: 'failed', error: 'Process restarted', crashReconciled: true };
+
+      it('requeues a non-mission task on the infra budget and books infra_failure', async () => {
+        const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: crashBody,
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+        expect(requeue).toBeDefined();
+        expect(requeue.context.infraRetryCount).toBe(1);
+        expect(requeue.context.retryCount).toBeUndefined();
+        expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+        const classified = workerSetCalls.find((u: any) => u.exitCause);
+        expect(classified.exitCause).toBe('infra_failure');
+      });
+
+      it('stalls and fails once the infra budget is spent', async () => {
+        const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: crashBody,
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+        const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+        expect(failing).toBeDefined();
+        expect(failing.result.errorType).toBe('infra_stalled');
+      });
+
+      it('still lets a budget error win over the crash reconcile', async () => {
+        const { workerSetCalls } = setupCrashReconcile({});
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { ...crashBody, budgetExhausted: true },
+        }), { params: mockParams });
+
+        const failedWorker = workerSetCalls.find((u: any) => u.exitCause);
+        expect(failedWorker.exitCause).toBe('budget_limited');
+      });
+    });
   });
 
   // ── Cancelled-task protection ────────────────────────────────────────────────
@@ -10567,6 +10698,10 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       taskId: 'task-planning-1',
       pendingInstructions: null,
       milestones: [],
+      // The session ran (it wrote prose) — not a silent start.
+      turns: 6,
+      inputTokens: 5200,
+      outputTokens: 900,
     });
 
     // terminalTaskRow returns a planning task with no loop config
@@ -10631,6 +10766,10 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       taskId: 'task-planning-1',
       pendingInstructions: null,
       milestones: [],
+      // The session ran (it wrote prose) — not a silent start.
+      turns: 6,
+      inputTokens: 5200,
+      outputTokens: 900,
     });
     mockSelect.mockReturnValueOnce({
       from: mock(() => ({
@@ -10689,6 +10828,10 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       taskId: 'task-planning-1',
       pendingInstructions: null,
       milestones: [],
+      // The session ran (it wrote prose) — not a silent start.
+      turns: 6,
+      inputTokens: 5200,
+      outputTokens: 900,
     });
     mockSelect.mockReturnValueOnce({
       from: mock(() => ({
@@ -10756,6 +10899,10 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       taskId: 'task-planning-1',
       pendingInstructions: null,
       milestones: [],
+      // The session ran (it wrote prose) — not a silent start.
+      turns: 6,
+      inputTokens: 5200,
+      outputTokens: 900,
     });
     mockSelect.mockReturnValueOnce({
       from: mock(() => ({
@@ -10777,6 +10924,81 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     expect(failedUpdate).toBeDefined();
     expect(failedUpdate.result.errorType).toBe('planning_contract_violation');
     expect(failedUpdate.result.errorType).not.toBe('budget_limited');
+  });
+
+  // A planning session that never produced a turn (0 turns, 0 tokens, $0) did
+  // not break the planning contract — it never got to write anything. Booking
+  // it code_failure blamed the agent for a runner/SDK stream that died.
+  describe('silent start vs planning contract', () => {
+    function setupPlanning(workerMetrics: Record<string, unknown>) {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          taskSetCalls.push(u);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      mockTasksFindFirst.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-planning-1',
+        pendingInstructions: null,
+        milestones: [],
+        ...workerMetrics,
+      });
+      mockSelect.mockReturnValueOnce({
+        from: mock(() => ({
+          where: mock(() => ({
+            limit: mock(() => [{ outputRequirement: 'auto', missionId: null, scheduleId: null, mode: 'planning' }]),
+          })),
+        })),
+      });
+      return { taskSetCalls, workerSetCalls };
+    }
+
+    it('books a 0-turn / 0-token / $0 planning completion as silent_start', async () => {
+      const { taskSetCalls, workerSetCalls } = setupPlanning({ turns: 0, inputTokens: 0, outputTokens: 0, costUsd: '0' });
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+      expect(failedUpdate.result.errorType).toBe('silent_start');
+      expect(failedUpdate.result.error).toBe(SILENT_START_ERROR);
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden.exitCause).toBe('silent_start');
+      expect(overridden.error).toBe(SILENT_START_ERROR);
+    });
+
+    it('keeps a 1-turn session that spent tokens as a code_failure contract violation', async () => {
+      const { taskSetCalls, workerSetCalls } = setupPlanning({ turns: 0, inputTokens: 0, outputTokens: 0 });
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'A plan, in prose.', turns: 1, inputTokens: 3200, outputTokens: 400, costUsd: 0 },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+      expect(failedUpdate.result.errorType).toBe('planning_contract_violation');
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden.exitCause).toBe('code_failure');
+    });
   });
 
   // Regression: an orchestrator/heartbeat cycle whose task row never got

@@ -7,6 +7,7 @@ import {
   getFailureAnalytics,
   getFailureSignatureFamily,
   findSupersededErrorMatch,
+  getFailureSignatureMatch,
   normalizeErrorSignature,
   parseFailureWindow,
   FAILURE_WINDOWS,
@@ -63,10 +64,13 @@ async function lookupSignature(
 
   // diedEarlySignatures is a subset ranking; a signature can rank there while
   // being pushed out of the main ranking, so both are searched.
+  // Last, every failed row in scope: bookkeeping exits (a `Deferred:`
+  // deferral, never_started, needs_input) are kept out of both rankings so they
+  // do not move the failure rate, but friction dedupe must still find them.
   const cluster =
     analytics.signatures.find(s => s.signature === signature) ??
     analytics.diedEarlySignatures.find(s => s.signature === signature) ??
-    null;
+    (await getFailureSignatureMatch(scopedWsIds, window, signature));
 
   if (cluster) {
     return {

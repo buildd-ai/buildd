@@ -3,7 +3,9 @@ import {
   classifyReportedFailure,
   classifyStaleExit,
   consumesRetryAttempt,
+  isBookkeepingExit,
   isConcurrencyConflictError,
+  isSilentStartShape,
   NEVER_STARTED_ERROR,
   SILENT_START_ERROR,
   STALE_EXPIRED_ERROR,
@@ -247,5 +249,61 @@ describe('server refusals', () => {
     // launder a session that genuinely shipped nothing.
     expect(consumesRetryAttempt('server_refused')).toBe(false);
     expect(consumesRetryAttempt('output_unmet')).toBe(true);
+  });
+});
+
+describe('crash-reconciled restarts', () => {
+  it('books a runner restart as infra_failure, which does not consume a retry', () => {
+    // The runner PATCHes every mid-session worker {failed, 'Process restarted',
+    // crashReconciled:true} on boot — a self-update, not the work failing.
+    const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, crashReconciled: true });
+    expect(cause).toBe('infra_failure');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+
+  it('still lets budget and sandbox diagnoses win over a crash reconcile', () => {
+    expect(classifyReportedFailure({ budgetLimited: true, sandboxMountGap: false, crashReconciled: true })).toBe('budget_limited');
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: true, crashReconciled: true })).toBe('sandbox_mount_gap');
+  });
+});
+
+describe('isBookkeepingExit', () => {
+  it('is true only for exits the taxonomy itself calls bookkeeping', () => {
+    expect(isBookkeepingExit('needs_input')).toBe(true);
+    expect(isBookkeepingExit('never_started')).toBe(true);
+    expect(isBookkeepingExit('condition_unmet')).toBe(true);
+  });
+
+  it('keeps infra_failure and silent_start visible as failures', () => {
+    for (const cause of ['code_failure', 'infra_failure', 'silent_start', 'budget_limited', 'server_refused', 'output_unmet'] as const) {
+      expect(isBookkeepingExit(cause)).toBe(false);
+    }
+    expect(isBookkeepingExit(null)).toBe(false);
+    expect(isBookkeepingExit(undefined)).toBe(false);
+  });
+});
+
+describe('isSilentStartShape', () => {
+  const cases = [
+    { turns: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },
+    { turns: 2, costUsd: '0', inputTokens: null, outputTokens: null },
+    { turns: 3, costUsd: 0, inputTokens: 0, outputTokens: 0 },
+    { turns: 1, costUsd: 0, inputTokens: 120, outputTokens: 0 },
+    { turns: 1, costUsd: 0, inputTokens: 0, outputTokens: 5 },
+    { turns: 1, costUsd: 0.02, inputTokens: 0, outputTokens: 0 },
+    { turns: null, costUsd: null, inputTokens: null, outputTokens: null },
+    { turns: 0, costUsd: 'not-a-number', inputTokens: 0, outputTokens: 0 },
+  ];
+
+  it('matches classifyStaleExit on every started worker shape', () => {
+    for (const c of cases) {
+      const stale = classifyStaleExit({ startedAt: new Date(), ...c });
+      expect(isSilentStartShape(c)).toBe(stale.exitCause === 'silent_start');
+    }
+  });
+
+  it('is true for a zero-output session and false once any work shows up', () => {
+    expect(isSilentStartShape({ turns: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 })).toBe(true);
+    expect(isSilentStartShape({ turns: 1, costUsd: 0, inputTokens: 900, outputTokens: 40 })).toBe(false);
   });
 });
