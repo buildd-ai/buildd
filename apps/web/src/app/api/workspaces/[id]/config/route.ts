@@ -242,6 +242,16 @@ export async function POST(
 
         const body = await req.json();
 
+        if (
+            body.defaultBackend !== undefined && body.defaultBackend !== null &&
+            !['default', 'claude', 'codex'].includes(body.defaultBackend)
+        ) {
+            return NextResponse.json(
+                { error: `Invalid defaultBackend '${body.defaultBackend}'. Valid: claude, codex, default` },
+                { status: 400 },
+            );
+        }
+
         // Handle releaseConfig update if provided (separate from gitConfig)
         if (body.releaseConfig !== undefined) {
             let releaseConfig: WorkspaceReleaseConfig | null = null;
@@ -263,14 +273,19 @@ export async function POST(
             }
         }
 
-        // Read existing gitConfig to preserve fields not managed by this form
-        // (e.g. subjectPolicy, which is managed via PATCH gitConfig.subjectPolicy).
+        // Start from the existing gitConfig and overlay only what this form manages.
+        // Rebuilding from scratch silently dropped every field owned elsewhere
+        // (policyConfig, autoMerge* thresholds, conflictSurfaces, sequenceNamespaces,
+        // maxCiRetries, sandbox.credentials, ...) on every save.
         const existing = await db.query.workspaces.findFirst({
             where: eq(workspaces.id, id),
             columns: { gitConfig: true },
         });
+        const previous: Partial<WorkspaceGitConfig> = existing?.gitConfig ?? {};
 
         const gitConfig: WorkspaceGitConfig = {
+            ...previous,
+
             // Branching (required)
             defaultBranch: body.defaultBranch || 'main',
             branchingStrategy: body.branchingStrategy || 'feature',
@@ -286,17 +301,6 @@ export async function POST(
             targetBranch: body.targetBranch || undefined,
             autoCreatePR: body.autoCreatePR ?? false,
 
-            // Preserve mergePolicy — managed via explicit mergePolicy field below, not legacy flags
-            ...(existing?.gitConfig?.mergePolicy
-                ? { mergePolicy: existing.gitConfig.mergePolicy }
-                : {}),
-
-            // Preserve branchStrategy — managed via explicit branchStrategy field below or
-            // PATCH gitConfig.branchStrategy, not this form.
-            ...(existing?.gitConfig?.branchStrategy
-                ? { branchStrategy: existing.gitConfig.branchStrategy }
-                : {}),
-
             // Agent instructions
             agentInstructions: body.agentInstructions || undefined,
             useClaudeMd: body.useClaudeMd ?? true,
@@ -304,85 +308,73 @@ export async function POST(
             // Permission mode
             bypassPermissions: body.bypassPermissions ?? false,
 
-            // Max budget per worker session (SDK-enforced)
-            ...(typeof body.maxBudgetUsd === 'number' && body.maxBudgetUsd > 0
-                ? { maxBudgetUsd: body.maxBudgetUsd }
-                : {}),
+            // SDK debug logging — form-managed, so omission clears
+            debug: body.debug === true ? true : undefined,
+            debugFile: typeof body.debugFile === 'string' && body.debugFile.trim()
+                ? body.debugFile.trim()
+                : undefined,
 
-            // SDK debug logging
-            ...(body.debug === true ? { debug: true } : {}),
-            ...(typeof body.debugFile === 'string' && body.debugFile.trim()
-                ? { debugFile: body.debugFile.trim() }
-                : {}),
+            // Fallback model (SDK v0.2.45+) — form-managed
+            fallbackModel: typeof body.fallbackModel === 'string' && body.fallbackModel.trim()
+                ? body.fallbackModel.trim()
+                : undefined,
 
-            // Sandbox configuration for worker isolation
-            ...(body.sandbox && typeof body.sandbox === 'object'
-                ? {
-                    sandbox: {
-                        enabled: Boolean(body.sandbox.enabled),
-                        autoAllowBashIfSandboxed: Boolean(body.sandbox.autoAllowBashIfSandboxed),
-                        ...(body.sandbox.network && typeof body.sandbox.network === 'object'
-                            ? {
-                                network: {
-                                    ...(Array.isArray(body.sandbox.network.allowedDomains)
-                                        ? { allowedDomains: body.sandbox.network.allowedDomains.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
-                                        : {}),
-                                    allowLocalBinding: Boolean(body.sandbox.network.allowLocalBinding),
-                                },
-                            }
-                            : {}),
-                        ...(Array.isArray(body.sandbox.excludedCommands)
-                            ? { excludedCommands: body.sandbox.excludedCommands.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
-                            : {}),
-                    },
-                }
-                : {}),
+            // Thinking / effort controls (SDK v0.2.45+) — form-managed
+            thinking: body.thinking && typeof body.thinking === 'object' && body.thinking.type
+                ? body.thinking
+                : undefined,
+            effort: typeof body.effort === 'string' && ['low', 'medium', 'high', 'max'].includes(body.effort)
+                ? body.effort
+                : undefined,
 
-            // Block config file changes during worker sessions (ConfigChange hook)
-            ...(typeof body.blockConfigChanges === 'boolean' ? { blockConfigChanges: body.blockConfigChanges } : {}),
+            // Default runner preference for new tasks — form-managed
+            defaultRunnerPreference: typeof body.defaultRunnerPreference === 'string' && ['any', 'user', 'service', 'action'].includes(body.defaultRunnerPreference)
+                ? body.defaultRunnerPreference
+                : undefined,
 
-            // Background agents (SDK v0.2.49+) — subagents run as background tasks
-            ...(typeof body.useBackgroundAgents === 'boolean'
-                ? { useBackgroundAgents: body.useBackgroundAgents }
-                : {}),
-
-            // Fallback model (SDK v0.2.45+)
-            ...(typeof body.fallbackModel === 'string' && body.fallbackModel.trim()
-                ? { fallbackModel: body.fallbackModel.trim() }
-                : {}),
-
-            // 1M context window beta
-            ...(typeof body.extendedContext === 'boolean'
-                ? { extendedContext: body.extendedContext }
-                : {}),
-
-            // Thinking / effort controls (SDK v0.2.45+)
-            ...(body.thinking && typeof body.thinking === 'object' && body.thinking.type
-                ? { thinking: body.thinking }
-                : {}),
-            ...(typeof body.effort === 'string' && ['low', 'medium', 'high', 'max'].includes(body.effort)
-                ? { effort: body.effort }
-                : {}),
-
-            // Default runner preference for new tasks
-            ...(typeof body.defaultRunnerPreference === 'string' && ['any', 'user', 'service', 'action'].includes(body.defaultRunnerPreference)
-                ? { defaultRunnerPreference: body.defaultRunnerPreference }
-                : {}),
-
-            // Preserve subjectPolicy — managed via PATCH gitConfig.subjectPolicy, not this form.
-            ...(existing?.gitConfig?.subjectPolicy
-                ? { subjectPolicy: existing.gitConfig.subjectPolicy }
-                : {}),
-
-            // enforceGreenCI — surfaced via the workspace CI policy toggle, not this form.
-            // Preserve existing value; explicit body param wins if provided.
-            ...(typeof body.enforceGreenCI === 'boolean'
-                ? { enforceGreenCI: body.enforceGreenCI }
-                : existing?.gitConfig?.enforceGreenCI !== undefined
-                  ? { enforceGreenCI: existing.gitConfig.enforceGreenCI }
-                  : {}),
-
+            // Default agent backend — validated above; absent/'default'/null clears
+            defaultBackend: body.defaultBackend === 'claude' || body.defaultBackend === 'codex'
+                ? body.defaultBackend
+                : undefined,
         };
+
+        // Sandbox: merge over the existing object so fields this form does not edit
+        // (credentials) survive. The form omits `sandbox` when the box is unchecked,
+        // which means "disabled", not "delete the sandbox config".
+        if (body.sandbox && typeof body.sandbox === 'object') {
+            gitConfig.sandbox = {
+                ...previous.sandbox,
+                enabled: Boolean(body.sandbox.enabled),
+                autoAllowBashIfSandboxed: Boolean(body.sandbox.autoAllowBashIfSandboxed),
+                network: body.sandbox.network && typeof body.sandbox.network === 'object'
+                    ? {
+                        ...(Array.isArray(body.sandbox.network.allowedDomains)
+                            ? { allowedDomains: body.sandbox.network.allowedDomains.filter((s: unknown) => typeof s === 'string' && (s as string).trim()) }
+                            : {}),
+                        allowLocalBinding: Boolean(body.sandbox.network.allowLocalBinding),
+                    }
+                    : undefined,
+                excludedCommands: Array.isArray(body.sandbox.excludedCommands)
+                    ? body.sandbox.excludedCommands.filter((s: unknown) => typeof s === 'string' && (s as string).trim())
+                    : undefined,
+            };
+        } else if (previous.sandbox) {
+            gitConfig.sandbox = { ...previous.sandbox, enabled: false };
+        }
+
+        // Fields not sent by GitConfigForm: explicit body value wins, otherwise the
+        // existing value (already spread above) is kept.
+        if (typeof body.maxBudgetUsd === 'number') {
+            gitConfig.maxBudgetUsd = body.maxBudgetUsd > 0 ? body.maxBudgetUsd : undefined;
+        }
+        if (typeof body.blockConfigChanges === 'boolean') gitConfig.blockConfigChanges = body.blockConfigChanges;
+        // Background agents (SDK v0.2.49+) — subagents run as background tasks
+        if (typeof body.useBackgroundAgents === 'boolean') gitConfig.useBackgroundAgents = body.useBackgroundAgents;
+        // 1M context window beta
+        if (typeof body.extendedContext === 'boolean') gitConfig.extendedContext = body.extendedContext;
+        // enforceGreenCI — surfaced via the workspace CI policy toggle
+        if (typeof body.enforceGreenCI === 'boolean') gitConfig.enforceGreenCI = body.enforceGreenCI;
+        if (typeof body.autoMergeOnGreenCI === 'boolean') gitConfig.autoMergeOnGreenCI = body.autoMergeOnGreenCI;
 
         // mergePolicy write-path validation: unknown keys rejected, not silently stripped
         if (body.mergePolicy !== undefined) {
