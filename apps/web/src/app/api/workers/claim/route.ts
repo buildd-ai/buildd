@@ -74,6 +74,18 @@ import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
 
+/**
+ * A review task the reviewer dispatched: `category: 'review'` plus
+ * `context.reviewerFor` naming the reviewed task (the same pair
+ * handleReviewerOutcomeIfNeeded requires). Only these skip the mission
+ * concurrency cap and pacing gate — the category alone is caller-settable.
+ */
+function isDispatchedReview(category: unknown, context: unknown): boolean {
+  if (category !== 'review') return false;
+  const reviewerFor = (context as Record<string, unknown> | null | undefined)?.reviewerFor;
+  return typeof reviewerFor === 'string' && reviewerFor.length > 0;
+}
+
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -1018,8 +1030,8 @@ export async function POST(req: NextRequest) {
   };
   const missionClaimMap = new Map<string, MissionClaimData>();
   /**
-   * missionId → in-flight NON-review tasks. Review tasks (`category: 'review'`)
-   * inherit the reviewed PR's missionId but are not mission work: they are
+   * missionId → in-flight NON-review tasks. Reviewer-dispatched tasks
+   * (`isDispatchedReview`) inherit the reviewed PR's missionId but are not mission work: they are
    * exempt from the mission concurrency cap and pacing gate below, so they must
    * not occupy a slot either — otherwise a running reviewer pushes back the
    * next builder, and the builder queue pushes back the review.
@@ -1074,7 +1086,7 @@ export async function POST(req: NextRequest) {
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
     const missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category })
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
@@ -1083,7 +1095,7 @@ export async function POST(req: NextRequest) {
       ));
     for (const row of missionInFlightRows) {
       if (!row.missionId) continue;
-      if (row.category !== 'review') {
+      if (!isDispatchedReview(row.category, row.context)) {
         missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
       }
       if (row.category !== 'review' && declaresNoScope(row.pathManifest as string[] | null)) {
@@ -1178,8 +1190,9 @@ export async function POST(req: NextRequest) {
     // but skip the mission's concurrency cap and pacing interval, and never
     // consume either (see the post-claim bookkeeping). Gating them made
     // reviews start long after their PR opened, in bursts — widening the
-    // window in which a PR can merge with no verdict.
-    const isReviewTask = (task as any).category === 'review';
+    // window in which a PR can merge with no verdict. Only reviewer-dispatched
+    // rows qualify: any task creator can set `category: 'review'`.
+    const isReviewTask = isDispatchedReview((task as any).category, (task as any).context);
     if (taskMissionId) {
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData) {
@@ -1620,18 +1633,19 @@ export async function POST(req: NextRequest) {
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
     // Review tasks consume neither the concurrency count nor the pacing slot.
+    if (taskMissionId && (task as any).category !== 'review'
+      && declaresNoScope((task as any).pathManifest as string[] | null)) {
+      // Reserve the mission's single scope-undeclared slot for the rest of the
+      // batch, so one poll cannot claim two '**' tasks from the same mission.
+      // Keyed on category alone, like both sides of the advisory guard above.
+      const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
+      set.add(task.id);
+      missionAdvisoryInFlight.set(taskMissionId, set);
+    }
     if (taskMissionId && !isReviewTask) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
       missionActiveCountMap.set(taskMissionId, (missionActiveCountMap.get(taskMissionId) ?? 0) + 1);
-
-      // Reserve the mission's single scope-undeclared slot for the rest of the
-      // batch, so one poll cannot claim two '**' tasks from the same mission.
-      if (declaresNoScope((task as any).pathManifest as string[] | null)) {
-        const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
-        set.add(task.id);
-        missionAdvisoryInFlight.set(taskMissionId, set);
-      }
 
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData?.pacingMode === 'paced') {

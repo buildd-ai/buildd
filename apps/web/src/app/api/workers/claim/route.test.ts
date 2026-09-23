@@ -715,6 +715,13 @@ describe('POST /api/workers/claim', () => {
   });
 
   describe('budget failover to Codex', () => {
+    // Several tests below install team pauses and reset them on their last
+    // line; a failing one would leak its pauses into the next test.
+    beforeEach(() => {
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
     const exhaustedOauthAccount = () => ({
       id: 'account-1',
       maxConcurrentWorkers: 5,
@@ -915,6 +922,28 @@ describe('POST /api/workers/claim', () => {
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
       const data = await res.json();
       expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(data.budgetResetsAt).toBeTruthy();
+      expect(new Date(data.budgetResetsAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    // budget_exhausted_partial: some work was claimed (here, failed over to
+    // Codex) while the account's own wall stands. The runner still schedules its
+    // Claude resume poll from this field, so it must be a future instant even
+    // when the account row carries no recorded reset.
+    it('returns a future budgetResetsAt on budget_exhausted_partial when the account has no recorded reset', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedOauthAccount(), budgetResetsAt: null });
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      mockGetCodexCredential.mockResolvedValue({
+        accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
+      });
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+      expect(data.diagnostics.reason).toBe('budget_exhausted_partial');
       expect(data.budgetResetsAt).toBeTruthy();
       expect(new Date(data.budgetResetsAt).getTime()).toBeGreaterThan(Date.now());
     });
@@ -3794,7 +3823,16 @@ describe('POST /api/workers/claim', () => {
     // neither wait on them nor consume them (V2).
     describe('review tasks are exempt from mission pacing/concurrency', () => {
       function reviewTask(id: string, missionId: string) {
-        return { ...missionTask(id, missionId), category: 'review', pathManifest: [] as string[] };
+        return {
+          ...missionTask(id, missionId),
+          category: 'review',
+          pathManifest: [] as string[],
+          context: { reviewerFor: `orig-${id}` },
+        };
+      }
+      /** `category: 'review'` set by a caller, not dispatched by the reviewer. */
+      function selfLabelledReview(id: string, missionId: string) {
+        return { ...missionTask(id, missionId), category: 'review', pathManifest: [`src/${id}.ts`], context: {} };
       }
       function builderTask(id: string, missionId: string) {
         return { ...missionTask(id, missionId), category: 'feature', pathManifest: [`src/${id}.ts`] };
@@ -3871,11 +3909,51 @@ describe('POST /api/workers/claim', () => {
         mockTasksFindMany.mockResolvedValueOnce([builderTask('task-1', 'mission-A')]);
         mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
         mockDbSelect.mockReturnValue(makeSelectChain([
-          { missionId: 'mission-A', taskId: 'task-8', pathManifest: [], category: 'review' },
+          { missionId: 'mission-A', taskId: 'task-8', pathManifest: [], category: 'review', context: { reviewerFor: 'orig-8' } },
         ]));
 
         const { data } = await claim();
         expect(data.workers.map((w: any) => w.taskId)).toEqual(['task-1']);
+      });
+
+      // The exemption belongs to reviewer-dispatched rows only. POST /api/tasks
+      // accepts `category: 'review'` from any caller, so the category alone
+      // must not unlock the mission's pacing or concurrency cap.
+      it('a review-labelled task without reviewerFor is still paced', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockTasksFindMany.mockResolvedValueOnce([selfLabelledReview('task-1', 'mission-A')]);
+        mockMissionsFindMany.mockResolvedValue([pacedMission()]);
+
+        const { data } = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.mission_paced).toBe(1);
+      });
+
+      it('a review-labelled task without reviewerFor is still held by the concurrency cap', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockTasksFindMany.mockResolvedValueOnce([selfLabelledReview('task-1', 'mission-A')]);
+        mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
+        mockDbSelect.mockReturnValue(makeSelectChain([
+          { missionId: 'mission-A', taskId: 'task-8', pathManifest: ['src/other.ts'], category: 'feature', context: {} },
+        ]));
+
+        const { data } = await claim();
+        expect(data.workers.length).toBe(0);
+      });
+
+      it('an in-flight review-labelled task without reviewerFor occupies a concurrency slot', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+        setupClaimBase();
+        mockTasksFindMany.mockResolvedValueOnce([builderTask('task-1', 'mission-A')]);
+        mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
+        mockDbSelect.mockReturnValue(makeSelectChain([
+          { missionId: 'mission-A', taskId: 'task-8', pathManifest: ['src/other.ts'], category: 'review', context: {} },
+        ]));
+
+        const { data } = await claim();
+        expect(data.workers.length).toBe(0);
       });
 
       it('(e) budget-exhausted mission still defers a review as mission_budget', async () => {
