@@ -146,6 +146,7 @@ export default function ObservationList({
   }
 
   function startEditing(obs: Observation) {
+    setSaveError(null);
     setEditingId(obs.id);
     setEditForm({
       type: obs.type,
