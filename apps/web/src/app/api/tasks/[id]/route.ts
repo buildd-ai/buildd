@@ -18,12 +18,38 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { releaseAndNotify } from '@/lib/path-claim-release';
-import { triggerEvent, channels, events } from '@/lib/pusher';
+import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
 import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
+
+/**
+ * Nudge runners for a task just reset to pending — but only when nothing it
+ * dependsOn is still outstanding. Mirrors checkDependsOnResolved's rule (every
+ * dep completed, looping deps satisfied) minus its open-PR check; the claim
+ * route still enforces the merged-PR gate, so this is only a wake-up.
+ */
+async function dispatchIfDependenciesSatisfied(
+  task: typeof tasks.$inferSelect,
+  workspace: Parameters<typeof dispatchUnblockedTask>[1] | null | undefined,
+): Promise<void> {
+  const deps = (task.dependsOn as string[] | null) ?? [];
+  if (deps.length > 0) {
+    const depRows = await db.query.tasks.findMany({
+      where: inArray(tasks.id, deps),
+      columns: { id: true, status: true, loopState: true },
+    });
+    const byId = new Map(depRows.map((d) => [d.id, d]));
+    const satisfied = deps.every((depId) => {
+      const dep = byId.get(depId);
+      return dep?.status === 'completed' && (dep.loopState == null || dep.loopState === 'satisfied');
+    });
+    if (!satisfied) return;
+  }
+  await dispatchUnblockedTask(task, workspace ?? {});
+}
 
 // GET /api/tasks/[id] - Get a single task.
 // Query params:
@@ -380,46 +406,34 @@ export async function PATCH(
       .where(eq(tasks.id, id))
       .returning();
 
-    // When a task is cancelled, push an abort command to any active worker immediately
-    // so it stops within seconds rather than waiting for its next sync poll.
-    if (status === 'cancelled') {
-      const activeWorker = await db.query.workers.findFirst({
-        where: and(
-          eq(workers.taskId, id),
-          inArray(workers.status, ['running', 'waiting_input']),
-        ),
-        columns: { id: true },
-      });
-      if (activeWorker) {
-        triggerEvent(
-          channels.worker(activeWorker.id),
-          events.WORKER_COMMAND,
-          { action: 'abort', reason: 'task_cancelled', timestamp: Date.now() }
-        ).catch((err) =>
-          console.error('[task-patch] cancel abort push failed:', err)
-        );
-      }
-
-      // Release this task's own held path_claims immediately. The abort push above
-      // is best-effort delivery to a worker that may not still be listening — the
-      // worker's own terminal PATCH is what normally releases claims (see
-      // releaseAndNotify call in workers/[id]/route.ts), but a cancel here does not
-      // guarantee that PATCH ever lands (worker already dead, never processes the
-      // abort, or was never assigned a live worker in the first place). Without this,
-      // a cancelled task's path_claims rows stay held forever and deadlock any
-      // sibling task whose manifest overlaps them. Idempotent — releaseAndNotify is a
-      // no-op when the task has no active claims, so it is safe even when the worker
-      // does go on to release them itself.
-      releaseAndNotify(id, 'abandoned').catch((err) =>
-        console.error('[task-patch] cancel path-claim release failed:', err)
-      );
-
-      // Fire mission dormancy check so missions with all deliverables in terminal
-      // state auto-complete without waiting for the next heartbeat.
-      if (updated?.missionId) {
-        resolveCompletedTask(id, updated.workspaceId).catch((err) =>
-          console.error('[task-patch] cancel dormancy check failed:', err)
-        );
+    // Status-change side effects. A PATCH that doesn't touch status (title,
+    // priority, …) runs none of this.
+    if (status !== undefined && updated) {
+      const ref = { id, workspaceId: updated.workspaceId, missionId: updated.missionId ?? null };
+      if (status === 'cancelled') {
+        // Abort the active worker, release path claims, resolve (parent/mission
+        // dormancy) and emit TASK_UPDATED — shared with the GitHub issue-close
+        // webhook and bulk cancel so every cancel path behaves the same.
+        await applyTaskCancelSideEffects(ref);
+      } else {
+        await emitTaskUpdated({ ...ref, status });
+        if (status === 'completed' || status === 'failed') {
+          // Manual complete/fail must unblock or cascade dependents exactly like a
+          // worker completion does. Exception: a human failing a *planning* task
+          // skips resolveCompletedTask, because its failed-planning branch treats
+          // the failure as infrastructure and auto-retriggers the mission — which
+          // would undo the deliberate stop. Retrigger such a mission manually.
+          const skipPlanningRetrigger = status === 'failed' && task.mode === 'planning';
+          if (!skipPlanningRetrigger) {
+            await resolveCompletedTask(id, updated.workspaceId).catch((err) =>
+              console.error('[task-patch] resolveCompletedTask failed:', err)
+            );
+          }
+        } else if (status === 'pending') {
+          await dispatchIfDependenciesSatisfied(updated, task.workspace).catch((err) =>
+            console.error('[task-patch] pending dispatch failed:', err)
+          );
+        }
       }
     }
 

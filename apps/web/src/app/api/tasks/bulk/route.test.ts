@@ -1,15 +1,21 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // --- Mocks ---
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
-const mockTasksFindMany = mock(() => [] as any[]);
+const mockTasksFindMany = mock((_opts?: any) => [] as any[]);
 const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
-    where: mock(() => Promise.resolve()),
+    where: mock(() => ({ returning: mock(() => Promise.resolve([])) })),
   })),
+}));
+const mockApplyTaskCancelSideEffects = mock(() => Promise.resolve());
+
+mock.module('@/lib/task-cancel', () => ({
+  applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
 }));
 const mockTasksDelete = mock(() => ({
   where: mock(() => Promise.resolve()),
@@ -39,24 +45,15 @@ mock.module('@buildd/core/db', () => ({
     query: {
       tasks: { findMany: mockTasksFindMany },
     },
-    update: () => mockTasksUpdate(),
+    update: (_table: unknown) => mockTasksUpdate(),
     delete: () => mockTasksDelete(),
   },
 }));
 
-mock.module('drizzle-orm', () => ({
-  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
-  and: (...args: any[]) => ({ args, type: 'and' }),
-  lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
-  not: (arg: any) => ({ arg, type: 'not' }),
-  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
-}));
-
-mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', status: 'status', workspaceId: 'workspaceId', missionId: 'missionId', createdAt: 'createdAt', result: 'result' },
-}));
-
 import { POST } from './route';
+
+const dialect = new PgDialect();
+const norm = (sqlText: string) => sqlText.replace(/\s+/g, ' ').trim();
 
 function createMockRequest(body: any, headers: Record<string, string> = {}): NextRequest {
   return new NextRequest('http://localhost:3000/api/tasks/bulk', {
@@ -76,10 +73,13 @@ describe('POST /api/tasks/bulk', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockGetAccountWorkspacePermissions.mockReset();
 
+    mockApplyTaskCancelSideEffects.mockReset();
+    mockApplyTaskCancelSideEffects.mockResolvedValue(undefined);
+
     // Default mock chains
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({
-        where: mock(() => Promise.resolve()),
+        where: mock(() => ({ returning: mock(() => Promise.resolve([])) })),
       })),
     });
     mockTasksDelete.mockReturnValue({
@@ -147,19 +147,90 @@ describe('POST /api/tasks/bulk', () => {
     expect(data.dryRun).toBe(true);
   });
 
-  it('cancels matching tasks by setting status to failed', async () => {
+  function captureUpdate(returned: any[]) {
+    const captured: { set?: any; where?: any } = {};
+    mockTasksUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        captured.set = data;
+        return {
+          where: mock((cond: any) => {
+            captured.where = cond;
+            return { returning: mock(() => Promise.resolve(returned)) };
+          }),
+        };
+      }),
+    });
+    return captured;
+  }
+
+  it('cancels matching tasks as cancelled (not failed), merging into result, and runs side effects per row', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockTasksFindMany.mockResolvedValue([
       { id: 'task-1', status: 'pending' },
+      { id: 'task-2', status: 'pending' },
     ]);
+    // task-2 went terminal between the read and the write — only task-1 changed.
+    const captured = captureUpdate([{ id: 'task-1', workspaceId: 'ws-1', missionId: 'm-1' }]);
 
-    const req = createMockRequest({ action: 'cancel', status: 'pending' });
-    const res = await POST(req);
+    const res = await POST(createMockRequest({ action: 'cancel', status: 'pending' }));
 
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.affected).toBe(1);
+    expect(data.taskIds).toEqual(['task-1']);
+    expect(data.dryRun).toBe(false);
+
+    expect(captured.set.status).toBe('cancelled');
+    // result is merged into, never replaced — a prUrl/summary already there survives.
+    const resultSql = dialect.sqlToQuery(captured.set.result);
+    expect(norm(resultSql.sql)).toContain('coalesce("tasks"."result", \'{}\'::jsonb) ||');
+    expect(JSON.parse(resultSql.params[0] as string)).toMatchObject({ cancelReason: 'Bulk cancelled by admin' });
+
+    // The write re-guards against terminal rows.
+    const where = dialect.sqlToQuery(captured.where);
+    expect(norm(where.sql)).toContain('"tasks"."status" not in');
+    expect(where.params).toEqual(expect.arrayContaining(['completed', 'failed', 'cancelled']));
+
+    expect(mockApplyTaskCancelSideEffects).toHaveBeenCalledTimes(1);
+    expect(mockApplyTaskCancelSideEffects).toHaveBeenCalledWith({ id: 'task-1', workspaceId: 'ws-1', missionId: 'm-1' });
+  });
+
+  it('bulk cancel with no status filter excludes terminal statuses in the SELECT predicate', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    await POST(createMockRequest({ action: 'cancel', dryRun: true }));
+
+    const opts = (mockTasksFindMany.mock.calls[0] as any[])[0];
+    const where = dialect.sqlToQuery(opts.where);
+    expect(norm(where.sql)).toContain('"tasks"."status" not in');
+    expect(where.params).toEqual(expect.arrayContaining(['completed', 'failed', 'cancelled']));
+  });
+
+  it.each(['completed', 'failed', 'cancelled'])(
+    'bulk cancel with terminal status filter %s is a 400',
+    async (status) => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+
+      const res = await POST(createMockRequest({ action: 'cancel', status }));
+
+      expect(res.status).toBe(400);
+      expect(mockTasksFindMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('echoes the caller\'s dryRun:false when nothing matches', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const res = await POST(createMockRequest({ action: 'cancel', status: 'pending', dryRun: false }));
+
+    const data = await res.json();
+    expect(data.affected).toBe(0);
     expect(data.dryRun).toBe(false);
   });
 
