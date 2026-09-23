@@ -85,6 +85,8 @@ mock.module('fs', () => ({
 mock.module('../../src/worker-store', () => ({
   saveWorker: mock(() => {}),
   loadAllWorkers: mock(() => [] as LocalWorker[]),
+  loadTerminalWorkersCached: () => [],
+  __resetDiskWorkersCache: () => {},
   loadWorker: mock(() => null),
   deleteWorker: mock(() => {}),
 }));

@@ -73,6 +73,21 @@ variable: Actions echoes variable values into the step's env group and logs here
 are world-readable. With the secret absent the check fails rather than passing on
 an empty pattern.
 
+**Cite your own task/worker/mission by its short id, not the full UUID**, when
+referencing it in a PR body or commit message (e.g. "task `8237cfa9`"), matching
+the branch name — see `packages/core/branch-names.ts`. A full UUID is a row
+identifier in a production table and trips the gate's UUID rule regardless of
+whose task it is, including your own. Measured over this gate's history, a
+full-UUID self-citation in prose is the single largest source of trips — far
+ahead of a genuine leak — and it's pure habit: nothing in `create_pr`, the MCP
+tool descriptions, or the workflow skills ever asks for the full form. See
+`docs/reports/no-prod-data-gate-trip-analysis.md`.
+
+Before pushing, run `bun run no-prod-data:check` (or let `.githooks/pre-commit`
+catch it on your next commit) to reproduce this gate locally. It cannot check
+the handle/private-repo half — that needs the secret above, which a workstation
+never has — and says so rather than reporting a false green.
+
 ## Git Workflow
 
 - **Default branch**: `dev`

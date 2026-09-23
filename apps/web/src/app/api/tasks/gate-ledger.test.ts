@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
 
 interface Recorded {
   gate: string;
@@ -38,6 +39,7 @@ mock.module('@buildd/core/gate-events', () => ({
     MANIFEST_REQUIRED: 'manifest_required',
     KIND_ABSENT: 'kind_absent',
   },
+  gateFrictionSignature,
   recordGateEvent: async (input: Recorded) => {
     if (ledgerShouldReject) throw new Error('gate_events is unreachable');
     recorded.push(input);
@@ -206,6 +208,52 @@ describe('POST /api/tasks — gate ledger wiring', () => {
     // Resolved in the background rather than left null — an unattributable row
     // is invisible to every scoped aggregation.
     expect(events[0].workspaceId).toBe(WS);
+  });
+
+  // ── frictionSignature on the 400 body ───────────────────────────────────────
+  // A gate refusal never becomes a worker failure, so get_failure_analytics has
+  // nothing to hand back — the 400 body itself is the only place an agent can
+  // get a stable dedupe key for the friction report it's about to file.
+
+  it('carries a frictionSignature on the manifest-required 400, matching (gate, reason)', async () => {
+    const res = await POST(post({
+      workspaceId: WS,
+      title: 'Do a thing',
+      description: 'x',
+      missionId: MISSION,
+      outputRequirement: 'pr_required',
+    }));
+    await settle();
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    const events = eventsFor('manifest_required');
+    expect(body.frictionSignature).toBe(gateFrictionSignature('manifest_required', events[0].reason));
+    expect(body.frictionSignature).toMatch(/^gate:manifest_required_[a-z0-9_]*[0-9a-f]{6}$/);
+  });
+
+  it('the same refusal from two different callers produces the identical frictionSignature', async () => {
+    const req = () => post({
+      workspaceId: WS,
+      title: 'Do a thing',
+      description: 'x',
+      missionId: MISSION,
+      outputRequirement: 'pr_required',
+    });
+
+    const first = await (await POST(req())).json();
+    const second = await (await POST(req())).json();
+
+    expect(first.frictionSignature).toBe(second.frictionSignature);
+  });
+
+  it('carries a frictionSignature on the out-of-vocabulary 400', async () => {
+    const res = await POST(post({ workspaceId: 'buildd', title: 'x', kind: 'nonsense' }));
+    await settle();
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.frictionSignature).toMatch(/^gate:task_param_vocabulary_[a-z0-9_]*[0-9a-f]{6}$/);
   });
 
   it('records the prose-gate lint as WARNED, not rejected, on a task that was created', async () => {

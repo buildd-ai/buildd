@@ -87,6 +87,8 @@ mock.module('../../src/workspace', () => ({
 mock.module('../../src/worker-store', () => ({
   saveWorker: () => {},
   loadAllWorkers: () => [],
+  loadTerminalWorkersCached: () => [],
+  __resetDiskWorkersCache: () => {},
   loadWorker: () => null,
   deleteWorker: () => {},
 }));

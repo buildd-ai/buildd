@@ -1058,6 +1058,88 @@ describe('POST /api/github/pr', () => {
     });
   });
 
+  // A worker's stored prUrl/prNumber must never outrank a prUrl the caller
+  // explicitly supplies in THIS request — regression for a friction report
+  // where a worker with a stale/wrong PR already recorded kept getting that
+  // same stale PR back from every subsequent create_pr call, even when the
+  // caller passed a different, freshly-created prUrl to correct it.
+  describe('adoption (prUrl) — caller-supplied prUrl overrides a stale stored one', () => {
+    it('returns the stored PR unchanged when the caller re-asserts the same prUrl (idempotent retry)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        prNumber: 42,
+        workspace: WORKSPACE_OK,
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'feature-branch',
+          prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.deduplicated).toBe(true);
+      expect(data.pr.number).toBe(42);
+      expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
+      // Same PR re-asserted — no GitHub call needed.
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('registers the new PR when the caller supplies a different prUrl than what is stored', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        taskId: 't-1',
+        // Stale PR from an earlier, unrelated call — this is what a caller
+        // must be able to correct via an explicit prUrl.
+        prUrl: 'https://github.com/other-org/infrastructure/pull/4',
+        prNumber: 4,
+        workspace: WORKSPACE_OK,
+      });
+
+      // Multiple db.update calls happen in this flow (the PR record itself,
+      // plus the best-effort task-kind stamp), so every `set()` payload is
+      // captured rather than just the last one.
+      const capturedSetDatas: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((data: any) => {
+          capturedSetDatas.push(data);
+          return { where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'feature-branch',
+          prUrl: 'https://github.com/owner/repo/pull/2600',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      // The caller's explicit correction wins — not the stale stored PR, and
+      // not silently marked as a dedup.
+      expect(data.deduplicated).toBeUndefined();
+      expect(data.pr.number).toBe(2600);
+      expect(data.pr.url).toBe('https://github.com/owner/repo/pull/2600');
+      const prUpdate = capturedSetDatas.find((d) => d.prUrl);
+      expect(prUpdate?.prUrl).toBe('https://github.com/owner/repo/pull/2600');
+      expect(prUpdate?.prNumber).toBe(2600);
+    });
+  });
+
   // ── Option A′: the dedup-by-head door ───────────────────────────────────
   //
   // `create_pr` adopts a PR that already exists for the worker's branch and

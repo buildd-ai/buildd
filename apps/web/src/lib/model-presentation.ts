@@ -106,29 +106,37 @@ function readContext(context: unknown): {
   resolvedTier: string | null;
   source: string | null;
   routingReason: string | null;
+  routingInferredReason: string | null;
 } {
   if (!context || typeof context !== 'object' || Array.isArray(context)) {
-    return { contextModel: null, resolvedTier: null, source: null, routingReason: null };
+    return { contextModel: null, resolvedTier: null, source: null, routingReason: null, routingInferredReason: null };
   }
   const c = context as Record<string, unknown>;
   const contextModel = typeof c.model === 'string' && c.model.trim() ? c.model.trim() : null;
   const routingReason =
     typeof c.routingReason === 'string' && c.routingReason.trim() ? c.routingReason.trim() : null;
+  // Only meaningful when `routingInferred === true` — see task-routing-preview.ts.
+  // A stray reason string with no accompanying flag is never trusted on its own.
+  const routingInferredReason = c.routingInferred === true
+    && typeof c.routingInferredReason === 'string' && c.routingInferredReason.trim()
+    ? c.routingInferredReason.trim()
+    : null;
   const rt = c.resolvedTier;
   if (!rt || typeof rt !== 'object' || Array.isArray(rt)) {
-    return { contextModel, resolvedTier: null, source: null, routingReason };
+    return { contextModel, resolvedTier: null, source: null, routingReason, routingInferredReason };
   }
   const r = rt as Record<string, unknown>;
   return {
     contextModel,
     routingReason,
+    routingInferredReason,
     resolvedTier: typeof r.tier === 'string' && r.tier.trim() ? r.tier.trim().toLowerCase() : null,
     source: typeof r.source === 'string' && r.source.trim() ? r.source.trim() : null,
   };
 }
 
 export function deriveTaskModel(inputs: TaskModelInputs): TaskModelSummary {
-  const { contextModel, resolvedTier, source, routingReason } = readContext(inputs.context);
+  const { contextModel, resolvedTier, source, routingReason, routingInferredReason } = readContext(inputs.context);
   const rawModel = (inputs.predictedModel ?? '').trim() || contextModel;
   // `inherit` is a real value in `context.model` and it names no model — showing
   // it as a pinned id would invent a decision nobody made.
@@ -163,7 +171,12 @@ export function deriveTaskModel(inputs: TaskModelInputs): TaskModelSummary {
     source: pinned ? null : source,
     pinned,
     downshifted,
-    reasonLabel: REASON_LABELS[routingReason ?? ''] ?? null,
+    reasonLabel: REASON_LABELS[routingReason ?? ''] ?? (
+      // A `classifier`-filled kind/complexity is the one other case worth a
+      // word: the filer gave nothing, the heuristic supplied a reason, and
+      // "why did this get Opus" is exactly the question this answers.
+      !pinned && routingInferredReason ? `auto-classified — ${routingInferredReason}` : null
+    ),
     actualModelId: primary,
     actualModelCount: all.length,
     divergedTo: verdict.verdict === 'diverged' ? getModelDisplayName(primary) : null,

@@ -34,6 +34,14 @@ how the identifier half -- the only half that reads added code -- ran on every P
 against an empty pattern for its entire life without anyone noticing. A guard
 that cannot see anything must not report success.
 
+Set NO_PROD_DATA_LOCAL=1 to opt into the one exception: a local run (see
+scripts/check-no-prod-data-local.sh) never has the secret, so failing closed
+there would make every run red regardless of content and train people to
+ignore it. That mode downgrades the missing-secret case to a warning instead
+-- it still runs the count/UUID rules, which need no secret -- and says
+plainly that the identifier half was skipped. CI never sets this variable, so
+its fail-closed behavior is unchanged.
+
 Escape hatch: a line STARTING with `no-prod-data: allow <reason>` in the PR body
 suppresses the count/UUID rules for that PR, and is reported. Documenting this
 check necessarily instantiates the patterns it forbids.
@@ -171,24 +179,45 @@ class Report:
 # is what lets the UUID scan skip test paths without skipping the rest of a diff.
 DIFF_FILE_RE = re.compile(r"^\+\+\+ b/(.*)$")
 TEST_PATH_RE = re.compile(r"(^|/)__tests__/|\.test\.[jt]sx?$|(^|/)tests/")
+# `@@ -oldstart,oldcount +newstart,newcount @@` -- newstart is where the new
+# file's line numbering resumes for this hunk.
+HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def added_source_lines(diff: str) -> list[tuple[str, str]]:
-    """`(path, line)` for every added line that is NOT in a test file.
+def diff_added_lines(diff: str, *, exclude_tests: bool = False) -> list[tuple[str, int, str]]:
+    """`(path, line_no, line)` for every added line.
 
-    Walks the raw diff so the owning path is known per line; the caller's
-    pre-filtered `+`-only list has already thrown that away.
+    `line_no` is the line's real position in the resulting file, tracked from
+    each hunk's `+newstart` header and advanced on every context or added
+    line (removed lines only exist on the old side and don't advance it).
+    Previously this was an enumeration index over the filtered `+`-only
+    lines, which is only correct when a diff is a single hunk starting at
+    line 1 -- any other shape reported a line number that pointed nowhere
+    near the actual match, which is exactly the class of diff a real PR
+    produces (one added line deep in an existing file, or several hunks).
     """
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, int, str]] = []
     path = "?"
+    new_line = 0
     for line in diff.splitlines():
         header = DIFF_FILE_RE.match(line)
         if header:
             path = header.group(1)
             continue
-        if line.startswith("+") and not line.startswith("+++"):
-            if not TEST_PATH_RE.search(path):
-                out.append((path, line))
+        hunk = HUNK_HEADER_RE.match(line)
+        if hunk:
+            new_line = int(hunk.group(1))
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            if not (exclude_tests and TEST_PATH_RE.search(path)):
+                out.append((path, new_line, line))
+            new_line += 1
+        elif line.startswith("-") or line.startswith("\\"):
+            continue  # old-side-only line, or "\ No newline at end of file"
+        else:
+            new_line += 1  # unchanged context line, still present in the new file
     return out
 
 
@@ -257,7 +286,6 @@ def main() -> int:
         ["git", "diff", f"{base}...HEAD", "--", ".",
          ":(exclude)packages/core/drizzle/meta", *excludes],
         capture_output=True, text=True).stdout
-    added = [l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
 
     # Added SOURCE lines: UUIDs. Needs no secret, so unlike the identifier half
     # below it cannot silently no-op.
@@ -277,9 +305,9 @@ def main() -> int:
     # pasted into a test file still passes. Narrow and stated beats broad and
     # switched off for noise.
     if check_counts:
-        for i, (path, line) in enumerate(added_source_lines(diff), 1):
+        for path, lineno, line in diff_added_lines(diff, exclude_tests=True):
             if UUID_RE.search(line):
-                rep.hit(f"added source line ({path})", "UUID", i, line,
+                rep.hit(f"added source line ({path})", "UUID", lineno, line,
                         "pass it in at run time (env var or argument); "
                         "row identifiers must not enter a public repo")
 
@@ -287,9 +315,18 @@ def main() -> int:
     ident = os.environ.get("NO_PROD_DATA_IDENTIFIERS", "").strip()
     if ident:
         rx = re.compile(ident, re.I)
-        for i, line in enumerate(added, 1):
+        for path, lineno, line in diff_added_lines(diff, exclude_tests=False):
             if rx.search(line):
-                rep.hit_identifier("added code", i, line)
+                rep.hit_identifier(f"added code ({path})", lineno, line)
+    elif os.environ.get("NO_PROD_DATA_LOCAL"):
+        # A developer/agent machine never has the secret -- that's the whole
+        # point of it being a secret. Failing closed here would make every
+        # local run red regardless of content, which trains people to ignore
+        # it. Say plainly what was skipped instead of faking a verdict.
+        print("::warning::NO_PROD_DATA_IDENTIFIERS not set locally -- the handle/"
+              "private-repo scan (added code AND prose) was skipped. CI still "
+              "enforces it with the real secret. This run cannot promise that "
+              "verdict for this half.")
     else:
         # Not a warning. With no pattern there is nothing to match, so the
         # identifier half of this check silently passes every PR -- including one

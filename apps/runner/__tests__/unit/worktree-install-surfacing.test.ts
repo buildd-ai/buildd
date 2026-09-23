@@ -43,7 +43,7 @@ mock.module('../../src/git-operations', () => ({
   collectGitStats: async () => ({}),
 }));
 mock.module('../../src/worker-store', () => ({
-  saveWorker: () => {}, loadAllWorkers: () => [], loadWorker: () => null, deleteWorker: () => {},
+  saveWorker: () => {}, loadAllWorkers: () => [], loadTerminalWorkersCached: () => [], __resetDiskWorkersCache: () => {}, loadWorker: () => null, deleteWorker: () => {},
 }));
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({}), checkMcpPreFlight: () => ({ warnings: [] }),

@@ -137,6 +137,8 @@ const mockStoreDeleteWorker = mock(() => {});
 mock.module('../../src/worker-store', () => ({
   saveWorker: mockStoreSaveWorker,
   loadAllWorkers: () => [],
+  loadTerminalWorkersCached: () => [],
+  __resetDiskWorkersCache: () => {},
   loadWorker: () => null,
   deleteWorker: mockStoreDeleteWorker,
 }));

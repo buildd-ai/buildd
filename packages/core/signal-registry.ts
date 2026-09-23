@@ -224,13 +224,13 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
     name: 'Disk-space alert',
     watches: 'Free space on the volume that actually fills on a worker host',
     threshold:
-      'Fixed remaining-space percentage (see disk-cleanup.sh in the infrastructure repo). Currently measures ' +
-      'the host root filesystem instead of the volume workers actually fill, so it can report healthy while ' +
-      'the real volume is full.',
+      'Fixed remaining-space percentage (see disk-cleanup.sh in the infrastructure repo). Fixed to resolve ' +
+      'the volume Docker actually stores data on at runtime (via `docker info`), instead of the host root ' +
+      'filesystem, so it can no longer report healthy while the real volume is full.',
     location: 'disk-cleanup.sh (infrastructure repo, not this codebase)',
     noLocalFireTest: {
       reason: 'implementation lives in the infrastructure repo, not this codebase',
-      trackedBy: 'paired buildd task filed against the infrastructure repo',
+      trackedBy: 'buildd-ai/infrastructure repo: scripts/disk-cleanup.sh (docker_root_dir) + scripts/disk-cleanup.test.sh (fire-test, wired into that repo\'s CI)',
     },
   },
 ];

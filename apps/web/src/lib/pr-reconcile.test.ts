@@ -293,7 +293,10 @@ describe('reconcileStalePrWorkers', () => {
   it('returns zeros when no stale workers found', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
     const result = await reconcileStalePrWorkers();
-    expect(result).toEqual({ total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0, unresolvable: 0, subjectsReconciled: 0 });
+    expect(result).toEqual({
+      total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0, unresolvable: 0,
+      subjectsReconciled: 0, conflictsDetected: 0,
+    });
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
@@ -378,6 +381,75 @@ describe('reconcileStalePrWorkers', () => {
     // AC-2/AC-4: a confirmed-still-open answer is a real GitHub answer, so the
     // verification clock advances too — this row is NOT the failure case.
     expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
+  });
+
+  // ── Conflict detection ──────────────────────────────────────────────────────
+  //
+  // The webhook only stamps conflictDetectedAt when the delivered payload's
+  // `pull_request.mergeable` is explicitly `false` — GitHub computes that field
+  // asynchronously and it is very often still null on `opened`/`synchronize`
+  // deliveries. This sweep already fetches every open worker PR directly (a
+  // reliable `mergeable_state`), on a tiered SLA as tight as 30 minutes for a
+  // fresh PR — so it is the backstop that does not depend on the webhook race,
+  // and unlike dead-zone-sweep it covers PRs whose originating task is still
+  // active, not just the terminal/dead-zone subset.
+
+  it('stamps conflictDetectedAt and prLifecycleStatus=conflict when GitHub reports mergeable_state dirty', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 7, workspaceId: 'ws1', taskId: 't1', conflictDetectedAt: null },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, mergeable_state: 'dirty' });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.conflictsDetected).toBe(1);
+    expect(result.skipped).toBe(1);
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLifecycleStatus).toBe('conflict');
+    expect(written.conflictDetectedAt).toBeInstanceOf(Date);
+    // A real GitHub answer — the verification clock advances too.
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
+  });
+
+  it('never overwrites an existing conflictDetectedAt on a repeat dirty observation', async () => {
+    const firstObserved = new Date('2026-01-01T00:00:00Z');
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 7, workspaceId: 'ws1', taskId: 't1', conflictDetectedAt: firstObserved },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, mergeable_state: 'dirty' });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.conflictsDetected).toBe(0);
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.conflictDetectedAt).toBeUndefined();
+    expect(written.prLifecycleStatus).toBeUndefined();
+  });
+
+  it('does not stamp a conflict for a clean or not-yet-computed mergeable_state', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 7, workspaceId: 'ws1', taskId: 't1', conflictDetectedAt: null },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, mergeable_state: null });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.conflictsDetected).toBe(0);
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.conflictDetectedAt).toBeUndefined();
+    expect(written.prLifecycleStatus).toBeUndefined();
   });
 
   it('skips workspace with no GitHub installation, counting it as a failure not a clean check', async () => {

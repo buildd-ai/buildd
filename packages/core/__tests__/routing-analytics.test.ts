@@ -91,6 +91,24 @@ describe('recordTaskOutcome', () => {
     expect(payload.outcome).toBe('completed');
   });
 
+  it('copies exitCause and workerId onto the row, NULL when absent', async () => {
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't1', kind: 'engineering', complexity: 'normal', classified_by: 'user', predicted_model: 'sonnet' },
+    ] });
+    const values = mock(() => Promise.resolve());
+    mockOutcomesInsert.mockReturnValue({ values });
+
+    await recordTaskOutcome({ taskId: 't1', outcome: 'failed', exitCause: 'infra_failure', workerId: 'w-1' });
+    const payload = (values.mock.calls[0] as any)[0];
+    expect(payload.exitCause).toBe('infra_failure');
+    expect(payload.workerId).toBe('w-1');
+
+    await recordTaskOutcome({ taskId: 't1', outcome: 'completed' });
+    const bare = (values.mock.calls[1] as any)[0];
+    expect(bare.exitCause).toBeNull();
+    expect(bare.workerId).toBeNull();
+  });
+
   it('does not flag a baseline-tier prediction as downshifted', async () => {
     mockExecuteResult.mockResolvedValue({ rows: [
       { id: 't2', kind: 'engineering', complexity: 'normal', classified_by: 'user', predicted_model: 'sonnet' },

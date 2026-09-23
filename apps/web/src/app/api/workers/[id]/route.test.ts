@@ -3060,6 +3060,40 @@ describe('PATCH /api/workers/[id]', () => {
       expect(body.hint).toBe('create_pr');
     });
 
+    // A gate refusal never becomes a worker failure — get_failure_analytics has
+    // nothing to hand back for it — so this frictionSignature is the ONLY
+    // stable dedupe key an agent filing a `[friction]` report for this refusal
+    // can get. Two workers hitting the identical refusal must get the identical
+    // key back, or the friction dedupe in POST /api/tasks can never collapse them.
+    it('carries a frictionSignature on the pr_required refusal, stable across repeats', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+
+      const makeRequest = () => createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+
+      const first = await (await PATCH(makeRequest(), { params: mockParams })).json();
+      const second = await (await PATCH(makeRequest(), { params: mockParams })).json();
+
+      expect(first.frictionSignature).toMatch(/^gate:output_requirement_[a-z0-9_]*[0-9a-f]{6}$/);
+      expect(first.frictionSignature).toBe(second.frictionSignature);
+    });
+
     it('echoes the gate slug in the auto-mode refusal body', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
@@ -6127,6 +6161,20 @@ describe('PATCH /api/workers/[id]', () => {
         },
       }), { params: mockParams });
       expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-opus-4-8');
+    });
+
+    // Experiment readouts separate model-attributable failures from infra ones
+    // by exit_cause; without the worker's cause on the outcome row that split
+    // needs a second join per row that the readout cannot rely on.
+    it('passes the worker exitCause and id to recordTaskOutcome', async () => {
+      setupTerminal({ exitCause: 'infra_failure' });
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+      const arg = mockRecordTaskOutcome.mock.calls[0][0];
+      expect(arg.workerId).toBe('worker-1');
+      expect(arg.exitCause).toBe('infra_failure');
     });
 
     it('stays null when an older runner reports no model at all', async () => {

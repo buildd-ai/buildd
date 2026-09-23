@@ -241,7 +241,9 @@ export function buildGateReasonFamily(events: GateEventRow[], prefix: string): G
     firstSeen: firstSeen !== null ? new Date(firstSeen).toISOString() : null,
     lastSeen: lastSeen !== null ? new Date(lastSeen).toISOString() : null,
     exampleTaskId,
-    frictionSignature: toFrictionSignature(prefix),
+    // 'gate', not the default 'worker-failure' — a gate reason family is
+    // never a worker failure, and the family key should read as what it is.
+    frictionSignature: toFrictionSignature(prefix, 'gate'),
     topReasons: [...byReason.entries()]
       .map(([reason, reasonCount]) => ({ reason, count: reasonCount }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))

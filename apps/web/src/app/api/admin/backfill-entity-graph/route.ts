@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
   type Corpus = import('@buildd/core/knowledge-store').Corpus;
 
   async function countTable(table: string): Promise<number> {
-    const r = await db.execute(sql.raw(`SELECT count(*) AS c FROM ${table}`));
+    const r = await db.execute(sql`SELECT count(*) AS c FROM ${sql.identifier(table)}`);
     return parseInt((r.rows[0] as { c: string }).c, 10);
   }
 

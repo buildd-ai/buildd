@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
     // `result.reconcile` for forensics and is logged here because it is the one
     // number that says how often the webhook is actually being missed.
     console.log(
-      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped} errors=${reconcile.errors} unresolvable=${reconcile.unresolvable} subjectsReconciled=${reconcile.subjectsReconciled}`,
+      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped} errors=${reconcile.errors} unresolvable=${reconcile.unresolvable} subjectsReconciled=${reconcile.subjectsReconciled} conflictsDetected=${reconcile.conflictsDetected}`,
     );
     if (deadZone) {
       console.log(
@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
     report({
       processed: reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total),
       changed:
-        reconcile.stamped + reconcile.closed + reconcile.unresolvable
+        reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
         + ('error' in missionPrs ? 0 : missionPrs.opened)
         + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared),

@@ -43,6 +43,7 @@ import {
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
+import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -449,7 +450,7 @@ export async function POST(req: NextRequest) {
     // would change which error a doubly-invalid request gets back).
     if (rawKind !== undefined && !TASK_KINDS.includes(rawKind)) {
       const error = `kind must be one of: ${TASK_KINDS.join(', ')}`;
-      fireGateEventForWorkspaceRef(rawWorkspaceId, {
+      const frictionSignature = fireGateEventForWorkspaceRef(rawWorkspaceId, {
         gate: GATE_SLUGS.TASK_PARAM_VOCABULARY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -457,11 +458,11 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { param: 'kind', value: String(rawKind).slice(0, 80) },
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
     if (rawComplexity !== undefined && !TASK_COMPLEXITIES.includes(rawComplexity)) {
       const error = `complexity must be one of: ${TASK_COMPLEXITIES.join(', ')}`;
-      fireGateEventForWorkspaceRef(rawWorkspaceId, {
+      const frictionSignature = fireGateEventForWorkspaceRef(rawWorkspaceId, {
         gate: GATE_SLUGS.TASK_PARAM_VOCABULARY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -469,7 +470,7 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { param: 'complexity', value: String(rawComplexity).slice(0, 80) },
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
 
     // Prose-gate lint: advisory only. If description declares a dependency gate in prose
@@ -557,7 +558,7 @@ export async function POST(req: NextRequest) {
     if (emitsPlan && (!pathManifest || pathManifest.length === 0)) {
       const error =
         "a spec task (emitsPlan: true) must declare pathManifest naming the spec document it authors";
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.EMITS_PLAN_MANIFEST_REQUIRED,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -566,7 +567,7 @@ export async function POST(req: NextRequest) {
         missionId,
         callerOrigin: gateCaller,
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
 
     // Dedup gate for friction tasks.
@@ -996,7 +997,7 @@ export async function POST(req: NextRequest) {
       const error =
         'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
         "If this task won't produce a PR, set outputRequirement: 'none' instead.";
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.MANIFEST_REQUIRED,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -1011,7 +1012,7 @@ export async function POST(req: NextRequest) {
           manifest: pathManifest ? 'wildcard' : 'absent',
         },
       });
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
 
     // Advisory kind gate: a mission task with no `kind` is unlabelled on every
@@ -1088,6 +1089,43 @@ export async function POST(req: NextRequest) {
     }
     const resolvedStartAt = laterStartAt(deferredStart.startAt, missionStartAt);
 
+    // Routing preview + heuristic fill-in — see docs on task-routing-preview.ts.
+    // Explicit kind/complexity/tier/model always win; the heuristic only fills
+    // a blank, and only when a rule actually fires (an unclassified task stays
+    // unclassified rather than being stamped with the router's own baseline).
+    const pathManifestIsConcrete = hasConcretePathManifest(pathManifest);
+    const routingInference = inferRouting({
+      kind: rawKind ?? null,
+      complexity: rawComplexity ?? null,
+      title,
+      description,
+      pathManifest,
+      pathManifestIsConcrete,
+      emitsPlan,
+    });
+    const routingWasInferred = routingInference.kindInferred || routingInference.complexityInferred;
+    const finalKind = rawKind !== undefined
+      ? (rawKind as TaskKind)
+      : routingInference.kindInferred ? routingInference.kind : undefined;
+    const finalComplexity = rawComplexity !== undefined
+      ? (rawComplexity as TaskComplexity)
+      : routingInference.complexityInferred ? routingInference.complexity : undefined;
+    const routingInferredReason = routingWasInferred
+      ? [routingInference.kindReason, routingInference.complexityReason].filter(Boolean).join('; ')
+      : null;
+    const explicitPreviewModel = typeof incomingContext?.model === 'string' ? incomingContext.model : null;
+    const routingPreview = computeRoutingPreview({
+      kind: rawKind ?? null,
+      complexity: rawComplexity ?? null,
+      tier: TIERS.includes(rawTier as Tier) ? (rawTier as Tier) : null,
+      model: explicitPreviewModel,
+      title,
+      description,
+      pathManifest,
+      pathManifestIsConcrete,
+      emitsPlan,
+    });
+
     const createTaskRow = async (subjectOverrides: {
       id: string;
       subjectDedupeScope: 'active' | 'none';
@@ -1134,6 +1172,10 @@ export async function POST(req: NextRequest) {
           // Last so it wins over any caller-supplied context.requiresPlanApproval —
           // a spec task's plan is always gated; nobody authorizes their own breakdown.
           ...(emitsPlan ? { requiresPlanApproval: true } : {}),
+          // Marks a kind/complexity that the heuristic filled in, not the caller —
+          // see task-routing-preview.ts. Lets analytics and the model cell tell
+          // "the filer said this" apart from "we guessed this".
+          ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -1145,11 +1187,13 @@ export async function POST(req: NextRequest) {
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? { pathManifest } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),
-        ...(rawKind !== undefined ? { kind: rawKind as TaskKind } : {}),
-        ...(rawComplexity !== undefined ? { complexity: rawComplexity as TaskComplexity } : {}),
+        ...(finalKind !== undefined ? { kind: finalKind } : {}),
+        ...(finalComplexity !== undefined ? { complexity: finalComplexity } : {}),
         // Caller-supplied routing inputs are attributed to the user so routing
-        // analytics can tell them apart from cadence/organizer-derived values.
-        ...(rawKind !== undefined || rawComplexity !== undefined ? { classifiedBy: 'user' as const } : {}),
+        // analytics can tell them apart from cadence/heuristic-derived values.
+        ...(rawKind !== undefined || rawComplexity !== undefined
+          ? { classifiedBy: 'user' as const }
+          : routingWasInferred ? { classifiedBy: 'classifier' as const } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
@@ -1171,6 +1215,7 @@ export async function POST(req: NextRequest) {
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
             ...(emitsPlan ? { requiresPlanApproval: true } : {}),
+            ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
             startResolution: deferredStart.resolution,
           },
         } : {}),
@@ -1341,6 +1386,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ...task,
       subjectIntakeOutcome: intake.outcome,
+      // Echoes what the claim-time router would do RIGHT NOW (budget pressure
+      // and spike detection ignored — neither is known yet at creation time,
+      // and both only ever downshift). See task-routing-preview.ts.
+      routing: {
+        tier: routingPreview.tier,
+        model: routingPreview.model,
+        reason: routingPreview.reason,
+      },
       ...(proseGateWarning ? {
         proseGateWarning: {
           message: `Description mentions a gate ("${proseGateWarning.phrase}") near ${proseGateWarning.taskIds.length > 0 ? `task IDs: ${proseGateWarning.taskIds.join(', ')}` : 'potential dependencies'}; no dependsOn edges set. If this is a real dependency, add dependsOn.`,
@@ -1354,7 +1407,7 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
       const message = 'fileAnywayReason must be nonblank';
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.FILE_ANYWAY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -1363,11 +1416,11 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { origin: subjectOriginForError ?? null },
       });
-      return NextResponse.json({ error: message }, { status: 400 });
+      return NextResponse.json({ error: message, frictionSignature }, { status: 400 });
     }
     if (error instanceof Error && error.message === 'file_anyway_not_allowed') {
       const message = `fileAnywayReason is not allowed for origin "${subjectOriginForError}" filings (only dashboard, api, mcp, and friction filings may bypass).`;
-      fireGateEvent({
+      const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.FILE_ANYWAY,
         surface: 'POST /api/tasks',
         outcome: 'rejected',
@@ -1376,7 +1429,7 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCaller,
         detail: { origin: subjectOriginForError ?? null },
       });
-      return NextResponse.json({ error: message }, { status: 400 });
+      return NextResponse.json({ error: message, frictionSignature }, { status: 400 });
     }
     if (error instanceof Error && error.message === 'active_planning_task_conflict') {
       const message = 'This mission already has an active planning task in progress — wait for it to complete, or approve/reject it, before creating another.';

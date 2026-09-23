@@ -268,6 +268,13 @@ describe('GET /api/models', () => {
   // a cheaper model with no signal anywhere.
 
   it('flags a tier sitting behind a newer model in the same family', async () => {
+    // Superseded only fires for an explicit operator pin (source: 'team' /
+    // 'workspace') — a 'default'-sourced tier is the self-healing path and
+    // must not be flagged. See the dedicated test below for that gate.
+    mockResolveAllTiers.mockReturnValue(Promise.resolve({
+      ...DEFAULT_TIERS,
+      standard: { provider: 'anthropic', model: 'claude-sonnet-4-6', source: 'team' },
+    } as any));
     mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
     mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
       { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
@@ -284,6 +291,26 @@ describe('GET /api/models', () => {
       { tier: 'standard', model: 'claude-sonnet-4-6', newer: 'claude-sonnet-5' },
     ]);
     expect(data.tierAudit.unknown).toEqual([]);
+  });
+
+  it('does not flag a default/catalog-sourced tier as superseded — that path self-heals', async () => {
+    // DEFAULT_TIERS' standard is source: 'default'. A newer sonnet existing in
+    // the live list must not produce a warning here: nobody pinned this tier,
+    // so there is nothing to warn an operator about — the resolver already
+    // picks the newest in-band release on its own.
+    mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
+    mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
+      { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
+      { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
+      { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
+      { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
+      { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' },
+    ])));
+
+    const data = await (await GET(req())).json();
+
+    expect(data.tierAudit.checked).toBe(true);
+    expect(data.tierAudit.superseded).toEqual([]);
   });
 
   it('flags a tier pinned to a model the API no longer returns', async () => {
@@ -327,6 +354,11 @@ describe('GET /api/models', () => {
 
   it('audits the tiers off the public catalog when there is NO credential', async () => {
     // This is the regression that mattered: no credential used to mean no audit.
+    // Explicit pin, same reason as the credentialed-catalog test above.
+    mockResolveAllTiers.mockReturnValue(Promise.resolve({
+      ...DEFAULT_TIERS,
+      standard: { provider: 'anthropic', model: 'claude-sonnet-4-6', source: 'team' },
+    } as any));
     mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([
       publicEntry('claude-sonnet-5'),
       publicEntry('claude-sonnet-4-6'),
