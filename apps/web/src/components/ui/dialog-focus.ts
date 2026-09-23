@@ -82,3 +82,28 @@ export function captureFocus(doc: { activeElement: unknown }): () => void {
     if (opener && typeof opener.focus === 'function') opener.focus();
   };
 }
+
+interface BackdropEventLike {
+  target: unknown;
+  currentTarget: unknown;
+}
+
+/**
+ * Backdrop-click dismissal that ignores drags: a press that starts inside the
+ * panel (e.g. selecting text) and is released over the backdrop still fires a
+ * click on the backdrop, so closing on `click` alone throws away the dialog.
+ * Close only when both the mousedown and the click landed on the backdrop.
+ */
+export function createBackdropDismiss() {
+  let pressedOnBackdrop = false;
+  return {
+    onMouseDown(e: BackdropEventLike): void {
+      pressedOnBackdrop = e.target === e.currentTarget;
+    },
+    shouldClose(e: BackdropEventLike): boolean {
+      const close = pressedOnBackdrop && e.target === e.currentTarget;
+      pressedOnBackdrop = false;
+      return close;
+    },
+  };
+}

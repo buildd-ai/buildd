@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
-import { FOCUSABLE_SELECTOR, captureFocus, handleDialogKeyDown } from './dialog-focus';
+import { FOCUSABLE_SELECTOR, captureFocus, createBackdropDismiss, handleDialogKeyDown } from './dialog-focus';
 
 type DialogName =
   /** id of the visible heading that names the dialog */
@@ -29,7 +29,7 @@ const DEFAULT_PANEL =
 /**
  * Shared modal primitive: role="dialog" + aria-modal, a name, Escape to close,
  * a Tab/Shift+Tab focus trap, focus restored to the opener on close, and a
- * backdrop click that closes. Build overlays on this instead of a hand-rolled
+ * backdrop click that closes (only when the press also started on the backdrop). Build overlays on this instead of a hand-rolled
  * `fixed inset-0` div.
  */
 export default function Dialog({
@@ -44,6 +44,7 @@ export default function Dialog({
   children,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const backdrop = useRef(createBackdropDismiss()).current;
   // Callers pass inline closures; keep the effect keyed on `open` only so a
   // re-render does not re-run focus capture/restore.
   const latest = useRef({ onClose, dismissible, initialFocusRef });
@@ -83,8 +84,9 @@ export default function Dialog({
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+      onMouseDown={backdrop.onMouseDown}
       onClick={(e) => {
-        if (e.target === e.currentTarget && dismissible) onClose();
+        if (backdrop.shouldClose(e) && dismissible) onClose();
       }}
     >
       <div

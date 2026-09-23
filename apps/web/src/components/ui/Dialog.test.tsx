@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import Dialog from './Dialog';
-import { captureFocus, handleDialogKeyDown } from './dialog-focus';
+import { captureFocus, createBackdropDismiss, handleDialogKeyDown } from './dialog-focus';
 
 function el(name: string) {
   return { name, focus: mock(() => {}) };
@@ -122,5 +122,41 @@ describe('captureFocus', () => {
   it('is a no-op when nothing focusable was active', () => {
     const restore = captureFocus({ activeElement: null });
     expect(() => restore()).not.toThrow();
+  });
+});
+
+describe('createBackdropDismiss', () => {
+  const backdrop = { name: 'backdrop' };
+  const inPanel = { name: 'panel-text' };
+  const on = (target: unknown) => ({ target, currentTarget: backdrop });
+
+  it('closes when the press starts and ends on the backdrop', () => {
+    const d = createBackdropDismiss();
+    d.onMouseDown(on(backdrop));
+    expect(d.shouldClose(on(backdrop))).toBe(true);
+  });
+
+  it('does not close when a drag starts in the panel and ends on the backdrop (text selection)', () => {
+    const d = createBackdropDismiss();
+    d.onMouseDown(on(inPanel));
+    expect(d.shouldClose(on(backdrop))).toBe(false);
+  });
+
+  it('does not close when the press starts on the backdrop and ends in the panel', () => {
+    const d = createBackdropDismiss();
+    d.onMouseDown(on(backdrop));
+    expect(d.shouldClose(on(inPanel))).toBe(false);
+  });
+
+  it('does not close on a click with no preceding mousedown', () => {
+    const d = createBackdropDismiss();
+    expect(d.shouldClose(on(backdrop))).toBe(false);
+  });
+
+  it('forgets the mousedown after one click', () => {
+    const d = createBackdropDismiss();
+    d.onMouseDown(on(backdrop));
+    d.shouldClose(on(backdrop));
+    expect(d.shouldClose(on(backdrop))).toBe(false);
   });
 });
