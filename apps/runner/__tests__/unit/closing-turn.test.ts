@@ -1,0 +1,382 @@
+/**
+ * Closing turn: a session that ends without calling `complete_task` gets one
+ * resumed turn to author it before the runner falls back to
+ * `summarySource: 'fallback'`.
+ *
+ * Drives the backend at the `createBackend` seam (mocking
+ * `../../src/backends/index.js`) rather than the raw Claude SDK, so the same
+ * script shape works for both the Claude and Codex resume-id paths without
+ * spawning a real CLI. Each `createBackend` call consumes one entry off
+ * `scriptQueue` — the original invocation gets the first entry, a closing
+ * turn (a second, resumed `createBackend` call) gets the next.
+ *
+ * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/closing-turn.test.ts
+ */
+
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import type { LocalUIConfig } from '../../src/types';
+
+// ─── Mocks ─────────────────────────────────────────────────────────────────
+
+type Script = any[];
+let scriptQueue: Script[] = [];
+let createBackendCalls: Array<{ backend: string; config: any }> = [];
+let runStreamedCalls: any[] = [];
+
+mock.module('pusher-js', () => ({
+  default: class {
+    connection = { bind: () => {} };
+    subscribe() { return { bind: () => {}, unbind_all: () => {}, unbind: () => {} }; }
+    unsubscribe() {}
+    disconnect() {}
+  },
+}));
+
+mock.module('../../src/backends/index.js', () => ({
+  createBackend: (backend: string, config: any) => {
+    createBackendCalls.push({ backend, config });
+    const script = scriptQueue.shift() ?? [];
+    return {
+      async *runStreamed(opts: any) {
+        runStreamedCalls.push(opts);
+        for (const msg of script) {
+          await opts.onProgress?.(msg);
+          if (msg.type === 'assistant') {
+            const text = msg.message?.content?.find((b: any) => b.type === 'text')?.text;
+            if (text) yield { type: 'progress', message: text };
+          } else if (msg.type === 'result') {
+            if (msg.is_error) {
+              yield { type: 'error', error: msg.result || 'Claude Agent SDK returned an error result' };
+              return;
+            }
+            yield { type: 'turn_complete' };
+          }
+        }
+        yield { type: 'complete', summary: '' };
+      },
+    };
+  },
+  inferSandboxMode: () => 'workspace-write',
+  ClaudeBackend: class {},
+}));
+
+mock.module('../../src/session-logger', () => ({
+  sessionLog: () => {},
+  readSessionLogs: () => [],
+  claimLog: () => {},
+  cleanupOldLogs: () => {},
+}));
+
+/** Every (workerId, payload) pair the runner PATCHed. */
+const updateCalls: Array<{ id: string; payload: any }> = [];
+const mockUpdateWorker = mock(async (id: string, payload: any) => {
+  updateCalls.push({ id, payload });
+  return {};
+});
+const mockClaimTask = mock(async () => ({ workers: [] as any[] }));
+
+/**
+ * Simulates the server's authoritative view of the worker. `null`/`working`
+ * until told otherwise — flip to `{status:'completed'}` mid-test to simulate
+ * the agent's own complete_task call winning the race (the 'authored' case),
+ * since that call happens over a wholly separate HTTP path this mock never
+ * sees directly.
+ */
+let remoteStatus: string | null = null;
+const mockGetWorkerRemote = mock(async () => (remoteStatus ? { status: remoteStatus } : null));
+
+mock.module('../../src/buildd', () => ({
+  BuilddClient: class {
+    updateWorker = mockUpdateWorker;
+    requestSessionUploadUrl = async () => null;
+    claimTask = mockClaimTask;
+    getWorkspaceConfig = async () => ({ configStatus: 'unconfigured' });
+    getCompactObservations = async () => ({ markdown: '', count: 0 });
+    searchObservations = async () => [];
+    getBatchObservations = async () => [];
+    createObservation = async () => ({});
+    listWorkspaces = async () => [];
+    sendHeartbeat = async () => ({});
+    runCleanup = async () => ({});
+    searchFeedbackMemories = async () => [];
+    getWorkerRemote = mockGetWorkerRemote;
+    writeBackCodexAuth = async () => ({});
+  },
+}));
+
+mock.module('../../src/workspace', () => ({
+  createWorkspaceResolver: () => ({
+    resolve: () => '/tmp/test-workspace',
+    debugResolve: () => ({}),
+    listLocalDirectories: () => [],
+    getPathOverrides: () => ({}),
+    setPathOverride: () => {},
+    scanGitRepos: () => [],
+    getProjectRoots: () => ['/tmp'],
+  }),
+}));
+
+mock.module('fs', () => ({
+  existsSync: () => false,
+  readFileSync: () => '{}',
+  writeFileSync: () => {},
+  mkdirSync: () => {},
+  unlinkSync: () => {},
+  renameSync: () => {},
+  readdirSync: () => [],
+  appendFileSync: () => {},
+  statSync: () => ({ size: 0, mtimeMs: 0 }),
+  copyFileSync: () => {},
+  rmSync: () => {},
+}));
+
+mock.module('../../src/worker-store', () => ({
+  saveWorker: () => {},
+  loadAllWorkers: () => [],
+  loadWorker: () => null,
+  deleteWorker: () => {},
+}));
+
+mock.module('../../src/skills.js', () => ({ syncSkillToLocal: async () => {} }));
+
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [] }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  parseMcpJson: () => [],
+  scanMcpServersRich: () => [],
+  checkBwrapSupport: () => true,
+  checkBwrapMountIsolationSupport: () => true,
+}));
+
+const { WorkerManager } = await import('../../src/workers');
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function makeConfig(): LocalUIConfig {
+  return {
+    projectsRoot: '/tmp',
+    builddServer: 'http://localhost:3000',
+    apiKey: 'test-key',
+    maxConcurrent: 2,
+    model: 'claude-sonnet-4-5-20250929',
+    serverless: true,
+  } as LocalUIConfig;
+}
+
+function makeTask(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'task-1',
+    title: 'Test task',
+    description: 'Do something',
+    workspaceId: 'ws-1',
+    workspace: { name: 'test-workspace' },
+    status: 'waiting',
+    priority: 1,
+    ...overrides,
+  };
+}
+
+async function runSession(
+  manager: InstanceType<typeof WorkerManager>,
+  workerId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  const task = makeTask(overrides);
+  mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
+  await manager.claimAndStart(task);
+  await new Promise(r => setTimeout(r, 300));
+}
+
+function assistantText(text: string) {
+  return { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+}
+
+function initMsg(sessionId = 'sess-1') {
+  return { type: 'system', subtype: 'init', session_id: sessionId, model: 'claude-sonnet-4-6' };
+}
+
+function successResult(sessionId = 'sess-1') {
+  return { type: 'result', subtype: 'success', session_id: sessionId, num_turns: 2, total_cost_usd: 0.1 };
+}
+
+function completionCall() {
+  return updateCalls.find(c => c.payload?.status === 'completed');
+}
+
+function failedCall() {
+  return updateCalls.find(c => c.payload?.status === 'failed');
+}
+
+function resetAll() {
+  updateCalls.length = 0;
+  scriptQueue = [];
+  createBackendCalls = [];
+  runStreamedCalls = [];
+  remoteStatus = null;
+  mockUpdateWorker.mockClear();
+  // mockClear() only clears call history — a test-local .mockImplementation()
+  // override (the 'authored' and 'complete_task already called' tests both
+  // set one) otherwise leaks into every later test.
+  mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+    updateCalls.push({ id, payload });
+    return {};
+  });
+  mockClaimTask.mockReset();
+  mockClaimTask.mockImplementation(async () => ({ workers: [] }));
+  mockGetWorkerRemote.mockClear();
+  mockGetWorkerRemote.mockImplementation(async () => (remoteStatus ? { status: remoteStatus } : null));
+}
+
+describe('closing turn', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('natural end without complete_task resumes the same session id for a closing turn', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-natural-end');
+
+    expect(createBackendCalls.length).toBe(2);
+    // The closing turn resumes the SAME session id the original captured —
+    // no second resume path, no fresh session.
+    expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
+
+    // Exactly one closing turn: no third invocation.
+    expect(createBackendCalls.length).toBe(2);
+  });
+
+  test('closing turn declined falls back with a bounded tail and outcome declined', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Work finished; nothing more to say.'), successResult('sess-1')],
+      [assistantText('Still not calling complete_task.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-declined');
+
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    // The tail includes the closing turn's own text too (newest last).
+    expect(call!.payload.summary).toContain('Still not calling complete_task.');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined');
+  });
+
+  test('agent-authored completion during the closing turn is recorded as authored, not fallback', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+
+    // The first terminal check (before attempting a closing turn) must see
+    // "not yet terminal" or no closing turn would be attempted at all; the
+    // second (the closing turn's own post-loop) simulates its complete_task
+    // call having already landed server-side.
+    let terminalChecks = 0;
+    mockGetWorkerRemote.mockImplementation(async () => {
+      terminalChecks++;
+      return terminalChecks > 1 ? { status: 'completed' } : null;
+    });
+    // Once the server considers the worker terminal (the simulated
+    // complete_task call), any runner-side completion PATCH must be
+    // refused — exactly the real first-writer-wins gate (abort: true),
+    // which is what makes persistTerminalMetrics send the metrics-only
+    // re-send instead.
+    mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+      updateCalls.push({ id, payload });
+      if (payload?.status === 'completed' && terminalChecks > 1) {
+        return { abort: true, actualStatus: 'completed' };
+      }
+      return {};
+    });
+
+    await runSession(manager, 'w-authored');
+
+    expect(createBackendCalls.length).toBe(2);
+    // The refused payload still carries a fallback-shaped summary locally —
+    // it never wins. What's authoritative is the metrics-only re-send,
+    // whose resultMeta.closingTurnOutcome is what a human/analytics query
+    // actually reads.
+    const metricsOnlyCall = updateCalls.find(c => c.payload?.metricsOnly === true);
+    expect(metricsOnlyCall).toBeDefined();
+    expect(metricsOnlyCall!.payload.resultMeta?.closingTurnOutcome).toBe('authored');
+  });
+
+  test('an aborted session never attempts a closing turn', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), { type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 'sess-1', result: 'Aborted by user' }],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-aborted');
+
+    // Only the original invocation — no resumed closing turn.
+    expect(createBackendCalls.length).toBe(1);
+    const call = failedCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toMatch(/^skipped:/);
+  });
+
+  test('a session that ends on the turn cap gets exactly one closing turn past it', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-max-turns');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
+    // Bounded to exactly one turn past the cap, regardless of the original's
+    // configured maxTurns.
+    expect(runStreamedCalls[1]?.maxTurns).toBe(1);
+
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined');
+  });
+
+  test('complete_task already called leaves no closing-turn trace at all', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Done — opened the PR and called complete_task.'), successResult('sess-1')],
+    ];
+    remoteStatus = 'completed';
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-already-done');
+
+    // No closing turn — the race check short-circuits before it's ever attempted.
+    expect(createBackendCalls.length).toBe(1);
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBeUndefined();
+  });
+
+  test('Codex tasks resume by thread id, not sessionId', async () => {
+    scriptQueue = [
+      [initMsg('thread-1'), assistantText('Opened the PR.'), successResult('thread-1')],
+      [assistantText('Calling complete_task now.'), successResult('thread-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    // Codex tasks hard-fail before ever reaching createBackend without a
+    // credential — a local OPENAI_API_KEY satisfies the same local-auth
+    // fallback the claim route itself accepts.
+    const priorKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    try {
+      await runSession(manager, 'w-codex', { backend: 'codex' });
+    } finally {
+      if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = priorKey;
+    }
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(createBackendCalls[0].backend).toBe('codex');
+    // Codex resume rides RunStreamedOpts.resumeThreadId (per-call), not the
+    // Claude-only queryOptions.resume baked into createBackend's config.
+    expect(runStreamedCalls[1]?.resumeThreadId).toBe('thread-1');
+  });
+});

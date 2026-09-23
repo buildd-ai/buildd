@@ -23,7 +23,12 @@ const mockStreamInputFn = mock(() => {});
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
     lastQueryOpts = opts;
-    const msgs = [...mockMessages];
+    // A resumed invocation is the runner's own closing turn (these sessions
+    // have a sessionId and never call complete_task) — it must not replay
+    // the original script a second time, or every skill-sync/tool-call count
+    // this file asserts on would double.
+    const isResume = Boolean(opts?.options?.resume);
+    const msgs = isResume ? [] : [...mockMessages];
     let idx = 0;
     return {
       streamInput: mockStreamInputFn,
@@ -336,8 +341,13 @@ describe('Integration: full claim → session flow', () => {
     expect(opts.systemPrompt.append ?? '').not.toContain('MUST use');
     expect(opts.systemPrompt.append ?? '').not.toContain('Use these skills');
 
-    // Skills were synced to disk
-    expect(mockSyncSkillToLocal.mock.calls.length).toBe(2);
+    // Skills were synced to disk. Synced twice: this mock's session (an
+    // init + a bare "Done." aside, no complete_task call) is eligible for the
+    // runner's closing turn, whose own startSession invocation re-runs the
+    // same early setup phase — including skill sync — before the mocked SDK
+    // ever gets to yield a message, so this doubles regardless of what the
+    // resumed session actually streams back.
+    expect(mockSyncSkillToLocal.mock.calls.length).toBe(4);
   });
 
   test('claim response without useSkillAgents uses traditional skill flow', async () => {
@@ -375,8 +385,9 @@ describe('Integration: full claim → session flow', () => {
     // System prompt instructs Skill tool usage
     expect(opts.systemPrompt.append).toContain('MUST use the deploy skill');
 
-    // Skills still synced to disk
-    expect(mockSyncSkillToLocal.mock.calls.length).toBe(1);
+    // Skills still synced to disk — doubled by the closing turn's own setup
+    // pass, same reasoning as the useSkillAgents case above.
+    expect(mockSyncSkillToLocal.mock.calls.length).toBe(2);
   });
 
   test('worker completes successfully with subagent config', async () => {
