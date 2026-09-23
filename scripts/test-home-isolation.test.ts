@@ -84,6 +84,10 @@ const MAY_REFERENCE_THE_REAL_HOME: Array<[path: string, why: string]> = [
     'apps/runner/__tests__/unit/worker-store-integrity.test.ts',
     'readdir-only: asserts the real store is byte-identical before and after it saves into its own temp home; the regression test for this very gate',
   ],
+  [
+    'apps/runner/__tests__/unit/buildd-home-single-resolver.test.ts',
+    "pure path-math: its own INLINE_HOME regex is tested against string literals naming the homedir helper's call form, never touches the filesystem",
+  ],
 ];
 
 function trackedTestFiles(): string[] {

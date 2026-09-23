@@ -8,7 +8,7 @@
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import { checkBwrapSupport } from './env-scan';
 import { cbmSeedLogPath, parseSeedOutcomes } from './cbm-enforcement';
 import {
@@ -26,7 +26,9 @@ import {
 } from './worktree-utils';
 import { activityAt } from './worker-store';
 
-const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+// Resolved per call so a test runtime without a temp BUILDD_HOME fails closed
+// (see buildd-home.ts) instead of inspecting or repairing the real install.
+const builddDir = () => resolveBuilddHome();
 const WORKER_STORE_TTL_MS = 24 * 60 * 60 * 1000; // mirrors worker-store MAX_AGE_MS
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
 // Overridable for tests — production always redirects the runner's own
@@ -54,8 +56,8 @@ export interface DoctorReport {
 
 function checkGitState(): CheckResult {
   try {
-    const head = execSync('git rev-parse HEAD', { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+    const head = execSync('git rev-parse HEAD', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
 
     if (branch !== BRANCH) {
       return {
@@ -68,8 +70,8 @@ function checkGitState(): CheckResult {
 
     // Check if behind remote
     try {
-      execSync(`git fetch origin ${BRANCH} --dry-run`, { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
-      const behind = execSync(`git rev-list HEAD..origin/${BRANCH} --count`, { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+      execSync(`git fetch origin ${BRANCH} --dry-run`, { cwd: builddDir(), encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
+      const behind = execSync(`git rev-list HEAD..origin/${BRANCH} --count`, { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
       if (parseInt(behind) > 0) {
         return {
           name: 'git-branch',
@@ -88,7 +90,7 @@ function checkGitState(): CheckResult {
 
 function checkGitDirty(): CheckResult {
   try {
-    const status = execSync('git status --porcelain -- apps/ packages/', { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+    const status = execSync('git status --porcelain -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
     if (status) {
       const lines = status.split('\n').filter(Boolean);
       return {
@@ -131,7 +133,7 @@ function checkBunInstall(): CheckResult {
 
 function checkDiskUsage(): CheckResult {
   try {
-    const df = execSync("df -h . | tail -1", { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+    const df = execSync("df -h . | tail -1", { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
     const parts = df.split(/\s+/);
     const usedPct = parseInt(parts[4]); // e.g. "66%"
     if (usedPct >= 90) {
@@ -179,8 +181,8 @@ function safeReaddir(dir: string): string[] {
 /** Discover candidate "main" git repos whose worktrees we should sweep. */
 function discoverMainRepos(): string[] {
   return candidateRepoRoots({
-    builddDir: BUILDD_DIR,
-    projectDir: join(BUILDD_DIR, '..', 'project'),
+    builddDir: builddDir(),
+    projectDir: join(builddDir(), '..', 'project'),
     isGitRepo: (dir: string) => existsSync(join(dir, '.git')),
     listDir: safeReaddir,
     joinPath: join,
@@ -193,7 +195,7 @@ function discoverMainRepos(): string[] {
  * on restart, so their worktrees are treated as unowned orphans.
  */
 function loadOwnerRecords(): WorktreeOwnerRecord[] {
-  const dir = join(BUILDD_DIR, 'workers');
+  const dir = join(builddDir(), 'workers');
   const now = Date.now();
   const out: WorktreeOwnerRecord[] = [];
   for (const f of safeReaddir(dir)) {
@@ -448,7 +450,7 @@ function checkRunnerProcess(): CheckResult {
 }
 
 function checkConfig(): CheckResult {
-  const configPath = join(BUILDD_DIR, 'config.json');
+  const configPath = join(builddDir(), 'config.json');
   try {
     const raw = readFileSync(configPath, 'utf-8');
     const config = JSON.parse(raw);
@@ -549,8 +551,8 @@ function checkRunnerLog(): CheckResult {
 }
 
 function checkHistoryDb(): CheckResult {
-  const dbPath = join(BUILDD_DIR, 'history.db');
-  const walPath = join(BUILDD_DIR, 'history.db-wal');
+  const dbPath = join(builddDir(), 'history.db');
+  const walPath = join(builddDir(), 'history.db-wal');
 
   try {
     if (!existsSync(dbPath)) {
@@ -588,7 +590,7 @@ export interface FixResult {
 function fixGitBranch(): FixResult {
   try {
     execSync(`git fetch origin ${BRANCH} && git checkout -f ${BRANCH} && git reset --hard origin/${BRANCH}`, {
-      cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 30000, stdio: 'pipe',
+      cwd: builddDir(), encoding: 'utf-8', timeout: 30000, stdio: 'pipe',
     });
     return { check: 'git-branch', success: true, message: `Checked out and reset to origin/${BRANCH}` };
   } catch (err: any) {
@@ -598,7 +600,7 @@ function fixGitBranch(): FixResult {
 
 function fixGitClean(): FixResult {
   try {
-    execSync('git checkout -- apps/ packages/', { cwd: BUILDD_DIR, encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
+    execSync('git checkout -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
     return { check: 'git-clean', success: true, message: 'Restored tracked files' };
   } catch (err: any) {
     return { check: 'git-clean', success: false, message: err.message };
@@ -672,7 +674,7 @@ function fixDiskUsage(): FixResult {
   const actions: string[] = [];
 
   // Clean archive (completed worker data)
-  const archiveDir = join(BUILDD_DIR, 'archive');
+  const archiveDir = join(builddDir(), 'archive');
   if (existsSync(archiveDir)) {
     try {
       const du = execSync(`du -sm "${archiveDir}" | cut -f1`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' }).trim();
@@ -693,7 +695,7 @@ function fixDiskUsage(): FixResult {
   }
 
   // Clean old logs (keep last 50)
-  const logsDir = join(BUILDD_DIR, 'logs');
+  const logsDir = join(builddDir(), 'logs');
   if (existsSync(logsDir)) {
     try {
       const logFiles = readdirSync(logsDir)
@@ -721,7 +723,7 @@ function fixDiskUsage(): FixResult {
 }
 
 function fixHistoryDb(): FixResult {
-  const dbPath = join(BUILDD_DIR, 'history.db');
+  const dbPath = join(builddDir(), 'history.db');
   try {
     // WAL checkpoint to consolidate WAL into main db
     execSync(`sqlite3 "${dbPath}" "PRAGMA wal_checkpoint(TRUNCATE);"`, {
