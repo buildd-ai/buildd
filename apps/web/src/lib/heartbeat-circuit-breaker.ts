@@ -159,3 +159,118 @@ export async function tripHeartbeatCircuitBreaker(input: {
 
   return { tripped: true };
 }
+
+// ─── Planning-failure backoff ────────────────────────────────────────────────
+//
+// The breaker above only reads "died early" cycles (<=2 turns, $0): a wall the
+// organizer never got past. It is blind to the other loop shape: an organizer
+// that runs a dozen turns, cannot produce a plan or a completion (a goal
+// criterion it cannot move, say), and fails the cycle with no confirmed
+// outcome. Each of those costs real turns, and the cron dispatched the next
+// one on the very next tick, indefinitely.
+//
+// This is a backoff, not a pause: after K consecutive failed cycles on the
+// same schedule the next dispatch waits BASE * 2^(streak-K) past the most
+// recent failure, capped at MAX. Any non-failed cycle ends the streak, and the
+// wait is derived from task rows alone (no new state), so it clears itself the
+// moment a cycle succeeds.
+
+/** Consecutive failed heartbeat cycles before dispatch starts backing off. */
+export const HEARTBEAT_PLANNING_BACKOFF_THRESHOLD = 3;
+/** Wait after the K-th consecutive failure; doubles for each further one. */
+export const HEARTBEAT_PLANNING_BACKOFF_BASE_MS = 60 * 60 * 1000;
+/** Ceiling on the wait, so a stuck mission is still retried daily. */
+export const HEARTBEAT_PLANNING_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
+/** How many recent cycles to read when measuring the streak. */
+const PLANNING_BACKOFF_LOOKBACK = 12;
+
+export interface HeartbeatPlanningBackoff {
+  /** True when the next cycle must not be dispatched yet. */
+  active: boolean;
+  /** Consecutive failed cycles, newest first (capped by the lookback). */
+  streak: number;
+  /** Earliest time the next cycle may dispatch; null below the threshold. */
+  resumeAt: Date | null;
+}
+
+/**
+ * Pure: given this schedule's recent cycles (newest first), decide whether to
+ * hold the next dispatch. Only `status === 'failed'` extends the streak; the
+ * first row that is anything else ends it.
+ */
+export function computeHeartbeatPlanningBackoff(
+  recent: Array<{ status: string; updatedAt?: Date | string | null; createdAt?: Date | string | null }>,
+  now: Date,
+): HeartbeatPlanningBackoff {
+  let streak = 0;
+  for (const t of recent) {
+    if (t.status !== 'failed') break;
+    streak++;
+  }
+  if (streak < HEARTBEAT_PLANNING_BACKOFF_THRESHOLD) return { active: false, streak, resumeAt: null };
+
+  const anchorRaw = recent[0].updatedAt ?? recent[0].createdAt ?? null;
+  const anchor = anchorRaw ? new Date(anchorRaw).getTime() : now.getTime();
+  // 2^(streak-K) passes the cap within a few steps; clamp the exponent anyway.
+  const exponent = Math.min(streak - HEARTBEAT_PLANNING_BACKOFF_THRESHOLD, 16);
+  const waitMs = Math.min(HEARTBEAT_PLANNING_BACKOFF_BASE_MS * 2 ** exponent, HEARTBEAT_PLANNING_BACKOFF_MAX_MS);
+  const resumeAt = new Date(anchor + waitMs);
+  return { active: now.getTime() < resumeAt.getTime(), streak, resumeAt };
+}
+
+/**
+ * Read this schedule's recent cycles (same window floor as the breaker, so a
+ * re-armed mission starts fresh) and compute the backoff.
+ */
+export async function evaluateHeartbeatPlanningBackoff(
+  input: HeartbeatBreakerCheckInput,
+  now: Date = new Date(),
+): Promise<HeartbeatPlanningBackoff> {
+  const recent = await db.query.tasks.findMany({
+    where: and(
+      eq(tasks.missionId, input.missionId),
+      eq(tasks.scheduleId, input.scheduleId),
+      ...(input.heartbeatBreakerTrippedAt ? [gt(tasks.createdAt, input.heartbeatBreakerTrippedAt)] : []),
+    ),
+    columns: { id: true, status: true, createdAt: true, updatedAt: true },
+    orderBy: [desc(tasks.createdAt)],
+    limit: PLANNING_BACKOFF_LOOKBACK,
+  });
+  return computeHeartbeatPlanningBackoff(recent, now);
+}
+
+/**
+ * Hold the schedule until `resumeAt`. Posts one mission-feed warning when the
+ * backoff begins (`alreadyBackingOff` false), not on every held tick.
+ */
+export async function applyHeartbeatPlanningBackoff(input: {
+  missionId: string;
+  scheduleId: string;
+  backoff: HeartbeatPlanningBackoff;
+  alreadyBackingOff: boolean;
+}): Promise<void> {
+  const now = new Date();
+  await db.update(taskSchedules)
+    .set({
+      nextRunAt: input.backoff.resumeAt,
+      lastDeferralReason: 'heartbeat_planning_backoff',
+      lastDeferredAt: now,
+      updatedAt: now,
+    })
+    .where(eq(taskSchedules.id, input.scheduleId));
+
+  if (input.alreadyBackingOff) return;
+
+  await db.insert(missionNotes).values({
+    missionId: input.missionId,
+    authorType: 'system',
+    type: 'warning',
+    title: 'Heartbeat backing off: repeated planning failures',
+    body:
+      `${input.backoff.streak} consecutive heartbeat cycles failed. The next cycle is held until ` +
+      `${input.backoff.resumeAt?.toISOString()}, and the wait doubles with each further failure. ` +
+      `Check the latest cycle's error: a goal criterion the organizer cannot move, or a plan it ` +
+      `cannot return, repeats on every cycle until the cause changes.`,
+    status: 'open',
+  }).catch(e => console.error(`[heartbeat-planning-backoff] note failed for ${input.missionId}:`, e));
+}

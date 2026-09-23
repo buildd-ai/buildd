@@ -14,7 +14,12 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
-import { evaluateHeartbeatCircuitBreaker, tripHeartbeatCircuitBreaker } from '@/lib/heartbeat-circuit-breaker';
+import {
+  evaluateHeartbeatCircuitBreaker,
+  tripHeartbeatCircuitBreaker,
+  evaluateHeartbeatPlanningBackoff,
+  applyHeartbeatPlanningBackoff,
+} from '@/lib/heartbeat-circuit-breaker';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { runStaleWorkerCleanup } from './maintenance/stale-workers';
@@ -576,6 +581,27 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               scheduleId: schedule.id,
               count: breaker.count,
               errorSignature: breaker.errorSignature,
+            });
+            skipped++;
+            continue;
+          }
+
+          // Planning-failure backoff: the breaker above only counts cycles that
+          // died on arrival. An organizer that works a dozen turns and still
+          // fails the cycle (no plan, no confirmed outcome) would otherwise be
+          // re-dispatched every tick. After K consecutive failed cycles, hold
+          // the next one on an exponential wait (heartbeat-circuit-breaker.ts).
+          const backoff = await evaluateHeartbeatPlanningBackoff({
+            missionId: linkedMission.id,
+            scheduleId: schedule.id,
+            heartbeatBreakerTrippedAt: linkedMission.heartbeatBreakerTrippedAt ?? null,
+          });
+          if (backoff.active) {
+            await applyHeartbeatPlanningBackoff({
+              missionId: linkedMission.id,
+              scheduleId: schedule.id,
+              backoff,
+              alreadyBackingOff: schedule.lastDeferralReason === 'heartbeat_planning_backoff',
             });
             skipped++;
             continue;

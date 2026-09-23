@@ -71,6 +71,10 @@ import {
   evaluateHeartbeatCircuitBreaker,
   tripHeartbeatCircuitBreaker,
   HEARTBEAT_BREAKER_THRESHOLD,
+  computeHeartbeatPlanningBackoff,
+  evaluateHeartbeatPlanningBackoff,
+  HEARTBEAT_PLANNING_BACKOFF_THRESHOLD,
+  HEARTBEAT_PLANNING_BACKOFF_MAX_MS,
 } from './heartbeat-circuit-breaker';
 
 function diedEarlyTask(id: string): typeof recentTaskRows[number] {
@@ -198,5 +202,104 @@ describe('tripHeartbeatCircuitBreaker', () => {
     expect(result.tripped).toBe(false);
     expect(insertedNotes.length).toBe(0);
     expect(notifyCalls.length).toBe(0);
+  });
+});
+
+// ── Planning-failure backoff ────────────────────────────────────────────────
+// The died-early breaker above never fires on an organizer that works for a
+// dozen turns and then fails the cycle (no confirmed outcome, no structured
+// plan). Those cycles cost real turns, and the cron re-dispatched them on
+// every tick with no backoff.
+
+const NOW_MS = Date.parse('2026-09-01T12:00:00.000Z');
+const minutesAgo = (m: number) => new Date(NOW_MS - m * 60_000);
+
+function failedCycle(id: string, failedMinutesAgo: number) {
+  return {
+    id,
+    status: 'failed',
+    updatedAt: minutesAgo(failedMinutesAgo),
+    workers: [{ status: 'failed', turns: 15, costUsd: '0', error: 'Task has no confirmed outcome' }],
+  } as any;
+}
+
+describe('computeHeartbeatPlanningBackoff', () => {
+  it('3 failed cycles → no dispatch on the 4th tick', () => {
+    const r = computeHeartbeatPlanningBackoff(
+      [failedCycle('t-3', 30), failedCycle('t-2', 60), failedCycle('t-1', 90)],
+      new Date(NOW_MS),
+    );
+    expect(r.active).toBe(true);
+    expect(r.streak).toBe(3);
+    expect(r.resumeAt!.getTime()).toBeGreaterThan(NOW_MS);
+  });
+
+  it('fewer than K consecutive failures → no backoff', () => {
+    const r = computeHeartbeatPlanningBackoff(
+      [failedCycle('t-2', 30), failedCycle('t-1', 60)],
+      new Date(NOW_MS),
+    );
+    expect(r.active).toBe(false);
+  });
+
+  it('a success resets the streak', () => {
+    const r = computeHeartbeatPlanningBackoff(
+      [
+        { id: 't-4', status: 'completed', updatedAt: minutesAgo(10), workers: [] } as any,
+        failedCycle('t-3', 30), failedCycle('t-2', 60), failedCycle('t-1', 90),
+      ],
+      new Date(NOW_MS),
+    );
+    expect(r.active).toBe(false);
+    expect(r.streak).toBe(0);
+  });
+
+  it('the wait doubles with each further failure and is capped', () => {
+    const at3 = computeHeartbeatPlanningBackoff(
+      [failedCycle('c', 0), failedCycle('b', 30), failedCycle('a', 60)],
+      new Date(NOW_MS),
+    );
+    const at4 = computeHeartbeatPlanningBackoff(
+      [failedCycle('d', 0), failedCycle('c', 30), failedCycle('b', 60), failedCycle('a', 90)],
+      new Date(NOW_MS),
+    );
+    const wait3 = at3.resumeAt!.getTime() - NOW_MS;
+    const wait4 = at4.resumeAt!.getTime() - NOW_MS;
+    expect(wait4).toBe(wait3 * 2);
+
+    const many = Array.from({ length: 30 }, (_, i) => failedCycle(`t-${i}`, i * 30));
+    const capped = computeHeartbeatPlanningBackoff(many, new Date(NOW_MS));
+    expect(capped.resumeAt!.getTime() - NOW_MS).toBe(HEARTBEAT_PLANNING_BACKOFF_MAX_MS);
+  });
+
+  it('lets a cycle through once the backoff window has elapsed', () => {
+    const r = computeHeartbeatPlanningBackoff(
+      [failedCycle('t-3', 24 * 60), failedCycle('t-2', 25 * 60), failedCycle('t-1', 26 * 60)],
+      new Date(NOW_MS),
+    );
+    expect(r.streak).toBe(3);
+    expect(r.active).toBe(false);
+  });
+});
+
+describe('evaluateHeartbeatPlanningBackoff', () => {
+  beforeEach(() => {
+    recentTaskRows = [];
+  });
+
+  it("reads this schedule's recent cycles and applies the backoff", async () => {
+    const now = Date.now();
+    recentTaskRows = [
+      { ...failedCycle('t-3', 0), updatedAt: new Date(now - 60_000) },
+      { ...failedCycle('t-2', 0), updatedAt: new Date(now - 31 * 60_000) },
+      { ...failedCycle('t-1', 0), updatedAt: new Date(now - 61 * 60_000) },
+    ];
+    const r = await evaluateHeartbeatPlanningBackoff({
+      missionId: 'm-1',
+      scheduleId: 's-1',
+      heartbeatBreakerTrippedAt: null,
+    });
+    expect(r.active).toBe(true);
+    expect(r.streak).toBe(HEARTBEAT_PLANNING_BACKOFF_THRESHOLD);
   });
 });

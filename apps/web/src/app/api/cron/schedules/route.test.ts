@@ -174,9 +174,14 @@ mock.module('@/lib/heartbeat-prepass', () => ({
 // heartbeat-circuit-breaker.test.ts.
 const mockEvaluateBreaker = mock(() => Promise.resolve({ tripped: false, count: 0, errorSignature: '' } as any));
 const mockTripBreaker = mock(() => Promise.resolve({ tripped: true } as any));
+// Planning-failure backoff: same condition, defaults to "not backing off".
+const mockEvaluatePlanningBackoff = mock(() => Promise.resolve({ active: false, streak: 0, resumeAt: null } as any));
+const mockApplyPlanningBackoff = mock(() => Promise.resolve());
 mock.module('@/lib/heartbeat-circuit-breaker', () => ({
   evaluateHeartbeatCircuitBreaker: mockEvaluateBreaker,
   tripHeartbeatCircuitBreaker: mockTripBreaker,
+  evaluateHeartbeatPlanningBackoff: mockEvaluatePlanningBackoff,
+  applyHeartbeatPlanningBackoff: mockApplyPlanningBackoff,
 }));
 
 const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
@@ -272,6 +277,10 @@ describe('GET /api/cron/schedules', () => {
     mockEvaluateBreaker.mockResolvedValue({ tripped: false, count: 0, errorSignature: '' } as any);
     mockTripBreaker.mockReset();
     mockTripBreaker.mockResolvedValue({ tripped: true } as any);
+    mockEvaluatePlanningBackoff.mockReset();
+    mockEvaluatePlanningBackoff.mockResolvedValue({ active: false, streak: 0, resumeAt: null } as any);
+    mockApplyPlanningBackoff.mockReset();
+    mockApplyPlanningBackoff.mockResolvedValue(undefined);
     mockCompleteMission.mockReset();
     mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
     mockApplyCriteriaRearm.mockReset();
@@ -640,6 +649,60 @@ describe('GET /api/cron/schedules', () => {
       await GET(makeRequest());
 
       expect(mockTripBreaker).not.toHaveBeenCalled();
+      expect(mockPrepass).toHaveBeenCalled();
+    });
+  });
+
+  describe('heartbeat planning-failure backoff', () => {
+    function heartbeatSchedule(overrides: Record<string, unknown> = {}) {
+      return makeSchedule({
+        workspaceId: 'ws-1',
+        taskTemplate: {
+          title: 'Mission: Backoff',
+          mode: 'planning',
+          priority: 0,
+          context: { heartbeat: true },
+        },
+        ...overrides,
+      });
+    }
+
+    it('holds the cycle instead of dispatching while backing off', async () => {
+      const resumeAt = new Date(Date.now() + 60 * 60 * 1000);
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' });
+      mockEvaluatePlanningBackoff.mockResolvedValue({ active: true, streak: 3, resumeAt } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).toBeNull();
+      expect(mockPrepass).not.toHaveBeenCalled();
+      expect(mockApplyPlanningBackoff).toHaveBeenCalledWith(expect.objectContaining({
+        missionId: 'mission-1',
+        alreadyBackingOff: false,
+        backoff: expect.objectContaining({ resumeAt }),
+      }));
+      expect(body.skipped).toBeGreaterThan(0);
+    });
+
+    it('tells the apply step a backoff is already running so the note posts once', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule({ lastDeferralReason: 'heartbeat_planning_backoff' })]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' });
+      mockEvaluatePlanningBackoff.mockResolvedValue({ active: true, streak: 4, resumeAt: new Date(Date.now() + 1000) } as any);
+
+      await GET(makeRequest());
+
+      expect(mockApplyPlanningBackoff).toHaveBeenCalledWith(expect.objectContaining({ alreadyBackingOff: true }));
+    });
+
+    it('dispatches normally when not backing off', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' });
+
+      await GET(makeRequest());
+
+      expect(mockApplyPlanningBackoff).not.toHaveBeenCalled();
       expect(mockPrepass).toHaveBeenCalled();
     });
   });
