@@ -156,8 +156,12 @@ async function getReleasePrCiState(
 }
 
 // Merge a feature branch into prodBranch via GitHub API.
-// Strategy: create/update a PR from the worker's branch to prodBranch, then merge it.
-// Falls back to direct push merge if no PR exists.
+//
+// `merged: true` is only ever returned when GitHub confirms prod contains the
+// work: this call merged it, the tracked PR reads `merged`, or the branch-merge
+// API answered 204 (prodBranch already contains the head). Anything else is a
+// failure — a caller that reports `completed` off this result is telling the
+// task, the mission and the dashboard that production moved.
 async function mergeIntoProd(
   installationId: number,
   repoFullName: string,
@@ -165,7 +169,10 @@ async function mergeIntoProd(
   prNumber: number | null | undefined,
   prodBranch: string
 ): Promise<{ merged: boolean; sha?: string; message: string }> {
-  // If the worker already has a tracked PR, merge it
+  // A tracked PR is the release unit. If it cannot be merged, the release
+  // fails — it never falls back to pushing the branch around the PR, because
+  // "not mergeable" (405) is exactly the answer from required reviews, required
+  // checks, conflicts or a draft: the gates the PR exists to enforce.
   if (prNumber) {
     try {
       const mergeResp = await githubApi(
@@ -179,15 +186,21 @@ async function mergeIntoProd(
       );
       return { merged: true, sha: mergeResp?.sha, message: 'PR merged via squash' };
     } catch (err) {
-      // PR may already be merged or in a non-mergeable state — try direct merge
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('405') && !msg.includes('already been merged')) {
-        return { merged: false, message: `PR merge failed: ${msg}` };
-      }
-      // Already merged — treat as success
-      if (msg.includes('already been merged')) {
-        return { merged: true, message: 'PR already merged' };
-      }
+      // The merge call failing does not mean the work is not in prod: the PR
+      // may already be merged (auto-merge, a human, a redelivery). Ask GitHub
+      // rather than pattern-matching the error text.
+      try {
+        const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+        if (pr?.merged === true) {
+          return {
+            merged: true,
+            sha: (pr.merge_commit_sha as string | undefined) ?? undefined,
+            message: `PR #${prNumber} already merged`,
+          };
+        }
+      } catch { /* fall through to the failure below */ }
+      return { merged: false, message: `PR #${prNumber} merge failed: ${msg}` };
     }
   }
 
@@ -207,19 +220,24 @@ async function mergeIntoProd(
         }),
       }
     );
-    // 204 = already up-to-date
-    const sha = mergeResp?.sha;
-    return { merged: true, sha, message: `Branch merged into ${prodBranch}` };
+    // githubApi returns null for 204: prodBranch already contains the head.
+    // GitHub has verified the work is in prod, so this is a confirmed state,
+    // but no new commit was made — say so rather than "merged".
+    if (mergeResp == null) {
+      return { merged: true, message: `${prodBranch} already contains ${workerBranch} — nothing new merged` };
+    }
+    return { merged: true, sha: mergeResp.sha, message: `Branch merged into ${prodBranch}` };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Treat 204 (no content, already up-to-date) as success
-    if (msg.includes('204')) {
-      return { merged: true, message: `${prodBranch} already up-to-date` };
-    }
-    // 404 "Head does not exist" means the branch was already merged and deleted.
-    // Treat as no-op success rather than failing the whole release.
+    // 404 "Head does not exist" used to be reported as success ("likely already
+    // merged"). A deleted branch is equally what an UNmerged, deleted branch
+    // looks like, and with no PR there is nothing to confirm against — so this
+    // is a failure, not a release.
     if (msg.includes('404') && msg.includes('Head does not exist')) {
-      return { merged: true, message: `Head branch already gone — likely already merged into ${prodBranch}` };
+      return {
+        merged: false,
+        message: `head branch ${workerBranch} no longer exists and no PR records a merge — cannot confirm it reached ${prodBranch}`,
+      };
     }
     return { merged: false, message: `Merge failed: ${msg}` };
   }
@@ -625,6 +643,17 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   const branchMerge = resolution.strategy;
   const { prodBranch } = branchMerge;
 
+  // Config errors must surface before anything merges. Failing after the merge
+  // returns no mergedAt, which mission release reads as "nothing shipped" and
+  // retries against a prod that already moved.
+  if (branchMerge.deployTarget?.type === 'vercel' && !branchMerge.deployTarget.projectId) {
+    return {
+      status: 'failed',
+      message: 'Release: FAILED — deployTarget.projectId is required for Vercel deploys',
+      error: 'Missing Vercel projectId',
+    };
+  }
+
   // Step 1: Merge into prodBranch
   let mergedAt: string | undefined;
   let mergeSha: string | undefined;
@@ -725,18 +754,38 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
       return { merged: false, message: msg } as Record<string, unknown>;
     });
 
-    if (!mergeResp?.sha && mergeResp?.merged === false) {
-      return {
-        status: 'failed',
-        message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${mergeResp.message ?? 'merge failed'}`,
-        error: String(mergeResp.message ?? 'merge failed'),
-        releasePrNumber: releasePr.number,
-        releasePrUrl: releasePr.url,
-      };
+    // The merge endpoint answers `{ merged: true, sha }` on success. Anything
+    // else — including an empty body — is not evidence of a merge.
+    let rbMergeSha: string | undefined;
+    if (!mergeResp?.sha && mergeResp?.merged !== true) {
+      // The merge call failing does not mean prod is unmoved: a human or the
+      // check_suite webhook may have merged the release PR first. Ask GitHub,
+      // as mergeIntoProd does — a `failed` without mergedAt makes mission
+      // release retry a release that already shipped.
+      let alreadyMerged = false;
+      try {
+        const pr = await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/pulls/${releasePr.number}`);
+        if (pr?.merged === true) {
+          alreadyMerged = true;
+          rbMergeSha = (pr.merge_commit_sha as string | undefined) ?? undefined;
+        }
+      } catch { /* fall through to the failure below */ }
+
+      if (!alreadyMerged) {
+        return {
+          status: 'failed',
+          message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${mergeResp?.message ?? 'merge failed'}`,
+          error: String(mergeResp?.message ?? 'merge failed'),
+          releasePrNumber: releasePr.number,
+          releasePrUrl: releasePr.url,
+        };
+      }
+    } else {
+      rbMergeSha = mergeResp.sha as string | undefined;
     }
 
     mergedAt = new Date().toISOString();
-    mergeSha = mergeResp.sha as string | undefined;
+    mergeSha = rbMergeSha;
 
     createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, repo });
   } else if (worker?.branch) {
@@ -769,6 +818,21 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
     mergeSha = mergeResult.sha;
 
     createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, repo });
+  } else {
+    // No release branch and no worker branch: there is nothing to merge, so
+    // nothing is released. This used to fall through to the deploy poll and
+    // return `completed` — which marked missions released with prod unmoved.
+    if (releaseFlag === 'true') {
+      return {
+        status: 'failed',
+        message: `Release: FAILED — task requested release but its worker has no branch to merge into ${prodBranch}.`,
+        error: 'No branch to merge',
+      };
+    }
+    return {
+      status: 'skipped',
+      message: `Release: nothing to merge — the worker has no branch, so ${prodBranch} is unchanged.`,
+    };
   }
 
   // Step 2: Poll Vercel for deployment
@@ -776,14 +840,8 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   let deployState: string | undefined;
 
   if (branchMerge.deployTarget?.type === 'vercel') {
-    const { projectId, teamId } = branchMerge.deployTarget;
-    if (!projectId) {
-      return {
-        status: 'failed',
-        message: 'Release: FAILED — deployTarget.projectId is required for Vercel deploys',
-        error: 'Missing Vercel projectId',
-      };
-    }
+    // projectId presence is validated before Step 1, so it is set here.
+    const { projectId, teamId } = branchMerge.deployTarget as { projectId: string; teamId?: string };
 
     try {
       // Only wait for Vercel to pick up the push when we can actually verify.
