@@ -4206,6 +4206,44 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('conflict-retry-task');
   });
+
+  it('still defers a conflict-retry task whose manifest overlaps a DIFFERENT open PR', async () => {
+    // The exemption covers only the PR being retried. Another task's open PR
+    // touching the same files is a genuine concurrent-edit risk and must block.
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: own PR + an unrelated sibling PR
+        { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    const conflictRetryTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'conflict-retry-task',
+      conflictRetryPrNumber: 2659,
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([conflictRetryTask])
+      .mockResolvedValueOnce([
+        { id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+        { id: 'sibling-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+      ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
 });
 
 describe('entity catalog injection at claim time', () => {
