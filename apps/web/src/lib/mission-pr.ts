@@ -40,6 +40,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { fetchSplitPrStats } from '@/lib/supersession-check';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -640,6 +641,13 @@ export async function openMissionIntegrationPr(
   }
   const recordedBaseRef = prData.base?.ref ?? base;
 
+  // This owner worker is a synthetic 'system' row with no session/cwd, so the
+  // runner-side git-stats collector that populates filesChanged/linesAdded/
+  // linesRemoved for a normal task PR never runs against it — the same live
+  // GitHub fetch pr/route.ts uses for a task PR's create/adopt path, so mission
+  // integration PRs stop reporting zero size while GitHub reports a real one.
+  const stats = await fetchSplitPrStats(installationId, repo.fullName, prNumber);
+
   await db
     .update(workers)
     .set({
@@ -647,6 +655,9 @@ export async function openMissionIntegrationPr(
       prNumber,
       prBaseRef: recordedBaseRef,
       prLifecycleStatus: 'pr_open',
+      ...(stats ? { filesChanged: stats.reviewable.files } : {}),
+      ...(stats ? { linesAdded: stats.reviewable.additions } : {}),
+      ...(stats ? { linesRemoved: stats.reviewable.deletions } : {}),
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
