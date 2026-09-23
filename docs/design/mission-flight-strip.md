@@ -568,10 +568,11 @@ at that adapter instead of `deriveWorkLane`; (c) delete `deriveWorkLane` and
 its dedicated tests once no call site reads it, and re-verify the SVG
 renderer and detail-page/flight-detail-sheet wiring against the new lane
 source — same field shape, different source, so this is a swap-and-reverify
-pass on those two, not a rewrite. Only once (a)-(c) land can
-`computeMissionSkyline`/`SkylineBlock`/`MissionSkylineData` be deleted (AC-1)
-— the detail page's completed-mission stats row is the one remaining live
-caller and needs to move onto the flight strip's own §6 metrics first.
+pass on those two, not a rewrite. AC-1 did not have to wait for (a)-(c):
+`computeMissionSkyline`/`SkylineBlock`/`MissionSkylineData` are already
+deleted, because their one remaining live caller — the detail page's
+completed-mission stats row — moved onto the flight strip's own §6 metrics,
+whose Rule L-3 exclusion does not depend on the lane source.
 
 **2. SVG component** *(second, depends on 1)* — **Shipped.** See
 "Implementation Status" above.
