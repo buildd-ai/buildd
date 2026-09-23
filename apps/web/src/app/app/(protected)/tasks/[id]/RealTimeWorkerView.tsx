@@ -8,8 +8,32 @@ import WorkerActivityTimeline, { collapseWorkspacePath } from './WorkerActivityT
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
 import ModelUsagePanel from './ModelUsagePanel';
+import NeedsInputAnswerBox from './NeedsInputAnswerBox';
 import StatusBadge from '@/components/StatusBadge';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
+import { requestRefresh, flushRefresh } from './coalesced-refresh';
+
+// Exported for testing: whether a worker-channel event should bypass the
+// debounce. A status change (e.g. running -> waiting_input) is a one-off
+// transition and must be seen right away; a same-status progress tick is the
+// steady ~10s heartbeat and should coalesce with TaskAutoRefresh's own
+// refresh for the same PATCH instead of doubling it.
+export function shouldFlushImmediately(previousStatus: string, nextStatus: string | undefined): boolean {
+  return typeof nextStatus === 'string' && nextStatus !== previousStatus;
+}
+
+// Exported for testing: extracts a server error message from a fetch
+// Response, tolerating a non-JSON or empty body instead of throwing past the
+// caller's own error handling.
+export async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const data = await res.json();
+    if (data && typeof data.error === 'string') return data.error;
+  } catch {
+    // non-JSON body — fall back
+  }
+  return fallback;
+}
 
 
 type Milestone =
@@ -56,6 +80,12 @@ interface Worker {
 
 interface Props {
   initialWorker: Worker;
+  /**
+   * Keys the coalesced-refresh debounce — must match the taskId TaskAutoRefresh
+   * uses on the same page so their refreshes for the same PATCH collapse into
+   * one instead of two.
+   */
+  taskId: string;
   statusColors?: Record<string, string>;
   /**
    * The tier this task was assigned (`Premium` / `Standard` / `Budget`, or
@@ -70,9 +100,10 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, statusColors, modelTier }: Props) {
+export default function RealTimeWorkerView({ initialWorker, taskId, statusColors, modelTier }: Props) {
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
+  const lastStatusRef = useRef(initialWorker.status);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
   // Set only when the answer became a COLD continuation — a new task to link
@@ -88,7 +119,9 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
   const answeredPromptRef = useRef<string | null>(null);
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [abortLoading, setAbortLoading] = useState(false);
+  const [abortError, setAbortError] = useState<string | null>(null);
   const [interruptMode, setInterruptMode] = useState(false);
+  const [interruptError, setInterruptError] = useState<string | null>(null);
   const [showMetricsDetail, setShowMetricsDetail] = useState(false);
   const [currentActionExpanded, setCurrentActionExpanded] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
@@ -102,6 +135,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
       setAnswerSent(false);
     }
     setWorker(initialWorker);
+    lastStatusRef.current = initialWorker.status;
   // updatedAt changes on every PATCH — use it as the dep to avoid stale closures
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialWorker.id, initialWorker.updatedAt]);
@@ -109,7 +143,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
   // Subscribe to real-time updates
   useEffect(() => {
     const channelName = `${CHANNEL_PREFIX}worker-${worker.id}`;
-    console.log('[RealTimeWorkerView] Setting up subscription for:', channelName);
     const channel = subscribeToChannel(channelName);
 
     if (channel) {
@@ -117,31 +150,48 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
       // updatedAt, taskProgress?}. The full worker row is fetched by the server
       // component when router.refresh() re-renders the page.
       const handleUpdate = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
-        console.log('[RealTimeWorkerView] Received update:', data.status);
         // taskProgress is transient (not persisted) — consume it directly from event
         if (Array.isArray(data.taskProgress)) {
           setTaskProgress(data.taskProgress);
         } else {
           setTaskProgress([]);
         }
-        // Refresh the server component so initialWorker prop gets the full fresh row
-        router.refresh();
+        // A status change (e.g. running -> waiting_input) must be seen right
+        // away; a same-status progress tick coalesces with TaskAutoRefresh's
+        // own refresh for the same PATCH instead of doubling it.
+        const immediate = shouldFlushImmediately(lastStatusRef.current, data.status);
+        if (typeof data.status === 'string') lastStatusRef.current = data.status;
+        if (immediate) {
+          flushRefresh(router, taskId);
+        } else {
+          requestRefresh(router, taskId);
+        }
+      };
+      // worker:completed/failed are always terminal — refresh immediately.
+      const handleTerminal = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
+        if (Array.isArray(data.taskProgress)) {
+          setTaskProgress(data.taskProgress);
+        } else {
+          setTaskProgress([]);
+        }
+        if (typeof data.status === 'string') lastStatusRef.current = data.status;
+        flushRefresh(router, taskId);
       };
 
       channel.bind('worker:progress', handleUpdate);
-      channel.bind('worker:completed', handleUpdate);
-      channel.bind('worker:failed', handleUpdate);
+      channel.bind('worker:completed', handleTerminal);
+      channel.bind('worker:failed', handleTerminal);
 
       return () => {
         channel.unbind('worker:progress', handleUpdate);
-        channel.unbind('worker:completed', handleUpdate);
-        channel.unbind('worker:failed', handleUpdate);
+        channel.unbind('worker:completed', handleTerminal);
+        channel.unbind('worker:failed', handleTerminal);
         unsubscribeFromChannel(channelName);
       };
     } else {
       console.warn('[RealTimeWorkerView] No channel returned - Pusher not configured?');
     }
-  }, [worker.id]);
+  }, [worker.id, taskId, router]);
 
   // Send the answer via the respond endpoint, which decides between resuming
   // this worker's own parked session and starting a cold continuation — and
@@ -188,6 +238,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
 
   async function handleAbort() {
     setAbortLoading(true);
+    setAbortError(null);
     try {
       const res = await fetch(`/api/workers/${worker.id}/cmd`, {
         method: 'POST',
@@ -195,18 +246,19 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
         body: JSON.stringify({ action: 'abort' }),
       });
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to abort');
+        throw new Error(await parseErrorMessage(res, 'Failed to abort'));
       }
       setShowAbortConfirm(false);
+      router.refresh();
     } catch (err) {
-      console.error('Failed to abort worker:', err);
+      setAbortError(err instanceof Error ? err.message : 'Failed to abort worker');
     } finally {
       setAbortLoading(false);
     }
   }
 
   async function handleInterruptSend(message: string) {
+    setInterruptError(null);
     try {
       const res = await fetch(`/api/workers/${worker.id}/instruct`, {
         method: 'POST',
@@ -214,16 +266,18 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
         body: JSON.stringify({ message, priority: 'urgent' }),
       });
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to send interrupt');
+        throw new Error(await parseErrorMessage(res, 'Failed to send interrupt'));
       }
       setInterruptMode(false);
     } catch (err) {
-      console.error('Failed to send interrupt:', err);
+      setInterruptError(err instanceof Error ? err.message : 'Failed to send interrupt');
     }
   }
 
   const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
+  // Instructing while a question is unanswered is the wrong tool — /instruct
+  // queues an instruction for a running session; the answer path is /respond.
+  const hasUnansweredQuestion = !!worker.waitingFor && !answerSent;
 
   return (
     <div className="border border-border-default bg-surface-2 rounded-md p-4">
@@ -270,6 +324,11 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
               </button>
             )}
           </div>
+        )}
+        {abortError && (
+          <p data-testid="worker-abort-error" className="mt-2 text-sm text-status-error">
+            {abortError}
+          </p>
         )}
       </div>
 
@@ -356,6 +415,11 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
               </button>
             </div>
           </form>
+          {interruptError && (
+            <p data-testid="worker-interrupt-error" className="mt-2 text-sm text-status-error">
+              {interruptError}
+            </p>
+          )}
         </div>
       )}
 
@@ -392,33 +456,40 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
                 </>
               )}
             </p>
-          ) : worker.waitingFor.options && worker.waitingFor.options.length > 0 ? (
-            <div data-testid="worker-needs-input-options" className="flex flex-col gap-2 mt-3">
-              {worker.waitingFor.options.map((opt, i) => {
-                const label = typeof opt === 'string' ? opt : opt.label;
-                const description = typeof opt === 'string' ? undefined : opt.description;
-                const recommended = typeof opt === 'string' ? false : opt.recommended;
-                return (
-                  <button
-                    key={i}
-                    onClick={() => handleAnswer(label)}
-                    disabled={answerSending !== null}
-                    className="text-left px-3 py-2 text-sm bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="font-medium">{answerSending === label ? 'Sending…' : label}</span>
-                      {recommended && (
-                        <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
-                      )}
-                    </span>
-                    {description && (
-                      <span className="block mt-0.5 text-xs text-text-muted">{description}</span>
-                    )}
-                  </button>
-                );
-              })}
+          ) : (
+            <div className="flex flex-col gap-2 mt-3">
+              {worker.waitingFor.options && worker.waitingFor.options.length > 0 && (
+                <div data-testid="worker-needs-input-options" className="flex flex-col gap-2">
+                  {worker.waitingFor.options.map((opt, i) => {
+                    const label = typeof opt === 'string' ? opt : opt.label;
+                    const description = typeof opt === 'string' ? undefined : opt.description;
+                    const recommended = typeof opt === 'string' ? false : opt.recommended;
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => handleAnswer(label)}
+                        disabled={answerSending !== null}
+                        className="text-left px-3 py-2 text-sm bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="font-medium">{answerSending === label ? 'Sending…' : label}</span>
+                          {recommended && (
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
+                          )}
+                        </span>
+                        {description && (
+                          <span className="block mt-0.5 text-xs text-text-muted">{description}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {/* Always available — the only way to answer an open-ended
+                  question (no options), and an escape hatch alongside them. */}
+              <NeedsInputAnswerBox onSubmit={handleAnswer} sending={answerSending !== null} />
             </div>
-          ) : null}
+          )}
         </div>
       )}
 
@@ -521,8 +592,9 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
         </>
       )}
 
-      {/* Instruction history and input */}
-      {isActive && (
+      {/* Instruction history and input — hidden while a question is
+          unanswered, since /instruct is the wrong path for an answer. */}
+      {isActive && !hasUnansweredQuestion && (
         <>
           <InstructionHistory
             history={worker.instructionHistory || []}

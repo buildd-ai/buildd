@@ -1147,6 +1147,7 @@ export default async function TaskDetailPage({
               Active Worker
             </div>
             <RealTimeWorkerView
+              taskId={task.id}
               initialWorker={{
                 id: activeWorker.id,
                 name: activeWorker.name,
