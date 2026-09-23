@@ -356,7 +356,10 @@ describe('executeRelease — worker branch', () => {
     delete process.env.VERCEL_TOKEN;
   });
 
-  it('treats 404 "Head does not exist" as no-op success (branch already merged/deleted)', async () => {
+  it('does NOT report completed when the head is gone and nothing proves a merge', async () => {
+    // A deleted head branch is not evidence of a merge — it is equally what a
+    // branch deleted without merging looks like. With no PR to consult, the
+    // release cannot confirm prod moved, so it must not say it did.
     setupTask();
     setupWorker();
     setupWorkspace();
@@ -369,8 +372,91 @@ describe('executeRelease — worker branch', () => {
     );
 
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
-    expect(result.status).toBe('completed');
-    expect(result.message).toContain('completed');
+    expect(result.status).toBe('failed');
+    expect(result.mergedAt).toBeUndefined();
+  });
+
+  describe('tracked PR that cannot be merged', () => {
+    function setupWorkerWithPr() {
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', branch: 'buildd/task-branch', prNumber: 12, prUrl: null });
+    }
+
+    it('a 405 on the PR merge fails the release and never falls back to a raw branch merge', async () => {
+      // 405 is "not mergeable": required reviews/checks, conflicts, a draft.
+      // Falling back to POST /merges pushes the branch around the PR — the
+      // very gate that refused it.
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+        if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+        if (path.endsWith('/pulls/12/merge')) {
+          throw new Error('GitHub API error: 405 {"message":"Required status check is expected."}');
+        }
+        if (path.endsWith('/pulls/12')) return { merged: false, state: 'open' };
+        if (path.endsWith('/merges')) return { sha: 'rawmerge999' };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result.status).toBe('failed');
+      expect(result.mergedAt).toBeUndefined();
+      const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+      expect(paths.some((p) => p.endsWith('/merges'))).toBe(false);
+    });
+
+    it('a PR that GitHub reports as already merged counts, with its real merge sha', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockDetectArchetype.mockReturnValue('continuous');
+      mockDbInsertReturning.mockResolvedValue([{ id: 'rel-1' }]);
+      mockAttributeRelease.mockResolvedValue({ attributed: 0, skipped: 0 });
+      mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+        if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+        if (path.endsWith('/pulls/12/merge')) {
+          throw new Error('GitHub API error: 405 {"message":"Pull Request is not mergeable"}');
+        }
+        if (path.endsWith('/pulls/12')) return { merged: true, state: 'closed', merge_commit_sha: 'realmerge123' };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result.status).toBe('completed');
+      expect(result.mergedAt).toBeDefined();
+      const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+      expect(paths.some((p) => p.endsWith('/merges'))).toBe(false);
+      expect((mockDbInsertValues.mock.calls[0] as any)?.[0]?.headSha).toBe('realmerge123');
+    });
+  });
+
+  it('with no branch and no release branch, does not report completed', async () => {
+    // Nothing to merge means nothing was released. This used to fall through
+    // to the deploy poll and return `completed` having merged nothing.
+    setupTask();
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', branch: null, prNumber: null, prUrl: null });
+    setupWorkspace();
+    setupRepo();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('failed');
+    expect(result.mergedAt).toBeUndefined();
+  });
+
+  it('with no branch on an inherit task, skips rather than failing', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', release: 'inherit' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', branch: null, prNumber: null, prUrl: null });
+    setupWorkspace();
+    setupRepo();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('skipped');
   });
 
   it('completes without Vercel verification when VERCEL_TOKEN is absent', async () => {

@@ -40,7 +40,8 @@ export type MissionReleaseFailure =
   | 'dispatch_failed'
   | 'execute_failed'
   | 'strategy_unhandled'
-  | 'skipped';
+  | 'skipped'
+  | 'pending_ci';
 
 /**
  * Phase 1 of the release claim: take ownership of the attempt.
@@ -319,8 +320,22 @@ export async function fireMissionReleaseIfComplete(
           // clear the claim without a failure note on the mission feed.
           result.skipReason === 'mission_integration_branch',
         );
-      } else {
+      } else if (result.status === 'completed' || (result.status === 'failed' && result.mergedAt)) {
+        // Only an outcome where the merge actually landed consumes the
+        // release. A `failed` WITH `mergedAt` means prod moved and only the
+        // post-merge deploy check failed — retrying would ship nothing new,
+        // and abandoning would let a later completion fire a second release.
         released = true;
+      } else if (result.status === 'pending_ci') {
+        // The release PR is still waiting on CI. Nothing persists that PR for
+        // the check_suite webhook on this path, so nothing else will merge it:
+        // hand the claim back so a later attempt can.
+        await abandonMissionReleaseAttempt(missionId, 'pending_ci', result.message);
+      } else if (result.status === 'not_configured') {
+        await abandonMissionReleaseAttempt(missionId, 'not_configured', result.message);
+      } else {
+        // `failed` before any merge (no mergedAt): nothing reached production.
+        await abandonMissionReleaseAttempt(missionId, 'execute_failed', result.message);
       }
     } catch (err) {
       await abandonMissionReleaseAttempt(
