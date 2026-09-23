@@ -47,3 +47,6 @@ scripts/workflow-safety.test.ts
 # Enumerates every tracked schema file to check that hand-built sql
 # renders correctly and matches no broken patterns.
 scripts/sql-render-coverage.test.ts
+# Checks CLAUDE.md's backticked paths, testids and symbols against `git
+# ls-files`. The rename or deletion that breaks it lands anywhere in the repo.
+scripts/agent-docs-drift.test.ts
