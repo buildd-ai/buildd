@@ -72,7 +72,7 @@ async function resolveTarget(
   workspaceIdInput: string | null,
 ): Promise<ResolvedTarget | { error: string; status: number; candidates?: string[] }> {
   if (workspaceIdInput) {
-    const ws = await resolveWorkspace(workspaceIdInput);
+    const ws = await resolveWorkspace(workspaceIdInput, { teamIds: [account.teamId] });
     if (!ws) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     if (ws.teamId !== account.teamId) {
       return { error: 'Workspace belongs to a different team', status: 403 };

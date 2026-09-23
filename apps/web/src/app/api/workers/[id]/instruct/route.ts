@@ -47,19 +47,21 @@ export async function POST(
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    with: { workspace: { columns: { dataClass: true } } },
+    with: { workspace: { columns: { dataClass: true, teamId: true } } },
   });
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Verify workspace access if using session auth (not admin token)
-  if (hasSessionAuth && !hasAdminToken) {
-    const access = await verifyWorkspaceAccess(user!.id, worker.workspaceId);
-    if (!access) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    }
+  // The caller must be able to administer the worker's workspace: an
+  // admin-level key belonging to the workspace's team, or a session user with
+  // admin/owner role in it. Anything else sees "not found".
+  const canAdminister = hasAdminToken
+    ? apiAccount!.teamId === worker.workspace?.teamId
+    : !!(await verifyWorkspaceAccess(user!.id, worker.workspaceId, 'admin'));
+  if (!canAdminister) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
   // Can't instruct completed/failed workers

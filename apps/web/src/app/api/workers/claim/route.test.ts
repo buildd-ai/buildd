@@ -175,7 +175,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
   missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
-  workspaces: { id: 'id', accessMode: 'accessMode' },
+  workspaces: { id: 'id', accessMode: 'accessMode', teamId: 'teamId' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
@@ -494,6 +494,37 @@ describe('POST /api/workers/claim', () => {
 
     // Should NOT be 400 — single accessible workspace, no ambiguity
     expect(res.status).toBe(200);
+  });
+
+  it('only treats open workspaces of the account\'s own team as claimable without a link', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      teamId: 'team-runner',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    await POST(req);
+
+    const hasEq = (node: any, field: string, value: unknown): boolean => {
+      if (!node || typeof node !== 'object') return false;
+      if (node.type === 'eq' && node.field === field && node.value === value) return true;
+      return Object.values(node).some((v) => (Array.isArray(v) ? v.some((x) => hasEq(x, field, value)) : hasEq(v, field, value)));
+    };
+    const openQueries = mockWorkspacesFindMany.mock.calls
+      .map((c: any[]) => c[0]?.where)
+      .filter((w: any) => hasEq(w, 'accessMode', 'open'));
+    expect(openQueries.length).toBeGreaterThan(0);
+    for (const w of openQueries) expect(hasEq(w, 'teamId', 'team-runner')).toBe(true);
   });
 
   it('skips the OAuth workspace-required guard when authType is api', async () => {

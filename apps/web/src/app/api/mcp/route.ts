@@ -23,9 +23,10 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
+import { isWorkerInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   appendPathManifest,
   checkPathClaimConflict,
@@ -877,31 +878,27 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   if (workspaceParam) {
     workspaceId = workspaceParam;
   } else if (repoParam) {
-    // Try exact match first, then case-insensitive
-    const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.repo, repoParam),
-      columns: { id: true },
-    });
-    if (workspace) {
-      workspaceId = workspace.id;
-    } else {
-      // Case-insensitive fallback
-      const [wsRow] = await db
-        .select({ id: workspaces.id })
-        .from(workspaces)
-        .where(sql`LOWER(${workspaces.repo}) = LOWER(${repoParam})`)
-        .limit(1);
-      workspaceId = wsRow?.id;
-      if (!workspaceId) {
-        console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
-      }
+    // Resolved only among the account's own team's workspaces and the ones it
+    // is explicitly linked to.
+    workspaceId = await resolveRepoParamWorkspaceId(repoParam, account);
+    if (!workspaceId) {
+      console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
     }
+  }
+
+  // A `?worker=` id is the worker this session acts as; it must be one the
+  // calling account runs, or one in its own team's workspaces.
+  const workerParam = url.searchParams.get("worker");
+  if (workerParam && !(await isWorkerInCallerScope(workerParam, account))) {
+    return new Response(JSON.stringify({ error: "Worker not found for this account" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
-  const workerParam = url.searchParams.get("worker");
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';

@@ -152,7 +152,7 @@ describe('check_path_claim MCP handler', () => {
 
     // Default: authenticated, worker resolves to task, no conflict, append succeeds
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
-    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID });
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, accountId: 'acc-1', workspace: { teamId: 'team-1' } });
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
     mockCheckPathClaimConflict.mockResolvedValue(null);
     mockAppendPathManifest.mockImplementation(async (_taskId: string, paths: string[]) => paths);
@@ -169,6 +169,20 @@ describe('check_path_claim MCP handler', () => {
     const result = body.result;
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('worker');
+  });
+
+  it('refuses a ?worker= id that belongs to another account and team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, accountId: 'acc-other', workspace: { teamId: 'team-other' } });
+    const res = await POST(makeToolCallRequest({ paths: ['src/foo.ts'] }));
+    expect(res.status).toBe(403);
+    expect(mockInsertClaims).not.toHaveBeenCalled();
+    expect(mockAppendPathManifest).not.toHaveBeenCalled();
+  });
+
+  it('accepts a ?worker= id in a workspace of the caller team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, accountId: 'acc-other', workspace: { teamId: 'team-1' } });
+    const res = await POST(makeToolCallRequest({ paths: ['src/foo.ts'] }));
+    expect(res.status).toBe(200);
   });
 
   it('returns isError when paths is empty', async () => {

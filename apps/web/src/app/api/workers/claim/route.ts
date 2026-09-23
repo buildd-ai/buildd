@@ -271,9 +271,10 @@ export async function POST(req: NextRequest) {
   if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
     const permissions = await getAccountWorkspacePermissions(account.id);
     const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
-    // Also count open workspaces — those are claimable by any account
+    // Also count open workspaces of the account's own team — those are
+    // claimable without an explicit link.
     const openCount = await db.query.workspaces.findMany({
-      where: eq(workspaces.accessMode, 'open'),
+      where: and(eq(workspaces.accessMode, 'open'), eq(workspaces.teamId, account.teamId)),
       columns: { id: true },
     });
     for (const w of openCount) accessibleWorkspaceIds.add(w.id);
@@ -307,11 +308,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Get workspaces this account can claim from
-  // 1. Open workspaces (any account can claim)
-  // 2. Restricted workspaces where account has canClaim permission
+  // 1. Open workspaces of the account's own team ("open" = open within the team)
+  // 2. Any workspace where the account has an explicit canClaim link
   const openWorkspaces = await db.query.workspaces.findMany({
     where: and(
       eq(workspaces.accessMode, 'open'),
+      eq(workspaces.teamId, account.teamId),
       workspaceId ? eq(workspaces.id, workspaceId) : undefined
     ),
   });
@@ -322,15 +324,14 @@ export async function POST(req: NextRequest) {
     .filter((p) => p.canClaim)
     .filter((p) => !workspaceId || p.workspaceId === workspaceId);
 
-  // Resolve which restricted workspaces this account can access
+  // Resolve which linked workspaces still exist. An explicit canClaim link
+  // grants access whatever the workspace's accessMode — it is how an account
+  // outside the owning team is given access to an open workspace.
   const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
   let restrictedIds: string[] = [];
   if (restrictedWsIds.length > 0) {
     const restrictedWorkspaces = await db.query.workspaces.findMany({
-      where: and(
-        inArray(workspaces.id, restrictedWsIds),
-        eq(workspaces.accessMode, 'restricted'),
-      ),
+      where: inArray(workspaces.id, restrictedWsIds),
       columns: { id: true },
     });
     restrictedIds = restrictedWorkspaces.map((ws) => ws.id);

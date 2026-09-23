@@ -9,6 +9,8 @@
  * Run: bun test:integration-config
  */
 
+import { readLocalToken, LOCAL_TOKEN_HEADER } from '../src/local-server-auth';
+const LOCAL_TOKEN = readLocalToken();
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 
 const BASE_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
@@ -19,6 +21,7 @@ let viewerToken: string | null = null;
 
 async function api(path: string, method = 'GET', body?: any): Promise<Response> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (LOCAL_TOKEN) headers[LOCAL_TOKEN_HEADER] = LOCAL_TOKEN;
   // Pass viewer token for protected endpoints when available
   if (viewerToken) {
     headers['Authorization'] = `Bearer ${viewerToken}`;

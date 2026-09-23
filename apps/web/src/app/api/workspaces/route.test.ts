@@ -33,6 +33,11 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
 }));
 
+const mockGetInstallationOwnerTeamIds = mock(async (_id: string) => ['team-1'] as string[]);
+mock.module('@/lib/github-installation-access', () => ({
+  getInstallationOwnerTeamIds: mockGetInstallationOwnerTeamIds,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -310,6 +315,40 @@ describe('POST /api/workspaces', () => {
       body: JSON.stringify({ name: 'API Workspace' }),
     });
     const res = await POST(req);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses to link an installation that does not belong to the workspace team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetInstallationOwnerTeamIds.mockImplementation(async () => ['team-other']);
+
+    const res = await POST(createMockPostRequest({
+      name: 'Linked',
+      githubInstallationId: 'inst-other',
+      githubRepo: { id: '1', repoId: '1', fullName: 'acme/app', name: 'app', owner: 'acme' },
+    }));
+
+    expect(res.status).toBe(403);
+    expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    expect(mockGetInstallationOwnerTeamIds).toHaveBeenCalledWith('inst-other');
+  });
+
+  it('links an installation that belongs to the workspace team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetInstallationOwnerTeamIds.mockImplementation(async () => ['team-1']);
+    mockWorkspacesInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{ id: 'ws-new', name: 'New Workspace' }]),
+        onConflictDoUpdate: mock(() => ({ returning: mock(() => [{ id: 'repo-row-1' }]) })),
+      })),
+    });
+
+    const res = await POST(createMockPostRequest({
+      name: 'Linked',
+      githubInstallationId: 'inst-1',
+      githubRepo: { id: '1', repoId: '1', fullName: 'acme/app', name: 'app', owner: 'acme' },
+    }));
 
     expect(res.status).toBe(200);
   });

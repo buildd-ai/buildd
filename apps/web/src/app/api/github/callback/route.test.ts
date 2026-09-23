@@ -12,11 +12,13 @@ const { privateKey: testPrivateKey } = generateKeyPairSync('rsa', {
 const originalEnv = { ...process.env };
 process.env.GITHUB_APP_ID = '12345';
 process.env.GITHUB_APP_PRIVATE_KEY = testPrivateKey;
+process.env.AUTH_SECRET = 'callback-test-signing-secret';
 
 // --- Mock functions ---
 
 const mockAuth = mock(() => null as any);
 const mockInstallationsFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
 
 const mockInsertReturning = mock(() => [{ id: 'inst-db-new' }]);
 const mockInsertValues = mock(() => ({
@@ -38,6 +40,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       githubInstallations: { findFirst: mockInstallationsFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: () => ({
       values: mockInsertValues,
@@ -54,6 +57,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: 'githubInstallations',
+  workspaces: 'workspaces',
 }));
 
 // --- Mock global fetch ---
@@ -72,6 +76,7 @@ const mockFetch = mock(() =>
         permissions: { issues: 'read', contents: 'write' },
         repository_selection: 'all',
         suspended_at: null,
+        created_at: new Date().toISOString(),
       }),
       { status: 200 }
     )
@@ -80,6 +85,7 @@ const mockFetch = mock(() =>
 
 // Import handler AFTER mocks
 import { GET } from './route';
+import { signInstallState } from '@/lib/github-install-state';
 
 // --- Helpers ---
 
@@ -103,6 +109,8 @@ describe('GET /api/github/callback', () => {
     mockAuth.mockReset();
     mockInstallationsFindFirst.mockReset();
     mockInstallationsFindFirst.mockImplementation(() => null);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockImplementation(() => null);
     mockInsertReturning.mockReset();
     mockInsertReturning.mockImplementation(() => [{ id: 'inst-db-new' }]);
     mockInsertValues.mockReset();
@@ -129,6 +137,7 @@ describe('GET /api/github/callback', () => {
             permissions: { issues: 'read', contents: 'write' },
             repository_selection: 'all',
             suspended_at: null,
+            created_at: new Date().toISOString(),
           }),
           { status: 200 }
         )
@@ -182,11 +191,12 @@ describe('GET /api/github/callback', () => {
     expect(location).toContain('error=fetch_failed');
   });
 
-  it('records the installer on a new installation', async () => {
+  it('records the installer on a new installation from a flow this user started', async () => {
     mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
     mockInstallationsFindFirst.mockImplementation(() => null);
 
-    await GET(createRequest({ installation_id: '77777' }));
+    const state = signInstallState({ userId: 'user-1' });
+    await GET(createRequest({ installation_id: '77777', state }));
 
     expect(mockInsertValues.mock.calls[0][0]).toMatchObject({
       installationId: 77777,
@@ -194,16 +204,68 @@ describe('GET /api/github/callback', () => {
     });
   });
 
-  it('backfills the installer on an existing installation that has none', async () => {
+  it('does not record an installer without a state bound to this user', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
+    mockInstallationsFindFirst.mockImplementation(() => null);
+
+    await GET(createRequest({ installation_id: '77777', state: makeState({ returnUrl: '/app/workspaces' }) }));
+    expect(mockInsertValues.mock.calls[0][0].installedByUserId).toBeNull();
+
+    mockInsertValues.mockClear();
+    const otherUsersState = signInstallState({ userId: 'user-2' });
+    await GET(createRequest({ installation_id: '77777', state: otherUsersState }));
+    expect(mockInsertValues.mock.calls[0][0].installedByUserId).toBeNull();
+  });
+
+  it('does not record an installer for an installation GitHub reports as not newly created', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
+    mockInstallationsFindFirst.mockImplementation(() => null);
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({
+        account: { login: 'testorg', avatar_url: null, type: 'Organization', id: 123 },
+        permissions: {}, repository_selection: 'all', suspended_at: null,
+        created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+      }), { status: 200 })),
+    );
+
+    await GET(createRequest({ installation_id: '77777', state: signInstallState({ userId: 'user-1' }) }));
+    expect(mockInsertValues.mock.calls[0][0].installedByUserId).toBeNull();
+  });
+
+  it('backfills the installer on an existing unowned, unused installation', async () => {
     mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
     mockInstallationsFindFirst.mockImplementation(() => ({
       id: 'inst-db-1',
       installedByUserId: null,
     }));
 
-    await GET(createRequest({ installation_id: '77777' }));
+    await GET(createRequest({ installation_id: '77777', state: signInstallState({ userId: 'user-1' }) }));
 
     expect(mockUpdateSet.mock.calls[0][0]).toMatchObject({ installedByUserId: 'user-1' });
+  });
+
+  it('does not backfill an installer on an installation a workspace already uses', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
+    mockInstallationsFindFirst.mockImplementation(() => ({
+      id: 'inst-db-1',
+      installedByUserId: null,
+    }));
+    mockWorkspacesFindFirst.mockImplementation(() => ({ id: 'ws-1' }));
+
+    await GET(createRequest({ installation_id: '77777', state: signInstallState({ userId: 'user-1' }) }));
+
+    expect(mockUpdateSet.mock.calls[0][0].installedByUserId).toBeNull();
+  });
+
+  it('only redirects to a relative in-app returnUrl', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
+    const state = makeState({ returnUrl: '//elsewhere.example/path' });
+
+    const response = await GET(createRequest({ installation_id: '55555', state }));
+
+    const location = new URL(response.headers.get('location')!);
+    expect(location.host).toBe('localhost:3000');
+    expect(location.pathname).toBe('/app/workspaces');
   });
 
   it('does not reassign an installation already attributed to another user', async () => {
