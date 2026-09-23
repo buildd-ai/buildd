@@ -298,4 +298,46 @@ describe('routingReason', () => {
     expect(s.reasonLabel).toBeNull();
     expect(s.source).toBe('team');
   });
+
+  test('an auto-classified task names the heuristic that fired', () => {
+    const s = deriveTaskModel({
+      tier: 'premium',
+      predictedModel: 'claude-opus-5',
+      context: {
+        model: 'claude-opus-5',
+        routingReason: 'baseline',
+        routingInferred: true,
+        routingInferredReason: 'pathManifest touches 8 files',
+        resolvedTier: { tier: 'premium', provider: 'anthropic', source: 'team' },
+      },
+    });
+    expect(s.reasonLabel).toBe('auto-classified — pathManifest touches 8 files');
+  });
+
+  test('does not claim auto-classification without the routingInferred flag', () => {
+    // A stray routingInferredReason with no flag must never be trusted alone —
+    // it could be leftover context from an unrelated write path.
+    const s = deriveTaskModel({
+      tier: 'standard',
+      predictedModel: 'claude-sonnet-5',
+      context: { model: 'claude-sonnet-5', routingInferredReason: 'pathManifest touches 8 files' },
+    });
+    expect(s.reasonLabel).toBeNull();
+  });
+
+  test('a pin never shows the auto-classified reason, even if both are present', () => {
+    const s = deriveTaskModel({
+      predictedModel: 'claude-opus-5',
+      context: {
+        model: 'claude-opus-5',
+        routingReason: 'explicit_override',
+        routingInferred: true,
+        routingInferredReason: 'pathManifest touches 8 files',
+      },
+    });
+    expect(s.tierLabel).toBe('Pinned');
+    // 'pinned' from the routingReason map — not the auto-classified text, which
+    // would misattribute a deliberate pin to the heuristic.
+    expect(s.reasonLabel).toBe('pinned');
+  });
 });

@@ -19,6 +19,7 @@
     "./model-catalog-cache": "./model-catalog-cache.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
+    "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",

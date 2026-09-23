@@ -96,6 +96,31 @@ describe('TaskModelCell', () => {
     expect(html).not.toContain('Ran on');
   });
 
+  test('answers "why this model" with the auto-classified reason', () => {
+    const html = render({
+      tier: 'premium',
+      predictedModel: 'claude-opus-5',
+      context: {
+        model: 'claude-opus-5',
+        routingReason: 'baseline',
+        routingInferred: true,
+        routingInferredReason: 'pathManifest touches 8 files',
+        resolvedTier: { tier: 'premium', provider: 'anthropic', source: 'team' },
+      },
+    });
+    expect(html).toContain('auto-classified');
+    expect(html).toContain('pathManifest touches 8 files');
+  });
+
+  test('surfaces a budget downshift reason in the cell', () => {
+    const html = render({
+      tier: 'premium',
+      predictedModel: 'claude-haiku-4-5-20251001',
+      context: { model: 'claude-haiku-4-5-20251001', routingReason: 'budget_downshift' },
+    });
+    expect(html).toContain('budget downshift');
+  });
+
   test('never hides the model id in a title attribute', () => {
     const html = render({
       tier: 'premium',
