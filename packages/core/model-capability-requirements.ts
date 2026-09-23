@@ -12,7 +12,7 @@
  *
  * The @anthropic-ai/claude-agent-sdk npm package and the CLI binary it bundles
  * version in lockstep on the patch number today (SDK 0.3.N ships CLI 2.1.N —
- * confirmed against the registry's manifest.json for N = 231/238/251/260/272),
+ * confirmed against the registry's manifest.json for N = 231/238/251/260/272/280),
  * so a runner's reported CLI version can be compared directly against the
  * dotted version the API error names. This map only needs a new entry when a
  * future model raises the floor again — it is not tied to any one SDK release.
