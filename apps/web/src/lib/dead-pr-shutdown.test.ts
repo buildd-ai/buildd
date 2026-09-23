@@ -296,6 +296,33 @@ describe('shutdownDeadBuilddPrs', () => {
     expect(result.escalatedPrNumbers).toContain(LOSER_PR);
   });
 
+  it('Tier 2: does NOT close a conflict-dead loser PR when it was recently updated (active work)', async () => {
+    // conflictDetectedAt = 8 days ago (> 7 day threshold, otherwise Tier-2-eligible)
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    // updatedAt within 30 minutes = actively resolving the conflict right now
+    const recentUpdate = new Date(Date.now() - 5 * 60 * 1000);
+
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace({ subjectPolicy: { conflictDeadDays: 7, autoCloseBuilddSupersededPrs: true } }));
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: eightDaysAgo, updatedAt: recentUpdate }),
+    ]);
+    mockMissionNotesFindFirst.mockImplementation(() => null);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    // PR should NOT be closed despite being conflict-dead past the threshold (actively being worked on)
+    expect(result.closedPrNumbers).toHaveLength(0);
+
+    // No GitHub close call for the loser
+    const closeCall = mockGithubApi.mock.calls.find(
+      ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
+    );
+    expect(closeCall).toBeUndefined();
+  });
+
   // ── Tier 3: conflict-dead, no successor ────────────────────────────────────
 
   it('Tier 3: creates escalation note for conflict-dead PR with no green successor', async () => {

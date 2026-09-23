@@ -186,10 +186,21 @@ function isTier1Eligible(loser: LoserCandidate, workerUpdatedAt: Date | null): b
   );
 }
 
-function isTier2Eligible(loser: LoserCandidate, conflictDeadDays: number): boolean {
+function isTier2Eligible(
+  loser: LoserCandidate,
+  conflictDeadDays: number,
+  workerUpdatedAt: Date | null,
+): boolean {
   // Tier 2: conflict-dead for ≥ conflictDeadDays with a green winner.
   if (loser.prLifecycleStatus !== 'conflict') return false;
   if (!loser.conflictDetectedAt) return false;
+
+  // Safety: same active-work guard as Tier 1 — a worker actively retrying the
+  // conflict resolution that made this loser Tier-2-eligible should not be
+  // closed out from under it.
+  const isRecentlyActive = workerUpdatedAt && (Date.now() - workerUpdatedAt.getTime()) < ACTIVE_WORK_THRESHOLD_MS;
+  if (isRecentlyActive) return false;
+
   const ageMs = Date.now() - loser.conflictDetectedAt.getTime();
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
   return ageDays >= conflictDeadDays;
@@ -319,7 +330,7 @@ export async function shutdownDeadBuilddPrs(
         // Tier 1: winner merged → immediately close loser
         await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
         result.closedPrNumbers.push(loser.prNumber);
-      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays)) {
+      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays, loser.updatedAt)) {
         // Tier 2: conflict-dead ≥ conflictDeadDays with green winner → close
         await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
         result.closedPrNumbers.push(loser.prNumber);
