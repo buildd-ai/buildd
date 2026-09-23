@@ -4152,6 +4152,98 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('task-1');
   });
+
+  it('claims a conflict-retry task despite its own PR being open with the same pathManifest', async () => {
+    // Regression guard: conflict-retry tasks inherit pathManifest from the original task.
+    // When the original task's PR is still open (not merged), the path-overlap guard would
+    // normally defer the conflict-retry task. But conflict-retry tasks are exempt — they
+    // work on the same PR as the original to rebase and resolve conflicts, so overlap is
+    // the expected case and should never block the retry.
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    // Active workers: none
+    // Open PR pre-fetch: a worker for the original task with PR #2659 open
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: original task's open PR
+        {
+          workspaceId: 'ws-1',
+          taskId: 'original-task',
+          prNumber: 2659,  // PR from the original task
+          prUrl: 'https://github.com/org/repo/pull/2659',
+          status: 'completed',
+          prLifecycleStatus: 'open',  // PR still open (not merged)
+        },
+      ]);
+
+    // Claimable task is a conflict-retry task with the same pathManifest and same PR number
+    const conflictRetryTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'conflict-retry-task',
+      title: '[builder · after conflict #1] Fix merge conflicts',
+      missionId: 'mission-1',
+      priority: 8,
+      conflictRetryPrNumber: 2659,  // Matches the open PR above — should be exempted
+      context: null,
+    };
+
+    // PR task manifest lookup (should be filtered out for conflict-retry tasks)
+    mockTasksFindMany
+      .mockResolvedValueOnce([conflictRetryTask])
+      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Conflict-retry task is exempt from path-overlap blocking on its own PR
+    // → task is claimed despite the manifests overlapping
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('conflict-retry-task');
+  });
+
+  it('still defers a conflict-retry task whose manifest overlaps a DIFFERENT open PR', async () => {
+    // The exemption covers only the PR being retried. Another task's open PR
+    // touching the same files is a genuine concurrent-edit risk and must block.
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: own PR + an unrelated sibling PR
+        { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    const conflictRetryTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'conflict-retry-task',
+      conflictRetryPrNumber: 2659,
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([conflictRetryTask])
+      .mockResolvedValueOnce([
+        { id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+        { id: 'sibling-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+      ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
 });
 
 describe('entity catalog injection at claim time', () => {
