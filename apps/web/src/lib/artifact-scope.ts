@@ -3,8 +3,9 @@
  * in the drizzle schema, so never import it from a client component — import
  * `./artifact-prominence` there instead.
  */
-import { artifacts } from '@buildd/core/db/schema';
+import { artifacts, workers } from '@buildd/core/db/schema';
 import { and, inArray, isNotNull, notInArray, or, eq, sql, type SQL } from 'drizzle-orm';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
 import {
   BYPRODUCT_ARTIFACT_TYPES,
   REVIEW_ARTIFACT_TYPES,
@@ -14,35 +15,40 @@ import {
 const MATCHES_NOTHING = sql`false`;
 
 /**
- * Every artifact the given user may see, given the workspaces they can access
- * and the workers in those workspaces.
+ * Every artifact visible to a user who can access `workspaceIds`.
  *
  * Two arms, because an artifact has two possible tenancy anchors and
  * `workspace_id` is nullable:
  *
  *   workspace_id IN (accessible workspaces)   -- mission/initiative/workspace
  *                                                level rows, worker_id NULL
- *   OR worker_id IN (workers in those same workspaces)  -- legacy rows whose
+ *   OR worker_id IN (SELECT id FROM workers WHERE workspace_id IN (same))
+ *                                             -- legacy rows whose
  *                                                workspace_id was never set
  *
- * Both arms are anchored to an id the caller already resolved. There is
- * deliberately no `mission_id IS NOT NULL` style arm: a row whose
- * `workspace_id` AND `worker_id` are both NULL has no tenancy anchor and must
- * stay invisible rather than be reached through a mission join.
+ * Both arms are anchored to `workspaceIds`. There is deliberately no
+ * `mission_id IS NOT NULL` style arm: a row whose `workspace_id` AND
+ * `worker_id` are both NULL has no tenancy anchor and must stay invisible
+ * rather than be reached through a mission join.
  *
- * `workerIds` must be derived from `workspaceIds` — an empty `workspaceIds`
- * therefore means "no access at all" and matches nothing, regardless of
- * workers passed in.
+ * The worker arm is a subquery rather than a caller-loaded id list, which
+ * would grow with every worker ever run. Empty access fails closed.
  */
-export function artifactVisibilityScope(
-  { workspaceIds, workerIds }: { workspaceIds: readonly string[]; workerIds: readonly string[] },
-): SQL {
+export function workspaceArtifactScope(workspaceIds: readonly string[]): SQL {
   if (workspaceIds.length === 0) return MATCHES_NOTHING;
-
-  const workspaceArm = inArray(artifacts.workspaceId, [...workspaceIds]);
-  if (workerIds.length === 0) return workspaceArm;
-
-  return or(workspaceArm, inArray(artifacts.workerId, [...workerIds]))!;
+  const ids = [...workspaceIds];
+  // A built subquery, not a `sql` template: `db.query.*.findMany` re-aliases
+  // every Column inside a root `where` SQL fragment to the root table, which
+  // turned a templated subquery into a correlated self-reference on
+  // `artifacts` that matched nothing. A query-builder subquery is left alone.
+  const workerIdsInScope = new QueryBuilder()
+    .select({ id: workers.id })
+    .from(workers)
+    .where(inArray(workers.workspaceId, ids));
+  return or(
+    inArray(artifacts.workspaceId, ids),
+    inArray(artifacts.workerId, workerIdsInScope),
+  )!;
 }
 
 /**

@@ -78,3 +78,45 @@ describe('ArtifactList review scope', () => {
     expect(html).not.toContain('>Screenshot');
   });
 });
+
+describe('ArtifactList server-driven scope (paged callers)', () => {
+  // /app/artifacts loads one page, already filtered in SQL. The toggle must
+  // navigate (so the server re-queries the other scope) and show the SQL
+  // counts, not counts of whatever page happens to be loaded.
+  const REVIEW_ONLY = MIXED.filter(i => i.id !== 'shot' && i.id !== 'plan');
+  const serverScope = {
+    scope: 'review' as const,
+    reviewCount: 40,
+    totalCount: 90,
+    hrefs: { review: '/app/artifacts?scope=review', all: '/app/artifacts?scope=all' },
+    partial: true,
+  };
+
+  it('renders toggle segments as links carrying the SQL counts', () => {
+    const html = render({ artifacts: REVIEW_ONLY, serverScope });
+    const tag = (testid: string) => html.match(new RegExp(`<a [^>]*data-testid="${testid}"[^>]*>`))?.[0] ?? '';
+    expect(tag('artifact-scope-all')).toContain('href="/app/artifacts?scope=all"');
+    expect(tag('artifact-scope-review')).toContain('aria-current="page"');
+    expect(tag('artifact-scope-all')).not.toContain('aria-current');
+    expect(html).toMatch(/For review<span[^>]*>40</);
+    expect(html).toMatch(/All artifacts<span[^>]*>90</);
+  });
+
+  it('does not re-filter server-scoped rows on the client', () => {
+    const html = render({ artifacts: MIXED, serverScope: { ...serverScope, scope: 'all' } });
+    for (const i of MIXED) expect(html).toContain(`title-${i.id}`);
+  });
+
+  it('offers a link to all artifacts, not "No artifacts yet", when the review page is empty', () => {
+    const html = render({ artifacts: [], serverScope });
+    expect(html).not.toContain('No artifacts yet');
+    expect(html).toContain('Nothing waiting for review.');
+    expect(html).toContain('href="/app/artifacts?scope=all"');
+  });
+
+  it('says search covers only the loaded rows when the page is partial', () => {
+    const many = Array.from({ length: 5 }, (_, n) => item({ id: `r${n}`, type: 'report' }));
+    const html = render({ artifacts: many, serverScope });
+    expect(html).toContain('data-testid="artifact-search-partial"');
+  });
+});
