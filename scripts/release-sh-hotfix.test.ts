@@ -81,7 +81,9 @@ printf '%s\\n' "$*" >> "${ghLog}"
 case "$1 $2" in
   "repo view") echo "o/r" ;;
   "pr list") cat "${ghOpenTitles}" ;;
-  "pr create") echo "https://github.com/o/r/pull/1" ;;
+  "pr create")
+    if [ -n "\${GH_PR_CREATE_FAIL:-}" ]; then echo "gh: network down" >&2; exit 1; fi
+    echo "https://github.com/o/r/pull/1" ;;
 esac
 `;
   writeFileSync(join(bin, 'gh'), stub);
@@ -89,8 +91,8 @@ esac
   return { root, work, origin, ghLog, ghOpenTitles, bin };
 }
 
-function hotfix(f: Fixture) {
-  return run(f.work, 'bash', [SCRIPT, '--hotfix'], { PATH: `${f.bin}:${process.env.PATH}` });
+function hotfix(f: Fixture, env: Record<string, string> = {}) {
+  return run(f.work, 'bash', [SCRIPT, '--hotfix'], { PATH: `${f.bin}:${process.env.PATH}`, ...env });
 }
 
 const version = (dir: string, p: string) => JSON.parse(readFileSync(join(dir, p), 'utf8')).version;
@@ -172,6 +174,41 @@ describe('release.sh --hotfix', () => {
     expect(originHasBranch(f)).toBe(false);
   });
 
+  test('re-running after a failed PR create reuses the bump commit instead of dying', () => {
+    // The first run commits the bump, then `gh pr create` fails. origin/main
+    // has not moved, so the second run computes the same version; re-bumping
+    // is a no-op and used to abort with "changed no files".
+    const f = fixture();
+    const first = hotfix(f, { GH_PR_CREATE_FAIL: '1' });
+    expect(first.status).not.toBe(0);
+    expect(git(f.work, 'log', '-1', '--format=%s')).toBe('chore: bump version to v1.2.4');
+    const headAfterFirst = git(f.work, 'rev-parse', 'HEAD');
+
+    const second = hotfix(f);
+    expect(second.status, second.stdout + second.stderr).toBe(0);
+    // No second bump commit stacked on top.
+    expect(git(f.work, 'rev-parse', 'HEAD')).toBe(headAfterFirst);
+    expect(git(f.work, 'rev-list', '--count', 'origin/main..HEAD')).toBe('2');
+    for (const p of PACKAGE_FILES) expect(version(f.work, p)).toBe('1.2.4');
+    expect(readFileSync(f.ghLog, 'utf8')).toContain('--title Hotfix v1.2.4');
+    expect(git(f.origin, 'rev-parse', 'refs/heads/hotfix/thing')).toBe(headAfterFirst);
+  });
+
+  test('the collision check reads past gh pr list default page size', () => {
+    const f = fixture();
+    expect(hotfix(f).status).toBe(0);
+    const list = readFileSync(f.ghLog, 'utf8')
+      .split('\n')
+      .find((l) => l.startsWith('pr list'));
+    expect(list).toBeDefined();
+    expect(list).toMatch(/--limit \d{3,}/);
+  });
+
+  // The `refs/tags/${NEW_VERSION}` refusal in release.sh is defense-in-depth:
+  // NEW_VERSION is derived from max(latest tag, main's version) + 1, so it is
+  // above every tag the fetch saw and the guard is unreachable in practice.
+  // 'sees tags that only origin has' covers the realistic path to a taken tag.
+
   test('once merged, Tag Release resolves a fresh tag instead of failing', () => {
     const f = fixture();
     expect(hotfix(f).status).toBe(0);
@@ -206,7 +243,10 @@ describe('release.sh --hotfix', () => {
     const notify = wf.jobs.tag.steps.find((s: any) => /friction/i.test(s.name ?? ''));
     expect(notify).toBeDefined();
     expect(String(notify.if)).toContain('failure()');
-    expect(String(notify.if)).toContain('steps.version');
+    // Only the "already tagged at an older commit" branch, not every failure of
+    // the step: an unreadable package.json is a different diagnosis.
+    expect(String(notify.if)).toContain("steps.version.outputs.untagged == 'true'");
+    expect(resolveStep()).toContain('echo "untagged=true" >> "$GITHUB_OUTPUT"');
     expect(String(notify.run)).toContain('frictionSignature: "release-untagged-main"');
     expect(String(notify.run)).toContain('/api/tasks');
   });

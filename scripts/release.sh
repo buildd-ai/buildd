@@ -111,6 +111,8 @@ if [ "${1:-}" = "--hotfix" ]; then
 
   echo "Hotfix: latest tag ${LATEST_TAG}, main at v${MAIN_VERSION} → ${NEW_VERSION} (patch)"
 
+  # Defense-in-depth: NEW_VERSION is above every fetched tag by construction,
+  # so this only fires if the computation above is ever changed.
   if git rev-parse -q --verify "refs/tags/${NEW_VERSION}" >/dev/null; then
     echo "❌ ${NEW_VERSION} is already tagged. Refusing to open a hotfix that cannot be tagged."
     exit 1
@@ -118,7 +120,8 @@ if [ "${1:-}" = "--hotfix" ]; then
 
   # Another release/hotfix PR claiming the same version would leave whichever
   # merges second untagged. Fail closed if GitHub cannot be asked.
-  if ! OPEN_TITLES=$(gh pr list --state open --base main --json title --jq '.[].title'); then
+  # --limit: gh's default page is 30; missing a colliding PR must not pass.
+  if ! OPEN_TITLES=$(gh pr list --state open --base main --limit 500 --json title --jq '.[].title'); then
     echo "❌ Could not list open PRs to check for a version collision; refusing to continue."
     exit 1
   fi
@@ -127,11 +130,20 @@ if [ "${1:-}" = "--hotfix" ]; then
     exit 1
   fi
 
-  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "buildd-ai/buildd")
-  bump_versions "$SEMVER" "$LATEST_TAG" "$REPO"
-  if ! commit_version_bump "$NEW_VERSION"; then
-    echo "❌ Version bump to ${NEW_VERSION} changed no files (is PACKAGE_FILES right?). Refusing to open an untaggable hotfix."
-    exit 1
+  # Re-run after a failed push / `gh pr create`: the bump commit is already on
+  # this branch, and origin/main has not moved, so the same version comes out.
+  # Re-bumping would change nothing, so reuse the existing commit.
+  HEAD_VERSION=$(jq -r '.version // empty' apps/web/package.json 2>/dev/null || true)
+  if [ "$HEAD_VERSION" = "$SEMVER" ] \
+     && git log origin/main..HEAD --format='%s' | grep -qxF "chore: bump version to ${NEW_VERSION}"; then
+    echo "  i  ${NEW_VERSION} bump already committed on ${BRANCH} (earlier run) — reusing it"
+  else
+    REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "buildd-ai/buildd")
+    bump_versions "$SEMVER" "$LATEST_TAG" "$REPO"
+    if ! commit_version_bump "$NEW_VERSION"; then
+      echo "❌ Version bump to ${NEW_VERSION} changed no files. Check PACKAGE_FILES, or whether this branch already carries a partial bump commit (git log origin/main..HEAD). Refusing to open an untaggable hotfix."
+      exit 1
+    fi
   fi
 
   BODY=$(cat <<EOF

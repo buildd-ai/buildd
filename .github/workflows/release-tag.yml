@@ -74,11 +74,14 @@ jobs:
           # The merged PR did not bump apps/web/package.json. Both fixes below
           # move to a version that is NOT tagged yet — re-running `--tag` on
           # the current version is a no-op, because that version is taken.
+          echo "untagged=true" >> "$GITHUB_OUTPUT"
           echo "::error title=Production shipped untagged::${VERSION} already tags ${TAGGED_SHA}, but main is now at ${HEAD_SHA}. That commit is deployed and covered by no tag. Fix: (1) from a branch off origin/main run 'bun run release:hotfix' — it bumps every package.json past the latest tag and opens a PR to main; merging it re-runs this workflow and tags. Or (2) tag by hand with the next unused patch version: git tag vX.Y.Z ${HEAD_SHA} && git push origin vX.Y.Z && gh release create vX.Y.Z --title vX.Y.Z --notes '...', then bump package.json on main to match."
           exit 1
 
       - name: File a friction task when main ships untagged
-        if: failure() && steps.version.outcome == 'failure'
+        # Gated on the untagged branch only: other failures of the step (e.g.
+        # an unreadable package.json) are a different diagnosis.
+        if: failure() && steps.version.outputs.untagged == 'true'
         env:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
