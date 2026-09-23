@@ -7,7 +7,7 @@
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-const WORKER_ID = 'worker-aaa-111';
+const WORKER_ID = 'a1a1a1a1-0000-4000-8000-000000000111';
 const SENDER_TASK_ID = '11111111-1111-1111-1111-111111111111';
 const RECIPIENT_TASK_ID = '22222222-2222-2222-2222-222222222222';
 const WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';

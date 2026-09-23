@@ -11,6 +11,7 @@
 
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import * as realMcpTools from '@buildd/core/mcp-tools';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TEAM_ID = 'team-1';
@@ -18,6 +19,10 @@ const TEAM_ID = 'team-1';
 // ── Mocks must be declared before importing the route ───────────────────────
 
 const mockAuthenticateApiKey = mock(() => null as any);
+// Rows returned by any `db.select().from().where().limit()` — used by the
+// "does this caller reach a sensitive workspace" lookup.
+const mockSelectLimit = mock(() => Promise.resolve([] as any[]));
+const selectWheres: unknown[] = [];
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
 const mockGetMemoryStoreForTeam = mock(() => Promise.resolve(null as any));
 const mockHandleMemoryAction = mock(async () => ({ content: [{ type: 'text', text: '{"handled":true}' }] }));
@@ -44,7 +49,7 @@ mock.module('@buildd/core/db', () => ({
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve([])) })) })),
     insert: mock(() => ({ values: mock(() => Promise.resolve([])) })),
     select: mock(() => ({
-      from: mock(() => ({ where: mock(() => ({ limit: mock(() => Promise.resolve([])) })) })),
+      from: mock(() => ({ where: mock((w: unknown) => { selectWheres.push(w); return { limit: mockSelectLimit }; }) })),
     })),
   },
 }));
@@ -392,6 +397,53 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     await ctx.getWorkspaceId();
     expect(await ctx.getMemoryClient()).toBeNull();
     expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+
+  // claim_task resolves its own workspace (an explicit id, or any workspace the
+  // account can claim from), which the connection never learns. On an unpinned
+  // connection the memory client is therefore withheld whenever the caller
+  // can reach a sensitive workspace at all.
+  it('gives a claim on an unpinned connection no memory client when the caller reaches a sensitive workspace', async () => {
+    workspaceIs('standard');
+    mockSelectLimit.mockResolvedValueOnce([{ id: WORKSPACE_ID }]);
+
+    await callTool('buildd', { action: 'claim_task', params: { workspaceId: WORKSPACE_ID } });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    // Exactly what claim_task does with an explicit UUID: no getWorkspaceId().
+    expect(await ctx.getMemoryClient()).toBeNull();
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+
+  it("scopes the sensitive-reach lookup to sensitive workspaces of the caller's team", async () => {
+    workspaceIs('standard');
+    selectWheres.length = 0;
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    await ctx.getMemoryClient();
+    expect(selectWheres.length).toBe(1);
+    const q = new PgDialect().sqlToQuery(selectWheres[0] as any);
+    expect(q.sql).toContain('"data_class"');
+    expect(q.sql).toContain('"team_id"');
+    expect(q.params).toContain('sensitive');
+    expect(q.params).toContain(TEAM_ID);
+  });
+
+  it('withholds the memory client when the sensitive-reach lookup fails', async () => {
+    workspaceIs('standard');
+    mockSelectLimit.mockRejectedValueOnce(new Error('db down'));
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient()).toBeNull();
+  });
+
+  it('keeps the memory client for a claim when the caller reaches no sensitive workspace', async () => {
+    workspaceIs('standard');
+
+    await callTool('buildd', { action: 'claim_task', params: { workspaceId: WORKSPACE_ID } });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient()).toEqual({ id: 'store-1' });
   });
 
   it('gives buildd actions a memory client for an inferred standard workspace', async () => {

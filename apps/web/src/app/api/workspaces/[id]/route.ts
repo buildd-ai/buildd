@@ -4,7 +4,7 @@ import { workspaces, githubRepos } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
+import { verifyWorkspaceAccess, getUserTeamRole } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
@@ -102,11 +102,21 @@ export async function PATCH(
       gitConfig, maxConcurrentTasks, connectorAdvisoryMode,
     } = body;
 
-    // Merge policy / git config, access mode, data class and the connector
-    // claim gate are workspace-admin settings (POST /config applies the same
-    // bar): owner or admin in the workspace's team for a session, admin level
-    // for an API key. Checked before any write so a mixed body is all-or-nothing.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode]
+    // Moving the workspace to another team is not an API-key action: the
+    // migrate flow (/api/workspaces/[id]/migrate) owns cross-team moves.
+    if (teamId !== undefined && apiAccount) {
+      return NextResponse.json(
+        { error: 'teamId cannot be changed with an API key; use /api/workspaces/[id]/migrate' },
+        { status: 400 },
+      );
+    }
+
+    // Merge policy / git config, access mode, data class, the connector claim
+    // gate and the owning team are workspace-admin settings: owner or admin in
+    // the workspace's team for a session (the bar POST /config sets for
+    // sessions), plus an admin-level API key. Checked before any write so a
+    // mixed body is all-or-nothing.
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, teamId]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
@@ -117,19 +127,20 @@ export async function PATCH(
       }
     }
 
+    // A session move also needs owner or admin on the target team.
+    if (teamId !== undefined && user) {
+      const targetRole = typeof teamId === 'string' ? await getUserTeamRole(user.id, teamId) : null;
+      if (targetRole !== 'owner' && targetRole !== 'admin') {
+        return NextResponse.json({ error: 'Requires admin on the target team' }, { status: 403 });
+      }
+    }
+
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
     };
 
-    if (teamId !== undefined) {
-      if (user) {
-        const userTeamIds = await getUserTeamIds(user.id);
-        if (!userTeamIds.includes(teamId)) {
-          return NextResponse.json({ error: 'You do not belong to the target team' }, { status: 403 });
-        }
-      }
-      updates.teamId = teamId;
-    }
+    // Authorized above (session admin on both teams; API keys rejected).
+    if (teamId !== undefined) updates.teamId = teamId;
 
     if (name !== undefined) updates.name = name;
     // Accept both "repo" and "repoUrl" for convenience

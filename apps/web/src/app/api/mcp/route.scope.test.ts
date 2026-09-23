@@ -32,8 +32,19 @@ function render(where: any): { sql: string; params: unknown[] } {
 }
 
 // The workspace lookup keys on the id param inside the rendered predicate.
+// Postgres rejects a non-UUID compared to a uuid column (22P02); the mocks
+// throw the same way so a lookup on a malformed id is observable.
+function assertUuidParams(params: unknown[]) {
+  for (const p of params) {
+    if (typeof p === 'string' && !/^[0-9a-f-]{36}$/i.test(p) && !p.startsWith('team-') && !p.startsWith('acc-')) {
+      throw new Error('invalid input syntax for type uuid');
+    }
+  }
+}
+
 const mockWorkspacesFindFirst = mock(async (opts: any) => {
   const { params } = render(opts.where);
+  assertUuidParams(params);
   const id = params.find(p => typeof p === 'string' && WORKSPACE_ROWS[p as string]) as string | undefined;
   return id ? { id, ...WORKSPACE_ROWS[id] } : null;
 });
@@ -61,7 +72,12 @@ mock.module('@buildd/core/db', () => ({
         findMany: mock(async () => []),
       },
       teams: { findFirst: mock(async () => null) },
-      workers: { findFirst: mock(async () => null) },
+      workers: {
+        findFirst: mock(async (opts: any) => {
+          assertUuidParams(render(opts.where).params);
+          return null;
+        }),
+      },
       tasks: { findFirst: mock(async () => null) },
     },
     select: mock(() => ({
@@ -127,6 +143,20 @@ describe('/api/mcp ?workspace= scope', () => {
     const foreign = await POST(recallRequest(`?workspace=${FOREIGN_WS}`));
     expect(unknown.status).toBe(403);
     expect(await unknown.json()).toEqual(await foreign.json());
+  });
+
+  it('refuses a malformed workspace id with the same 403 as a foreign one', async () => {
+    const malformed = await POST(recallRequest('?workspace=not-a-uuid'));
+    const foreign = await POST(recallRequest(`?workspace=${FOREIGN_WS}`));
+    expect(malformed.status).toBe(403);
+    expect(await malformed.json()).toEqual(await foreign.json());
+    expect(mockHandleRecallAction).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed worker id with 403 rather than a server error', async () => {
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}&worker=not-a-uuid`));
+    expect(res.status).toBe(403);
+    expect(mockHandleRecallAction).not.toHaveBeenCalled();
   });
 
   it("accepts the caller's own team's workspace", async () => {
