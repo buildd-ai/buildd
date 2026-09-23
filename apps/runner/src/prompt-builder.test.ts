@@ -227,4 +227,21 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
     const desc = sections.find(s => s.name === 'task-description')!;
     expect(desc.bytes).toBe(Buffer.byteLength('## Task\nA description with some length to it.', 'utf8'));
   });
+
+  // Regression for a duplicate-push bug: a leftover for-loop pushed each
+  // resolvedContextProviders block into promptParts directly, and addSection
+  // pushed the joined content again — every task with context providers got
+  // that content duplicated verbatim in the actual prompt.
+  it('renders resolved context providers exactly once', () => {
+    const block = 'Some resolved context block.';
+    const ctx = baseCtx({ resolvedContextProviders: [block] });
+    const { promptText, sections } = buildPromptWithComposition(ctx);
+
+    const occurrences = promptText.split(block).length - 1;
+    expect(occurrences).toBe(1);
+
+    const section = sections.find(s => s.name === 'resolved-context-providers')!;
+    expect(section.rendered).toBe(true);
+    expect(section.bytes).toBe(Buffer.byteLength(block, 'utf8'));
+  });
 });

@@ -428,9 +428,6 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // section per provider — the set is dynamic and unnamed at this layer — so
   // this reports the combined bytes of whatever fired.
   if (ctx.resolvedContextProviders?.length) {
-    for (const block of ctx.resolvedContextProviders) {
-      promptParts.push(block);
-    }
     addSection('resolved-context-providers', ctx.resolvedContextProviders.join('\n\n'));
   } else {
     sections.push({ name: 'resolved-context-providers', bytes: 0, rendered: false, truncated: false });
