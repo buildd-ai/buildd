@@ -3,6 +3,7 @@ import {
   applyBudgetUsage,
   budgetMonthKey,
   BUDGET_ALERT_THRESHOLDS,
+  countsTowardAgentSdkCreditPool,
   type BudgetState,
 } from '../budget-alerts';
 
@@ -83,5 +84,30 @@ describe('applyBudgetUsage', () => {
 
   it('exposes the expected default thresholds', () => {
     expect(BUDGET_ALERT_THRESHOLDS).toEqual([50, 80, 100]);
+  });
+});
+
+// The monthly pool is the Claude Agent SDK credit on a seat subscription.
+// Codex spend, API-key (metered) spend and a tenant's own credential are all
+// billed somewhere else, so counting them overstated the pool and fired its
+// threshold alerts early.
+describe('countsTowardAgentSdkCreditPool', () => {
+  it('counts Claude work on a seat (OAuth) account', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth' })).toBe(true);
+    // A task row with no backend recorded ran on the default backend: Claude.
+    expect(countsTowardAgentSdkCreditPool({ backend: null, authType: 'oauth' })).toBe(true);
+  });
+
+  it('does not count Codex work', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'codex', authType: 'oauth' })).toBe(false);
+  });
+
+  it('does not count API-key (metered) work', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'api' })).toBe(false);
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: null })).toBe(false);
+  });
+
+  it('does not count work on a tenant credential', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth', tenantId: 'tenant-a' })).toBe(false);
   });
 });

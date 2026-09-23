@@ -7,7 +7,8 @@
  *
  * Context: as of 2026-06-15 the Claude Agent SDK draws from a fixed monthly
  * credit pool (e.g. $100), billed at list rates with no rollover. This tracks
- * consumption against that pool regardless of auth type.
+ * consumption against that pool; `countsTowardAgentSdkCreditPool` decides
+ * which sessions draw on it.
  */
 
 /** Percent-of-budget thresholds that trigger an alert. */
@@ -72,4 +73,29 @@ export function applyBudgetUsage(
   }
 
   return { monthlyCostUsd, monthlyCostMonth: month, alertsSent, crossed };
+}
+
+/**
+ * Does this session's spend draw on the monthly Agent SDK credit pool?
+ *
+ * The pool is Claude usage on a seat (OAuth) subscription. Codex has its own
+ * pool, API-key work is metered per token, and a tenant runs on its own
+ * credential, so none of them belong in the pool total or its threshold
+ * alerts. The worker row's cost is still written for every session; this only
+ * decides whether the TEAM's pool counter moves.
+ *
+ * `authType` is the account's, which is how the rest of the platform decides
+ * seat vs metered today (see the claim route's seat cap). An account created
+ * by a CLI login is recorded as `api` even when the runner behind it is on a
+ * seat; it is excluded here the same way it is excluded from seat pacing,
+ * until the credential's own billing mode is persisted on the worker.
+ */
+export function countsTowardAgentSdkCreditPool(input: {
+  backend: string | null | undefined;
+  authType: string | null | undefined;
+  tenantId?: string | null;
+}): boolean {
+  if (input.backend === 'codex') return false;
+  if (input.tenantId) return false;
+  return input.authType === 'oauth';
 }

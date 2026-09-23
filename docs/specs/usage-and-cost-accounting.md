@@ -202,6 +202,13 @@ NOT silently become a claim gate.
   `teams.monthlyCostUsd` / `monthlyCostMonth` / `budgetAlertsSent`
   (`apps/web/src/app/api/workers/[id]/route.ts:1098-1147`,
   `packages/core/db/schema.ts:46-49`).
+- Only Claude usage on a seat draws on the pool: a session whose task ran on
+  Codex, whose account is API-key (metered), or whose task carries a tenant
+  credential MUST NOT move `teams.monthlyCostUsd` or fire its alerts
+  (`countsTowardAgentSdkCreditPool`, `packages/core/budget-alerts.ts`). The
+  worker row's `costUsd` is still written for every session. Seat vs metered
+  is read from `accounts.authType`, the same signal the claim route's seat cap
+  uses.
 - The charge is `costUsd` when the worker reported a positive cost, otherwise
   `estimateCostUsd(resultMeta.modelUsage)` at published list prices
   (`packages/core/model-prices.ts:28-72`,
