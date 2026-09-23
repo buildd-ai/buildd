@@ -1,7 +1,6 @@
 import { db } from '@buildd/core/db';
 import { accounts, oauthBudgetEpisodes, tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { and, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import {
   DEFAULT_MAX_SAMPLES,
   OAUTH_WINDOW_MS,
@@ -143,17 +142,34 @@ export async function measureOauthWindow(input: {
 }
 
 /**
- * Live workers across every account on the seat. Learned pressure caps the
- * seat's concurrency (see `oauthParallelismCap`), so the count it is compared
- * against has to be seat-wide too — two accounts sharing one plan share one wall.
+ * Statuses that hold an active Claude session on the seat. `waiting_input` is
+ * deliberately absent: a worker parked on a question burns nothing, and letting
+ * it hold a slot would starve the seat while a human is away.
+ */
+export const SEAT_SESSION_STATUSES = ['running', 'starting', 'idle'] as const;
+
+/**
+ * Live Claude sessions across every account on the seat. Learned pressure caps
+ * the seat's Claude concurrency (see `oauthParallelismCap`), so the count it is
+ * compared against has to be seat-wide too — two accounts sharing one plan share
+ * one wall — and has to count only work that draws on that wall: Codex-backend
+ * tasks and tenant-credential tasks run on other pools and never use a slot.
+ *
+ * Budget-failover flips to Codex are in-memory only (tasks.backend stays
+ * 'claude'), so such a worker still counts here. That errs toward a tighter cap,
+ * never below one session — the same limitation the Codex single-flight
+ * tracker has.
  */
 export async function countLiveSeatWorkers(accountIds: string[]): Promise<number> {
   const rows = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(workers)
+    .leftJoin(tasks, eq(workers.taskId, tasks.id))
     .where(and(
       inArray(workers.accountId, accountIds),
-      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+      inArray(workers.status, [...SEAT_SESSION_STATUSES]),
+      or(isNull(tasks.backend), ne(tasks.backend, 'codex')),
+      sql`(${tasks.context}->'tenantContext'->>'tenantId') is null`,
     ));
   return Number(rows[0]?.count ?? 0);
 }

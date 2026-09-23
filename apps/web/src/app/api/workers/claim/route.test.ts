@@ -4450,6 +4450,50 @@ describe('entity catalog injection at claim time', () => {
       });
     });
 
+    // Budget failover flips a Claude task to Codex in-memory. The flipped task
+    // no longer draws on the Claude seat, so the Claude-only cap must not hold
+    // it — this is exactly when the cap is likely active (Claude walled, high
+    // pressure). Deferring it after the flip would also leave the workspace
+    // marked as flipped and refuse later Codex work in the same batch.
+    describe('after budget failover to Codex', () => {
+      const exhaustedOauthAccount = () => ({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const,
+        authType: 'oauth' as const, maxConcurrentSessions: 10, activeSessions: 0,
+        budgetExhaustedAt: new Date().toISOString(),
+        budgetResetsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+      });
+
+      beforeEach(() => {
+        mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+        mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+        mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+        mockHasCodexCredential.mockResolvedValue(true);
+        mockGetCodexCredential.mockResolvedValue({
+          accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
+        });
+        mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+        // Full window → Claude cap of one session.
+        mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
+      });
+
+      it('claims a failed-over task on Codex even when the Claude seat is at its cap', async () => {
+        mockCountLiveSeatWorkers.mockResolvedValue(1);
+        mockTasksFindMany.mockResolvedValue([
+          pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }),
+        ]);
+
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner' },
+        }));
+
+        const data = await res.json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].task.backend).toBe('codex');
+        expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
+      });
+    });
+
     it('claims only up to the narrowed cap in one batch', async () => {
       mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
       // 75% → cap 3 of 5; two already live on the seat → one more slot.

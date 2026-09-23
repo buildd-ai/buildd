@@ -1379,7 +1379,9 @@ export async function POST(req: NextRequest) {
 
     // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
     // Codex and tenant work draw on other pools, so they are never held by it.
-    const usesOauthSeat = !isCodexTask && !tenantCtx?.tenantId;
+    // Read the backend fresh: `isCodexTask` was captured before the budget
+    // failover above, which may just have flipped this task to Codex.
+    const usesOauthSeat = (task as any).backend !== 'codex' && !tenantCtx?.tenantId;
     if (usesOauthSeat && oauthSeatSlotsLeft !== null && oauthSeatSlotsLeft <= 0) {
       deferTask(task, 'oauth_parallelism', { pct: oauthPressure?.pct ?? null });
       continue;

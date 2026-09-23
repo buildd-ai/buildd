@@ -11,7 +11,10 @@
  * Learned OAuth pressure is deliberately NOT a pause input any more: it only
  * narrows per-seat parallelism (`oauthParallelismCap` in
  * packages/core/oauth-budget.ts), so it is never the reason a task sits unclaimed
- * on an idle seat and this probe does not report it.
+ * on an idle seat. It CAN hold a task behind a busy capped seat (claim deferral
+ * `oauth_parallelism`), and this probe does not report that yet — such a task
+ * may still read as `no_gate_identified`. Known gap, tracked as a follow-up:
+ * teach the stall ladder `oauthParallelismCap` + `countLiveSeatWorkers`.
  *
  * This probe answers the same question from the same inputs. It deliberately
  * calls the *same* pure router (`resolveEffectiveModel`) rather than

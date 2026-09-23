@@ -4,17 +4,26 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 let mockWorkerRows: any[] = [];
 let mockEpisodeRows: any[] = [];
 let mockLiveCountRows: any[] = [];
+// Last WHERE predicate handed to a count query, rendered via PgDialect below so
+// the scoping (which workers count against the Claude seat cap) is observable.
+let lastCountWhere: any = null;
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    select: () => ({
-      from: () => ({
-        leftJoin: () => ({
-          where: () => Promise.resolve(mockWorkerRows),
+    select: (shape: Record<string, unknown>) => {
+      const isCount = !!shape && 'count' in shape;
+      const where = (pred: any) => {
+        if (isCount) lastCountWhere = pred;
+        return Promise.resolve(isCount ? mockLiveCountRows : mockWorkerRows);
+      };
+      return {
+        from: () => ({
+          leftJoin: () => ({ where }),
+          innerJoin: () => ({ where }),
+          where,
         }),
-        where: () => Promise.resolve(mockLiveCountRows),
-      }),
-    }),
+      };
+    },
     query: {
       oauthBudgetEpisodes: {
         findMany: () => Promise.resolve(mockEpisodeRows),
@@ -26,6 +35,12 @@ mock.module('@buildd/core/db', () => ({
 const { loadOauthEpisodes, measureOauthWindow, countLiveSeatWorkers, OAUTH_EPISODE_HORIZON_DAYS } =
   await import('./oauth-budget-window');
 const { learnOauthCapacity } = await import('@buildd/core/oauth-budget');
+const { PgDialect } = await import('drizzle-orm/pg-core');
+
+function renderCountWhere(): { sql: string; params: unknown[] } {
+  const q = new PgDialect().sqlToQuery(lastCountWhere);
+  return { sql: q.sql, params: q.params };
+}
 
 const HOUR = 60 * 60 * 1000;
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -34,6 +49,7 @@ beforeEach(() => {
   mockWorkerRows = [];
   mockEpisodeRows = [];
   mockLiveCountRows = [];
+  lastCountWhere = null;
 });
 
 describe('loadOauthEpisodes', () => {
@@ -137,6 +153,33 @@ describe('countLiveSeatWorkers', () => {
   it('reads an empty result as zero', async () => {
     mockLiveCountRows = [];
     expect(await countLiveSeatWorkers(['acc1'])).toBe(0);
+  });
+
+  // The count is compared against a Claude-only session cap, so only work that
+  // draws on the Claude seat may use up a slot. A seat running one Codex worker
+  // has zero Claude sessions and must still get its next Claude claim.
+  it('excludes Codex-backend work from the seat count', async () => {
+    mockLiveCountRows = [{ count: 0 }];
+    await countLiveSeatWorkers(['acc1']);
+    const { sql, params } = renderCountWhere();
+    expect(sql).toContain('"tasks"."backend"');
+    expect(params).toContain('codex');
+  });
+
+  it('excludes tenant-credential work from the seat count', async () => {
+    mockLiveCountRows = [{ count: 0 }];
+    await countLiveSeatWorkers(['acc1']);
+    const { sql } = renderCountWhere();
+    expect(sql).toContain('tenantContext');
+    expect(sql).toContain('tenantId');
+  });
+
+  it('does not count waiting_input workers — they hold no active session', async () => {
+    mockLiveCountRows = [{ count: 0 }];
+    await countLiveSeatWorkers(['acc1']);
+    const { params } = renderCountWhere();
+    expect(params).toContain('running');
+    expect(params).not.toContain('waiting_input');
   });
 });
 
