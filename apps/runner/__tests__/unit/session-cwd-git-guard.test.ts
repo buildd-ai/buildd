@@ -134,13 +134,13 @@ function makeConfig(): LocalUIConfig {
   } as LocalUIConfig;
 }
 
-async function runTask(manager: InstanceType<typeof WorkerManager>, repo: string | null, workerId: string, settleMs = 250) {
+async function runTask(manager: InstanceType<typeof WorkerManager>, repo: string | null, workerId: string, settleMs = 250, gitConfig?: Record<string, unknown>) {
   const task = {
     id: `task-${workerId}`,
     title: 'Repo task',
     description: 'do work',
     workspaceId: 'ws-1',
-    workspace: { name: 'test-workspace', repo },
+    workspace: { name: 'test-workspace', repo, ...(gitConfig ? { gitConfig } : {}) },
     status: 'waiting',
     priority: 1,
   };
@@ -188,11 +188,37 @@ describe('session cwd must be a git checkout for a repo task', () => {
     expect(patch.error).toContain('/tmp/test-workspace');
   });
 
-  test('starts normally when the cwd is a git checkout', async () => {
+  test('starts normally when setupWorktree produced the cwd', async () => {
+    worktreeResult = { path: '/tmp/worktrees/w-git', branch: 'buildd/w-git', base: 'origin/main' };
     await runTask(manager, 'acme/widgets', 'w-git');
 
     expect(sessionStarted).toBe(true);
     expect(failurePatch('w-git')).toBeUndefined();
+  });
+
+  // Worktree setup failed but the base clone IS a checkout. Running there used
+  // to be the fallback: the agent shared the clone with every other worker on
+  // the repo — no isolation, and its commits landed on whatever the clone had
+  // checked out. Fail before any budget is spent instead.
+  test('fails the worker when worktree setup fails, instead of running in the shared clone', async () => {
+    worktreeResult = null;
+    await runTask(manager, 'acme/widgets', 'w-wtfail');
+
+    expect(sessionStarted).toBe(false);
+    const patch = failurePatch('w-wtfail');
+    expect(patch).toBeDefined();
+    expect(patch.error).toContain('Worktree setup failed');
+    expect(patch.error).toContain('buildd/w-wtfail');
+    expect(patch.error).toContain('/tmp/test-workspace');
+  });
+
+  // branchingStrategy 'none' opts out of worktrees: the shared clone is the
+  // configured cwd there, not a fallback.
+  test('branchingStrategy none still runs in the clone', async () => {
+    await runTask(manager, 'acme/widgets', 'w-none', 250, { branchingStrategy: 'none' });
+
+    expect(sessionStarted).toBe(true);
+    expect(failurePatch('w-none')).toBeUndefined();
   });
 
   // A coordination workspace has no repo and is not expected to be a checkout.
@@ -208,6 +234,7 @@ describe('session cwd must be a git checkout for a repo task', () => {
     worktreeResult = { path: '/tmp/worktrees/w-wt', branch: 'buildd/w-wt', base: 'origin/main' };
     await runTask(manager, 'acme/widgets', 'w-wt');
 
+    expect(sessionStarted).toBe(true);
     expect(failurePatch('w-wt')).toBeUndefined();
   });
 });
