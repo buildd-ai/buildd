@@ -41,7 +41,7 @@ assertions:
 
 ## Implementation Status (reconciled 2026-09-23)
 
-If you were dispatched here to reconcile this doc again: check `git log -- docs/design/mission-flight-strip.md` first — the table below may already be current.
+If you were dispatched here to reconcile this doc again: check `git log -- docs/design/mission-flight-strip.md` first — the table below may already be current. It was as of task `b71ed5d3`'s re-verification (2026-09-23, zero drift from the reconciliation above): every symbol, line reference, and test cited in this doc still matches the code exactly. This doc's `compute-mission-flight-strip` / `flight-strip-reachable-from-detail-page` / `flight-strip-cache-migration` ledger rows will keep re-opening after every checker run regardless — they test narrow code facts (a symbol export, a route, a migration) that pass independently of Rule L-4, so they can never carry this doc's status to a terminal value on their own, and a `code_ahead` row whose fix doesn't reach terminal status releases its claim for redispatch. That's expected per spec-conformance.md's claim-release rule, not a doc bug. Only Rule L-4 actually landing (Implementation Breakdown item 1) moves the status to `implemented` and lets those rows close for good.
 
 | Item | Status |
 |---|---|
