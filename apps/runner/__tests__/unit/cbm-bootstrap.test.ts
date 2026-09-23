@@ -495,6 +495,10 @@ describe('runCbmBootstrap', () => {
       expect(settled).toBeNull();
 
       jest.advanceTimersByTime(1);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      // Fail here with a clear message, not on bun's test timeout, if the
+      // default budget regresses past 10s.
+      expect(settled).not.toBeNull();
       const result = await pending;
       expect(result.ok).toBe(false);
       expect(result.backgrounded).toBe(true);

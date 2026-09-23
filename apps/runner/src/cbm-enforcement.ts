@@ -666,8 +666,10 @@ export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
     opening = [
       'The `codebase-memory` MCP server is mounted for this task, but the index build for this repo'
         + ' failed before your first turn — the graph is NOT available.',
-      'A graph call will likely report the project as not indexed. Call mcp__codebase-memory__index_repository'
-        + ` yourself to retry it, or just use a ${dialect.before} for this session.`,
+      opts.sharedBaseIndex
+        ? `A graph call will likely report the project as not indexed. Use a ${dialect.before} for this session.`
+        : 'A graph call will likely report the project as not indexed. Call mcp__codebase-memory__index_repository'
+          + ` yourself to retry it, or just use a ${dialect.before} for this session.`,
     ];
   } else if (opts.sharedBaseIndex) {
     opening = [
@@ -682,8 +684,11 @@ export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
   // Shared-seed mode points CBM at the fleet-wide seed cache. An agent-issued
   // index_repository there would index THIS worktree into that shared dir — a
   // project .db no seed record owns — so the not-indexed fallback in that mode
-  // is to name the seeded project, never to index.
-  const notIndexedFallback = opts.sharedBaseIndex && bootstrapState === 'warm'
+  // is to name the seeded project, never to index. Keyed on sharedBaseIndex
+  // alone (not also bootstrapState === 'warm'): the shared+building/unavailable
+  // combinations are unreachable today only because of how workers.ts reports
+  // a shared-cache hit, and the guidance must stay safe if that changes.
+  const notIndexedFallback = opts.sharedBaseIndex
     ? 'If a query reports the project is not indexed, pass project `' + (opts.project ?? 'unknown')
       + '` explicitly; do not index it yourself — this graph is a shared seed.'
     : 'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.';

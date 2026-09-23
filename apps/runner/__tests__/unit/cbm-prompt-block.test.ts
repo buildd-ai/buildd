@@ -132,6 +132,19 @@ describe('buildCbmGuidanceBody — shared seed does not suggest index_repository
     }
   });
 
+  // The 'building'/'unavailable' states are unreachable in shared mode today (a
+  // shared-cache hit is reported as skipped_warm), but that invariant lives in
+  // workers.ts, far from here. Key the rule on sharedBaseIndex alone so the
+  // guidance stays safe if the combination ever becomes reachable.
+  test('shared-seed guidance never names index_repository in any bootstrap state', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      for (const bootstrapState of ['warm', 'building', 'unavailable'] as const) {
+        const body = buildCbmGuidanceBody({ dialect, bootstrapState, project: 'p', sharedBaseIndex: true });
+        expect(body).not.toContain('index_repository');
+      }
+    }
+  });
+
   test('per-worktree guidance keeps the index_repository fallback', () => {
     for (const dialect of ['claude', 'codex'] as const) {
       expect(buildCbmGuidanceBody({ dialect })).toContain('mcp__codebase-memory__index_repository');
