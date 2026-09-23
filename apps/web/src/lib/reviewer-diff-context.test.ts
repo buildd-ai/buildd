@@ -117,6 +117,34 @@ describe('buildReviewerContext — base ref and diff recipe (V5)', () => {
     expect(out).toContain('gh pr view 42');
     expect(out).not.toMatch(/git diff origin\/main/);
   });
+
+  it('treats a base ref with shell or markdown metacharacters as unknown', async () => {
+    for (const bad of ['dev`; echo hi #', 'x$(id)', 'a;b', '-upload-pack=x', 'a..b']) {
+      const out = await buildReviewerContext({ ...BASE, baseRef: bad });
+      expect(out).toContain('Base branch: unknown');
+      expect(out).not.toContain(bad);
+    }
+  });
+
+  it('treats an unsafe base ref read from GitHub as unknown', async () => {
+    githubApiImpl = async () => ({ body: null, base: { ref: 'dev`$(id)`' } });
+    const out = await buildReviewerContext({ ...BASE, prBody: undefined });
+    expect(out).toContain('Base branch: unknown');
+    expect(out).not.toContain('$(id)');
+  });
+
+  it('still accepts ordinary slashed, dotted and dashed branch names', async () => {
+    const out = await buildReviewerContext({ ...BASE, baseRef: 'release/v1.2-rc_1' });
+    expect(out).toContain('Base branch: `release/v1.2-rc_1`');
+  });
+
+  it('only calls the file list a summary when a file list is rendered', async () => {
+    const withFiles = await buildReviewerContext({ ...BASE, baseRef: 'dev' });
+    expect(withFiles).toContain('The file list below is a summary');
+    const noFiles = await buildReviewerContext({ ...BASE, baseRef: 'dev', prFiles: [] as any });
+    expect(noFiles).not.toContain('The file list below is a summary');
+    expect(noFiles).toContain(`git diff origin/dev...${HEAD}`);
+  });
 });
 
 describe('buildReviewerContext — task artifacts (V6)', () => {

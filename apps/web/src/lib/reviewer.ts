@@ -863,6 +863,8 @@ export async function renderSpecConformanceGuidance(params: {
   return { doctrine, section };
 }
 
+const SAFE_BASE_REF = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]+$/;
+
 /**
  * Where the PR merges and how to read its full diff. The file list and the
  * optional patch are summaries; a reviewer that wants the real diff has to
@@ -877,8 +879,15 @@ export function renderDiffRecipe(params: {
   baseRef: string | null;
   headSha: string;
   prNumber: number;
+  /** Whether a file list follows the recipe; the "summary" line points at it. */
+  hasFileList?: boolean;
 }): string {
-  const { baseRef, headSha, prNumber } = params;
+  const { headSha, prNumber, hasFileList = true } = params;
+  // The ref is interpolated into markdown and into shell commands the reviewer
+  // is told to run. Git allows backticks, `$`, `;` and more in ref names, so
+  // anything outside a conservative shape renders as unknown rather than being
+  // echoed. A leading `-` would read as a git option; `..` as a range.
+  const baseRef = params.baseRef && SAFE_BASE_REF.test(params.baseRef) ? params.baseRef : null;
   if (!baseRef) {
     return [
       '## Reading the Diff',
@@ -892,7 +901,7 @@ export function renderDiffRecipe(params: {
     '## Reading the Diff',
     '',
     `Base branch: \`${baseRef}\`. This PR merges into \`${baseRef}\`; diff against it and no other branch.`,
-    'The file list below is a summary. To read the full change:',
+    hasFileList ? 'The file list below is a summary. To read the full change:' : 'To read the full change:',
     `  git fetch origin ${baseRef} ${headSha}`,
     `  git diff origin/${baseRef}...${headSha}            # the whole PR (three dots: from the merge-base)`,
     `  git diff origin/${baseRef}...${headSha} -- <path>  # one file`,
@@ -1011,7 +1020,12 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
       if (baseRef === undefined) baseRef = null;
     }
   }
-  const diffRecipe = renderDiffRecipe({ baseRef: baseRef ?? null, headSha, prNumber });
+  const diffRecipe = renderDiffRecipe({
+    baseRef: baseRef ?? null,
+    headSha,
+    prNumber,
+    hasFileList: files.length > 0,
+  });
   const { doctrine: ledeDoctrine, section: ledeSection } = renderLedeGuidance(prBody);
   const ledeBlock = ledeSection ? `\n${ledeSection}\n` : '';
   const ledeOutputLine = ledeSection
