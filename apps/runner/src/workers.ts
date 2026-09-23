@@ -246,18 +246,24 @@ function buildUserMessage(
 }
 
 // The one instruction given on a resumed "closing turn" — see startSession's
-// isClosingTurn handling. Deliberately does not restate the task, output
-// requirement, or handoff obligations: those already render into the prompt
-// from the (unmodified) task fields buildPromptWithComposition reads, so
-// repeating them here would just be a second copy to drift out of sync.
+// isClosingTurn handling. It is the ENTIRE prompt of that resumed turn: the
+// original task prompt (output requirement, handoff obligations, workflow
+// sections) is already in the resumed session's history, so the closing turn
+// must not rebuild and re-send it. Deliberately does not restate those
+// obligations either — it points back at them instead of keeping a second
+// copy that could drift out of sync.
 const CLOSING_TURN_INSTRUCTION =
-  'Your last session ended without calling `complete_task`. You have exactly ' +
-  'one turn to fix that: call `complete_task` now with a factual summary of ' +
-  'what you actually delivered (including the PR or artifact link, if any), ' +
-  'plus every structured field described above this task requires — the ' +
-  '`plan` array if this is a planning task, your `handoff` object if one is ' +
-  'requested, and any other field named by the Output Requirement section. ' +
-  'Do no other work — no new investigation, no additional edits.';
+  'Your last session ended without calling `complete_task`. Fix that now: ' +
+  'call `complete_task` with a factual summary of what you actually ' +
+  'delivered (including the PR or artifact link, if any), plus every ' +
+  'structured field the original task prompt earlier in this conversation ' +
+  'requires — the `plan` array if this is a planning task, your `handoff` ' +
+  'object if one is requested, and any other field named by its Output ' +
+  'Requirement section. Do no other work — no new investigation, no ' +
+  'additional edits.';
+
+// Turn cap for a closing turn. See the maxTurns resolution in startSession.
+const CLOSING_TURN_MAX_TURNS = 4;
 
 /**
  * Bounded tail of the session's own assistant text, newest last — the
@@ -2234,14 +2240,276 @@ export class WorkerManager {
   }
 
   /**
+   * The success tail of a session: git stats, Codex token write-back, the
+   * completion PATCH (status completed + measurement fields), then local
+   * status 'done'. Shared by startSession's natural-end branch and by a
+   * closing turn that itself errored — that fallback must complete the
+   * worker exactly as the original session would have without a closing
+   * turn, never mark it failed.
+   */
+  private async completeSessionNormally(
+    worker: LocalWorker,
+    task: BuilddTask,
+    cwd: string,
+    opts: {
+      isCodexTask: boolean;
+      closingTurnOutcome: 'authored' | 'declined' | `skipped:${string}` | undefined;
+      structuredOutput: Record<string, unknown> | undefined;
+    },
+  ): Promise<void> {
+    const { isCodexTask, closingTurnOutcome, structuredOutput } = opts;
+    // A clean completion proves the credential works — reset the auth-failure
+    // backoff so claims resume at full cadence.
+    this.consecutiveAuthFailures = 0;
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+
+    // B (write-back): After a successful OAuth Codex session, the CLI may have
+    // silently refreshed the tokens. Read the auth.json we left in place
+    // (seed-if-missing means it was never rewritten from the stale snapshot) and
+    // POST the current tokens back so the credential store stays fresh.
+    // Best-effort — never throws, never logs token values.
+    if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
+      try {
+        const currentAuth = readCodexAuthJson(worker.id);
+        if (currentAuth?.access_token && currentAuth?.refresh_token) {
+          await this.buildd.writeBackCodexAuth(task.workspaceId, {
+            accessToken: currentAuth.access_token,
+            refreshToken: currentAuth.refresh_token,
+            ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
+            ...(currentAuth.id_token ? { idToken: currentAuth.id_token } : {}),
+          });
+          console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
+        }
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
+      }
+    }
+
+    this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
+    this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
+    worker.currentAction = 'Completed';
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+    this.workerSync.recordCycleTime(worker);
+    this.probedWorkers.delete(worker.id);  // Clean up probe tracking
+    // Generate follow-up prompt suggestions if Stop hook didn't already
+    if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
+      worker.promptSuggestions = generatePromptSuggestions(worker);
+      if (worker.promptSuggestions.length > 0) {
+        console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
+      }
+    }
+    // Aggregate token counts: per-model breakdown → result totals → per-turn
+    // tally. The fallbacks matter on OAuth, where byModel is never populated
+    // and tokens are the only real consumption signal (cost is always 0).
+    // Read for usage aggregation only. The cbm/toolCounts blocks below can
+    // CREATE worker.resultMeta, so this snapshot must never be what the
+    // PATCH sends — see the re-read after them.
+    const sdkResultMeta = worker.resultMeta || undefined;
+    const totals = aggregateUsage(sdkResultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
+    const inputTokens = totals?.inputTokens;
+    const outputTokens = totals?.outputTokens;
+
+    // CBM observability: attach per-task metrics to resultMeta before completion.
+    if (worker.cbmOutcome !== undefined) {
+      const cbmMetrics = buildCbmMetrics(worker)!;
+      // Merge into resultMeta so all metrics travel together to the server.
+      if (worker.resultMeta) {
+        worker.resultMeta.cbm = cbmMetrics;
+      } else {
+        // Provision-failure path: resultMeta wasn't set by the SDK result handler.
+        // Create a minimal shell so cbm travels with the completion payload.
+        worker.resultMeta = {
+          stopReason: null,
+          durationMs: 0,
+          durationApiMs: 0,
+          numTurns: 0,
+          modelUsage: {},
+          cbm: cbmMetrics,
+        };
+      }
+    }
+
+    // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
+    // ships regardless of CBM activation; skipped entirely when no tool ran
+    // so a provision-failed worker doesn't get a resultMeta shell it never earned.
+    // The Bash sub-classification rides the same object: a bucket histogram
+    // is only useful next to the tool histogram it decomposes. Omitted when
+    // the session made no Bash call, so absence stays distinguishable from
+    // "made Bash calls, none of them searches".
+    const toolCounts = worker.toolCounts ?? {};
+    const bashCommandCounts = worker.bashCommandCounts;
+    const measured = {
+      ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
+      ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
+    };
+    if (Object.keys(measured).length > 0) {
+      if (worker.resultMeta) {
+        Object.assign(worker.resultMeta, measured);
+      } else {
+        worker.resultMeta = {
+          stopReason: null,
+          durationMs: 0,
+          durationApiMs: 0,
+          numTurns: 0,
+          modelUsage: {},
+          ...measured,
+        };
+      }
+    }
+
+    // Closing-turn outcome: only present when this invocation actually
+    // made (or explicitly skipped) a closing-turn decision above — never
+    // set on the already-terminal top-level race, which is what keeps
+    // that path's payload byte-identical to before this field existed.
+    if (closingTurnOutcome !== undefined) {
+      if (worker.resultMeta) {
+        worker.resultMeta.closingTurnOutcome = closingTurnOutcome;
+      } else {
+        worker.resultMeta = {
+          stopReason: null,
+          durationMs: 0,
+          durationApiMs: 0,
+          numTurns: 0,
+          modelUsage: {},
+          closingTurnOutcome,
+        };
+      }
+    }
+
+    // Re-read AFTER the three blocks above. All three can assign a
+    // brand-new object to worker.resultMeta (the SDK never emitted a
+    // result message, e.g. the provision-failure path), and the
+    // completion PATCH used to spread a const captured before them — so
+    // on exactly the path whose comment promises the metrics "travel
+    // with the completion payload", the cbm/toolCounts objects were
+    // built and then silently dropped.
+    const resultMeta = worker.resultMeta || undefined;
+
+    // Loop-until-verified: run verification command and collect evidence (spec §2).
+    // Only executes for loopConfig.exitCondition.type='command'; other types need no
+    // runner work (pr_checks_green = server reads webhooks; structured_predicate =
+    // server reads the structuredOutput field already in this payload).
+    let verificationEvidence: Record<string, unknown> | undefined;
+    const loopConfig = task.loopConfig;
+    if (loopConfig?.exitCondition?.type === 'command') {
+      const resolvedCmd = resolveCommand(
+        loopConfig.exitCondition as { type: 'command'; command?: string },
+        task.context as Record<string, unknown> | undefined,
+      );
+      if (resolvedCmd) {
+        this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
+        try {
+          const evidence = await runVerificationCommand({
+            workerId: worker.id,
+            iteration: task.loopIteration ?? 0,
+            command: resolvedCmd,
+            cwd,
+          });
+          verificationEvidence = evidence as unknown as Record<string, unknown>;
+          const label = evidence.outcome === 'ok'
+            ? `Verification passed (exit ${evidence.exitCode})`
+            : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
+        } catch (verifyErr) {
+          // Non-fatal: surface as exec_error evidence so server can still decide
+          console.warn(`[Worker ${worker.id}] Verification command threw unexpectedly:`, verifyErr);
+          verificationEvidence = {
+            workerId: worker.id,
+            iteration: task.loopIteration ?? 0,
+            conditionType: 'command',
+            command: resolvedCmd,
+            outcome: 'exec_error',
+            stderr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+          };
+        }
+      } else {
+        console.warn(`[Worker ${worker.id}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
+      }
+    }
+
+    // Build subagent spans for terminal flush (not on hot path — only at completion).
+    const subagentSpans = buildSubagentSpans(worker.subagentTasks);
+    const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
+
+    // Fallback summary, only meaningful when this PATCH is actually the
+    // first write (closingTurnOutcome !== 'authored') — an 'authored' or
+    // already-terminal payload gets refused (abort: true) and this field
+    // is dropped with the rest of the status half; see METRICS_ONLY_FIELDS.
+    const fallbackSummary = buildFallbackSummaryTail(worker);
+
+    const completionPayload = {
+      status: 'completed',
+      milestones: worker.milestones,
+      ...gitStats,
+      // Cost + model attribution: without these the server can only guess,
+      // and workers.cost_usd stayed at its '0' default for every runner task.
+      ...this.terminalAttributionPayload(worker),
+      ...(resultMeta && { resultMeta }),
+      ...(inputTokens && { inputTokens }),
+      ...(outputTokens && { outputTokens }),
+      // Include structured output if the SDK returned validated JSON
+      ...(structuredOutput ? { structuredOutput } : {}),
+      // Bounded tail of the session's own assistant text (newest last),
+      // used as the summary when the session ended without the agent
+      // calling complete_task itself — after a closing turn if one was
+      // attempted, so this reflects whatever it said too. Tag 'fallback'
+      // so downstream consumers (KB ingestion, UI) never present it as an
+      // authored result. See docs/specs — the agent's own complete_task
+      // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
+      ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
+      // Loop verification evidence (only present for command exit condition)
+      ...(verificationEvidence ? { verificationEvidence } : {}),
+      // Subagent spans — terminal-only flush
+      ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
+      subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+      backgroundAgentMs,
+    };
+    const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
+      { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
+
+    // The server refused the status write because the row is ALREADY
+    // terminal — the normal outcome when the agent called the buildd MCP
+    // `complete_task` itself: the server completed the worker, pushed
+    // worker:completed, and this PATCH arrives afterwards. Everything above
+    // that is measurement rather than state (resultMeta with the CBM
+    // metrics and tool histogram, tokens, cost, model, git stats, subagent
+    // spans) would be lost with it, and that cohort is the long-session
+    // one — which quietly biased every usage rollup toward short sessions.
+    // Re-send it as a metrics-only PATCH: the server accepts those on a
+    // terminal worker without reviving status, and still refuses a worker
+    // IT expired (stale cleanup / reassign / takeover).
+    if (completionResult?.abort === true) {
+      await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
+    }
+    // Set 'done' only after the server update so any poll of local status
+    // reflects the server's task state (prevents getMission race in E2E tests).
+    worker.status = 'done';
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+
+    // Task outcomes are indexed into the knowledge store via complete_task → mirrorWorkProduct (task corpus).
+    // The legacy createObservation path that wrote type:'summary' to the memory corpus has been removed:
+    // summary entries duplicated task-corpus data with worse fidelity and polluted memory recall.
+  }
+
+  /**
    * @param isClosingTurn Set only by the recursive self-call from this same
    * method's post-loop logic: this invocation IS a session's one bounded
    * closing turn (see CLOSING_TURN_INSTRUCTION), not a fresh dispatch or an
-   * ordinary follow-up resume. Gates two things: the closing-turn decision
-   * itself never fires twice (no recursion past depth 1), and maxTurns is
-   * forced to exactly 1 regardless of the task/workspace configured cap.
+   * ordinary follow-up resume. Gates: the closing-turn decision itself never
+   * fires twice (no recursion past depth 1), maxTurns is forced to
+   * CLOSING_TURN_MAX_TURNS regardless of the task/workspace configured cap,
+   * the prompt is only CLOSING_TURN_INSTRUCTION, and a closing turn that
+   * itself errors falls back to the pre-closing-turn outcome instead of
+   * failing the worker.
+   * @param closingTurnOriginalError Only for a closing turn that followed a
+   * turn-cap error: the original session's error, reported (as before closing
+   * turns existed) if the closing turn itself errors. Undefined for a closing
+   * turn after a natural end, whose fallback is a normal completion.
    */
-  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false) {
+  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, closingTurnOriginalError?: unknown) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
@@ -3168,9 +3436,13 @@ export class WorkerManager {
       // Resolve max turns for SDK-level turn limiting. A closing turn is a
       // single bounded attempt regardless of the task/workspace cap — it
       // exists to let the agent call complete_task, not to resume normal
-      // work, and bounding it to exactly 1 is what keeps it a fixed one-time
-      // cost even when the original session burned its own cap in full.
-      const maxTurns = isClosingTurn ? 1 : resolveMaxTurns(workspaceConfig, this.config.maxTurns);
+      // work, and a small fixed cap keeps it a one-time cost even when the
+      // original session burned its own cap in full. It is NOT 1: the buildd
+      // MCP tool is deferred, so the model needs one turn to load it
+      // (ToolSearch), one to call complete_task and one to end — a 1-turn cap
+      // was spent entirely on ToolSearch and ended every attempt on
+      // error_max_turns.
+      const maxTurns = isClosingTurn ? CLOSING_TURN_MAX_TURNS : resolveMaxTurns(workspaceConfig, this.config.maxTurns);
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (task.context as any)?.thinking;
@@ -3776,6 +4048,12 @@ export class WorkerManager {
         }
       }
 
+      // A closing turn resumes a session whose history already holds the full
+      // task prompt. Send ONLY the closing instruction — rebuilding the prompt
+      // here re-sent every section (workflow, output requirement, memory)
+      // as if it were a fresh task, inviting the model to start over.
+      if (isClosingTurn) promptText = CLOSING_TURN_INSTRUCTION;
+
       // One composition record per prompt build — what the workspace-memory
       // block cost, on the durable rail the concluded memory-digest
       // experiment left behind (see memory-digest-policy.ts).
@@ -3811,7 +4089,7 @@ export class WorkerManager {
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
-      const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
+      const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0 && !isClosingTurn
         ? (async function* () {
             yield buildUserMessage([
               { type: 'text', text: promptText },
@@ -4109,6 +4387,14 @@ export class WorkerManager {
         let closingTurnOutcome: 'authored' | 'declined' | `skipped:${string}` | undefined;
         if (isClosingTurn) {
           closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker)) ? 'authored' : 'declined';
+        } else if (structuredOutput) {
+          // The session authored its outcome through the SDK's structured
+          // output (a task with an outputSchema, e.g. a reviewer verdict) —
+          // that IS the result, delivered in the completion payload below.
+          // Such sessions never call complete_task, so "not terminal on the
+          // server" is expected here, not a missing outcome: resuming them for
+          // a closing turn only risks failing a session that already
+          // succeeded. Complete exactly as before closing turns existed.
         } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
           if (!resumeId) {
@@ -4135,240 +4421,11 @@ export class WorkerManager {
         // still built and sent, the server still refuses it (abort: true),
         // and persistTerminalMetrics still runs exactly as it always has.
 
-        // A clean completion proves the credential works — reset the auth-failure
-        // backoff so claims resume at full cadence.
-        this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
-
-        // B (write-back): After a successful OAuth Codex session, the CLI may have
-        // silently refreshed the tokens. Read the auth.json we left in place
-        // (seed-if-missing means it was never rewritten from the stale snapshot) and
-        // POST the current tokens back so the credential store stays fresh.
-        // Best-effort — never throws, never logs token values.
-        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
-          try {
-            const currentAuth = readCodexAuthJson(worker.id);
-            if (currentAuth?.access_token && currentAuth?.refresh_token) {
-              await this.buildd.writeBackCodexAuth(task.workspaceId, {
-                accessToken: currentAuth.access_token,
-                refreshToken: currentAuth.refresh_token,
-                ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
-                ...(currentAuth.id_token ? { idToken: currentAuth.id_token } : {}),
-              });
-              console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
-            }
-          } catch (err) {
-            console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
-          }
-        }
-
-        this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
-        this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
-        worker.currentAction = 'Completed';
-        worker.hasNewActivity = true;
-        worker.completedAt = Date.now();
-        this.workerSync.recordCycleTime(worker);
-        this.probedWorkers.delete(worker.id);  // Clean up probe tracking
-        // Generate follow-up prompt suggestions if Stop hook didn't already
-        if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
-          worker.promptSuggestions = generatePromptSuggestions(worker);
-          if (worker.promptSuggestions.length > 0) {
-            console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
-          }
-        }
-        // Aggregate token counts: per-model breakdown → result totals → per-turn
-        // tally. The fallbacks matter on OAuth, where byModel is never populated
-        // and tokens are the only real consumption signal (cost is always 0).
-        // Read for usage aggregation only. The cbm/toolCounts blocks below can
-        // CREATE worker.resultMeta, so this snapshot must never be what the
-        // PATCH sends — see the re-read after them.
-        const sdkResultMeta = worker.resultMeta || undefined;
-        const totals = aggregateUsage(sdkResultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
-        const inputTokens = totals?.inputTokens;
-        const outputTokens = totals?.outputTokens;
-
-        // CBM observability: attach per-task metrics to resultMeta before completion.
-        if (worker.cbmOutcome !== undefined) {
-          const cbmMetrics = buildCbmMetrics(worker)!;
-          // Merge into resultMeta so all metrics travel together to the server.
-          if (worker.resultMeta) {
-            worker.resultMeta.cbm = cbmMetrics;
-          } else {
-            // Provision-failure path: resultMeta wasn't set by the SDK result handler.
-            // Create a minimal shell so cbm travels with the completion payload.
-            worker.resultMeta = {
-              stopReason: null,
-              durationMs: 0,
-              durationApiMs: 0,
-              numTurns: 0,
-              modelUsage: {},
-              cbm: cbmMetrics,
-            };
-          }
-        }
-
-        // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
-        // ships regardless of CBM activation; skipped entirely when no tool ran
-        // so a provision-failed worker doesn't get a resultMeta shell it never earned.
-        // The Bash sub-classification rides the same object: a bucket histogram
-        // is only useful next to the tool histogram it decomposes. Omitted when
-        // the session made no Bash call, so absence stays distinguishable from
-        // "made Bash calls, none of them searches".
-        const toolCounts = worker.toolCounts ?? {};
-        const bashCommandCounts = worker.bashCommandCounts;
-        const measured = {
-          ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
-          ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
-        };
-        if (Object.keys(measured).length > 0) {
-          if (worker.resultMeta) {
-            Object.assign(worker.resultMeta, measured);
-          } else {
-            worker.resultMeta = {
-              stopReason: null,
-              durationMs: 0,
-              durationApiMs: 0,
-              numTurns: 0,
-              modelUsage: {},
-              ...measured,
-            };
-          }
-        }
-
-        // Closing-turn outcome: only present when this invocation actually
-        // made (or explicitly skipped) a closing-turn decision above — never
-        // set on the already-terminal top-level race, which is what keeps
-        // that path's payload byte-identical to before this field existed.
-        if (closingTurnOutcome !== undefined) {
-          if (worker.resultMeta) {
-            worker.resultMeta.closingTurnOutcome = closingTurnOutcome;
-          } else {
-            worker.resultMeta = {
-              stopReason: null,
-              durationMs: 0,
-              durationApiMs: 0,
-              numTurns: 0,
-              modelUsage: {},
-              closingTurnOutcome,
-            };
-          }
-        }
-
-        // Re-read AFTER the three blocks above. All three can assign a
-        // brand-new object to worker.resultMeta (the SDK never emitted a
-        // result message, e.g. the provision-failure path), and the
-        // completion PATCH used to spread a const captured before them — so
-        // on exactly the path whose comment promises the metrics "travel
-        // with the completion payload", the cbm/toolCounts objects were
-        // built and then silently dropped.
-        const resultMeta = worker.resultMeta || undefined;
-
-        // Loop-until-verified: run verification command and collect evidence (spec §2).
-        // Only executes for loopConfig.exitCondition.type='command'; other types need no
-        // runner work (pr_checks_green = server reads webhooks; structured_predicate =
-        // server reads the structuredOutput field already in this payload).
-        let verificationEvidence: Record<string, unknown> | undefined;
-        const loopConfig = task.loopConfig;
-        if (loopConfig?.exitCondition?.type === 'command') {
-          const resolvedCmd = resolveCommand(
-            loopConfig.exitCondition as { type: 'command'; command?: string },
-            task.context as Record<string, unknown> | undefined,
-          );
-          if (resolvedCmd) {
-            this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
-            try {
-              const evidence = await runVerificationCommand({
-                workerId: worker.id,
-                iteration: task.loopIteration ?? 0,
-                command: resolvedCmd,
-                cwd,
-              });
-              verificationEvidence = evidence as unknown as Record<string, unknown>;
-              const label = evidence.outcome === 'ok'
-                ? `Verification passed (exit ${evidence.exitCode})`
-                : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
-              this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-              console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
-            } catch (verifyErr) {
-              // Non-fatal: surface as exec_error evidence so server can still decide
-              console.warn(`[Worker ${worker.id}] Verification command threw unexpectedly:`, verifyErr);
-              verificationEvidence = {
-                workerId: worker.id,
-                iteration: task.loopIteration ?? 0,
-                conditionType: 'command',
-                command: resolvedCmd,
-                outcome: 'exec_error',
-                stderr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
-              };
-            }
-          } else {
-            console.warn(`[Worker ${worker.id}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
-          }
-        }
-
-        // Build subagent spans for terminal flush (not on hot path — only at completion).
-        const subagentSpans = buildSubagentSpans(worker.subagentTasks);
-        const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
-
-        // Fallback summary, only meaningful when this PATCH is actually the
-        // first write (closingTurnOutcome !== 'authored') — an 'authored' or
-        // already-terminal payload gets refused (abort: true) and this field
-        // is dropped with the rest of the status half; see METRICS_ONLY_FIELDS.
-        const fallbackSummary = buildFallbackSummaryTail(worker);
-
-        const completionPayload = {
-          status: 'completed',
-          milestones: worker.milestones,
-          ...gitStats,
-          // Cost + model attribution: without these the server can only guess,
-          // and workers.cost_usd stayed at its '0' default for every runner task.
-          ...this.terminalAttributionPayload(worker),
-          ...(resultMeta && { resultMeta }),
-          ...(inputTokens && { inputTokens }),
-          ...(outputTokens && { outputTokens }),
-          // Include structured output if the SDK returned validated JSON
-          ...(structuredOutput ? { structuredOutput } : {}),
-          // Bounded tail of the session's own assistant text (newest last),
-          // used as the summary when the session ended without the agent
-          // calling complete_task itself — after a closing turn if one was
-          // attempted, so this reflects whatever it said too. Tag 'fallback'
-          // so downstream consumers (KB ingestion, UI) never present it as an
-          // authored result. See docs/specs — the agent's own complete_task
-          // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
-          ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
-          // Loop verification evidence (only present for command exit condition)
-          ...(verificationEvidence ? { verificationEvidence } : {}),
-          // Subagent spans — terminal-only flush
-          ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
-          subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
-          backgroundAgentMs,
-        };
-        const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
-          { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
-
-        // The server refused the status write because the row is ALREADY
-        // terminal — the normal outcome when the agent called the buildd MCP
-        // `complete_task` itself: the server completed the worker, pushed
-        // worker:completed, and this PATCH arrives afterwards. Everything above
-        // that is measurement rather than state (resultMeta with the CBM
-        // metrics and tool histogram, tokens, cost, model, git stats, subagent
-        // spans) would be lost with it, and that cohort is the long-session
-        // one — which quietly biased every usage rollup toward short sessions.
-        // Re-send it as a metrics-only PATCH: the server accepts those on a
-        // terminal worker without reviving status, and still refuses a worker
-        // IT expired (stale cleanup / reassign / takeover).
-        if (completionResult?.abort === true) {
-          await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
-        }
-        // Set 'done' only after the server update so any poll of local status
-        // reflects the server's task state (prevents getMission race in E2E tests).
-        worker.status = 'done';
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
-
-        // Task outcomes are indexed into the knowledge store via complete_task → mirrorWorkProduct (task corpus).
-        // The legacy createObservation path that wrote type:'summary' to the memory corpus has been removed:
-        // summary entries duplicated task-corpus data with worse fidelity and polluted memory recall.
+        await this.completeSessionNormally(worker, task, cwd, {
+          isCodexTask,
+          closingTurnOutcome,
+          structuredOutput,
+        });
       }
 
     } catch (error) {
@@ -4432,6 +4489,40 @@ export class WorkerManager {
         return;
       }
 
+      // A closing turn is a best-effort extra on top of a session that has
+      // already ended. If the closing turn itself errors (turn cap, SDK error
+      // result, abort), it must never change the outcome the original session
+      // earned: report exactly what would have been reported had no closing
+      // turn been attempted — a normal completion after a natural end, the
+      // original error after a turn-cap end — tagged so analytics can tell.
+      // Returns without the resume re-throw below: the caller is this same
+      // method's own closing-turn delegation, not resumeSession, and a throw
+      // would make it report the worker a second time.
+      if (isClosingTurn) {
+        const closingErrMsg = error instanceof Error ? error.message : String(error);
+        console.warn(`[Worker ${worker.id}] Closing turn errored (${closingErrMsg}) — falling back to the original session outcome`);
+        sessionLog(worker.id, 'warn', 'closing_turn_error', closingErrMsg, worker.taskId);
+        this.addMilestone(worker, { type: 'status', label: 'Closing turn errored — using original session outcome', ts: Date.now() });
+        if (closingTurnOriginalError !== undefined) {
+          const closingSpans = buildSubagentSpans(worker.subagentTasks);
+          await this.reportUnexpectedError(worker, closingTurnOriginalError, stderrCollector, {
+            ...(closingSpans.length > 0 ? { subagentSpans: closingSpans } : {}),
+            subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+            backgroundAgentMs: computeBackgroundAgentMs(closingSpans),
+          }, 'skipped:closing_turn_error');
+        } else {
+          worker.error = undefined;
+          await this.completeSessionNormally(worker, task, cwd, {
+            isCodexTask,
+            closingTurnOutcome: 'skipped:closing_turn_error',
+            structuredOutput: undefined,
+          });
+        }
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+        return;
+      }
+
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 
       // Flush subagent spans on terminal failure (spans still running persist as-is).
@@ -4482,26 +4573,28 @@ export class WorkerManager {
         // Turn-budget closing turn: the loop ended specifically because it
         // hit its configured maxTurns cap, not because anything broke. That's
         // still eligible for the same one-shot closing turn as a natural end
-        // — bounded to exactly one turn past the cap (maxTurns override
+        // — bounded to CLOSING_TURN_MAX_TURNS past the cap (maxTurns override
         // above), so a session that burned its whole budget refusing to
-        // finish cannot burn a second one doing it again.
+        // finish cannot burn a second one doing it again. The original error
+        // rides along so a closing turn that itself errors reports it, not
+        // its own.
         const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
         if (resumeId) {
           sessionLog(worker.id, 'info', 'closing_turn_attempt', `resume=${resumeId} reason=max_turns`, worker.taskId);
           this.addMilestone(worker, { type: 'status', label: 'Max turns reached — giving one closing turn', ts: Date.now() });
           const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
           delegatedToClosingTurn = true;
-          await this.startSession(worker, cwd, closingTask, resumeId, true);
+          await this.startSession(worker, cwd, closingTask, resumeId, true, error);
           return; // nested call owns the rest of this worker's lifecycle
         }
         // No resume id — fall through to the generic error handling below,
         // tagged the same as any other unresumable skip.
         await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, 'skipped:not_resumable');
       } else {
-        // Unexpected error — a genuine crash/abort-adjacent failure (or a
-        // closing turn's own error-terminated attempt), never eligible for a
-        // closing turn of its own.
-        await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, isClosingTurn ? 'declined' : 'skipped:error');
+        // Unexpected error — a genuine crash/abort-adjacent failure, never
+        // eligible for a closing turn of its own. (A closing turn's own error
+        // never reaches here — see the isClosingTurn fallback above.)
+        await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, 'skipped:error');
       }
       if (!bwrapRetryAfterCleanup) {
         this.emit({ type: 'worker_update', worker });

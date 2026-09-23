@@ -335,7 +335,9 @@ describe('closing turn', () => {
     expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
     // Bounded to exactly one turn past the cap, regardless of the original's
     // configured maxTurns.
-    expect(runStreamedCalls[1]?.maxTurns).toBe(1);
+    // Enough budget to load a deferred tool (ToolSearch) AND call
+    // complete_task — a 1-turn cap was spent entirely on ToolSearch.
+    expect(runStreamedCalls[1]?.maxTurns).toBeGreaterThanOrEqual(3);
 
     const call = completionCall();
     expect(call).toBeDefined();
@@ -380,5 +382,79 @@ describe('closing turn', () => {
     // Codex resume rides RunStreamedOpts.resumeThreadId (per-call), not the
     // Claude-only queryOptions.resume baked into createBackend's config.
     expect(runStreamedCalls[1]?.resumeThreadId).toBe('thread-1');
+  });
+
+  // ── Incident regression: reviewer tasks deliver via structured output ────
+  // A task with an outputSchema authors its outcome through the SDK's
+  // StructuredOutput tool, never complete_task. Giving it a closing turn
+  // spent the (1-turn) budget on ToolSearch, hit max turns, and failed the
+  // worker — discarding the verdict the session had already produced.
+
+  test('a session that ended with structured output never gets a closing turn and completes with it', async () => {
+    const verdict = { verdict: 'approve', summary: 'LGTM' };
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Review done.'), { ...successResult('sess-1'), structured_output: verdict }],
+      // Would be consumed only if a closing turn were (wrongly) attempted.
+      [{ type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-structured', {
+      outputSchema: { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] },
+    });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.structuredOutput).toEqual(verdict);
+  });
+
+  test('a closing turn that itself errors never turns a successful session into a failure', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
+      [{ type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-error');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const completions = updateCalls.filter(c => c.payload?.status === 'completed');
+    expect(completions.length).toBe(1);
+    expect(completions[0].payload.summarySource).toBe('fallback');
+    expect(completions[0].payload.summary).toContain('Opened the PR.');
+    expect(completions[0].payload.resultMeta?.closingTurnOutcome).toBe('skipped:closing_turn_error');
+  });
+
+  test('a turn-cap session whose closing turn errors fails exactly once, as before closing turns existed', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+      [{ type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns again' }],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-max-turns-closing-error');
+
+    expect(createBackendCalls.length).toBe(2);
+    const failures = updateCalls.filter(c => c.payload?.status === 'failed');
+    expect(failures.length).toBe(1);
+    expect(failures[0].payload.error).toBe('Reached max turns');
+    expect(failures[0].payload.resultMeta?.closingTurnOutcome).toBe('skipped:closing_turn_error');
+  });
+
+  test('the closing turn sends only the closing instruction, not a rebuilt task prompt', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-prompt', { description: 'UNIQUE-ORIGINAL-DESCRIPTION' });
+
+    expect(runStreamedCalls.length).toBe(2);
+    expect(String(runStreamedCalls[0].prompt)).toContain('UNIQUE-ORIGINAL-DESCRIPTION');
+    const closingPrompt = runStreamedCalls[1].prompt;
+    expect(typeof closingPrompt).toBe('string');
+    expect(closingPrompt.startsWith('Your last session ended without calling `complete_task`.')).toBe(true);
+    expect(closingPrompt).not.toContain('UNIQUE-ORIGINAL-DESCRIPTION');
+    expect(closingPrompt).not.toContain('## ');
   });
 });
