@@ -1586,6 +1586,10 @@ export const workers = pgTable('workers', {
   accountIdx: index('workers_account_idx').on(t.accountId),
   statusIdx: index('workers_status_idx').on(t.status),
   accountStatusIdx: index('workers_account_status_idx').on(t.accountId, t.status),
+  // Webhook "which worker owns this PR" lookups (workerOwnsPr / workerOwnsPrUrl in lib/repo-scope.ts)
+  // and knowledge ingest's by-URL lookup. Partial: most workers never open a PR.
+  prNumberIdx: index('workers_pr_number_idx').on(t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
+  prUrlIdx: index('workers_pr_url_idx').on(t.prUrl).where(sql`${t.prUrl} IS NOT NULL`),
 }));
 
 /**

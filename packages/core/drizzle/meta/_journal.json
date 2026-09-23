@@ -1233,6 +1233,13 @@
       "when": 1790196414657,
       "tag": "0176_tan_mandarin",
       "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1790200584678,
+      "tag": "0177_crazy_shinobi_shaw",
+      "breakpoints": true
     }
   ]
 }
