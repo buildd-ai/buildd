@@ -497,4 +497,27 @@ describe('runProvisionGate warm cache', () => {
     const other = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(READY), runCommand: fakeRunner(), commit: 'bbb' });
     expect(other.cached).toBeUndefined();
   });
+
+  it('still runs install on a cache hit — the cache key is (commit, manifest), not the worktree path, so a second worktree cut from an already-verified base has no node_modules of its own unless install actually runs there', async () => {
+    clearProvisionGateCache();
+    const withInstall = fakeFs({
+      [MANIFEST_PATH]: 'install:\n  command: bun install --frozen-lockfile\nreadiness:\n  command: echo ok\n',
+    });
+    const r = countingRunner();
+    // First worktree off commit 'abc123': runs install for real.
+    const first = await runProvisionGate({ root: '/worktree-a', env: {}, fs: withInstall, runCommand: r.run, commit: 'abc123' });
+    expect(first.ok).toBe(true);
+    expect(first.steps.find((s) => s.phase === 'install')!.status).toBe('ok');
+    const callsAfterFirst = r.calls();
+
+    // Second worktree, SAME base commit + manifest, but a different directory on
+    // disk — the gate must still install here even though the pass is cached.
+    const second = await runProvisionGate({ root: '/worktree-b', env: {}, fs: withInstall, runCommand: r.run, commit: 'abc123' });
+    expect(second.ok).toBe(true);
+    expect(second.cached).toBe(true);
+    expect(second.steps.find((s) => s.phase === 'install')!.status).toBe('ok');
+    // readiness is the only phase actually skipped by the cache hit.
+    expect(second.steps.find((s) => s.phase === 'readiness')!.status).toBe('skip');
+    expect(r.calls()).toBeGreaterThan(callsAfterFirst);
+  });
 });
