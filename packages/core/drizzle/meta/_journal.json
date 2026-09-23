@@ -1226,6 +1226,13 @@
       "when": 1790126202257,
       "tag": "0175_bouncy_dreaming_celestial",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1790165813870,
+      "tag": "0176_organic_shocker",
+      "breakpoints": true
     }
   ]
 }

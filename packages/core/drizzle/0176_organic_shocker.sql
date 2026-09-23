@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "tasks_one_open_attempt_per_parent_unique" ON "tasks" USING btree ("workspace_id","parent_task_id") WHERE "tasks"."status" = 'pending' AND "tasks"."task_class" = 'attempt' AND "tasks"."creation_source" = 'webhook' AND "tasks"."parent_task_id" IS NOT NULL;

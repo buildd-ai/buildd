@@ -1151,6 +1151,19 @@ export const tasks = pgTable('tasks', {
   reviewerRetryEventIdx: uniqueIndex('tasks_reviewer_retry_event_unique')
     .on(t.workspaceId, t.reviewerRetryPrNumber, t.reviewerRetryHeadSha)
     .where(sql`${t.reviewerRetryPrNumber} IS NOT NULL AND ${t.reviewerRetryHeadSha} IS NOT NULL`),
+  // Partial unique index — at most one unclaimed "attempt" child (CI retry, conflict
+  // retry, or reviewer retry) per parent task at a time, regardless of which head SHA
+  // triggered it. The three *RetryEventIdx indexes above dedupe an identical event
+  // (workspace+PR+headSha) so a duplicate webhook delivery is a no-op — but a rebase
+  // bot force-pushing several times in quick succession produces several DISTINCT
+  // head SHAs for the same still-unclaimed failure, and each one passed that check.
+  // This index closes that window: once the pending child is claimed (status leaves
+  // 'pending'), a later genuinely-new failure is free to dispatch its own attempt —
+  // "a new SHA is legitimately a new failure" once someone has actually started
+  // acting on the earlier one, just not before anyone has looked at it at all.
+  oneOpenAttemptPerParentIdx: uniqueIndex('tasks_one_open_attempt_per_parent_unique')
+    .on(t.workspaceId, t.parentTaskId)
+    .where(sql`${t.status} = 'pending' AND ${t.taskClass} = 'attempt' AND ${t.creationSource} = 'webhook' AND ${t.parentTaskId} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
