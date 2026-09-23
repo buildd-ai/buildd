@@ -554,6 +554,28 @@ describe('buildDiscrepancyItems', () => {
     expect(items[0].mergedDocFixTaskId).toBe('task-1');
   });
 
+  it('a merged-stale row plus a fresh unclaimed row on the same path keeps Dispatch available (no mergedDocFixTaskId)', () => {
+    // The old row stays open with its docFixTaskId until accepted. A new
+    // code_ahead assertion on the same spec has never been attempted, so the
+    // card must still offer the doc fix for it.
+    const { items } = buildDiscrepancyItems([
+      row({
+        id: 'd-old',
+        assertionId: 'a-old',
+        docFixTaskId: 'task-1',
+        docFixTaskStatus: 'completed',
+        docFixPrLifecycleStatus: 'merged',
+        docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+        firstSeenAt: new Date('2026-08-20T00:00:00Z'),
+        lastCheckedAt: new Date('2026-09-02T00:00:00Z'),
+      }),
+      row({ id: 'd-new', assertionId: 'a-new', firstSeenAt: new Date('2026-09-10T00:00:00Z') }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].docFixTaskId).toBeNull();
+    expect(items[0].mergedDocFixTaskId ?? null).toBeNull();
+  });
+
   it('a fresh code_ahead group with no prior merged fix carries no mergedDocFixTaskId', () => {
     const { items } = buildDiscrepancyItems([row()]);
     expect(items[0].mergedDocFixTaskId ?? null).toBeNull();

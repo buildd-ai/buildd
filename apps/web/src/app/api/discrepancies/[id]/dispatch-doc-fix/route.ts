@@ -115,9 +115,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Resolve the status of every task already claimed on this group. A claim
   // held by a live task wins; one held by a failed/cancelled task is dead and
   // may be taken over. One held by a completed task whose PR merged and was
-  // re-evaluated with the gap still open (isDocFixClaimStale) is refused
-  // below: the doc fix already landed, so the row is held open by its
-  // assertions, and another docs-only task would reproduce the same result.
+  // re-evaluated with the gap still open (isDocFixClaimStale) is left out of
+  // any new dispatch below: the doc fix already landed, so that row is held
+  // open by its assertions, and another docs-only task would reproduce the
+  // same result.
   const claimedTaskIds = [...new Set(groupRows.map((r) => r.docFixTaskId).filter(Boolean) as string[])];
   const claimedTasks = claimedTaskIds.length
     ? await db.query.tasks.findMany({
@@ -162,14 +163,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: true, dispatched: false, taskId: liveClaim.docFixTaskId });
   }
 
-  const mergedClaim = groupRows.find((r) => r.docFixTaskId && isDocFixClaimStale(rowClaimState(r)));
-  if (mergedClaim?.docFixTaskId) {
+  // Rows held by a merged-and-rechecked fix are the owner's call now (accept,
+  // skip_until, or rewrite the assertion), so they are left out of this
+  // dispatch. Only when EVERY open row on the path is held that way is the
+  // dispatch refused: a code_ahead row that opened later on the same spec has
+  // never been attempted and must stay doc-fixable.
+  const isMergedStale = (r: (typeof groupRows)[number]) =>
+    Boolean(r.docFixTaskId) && isDocFixClaimStale(rowClaimState(r));
+  const dispatchRows = groupRows.filter((r) => !isMergedStale(r));
+  if (dispatchRows.length === 0) {
+    const mergedClaim = groupRows.find(isMergedStale);
     return NextResponse.json(
       {
         ok: false,
         dispatched: false,
         code: 'doc_fix_already_merged',
-        taskId: mergedClaim.docFixTaskId,
+        taskId: mergedClaim?.docFixTaskId ?? null,
         error:
           `A doc fix for ${row.specPath} already merged and the conformance re-run still finds these ` +
           `assertions open, so another docs-only task would reproduce the same result. Accept the ` +
@@ -179,10 +188,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  const staleClaimTaskIds = claimedTaskIds.filter((t) => DEAD_DOC_FIX_STATUSES.has(statusByTask.get(t) ?? ''));
+  const staleClaimTaskIds = [
+    ...new Set(
+      dispatchRows
+        .map((r) => r.docFixTaskId)
+        .filter((t): t is string => Boolean(t) && DEAD_DOC_FIX_STATUSES.has(statusByTask.get(t as string) ?? '')),
+    ),
+  ];
 
-  const assertionIds = groupRows.map((r) => r.assertionId);
-  const discrepancyIds = groupRows.map((r) => r.id);
+  const assertionIds = dispatchRows.map((r) => r.assertionId);
+  const discrepancyIds = dispatchRows.map((r) => r.id);
 
   const [docFixTask] = await db
     .insert(tasks)
@@ -191,7 +206,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       title: docFixTaskTitle(row.specPath),
       description: buildDocFixTaskDescription({
         specPath: row.specPath,
-        assertions: groupRows.map((r) => ({
+        assertions: dispatchRows.map((r) => ({
           assertionId: r.assertionId,
           detail: typeof r.evidence?.detail === 'string' ? (r.evidence.detail as string) : null,
         })),

@@ -560,8 +560,9 @@ export function isDocFixInFlight(
  * last_checked_at past mergedAt without ever reading the fixed doc.
  *
  * A stale claim is NOT an invitation to dispatch the same doc fix again: the
- * dispatch route refuses (`doc_fix_already_merged`) and the card offers
- * Accept. A code_ahead row that survives a merged, rechecked docs fix is held
+ * dispatch route leaves such rows out of any new task, refuses outright
+ * (`doc_fix_already_merged`) when every open row on the path is held that
+ * way, and in that case the card offers Accept only. A code_ahead row that survives a merged, rechecked docs fix is held
  * open by its assertions, not by the document text, and only the owner can
  * change that (accept, `skip_until`, or rewrite the assertion).
  */
@@ -677,12 +678,16 @@ export function buildDiscrepancyItems(
     // path — the doc fix reconciles the document, not one assertion at a
     // time. A claim the checker has already re-evaluated post-merge and
     // still found wanting (isDocFixClaimStale) does not count: the fix
-    // demonstrably did not close this gap. The card comes back to the owner,
-    // but as "fix merged, still open" — not as a fresh dispatch.
+    // demonstrably did not close this gap. When EVERY row on the path is held
+    // that way the card comes back to the owner as "fix merged, still open" —
+    // not as a fresh dispatch. If any row is unclaimed (or dead-claimed), a
+    // doc fix is still owed for it, so Dispatch stays available; the dispatch
+    // route leaves the merged-stale rows out of that task.
     const claimed = group.rows.find((r) => isDocFixInFlight(r) && !isDocFixClaimStale(r));
-    group.mergedDocFixTaskId = claimed
-      ? null
-      : group.rows.find((r) => r.docFixTaskId && isDocFixClaimStale(r))?.docFixTaskId ?? null;
+    const mergedStale = (r: DiscrepancyCandidate) => Boolean(r.docFixTaskId) && isDocFixClaimStale(r);
+    group.mergedDocFixTaskId = !claimed && group.rows.every(mergedStale)
+      ? group.rows[0].docFixTaskId ?? null
+      : null;
     group.inFlight = Boolean(claimed);
     group.docFixTaskId = claimed?.docFixTaskId ?? null;
     group.docFixTaskStatus = claimed?.docFixTaskStatus ?? null;

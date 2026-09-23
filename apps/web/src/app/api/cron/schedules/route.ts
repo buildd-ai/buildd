@@ -522,13 +522,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           continue;
         }
 
-        // Required-skill pre-flight. A template naming a skill no claim here
-        // can deliver would dispatch a worker told to use a skill it does not
-        // have, every tick. Throwing lands in the per-schedule catch below:
-        // lastError carries the reason, the failure counts toward
-        // pauseAfterFailures, and one friction task is filed.
-        await assertScheduleSkillsAvailable(taskWorkspaceId, template.context);
-
         // Set when a blocked criteria verdict re-arms the organizer: carries the
         // verdict into buildMissionContext instead of skipping the cycle.
         let criteriaRearmContext: Record<string, unknown> | null = null;
@@ -756,6 +749,16 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // requested structured output and the agent's "plan" was discarded prose
         // — 35 clean-looking completions, zero child tasks.
         const resolvedMode = template.mode || (linkedMission ? 'planning' : 'execution');
+
+        // Required-skill pre-flight. A template naming a skill no claim here
+        // can deliver would dispatch a worker told to use a skill it does not
+        // have, every tick. Throwing lands in the per-schedule catch below:
+        // lastError carries the reason, the failure counts toward
+        // pauseAfterFailures, and one friction task is filed. It runs here,
+        // after every skip/defer branch, so a tick that would never have
+        // dispatched (active hours, breaker, heartbeat prepass) never counts
+        // a failure and never pays for the lookup.
+        await assertScheduleSkillsAvailable(taskWorkspaceId, template.context);
 
         // Create task from template
         const [task] = await db

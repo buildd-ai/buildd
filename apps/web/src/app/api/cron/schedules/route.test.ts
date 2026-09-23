@@ -444,10 +444,10 @@ describe('GET /api/cron/schedules', () => {
     const schedule = makeSchedule({
       workspaceId: 'ws-1',
       consecutiveFailures: 0,
-      taskTemplate: { title: 'Update CHANGELOG', mode: 'execution', priority: 0, context: { skillSlugs: ['changelog-generator'] } },
+      taskTemplate: { title: 'Example schedule', mode: 'execution', priority: 0, context: { skillSlugs: ['example-skill'] } },
     });
     mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
-    mockAssertSkills.mockRejectedValue(new MockMissingScheduleSkillError(['changelog-generator']));
+    mockAssertSkills.mockRejectedValue(new MockMissingScheduleSkillError(['example-skill']));
 
     const res = await GET(makeRequest());
     const body = await res.json();
@@ -455,7 +455,7 @@ describe('GET /api/cron/schedules', () => {
     expect(body.errors).toBe(1);
 
     // The preflight ran against the schedule's own workspace and template context.
-    expect(mockAssertSkills).toHaveBeenCalledWith('ws-1', expect.objectContaining({ skillSlugs: ['changelog-generator'] }));
+    expect(mockAssertSkills).toHaveBeenCalledWith('ws-1', expect.objectContaining({ skillSlugs: ['example-skill'] }));
 
     // No task row, so no worker is ever dispatched into a worktree without the skill.
     expect(tasksInsertValues).toBeNull();
@@ -463,15 +463,43 @@ describe('GET /api/cron/schedules', () => {
     // The failure is recorded on the schedule with a readable reason.
     const updateCall = taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 1);
     expect(updateCall).toBeDefined();
-    expect(updateCall.set.lastError).toContain('changelog-generator');
+    expect(updateCall.set.lastError).toContain('example-skill');
 
     // Friction is filed (the filer dedupes, so "once" holds across ticks).
     expect(mockFileSkillFriction).toHaveBeenCalledTimes(1);
     expect(mockFileSkillFriction.mock.calls[0][0]).toMatchObject({
       scheduleId: 'sched-1',
       workspaceId: 'ws-1',
-      missingSlugs: ['changelog-generator'],
+      missingSlugs: ['example-skill'],
     });
+  });
+
+  it('a schedule outside its active hours skips cleanly — the skill preflight never runs, so no failure is counted', async () => {
+    const { isWithinActiveHours } = await import('@/lib/mission-context');
+    (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(false);
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      consecutiveFailures: 0,
+      taskTemplate: {
+        title: 'Heartbeat check',
+        mode: 'execution',
+        priority: 0,
+        context: { heartbeat: true, activeHoursStart: 8, activeHoursEnd: 22, skillSlugs: ['example-skill'] },
+      },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockAssertSkills.mockRejectedValue(new MockMissingScheduleSkillError(['example-skill']));
+
+    try {
+      const body = await (await GET(makeRequest())).json();
+      expect(body.skipped).toBe(1);
+      expect(body.errors).toBe(0);
+      expect(mockAssertSkills).not.toHaveBeenCalled();
+      expect(taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 1)).toBeUndefined();
+      expect(mockFileSkillFriction).not.toHaveBeenCalled();
+    } finally {
+      (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(true);
+    }
   });
 
   it('a generic failure does not file missing-skill friction', async () => {

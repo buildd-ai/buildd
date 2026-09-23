@@ -75,12 +75,14 @@ const SECONDARY_BTN =
  *   - PR merged AND rechecked since (lib/action-queue.ts's isDocFixClaimStale
  *     compares the row's own last_checked_at against the merge time) and the
  *     row is STILL open — the fix demonstrably didn't close it. The claim
- *     releases (buildDiscrepancyItems) and the group falls out of `inFlight`,
- *     but it carries `mergedDocFixTaskId`: the card links the merged fix and
+ *     releases (buildDiscrepancyItems) and the group falls out of `inFlight`.
+ *     When every open row on the path is held that way the group carries
+ *     `mergedDocFixTaskId`: the card links the merged fix and
  *     offers Accept only. No Dispatch doc fix — the doc already landed, so the
  *     row is held open by its assertions, and a second docs-only task would
  *     reproduce the same result (the dispatch route refuses it with
- *     `doc_fix_already_merged`). Only the owner can move it now.
+ *     `doc_fix_already_merged`). Only the owner can move it now. If some row
+ *     on the path was never attempted, Dispatch stays and covers only those.
  * In every other completed sub-state — PR still open, or a merge lifecycle
  * that is simply unknown (isDocFixClaimStale can never fire without a known
  * merge timestamp to compare against, so that claim would otherwise sit

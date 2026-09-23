@@ -13,27 +13,57 @@
  * `pauseAfterFailures`, and files ONE `[friction]` task (deduped by signature
  * for as long as it stays open).
  *
- * "Deliverable" mirrors the claim-time resolution exactly — an enabled row
- * scoped to this workspace, or an enabled account-level row belonging to an
- * account that can claim in this workspace. Anything looser would pass the
- * preflight for a skill the claim then drops.
+ * "Deliverable" mirrors what `attachSkillBundles` will do for WHICHEVER
+ * account claims: an enabled row scoped to this workspace, or an enabled
+ * account-level row present on EVERY account that can claim here (the claim
+ * falls back only to the claiming account's own rows, so a row on some of
+ * them is a coin-toss drop). Team-level skill rows (workspaceId NULL, e.g.
+ * created via /api/roles) are listed by `list_skills` as registered, but the
+ * claim never delivers them as skill bundles — they are read here only to
+ * name that cause in the error, never to pass the check.
+ *
+ * Not covered: a bundle the claim does attach but the runner then fails to
+ * materialise in the worktree. That happens after dispatch and is invisible
+ * from here.
  */
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, tasks, workspaceSkills } from '@buildd/core/db/schema';
-import { and, eq, inArray, like, notInArray, or, sql } from 'drizzle-orm';
+import { accountWorkspaces, tasks, workspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
+
+/** Why a required slug cannot be delivered by a claim in this workspace. */
+export type MissingSkillReason = 'not_registered' | 'team_level_only' | 'not_on_every_claim_account';
+
+export interface MissingSkill {
+  slug: string;
+  reason: MissingSkillReason;
+}
+
+const REASON_TEXT: Record<MissingSkillReason, string> = {
+  not_registered: 'no enabled row in this workspace',
+  team_level_only:
+    'registered at team level only — claims deliver workspace-scoped skills, not team-level rows',
+  not_on_every_claim_account:
+    'an account-level row exists on some, but not all, of the accounts that can claim here',
+};
 
 export class MissingScheduleSkillError extends Error {
   readonly missingSlugs: string[];
+  readonly missing: MissingSkill[];
   /** The workspace the check ran against (a mission schedule may have none of its own). */
   readonly workspaceId: string | null;
-  constructor(missingSlugs: string[], workspaceId: string | null = null) {
+  constructor(missing: MissingSkill[] | string[], workspaceId: string | null = null) {
+    const detailed: MissingSkill[] = missing.map(m =>
+      typeof m === 'string' ? { slug: m, reason: 'not_registered' as const } : m,
+    );
     super(
-      `Required skill(s) not available to this workspace: ${missingSlugs.join(', ')}. ` +
+      `Required skill(s) not available to this workspace: ` +
+      detailed.map(m => `${m.slug} (${REASON_TEXT[m.reason]})`).join('; ') + '. ' +
       `Register them in the schedule's workspace (register_skill) or remove them from the ` +
       `schedule's skillSlugs — no task was created.`,
     );
     this.name = 'MissingScheduleSkillError';
-    this.missingSlugs = missingSlugs;
+    this.missing = detailed;
+    this.missingSlugs = detailed.map(m => m.slug);
     this.workspaceId = workspaceId;
   }
 }
@@ -45,26 +75,55 @@ export function requiredScheduleSkillSlugs(context: Record<string, unknown> | nu
   return [...new Set(raw.filter((s): s is string => typeof s === 'string' && s.length > 0))];
 }
 
-/** Slugs from `slugs` that no claim in `workspaceId` could deliver a bundle for. */
-export async function findMissingScheduleSkills(workspaceId: string, slugs: string[]): Promise<string[]> {
+/** Each slug in `slugs` that no claim in `workspaceId` is guaranteed to deliver, with the reason. */
+export async function diagnoseScheduleSkills(workspaceId: string, slugs: string[]): Promise<MissingSkill[]> {
   if (slugs.length === 0) return [];
 
-  const claimLinks = await db.query.accountWorkspaces.findMany({
-    where: and(eq(accountWorkspaces.workspaceId, workspaceId), eq(accountWorkspaces.canClaim, true)),
-    columns: { accountId: true },
-  });
+  const [claimLinks, workspace] = await Promise.all([
+    db.query.accountWorkspaces.findMany({
+      where: and(eq(accountWorkspaces.workspaceId, workspaceId), eq(accountWorkspaces.canClaim, true)),
+      columns: { accountId: true },
+    }),
+    db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } }),
+  ]);
   const accountIds = [...new Set(claimLinks.map(l => l.accountId).filter(Boolean))];
 
-  const scope = accountIds.length > 0
-    ? or(eq(workspaceSkills.workspaceId, workspaceId), inArray(workspaceSkills.accountId, accountIds))
-    : eq(workspaceSkills.workspaceId, workspaceId);
+  const scopes = [eq(workspaceSkills.workspaceId, workspaceId)];
+  if (accountIds.length > 0) scopes.push(inArray(workspaceSkills.accountId, accountIds));
+  // Team-level rows: read only to explain a miss (see the module header).
+  if (workspace?.teamId) {
+    scopes.push(and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, workspace.teamId))!);
+  }
 
   const rows = await db.query.workspaceSkills.findMany({
-    where: and(inArray(workspaceSkills.slug, slugs), eq(workspaceSkills.enabled, true), scope),
-    columns: { slug: true },
+    where: and(
+      inArray(workspaceSkills.slug, slugs),
+      eq(workspaceSkills.enabled, true),
+      scopes.length === 1 ? scopes[0] : or(...scopes),
+    ),
+    columns: { slug: true, workspaceId: true, accountId: true },
   });
-  const found = new Set(rows.map(r => r.slug));
-  return slugs.filter(s => !found.has(s));
+
+  const missing: MissingSkill[] = [];
+  for (const slug of slugs) {
+    const forSlug = rows.filter(r => r.slug === slug);
+    if (forSlug.some(r => r.workspaceId === workspaceId)) continue;
+    const onAccounts = new Set(forSlug.map(r => r.accountId).filter(Boolean));
+    if (accountIds.length > 0 && accountIds.every(a => onAccounts.has(a))) continue;
+    if (onAccounts.size > 0 && accountIds.some(a => onAccounts.has(a))) {
+      missing.push({ slug, reason: 'not_on_every_claim_account' });
+    } else if (forSlug.some(r => r.workspaceId === null && !r.accountId)) {
+      missing.push({ slug, reason: 'team_level_only' });
+    } else {
+      missing.push({ slug, reason: 'not_registered' });
+    }
+  }
+  return missing;
+}
+
+/** Slugs from `slugs` that no claim in `workspaceId` is guaranteed to deliver. */
+export async function findMissingScheduleSkills(workspaceId: string, slugs: string[]): Promise<string[]> {
+  return (await diagnoseScheduleSkills(workspaceId, slugs)).map(m => m.slug);
 }
 
 /** Throws `MissingScheduleSkillError` when a required skill cannot be delivered. */
@@ -72,7 +131,7 @@ export async function assertScheduleSkillsAvailable(
   workspaceId: string,
   context: Record<string, unknown> | null | undefined,
 ): Promise<void> {
-  const missing = await findMissingScheduleSkills(workspaceId, requiredScheduleSkillSlugs(context));
+  const missing = await diagnoseScheduleSkills(workspaceId, requiredScheduleSkillSlugs(context));
   if (missing.length > 0) throw new MissingScheduleSkillError(missing, workspaceId);
 }
 
@@ -129,7 +188,10 @@ export async function fileMissingSkillFriction(input: {
       status: 'pending',
       mode: 'execution',
       taskClass: 'work',
-      creationSource: 'schedule',
+      // Not 'schedule': this is system-filed friction with no scheduleId
+      // column, and must not be counted as schedule-spawned work. Matches the
+      // other system-generated reports (health-watcher, ci-retry).
+      creationSource: 'webhook',
       category: 'bug',
       context: {
         frictionSignature: signature,
