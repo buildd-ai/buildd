@@ -10,6 +10,7 @@
  */
 
 import type { MergePolicy } from '@buildd/shared';
+import type { MigrationSafety } from '@/lib/migration-safety';
 import type { WorkspacePolicyPreset, RiskClassName, RiskClassAction, RiskClassEntry, WorkspacePolicyConfig } from '@buildd/shared';
 
 export type { WorkspacePolicyPreset, RiskClassName, RiskClassAction, RiskClassEntry, WorkspacePolicyConfig };
@@ -215,10 +216,16 @@ export interface PRPolicyMatch {
  * (meaning the PR is unclassified → fall back to the base MergePolicy tier).
  *
  * Priority: human > agent-review > auto.
+ *
+ * `destructive_schema_change` is decided by the operation-class classifier,
+ * not by path: an EXPAND verdict (additive-only SQL, or schema.ts with no
+ * generated migration) means the class does not fire. Without a verdict the
+ * class falls back to its path match, so a missing inspection fails closed.
  */
 export function resolveEffectivePolicyForPR(
   policyConfig: WorkspacePolicyConfig,
   prFiles: string[],
+  migrationSafety?: MigrationSafety,
 ): PRPolicyMatch | null {
   const priority: Record<RiskClassAction, number> = {
     human: 2,
@@ -231,14 +238,19 @@ export function resolveEffectivePolicyForPR(
   for (const entry of policyConfig.riskClasses) {
     const action = getClassAction(policyConfig.preset, entry.name);
     if (action === 'auto') continue; // no escalation — skip
+    if (entry.name === 'destructive_schema_change' && migrationSafety?.safe) continue;
 
     for (const file of prFiles) {
       if (fileCoveredByClass(file, entry)) {
+        const detail =
+          entry.name === 'destructive_schema_change' && migrationSafety && !migrationSafety.safe
+            ? `${file}: ${migrationSafety.reason}`
+            : file;
         const candidate: PRPolicyMatch = {
           action,
           matchedClass: entry.name,
-          matchedFile: file,
-          reason: `${entry.name.replace(/_/g, ' ')} (${file}) → ${action}`,
+          matchedFile: detail,
+          reason: `${entry.name.replace(/_/g, ' ')} (${detail}) → ${action}`,
         };
         if (!best || priority[action] > priority[best.action]) {
           best = candidate;
@@ -453,10 +465,11 @@ export function applyPolicyConfigToMergePolicy(
   base: MergePolicy,
   policyConfig: WorkspacePolicyConfig | null | undefined,
   prFileNames: string[],
+  migrationSafety?: MigrationSafety,
 ): MergePolicy {
   if (!policyConfig || policyConfig.riskClasses.length === 0) return base;
 
-  const match = resolveEffectivePolicyForPR(policyConfig, prFileNames);
+  const match = resolveEffectivePolicyForPR(policyConfig, prFileNames, migrationSafety);
   if (!match) return base; // no risk class triggered — keep base
 
   // Map RiskClassAction → MergePolicyTier
