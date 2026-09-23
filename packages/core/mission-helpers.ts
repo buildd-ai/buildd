@@ -810,6 +810,24 @@ export function isDeliverableTask(task: {
   return true;
 }
 
+const TERMINAL_DELIVERABLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
+
+/**
+ * True when a deliverable task (`isDeliverableTask`) is still open. This is the
+ * `hasPendingDeliverableWork` input `deriveMissionHealth` requires before it
+ * will report `escalated` — every surface computes it here so the mission
+ * list, Home, Team and the detail page cannot disagree about it. Same
+ * definition the `no_open_tasks` criterion uses.
+ *
+ * Callers must select `taskClass` (and `category`/`kind`/`mode`/`title` for
+ * pre-migration rows), or attempts and bookkeeping rows count as deliverables.
+ */
+export function hasPendingDeliverableWork(
+  tasks: ReadonlyArray<Parameters<typeof isDeliverableTask>[0] & { status: string }>,
+): boolean {
+  return tasks.some(t => isDeliverableTask(t) && !TERMINAL_DELIVERABLE_STATUSES.has(t.status));
+}
+
 function deriveMissionSegmentState(task: {
   id?: string;
   status: string;

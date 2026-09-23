@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -423,9 +423,7 @@ export default async function MissionDetailPage({
   // "No pending deliverable work" for the escalated health state — same
   // definition the `no_open_tasks` criterion uses, so the state agrees with
   // the gate that produced the escalation in the first place.
-  const hasPendingDeliverableWork = (mission.tasks || [])
-    .filter(isDeliverableTask)
-    .some(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+  const hasPendingDeliverableWork = computeHasPendingDeliverableWork(mission.tasks || []);
   // See heartbeat-prepass.ts: recorded as `nextRunAt` while the heartbeat is
   // deliberately waiting on a known self-resolving condition — read it back so
   // the mission renders BLOCKED, not idle, while it waits.
@@ -460,20 +458,6 @@ export default async function MissionDetailPage({
       })
     : null;
 
-  // Single derived display state for the header chip and CTA
-  const displayState = deriveMissionDisplayState({
-    status: mission.status,
-    isHeld,
-    orchestrationMode,
-    activeAgents,
-    health: healthState,
-    progress,
-    criteriaUnverified,
-    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
-    hasPendingDeliverableWork,
-  });
-  const stateChip = getMissionStateChip(displayState);
-
   // ── What is this mission actually waiting on? ──
   // Read from `explain`, which runs the one shared mission-state accessor. The
   // page does NOT assemble its own accessor input and does NOT re-derive the
@@ -493,6 +477,24 @@ export default async function MissionDetailPage({
     getLinksForEntity(db, 'mission', id),
   ]);
   const missionAnswer = explained?.subjects[0] ?? null;
+
+  // Single derived display state for the header chip and CTA — read off the
+  // SAME accessor answer the waiting-on panel renders, so the chip cannot say
+  // AUTO/RUNNING while the panel below says blocked or idle. The historical
+  // chain is only the fallback for when the explain read failed.
+  const displayState = missionAnswer?.displayState ?? deriveMissionDisplayState({
+    status: mission.status,
+    isHeld,
+    orchestrationMode,
+    activeAgents,
+    health: healthState,
+    progress,
+    criteriaUnverified,
+    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
+    hasPendingDeliverableWork,
+  });
+  const stateChip = missionAnswer?.chip ?? getMissionStateChip(displayState);
+
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
   // parity with the one right action is what made this screen unreadable.
