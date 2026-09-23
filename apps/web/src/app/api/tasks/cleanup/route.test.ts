@@ -524,7 +524,11 @@ describe('POST /api/tasks/cleanup', () => {
       .mockResolvedValueOnce([{ id: 'w1' }])
       .mockResolvedValueOnce([{ id: 'w2' }]);
 
-    mockTasksFindMany.mockResolvedValue([]); // No orphaned tasks
+    mockTasksFindMany
+      .mockResolvedValueOnce([]) // No orphaned assigned tasks
+      // Both orphan tasks are in the caller's workspaces
+      .mockResolvedValueOnce([{ id: 'task-1' }, { id: 'task-2' }]);
+    mockTasksUpdate.mockClear();
 
     // Stale heartbeats found
     mockHeartbeatsFindMany.mockResolvedValue([
@@ -537,6 +541,8 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cleaned.heartbeatOrphans).toBe(2);
+    // Both in-scope tasks were reset to pending.
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -629,6 +635,48 @@ describe('POST /api/tasks/cleanup — caller scope', () => {
     expect(inArrays(deleteWhere.mock.calls[0][0])).toContainEqual({
       field: 'workerHeartbeats.accountId', values: ['account-a'],
     });
+  });
+
+  it("does not reset a stalled worker's task that lives outside the caller's workspaces", async () => {
+    adminKeyForTeamA();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-b' }]) // stalled running (own account)
+      .mockResolvedValue([]);
+    // The DB applies the workspace filter; a task in another team's workspace is not returned.
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksUpdate.mockClear();
+
+    await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    const stillAssignedWhere = (mockTasksFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(stillAssignedWhere)).toContainEqual({ field: 'tasks.id', values: ['task-b'] });
+    expect(inArrays(stillAssignedWhere)).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not change a heartbeat orphan's task that lives outside the caller's workspaces", async () => {
+    adminKeyForTeamA();
+    mockHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'account-a' }]);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])                               // stalled running
+      .mockResolvedValueOnce([])                               // active accounts
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-b' }]) // heartbeat orphans (own account)
+      .mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksUpdate.mockClear();
+
+    const res = await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    // The orphaned worker itself is still the caller's to fail...
+    expect((await res.json()).cleaned.heartbeatOrphans).toBe(1);
+    // ...but its task is only touched if it is in one of the caller's workspaces.
+    const lookup = mockTasksFindMany.mock.calls
+      .map(c => inArrays((c as any[])[0].where))
+      .find(preds => preds.some(p => p.field === 'tasks.id'));
+    expect(lookup).toBeDefined();
+    expect(lookup).toContainEqual({ field: 'tasks.id', values: ['task-b'] });
+    expect(lookup).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
   });
 
   it('touches nothing when the caller has no accounts or workspaces in scope', async () => {

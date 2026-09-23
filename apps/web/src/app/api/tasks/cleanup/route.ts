@@ -90,6 +90,8 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
  * What one cleanup call may touch. An admin-level API key reaches only its own
  * account's workers/heartbeats and its team's workspaces' tasks; a session
  * reaches the accounts and workspaces of every team the user belongs to.
+ * A task is changed only when its workspace is in scope, even when the worker
+ * holding it belongs to the caller.
  * The cross-tenant sweep lives in the cron jobs, never behind this route.
  */
 interface CleanupScope {
@@ -184,9 +186,15 @@ export async function POST(req: NextRequest) {
 
     // Reset associated tasks to pending so they can be re-claimed — but cap
     // retries via resetOrFailTask to break loops on persistently-failing tasks.
-    if (stalledTaskIds.length > 0) {
+    // The worker is the caller's, but its task is only touched when it sits in
+    // one of the caller's workspaces (a worker can hold a task elsewhere).
+    if (stalledTaskIds.length > 0 && hasWorkspaces) {
       const stillAssigned = await db.query.tasks.findMany({
-        where: and(inArray(tasks.id, stalledTaskIds), eq(tasks.status, 'assigned')),
+        where: and(
+          inArray(tasks.id, stalledTaskIds),
+          inArray(tasks.workspaceId, scope.workspaceIds),
+          eq(tasks.status, 'assigned'),
+        ),
         columns: { id: true },
       });
       for (const t of stillAssigned) {
@@ -344,9 +352,20 @@ export async function POST(req: NextRequest) {
         })
         .where(inArray(workers.id, orphanWorkerIds));
 
+      // Same rule as phase 1: only tasks in the caller's workspaces are changed.
+      const inScopeTaskIds = orphanTaskIds.length > 0 && hasWorkspaces
+        ? (await db.query.tasks.findMany({
+            where: and(
+              inArray(tasks.id, orphanTaskIds),
+              inArray(tasks.workspaceId, scope.workspaceIds),
+            ),
+            columns: { id: true },
+          })).map(t => t.id)
+        : [];
+
       // Check each task — promote to completed if worker had deliverables, else reset to pending
-      if (orphanTaskIds.length > 0) {
-        for (const taskId of orphanTaskIds) {
+      if (inScopeTaskIds.length > 0) {
+        for (const taskId of inScopeTaskIds) {
           const orphanWorker = orphanedWorkers.find(w => w.taskId === taskId);
           let hasDeliverables = false;
           if (orphanWorker) {
