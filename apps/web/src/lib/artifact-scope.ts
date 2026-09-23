@@ -5,6 +5,7 @@
  */
 import { artifacts, workers } from '@buildd/core/db/schema';
 import { and, inArray, isNotNull, notInArray, or, eq, sql, type SQL } from 'drizzle-orm';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
 import {
   BYPRODUCT_ARTIFACT_TYPES,
   REVIEW_ARTIFACT_TYPES,
@@ -36,9 +37,17 @@ const MATCHES_NOTHING = sql`false`;
 export function workspaceArtifactScope(workspaceIds: readonly string[]): SQL {
   if (workspaceIds.length === 0) return MATCHES_NOTHING;
   const ids = [...workspaceIds];
+  // A built subquery, not a `sql` template: `db.query.*.findMany` re-aliases
+  // every Column inside a root `where` SQL fragment to the root table, which
+  // turned a templated subquery into a correlated self-reference on
+  // `artifacts` that matched nothing. A query-builder subquery is left alone.
+  const workerIdsInScope = new QueryBuilder()
+    .select({ id: workers.id })
+    .from(workers)
+    .where(inArray(workers.workspaceId, ids));
   return or(
     inArray(artifacts.workspaceId, ids),
-    sql`${artifacts.workerId} in (select ${workers.id} from ${workers} where ${inArray(workers.workspaceId, ids)})`,
+    inArray(artifacts.workerId, workerIdsInScope),
   )!;
 }
 

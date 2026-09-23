@@ -109,7 +109,7 @@ describe('loadArtifactsPage', () => {
     expect(args.limit).toBe(51);
     const { sql } = render(args.where);
     expect(sql).toContain('"artifacts"."workspace_id" in');
-    expect(sql).toContain('select "workers"."id" from "workers"');
+    expect(sql).toContain('select "id" from "workers" where "workers"."workspace_id" in');
   });
 
   it('pushes the review filter into SQL for the review scope', async () => {

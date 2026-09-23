@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { drizzle } from 'drizzle-orm/neon-http';
+import { neon } from '@neondatabase/serverless';
+import * as schema from '@buildd/core/db/schema';
 import { reviewArtifactScope, workspaceArtifactScope } from './artifact-scope';
 
 /**
@@ -45,9 +48,26 @@ describe('workspaceArtifactScope — tenancy', () => {
     // assertion failing.
     const { sql, params } = render(workspaceArtifactScope(['ws-mine']));
     expect(sql).toBe(
-      '("artifacts"."workspace_id" in ($1) or "artifacts"."worker_id" in (select "workers"."id" from "workers" where "workers"."workspace_id" in ($2)))',
+      '("artifacts"."workspace_id" in ($1) or "artifacts"."worker_id" in (select "id" from "workers" where "workers"."workspace_id" in ($2)))',
     );
     expect(params).toEqual(['ws-mine', 'ws-mine']);
+  });
+
+  it('keeps the subquery on the workers table inside a relational findMany', () => {
+    // PgDialect alone is not enough: `db.query.<t>.findMany` rewrites every
+    // Column inside a root `where` SQL fragment to the root table's alias. A
+    // subquery written as a `sql` template therefore rendered as
+    // `select "artifacts"."id" from "workers" where "artifacts"."workspace_id" ...`
+    // — a correlated self-reference that silently matched no legacy row.
+    // Render through a real (never-executed) relational query to observe it.
+    const qdb = drizzle(neon('postgres://u:p@localhost/db'), { schema });
+    const q = qdb.query.artifacts
+      .findMany({ where: workspaceArtifactScope(['ws-mine']), limit: 1 })
+      .toSQL();
+    const rendered = q.sql.replace(/\s+/g, ' ').toLowerCase();
+    expect(rendered).toContain('from "workers" where "workers"."workspace_id" in');
+    expect(rendered).toContain('"worker_id" in (select "id" from "workers"');
+    expect(rendered).not.toContain('select "artifacts"."id" from "workers"');
   });
 
   it('matches nothing when the user has no accessible workspaces', () => {
