@@ -598,29 +598,36 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       });
       injectWorker(manager, worker);
 
-      defaultQueryBehavior = { type: 'success', messages: successMessages('sess-reconstructed') };
-      // The reconstructed session ends without calling complete_task, so it
-      // now gets a sessionId of its own (see successMessages) and is eligible
-      // for the runner's own closing turn. Queue an empty behavior for that
-      // resumed call so it ends immediately instead of replaying the same
-      // script — otherwise every resumed call would itself be eligible for
-      // another closing turn, chaining indefinitely in this mock.
-      queryBehaviors = [{ type: 'success', messages: [] }];
+      // `queryBehaviors.shift() || defaultQueryBehavior` consumes queued
+      // entries in call order, so the reconstruction call (first) must get
+      // its own successMessages, and the closing turn's resumed call
+      // (second) gets the empty response that ends it immediately —
+      // otherwise every resumed call would itself be eligible for another
+      // closing turn, chaining indefinitely in this mock.
+      defaultQueryBehavior = { type: 'success', messages: [] };
+      queryBehaviors = [
+        { type: 'success', messages: successMessages('sess-reconstructed') },
+        { type: 'success', messages: [] },
+      ];
 
       const result = await manager.sendMessage('w-th-1', 'Also update the docs');
       expect(result).toBe(true);
 
       await new Promise(r => setTimeout(r, 300));
 
-      // Should have called query at least once (no resume attempt on the
-      // reconstruction call itself)
-      expect(queryCallCount).toBeGreaterThanOrEqual(1);
+      // The reconstructed session ends without calling complete_task, so it
+      // now gets a sessionId of its own (see successMessages) and is
+      // eligible for the runner's own closing turn: one query call for the
+      // Layer 3 reconstruction, one more for the resumed closing turn.
+      expect(queryCallCount).toBe(2);
 
       // The Layer 3 reconstruction call carries no resume option — there was
-      // no sessionId to resume with. (The runner's closing turn does resume,
-      // once the reconstructed session has a sessionId of its own — that's a
-      // later, separate call, not this one.)
+      // no sessionId to resume with.
       expect(allQueryOpts[0]?.options?.resume).toBeUndefined();
+
+      // The closing turn resumes the session the reconstruction call just
+      // established.
+      expect(allQueryOpts[1]?.options?.resume).toBe('sess-reconstructed');
     });
 
     test('sets error when reconstruction query fails', async () => {
