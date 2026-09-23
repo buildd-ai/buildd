@@ -448,14 +448,16 @@ export interface ResultMeta {
    * calling complete_task gets before the runner falls back to
    * summarySource:'fallback' — see startSession's isClosingTurn handling.
    * 'authored' = the closing turn called complete_task itself. 'declined' =
-   * it ran but still didn't. `skipped:<reason>` = none was attempted (not
+   * it ran but still didn't; `declined:<reason>` = it ended on its own error
+   * (`max_turns`, or `error` for any other error result / thrown error) and
+   * the fallback ran instead. `skipped:<reason>` = none was attempted (not
    * resumable, or the original session ended by error/abort/rate-limit/
    * credential-failure/cancellation). Absent when the agent's own
    * complete_task call already won the race before the decision was made.
    * Mirrors packages/core/db/schema.ts's ResultMeta — kept in sync manually,
    * same as every other field in this local copy.
    */
-  closingTurnOutcome?: 'authored' | 'declined' | `skipped:${string}`;
+  closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
 }
 
 // Loop exit condition (spec §1)

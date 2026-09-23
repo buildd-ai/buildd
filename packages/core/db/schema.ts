@@ -685,14 +685,16 @@ export interface ResultMeta {
    * `summarySource: 'fallback'`. 'authored' = the closing turn called
    * complete_task itself (the ordinary fallback text/tagging never applied).
    * 'declined' = the closing turn ran but still didn't call it, so the
-   * fallback summary was used anyway. `skipped:<reason>` = no closing turn was
+   * fallback summary was used anyway; `declined:<reason>` = same, but the
+   * closing turn ended on its own error (`max_turns`, or `error` for any other
+   * error result / thrown error) — never a task failure. `skipped:<reason>` = no closing turn was
    * attempted at all (session not resumable, or the original session ended by
    * error/abort/rate-limit/credential-failure/cancellation rather than
    * naturally) — reason names why. Absent entirely when the agent's own
    * complete_task call already won the race before this decision was made,
    * which keeps that path byte-identical to before this field existed.
    */
-  closingTurnOutcome?: 'authored' | 'declined' | `skipped:${string}`;
+  closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
 }
 
 export const workspaces = pgTable('workspaces', {
