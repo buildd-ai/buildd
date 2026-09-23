@@ -1,8 +1,64 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { requestRefresh, flushRefresh } from './coalesced-refresh';
+
+interface RouterLike {
+  refresh: () => void;
+}
+
+// Exported for testing: the actual event→refresh wiring, decoupled from the
+// Pusher subscription lifecycle. worker:progress is the steady ~10s-per-worker
+// heartbeat and goes through the debounce; everything else here is a one-off
+// status transition or terminal event and must never be delayed or merged away.
+export function createEventHandlers(router: RouterLike, taskId: string, depTaskIds: string[]) {
+  const handleClaimed = (data: { task: { id: string } }) => {
+    if (data.task?.id === taskId) flushRefresh(router, taskId);
+  };
+
+  const handleWorkerEvent = (data: { taskId?: string; worker?: { taskId?: string } }) => {
+    const eventTaskId = data.taskId ?? data.worker?.taskId;
+    if (eventTaskId === taskId) requestRefresh(router, taskId);
+  };
+
+  const handleWorkerTerminal = (data: { taskId?: string; worker?: { taskId?: string } }) => {
+    const eventTaskId = data.taskId ?? data.worker?.taskId;
+    if (eventTaskId === taskId) flushRefresh(router, taskId);
+  };
+
+  const handleTaskUnblocked = (data: { taskId: string; resolvedDependency: string }) => {
+    if (data.taskId === taskId) flushRefresh(router, taskId);
+  };
+
+  const handleChildrenCompleted = (data: { parentTaskId: string; childCount: number; completed: number; failed: number }) => {
+    if (data.parentTaskId === taskId) flushRefresh(router, taskId);
+  };
+
+  const handleTaskCompleted = (data: { taskId: string }) => {
+    if (depTaskIds.includes(data.taskId)) flushRefresh(router, taskId);
+  };
+
+  const handleTaskFailed = (data: { taskId: string }) => {
+    if (depTaskIds.includes(data.taskId)) flushRefresh(router, taskId);
+  };
+
+  const handleTaskUpdated = (data: { task?: { id?: string } }) => {
+    if (data.task?.id === taskId) flushRefresh(router, taskId);
+  };
+
+  return {
+    handleClaimed,
+    handleWorkerEvent,
+    handleWorkerTerminal,
+    handleTaskUnblocked,
+    handleChildrenCompleted,
+    handleTaskCompleted,
+    handleTaskFailed,
+    handleTaskUpdated,
+  };
+}
 
 export function computeIsTerminalLeaf(
   taskStatus: string,
@@ -39,7 +95,6 @@ export default function TaskAutoRefresh({
   workerHasOpenPr: boolean;
 }) {
   const router = useRouter();
-  const refreshedRef = useRef(false);
 
   // Stabilize depTaskIds to avoid infinite re-renders (arrays are compared by reference)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -58,76 +113,24 @@ export default function TaskAutoRefresh({
     const channel = subscribeToChannel(channelName);
     if (!channel) return;
 
-    const doRefresh = () => {
-      if (!refreshedRef.current) {
-        refreshedRef.current = true;
-        setTimeout(() => {
-          router.refresh();
-          // Reset so future events can trigger another refresh
-          refreshedRef.current = false;
-        }, 500);
-      }
-    };
-
-    // When a worker claims this task
-    const handleClaimed = (data: { task: { id: string } }) => {
-      if (data.task?.id === taskId) {
-        doRefresh();
-      }
-    };
-
-    // When a worker reports progress, completes, or fails on this task.
-    // Accepts both thin events {taskId, workerId} and legacy {worker:{taskId}}.
-    const handleWorkerEvent = (data: { taskId?: string; worker?: { taskId?: string } }) => {
-      const eventTaskId = data.taskId ?? data.worker?.taskId;
-      if (eventTaskId === taskId) {
-        doRefresh();
-      }
-    };
-
-    // When a dependency of this task resolves, unblocking it
-    const handleTaskUnblocked = (data: { taskId: string; resolvedDependency: string }) => {
-      if (data.taskId === taskId) {
-        doRefresh();
-      }
-    };
-
-    // When all children of this task complete (planning tasks)
-    const handleChildrenCompleted = (data: { parentTaskId: string; childCount: number; completed: number; failed: number }) => {
-      if (data.parentTaskId === taskId) {
-        doRefresh();
-      }
-    };
-
-    // When any dep task completes or fails, refresh to update blocked status
-    const handleTaskCompleted = (data: { taskId: string }) => {
-      if (stableDepIds.includes(data.taskId)) {
-        doRefresh();
-      }
-    };
-
-    const handleTaskFailed = (data: { taskId: string }) => {
-      if (stableDepIds.includes(data.taskId)) {
-        doRefresh();
-      }
-    };
-
-    // Task reset out from under the viewer. Published when a worker's budget is
-    // exhausted or an auth failover flips the backend, both of which set the task
-    // back to `pending` — so without this the page shows a running task that is
-    // no longer running, which is precisely the invisible-stall symptom that
-    // makes a budget reset look like a hung worker.
-    const handleTaskUpdated = (data: { task?: { id?: string } }) => {
-      if (data.task?.id === taskId) {
-        doRefresh();
-      }
-    };
+    const {
+      handleClaimed,
+      handleWorkerEvent,
+      handleWorkerTerminal,
+      handleTaskUnblocked,
+      handleChildrenCompleted,
+      handleTaskCompleted,
+      handleTaskFailed,
+      handleTaskUpdated,
+    } = createEventHandlers(router, taskId, stableDepIds);
 
     channel.bind('task:claimed', handleClaimed);
     channel.bind('task:updated', handleTaskUpdated);
+    // worker:progress is the steady ~10s-per-worker heartbeat — debounced.
+    // worker:completed/failed are terminal — refreshed immediately.
     channel.bind('worker:progress', handleWorkerEvent);
-    channel.bind('worker:completed', handleWorkerEvent);
-    channel.bind('worker:failed', handleWorkerEvent);
+    channel.bind('worker:completed', handleWorkerTerminal);
+    channel.bind('worker:failed', handleWorkerTerminal);
     channel.bind('task:unblocked', handleTaskUnblocked);
     channel.bind('task:children_completed', handleChildrenCompleted);
     channel.bind('task:completed', handleTaskCompleted);
@@ -137,8 +140,8 @@ export default function TaskAutoRefresh({
       channel.unbind('task:claimed', handleClaimed);
       channel.unbind('task:updated', handleTaskUpdated);
       channel.unbind('worker:progress', handleWorkerEvent);
-      channel.unbind('worker:completed', handleWorkerEvent);
-      channel.unbind('worker:failed', handleWorkerEvent);
+      channel.unbind('worker:completed', handleWorkerTerminal);
+      channel.unbind('worker:failed', handleWorkerTerminal);
       channel.unbind('task:unblocked', handleTaskUnblocked);
       channel.unbind('task:children_completed', handleChildrenCompleted);
       channel.unbind('task:completed', handleTaskCompleted);
