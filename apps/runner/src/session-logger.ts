@@ -1,9 +1,12 @@
 import * as fs from 'fs';
 const { existsSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, statSync, readFileSync } = fs;
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 
-const LOGS_DIR = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'logs');
+/** Resolved per call so a test runtime without a temp BUILDD_HOME fails closed (see buildd-home.ts). */
+function logsDir(): string {
+  return join(resolveBuilddHome(), 'logs');
+}
 const MAX_AGE_MS = 48 * 60 * 60 * 1000; // 48 hours
 
 export type SessionLogLevel = 'info' | 'warn' | 'error';
@@ -18,13 +21,13 @@ export interface SessionLogEntry {
 }
 
 function ensureDir() {
-  if (!existsSync(LOGS_DIR)) {
-    mkdirSync(LOGS_DIR, { recursive: true });
+  if (!existsSync(logsDir())) {
+    mkdirSync(logsDir(), { recursive: true });
   }
 }
 
 function logPath(workerId: string): string {
-  return join(LOGS_DIR, `${workerId}.log`);
+  return join(logsDir(), `${workerId}.log`);
 }
 
 /** Append a structured log entry for a worker session */
@@ -78,14 +81,13 @@ export interface ClaimLogEntry {
   matchedTasks?: number;
 }
 
-const CLAIMS_LOG = join(LOGS_DIR, 'claims.log');
 
 /** Append a structured claim log entry */
 export function claimLog(entry: Omit<ClaimLogEntry, 'ts'>): void {
   try {
     ensureDir();
     const full: ClaimLogEntry = { ts: Date.now(), ...entry };
-    appendFileSync(CLAIMS_LOG, JSON.stringify(full) + '\n');
+    appendFileSync(join(logsDir(), 'claims.log'), JSON.stringify(full) + '\n');
   } catch {
     // Logging should never crash the app
   }
@@ -105,17 +107,19 @@ export function readClaimLogs(maxLines = 50): ClaimLogEntry[] {
 
 /** Clean up log files older than 48 hours */
 export function cleanupOldLogs(): void {
-  if (!existsSync(LOGS_DIR)) return;
+  let dir: string;
+  try { dir = logsDir(); } catch { return; }
+  if (!existsSync(dir)) return;
   const now = Date.now();
   try {
-    for (const file of readdirSync(LOGS_DIR)) {
+    for (const file of readdirSync(dir)) {
       // claims.log holds months of the best forensic data available and is
       // append-only — its mtime only looks fresh while the runner is
       // actively claiming, so an idle runner would otherwise age it past
       // MAX_AGE_MS and this sweep would delete it. Same exemption doctor.ts's
       // disk-usage cleanup already applies by name.
       if (!file.endsWith('.log') || file === 'claims.log') continue;
-      const filePath = join(LOGS_DIR, file);
+      const filePath = join(dir, file);
       try {
         const stat = statSync(filePath);
         if (now - stat.mtimeMs > MAX_AGE_MS) {

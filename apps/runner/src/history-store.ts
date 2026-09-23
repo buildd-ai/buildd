@@ -7,13 +7,14 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import type { LocalWorker, ResultMeta } from './types';
 
-const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
-const DB_PATH = join(BUILDD_DIR, 'history.db');
-const ARCHIVE_DIR = join(BUILDD_DIR, 'archive');
-const WORKERS_DIR = join(BUILDD_DIR, 'workers');
+// Resolved per call so a test runtime without a temp BUILDD_HOME fails closed
+// (see buildd-home.ts) instead of opening the operator's real history.db.
+const builddDir = () => resolveBuilddHome();
+const archiveDir = () => join(builddDir(), 'archive');
+const workersDir = () => join(builddDir(), 'workers');
 
 // Archive TTL: 90 days
 const ARCHIVE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -21,15 +22,16 @@ const ARCHIVE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 let db: Database | null = null;
 
 function ensureDirs() {
-  if (!existsSync(BUILDD_DIR)) mkdirSync(BUILDD_DIR, { recursive: true });
-  if (!existsSync(ARCHIVE_DIR)) mkdirSync(ARCHIVE_DIR, { recursive: true });
+  const dir = builddDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(archiveDir())) mkdirSync(archiveDir(), { recursive: true });
 }
 
 function getDb(): Database {
   if (db) return db;
 
   ensureDirs();
-  db = new Database(DB_PATH);
+  db = new Database(join(builddDir(), 'history.db'));
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
 
@@ -243,7 +245,7 @@ export function archiveSession(worker: LocalWorker): void {
     const compressed = Bun.gzipSync(
       Buffer.from(JSON.stringify(archiveData))
     );
-    Bun.write(join(ARCHIVE_DIR, `${worker.id}.json.gz`), compressed);
+    Bun.write(join(archiveDir(), `${worker.id}.json.gz`), compressed);
 
   } catch (err) {
     // Non-fatal — don't crash the worker lifecycle
@@ -368,7 +370,7 @@ export function getSession(workerId: string): SessionRow | null {
 
 /** Get archived session data (decompressed) */
 export function getArchivedData(workerId: string): any | null {
-  const archivePath = join(ARCHIVE_DIR, `${workerId}.json.gz`);
+  const archivePath = join(archiveDir(), `${workerId}.json.gz`);
   if (!existsSync(archivePath)) return null;
 
   try {
@@ -428,17 +430,17 @@ export function getStats(): HistoryStats {
 
 /** Backfill: scan existing worker JSON files for completed workers not already in SQLite */
 export function backfillFromWorkerFiles(): number {
-  if (!existsSync(WORKERS_DIR)) return 0;
+  if (!existsSync(workersDir())) return 0;
 
   let backfilled = 0;
   const db = getDb();
 
   try {
-    const files = readdirSync(WORKERS_DIR).filter(f => f.endsWith('.json'));
+    const files = readdirSync(workersDir()).filter(f => f.endsWith('.json'));
 
     for (const file of files) {
       try {
-        const raw = readFileSync(join(WORKERS_DIR, file), 'utf-8');
+        const raw = readFileSync(join(workersDir(), file), 'utf-8');
         const data = JSON.parse(raw);
 
         // Only backfill terminal states
@@ -515,13 +517,13 @@ export function initHistory(): void {
 
 /** Remove archives older than TTL */
 function cleanupOldArchives(): void {
-  if (!existsSync(ARCHIVE_DIR)) return;
+  if (!existsSync(archiveDir())) return;
 
   const now = Date.now();
   try {
-    for (const file of readdirSync(ARCHIVE_DIR)) {
+    for (const file of readdirSync(archiveDir())) {
       if (!file.endsWith('.json.gz')) continue;
-      const filePath = join(ARCHIVE_DIR, file);
+      const filePath = join(archiveDir(), file);
       try {
         const stat = statSync(filePath);
         if (now - stat.mtimeMs > ARCHIVE_TTL_MS) {
