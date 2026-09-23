@@ -21,6 +21,8 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { parseLoopConfig } from '@buildd/core/loop-config';
+import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
+import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
 
 // GET /api/tasks/[id] - Get a single task.
@@ -195,7 +197,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, maxLoops, actorWorkerId, resultSummary, correctedBy } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -220,6 +222,35 @@ export async function PATCH(
         const { budgetExhausted: _paused, budgetResetsAt: _resets, ...restCtx } = taskCtx;
         updateData.startAt = null;
         updateData.context = { ...restCtx, switchedBackendFrom: currentBackend };
+      }
+    }
+    // Model pin for the NEXT claim or retry (never the in-flight session).
+    // `tier` is the tier-first override (tasks.tier); `model` is a concrete id
+    // pinned in context.model with the context.modelPinned marker the claim
+    // route reads via readModelPin. null clears either so routing decides again.
+    // A tier set without a model drops any existing model pin — otherwise the
+    // pin would silently outrank the tier the caller just asked for.
+    if (tier !== undefined || model !== undefined) {
+      if (tier !== undefined && tier !== null && !isTaskTier(tier)) {
+        return NextResponse.json(
+          { error: `tier must be one of: ${TIERS.join(', ')} (or null to clear)` },
+          { status: 400 },
+        );
+      }
+      if (model !== undefined && model !== null && !isAcceptableModelPin(model)) {
+        return NextResponse.json(
+          { error: 'model must be an Anthropic model id (e.g. claude-…) or null to clear' },
+          { status: 400 },
+        );
+      }
+      if (tier !== undefined) updateData.tier = tier;
+
+      const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
+      if (model !== undefined && model !== null) {
+        updateData.context = { ...baseCtx, model: (model as string).trim(), modelPinned: true };
+      } else if (model === null || (tier && readModelPin(baseCtx) !== null)) {
+        const { model: _dropped, ...rest } = baseCtx;
+        updateData.context = { ...rest, modelPinned: false };
       }
     }
     if (project !== undefined) updateData.project = project;
