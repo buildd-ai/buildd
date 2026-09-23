@@ -28,6 +28,7 @@ import { listWorkspaceRoles } from '@/lib/pr-review-request';
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { resolveReReviewPlan } from '@/lib/pr-re-review';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 
@@ -141,6 +142,23 @@ export async function POST(
       detail: { prNumber, reviewTaskId: plan.reviewTaskId },
     });
     return NextResponse.json({ ok: true, alreadyRequested: true, reviewTaskId: plan.reviewTaskId });
+  }
+
+  // A delta against an approval whose PR diff has not changed (rebase / base
+  // merge only) has nothing to review: carry the approval to this head.
+  const baseRef = (resolved as { prBaseRef?: string | null }).prBaseRef;
+  if (plan.kind === 'delta' && plan.priorVerdict.verdict === 'approve' && baseRef) {
+    const carry = await carryForwardApprovalIfUnchanged({
+      installationId,
+      repoFullName,
+      workspaceId: worker.workspaceId,
+      prNumber,
+      baseRef,
+      headSha,
+    }).catch(() => ({ carried: false, reason: 'carry-forward check failed' }));
+    if (carry.carried) {
+      return NextResponse.json({ ok: true, carriedForward: true, reason: carry.reason });
+    }
   }
 
   const reviewerTask = await createReviewerTask({

@@ -21,6 +21,7 @@ import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -239,6 +240,42 @@ export async function POST(req: NextRequest) {
   const deltaPriorVerdict = priorVerdict && priorVerdict.headSha !== (pr.head?.sha ?? '')
     ? priorVerdict
     : undefined;
+
+  // An approval whose PR diff is unchanged since it was given (the head only
+  // moved by a rebase or base merge) needs no second agent: record that it
+  // covers the new head and return it, instead of paying for a delta review
+  // of an empty delta. Only an approve carries forward.
+  if (existingReview && deltaPriorVerdict?.verdict === 'approve' && pr.base?.ref && pr.head?.sha) {
+    const carry = await carryForwardApprovalIfUnchanged({
+      installationId: repo.installationId,
+      repoFullName: repo.fullName,
+      workspaceId: workspace.id,
+      prNumber,
+      baseRef: pr.base.ref,
+      headSha: pr.head.sha,
+    }).catch((err) => {
+      console.warn(`[pr-review] carry-forward check failed for PR #${prNumber}:`, err);
+      return { carried: false, reason: 'carry-forward check failed' };
+    });
+    if (carry.carried) {
+      const policy = await resolveEffectivePolicy(workspace, null);
+      return NextResponse.json({
+        ok: true,
+        alreadyRequested: true,
+        carriedForward: true,
+        carriedForwardReason: carry.reason,
+        prNumber,
+        reviewTaskId: existingReview.id,
+        taskId: existingWorker?.taskId ?? null,
+        autoMergeExpected: autoMergeExpectedFor(policy),
+        status: derivePrReviewStatus({
+          reviewTask: existingReview,
+          worker: existingWorker ?? null,
+          autoMergeExpected: autoMergeExpectedFor(policy),
+        }),
+      });
+    }
+  }
 
   // Adopt the PR when buildd has no worker for it: every downstream surface
   // keys off "the worker that owns this PR", so adoption is what lets an

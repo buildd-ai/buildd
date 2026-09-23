@@ -35,6 +35,15 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 
 /**
+ * The base-freshness refusal below: behind the base but not conflicting.
+ * Lets the conflict-retry path bring the branch up to date via GitHub instead
+ * of an agent. Keyed to that refusal's own wording, which it owns.
+ */
+export function isBehindBaseRefusal(reason: string): boolean {
+  return /^PR is \d+ commits? behind .* — the green CI result was measured against a base that no longer exists/.test(reason);
+}
+
+/**
  * Check CI status, deny paths, and diff size for a PR before merging.
  * Returns `{ ok: true }` when all safety rails pass, `{ ok: false, reason }` otherwise.
  *
@@ -459,6 +468,7 @@ export async function tryAutoMergeWorkerPr(params: {
           headSha,
           repoFullName,
           workspaceId,
+          behindOnly: isBehindBaseRefusal(safetyCheck.reason),
         }).catch(err => {
           console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;

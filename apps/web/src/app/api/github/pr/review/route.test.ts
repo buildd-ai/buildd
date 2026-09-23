@@ -39,6 +39,8 @@ mock.module('@/lib/workspace-resolver', () => ({ resolveWorkspace: mockResolveWo
 mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewerTask }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
+const mockCarryForward = mock(async (_p: any) => ({ carried: false, reason: 'PR diff changed' }));
+mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
 
 mock.module('@/lib/pr-review-request', () => ({
   findReviewTaskForPr: mockFindReviewTaskForPr,
@@ -442,6 +444,39 @@ describe('POST /api/github/pr/review — idempotency', () => {
       feedback: null,
       escalationReason: null,
     });
+  });
+
+  it('force does NOT dispatch a reviewer when the approved PR diff is unchanged since the approval (rebase only)', async () => {
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-1',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'approve', confidence: 0.9, summary: 'good' } },
+      context: { prNumber: 42, headSha: 'old-sha' },
+    });
+    mockCarryForward.mockResolvedValueOnce({ carried: true, reason: 'PR diff unchanged' });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.carriedForward).toBe(true);
+    expect(json.reviewTaskId).toBe('review-task-1');
+    expect(mockCarryForward.mock.calls.at(-1)![0]).toMatchObject({ prNumber: 42, headSha: 'sha-42' });
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('force never tries to carry forward a request-changes verdict', async () => {
+    mockCarryForward.mockClear();
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-1',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 'fix it', feedback: 'x' } },
+      context: { prNumber: 42, headSha: 'old-sha' },
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(201);
+    expect(mockCarryForward).not.toHaveBeenCalled();
+    expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
   });
 
   it('force does NOT build a delta when the terminal verdict is already at the current head', async () => {

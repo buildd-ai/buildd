@@ -56,6 +56,18 @@ describe('derivePrReviewStatus — review progress', () => {
     expect(status.reviewTaskId).toBeNull();
   });
 
+  it('surfaces heads an approval was carried to, ignoring malformed entries', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'completed',
+        result: verdictResult('approve'),
+        context: { prNumber: 42, headSha: 'a'.repeat(40), equivalentHeadShas: ['b'.repeat(40), 7, null] },
+      }),
+    });
+    expect(status.reviewEquivalentHeadShas).toEqual(['b'.repeat(40)]);
+    expect(derivePrReviewStatus({ reviewTask: null }).reviewEquivalentHeadShas).toEqual([]);
+  });
+
   it('maps a pending reviewer task to queued, and in-flight to reviewing', () => {
     expect(derivePrReviewStatus({ reviewTask: reviewTask({ status: 'pending' }) }).state).toBe('queued');
     expect(derivePrReviewStatus({ reviewTask: reviewTask({ status: 'in_progress' }) }).state).toBe('reviewing');
