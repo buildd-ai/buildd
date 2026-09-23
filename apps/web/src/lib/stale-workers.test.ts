@@ -2355,33 +2355,6 @@ describe('cleanupUnresumedAnswers', () => {
     expect(insertedValues[0].description).toContain('Which database?');
   });
 
-  // neon-http has no transactions: the worker was already CAS-updated to
-  // `superseded` before this insert runs, so a rejection here must be
-  // compensated by hand or the worker is stuck `superseded` forever with the
-  // human's answer gone and no continuation to pick it up.
-  it('restores the worker to waiting_input with the answer requeued when the continuation insert fails', async () => {
-    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
-    mockTasksInsert.mockReturnValue({
-      values: mock(() => ({
-        returning: mock(() => { throw new Error('insert failed'); }),
-      })),
-    } as any);
-
-    const result = await cleanupUnresumedAnswers('account-1');
-
-    expect(result.degraded).toBe(0);
-    // First write is the supersede CAS; second is the rollback this test cares about.
-    expect(capturedWorkerUpdates).toHaveLength(2);
-    const rollback = capturedWorkerUpdates[1];
-    expect(rollback.status).toBe('waiting_input');
-    expect(rollback.pendingInstructions).toBe('Use Postgres');
-    expect(rollback.completedAt).toBeNull();
-    // No compensating task, no note, no seat release — the answer is still
-    // queued on the worker for a later sweep to retry.
-    expect(capturedInsertValues).toBeNull();
-    expect(capturedAccountsSet).toBeNull();
-  });
-
   it('posts one warning note naming the failure to deliver', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
@@ -2491,5 +2464,30 @@ describe('cleanupUnresumedAnswers', () => {
     expect(restore.pendingInstructions).toBe('Use Postgres');
     // No account seat is released for a worker that was never actually degraded.
     expect(capturedAccountsSet).toBeNull();
+  });
+
+  // AC-AQR-26 — once the Continue: task insert has succeeded, the answer is
+  // durably recoverable, so the two remaining writes (context stamp, feed
+  // note) are best-effort: a throw there must not abort the sweep for the
+  // rest of the account's candidates.
+  it('keeps degrading later candidates when the downstream bookkeeping writes throw', async () => {
+    const second = parkedWithQueuedAnswer({ workerId: 'worker-2' });
+    second.id = 'worker-2';
+    second.taskId = 'task-2';
+    second.task = { ...second.task, id: 'task-2' };
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer(), second] as any);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.reject(new Error('context stamp failed'))) })),
+    } as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    // Both candidates still degrade — the throw is swallowed, not propagated.
+    expect(result.degraded).toBe(2);
+    // Neither worker was rolled back: the continuation task already exists
+    // for both, so the answer was never at risk.
+    expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
+    // One OAuth seat released per degraded worker, same as the happy path.
+    expect(capturedAccountsSet).not.toBeNull();
   });
 });
