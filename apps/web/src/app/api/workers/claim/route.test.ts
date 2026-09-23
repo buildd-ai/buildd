@@ -52,6 +52,10 @@ function makeSelectChain(result: any[] = []) {
   chain.from = () => chain;
   chain.innerJoin = () => chain;
   chain.where = () => chain;
+  // The role lookup orders before limiting (§C.2 precedence). Without this the
+  // chain dies mid-claim on `.orderBy is not a function`, which reads as a
+  // claim-route bug rather than a missing stub.
+  chain.orderBy = () => chain;
   chain.groupBy = () => Promise.resolve(result);
   chain.limit = () => Promise.resolve(result);
   chain.then = (resolve: any, reject?: any) => Promise.resolve(result).then(resolve, reject);
@@ -3947,10 +3951,14 @@ describe('entity catalog injection at claim time', () => {
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
     });
+    // Two shapes share this stub: the claim-rate probe awaits `where()`
+    // directly, the role lookup chains `orderBy().limit()` off it.
+    const whereResult: any = {
+      then: (res: any, rej?: any) => Promise.resolve([{ count: 0 }]).then(res, rej),
+      orderBy: () => ({ limit: async () => [] }),
+    };
     mockDbSelect.mockReturnValue({
-      from: mock(() => ({
-        where: mock(() => Promise.resolve([{ count: 0 }])),
-      })),
+      from: mock(() => ({ where: mock(() => whereResult) })),
     });
   });
 
