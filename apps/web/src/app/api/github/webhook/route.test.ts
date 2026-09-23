@@ -4077,6 +4077,21 @@ describe('workflow_run → releases state advancement', () => {
     expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
   });
 
+  it('a late dispatch failure never overwrites a gated row the release-PR merge already advanced', async () => {
+    // The merge is the gated deploy signal; once it moved the row to
+    // `deploying`, no later conclusion of the dispatch run describes it.
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-gated-4', workspaceId: 'ws-release', state: 'deploying', archetype: 'gated', runUrl: RUN_URL }]
+        : null;
+    // Even when GitHub's live view of the dispatch run agrees it failed.
+    mockGithubApi.mockReturnValue(Promise.resolve({ conclusion: 'failure' }));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('failure')));
+    expect(res.status).toBe(200);
+    expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+  });
+
   it('still marks a non-gated (continuous) release deploying on dispatch success — unaffected', async () => {
     selectTableResults = (t) =>
       t === schemaMock.releases

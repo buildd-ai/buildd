@@ -2805,10 +2805,19 @@ async function advanceReleaseStateFromWorkflowRun(
   const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
 
   // A gated row already in `deploying` got there from its release PR merging
-  // (advanceGatedReleaseOnPrMerge). A dispatch success arriving after that —
-  // a late or redelivered event — carries nothing newer, and applying it
-  // would move a shipped release back to waiting on a merge that happened.
-  if (isGatedDispatchSuccess && matchingRelease.state === 'deploying') return;
+  // (advanceGatedReleaseOnPrMerge) — a gated dispatch success only ever moves
+  // a row to `pending_external`. Any dispatch-run conclusion arriving after
+  // that — a late or redelivered event, success or not — describes the run
+  // that opened the PR, not the release that shipped. A success would move it
+  // back to waiting on a merge that already happened; a failure would stamp a
+  // shipped release `failed`. Verification owns the row from here.
+  if (matchingRelease.archetype === 'gated' && matchingRelease.state === 'deploying') {
+    console.log(
+      `[webhook:workflow_run] Ignoring conclusion=${run.conclusion} for gated release ${matchingRelease.id} — ` +
+        `its release PR already merged`,
+    );
+    return;
+  }
 
   // GitHub can deliver two `workflow_run.completed` events for the identical
   // run with different reported conclusions — observed for a release job that

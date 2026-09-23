@@ -1839,6 +1839,40 @@ describe('advanceGatedReleaseOnPrMerge', () => {
     expect(mockDbUpdateSet).not.toHaveBeenCalled();
   });
 
+  it('does not record an external release when a compare could not answer', async () => {
+    // A transient compare error leaves the in-flight row possibly shipped by
+    // this merge. Recording the merge as its own row would give the cron heal
+    // a second `deploying` row for one release; leave it to the cron instead.
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([
+      { id: 'release-diverged', headSha: 'diverged-sha' },
+      { id: 'release-unknown', headSha: 'dev-sha' },
+    ]);
+    mockGithubApi.mockImplementation(((_inst: number, path: string) => {
+      if (path.includes('/compare/diverged-sha')) return Promise.resolve({ status: 'diverged' });
+      if (path.includes('/compare/')) return Promise.reject(new Error('GitHub API error: 502'));
+      return Promise.resolve(null);
+    }) as any);
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('records an external release when there is no installation to compare with', async () => {
+    // No installation means the cron cannot heal either — the merge is still a
+    // production release and must get a row.
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([{ id: 'release-gated-1', headSha: 'dev-sha' }]);
+
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, installationId: undefined });
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1);
+  });
+
   it('reads the version from package.json at the merge commit when the title has none', async () => {
     setupGatedWorkflowDispatchWorkspace();
     mockGithubApi.mockImplementation(((_i: number, path: string) =>

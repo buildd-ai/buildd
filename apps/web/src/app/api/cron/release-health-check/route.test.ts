@@ -622,6 +622,32 @@ describe('release-health-check cron — pending_external heal before failing', (
     expect(reason).not.toContain('was never merged');
   });
 
+  it('several stale rows shipped by one release PR: heals only the newest, supersedes the rest', async () => {
+    // e.g. right after scripts/repair-release-rows.ts --apply re-opens a batch
+    // of historical rows. Advancing all of them would put several rows for one
+    // merge into `deploying`, each verifying a sha that is no longer prod head.
+    const older = { ...stale, id: 'rel-older', dispatchedAt: hoursAgo(60), headSha: 'dev-sha-older' };
+    const newest = { ...stale, id: 'rel-newest', dispatchedAt: hoursAgo(30), headSha: 'dev-sha-newest' };
+    selectResults = [[], [], [], [older, newest]];
+    queryWorkspaceResult = gatedWorkspace;
+    mockFindMergedReleasePrContaining.mockResolvedValue({
+      number: 77, title: 'Release v1.2.3', mergeCommitSha: 'merge-sha', headSha: 'pr-head',
+    } as any);
+    mockAdvanceGatedRowForMerge.mockResolvedValue(true);
+    updateReturning = [[{ id: 'rel-older' }]];
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(mockAdvanceGatedRowForMerge).toHaveBeenCalledTimes(1);
+    expect(mockAdvanceGatedRowForMerge.mock.calls[0]?.[0]).toMatchObject({ releaseId: 'rel-newest' });
+    const failed = updateCalls.filter((c) => c.values.state === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(String(failed[0]!.values.failureReason)).toBe('superseded by release rel-newest (PR #77 merged)');
+    expect(data.pendingExternalHealed).toBe(1);
+    expect(data.pendingExternalSuperseded).toBe(1);
+  });
+
   it('a heal that loses the compare-and-set falls through to nothing — the row already moved', async () => {
     selectResults = [[], [], [], [stale]];
     queryWorkspaceResult = gatedWorkspace;

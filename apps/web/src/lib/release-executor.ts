@@ -466,11 +466,15 @@ export async function advanceGatedReleaseOnPrMerge(params: {
       .orderBy(desc(releases.dispatchedAt));
 
     const matched: string[] = [];
+    // A compare that errored (5xx, rate limit) leaves that row possibly
+    // shipped by this merge. Without an installation there is no compare and
+    // no cron heal either, so null there means "not equal", not "unknown".
+    let compareUnknown = false;
     for (const row of inFlight) {
       if (!row.headSha) continue;
-      if ((await commitContains(installationId, repoFullName, row.headSha, prHeadSha)) === true) {
-        matched.push(row.id);
-      }
+      const contains = await commitContains(installationId, repoFullName, row.headSha, prHeadSha);
+      if (contains === true) matched.push(row.id);
+      else if (contains === null && installationId) compareUnknown = true;
     }
 
     if (matched.length > 0) {
@@ -504,7 +508,18 @@ export async function advanceGatedReleaseOnPrMerge(params: {
     }
 
     // No dispatched row shipped with this merge: record it as its own release.
+    // Unless a compare could not answer — then an in-flight row may be this
+    // release, and an external row would give the cron heal a second
+    // `deploying` row for one merge. Leave it to the cron sweep, which asks
+    // GitHub again and either heals that row or fails it.
     if (!mergeCommitSha) continue;
+    if (compareUnknown) {
+      console.warn(
+        `[release] merge ${mergeCommitSha} into ${baseRef}: a compare against an in-flight release failed — ` +
+          `not recording it as an external release; the release-health-check cron will reconcile`,
+      );
+      continue;
+    }
     const [inserted] = await db
       .insert(releases)
       .values({

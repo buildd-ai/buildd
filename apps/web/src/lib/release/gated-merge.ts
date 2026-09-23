@@ -76,6 +76,12 @@ export async function commitContains(
 // actually runs, so the deploy-identity watch compares like with like, and a
 // redelivered merge event then collides on (workspace_id, head_sha) instead
 // of inserting a second row. Returns whether this call advanced the row.
+//
+// Side effect of the re-point: record.ts's non-forced dispatch idempotency
+// check is keyed on (workspace, head sha), so once a row is re-pointed its
+// original dispatch sha no longer looks recorded, and a non-forced
+// re-dispatch of that sha is allowed again. That sha has already shipped, so
+// a re-dispatch releases nothing new; dedup on the dispatch sha is not kept.
 export async function advanceGatedRowForMerge(params: {
   releaseId: string;
   workspaceId: string;

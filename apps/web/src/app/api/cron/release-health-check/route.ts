@@ -250,20 +250,61 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   let pendingExternalHardFailed = 0;
   let pendingExternalHealed = 0;
+  let pendingExternalSuperseded = 0;
+
+  // Resolve every row first, then group by the release PR that shipped it.
+  // Several stale rows can resolve to one PR — each dispatch before the merge
+  // left a row, and scripts/repair-release-rows.ts --apply re-opens a batch
+  // of historical ones at once. As in the merge webhook, only the newest row
+  // of a group advances; the older ones shipped inside it and are superseded.
+  // Advancing all of them would put several `deploying` rows on one merge,
+  // each verifying a sha that is no longer production's head.
+  type MergedPr = Exclude<Awaited<ReturnType<typeof findMergedReleasePrForRow>>, null | 'unknown'>;
+  const shippedGroups = new Map<string, { pr: MergedPr; rows: typeof stalePendingExternal }>();
+  const unshipped: Array<{ row: (typeof stalePendingExternal)[number]; merged: null | 'unknown' }> = [];
   for (const row of stalePendingExternal) {
     const merged = await findMergedReleasePrForRow(row);
     if (merged && merged !== 'unknown') {
-      const advanced = await advanceGatedRowForMerge({
-        releaseId: row.id,
-        workspaceId: row.workspaceId,
-        mergeCommitSha: merged.mergeCommitSha,
-        version: versionFromReleasePrTitle(merged.title),
-      });
-      if (advanced) pendingExternalHealed++;
-      // Lost the CAS: the row already moved on; nothing to fail.
-      continue;
+      const key = `${row.workspaceId}:${merged.number}`;
+      const group = shippedGroups.get(key) ?? { pr: merged, rows: [] };
+      group.rows.push(row);
+      shippedGroups.set(key, group);
+    } else {
+      unshipped.push({ row, merged });
     }
+  }
 
+  for (const { pr, rows } of shippedGroups.values()) {
+    const [newest, ...older] = [...rows].sort(
+      (a, b) => (b.dispatchedAt?.getTime() ?? 0) - (a.dispatchedAt?.getTime() ?? 0),
+    ) as [(typeof rows)[number], ...typeof rows];
+    const advanced = await advanceGatedRowForMerge({
+      releaseId: newest.id,
+      workspaceId: newest.workspaceId,
+      mergeCommitSha: pr.mergeCommitSha,
+      version: versionFromReleasePrTitle(pr.title),
+    });
+    if (advanced) pendingExternalHealed++;
+    // Lost the CAS: the newest row already moved on. The older rows still
+    // shipped inside that PR, so they are superseded either way — leaving
+    // them would let the next tick heal one of them onto the same merge.
+    for (const row of older) {
+      const [updated] = await db
+        .update(releases)
+        .set({ state: 'failed', failureReason: `superseded by release ${newest.id} (PR #${pr.number} merged)` })
+        .where(and(eq(releases.id, row.id), eq(releases.state, 'pending_external')))
+        .returning({ id: releases.id });
+      if (updated) {
+        pendingExternalSuperseded++;
+        await triggerEvent(channels.workspace(row.workspaceId), events.RELEASE_UPDATED, {
+          releaseId: row.id,
+          state: 'failed',
+        });
+      }
+    }
+  }
+
+  for (const { row, merged } of unshipped) {
     const why =
       merged === 'unknown'
         ? `could not check whether a merged release PR contains ${row.headSha ?? 'its head sha'}`
@@ -353,6 +394,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       healableDegraded: healableDegraded.length,
       healed,
       pendingExternalHealed,
+      pendingExternalSuperseded,
     }),
   );
 
@@ -369,7 +411,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       healableDegraded.length,
     changed:
       degraded + staleRetried + staleHardFailed + dispatchedHardFailed + pendingExternalHardFailed +
-      pendingExternalHealed + healed,
+      pendingExternalHealed + pendingExternalSuperseded + healed,
     result: {
       probed,
       degraded,
@@ -381,6 +423,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       stalePendingExternal: stalePendingExternal.length,
       pendingExternalHardFailed,
       pendingExternalHealed,
+      pendingExternalSuperseded,
       healableDegraded: healableDegraded.length,
       healed,
     },
@@ -400,6 +443,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     stalePendingExternal: stalePendingExternal.length,
     pendingExternalHardFailed,
     pendingExternalHealed,
+    pendingExternalSuperseded,
     healableDegraded: healableDegraded.length,
     healed,
   });
