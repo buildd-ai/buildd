@@ -43,6 +43,7 @@ import {
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
+import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -1088,6 +1089,43 @@ export async function POST(req: NextRequest) {
     }
     const resolvedStartAt = laterStartAt(deferredStart.startAt, missionStartAt);
 
+    // Routing preview + heuristic fill-in — see docs on task-routing-preview.ts.
+    // Explicit kind/complexity/tier/model always win; the heuristic only fills
+    // a blank, and only when a rule actually fires (an unclassified task stays
+    // unclassified rather than being stamped with the router's own baseline).
+    const pathManifestIsConcrete = hasConcretePathManifest(pathManifest);
+    const routingInference = inferRouting({
+      kind: rawKind ?? null,
+      complexity: rawComplexity ?? null,
+      title,
+      description,
+      pathManifest,
+      pathManifestIsConcrete,
+      emitsPlan,
+    });
+    const routingWasInferred = routingInference.kindInferred || routingInference.complexityInferred;
+    const finalKind = rawKind !== undefined
+      ? (rawKind as TaskKind)
+      : routingInference.kindInferred ? routingInference.kind : undefined;
+    const finalComplexity = rawComplexity !== undefined
+      ? (rawComplexity as TaskComplexity)
+      : routingInference.complexityInferred ? routingInference.complexity : undefined;
+    const routingInferredReason = routingWasInferred
+      ? [routingInference.kindReason, routingInference.complexityReason].filter(Boolean).join('; ')
+      : null;
+    const explicitPreviewModel = typeof incomingContext?.model === 'string' ? incomingContext.model : null;
+    const routingPreview = computeRoutingPreview({
+      kind: rawKind ?? null,
+      complexity: rawComplexity ?? null,
+      tier: TIERS.includes(rawTier as Tier) ? (rawTier as Tier) : null,
+      model: explicitPreviewModel,
+      title,
+      description,
+      pathManifest,
+      pathManifestIsConcrete,
+      emitsPlan,
+    });
+
     const createTaskRow = async (subjectOverrides: {
       id: string;
       subjectDedupeScope: 'active' | 'none';
@@ -1134,6 +1172,10 @@ export async function POST(req: NextRequest) {
           // Last so it wins over any caller-supplied context.requiresPlanApproval —
           // a spec task's plan is always gated; nobody authorizes their own breakdown.
           ...(emitsPlan ? { requiresPlanApproval: true } : {}),
+          // Marks a kind/complexity that the heuristic filled in, not the caller —
+          // see task-routing-preview.ts. Lets analytics and the model cell tell
+          // "the filer said this" apart from "we guessed this".
+          ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -1145,11 +1187,13 @@ export async function POST(req: NextRequest) {
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? { pathManifest } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),
-        ...(rawKind !== undefined ? { kind: rawKind as TaskKind } : {}),
-        ...(rawComplexity !== undefined ? { complexity: rawComplexity as TaskComplexity } : {}),
+        ...(finalKind !== undefined ? { kind: finalKind } : {}),
+        ...(finalComplexity !== undefined ? { complexity: finalComplexity } : {}),
         // Caller-supplied routing inputs are attributed to the user so routing
-        // analytics can tell them apart from cadence/organizer-derived values.
-        ...(rawKind !== undefined || rawComplexity !== undefined ? { classifiedBy: 'user' as const } : {}),
+        // analytics can tell them apart from cadence/heuristic-derived values.
+        ...(rawKind !== undefined || rawComplexity !== undefined
+          ? { classifiedBy: 'user' as const }
+          : routingWasInferred ? { classifiedBy: 'classifier' as const } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
@@ -1171,6 +1215,7 @@ export async function POST(req: NextRequest) {
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
             ...(emitsPlan ? { requiresPlanApproval: true } : {}),
+            ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
             startResolution: deferredStart.resolution,
           },
         } : {}),
@@ -1341,6 +1386,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ...task,
       subjectIntakeOutcome: intake.outcome,
+      // Echoes what the claim-time router would do RIGHT NOW (budget pressure
+      // and spike detection ignored — neither is known yet at creation time,
+      // and both only ever downshift). See task-routing-preview.ts.
+      routing: {
+        tier: routingPreview.tier,
+        model: routingPreview.model,
+        reason: routingPreview.reason,
+      },
       ...(proseGateWarning ? {
         proseGateWarning: {
           message: `Description mentions a gate ("${proseGateWarning.phrase}") near ${proseGateWarning.taskIds.length > 0 ? `task IDs: ${proseGateWarning.taskIds.join(', ')}` : 'potential dependencies'}; no dependsOn edges set. If this is a real dependency, add dependsOn.`,

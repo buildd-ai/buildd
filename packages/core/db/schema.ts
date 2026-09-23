@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -2160,11 +2160,106 @@ export const taskOutcomes = pgTable('task_outcomes', {
   durationMs: integer('duration_ms'),
   // Retried at least once before terminal outcome (mission auto-retry path).
   wasRetried: boolean('was_retried').default(false).notNull(),
+  // The worker's classified exit cause at the terminal write (workers.exit_cause),
+  // copied so an experiment readout can separate model-attributable failures
+  // from infra ones without re-deriving which worker produced the row. NULL on
+  // rows written before this column existed and on completions with no cause.
+  // Free text on purpose: the classifier's vocabulary is still moving, and a
+  // typed union here would turn every new cause into a schema change.
+  exitCause: text('exit_cause'),
+  // Which worker's terminal report wrote this row. No FK: workers are pruned by
+  // the archive cron on a different cadence than outcomes, and a dangling id is
+  // more useful to a readout than a cascade-deleted outcome.
+  workerId: uuid('worker_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   taskIdx: index('task_outcomes_task_idx').on(t.taskId),
   createdIdx: index('task_outcomes_created_idx').on(t.createdAt),
   kindIdx: index('task_outcomes_kind_idx').on(t.kind),
+}));
+
+/**
+ * Experiment registry — one row per declared experiment, scoped to a team.
+ *
+ * The row is the source of truth for the declaration (hypothesis, arms,
+ * treatment share, policy version) and the decision. Nothing enrolls unless a
+ * row with `status = 'running'` exists: with no row, every consumer behaves
+ * exactly as it did before the registry existed. See
+ * docs/design/model-routing-experiment.md and docs/design/experiment-lifecycle.md.
+ *
+ * `policyVersion` is part of the randomiser's salt
+ * (packages/core/experiment-randomizer.ts), so bumping it re-randomises every
+ * unit. Bump it when the meaning of an arm changes; never edit arm semantics
+ * in place under a running version.
+ */
+export const experiments = pgTable('experiments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Stable, human-chosen handle. Unique per team so two teams can each run a
+  // same-named experiment without colliding.
+  key: text('key').notNull(),
+  title: text('title').notNull(),
+  hypothesis: text('hypothesis'),
+  status: text('status').notNull().default('draft').$type<'draft' | 'running' | 'paused' | 'concluded'>(),
+  kind: text('kind').notNull().$type<'model_routing'>(),
+  // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
+  // resolveEnrolmentFraction, so an out-of-range value runs the control rather
+  // than enrolling everyone.
+  treatmentFraction: real('treatment_fraction').notNull().default(0.5),
+  policyVersion: integer('policy_version').notNull().default(1),
+  // Kind-specific shape; for model_routing see ModelRoutingExperimentConfig in
+  // packages/core/model-routing-experiment.ts.
+  config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+  visibility: text('visibility').notNull().default('admins').$type<'admins' | 'team'>(),
+  decision: text('decision'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  concludedAt: timestamp('concluded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamKeyIdx: uniqueIndex('experiments_team_key_idx').on(t.teamId, t.key),
+  // The claim-time lookup: "is there a running experiment of this kind for this team?"
+  teamStatusKindIdx: index('experiments_team_status_kind_idx').on(t.teamId, t.status, t.kind),
+}));
+
+/**
+ * One row per (experiment, task) — the arm a task was assigned, recorded at
+ * claim time. Intent-to-treat: `arm` is what was drawn; `served` says whether
+ * the treatment model actually ran (it may not, e.g. when the runner's client
+ * is too old for it — the claim falls back to the control model rather than
+ * deferring, so a capability gap cannot bias which tasks reach each arm).
+ *
+ * Unique on (experiment_id, task_id): a re-claimed task reuses its row, and a
+ * retry/attempt task gets its own row carrying the arm INHERITED from its
+ * parent (eligibility.inheritedFromTaskId), never a fresh draw.
+ */
+export const experimentAssignments = pgTable('experiment_assignments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The randomisation unit: the mission when the task has one (tasks cluster
+  // in missions, so the cluster is randomised), else the task itself.
+  unitType: text('unit_type').notNull().$type<'mission' | 'task'>(),
+  unitId: uuid('unit_id').notNull(),
+  arm: text('arm').notNull().$type<'control' | 'treatment'>(),
+  // Recorded at assignment, never reconstructed from the fraction later.
+  propensity: real('propensity').notNull(),
+  policyVersion: integer('policy_version').notNull(),
+  // Counterfactual: the model the router would have served with no experiment.
+  defaultModel: text('default_model'),
+  assignedModel: text('assigned_model'),
+  served: boolean('served').notNull(),
+  // Snapshot of the inputs eligibility was judged on (budget pressure, kind,
+  // complexity, role slug, inheritance source).
+  eligibility: jsonb('eligibility').$type<Record<string, unknown>>().notNull().default({}),
+  runnerCliVersion: text('runner_cli_version'),
+  assignedAt: timestamp('assigned_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  experimentTaskIdx: uniqueIndex('experiment_assignments_experiment_task_idx').on(t.experimentId, t.taskId),
+  // Readout scan: every row for an experiment/version, split by arm.
+  experimentVersionArmIdx: index('experiment_assignments_experiment_version_arm_idx').on(t.experimentId, t.policyVersion, t.arm),
+  taskIdx: index('experiment_assignments_task_idx').on(t.taskId),
 }));
 
 // Team invitations for multi-tenancy

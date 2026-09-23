@@ -50,6 +50,8 @@ const PERSISTED_FIELDS = [
   'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'taskBackend', 'workspaceId', 'workspaceName',
   'branch', 'status', 'error', 'completedAt', 'startedAt', 'lastActivity', 'sessionId', 'codexThreadId',
   'waitingFor',
+  // So a resume after a runner restart keeps the model the session ran on.
+  'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
 ] as const;

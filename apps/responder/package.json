@@ -1,0 +1,20 @@
+{
+  "name": "@buildd/responder",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Observe-only incident responder. Watches the platform from outside it.",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "once": "bun src/index.ts --once",
+    "type-check": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@neondatabase/serverless": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "typescript": "^6.0.0"
+  }
+}

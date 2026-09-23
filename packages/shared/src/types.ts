@@ -995,6 +995,33 @@ export interface CreateTaskInput {
   emitsPlan?: boolean;
 }
 
+/** Task model tier vocabulary (mirrors @buildd/core model-tier-defaults TIERS). */
+export type TaskModelTier = 'premium-plus' | 'premium' | 'standard' | 'budget';
+
+/**
+ * Body of PATCH /api/tasks/[id] (MCP `update_task`). Every field is optional;
+ * `null` clears an override.
+ */
+export interface UpdateTaskInput {
+  title?: string;
+  description?: string;
+  priority?: number;
+  project?: string | null;
+  status?: 'pending' | 'completed' | 'failed' | 'cancelled';
+  backend?: AgentBackend | null;
+  /**
+   * Tier pin for the NEXT claim or retry (never the running session). Setting
+   * a tier without `model` also drops an existing model pin.
+   */
+  tier?: TaskModelTier | null;
+  /**
+   * Exact model pin (Anthropic id) for the NEXT claim or retry; stored as
+   * `context.model` with `context.modelPinned: true`. Outranks `tier`.
+   */
+  model?: string | null;
+  maxLoops?: number;
+}
+
 export interface CreateMissionInput {
   title: string;
   description?: string;
@@ -1932,4 +1959,60 @@ export interface GateReasonFamily {
   /** Dedupe key derived from the prefix, for friction reports. */
   frictionSignature: string;
   topReasons: { reason: string; count: number }[];
+}
+
+// ── Experiments (/api/experiments, MCP manage_experiments) ──────────────────
+
+export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
+export type ExperimentVisibility = 'admins' | 'team';
+export type ExperimentKind = 'model_routing';
+
+/** An `experiments` row as the API returns it. Dates are ISO strings. */
+export interface Experiment {
+  id: string;
+  key: string;
+  title: string;
+  hypothesis: string | null;
+  status: ExperimentStatus;
+  kind: ExperimentKind;
+  treatmentFraction: number;
+  /**
+   * Salt of the arm draw. Bumped whenever the fraction or config changes after
+   * the experiment first started, so rows drawn under different settings are
+   * read out separately rather than pooled.
+   */
+  policyVersion: number;
+  config: Record<string, unknown>;
+  visibility: ExperimentVisibility;
+  decision: string | null;
+  startedAt: string | null;
+  concludedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/experiments. Status always starts at `draft`. */
+export interface CreateExperimentInput {
+  key: string;
+  title: string;
+  hypothesis?: string | null;
+  kind?: ExperimentKind;
+  treatmentFraction?: number;
+  config?: Record<string, unknown>;
+  visibility?: ExperimentVisibility;
+}
+
+/**
+ * PATCH /api/experiments/[id]. Legal status moves: draft→running,
+ * running⇄paused, draft|running|paused→concluded (needs `decision`).
+ * `concluded` is terminal.
+ */
+export interface UpdateExperimentInput {
+  title?: string;
+  hypothesis?: string | null;
+  treatmentFraction?: number;
+  config?: Record<string, unknown>;
+  visibility?: ExperimentVisibility;
+  status?: ExperimentStatus;
+  decision?: string;
 }

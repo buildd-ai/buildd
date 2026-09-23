@@ -24,6 +24,12 @@ packages/core/__tests__/gate-slug-coverage.test.ts
 # enumerating the repo, so the ls-files heuristic does not flag it — but a change
 # to that workflow still selects no test beside it, which is the same hole.
 scripts/release-tag-workflow.test.ts
+# Asserts that the claim route still rejects a runner-less body BEFORE it
+# assigns work — the property that makes the responder's health probe
+# structurally incapable of claiming a real task. Same fixed-path hole: a diff
+# to apps/web/src/app/api/workers/claim/route.ts selects the test beside that
+# route, never this one, so removing the guard would land green.
+apps/responder/src/probes/claim-probe.test.ts
 # Enumerates every tracked test file to check that none reaches the operator's
 # real home directory. The file that breaks it is a test file anywhere in the
 # repo, which is never the file next to this one.
@@ -38,3 +44,6 @@ scripts/signal-fire-coverage.test.ts
 scripts/cron-job-notify-coverage.test.ts
 scripts/skills-listed.test.ts
 scripts/workflow-safety.test.ts
+# Enumerates every tracked schema file to check that hand-built sql
+# renders correctly and matches no broken patterns.
+scripts/sql-render-coverage.test.ts

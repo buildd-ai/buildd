@@ -157,17 +157,46 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
     },
   },
   {
+    slug: 'ci-fix-bot-actor-allowlist',
+    name: 'CI auto-fix bot-actor allowlist',
+    watches: 'Whether the claude-code-action repair step is allowed to run when the dev push it is reacting to was authored by a known repo bot (buildd-ai worker commits, buildd-release)',
+    threshold:
+      "allowed_bots names both bots this workflow's trigger can ever produce, never '*'. Previously the " +
+      "default empty allowlist rejected every bot-authored push outright ('Workflow initiated by " +
+      "non-human actor... Add bot to allowed_bots list') — a large share of ci-fix.yml failures, all " +
+      'landing at the claude-code-action step.',
+    location: '.github/workflows/ci-fix.yml (auto-fix job, claude-code-action step)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'allows the two bots this workflow can ever be triggered by, and nothing wider',
+    },
+  },
+  {
+    slug: 'ci-fix-max-turns-headroom',
+    name: 'CI auto-fix turn budget',
+    watches: "The claude-code-action repair step's --max-turns budget against what a working fix has actually needed",
+    threshold:
+      '--max-turns >= 50. Successful repair runs were finishing just under the previous 30-turn cap — ' +
+      'already close to binding on a WORKING fix — while a large share of failures hit the cap outright ' +
+      '(Claude execution failed: Reached maximum number of turns).',
+    location: '.github/workflows/ci-fix.yml (auto-fix job, claude-code-action step claude_args)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'gives the fix agent headroom above what a working run has actually needed',
+    },
+  },
+  {
     slug: 'disk-space-alert',
     name: 'Disk-space alert',
     watches: 'Free space on the volume that actually fills on a worker host',
     threshold:
-      'Fixed remaining-space percentage (see disk-cleanup.sh in the infrastructure repo). Currently measures ' +
-      'the host root filesystem instead of the volume workers actually fill, so it can report healthy while ' +
-      'the real volume is full.',
+      'Fixed remaining-space percentage (see disk-cleanup.sh in the infrastructure repo). Fixed to resolve ' +
+      'the volume Docker actually stores data on at runtime (via `docker info`), instead of the host root ' +
+      'filesystem, so it can no longer report healthy while the real volume is full.',
     location: 'disk-cleanup.sh (infrastructure repo, not this codebase)',
     noLocalFireTest: {
       reason: 'implementation lives in the infrastructure repo, not this codebase',
-      trackedBy: 'paired buildd task filed against the infrastructure repo',
+      trackedBy: 'buildd-ai/infrastructure repo: scripts/disk-cleanup.sh (docker_root_dir) + scripts/disk-cleanup.test.sh (fire-test, wired into that repo\'s CI)',
     },
   },
 ];

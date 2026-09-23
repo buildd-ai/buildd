@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveReviewerGate } from './reviewer-gate';
+import { resolveReviewerGate, deriveStoredVerdictFallback } from './reviewer-gate';
 import type { ReviewerGateInput } from './reviewer-gate';
 import { resolvePolicy, isMissionIntegrationBase } from './merge-policy';
 import { buildActionQueue } from './action-queue';
@@ -506,5 +506,138 @@ describe('reviewer stall facts', () => {
   it('uses the configured threshold without changing ownership before it elapses', () => {
     expect(resolveReviewerGate(baseInput({ reviewerTask, queuedThresholdMinutes: 60 })).actor).toBe('agent');
     expect(resolveReviewerGate(baseInput({ reviewerTask, queuedThresholdMinutes: 15 })).reason).toContain('Pending · task age 47m');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A mission-less PR's reviewer task completed with a real terminal verdict in
+// its own result.structuredOutput, but handleReviewerOutcomeIfNeeded only ever
+// writes the reviewer_approved / reviewer_escalated mission note `if
+// (missionId)` — so a mission-less PR never gets one, and the "completed with
+// no note" fail-safe below fired even though `get_pr_review`
+// (derivePrReviewStatus reading the same row) reported a clean terminal
+// approve. `deriveStoredVerdictFallback` closes that gap by reading the
+// verdict directly off the reviewer task row — the SAME row `get_pr_review`
+// reads — whenever no note supplied one.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('deriveStoredVerdictFallback — the mission-less "no recorded verdict" gap', () => {
+  const HEAD_SHA = 'a'.repeat(40);
+
+  function approvedReviewerTask(overrides: Record<string, unknown> = {}) {
+    return {
+      status: 'completed' as const,
+      result: {
+        structuredOutput: {
+          verdict: 'approve',
+          confidence: 0.94,
+          summary: 'Implementation matches the description; tests pass.',
+        },
+      },
+      context: { headSha: HEAD_SHA },
+      ...overrides,
+    };
+  }
+
+  it('a mission-less terminal approve is read straight off the task, not lost as "no recorded verdict"', () => {
+    const fallback = deriveStoredVerdictFallback({
+      escalationReason: null,
+      approvalSummary: null,
+      reviewerTask: approvedReviewerTask(),
+      currentHeadSha: HEAD_SHA,
+    });
+    expect(fallback.approvalSummary).toBe('Implementation matches the description; tests pass.');
+    expect(fallback.escalationReason).toBeNull();
+
+    // Fed into the gate exactly as Home does: this must render as an approve
+    // awaiting merge, never the generic no-verdict fail-safe.
+    const gate = resolveReviewerGate(baseInput({
+      approvalSummary: fallback.approvalSummary,
+      escalationReason: fallback.escalationReason,
+      reviewerTask: { status: 'completed', hasLiveWorker: false, createdAt: NOW },
+    }));
+    expect(gate.actor).toBe('human');
+    expect(gate.reason).not.toContain('no recorded verdict');
+  });
+
+  it('a stale approval (head moved since review) surfaces the SAME reason the merge doors refuse on, not "no recorded verdict"', () => {
+    const laterHeadSha = 'b'.repeat(40);
+    const fallback = deriveStoredVerdictFallback({
+      escalationReason: null,
+      approvalSummary: null,
+      reviewerTask: approvedReviewerTask(),
+      currentHeadSha: laterHeadSha,
+    });
+    expect(fallback.approvalSummary).toBeNull();
+    expect(fallback.escalationReason).toContain('earlier commit');
+
+    const gate = resolveReviewerGate(baseInput({
+      approvalSummary: fallback.approvalSummary,
+      escalationReason: fallback.escalationReason,
+      reviewerTask: { status: 'completed', hasLiveWorker: false, createdAt: NOW },
+    }));
+    expect(gate.actor).toBe('human');
+    expect(gate.reason).toContain('earlier commit');
+    expect(gate.reason).not.toContain('no recorded verdict');
+  });
+
+  it('an escalate verdict with no note still surfaces the escalation, not "no recorded verdict"', () => {
+    const fallback = deriveStoredVerdictFallback({
+      escalationReason: null,
+      approvalSummary: null,
+      reviewerTask: {
+        status: 'completed',
+        result: {
+          structuredOutput: {
+            verdict: 'escalate',
+            confidence: 0.4,
+            summary: 'Touches a protected path.',
+            escalationReason: 'schema.ts changed with no generated migration',
+          },
+        },
+        context: { headSha: HEAD_SHA },
+      },
+      currentHeadSha: HEAD_SHA,
+    });
+    expect(fallback.escalationReason).toContain('escalated');
+    expect(fallback.approvalSummary).toBeNull();
+  });
+
+  it('a genuinely verdict-less completed reviewer still falls to the no-verdict fail-safe', () => {
+    const fallback = deriveStoredVerdictFallback({
+      escalationReason: null,
+      approvalSummary: null,
+      reviewerTask: { status: 'completed', result: {}, context: {} },
+      currentHeadSha: HEAD_SHA,
+    });
+    expect(fallback.escalationReason).toBeNull();
+    expect(fallback.approvalSummary).toBeNull();
+
+    const gate = resolveReviewerGate(baseInput({
+      reviewerTask: { status: 'completed', hasLiveWorker: false, createdAt: NOW },
+    }));
+    expect(gate.actor).toBe('human');
+    expect(gate.reason).toBe('Review completed without a recorded verdict — needs human review');
+  });
+
+  it('an existing note wins outright — the fallback never overrides real note evidence', () => {
+    const fallback = deriveStoredVerdictFallback({
+      escalationReason: 'escalated: an actual note',
+      approvalSummary: null,
+      reviewerTask: approvedReviewerTask(),
+      currentHeadSha: HEAD_SHA,
+    });
+    expect(fallback.escalationReason).toBe('escalated: an actual note');
+    expect(fallback.approvalSummary).toBeNull();
+  });
+
+  it('a live/pending reviewer task is left alone — the agent still owns it', () => {
+    const fallback = deriveStoredVerdictFallback({
+      escalationReason: null,
+      approvalSummary: null,
+      reviewerTask: { status: 'in_progress', result: null, context: {} },
+      currentHeadSha: HEAD_SHA,
+    });
+    expect(fallback.escalationReason).toBeNull();
+    expect(fallback.approvalSummary).toBeNull();
   });
 });

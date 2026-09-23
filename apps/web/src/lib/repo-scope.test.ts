@@ -1,6 +1,8 @@
 process.env.NODE_ENV = 'test';
 
 import { describe, it, expect } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { workspaces } from '@buildd/core/db/schema';
 import {
   GITHUB_HOST_PREFIX_RE,
   GIT_SUFFIX_RE,
@@ -8,6 +10,8 @@ import {
   normalizeRepoFullName,
   repoFullNameFromPrUrl,
   resolvePrRepo,
+  normalizedRepoSql,
+  workspaceRepoMatches,
 } from './repo-scope';
 
 /**
@@ -149,5 +153,54 @@ describe('resolvePrRepo', () => {
   it('returns null only when neither source yields a repo', () => {
     expect(resolvePrRepo({ prUrl: null, workspaceRepo: null })).toBeNull();
     expect(resolvePrRepo({ prUrl: '', workspaceRepo: '' })).toBeNull();
+  });
+});
+
+// ─── The emitted SQL ─────────────────────────────────────────────────────────
+//
+// Everything above pins the JS-side regex behaviour, but `normalizedRepoSql`
+// and `workspaceRepoMatches` build a real `sql` fragment that only ever runs
+// inside a route whose own test file mocks the query builder — so a wrong
+// regex bound in the wrong order, or a comparison against the raw column
+// instead of the normalized expression, would pass every test above and still
+// ship broken. Render it through the real dialect.
+describe('normalizedRepoSql() / workspaceRepoMatches() — emitted SQL', () => {
+  const dialect = new PgDialect();
+  const render = (frag: ReturnType<typeof normalizedRepoSql> | ReturnType<typeof workspaceRepoMatches>) =>
+    dialect.sqlToQuery(frag);
+
+  it('lowercases, then strips the github host prefix, then strips the trailing suffix, in that nesting order', () => {
+    const { sql: text } = render(normalizedRepoSql(workspaces.repo));
+    // Nested regexp_replace: the outermost call must be lower(...), and the
+    // suffix-strip must wrap the host-strip, not the other way — swapping the
+    // nesting order (or dropping a layer) changes what actually gets matched.
+    expect(text.startsWith('lower(regexp_replace(regexp_replace(coalesce(')).toBe(true);
+    const lowerIdx = text.indexOf('lower(');
+    const hostIdx = text.indexOf('$1'); // host-prefix pattern param, bound first
+    const suffixIdx = text.indexOf('$2'); // suffix pattern param, bound second
+    expect(lowerIdx).toBeLessThan(hostIdx);
+    expect(hostIdx).toBeLessThan(suffixIdx);
+  });
+
+  it('COALESCEs a NULL repo to empty string rather than leaving the whole expression NULL', () => {
+    // regexp_replace(NULL, ...) is NULL, and NULL = 'owner/name' is never TRUE —
+    // silently harmless for a predicate, but the COALESCE is what keeps a NULL
+    // repo comparable to the empty string instead of vanishing from the WHERE.
+    expect(render(normalizedRepoSql(workspaces.repo)).sql).toContain('coalesce(');
+  });
+
+  it('binds the host-prefix and suffix regexes as parameters, matching the JS-side constants', () => {
+    const { params } = render(normalizedRepoSql(workspaces.repo));
+    expect(params).toEqual([GITHUB_HOST_PREFIX_RE, GIT_SUFFIX_RE]);
+  });
+
+  it('workspaceRepoMatches compares the normalized column against a lowercased, bound literal', () => {
+    const { sql: text, params } = render(workspaceRepoMatches('Buildd-AI/Buildd'));
+    expect(text).toContain('lower(regexp_replace(regexp_replace(coalesce("workspaces"."repo"');
+    expect(text.trim().endsWith('= $3')).toBe(true);
+    // Lowercased on the JS side before binding — the normalized SQL side is
+    // already lower(...), so comparing against the ORIGINAL case would only
+    // ever match a workspace whose stored repo happened to already be lower.
+    expect(params[2]).toBe('buildd-ai/buildd');
   });
 });

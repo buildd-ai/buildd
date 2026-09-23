@@ -127,7 +127,7 @@ async function main() {
     // Find which IDs already exist in buildd
     const ids = rows.map(r => r.id);
     const existing = resultRows<{ id: string }>(await db.execute(
-      sql`SELECT id FROM memories WHERE id = ANY(${sql.raw(`ARRAY[${ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]::uuid[]`)})`,
+      sql`SELECT id FROM memories WHERE ${inArray(memories.id, ids)}`,
     ));
     const existingIds = new Set(existing.map(r => r.id));
 

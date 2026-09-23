@@ -25,6 +25,9 @@ export default function TaskModelCell({ summary }: { summary: TaskModelSummary }
       {summary.modelId && (
         <dd className="text-text-muted font-mono text-[11px] break-all">{summary.modelId}</dd>
       )}
+      {summary.reasonLabel && (
+        <dd className="text-text-muted text-[11px]">{summary.reasonLabel}</dd>
+      )}
       {summary.divergedTo && (
         <dd className="text-text-muted text-[11px]">Ran on {summary.divergedTo}</dd>
       )}

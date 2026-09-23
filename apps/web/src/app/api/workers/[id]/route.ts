@@ -2983,6 +2983,10 @@ export async function PATCH(
           totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
           durationMs,
           wasRetried: retryCount > 0,
+          // Taxonomy follow-up: code_failure is still the catch-all here, so a
+          // readout must treat it as "unclassified", not "the model's fault".
+          exitCause: (updates.exitCause as string | null | undefined) ?? worker.exitCause ?? null,
+          workerId: id,
         }).catch(() => {});
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.

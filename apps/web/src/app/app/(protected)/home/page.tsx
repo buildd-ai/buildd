@@ -84,7 +84,8 @@ import {
 } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { resolveReviewerGate } from '@/lib/reviewer-gate';
+import { resolveReviewerGate, deriveStoredVerdictFallback } from '@/lib/reviewer-gate';
+import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { StageChip } from '@/components/StageChip';
 import { deriveStage } from '@/lib/stage';
@@ -983,6 +984,7 @@ export default async function HomePage({
             // it falls to the human. parentTaskId is a real column (set at
             // createReviewerTask), so this is a direct join, not a context scan.
             const latestReviewerTaskByOrigId = new Map<string, {
+              id: string;
               status: string;
               hasLiveWorker: boolean;
               createdAt: Date;
@@ -990,6 +992,15 @@ export default async function HomePage({
               reviewerWorkerId: string | null;
               reviewerStartedAt: Date | null;
               context: Record<string, unknown> | null;
+              // The reviewer task's own stored result — the SAME row `get_pr_review`
+              // reads via `derivePrReviewStatus`. Carried through so the gate can fall
+              // back to the actual verdict when no mission note recorded one (see the
+              // gate-building loop below): a mission-less PR never gets a
+              // reviewer_approved/reviewer_escalated note (handleReviewerOutcomeIfNeeded
+              // only writes those `if (missionId)`), and reading only the notes made a
+              // mission-less terminal approve indistinguishable from a genuinely dropped
+              // verdict.
+              result: unknown;
               startAt: Date | null;
               mission: { status: string } | null;
             }>();
@@ -999,7 +1010,7 @@ export default async function HomePage({
                   inArray(tasks.parentTaskId, openTaskIds),
                   eq(tasks.category, 'review'),
                 ),
-                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, startAt: true },
+                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, result: true, startAt: true },
                 with: {
                   mission: { columns: { status: true } },
                   workers: {
@@ -1015,6 +1026,7 @@ export default async function HomePage({
                 if (!rt.parentTaskId || latestReviewerTaskByOrigId.has(rt.parentTaskId)) continue;
                 const liveWorker = (rt as any).workers?.[0];
                 latestReviewerTaskByOrigId.set(rt.parentTaskId, {
+                  id: rt.id,
                   status: rt.status,
                   hasLiveWorker: !!liveWorker,
                   createdAt: rt.createdAt,
@@ -1022,6 +1034,7 @@ export default async function HomePage({
                   reviewerWorkerId: liveWorker?.id ?? null,
                   reviewerStartedAt: liveWorker?.startedAt ?? null,
                   context: rt.context,
+                  result: rt.result,
                   startAt: rt.startAt,
                   mission: rt.mission,
                 });
@@ -1088,6 +1101,21 @@ export default async function HomePage({
                   )
                 : { tier: 'auto-threshold' as const };
               const rt = latestReviewerTaskByOrigId.get(w.taskId);
+              // Mission notes never exist for a mission-less PR
+              // (handleReviewerOutcomeIfNeeded writes reviewer_approved /
+              // reviewer_escalated `if (missionId)` only) — fall back to the
+              // reviewer task's own stored verdict, the SAME row `get_pr_review`
+              // reads via `derivePrReviewStatus`, so a mission-less terminal
+              // approve/request-changes/escalate is never indistinguishable from a
+              // genuinely dropped verdict. See deriveStoredVerdictFallback.
+              const fallback = deriveStoredVerdictFallback({
+                escalationReason: escalatedMap.get(w.taskId) ?? null,
+                approvalSummary: approvedMap.get(w.taskId) ?? null,
+                reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                currentHeadSha: w.lastCommitSha ?? null,
+              });
+              if (fallback.escalationReason != null) escalatedMap.set(w.taskId, fallback.escalationReason);
+              if (fallback.approvalSummary != null) approvedMap.set(w.taskId, fallback.approvalSummary);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
                 policyTier: policy.tier,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,

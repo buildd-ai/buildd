@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 
 // Mock functions
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -224,6 +225,18 @@ mock.module('@buildd/core/path-claim', () => ({
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
+}));
+
+// Model-routing experiment glue. The real module is exercised against rendered
+// SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
+// only the call-site wiring is under test. Default: no running experiment.
+const mockDrawModelRoutingArm = mock((_args: any): Promise<any> => Promise.resolve(null));
+const mockApplyModelRoutingTreatment = mock((_draw: any, _args: any): Promise<any> => Promise.resolve(null));
+const mockRecordModelRoutingAssignment = mock((_draw: any, _args: any) => Promise.resolve());
+mock.module('@buildd/core/model-routing-experiment-source', () => ({
+  drawModelRoutingArm: mockDrawModelRoutingArm,
+  applyModelRoutingTreatment: mockApplyModelRoutingTreatment,
+  recordModelRoutingAssignment: mockRecordModelRoutingAssignment,
 }));
 
 import { POST } from './route';
@@ -1073,6 +1086,94 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
+  });
+
+  // --- Model-routing experiment wiring ---
+
+  describe('model-routing experiment', () => {
+    const experimentTask = () => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', kind: 'engineering', complexity: 'normal',
+      priority: 0, dependsOn: [], requiredCapabilities: [], context: {},
+      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+    });
+    const claimReq = () => createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', environment: { tools: [], envKeys: [], mcp: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'h' }, scannedAt: '2026-01-01T00:00:00.000Z', claudeCliVersion: '2.1.300' } },
+    });
+    function setup() {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([experimentTask()]);
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) }; }),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+      return sets;
+    }
+
+    beforeEach(() => {
+      mockDrawModelRoutingArm.mockReset();
+      mockDrawModelRoutingArm.mockResolvedValue(null);
+      mockApplyModelRoutingTreatment.mockReset();
+      mockApplyModelRoutingTreatment.mockResolvedValue(null);
+      mockRecordModelRoutingAssignment.mockReset();
+      mockRecordModelRoutingAssignment.mockResolvedValue(undefined);
+    });
+
+    // mockTasksUpdate is module-level and not reset by the outer beforeEach;
+    // later tests rely on its default "lock won" shape.
+    afterEach(() => {
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+      });
+    });
+
+    it('with no running experiment, routes exactly as before and records nothing', async () => {
+      const sets = setup();
+      const res = await POST(claimReq());
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers.length).toBe(1);
+      expect(mockDrawModelRoutingArm).toHaveBeenCalledTimes(1);
+      expect(mockDrawModelRoutingArm.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', routerReason: 'baseline', explicitModel: null });
+      expect(mockApplyModelRoutingTreatment).not.toHaveBeenCalled();
+      expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+      const claimSet = sets.find(v => v.status === 'assigned');
+      expect(claimSet.predictedModel).toBe('claude-sonnet-5');
+    });
+
+    it('a treatment draw overrides the tier, and the assignment is recorded after the lock with the served model', async () => {
+      const sets = setup();
+      const draw = { arm: 'treatment' };
+      mockDrawModelRoutingArm.mockResolvedValue(draw);
+      mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: 'claude-opus-5', provider: 'anthropic', source: 'default' });
+
+      const res = await POST(claimReq());
+      expect((await res.json()).workers.length).toBe(1);
+
+      const applyArgs = mockApplyModelRoutingTreatment.mock.calls[0][1];
+      expect(applyArgs.controlModel).toBe('claude-sonnet-5');
+      // The capability check handed to the experiment is the real one, fed this runner's CLI version.
+      expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
+
+      const claimSet = sets.find(v => v.status === 'assigned');
+      expect(claimSet.predictedModel).toBe('claude-opus-5');
+      expect(claimSet.context.model).toBe('claude-opus-5');
+      expect(claimSet.context.resolvedTier.tier).toBe('premium');
+      expect(mockRecordModelRoutingAssignment).toHaveBeenCalledTimes(1);
+      expect(mockRecordModelRoutingAssignment.mock.calls[0][0]).toBe(draw);
+      expect(mockRecordModelRoutingAssignment.mock.calls[0][1]).toMatchObject({ taskId: 'task-1', runnerCliVersion: '2.1.300', resolvedModel: 'claude-opus-5' });
+    });
+
+    it('does not record an assignment when the optimistic lock is lost', async () => {
+      setup();
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
+      mockDrawModelRoutingArm.mockResolvedValue({ arm: 'control' });
+      await POST(claimReq());
+      expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+    });
   });
 
   // --- Runner capability gate (Claude Code client version) ---
@@ -2377,6 +2478,96 @@ describe('POST /api/workers/claim', () => {
 
       expect(lastTaskSetPayload.predictedModel).toBe('claude-opus-4-8');
       expect(lastTaskSetPayload.context?.model).toBe('claude-opus-4-8');
+    });
+
+    // --- Pin vs routed result (requeue stickiness) ---
+    // The claim route writes the model it resolved into context.model so the
+    // runner can read it. A requeue keeps that context. The next claim must
+    // not mistake its own earlier output for a user pin — otherwise routing
+    // inputs (tier, complexity, registry) can never change the model again.
+    async function claimOnce(taskRow: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+        maxCostPerDay: '100',
+        totalCost: '5',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'requeued task',
+        kind: 'engineering',
+        complexity: 'simple',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+        ...taskRow,
+      }]);
+      lastTaskSetPayload = null;
+      mockClaimSuccess();
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      expect(res.status).toBe(200);
+      expect(lastTaskSetPayload).not.toBeNull();
+      return lastTaskSetPayload;
+    }
+
+    it('a requeued task re-routes on its new tier instead of replaying the first claim model', async () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      const first = await claimOnce({ workspace, tier: null });
+      expect(first.context.routingReason).toBe('baseline');
+      expect(first.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+
+      // Requeue keeps the context the first claim wrote; the tier is then raised.
+      const second = await claimOnce({ workspace, tier: 'premium', context: first.context });
+      expect(second.context.routingReason).not.toBe('explicit_override');
+      expect(second.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      expect(second.context.model).toBe(TIER_DEFAULTS.premium.model);
+    });
+
+    it('a requeued task re-routes when its complexity changes (no team registry)', async () => {
+      const first = await claimOnce({ complexity: 'simple' });
+      expect(first.predictedModel).toBe('haiku');
+
+      const second = await claimOnce({ complexity: 'complex', context: first.context });
+      expect(second.context.routingReason).not.toBe('explicit_override');
+      expect(second.predictedModel).toBe('opus');
+    });
+
+    it('rows claimed before the pin marker shipped (model + non-explicit routingReason) are not pins', async () => {
+      const res = await claimOnce({
+        complexity: 'complex',
+        context: { model: 'haiku', routingReason: 'baseline' },
+      });
+      expect(res.context.routingReason).not.toBe('explicit_override');
+      expect(res.predictedModel).toBe('opus');
+    });
+
+    it('a user pin set at create time survives requeue', async () => {
+      const first = await claimOnce({ context: { model: 'claude-opus-4-8' } });
+      expect(first.context.routingReason).toBe('explicit_override');
+      expect(first.context.modelPinned).toBe(true);
+
+      const second = await claimOnce({ complexity: 'complex', context: first.context });
+      expect(second.context.routingReason).toBe('explicit_override');
+      expect(second.predictedModel).toBe('claude-opus-4-8');
+    });
+
+    it('modelPinned: false means routing applies even though context.model is present', async () => {
+      const res = await claimOnce({
+        complexity: 'complex',
+        context: { model: 'claude-opus-4-8', modelPinned: false },
+      });
+      expect(res.context.routingReason).not.toBe('explicit_override');
+      expect(res.predictedModel).toBe('opus');
+      expect(res.context.modelPinned).toBe(false);
     });
 
     it('spike-detection downshifts when recent claim count exceeds threshold', async () => {

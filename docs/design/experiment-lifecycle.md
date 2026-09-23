@@ -1,18 +1,18 @@
 ---
-status: proposed
+status: partially
 # Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
-# The cited reused infrastructure (randomiser, CBM readout, the ad-hoc
-# memory-digest cleanup-task precedent) all check out — genuinely shipped,
-# not false positives — but they predate/support this proposal rather than
-# constitute it. The proposal's own deliverable — a generic `experiments`
-# registry table — has not been built, so the doc must stay 'proposed'
-# indefinitely until it does. Left unsuppressed, the three passing assertions
-# below would reclassify as code_ahead and redispatch a reconcile-spec task
-# against this already-accurate doc forever (same shape as
-# docs/design/mission-context-clusters.md, docs/design/backend-failover-policy.md).
-# Suppressed below (skip_until) instead.
+# The registry this doc proposes now exists in a first, narrower form: the
+# `experiments` table plus `experiment_assignments` (packages/core/db/schema.ts),
+# built for the model-routing experiment (docs/design/model-routing-experiment.md).
+# What it does NOT yet have is most of what this doc is about — the
+# declared/enrolling/frozen/retired lifecycle with write-boundary preconditions
+# (§1), the code-side policy-module registration and surface-fingerprint pin
+# guard (§4), and non-date stopping rules (§3). Hence `partially`, not
+# `implemented`. The three reuse assertions below stay suppressed: they pass,
+# but they certify pre-existing infrastructure rather than this doc's remaining
+# deliverables, and unsuppressing them would read as `implemented`.
 assertions:
-  - id: "experiment-registry-table-not-yet-built"
+  - id: "experiment-registry-table"
     type: "symbol"
     name: "experiments"
     path: "packages/core/db/schema.ts"
@@ -21,24 +21,24 @@ assertions:
     name: "hashUnitInterval"
     path: "apps/runner/src/experiment-randomizer.ts"
     skip_until: "2026-12-19"
-    skip_reason: "hashUnitInterval genuinely shipped (extracted from the memory-digest arm ahead of the registry proposed below) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
+    skip_reason: "hashUnitInterval genuinely shipped (extracted from the memory-digest arm ahead of the registry) — not a false positive — but it is pre-existing infrastructure this doc reuses, not one of its remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
   - id: "cbm-readout-aggregation"
     type: "symbol"
     name: "aggregateCbm"
     path: "apps/web/src/lib/cbm-insight.ts"
     skip_until: "2026-12-19"
-    skip_reason: "aggregateCbm genuinely shipped (existing CBM readout this proposal reuses) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
+    skip_reason: "aggregateCbm genuinely shipped (existing CBM readout this proposal reuses) — not a false positive — but it is pre-existing infrastructure, not one of this doc's remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
   - id: "experiment-cleanup-task-precedent"
     type: "symbol"
     name: "fileExperimentCleanupTask"
     path: "apps/web/src/lib/experiment-cleanup-task.ts"
     skip_until: "2026-12-19"
-    skip_reason: "fileExperimentCleanupTask genuinely shipped (the retirement-cleanup precedent this proposal's §1 generalises) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
+    skip_reason: "fileExperimentCleanupTask genuinely shipped (the retirement-cleanup precedent this proposal's §1 generalises) — not a false positive — but it is pre-existing infrastructure, not one of this doc's remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
 ---
 
 # Experiment Lifecycle
 
-**Status:** Proposed
+**Status:** Partially implemented — a first `experiments` registry and `experiment_assignments` table shipped with the model-routing experiment (`docs/design/model-routing-experiment.md`); the lifecycle states, pin manifest and stopping rules below are not built.
 **Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/experiment-randomizer.ts`, `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c), `packages/core/experiment-cleanup.ts`, `apps/web/src/lib/experiment-cleanup-task.ts`, `apps/web/src/app/api/cron/memory-digest-readout/route.ts`, `packages/core/memory-digest-readout-source.ts`, `cron-manifest.json`
 
 **Update, post memory-digest conclusion:** the memory-digest experiment is
@@ -61,6 +61,21 @@ stays exactly as described below: a memory-digest-specific payload table, not
 a generic rail. A future experiment (CBM or otherwise) needs its own payload
 source; that design call is out of scope here and belongs to whoever declares
 that experiment.
+
+
+**Update, registry v1:** a first `experiments` table now exists
+(`packages/core/db/schema.ts`), with per-task `experiment_assignments`, built
+for the model-routing experiment (`docs/design/model-routing-experiment.md`).
+It is deliberately narrower than §2's sketch: a per-team `key` rather than a
+global `slug`; a four-value `status` (`draft | running | paused | concluded`)
+rather than §1's five states, with no write-boundary preconditions yet; one
+`config` jsonb holding arms, eligibility and the minimum sample per arm; and no
+`owner_user_id`, `expires_at`, `readout_state` or stopping rule. The
+assignment rail is generic (experiment id, policy version, unit, arm,
+propensity, served), unlike `worker_prompt_composition_events`. Where the
+"Current state" table below says no registry exists, read it as describing the
+repo before this shipped. §1's lifecycle, §3's stopping rules and §4's pin
+manifest remain the open work.
 
 ---
 
