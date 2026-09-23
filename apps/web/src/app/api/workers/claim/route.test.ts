@@ -214,6 +214,10 @@ mock.module('@buildd/core/secrets', () => ({
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
 }));
+const mockAnnounceFixClaimed = mock(() => Promise.resolve());
+mock.module('@/lib/pr-activity-fix-claimed', () => ({
+  announceFixClaimed: mockAnnounceFixClaimed,
+}));
 mock.module('@/lib/notify', () => ({
   notify: mock(() => {}),
 }));
@@ -780,6 +784,9 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].taskId).toBe('task-1');
       // The task was flipped to Codex (in-memory) so the runner executes it on Codex.
       expect(data.workers[0].task.backend).toBe('codex');
+      // Every successful claim is offered to the PR activity comment, which
+      // decides whether it was a fix attempt (queued → Fixing).
+      expect(mockAnnounceFixClaimed).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }));
     });
 
     it('skips a budget-blocked Claude task when the workspace has no Codex credential', async () => {

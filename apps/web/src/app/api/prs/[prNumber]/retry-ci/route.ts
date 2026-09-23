@@ -29,7 +29,7 @@ import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-dia
 import { buildCIRetryTask, DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import { LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
@@ -172,7 +172,12 @@ export async function POST(
         installationId,
         repoFullName,
         prNumber,
-        entry: { kind: 'ci_fixing', detail: `schema drift detected — dispatched diagnose-only task by ${user.email}, no auto-fix`, url: ciLogs.runUrl },
+        entry: {
+          kind: 'ci_fixing',
+          detail: 'schema drift · diagnose only',
+          url: ciLogs.runUrl,
+          taskUrl: taskActivityUrl(newDiagnoseTask.id),
+        },
         workspaceId,
       });
     }
@@ -245,7 +250,7 @@ export async function POST(
       installationId,
       repoFullName,
       prNumber,
-      entry: { kind: 'ci_fixing', detail: `manual fix dispatched by ${user.email}`, url: ciLogs.runUrl },
+      entry: { kind: 'ci_fixing', detail: 'manual', url: ciLogs.runUrl, taskUrl: taskActivityUrl(newTask.id) },
       workspaceId,
     });
   }

@@ -348,7 +348,7 @@ export async function POST(req: NextRequest) {
       installationId: repo.installationId,
       repoFullName: repo.fullName,
       prNumber,
-      entry: { kind: 'reviewing', detail: `reviewer role \`${picked.role}\`` },
+      entry: { kind: 'reviewing' },
       workspaceId: workspace.id,
     });
   }

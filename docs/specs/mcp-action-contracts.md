@@ -159,7 +159,7 @@ long-poll, or by an https callback.
 **Acceptance criteria**:
 - AC-14: WHEN `request_pr_review` is called for an open PR with no buildd worker
   THEN a task + worker mapped to that `prNumber` are created, a reviewer task is
-  dispatched, and the PR's activity comment shows "Reviewing changes".
+  dispatched, and the PR's activity comment shows "Reviewing".
 - AC-15: WHEN `request_pr_review` is called while a reviewer task for that PR is
   pending or in progress THEN no second reviewer task is created, with or
   without `force`.

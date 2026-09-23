@@ -33,7 +33,10 @@ const {
   appendPrActivity,
   parsePrActivityState,
   renderPrActivityComment,
+  formatOffset,
+  GLYPH,
   MAX_ACTIVITY_ENTRIES,
+  MAX_NOTE_CHARS,
 } = await import('./pr-activity-comment');
 
 function bodyOf(call: Call): string {
@@ -49,110 +52,212 @@ beforeEach(() => {
   mockGithubApi.mockClear();
 });
 
-describe('renderPrActivityComment', () => {
-  it('leads with the latest entry as the headline status', () => {
-    const body = renderPrActivityComment([
-      { kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' },
-      { kind: 'ci_fixing', detail: 'attempt 1 of 3', at: '2026-08-29T14:31:00.000Z' },
-    ]);
+// The #2658 scenario, one fix iteration end to end. Timestamps are spaced so
+// the offsets are easy to read in assertions.
+const T0 = '2026-09-23T11:31:00.000Z';
+const at = (mins: number) => new Date(Date.parse(T0) + mins * 60_000).toISOString();
+const TASK = 'https://buildd.dev/app/tasks/fix-1';
+const FEEDBACK =
+  'In apps/web/src/lib/foo.ts:120 the retry path swallows the error.\nPlease surface it and add a regression test.';
 
-    expect(body).toStartWith(ACTIVITY_COMMENT_MARKER);
-    // Headline reflects the most recent entry, not the first.
-    const headlineIdx = body.indexOf('CI failed — fixing');
-    const logIdx = body.indexOf('Aug 29, 14:03 UTC');
-    expect(headlineIdx).toBeGreaterThan(-1);
-    expect(headlineIdx).toBeLessThan(logIdx);
+const reviewing = { kind: 'reviewing' as const, at: at(0) };
+const queued = {
+  kind: 'review_changes_requested' as const,
+  iteration: 1, maxIterations: 3, note: FEEDBACK, taskUrl: TASK, at: at(9),
+};
+const fixing = { kind: 'fix_started' as const, iteration: 1, maxIterations: 3, taskUrl: TASK, at: at(14) };
+const pushed = { kind: 'changes_pushed' as const, sha: 'abc1234', at: at(26) };
+const rereview = { kind: 'reviewing' as const, at: at(27) };
+const approved = { kind: 'review_approved' as const, note: 'Error now surfaces; test covers it.', at: at(35) };
+
+function headerOf(body: string): string {
+  return body.split('\n')[1];
+}
+
+describe('status derivation — queued is never shown as working', () => {
+  it('a request-changes review reads as a queued fix, with a task link and no spinner', () => {
+    const body = renderPrActivityComment([reviewing, queued]);
+    const header = headerOf(body);
+    expect(header).toContain('**Fix 1 of 3 queued**');
+    expect(header).toContain('waiting for a worker');
+    expect(header).toContain(`[task](${TASK})`);
+    expect(header).toContain(GLYPH.waiting);
+    // The bug: "buildd is pushing fixes" while the fix task had no worker.
+    expect(body).not.toContain(SPINNER_PATH);
+    expect(body.toLowerCase()).not.toContain('pushing');
   });
 
-  it('renders every entry in the activity log with UTC timestamps', () => {
-    const body = renderPrActivityComment([
-      { kind: 'reviewing', detail: 'role `builder`', at: '2026-08-29T14:03:00.000Z' },
-      { kind: 'changes_pushed', url: 'https://github.com/o/r/pull/7/commits/abc', at: '2026-08-29T15:00:00.000Z' },
-    ]);
-
-    expect(body).toContain('Aug 29, 14:03 UTC');
-    expect(body).toContain('Reviewing changes');
-    expect(body).toContain('role `builder`');
-    expect(body).toContain('Aug 29, 15:00 UTC');
-    expect(body).toContain('https://github.com/o/r/pull/7/commits/abc');
+  it('links the fix task once in the timeline, not on every row', () => {
+    const body = renderPrActivityComment([reviewing, queued, fixing]);
+    const rows = body.split('\n').filter((l) => l.startsWith('- '));
+    expect(rows.filter((r) => r.includes(TASK))).toHaveLength(1);
   });
 
-  it('round-trips its entries through the embedded state block', () => {
-    const entries = [
-      { kind: 'reviewing' as const, detail: null, url: null, at: '2026-08-29T14:03:00.000Z' },
-      { kind: 'review_changes_requested' as const, detail: 'iteration 1/3', url: null, at: '2026-08-29T14:40:00.000Z' },
-    ];
-    const parsed = parsePrActivityState(renderPrActivityComment(entries));
-    expect(parsed).toEqual(entries);
+  it('only a claimed fix animates and says Fixing', () => {
+    const header = headerOf(renderPrActivityComment([reviewing, queued, fixing]));
+    expect(header).toContain(SPINNER_PATH);
+    expect(header).toContain('**Fixing · fix 1 of 3**');
+  });
+
+  it('a push waits on checks, naming the short sha', () => {
+    const header = headerOf(renderPrActivityComment([reviewing, queued, fixing, pushed]));
+    expect(header).toContain('**Pushed `abc1234`**');
+    expect(header).toContain('waiting on checks');
+    expect(header).not.toContain(SPINNER_PATH);
+  });
+
+  it('a review after a fix is a re-review, and says which fix', () => {
+    const header = headerOf(renderPrActivityComment([reviewing, queued, fixing, pushed, rereview]));
+    expect(header).toContain('**Re-reviewing · after fix 1 of 3**');
+    expect(header).toContain(SPINNER_PATH);
+  });
+
+  it('approval is an outcome, not motion', () => {
+    const header = headerOf(renderPrActivityComment([reviewing, queued, fixing, pushed, rereview, approved]));
+    expect(header).toContain(`${GLYPH.done} **Approved**`);
+    expect(header).toContain('merging once checks pass');
+    expect(header).not.toContain(SPINNER_PATH);
+  });
+
+  it('a CI failure is also queued until claimed', () => {
+    const body = renderPrActivityComment([
+      { kind: 'ci_fixing', iteration: 2, maxIterations: 3, url: 'https://ci/run/1', at: at(0) },
+    ]);
+    expect(headerOf(body)).toContain('**CI fix 2 of 3 queued**');
+    expect(body).toContain('- `0m` CI failed · fix 2 of 3 queued');
+    expect(body).toContain('[CI run](https://ci/run/1)');
+    expect(body).not.toContain(SPINNER_PATH);
+  });
+
+  it('fix_started without its own iteration inherits the queued one', () => {
+    const header = headerOf(renderPrActivityComment([queued, { kind: 'fix_started', at: at(12) }]));
+    expect(header).toContain('**Fixing · fix 1 of 3**');
+  });
+
+  for (const kind of ['review_escalated', 'review_failed', 'human_review_required', 'ci_exhausted'] as const) {
+    it(`${kind} flags a human and stops moving`, () => {
+      const body = renderPrActivityComment([reviewing, { kind, at: at(5) }]);
+      expect(headerOf(body)).toContain(GLYPH.human);
+      expect(body).not.toContain(SPINNER_PATH);
+    });
+  }
+
+  it('the PR closing is always the last word', () => {
+    const merged = renderPrActivityComment([reviewing, fixing, { kind: 'merged', detail: 'into `dev`', at: at(40) }]);
+    expect(headerOf(merged)).toContain(`${GLYPH.done} **Merged**`);
+    expect(merged).not.toContain(SPINNER_PATH);
+    const closed = renderPrActivityComment([reviewing, fixing, { kind: 'closed_unmerged', at: at(40) }]);
+    expect(headerOf(closed)).toContain(`${GLYPH.ended} **Closed without merging**`);
+    expect(closed).not.toContain(SPINNER_PATH);
+  });
+
+  it('a lede correction is a timeline row, never the header', () => {
+    const body = renderPrActivityComment([
+      reviewing,
+      { kind: 'lede_corrected', note: 'Rewrote the whole auth layer', at: at(3) },
+    ]);
+    expect(headerOf(body)).toContain('**Reviewing**');
+    expect(body).toContain('Opening line corrected');
+    expect(body).toContain('<details><summary>Original</summary>');
+    expect(body).toContain('Rewrote the whole auth layer');
+  });
+});
+
+describe('length and layout', () => {
+  it('collapses reviewer feedback instead of pasting it into the row', () => {
+    const body = renderPrActivityComment([reviewing, queued]);
+    const row = body.split('\n').find((l) => l.startsWith('- ') && l.includes('Changes requested'))!;
+    expect(row.startsWith('- `+9m`')).toBe(true);
+    expect(row).not.toContain('swallows the error');
+    expect(body).toContain('<details><summary>Reviewer feedback</summary>');
+    expect(body).toContain('  In apps/web/src/lib/foo.ts:120 the retry path swallows the error.');
+  });
+
+  it('moves a legacy long detail into a note', () => {
+    const long = 'iteration 1 of 3 — ' + 'the reviewer wrote a very long paragraph about this change. '.repeat(3);
+    const body = renderPrActivityComment([{ kind: 'review_changes_requested', detail: long, at: at(0) }]);
+    const row = body.split('\n').find((l) => l.startsWith('- '))!;
+    expect(row.length).toBeLessThan(80);
+    expect(body).toContain('<details>');
+  });
+
+  it('keeps every timeline row short enough for a phone', () => {
+    const body = renderPrActivityComment([reviewing, queued, fixing, pushed, rereview, approved]);
+    const rows = body.split('\n').filter((l) => l.startsWith('- '));
+    expect(rows).toHaveLength(6);
+    for (const r of rows) {
+      // Row text minus markdown link targets: what a reader actually sees.
+      const visible = r.replace(/\]\([^)]*\)/g, ']');
+      expect(visible.length).toBeLessThanOrEqual(64);
+    }
+  });
+
+  it('carries one absolute timestamp; rows are offsets from the start', () => {
+    const body = renderPrActivityComment([reviewing, queued, fixing, pushed], 'America/New_York');
+    expect(body.match(/EDT/g)).toHaveLength(1);
+    expect(body).toContain('Started Sep 23, 07:31 EDT');
+    expect(body).toContain('- `0m` Reviewing');
+    expect(body).toContain('- `+14m` Fixing · fix 1 of 3');
+    expect(body).toContain('- `+26m` Pushed `abc1234`');
+  });
+
+  it('marks only outcome rows with a glyph', () => {
+    const body = renderPrActivityComment([reviewing, queued, fixing, pushed, rereview, approved]);
+    const rows = body.split('\n').filter((l) => l.startsWith('- '));
+    expect(rows.filter((r) => /[○✓⚑✕]/.test(r))).toEqual([rows[5]]);
+    expect(rows[5]).toContain(`${GLYPH.done} Approved`);
+  });
+
+  it('cannot be broken out of by a note', () => {
+    const body = renderPrActivityComment([
+      { kind: 'review_escalated', note: 'bad </details> and --> and <summary>x', at: at(0) },
+    ]);
+    expect(body.match(/<\/details>/g)).toHaveLength(1);
+    const parsed = parsePrActivityState(body);
+    expect(parsed[0].note).toBe('bad </details> and --> and <summary>x');
+  });
+
+  it('clips a very long note', () => {
+    const body = renderPrActivityComment([{ kind: 'review_escalated', note: 'x'.repeat(5000), at: at(0) }]);
+    expect(parsePrActivityState(body)[0].note!.length).toBe(MAX_NOTE_CHARS);
+  });
+});
+
+describe('formatOffset', () => {
+  it.each([
+    [0, '0m'], [0.5, '0m'], [9, '+9m'], [60, '+1h'], [64, '+1h 4m'], [60 * 24, '+1d'], [60 * 27, '+1d 3h'],
+  ])('%p minutes → %p', (mins, out) => {
+    expect(formatOffset(T0, at(mins as number))).toBe(out as string);
+  });
+});
+
+describe('renderPrActivityComment — state block', () => {
+  it('round-trips its entries, including the new fields', () => {
+    const entries = [reviewing, queued, fixing, pushed];
+    expect(parsePrActivityState(renderPrActivityComment(entries))).toEqual(entries);
+  });
+
+  it('still reads a comment written by the previous renderer', () => {
+    const legacy = [
+      ACTIVITY_COMMENT_MARKER,
+      '<!-- buildd-activity-state:{"v":1,"entries":[{"kind":"reviewing","detail":"reviewer role `builder`","url":null,"at":"2026-08-29T14:03:00.000Z"}]} -->',
+    ].join('\n');
+    const parsed = parsePrActivityState(legacy);
+    expect(parsed).toHaveLength(1);
+    expect(headerOf(renderPrActivityComment(parsed))).toContain('**Reviewing**');
   });
 
   it('keeps only the most recent entries when the log grows past the cap', () => {
     const entries = Array.from({ length: MAX_ACTIVITY_ENTRIES + 5 }, (_, i) => ({
       kind: 'changes_pushed' as const,
-      detail: `push ${i}`,
-      at: new Date(Date.UTC(2026, 7, 29, 12, i)).toISOString(),
+      sha: `sha${i}`,
+      at: at(i),
     }));
     const body = renderPrActivityComment(entries);
     const parsed = parsePrActivityState(body);
-
     expect(parsed).toHaveLength(MAX_ACTIVITY_ENTRIES);
-    expect(parsed[parsed.length - 1]!.detail).toBe(`push ${MAX_ACTIVITY_ENTRIES + 4}`);
-    expect(body).not.toContain('push 0');
-  });
-});
-
-describe('the header spinner', () => {
-  it('animates while buildd still has work in hand', () => {
-    for (const kind of ['reviewing', 'ci_fixing', 'review_changes_requested', 'changes_pushed'] as const) {
-      const body = renderPrActivityComment([{ kind, at: '2026-08-29T14:03:00.000Z' }]);
-      expect(body).toContain(`<img src="https://buildd.dev${SPINNER_PATH}"`);
-      expect(body).toContain('width="14" height="14"');
-    }
-  });
-
-  it('falls back to a static icon once the state is terminal', () => {
-    for (const kind of [
-      'ci_exhausted',
-      'review_escalated',
-      'review_failed',
-      'human_review_required',
-      'review_approved_awaiting_human',
-      'merged',
-      'closed_unmerged',
-    ] as const) {
-      const body = renderPrActivityComment([{ kind, at: '2026-08-29T14:03:00.000Z' }]);
-      // A finished PR must never keep spinning — movement means "on it right now".
-      expect(body).not.toContain(SPINNER_PATH);
-    }
-  });
-
-  it('stops spinning once the PR itself closes, whatever preceded it', () => {
-    // The spin-forever bug: a PR whose last buildd entry was a working state
-    // (review passed, waiting on checks) kept animating after the merge landed.
-    const working = { kind: 'review_approved' as const, at: '2026-08-29T14:03:00.000Z' };
-    expect(renderPrActivityComment([working])).toContain(SPINNER_PATH);
-
-    const merged = renderPrActivityComment([working, { kind: 'merged', at: '2026-08-29T14:31:00.000Z' }]);
-    expect(merged).not.toContain(SPINNER_PATH);
-    expect(merged).toContain('**Merged**');
-    expect(merged).toContain('since Aug 29, 14:31 UTC');
-
-    const closed = renderPrActivityComment([working, { kind: 'closed_unmerged', at: '2026-08-29T14:31:00.000Z' }]);
-    expect(closed).not.toContain(SPINNER_PATH);
-    expect(closed).toContain('**Closed without merging**');
-  });
-
-  it('renders review_failed distinctly from review_escalated', () => {
-    // review_escalated means the reviewer looked and raised a finding;
-    // review_failed means it never produced a verdict at all. Before this
-    // kind existed the comment simply stopped at "Reviewing changes" forever
-    // on this path, which reads as still-in-progress to a human watching it.
-    const body = renderPrActivityComment([
-      { kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' },
-      { kind: 'review_failed', at: '2026-08-29T14:45:00.000Z' },
-    ]);
-    expect(body).toContain('Review never completed');
-    expect(body).not.toContain(SPINNER_PATH);
+    expect(parsed[parsed.length - 1]!.sha).toBe(`sha${MAX_ACTIVITY_ENTRIES + 4}`);
+    expect(body).not.toContain('`sha0`');
   });
 
   it('points the spinner at a camo-reachable origin, never at localhost', () => {
@@ -160,7 +265,6 @@ describe('the header spinner', () => {
     try {
       process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3001';
       expect(renderPrActivityComment([{ kind: 'reviewing' }])).toContain(`https://buildd.dev${SPINNER_PATH}`);
-
       process.env.NEXT_PUBLIC_APP_URL = 'https://buildd-preview.vercel.app/';
       expect(renderPrActivityComment([{ kind: 'reviewing' }])).toContain(
         `https://buildd-preview.vercel.app${SPINNER_PATH}`,
@@ -170,13 +274,22 @@ describe('the header spinner', () => {
       else process.env.NEXT_PUBLIC_APP_URL = original;
     }
   });
+});
 
-  it('stamps when the current state started so an edit visibly moves forward', () => {
-    const body = renderPrActivityComment([
-      { kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' },
-      { kind: 'ci_fixing', at: '2026-08-29T15:20:00.000Z' },
-    ]);
-    expect(body).toContain('since Aug 29, 15:20 UTC');
+describe('the #2658 walkthrough (snapshot for the PR body)', () => {
+  it('renders each phase', () => {
+    const phases = {
+      queued: [reviewing, queued],
+      fixing: [reviewing, queued, fixing],
+      pushed: [reviewing, queued, fixing, pushed],
+      rereview: [reviewing, queued, fixing, pushed, rereview],
+      approved: [reviewing, queued, fixing, pushed, rereview, approved],
+    };
+    for (const [name, entries] of Object.entries(phases)) {
+      const body = renderPrActivityComment(entries, 'America/New_York');
+      if (process.env.PRINT_PR_ACTIVITY) console.log(`\n===== ${name} =====\n${body}`);
+      expect(body).toStartWith(ACTIVITY_COMMENT_MARKER);
+    }
   });
 });
 
@@ -223,7 +336,7 @@ describe('appendPrActivity', () => {
     expect(result).toEqual({ action: 'created', commentId: 999 });
     const post = calls.find((c) => c.options.method === 'POST')!;
     expect(post.path).toBe('/repos/buildd-ai/buildd/issues/7/comments');
-    expect(bodyOf(post)).toContain('Reviewing changes');
+    expect(bodyOf(post)).toContain('**Reviewing**');
   });
 
   it('edits the existing sticky comment and preserves earlier entries', async () => {
@@ -237,7 +350,7 @@ describe('appendPrActivity', () => {
       installationId: 42,
       repoFullName: 'buildd-ai/buildd',
       prNumber: 7,
-      entry: { kind: 'ci_fixing', detail: 'attempt 1 of 3', at: '2026-08-29T14:31:00.000Z' },
+      entry: { kind: 'ci_fixing', iteration: 1, maxIterations: 3, at: '2026-08-29T14:31:00.000Z' },
     });
 
     expect(result).toEqual({ action: 'updated', commentId: 55 });
@@ -297,25 +410,21 @@ describe('appendPrActivity', () => {
 describe('timezone rendering', () => {
   const entries = [
     { kind: 'reviewing' as const, at: '2026-08-29T14:03:00.000Z' },
-    { kind: 'ci_fixing' as const, detail: 'attempt 1 of 3', at: '2026-08-29T15:20:00.000Z' },
+    { kind: 'ci_fixing' as const, iteration: 1, maxIterations: 3, at: '2026-08-29T15:20:00.000Z' },
   ];
 
   it('stamps in UTC when no zone is given (unchanged default)', () => {
-    const body = renderPrActivityComment(entries);
-    expect(body).toContain('`Aug 29, 14:03 UTC`');
-    expect(body).toContain('since Aug 29, 15:20 UTC');
+    expect(renderPrActivityComment(entries)).toContain('Started Aug 29, 14:03 UTC');
   });
 
-  it('stamps every line and the header in the requested zone', () => {
+  it('stamps the start in the requested zone', () => {
     const body = renderPrActivityComment(entries, 'America/New_York');
-    expect(body).toContain('`Aug 29, 10:03 EDT`');
-    expect(body).toContain('`Aug 29, 11:20 EDT`');
-    expect(body).toContain('since Aug 29, 11:20 EDT');
+    expect(body).toContain('Started Aug 29, 10:03 EDT');
     expect(body).not.toContain('UTC');
   });
 
   it('falls back to UTC for a zone this runtime does not know', () => {
-    expect(renderPrActivityComment(entries, 'Mars/Olympus')).toContain('`Aug 29, 14:03 UTC`');
+    expect(renderPrActivityComment(entries, 'Mars/Olympus')).toContain('Started Aug 29, 14:03 UTC');
   });
 
   it('does not persist the zone in the state block — it is applied at render time', () => {
@@ -323,8 +432,7 @@ describe('timezone rendering', () => {
     const recovered = parsePrActivityState(body);
     expect(recovered).toHaveLength(2);
     expect(JSON.stringify(recovered)).not.toContain('New_York');
-    // Re-rendering the recovered entries in a different zone re-stamps them.
-    expect(renderPrActivityComment(recovered, 'Europe/Berlin')).toContain('`Aug 29, 16:03 ');
+    expect(renderPrActivityComment(recovered, 'Europe/Berlin')).toContain('Started Aug 29, 16:03 ');
   });
 
   it('appendPrActivity stamps a new comment in the owning team zone', async () => {
@@ -343,7 +451,7 @@ describe('timezone rendering', () => {
     expect(bodyOf(post)).toContain('Aug 29, 10:03 EDT');
   });
 
-  it('appendPrActivity re-stamps the whole log in the team zone when editing', async () => {
+  it('appendPrActivity re-stamps in the team zone when editing', async () => {
     workspaceTimezone = 'Europe/Berlin';
     listResponse = [
       {
@@ -356,14 +464,13 @@ describe('timezone rendering', () => {
       installationId: 42,
       repoFullName: 'buildd-ai/buildd',
       prNumber: 7,
-      entry: { kind: 'ci_fixing', detail: 'attempt 1 of 3', at: '2026-08-29T15:20:00.000Z' },
+      entry: { kind: 'ci_fixing', iteration: 1, maxIterations: 3, at: '2026-08-29T15:20:00.000Z' },
       workspaceId: 'ws-1',
     });
 
-    const patch = calls.find((c) => c.options.method === 'PATCH')!;
-    const body = bodyOf(patch);
-    expect(body).toContain('`Aug 29, 16:03 ');
-    expect(body).toContain('`Aug 29, 17:20 ');
+    const body = bodyOf(calls.find((c) => c.options.method === 'PATCH')!);
+    expect(body).toContain('Started Aug 29, 16:03 ');
+    expect(body).toContain('- `+1h 17m` CI failed · fix 1 of 3 queued');
     expect(body).not.toContain('UTC');
   });
 
@@ -378,5 +485,21 @@ describe('timezone rendering', () => {
     expect(workspaceTimezoneCalls).toEqual([]);
     const post = calls.find((c) => c.options.method === 'POST')!;
     expect(bodyOf(post)).toContain('Aug 29, 14:03 UTC');
+  });
+});
+
+describe('appendPrActivity — redelivery', () => {
+  it('treats a new fix iteration as a new entry, not a duplicate', async () => {
+    listResponse = [{
+      id: 55,
+      body: renderPrActivityComment([{ kind: 'review_changes_requested', iteration: 1, maxIterations: 3, at: '2026-08-29T14:03:00.000Z' }]),
+    }];
+    const result = await appendPrActivity({
+      installationId: 42,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 7,
+      entry: { kind: 'review_changes_requested', iteration: 2, maxIterations: 3, at: '2026-08-29T15:03:00.000Z' },
+    });
+    expect(result).toEqual({ action: 'updated', commentId: 55 });
   });
 });

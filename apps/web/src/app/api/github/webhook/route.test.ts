@@ -1097,8 +1097,10 @@ describe('POST /api/github/webhook', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('CI failed — fixing');
-      expect(body).toContain('attempt 1 of 3');
+      // Queued, not "fixing": the retry task has no worker until the claim.
+      expect(body).toContain('CI fix 1 of 3 queued');
+      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('/app/tasks/');
     });
 
     it('dedupes structurally — skips dispatch when this workspace/PR/SHA already has a retry', async () => {
@@ -1164,7 +1166,7 @@ describe('POST /api/github/webhook', () => {
         (c) => c[1] === '/repos/test-org/test-repo/issues/42/comments' && c[2]?.method === 'POST',
       );
       expect(commentCall).toBeDefined();
-      expect(JSON.parse(commentCall[2].body).body).toContain('CI still failing — needs a human');
+      expect(JSON.parse(commentCall[2].body).body).toContain('CI still failing · needs a human');
     });
 
     it('does not retry when maxCiRetries is 0 (disabled)', async () => {
@@ -3171,8 +3173,9 @@ describe('POST /api/github/webhook', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('Reviewing changes');
-      expect(body).toContain('reviewer role `reviewer`');
+      expect(body).toContain('**Reviewing**');
+      // Role slugs are internal vocabulary; the PR reader doesn't need them.
+      expect(body).not.toContain('reviewer role');
     });
 
     it('skips reviewer task and escalates when pre-flight detects schema file', async () => {

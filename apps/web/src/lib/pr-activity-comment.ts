@@ -13,6 +13,9 @@
  * Every function here is best-effort: a GitHub failure logs and returns
  * `{ action: 'failed' }`. Posting a status comment must never break the
  * lifecycle step that triggered it.
+ *
+ * Copy rules (status words, length limits, glyph set) live next to this file in
+ * `pr-activity-comment.STYLE.md`. Read it before adding a kind or a label.
  */
 
 import { DEFAULT_TIMEZONE, formatStamp } from '@buildd/core/timezone';
@@ -47,6 +50,12 @@ const STATE_SUFFIX = ' -->';
 /** Entries older than this fall off the log so the comment stays readable. */
 export const MAX_ACTIVITY_ENTRIES = 12;
 
+/** A row's inline qualifier is cut here; anything longer belongs in `note`. */
+export const MAX_DETAIL_CHARS = 60;
+
+/** A collapsed note is cut here — the task or review holds the full text. */
+export const MAX_NOTE_CHARS = 1200;
+
 export type PrActivityKind =
   | 'reviewing'
   | 'review_approved'
@@ -58,6 +67,7 @@ export type PrActivityKind =
   | 'human_review_required'
   | 'ci_fixing'
   | 'ci_exhausted'
+  | 'fix_started'
   | 'changes_pushed'
   | 'review_superseded_by_merge'
   | 'human_applied_recommendation'
@@ -67,191 +77,311 @@ export type PrActivityKind =
 
 export interface PrActivityEntry {
   kind: PrActivityKind;
-  /** One-line qualifier rendered after the headline (e.g. "attempt 2 of 3"). */
+  /**
+   * Short inline qualifier, a few words ("schema drift · diagnose only").
+   * Anything over `MAX_DETAIL_CHARS` is collapsed like a `note` instead of
+   * pasted into the row.
+   */
   detail?: string | null;
-  /** Link rendered alongside the entry (CI run, commit, task). */
+  /**
+   * Long text (reviewer feedback, an escalation reason, the original lede).
+   * Never inline: always rendered collapsed under its row.
+   */
+  note?: string | null;
+  /** Fix iteration this entry is about — "fix 1 of 3". */
+  iteration?: number | null;
+  maxIterations?: number | null;
+  /** Short commit sha, for `changes_pushed`. */
+  sha?: string | null;
+  /** The buildd task doing the work — the link a reader follows from a queued fix. */
+  taskUrl?: string | null;
+  /** Any other link (CI run, commit). */
   url?: string | null;
   /** ISO timestamp. Defaults to now. */
   at?: string;
 }
 
-interface Presentation {
-  icon: string;
-  /**
-   * True while buildd still has work in hand for this PR. Drives the animated
-   * header spinner, so movement always means "an agent is on it right now" —
-   * a terminal state must never keep spinning.
-   */
-  working: boolean;
-  /** Short label used in both the headline and the log line. */
+type NormalizedEntry = PrActivityEntry & { at: string };
+
+/**
+ * Glyphs. The copy style guide (`pr-activity-comment.STYLE.md`) is the
+ * contract; this is its implementation. A glyph appears only when it carries a
+ * meaning the words don't — most rows have none.
+ */
+export const GLYPH = {
+  /** Nothing is running: queued, or waiting on checks/another party. */
+  waiting: '○',
+  /** An outcome that went well: approved, merged. */
+  done: '✓',
+  /** A human has to act. */
+  human: '⚑',
+  /** Ended without landing. */
+  ended: '✕',
+} as const;
+
+type Tone = 'working' | keyof typeof GLYPH | 'plain';
+
+interface Rendered {
+  /** `working` shows the animated spinner in the header; rows never animate. */
+  tone: Tone;
+  /** Timeline row text, and the header headline when this entry is current. */
   label: string;
-  /** Sentence under the headline explaining what buildd is doing right now. */
-  status: string;
+  /** Shorter header wording, when the row label carries history the header doesn't need. */
+  headline?: string;
+  /** Header-only tail, e.g. "waiting for a worker". Omitted from the row. */
+  status?: string;
+  /** Summary text on the collapsed note. */
+  noteLabel?: string;
+  /** Label for `url`. */
+  urlLabel?: string;
+  /** Not a state change — never becomes the header on its own. */
+  aside?: boolean;
 }
 
-const PRESENTATION: Record<PrActivityKind, Presentation> = {
-  reviewing: {
-    icon: '🔍',
-    working: true,
-    label: 'Reviewing changes',
-    status: 'A buildd reviewer agent is going through this PR now.',
-  },
-  review_approved: {
-    icon: '✅',
-    working: true,
-    label: 'Review passed',
-    status: 'The reviewer approved these changes — merging once checks are green.',
-  },
-  review_approved_awaiting_human: {
-    icon: '✅',
-    working: false,
-    label: 'Review passed — awaiting human merge',
-    status: 'The reviewer approved these changes. Merge policy leaves the merge to a human.',
-  },
-  review_changes_requested: {
-    icon: '🔁',
-    working: true,
-    label: 'Applying review feedback',
-    status: 'The reviewer requested changes — buildd is pushing fixes to this branch.',
-  },
-  review_escalated: {
-    icon: '🚨',
-    working: false,
-    label: 'Escalated to a human',
-    status: 'The reviewer stopped and handed this PR to a human.',
-  },
-  // Distinct from `review_escalated`: that kind means the reviewer looked and
-  // raised a finding. This means the reviewer session died or returned prose
-  // instead of a verdict — there is no finding, and nothing here blocks a
-  // merge, but no review actually happened either. Without this entry the
-  // comment stops at "🔍 Reviewing changes" forever, which reads as "still in
-  // progress" rather than "gave up" to anyone watching the PR.
-  review_failed: {
-    icon: '🚨',
-    working: false,
-    label: 'Review never completed',
-    status: 'The reviewer never returned a verdict. Nothing here blocks merging, but no review actually happened — a human should look before merging.',
-  },
-  // Not a lifecycle state — the review carries on either side of it — so this
-  // keeps `working: true` and never stops the spinner on its own.
-  lede_corrected: {
-    icon: '✍️',
-    working: true,
-    label: 'Opening line corrected',
-    status: 'The reviewer found the PR\'s opening sentence contradicted the diff and replaced it. The original is kept in the body.',
-  },
-  human_review_required: {
-    icon: '👀',
-    working: false,
-    label: 'Human review required',
-    status: 'Merge policy requires a human to review this PR — buildd will not merge it.',
-  },
-  ci_fixing: {
-    icon: '🔧',
-    working: true,
-    label: 'CI failed — fixing',
-    status: 'buildd picked up the CI failure and is working on a fix on this branch.',
-  },
-  ci_exhausted: {
-    icon: '🚨',
-    working: false,
-    label: 'CI still failing — needs a human',
-    status: 'buildd used up its CI retries and stopped. This PR needs a human.',
-  },
-  changes_pushed: {
-    icon: '⬆️',
-    working: true,
-    label: 'Fixes pushed',
-    status: 'buildd pushed new commits to this branch — waiting on checks.',
-  },
-  review_superseded_by_merge: {
-    icon: '⏭️',
-    working: false,
-    label: 'Review superseded — merged by a human',
-    status: 'A human merged this PR before the reviewer got to it. The pending review was cancelled.',
-  },
-  human_applied_recommendation: {
-    icon: '🛠️',
-    working: true,
-    label: 'Applying reviewer recommendation',
-    status: 'A human applied the reviewer\'s escalated recommendation — buildd is pushing fixes to this branch.',
-  },
-  human_override_merge: {
-    icon: '⚠️',
-    working: false,
-    label: 'Merged despite escalation — human override',
-    status: 'A human merged this PR anyway, overriding the reviewer\'s escalation.',
-  },
-  // The PR's own close is always the last word: whatever buildd was mid-flight
-  // on (review passed, waiting on checks, fixing CI) is over once the PR is
-  // merged or abandoned, so these two kinds exist to stop the spinner.
-  merged: {
-    icon: '🏁',
-    working: false,
-    label: 'Merged',
-    status: 'This PR is merged — buildd is done here.',
-  },
-  closed_unmerged: {
-    icon: '🗑️',
-    working: false,
-    label: 'Closed without merging',
-    status: 'This PR was closed without merging — buildd stopped work on it.',
-  },
-};
+/** Running facts the timeline has established by the time it reaches an entry. */
+interface Story {
+  /** The newest fix iteration seen so far. */
+  fix: { iteration: number | null; maxIterations: number | null } | null;
+}
 
+function fixText(e: { iteration?: number | null; maxIterations?: number | null } | null | undefined): string {
+  if (!e || e.iteration == null) return 'fix';
+  return e.maxIterations != null ? `fix ${e.iteration} of ${e.maxIterations}` : `fix ${e.iteration}`;
+}
 
-function normalize(entry: PrActivityEntry): Required<Pick<PrActivityEntry, 'kind' | 'at'>> & PrActivityEntry {
-  return {
-    kind: entry.kind,
-    detail: entry.detail ?? null,
-    url: entry.url ?? null,
-    at: entry.at ?? new Date().toISOString(),
-  };
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function hasIteration(e: PrActivityEntry): boolean {
+  return e.iteration != null;
 }
 
 /**
- * Render the full comment body (marker, headline, activity log, state block).
+ * The status vocabulary. Every label here is listed in the style guide — add
+ * one there first.
+ */
+function present(e: NormalizedEntry, story: Story): Rendered {
+  switch (e.kind) {
+    case 'reviewing':
+      return story.fix
+        ? { tone: 'working', label: story.fix.iteration != null ? `Re-reviewing · after ${fixText(story.fix)}` : 'Re-reviewing' }
+        : { tone: 'working', label: 'Reviewing' };
+    case 'review_changes_requested':
+      return {
+        tone: 'waiting',
+        label: `Changes requested · ${fixText(e)} queued`,
+        headline: `${capitalize(fixText(e))} queued`,
+        status: 'waiting for a worker',
+        noteLabel: 'Reviewer feedback',
+      };
+    case 'ci_fixing':
+      return {
+        tone: 'waiting',
+        label: `CI failed · ${fixText(e)} queued`,
+        headline: `CI ${fixText(e)} queued`,
+        status: 'waiting for a worker',
+        noteLabel: 'Details',
+        urlLabel: 'CI run',
+      };
+    case 'human_applied_recommendation':
+      return {
+        tone: 'waiting',
+        label: 'Recommendation applied · fix queued',
+        status: 'waiting for a worker',
+      };
+    case 'fix_started':
+      // Only ever written once a worker has CLAIMED the fix task. This is the
+      // one state allowed to say buildd is changing the branch.
+      return { tone: 'working', label: `Fixing · ${fixText(hasIteration(e) ? e : story.fix)}` };
+    case 'changes_pushed': {
+      const sha = e.sha ? `\`${e.sha}\`` : null;
+      return {
+        tone: 'waiting',
+        label: sha ? `Pushed ${sha}` : 'Pushed',
+        status: 'waiting on checks',
+        urlLabel: 'commit',
+      };
+    }
+    case 'review_approved':
+      return { tone: 'done', label: 'Approved', status: 'merging once checks pass', noteLabel: 'Summary' };
+    case 'review_approved_awaiting_human':
+      return { tone: 'done', label: 'Approved · ready to merge', status: 'merge policy leaves this to a human', noteLabel: 'Summary' };
+    case 'review_escalated':
+      return { tone: 'human', label: 'Escalated · needs a human', noteLabel: 'Reason' };
+    case 'review_failed':
+      return {
+        tone: 'human',
+        label: 'Review didn’t finish · needs a human',
+        status: 'no verdict came back; nothing blocks merging, but nobody reviewed it',
+      };
+    case 'human_review_required':
+      return { tone: 'human', label: 'Human review required', status: 'merge policy', noteLabel: 'Reason' };
+    case 'ci_exhausted':
+      return { tone: 'human', label: 'CI still failing · needs a human', noteLabel: 'Details', urlLabel: 'CI run' };
+    case 'lede_corrected':
+      return { tone: 'plain', label: 'Opening line corrected', noteLabel: 'Original', aside: true };
+    case 'review_superseded_by_merge':
+      return { tone: 'done', label: 'Merged by a human · review cancelled' };
+    case 'human_override_merge':
+      return { tone: 'done', label: 'Merged · escalation overridden', noteLabel: 'Reason' };
+    case 'merged':
+      return { tone: 'done', label: 'Merged' };
+    case 'closed_unmerged':
+      return { tone: 'ended', label: 'Closed without merging' };
+  }
+}
+
+function advance(story: Story, e: PrActivityEntry): Story {
+  if (e.kind === 'review_changes_requested' || e.kind === 'ci_fixing' || e.kind === 'fix_started' || e.kind === 'human_applied_recommendation') {
+    return {
+      fix: hasIteration(e)
+        ? { iteration: e.iteration ?? null, maxIterations: e.maxIterations ?? null }
+        : story.fix ?? { iteration: null, maxIterations: null },
+    };
+  }
+  return story;
+}
+
+function normalize(entry: PrActivityEntry): NormalizedEntry {
+  const out: NormalizedEntry = { kind: entry.kind, at: entry.at ?? new Date().toISOString() };
+  // Only set what is present, so the state block stays small and old entries
+  // (which carry just kind/detail/url/at) round-trip unchanged.
+  if (entry.detail != null) out.detail = entry.detail;
+  if (entry.note != null && entry.note.trim()) out.note = clip(entry.note.trim(), MAX_NOTE_CHARS);
+  if (entry.iteration != null) out.iteration = entry.iteration;
+  if (entry.maxIterations != null) out.maxIterations = entry.maxIterations;
+  if (entry.sha != null) out.sha = entry.sha;
+  if (entry.taskUrl != null) out.taskUrl = entry.taskUrl;
+  if (entry.url != null) out.url = entry.url;
+  // Legacy callers put everything in `detail`. Treat anything long as a note.
+  if (out.detail && out.detail.length > MAX_DETAIL_CHARS) {
+    out.note = out.note ? `${out.detail}\n\n${out.note}` : clip(out.detail, MAX_NOTE_CHARS);
+    delete out.detail;
+  }
+  return out;
+}
+
+function clip(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** `0m`, `+9m`, `+1h 4m`, `+2d 3h` — elapsed since the first entry. Never goes stale. */
+export function formatOffset(fromIso: string, toIso: string): string {
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  if (!Number.isFinite(ms) || ms < 60_000) return '0m';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `+${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return mins % 60 ? `+${hours}h ${mins % 60}m` : `+${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `+${days}d ${hours % 24}h` : `+${days}d`;
+}
+
+/**
+ * Keep user text inside its `<details>`: a stray tag would close the
+ * disclosure early and spill the rest of the comment into it.
+ */
+function escapeNote(s: string): string {
+  return s.replace(/<(\/?)(details|summary)/gi, '&lt;$1$2');
+}
+
+function links(e: NormalizedEntry, p: Rendered, seenTasks: Set<string>): string {
+  const parts: string[] = [];
+  // The same fix task threads through queued → fixing; link it once.
+  if (e.taskUrl && !seenTasks.has(e.taskUrl)) {
+    seenTasks.add(e.taskUrl);
+    parts.push(`[task](${e.taskUrl})`);
+  }
+  if (e.url) parts.push(`[${p.urlLabel ?? 'details'}](${e.url})`);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
+}
+
+function rowGlyph(tone: Tone): string {
+  // Rows only mark outcomes. "Waiting" and "working" are header states; on a
+  // history row they'd just be decoration.
+  return tone === 'done' || tone === 'human' || tone === 'ended' ? `${GLYPH[tone]} ` : '';
+}
+
+/**
+ * Render the full comment body (marker, status line, timeline, state block).
  *
  * `timezone` is applied at render time and never stored in the state block, so
- * changing a team's zone re-stamps the whole log on the next update.
+ * changing a team's zone re-stamps the comment on the next update.
  */
 export function renderPrActivityComment(
   entries: PrActivityEntry[],
   timezone: string = DEFAULT_TIMEZONE,
 ): string {
   const kept = entries.slice(-MAX_ACTIVITY_ENTRIES).map(normalize);
-  const latest = kept[kept.length - 1];
-  const head = latest ? PRESENTATION[latest.kind] : null;
+  if (kept.length === 0) {
+    return [ACTIVITY_COMMENT_MARKER, '**buildd** · no activity yet', stateBlock(kept)].join('\n');
+  }
 
-  const lines = kept.map((entry) => {
-    const p = PRESENTATION[entry.kind];
-    const detail = entry.detail ? ` — ${entry.detail}` : '';
-    const link = entry.url ? ` ([details](${entry.url}))` : '';
-    return `- ${p.icon} \`${formatStamp(entry.at, timezone)}\` **${p.label}**${detail}${link}`;
-  });
+  const start = kept[0].at;
+  let story: Story = { fix: null };
+  const rows: string[] = [];
+  const seenTasks = new Set<string>();
+  let head: { entry: NormalizedEntry; p: Rendered } | null = null;
 
-  // The spinner is the whole point of the header: it moves while buildd is
-  // mid-flight, and is replaced by a static icon the moment it isn't.
-  const marker = head?.working
-    ? `<img src="${assetOrigin()}${SPINNER_PATH}" width="14" height="14" alt="working" align="top" />`
-    : (head?.icon ?? '');
-  const since = latest ? ` <sub>· since ${formatStamp(latest.at, timezone)}</sub>` : '';
+  for (const e of kept) {
+    story = advance(story, e);
+    const p = present(e, story);
+    if (!p.aside || !head) head = { entry: e, p };
+
+    const detail = e.detail ? ` · ${e.detail}` : '';
+    rows.push(`- \`${formatOffset(start, e.at)}\` ${rowGlyph(p.tone)}${p.label}${detail}${links(e, p, seenTasks)}`);
+    if (e.note) {
+      const body = escapeNote(e.note).split('\n').map((l) => (l ? `  ${l}` : '')).join('\n');
+      rows.push(`  <details><summary>${p.noteLabel ?? 'Details'}</summary>`, '', body, '', '  </details>');
+    }
+  }
+
+  const { entry: current, p: currentP } = head!;
+  // Movement means "a worker is on this right now" — never a queued fix.
+  const marker = currentP.tone === 'working'
+    ? `<img src="${assetOrigin()}${SPINNER_PATH}" width="12" height="12" alt="working" align="absmiddle" />`
+    : currentP.tone === 'plain' ? '' : GLYPH[currentP.tone];
+  const status = currentP.status ? ` · ${currentP.status}` : '';
+  const headLink = current.taskUrl ? ` · [task](${current.taskUrl})` : '';
 
   return [
     ACTIVITY_COMMENT_MARKER,
-    '### 🤖 buildd',
+    `**buildd** · ${marker ? `${marker} ` : ''}**${currentP.headline ?? currentP.label}**${status}${headLink}`,
     '',
-    head ? `${marker} **${head.label}** — ${head.status}${since}` : '_No activity yet._',
+    ...rows,
     '',
-    '<details open><summary>Activity</summary>',
-    '',
-    ...lines,
-    '',
-    '</details>',
-    '',
-    '<sub>Posted by [buildd](https://buildd.dev) and edited in place as work progresses.</sub>',
-    `${STATE_PREFIX}${JSON.stringify({ v: 1, entries: kept })}${STATE_SUFFIX}`,
+    `<sub>Started ${formatStamp(start, timezone)} · edited in place by [buildd](https://buildd.dev)</sub>`,
+    stateBlock(kept),
   ].join('\n');
+}
+
+function stateBlock(kept: NormalizedEntry[]): string {
+  // `>` is escaped so a note containing `-->` can't end the HTML comment early.
+  const json = JSON.stringify({ v: 1, entries: kept }).replace(/>/g, '\\u003e');
+  return `${STATE_PREFIX}${json}${STATE_SUFFIX}`;
+}
+
+const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
+  'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
+  'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
+  'ci_exhausted', 'fix_started', 'changes_pushed', 'review_superseded_by_merge',
+  'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
+]);
+
+/** A webhook redelivery of the newest entry — same kind and the same facts. */
+function sameEntry(a: PrActivityEntry, b: PrActivityEntry): boolean {
+  return (
+    a.kind === b.kind &&
+    (a.detail ?? null) === (b.detail ?? null) &&
+    (a.iteration ?? null) === (b.iteration ?? null) &&
+    (a.sha ?? null) === (b.sha ?? null)
+  );
+}
+
+/** Dashboard link for a task, for `taskUrl`. */
+export function taskActivityUrl(taskId: string): string {
+  return `${assetOrigin()}/app/tasks/${taskId}`;
 }
 
 /** Recover the entry list from an existing comment body. Corrupt state → `[]`. */
@@ -267,7 +397,7 @@ export function parsePrActivityState(body: string): PrActivityEntry[] {
     return parsed.entries.filter(
       (e): e is PrActivityEntry =>
         !!e && typeof e === 'object' && typeof (e as PrActivityEntry).kind === 'string' &&
-        (e as PrActivityEntry).kind in PRESENTATION,
+        KNOWN_KINDS.has((e as PrActivityEntry).kind),
     );
   } catch {
     return [];
@@ -352,7 +482,7 @@ export async function appendPrActivity(params: {
     if (existing) {
       const entries = parsePrActivityState(existing.body);
       const last = entries[entries.length - 1];
-      if (last && last.kind === next.kind && (last.detail ?? null) === (next.detail ?? null)) {
+      if (last && sameEntry(normalize(last), next)) {
         return { action: 'unchanged', commentId: existing.id };
       }
       await githubApi(installationId, `/repos/${repoFullName}/issues/comments/${existing.id}`, {

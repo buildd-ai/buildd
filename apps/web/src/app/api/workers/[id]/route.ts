@@ -43,7 +43,7 @@ import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -4295,10 +4295,7 @@ async function handleReviewerOutcomeIfNeeded(
           installationId,
           repoFullName,
           prNumber,
-          entry: {
-            kind: 'review_approved_awaiting_human',
-            detail: `confidence ${output.confidence.toFixed(2)} — ${output.summary}`,
-          },
+          entry: { kind: 'review_approved_awaiting_human', note: output.summary },
           workspaceId,
         });
         console.log(`[reviewer] PR #${prNumber} approved (approve-only) — leaving merge to human`);
@@ -4323,10 +4320,7 @@ async function handleReviewerOutcomeIfNeeded(
         installationId,
         repoFullName,
         prNumber,
-        entry: {
-          kind: 'review_approved',
-          detail: `confidence ${output.confidence.toFixed(2)} — ${output.summary}`,
-        },
+        entry: { kind: 'review_approved', note: output.summary },
         workspaceId,
       });
 
@@ -4406,7 +4400,8 @@ async function handleReviewerOutcomeIfNeeded(
           prNumber,
           entry: {
             kind: 'review_escalated',
-            detail: `review loop hit its ${maxIterations}-iteration cap — needs a human`,
+            detail: `after ${maxIterations} fixes`,
+            note: output.feedback ?? null,
           },
           workspaceId,
         });
@@ -4490,9 +4485,14 @@ async function handleReviewerOutcomeIfNeeded(
           installationId,
           repoFullName,
           prNumber,
+          // Queued, not fixing: the retry task has no worker yet. The claim
+          // route writes `fix_started` when one picks it up.
           entry: {
             kind: 'review_changes_requested',
-            detail: `iteration ${currentIteration + 1} of ${maxIterations} — ${output.feedback ?? output.summary ?? 'reviewer requested changes'}`,
+            iteration: currentIteration + 1,
+            maxIterations,
+            note: output.feedback ?? output.summary ?? null,
+            taskUrl: taskActivityUrl(retryTask.id),
           },
           workspaceId,
         });
@@ -4513,10 +4513,7 @@ async function handleReviewerOutcomeIfNeeded(
         installationId,
         repoFullName,
         prNumber,
-        entry: {
-          kind: 'review_escalated',
-          detail: output.escalationReason ?? output.summary,
-        },
+        entry: { kind: 'review_escalated', note: output.escalationReason ?? output.summary },
         workspaceId,
       });
       console.log(`[reviewer] Escalated PR #${prNumber}: ${output.escalationReason ?? output.summary}`);
