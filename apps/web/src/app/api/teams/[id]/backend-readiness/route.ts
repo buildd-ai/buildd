@@ -10,11 +10,11 @@
  * report. See `apps/web/src/lib/backend-strand.ts` for how the effective backend
  * is resolved (shared with the claim route and the queue-stall watchdog).
  *
- * Auth: session or API key, team membership required.
+ * Auth: session (team membership required) or an API key of that same team.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromRequest } from '@/lib/auth-helpers';
+import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { getTeamWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
 
@@ -24,12 +24,15 @@ export async function GET(
 ) {
   const { id: teamId } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
+  const principal = await getRequestPrincipal(req);
+  if (!principal) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const teamIds = await getUserTeamIds(user.id);
+  // An API key reads only its own team; a user reads any team they belong to.
+  const teamIds = principal.kind === 'api_key'
+    ? [principal.account.teamId]
+    : await getUserTeamIds(principal.user.id);
   if (!teamIds.includes(teamId)) {
     // 404 rather than 403 — do not confirm the team exists.
     return NextResponse.json({ error: 'Team not found' }, { status: 404 });

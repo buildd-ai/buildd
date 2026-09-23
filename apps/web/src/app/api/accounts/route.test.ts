@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockGetUserDefaultTeamId = mock(() => Promise.resolve('team-1'));
+const mockGetUserTeamRole = mock(() => Promise.resolve('owner' as string | null));
 const mockAccountsFindMany = mock(() => [] as any[]);
 const mockAccountsInsert = mock(() => ({
   values: mock(() => ({
@@ -18,6 +19,7 @@ mock.module('@/lib/auth-helpers', () => ({
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
   getUserDefaultTeamId: mockGetUserDefaultTeamId,
+  getUserTeamRole: mockGetUserTeamRole,
 }));
 
 mock.module('@/lib/api-auth', () => ({
@@ -100,6 +102,8 @@ describe('POST /api/accounts', () => {
     mockGetUserTeamIds.mockReset();
     mockGetUserDefaultTeamId.mockReset();
     mockSetOAuthToken.mockReset();
+    mockGetUserTeamRole.mockReset();
+    mockGetUserTeamRole.mockResolvedValue('owner');
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockGetUserDefaultTeamId.mockResolvedValue('team-1');
     process.env.NODE_ENV = 'production';
@@ -184,5 +188,86 @@ describe('POST /api/accounts', () => {
     expect(capturedValues?.oauthToken).toBeUndefined();
     // setOAuthToken must not be called — credentials belong in Agent Backends, not here
     expect((mockSetOAuthToken as Mock<any>).mock.calls.length).toBe(0);
+  });
+});
+
+describe("POST /api/accounts — key level is capped by the creator's team role", () => {
+  let capturedValues: any;
+
+  function createReq(body: Record<string, unknown>) {
+    return new NextRequest('http://localhost:3000/api/accounts', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ name: 'Key', type: 'service', authType: 'api', ...body }),
+    });
+  }
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    capturedValues = undefined;
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserDefaultTeamId.mockReset();
+    mockGetUserDefaultTeamId.mockResolvedValue('team-1');
+    mockGetUserTeamRole.mockReset();
+    mockAccountsInsert.mockReset();
+    mockAccountsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { returning: mock(() => [{ id: 'account-new', name: 'Key', apiKey: 'hashed' }]) };
+      }),
+    });
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('refuses an admin-level key for a team member with 403 and creates nothing', async () => {
+    mockGetUserTeamRole.mockResolvedValue('member');
+    const res = await POST(createReq({ level: 'admin' }));
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toContain('worker');
+    expect(capturedValues).toBeUndefined();
+  });
+
+  it('lets a team member create a worker-level key', async () => {
+    mockGetUserTeamRole.mockResolvedValue('member');
+    const res = await POST(createReq({ level: 'worker' }));
+    expect(res.status).toBe(200);
+    expect(capturedValues.level).toBe('worker');
+  });
+
+  it('lets a team admin create an admin-level key', async () => {
+    mockGetUserTeamRole.mockResolvedValue('admin');
+    const res = await POST(createReq({ level: 'admin' }));
+    expect(res.status).toBe(200);
+    expect(capturedValues.level).toBe('admin');
+  });
+
+  it('defaults to worker level when none is requested', async () => {
+    mockGetUserTeamRole.mockResolvedValue('member');
+    const res = await POST(createReq({}));
+    expect(res.status).toBe(200);
+    expect(capturedValues.level).toBe('worker');
+  });
+
+  it('rejects an unknown level with 400', async () => {
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    const res = await POST(createReq({ level: 'superuser' }));
+    expect(res.status).toBe(400);
+    expect(capturedValues).toBeUndefined();
+  });
+
+  it('checks the role on the team the key is created in', async () => {
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockGetUserTeamRole.mockImplementation(async (_u: string, teamId: string) =>
+      teamId === 'team-2' ? 'member' : 'owner');
+    const res = await POST(createReq({ level: 'admin', teamId: 'team-2' }));
+    expect(res.status).toBe(403);
+    expect(mockGetUserTeamRole).toHaveBeenCalledWith('user-1', 'team-2');
   });
 });

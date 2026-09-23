@@ -5,20 +5,27 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // co-running test files import. getUserTeamIds → db.query.teamMembers.findMany;
 // getUserDefaultTeamId → db.query.teams.findFirst (slug = personal-{userId}).
 const mockTeamMembersFindMany = mock(() => [] as any[]);
+const mockTeamMembersFindFirst = mock(() => null as any);
 const mockTeamsFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      teamMembers: { findMany: mockTeamMembersFindMany },
+      teamMembers: { findMany: mockTeamMembersFindMany, findFirst: mockTeamMembersFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
       workspaces: { findMany: mockWorkspacesFindMany },
     },
   },
 }));
 
-const { resolveActiveTeamId, getTeamWorkspaceIds, getUserTeamIds } = await import('./team-access');
+const {
+  resolveActiveTeamId,
+  getTeamWorkspaceIds,
+  getUserTeamIds,
+  resolveAccountTeamIds,
+  getUserTeamRole,
+} = await import('./team-access');
 
 describe('getUserTeamIds', () => {
   beforeEach(() => {
@@ -146,5 +153,59 @@ describe('resolveActiveTeamId', () => {
     mockTeamMembersFindMany.mockResolvedValue([]);
     mockTeamsFindFirst.mockResolvedValue({ id: 'personal-team-id' });
     expect(await resolveActiveTeamId('user-1', null)).toBe('personal-team-id');
+  });
+});
+
+describe('resolveAccountTeamIds — an API key resolves to exactly its own team', () => {
+  beforeEach(() => {
+    mockTeamMembersFindMany.mockReset();
+    mockTeamMembersFindFirst.mockReset();
+    mockTeamsFindFirst.mockReset();
+    // A member of the key's team who also belongs to other teams.
+    mockTeamMembersFindFirst.mockResolvedValue({ userId: 'someone' });
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'key-team' }, { teamId: 'other-team' }]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'key-team', slug: 'personal-someone' });
+  });
+
+  it("returns only the key account's team, not a member's other teams", async () => {
+    expect(await resolveAccountTeamIds(null, { teamId: 'key-team' })).toEqual(['key-team']);
+  });
+
+  it('uses the API account scope even when a session user is also present', async () => {
+    expect(await resolveAccountTeamIds({ id: 'someone' }, { teamId: 'key-team' })).toEqual(['key-team']);
+  });
+
+  it('a key on a personal team stays on that team', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    expect(await resolveAccountTeamIds(null, { teamId: 'key-team' })).toEqual(['key-team']);
+  });
+
+  it('session users still resolve to all of their teams', async () => {
+    mockTeamsFindFirst.mockResolvedValue(null);
+    expect(await resolveAccountTeamIds({ id: 'user-9' }, null)).toEqual(['key-team', 'other-team']);
+  });
+});
+
+describe('getUserTeamRole', () => {
+  beforeEach(() => {
+    mockTeamMembersFindFirst.mockReset();
+    mockTeamsFindFirst.mockReset();
+  });
+
+  it('returns the membership role', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
+    expect(await getUserTeamRole('user-1', 'team-a')).toBe('member');
+  });
+
+  it("treats the user's own personal team as owner when no membership row exists", async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'team-p', slug: 'personal-user-1' });
+    expect(await getUserTeamRole('user-1', 'team-p')).toBe('owner');
+  });
+
+  it('returns null for a team the user does not belong to', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'team-x', slug: 'personal-someone-else' });
+    expect(await getUserTeamRole('user-1', 'team-x')).toBeNull();
   });
 });

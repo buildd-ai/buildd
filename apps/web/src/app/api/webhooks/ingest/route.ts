@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
@@ -87,12 +87,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  // 2. Look up workspace by project.repo (supports exact, suffix, and name match)
+  // 2. Look up workspace by project.repo (supports exact, suffix, and name
+  //    match) — only among the workspaces the authenticated account can reach:
+  //    its own team's, plus any it is explicitly linked to.
   if (!data.project?.repo) {
     return NextResponse.json({ error: 'project.repo is required' }, { status: 400 });
   }
 
-  const workspace = await resolveWorkspace(data.project.repo);
+  const workspace = await resolveWorkspace(data.project.repo, { account });
 
   if (!workspace) {
     return NextResponse.json({ error: `No workspace found for repo: ${data.project.repo}` }, { status: 404 });
@@ -169,7 +171,7 @@ export async function POST(req: NextRequest) {
         await db
           .update(tasks)
           .set({ status: 'completed', updatedAt: new Date() })
-          .where(eq(tasks.externalId, externalId));
+          .where(and(eq(tasks.externalId, externalId), eq(tasks.workspaceId, workspace.id)));
 
         return NextResponse.json({ ok: true });
       }
@@ -178,7 +180,7 @@ export async function POST(req: NextRequest) {
         await db
           .update(tasks)
           .set({ status: 'pending', updatedAt: new Date() })
-          .where(eq(tasks.externalId, externalId));
+          .where(and(eq(tasks.externalId, externalId), eq(tasks.workspaceId, workspace.id)));
 
         return NextResponse.json({ ok: true });
       }
@@ -192,7 +194,7 @@ export async function POST(req: NextRequest) {
             description: data.issue.body || '',
             updatedAt: new Date(),
           })
-          .where(eq(tasks.externalId, externalId));
+          .where(and(eq(tasks.externalId, externalId), eq(tasks.workspaceId, workspace.id)));
 
         return NextResponse.json({ ok: true });
       }

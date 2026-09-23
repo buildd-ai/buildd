@@ -90,11 +90,51 @@ describe('classifyMigrationSql', () => {
     });
   });
 
-  it('classifies ambiguous procedural SQL as CONTRACT (migration 0019)', () => {
-    const result = classifyMigrationSql(migration('0019_loving_pride.sql'));
+  it("unwraps drizzle's idempotent DO-block FK wrapper and classifies the inner statement (migration 0019)", () => {
+    expect(classifyMigrationSql(migration('0019_loving_pride.sql'))).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('still escalates a DO block that is not the idempotent wrapper around a safe statement', () => {
+    const procedural = classifyMigrationSql(
+      'DO $$ DECLARE n integer; BEGIN DELETE FROM "task_schedules" WHERE id IS NULL; END $$;',
+    );
+    expect(procedural.safe).toBe(false);
+    expect(procedural.safe ? '' : procedural.reason).toMatch(/^ambiguous migration statement: DO \$\$ DECLARE/);
+
+    const wrappedDrop = classifyMigrationSql(
+      'DO $$ BEGIN\n ALTER TABLE "tasks" DROP COLUMN "legacy";\nEXCEPTION\n WHEN duplicate_object THEN null;\nEND $$;',
+    );
+    expect(wrappedDrop).toEqual({ safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' });
+  });
+
+  it('does not split a dollar-quoted body on its inner semicolons', () => {
+    const result = classifyMigrationSql(
+      'CREATE OR REPLACE FUNCTION f() RETURNS void AS $fn$ BEGIN UPDATE "tasks" SET x = 1; END; $fn$ LANGUAGE plpgsql;',
+    );
     expect(result.safe).toBe(false);
-    expect(result.safe ? '' : result.reason).toMatch(/^ambiguous migration statement: DO \$\$ BEGIN/);
-    expect(result.operationClass).toBe('CONTRACT');
+    expect(result.safe ? '' : result.reason).toMatch(/^ambiguous migration statement: CREATE OR REPLACE FUNCTION/);
+  });
+
+  it.each([
+    ['CREATE TYPE "public"."mode" AS ENUM(\'a\', \'b\');'],
+    ['ALTER TYPE "public"."mode" ADD VALUE IF NOT EXISTS \'c\';'],
+    ['ALTER TABLE "workspaces" ALTER COLUMN "access_mode" SET DEFAULT \'open\';'],
+    ['ALTER TABLE "workspaces" ALTER COLUMN "access_mode" DROP DEFAULT;'],
+    ['ALTER TABLE "artifacts" ALTER COLUMN "worker_id" DROP NOT NULL;'],
+    ['CREATE EXTENSION IF NOT EXISTS vector;'],
+    ['ALTER TABLE "workspace_skills" ADD COLUMN IF NOT EXISTS "account_id" uuid;'],
+  ])('classifies low-risk DDL as EXPAND: %s', (sql) => {
+    expect(classifyMigrationSql(sql)).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it.each([
+    ['DROP INDEX "path_claims_active_idx";', 'drops index path_claims_active_idx'],
+    ['DROP INDEX IF EXISTS "secrets_account_purpose_idx";', 'drops index secrets_account_purpose_idx'],
+    ['ALTER TABLE "tasks" DROP CONSTRAINT "tasks_source_uniq";', 'drops constraint tasks.tasks_source_uniq'],
+    ['DROP TYPE "public"."mode";', 'drops type public.mode'],
+    ['ALTER TABLE "x" ADD COLUMN IF NOT EXISTS "y" text NOT NULL;', 'adds NOT NULL column without default x.y'],
+  ])('names the risky operation instead of "ambiguous": %s', (sql, reason) => {
+    expect(classifyMigrationSql(sql)).toEqual({ safe: false, operationClass: 'CONTRACT', reason });
   });
 });
 

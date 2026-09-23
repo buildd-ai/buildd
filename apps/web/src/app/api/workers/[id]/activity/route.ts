@@ -22,15 +22,20 @@ export async function POST(
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
+    with: { workspace: { columns: { teamId: true } } },
   });
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Allow activity reports from the worker's owner OR any authenticated account
-  // (hooks might run with different credentials)
-  // For security, we still require valid API key
+  // Activity is written by the account running the worker (its runner's key),
+  // or by an admin-level account of the worker's workspace team.
+  const isOwnRunner = worker.accountId === account.id;
+  const isTeamAdmin = account.level === 'admin' && account.teamId === worker.workspace?.teamId;
+  if (!isOwnRunner && !isTeamAdmin) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
 
   const body = await req.json();
   const { toolName, toolInput, timestamp } = body;

@@ -105,7 +105,7 @@ describe('resolveExperimentViewer — API key', () => {
     expect(r.ok && r.viewer.teamId).toBe('team-b');
   });
 
-  it('OAuth bearer uses the human’s team role, not the forced admin level', async () => {
+  it('OAuth bearer uses the human’s team_members role on the resolved team', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct', teamId: 'team-a', level: 'admin' });
     mockVerifyJwt.mockResolvedValue({ sub: 'u-9' });
     mockMemberFindFirst.mockResolvedValue({ role: 'member' });

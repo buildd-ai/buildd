@@ -176,3 +176,19 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
     dispose() { process.removeListener('SIGINT', handler); },
   };
 }
+
+/**
+ * fetch() against a runner's local UI server. State-changing requests (and the
+ * config read) need the runner's local token, sent as X-Buildd-Local-Token:
+ * BUILDD_LOCAL_TOKEN, else the token file in BUILDD_HOME (default ~/.buildd).
+ */
+export function localUiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  let token = process.env.BUILDD_LOCAL_TOKEN?.trim() || '';
+  if (!token) {
+    const home = process.env.BUILDD_HOME || join(process.env.HOME || '', '.buildd');
+    try { token = readFileSync(join(home, 'local-token'), 'utf8').trim(); } catch { /* none */ }
+  }
+  const headers = new Headers(init.headers);
+  if (token) headers.set('x-buildd-local-token', token);
+  return fetch(url, { ...init, headers });
+}

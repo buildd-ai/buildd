@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { auth } from '@/auth';
+import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 
 // DELETE /api/github/installations/[id] - Disconnect an installation
 export async function DELETE(
@@ -27,6 +28,20 @@ export async function DELETE(
 
     if (!installation) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
+    }
+
+    // Disconnecting requires managing the installation (its installer, or an
+    // admin/owner of a team it belongs to) and is refused while workspaces in
+    // teams the caller does not administer still use it.
+    const access = await getInstallationAccessForUser(session.user.id!, installation);
+    if (!access.canManage) {
+      return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
+    }
+    if (access.otherTeamsUsingIt.length > 0) {
+      return NextResponse.json(
+        { error: 'Installation is still used by workspaces in teams you do not administer' },
+        { status: 409 },
+      );
     }
 
     // Delete the installation (cascade will delete repos)

@@ -587,7 +587,14 @@ stored — it is derived on read from the state of associated tasks via
     approval would fire far more often, since most approved PRs merge before
     another push lands) — the gate itself is the explicit recorded decision
     that the approval no longer covers what would merge; a human or a fresh
-    re-review request clears it.
+    re-review request clears it. Exception: a push that leaves the PR's own
+    diff unchanged (rebase or base merge — `base...sha` compared at both
+    commits, hunk positions ignored) is recorded on the approving review as
+    `context.equivalentHeadShas`, and the gate treats those heads as covered
+    (`approval-carry-forward.ts`). A forced or dashboard re-review of such a
+    head carries the approval forward instead of dispatching a reviewer.
+    Unverifiable comparisons (read failure, truncated file list, binary
+    patch) are not equivalent. Only `approve` carries forward.
   - If either commit is unknown, or the review status cannot be read, the gate
     fails closed for every kind above EXCEPT `stale_approval`, which starts
     from a pass and so treats an unprovable comparison as "cannot show this
@@ -666,7 +673,9 @@ stored — it is derived on read from the state of associated tasks via
   GIVEN an `approve` recorded at an EARLIER head than the one being merged
   THEN it is refused as `stale_approval` instead — an approval is not silently
   re-used past the commit it was made against, and (unlike request-changes) is
-  not paired with an automatic re-dispatch.
+  not paired with an automatic re-dispatch — UNLESS the PR diff at the merged
+  head is identical to the diff at the approved head, in which case the
+  approval carries forward and the merge proceeds once CI is green.
 - AC-11za: GIVEN a blocking verdict WHEN a human merges from the dashboard with
   `override: true` THEN the merge proceeds and is recorded as a `bypassed`
   ledger row naming the overridden verdict and the person; GIVEN the same

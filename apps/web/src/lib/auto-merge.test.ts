@@ -1942,3 +1942,16 @@ describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });
+
+describe('isBehindBaseRefusal', () => {
+  it('matches the base-freshness refusal and nothing else', async () => {
+    const { isBehindBaseRefusal } = await import('./auto-merge');
+    expect(isBehindBaseRefusal(
+      'PR is 3 commits behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+    )).toBe(true);
+    expect(isBehindBaseRefusal(
+      'PR is 1 commit behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+    )).toBe(true);
+    expect(isBehindBaseRefusal('PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch')).toBe(false);
+  });
+});

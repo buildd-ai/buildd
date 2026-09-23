@@ -5,6 +5,8 @@ const mockConsumeAuthCode = mock(() => ({ error: 'invalid_grant' }) as any);
 const mockConsumeRefreshToken = mock(() => ({ error: 'invalid_grant' }) as any);
 const mockCreateRefreshToken = mock(() => Promise.resolve('refresh-token'));
 const mockSignAccessToken = mock(() => Promise.resolve({ token: 'access-token', expiresIn: 3600 }));
+const mockUserHasWorkspaceMembership = mock(() => Promise.resolve(true));
+const mockRevokeRefreshTokensForUserWorkspace = mock(() => Promise.resolve());
 
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
@@ -15,6 +17,8 @@ mock.module('@/lib/oauth/storage', () => ({
   consumeAuthCode: mockConsumeAuthCode,
   consumeRefreshToken: mockConsumeRefreshToken,
   createRefreshToken: mockCreateRefreshToken,
+  userHasWorkspaceMembership: mockUserHasWorkspaceMembership,
+  revokeRefreshTokensForUserWorkspace: mockRevokeRefreshTokensForUserWorkspace,
 }));
 
 mock.module('@/lib/oauth/tokens', () => ({
@@ -75,6 +79,10 @@ describe('POST /api/oauth/token — account auto-creation', () => {
     mockSignAccessToken.mockResolvedValue({ token: 'access-token', expiresIn: 3600 });
     mockCreateRefreshToken.mockResolvedValue('refresh-token');
     mockAccountsInsert.mockReturnValue({ values: mock(() => Promise.resolve()) });
+    mockUserHasWorkspaceMembership.mockReset();
+    mockUserHasWorkspaceMembership.mockResolvedValue(true);
+    mockRevokeRefreshTokensForUserWorkspace.mockReset();
+    mockRevokeRefreshTokensForUserWorkspace.mockResolvedValue(undefined);
   });
 
   describe('authorization_code grant', () => {
@@ -199,6 +207,57 @@ describe('POST /api/oauth/token — account auto-creation', () => {
       expect(res.status).toBe(200);
       expect(mockAccountsInsert).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('POST /api/oauth/token — team membership is re-checked', () => {
+  beforeEach(() => {
+    mockConsumeAuthCode.mockReset();
+    mockConsumeRefreshToken.mockReset();
+    mockSignAccessToken.mockReset();
+    mockCreateRefreshToken.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockSignAccessToken.mockResolvedValue({ token: 'access-token', expiresIn: 3600 });
+    mockCreateRefreshToken.mockResolvedValue('refresh-token');
+    mockUserHasWorkspaceMembership.mockReset();
+    mockRevokeRefreshTokensForUserWorkspace.mockReset();
+    mockRevokeRefreshTokensForUserWorkspace.mockResolvedValue(undefined);
+  });
+
+  it('refresh: a user who is no longer on the team gets invalid_grant, and their refresh tokens are revoked', async () => {
+    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp' });
+    mockUserHasWorkspaceMembership.mockResolvedValue(false);
+
+    const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'old', client_id: 'c_1' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_grant');
+    expect(mockUserHasWorkspaceMembership).toHaveBeenCalledWith('user-1', 'ws-1');
+    expect(mockRevokeRefreshTokensForUserWorkspace).toHaveBeenCalledWith('user-1', 'ws-1');
+    expect(mockSignAccessToken).not.toHaveBeenCalled();
+    expect(mockCreateRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('refresh: a current member still gets a new token pair', async () => {
+    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp' });
+    mockUserHasWorkspaceMembership.mockResolvedValue(true);
+
+    const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'old', client_id: 'c_1' }));
+    expect(res.status).toBe(200);
+    expect(mockRevokeRefreshTokensForUserWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('authorization_code: a user who is no longer on the team gets invalid_grant', async () => {
+    mockConsumeAuthCode.mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp' });
+    mockUserHasWorkspaceMembership.mockResolvedValue(false);
+
+    const res = await POST(makeRequest({
+      grant_type: 'authorization_code', code: 'c', client_id: 'c_1',
+      redirect_uri: 'https://example.com/callback', code_verifier: 'v',
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_grant');
+    expect(mockSignAccessToken).not.toHaveBeenCalled();
   });
 });
 

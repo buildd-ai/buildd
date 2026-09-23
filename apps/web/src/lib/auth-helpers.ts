@@ -1,9 +1,9 @@
 import { cache } from 'react';
-import { NextRequest } from 'next/server';
+import type { NextRequest } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
-import { teamMembers, users } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { users } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 
 export type CurrentUser = {
@@ -80,40 +80,64 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   };
 });
 
-/**
- * Resolve the current user from a request, supporting both session and API key auth.
- * For API key auth, resolves the user via account → team → owner member.
- */
-export async function getUserFromRequest(req: NextRequest): Promise<CurrentUser | null> {
-  // Try session auth first
-  const sessionUser = await getCurrentUser();
-  if (sessionUser) return sessionUser;
+/** The API key account a request authenticated as — its own identity, never a user's. */
+export type ApiKeyPrincipal = {
+  id: string;
+  name: string;
+  teamId: string;
+  level: 'trigger' | 'worker' | 'admin';
+};
 
-  // Try API key auth
+export type RequestPrincipal =
+  | { kind: 'session'; user: CurrentUser }
+  | { kind: 'api_key'; account: ApiKeyPrincipal };
+
+/**
+ * Resolve who is making a request: a signed-in user (session), or an API key
+ * account. An API key resolves to its own account and level only — it does not
+ * act as any user of its team, so user-scoped checks (team role, membership)
+ * never apply to it. Routes decide what a key may do from `account.teamId` and
+ * `account.level`.
+ */
+export async function getRequestPrincipal(req: NextRequest): Promise<RequestPrincipal | null> {
+  const sessionUser = await getCurrentUser();
+  if (sessionUser) return { kind: 'session', user: sessionUser };
+
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
   if (!account) return null;
 
-  // Find the owner of the account's team
-  const ownerMembership = await db.query.teamMembers.findFirst({
-    where: and(
-      eq(teamMembers.teamId, account.teamId),
-      eq(teamMembers.role, 'owner')
-    ),
-    with: { user: true },
-  });
-
-  if (!ownerMembership?.user) return null;
-
-  const u = ownerMembership.user;
   return {
-    id: u.id,
-    email: u.email,
-    name: u.name,
-    image: u.image,
-    timezone: u.timezone,
+    kind: 'api_key',
+    account: {
+      id: account.id,
+      name: account.name,
+      teamId: account.teamId,
+      level: account.level as ApiKeyPrincipal['level'],
+    },
   };
+}
+
+export const SESSION_REQUIRED_MESSAGE =
+  'Team administration requires a signed-in session; API keys cannot perform this action.';
+
+/**
+ * For session-only operations (team creation/deletion, membership and role
+ * changes, invitations, ownership). Returns the signed-in user, or a response
+ * to send: 401 when unauthenticated, 403 when the caller is an API key.
+ */
+export async function requireSessionUser(
+  req: NextRequest,
+): Promise<{ user: CurrentUser; response?: undefined } | { user?: undefined; response: Response }> {
+  const principal = await getRequestPrincipal(req);
+  if (!principal) {
+    return { response: Response.json({ error: 'Unauthorized' }, { status: 401 }) };
+  }
+  if (principal.kind !== 'session') {
+    return { response: Response.json({ error: SESSION_REQUIRED_MESSAGE }, { status: 403 }) };
+  }
+  return { user: principal.user };
 }
 
 /**

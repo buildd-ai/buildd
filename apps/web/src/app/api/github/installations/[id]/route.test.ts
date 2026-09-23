@@ -13,9 +13,16 @@ const mockDelete = mock(() => ({
   where: mockDeleteWhere,
 }));
 
+const defaultAccess = { canView: true, canManage: true, otherTeamsUsingIt: [] as string[] };
+const mockGetAccess = mock(async () => defaultAccess as any);
+
 // Mock @/auth
 mock.module('@/auth', () => ({
   auth: mockAuth,
+}));
+
+mock.module('@/lib/github-installation-access', () => ({
+  getInstallationAccessForUser: mockGetAccess,
 }));
 
 // Mock database
@@ -63,6 +70,8 @@ describe('DELETE /api/github/installations/[id]', () => {
       where: mockDeleteWhere,
     }));
     mockDeleteWhere.mockResolvedValue(undefined);
+    mockGetAccess.mockReset();
+    mockGetAccess.mockImplementation(async () => defaultAccess);
     // Keep production mode for each test
     process.env.NODE_ENV = 'production';
   });
@@ -90,7 +99,7 @@ describe('DELETE /api/github/installations/[id]', () => {
   });
 
   it('returns 404 when installation not found', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockFindFirst.mockResolvedValue(null);
 
     const mockParams = Promise.resolve({ id: 'inst-nonexistent' });
@@ -102,7 +111,7 @@ describe('DELETE /api/github/installations/[id]', () => {
   });
 
   it('deletes installation successfully', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockFindFirst.mockResolvedValue({
       id: 'inst-1',
       installationId: 12345,
@@ -121,8 +130,28 @@ describe('DELETE /api/github/installations/[id]', () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
+  it('returns 404 when the caller does not manage the installation', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: false, otherTeamsUsingIt: [] }));
+
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 while workspaces in teams the caller does not administer use it', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: 'user-1' });
+    mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: true, otherTeamsUsingIt: ['team-x'] }));
+
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(409);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
   it('returns 500 on DB error', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockFindFirst.mockRejectedValue(new Error('DB connection failed'));
 
     const mockParams = Promise.resolve({ id: 'inst-1' });

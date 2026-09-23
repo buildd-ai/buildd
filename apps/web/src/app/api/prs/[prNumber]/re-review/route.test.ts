@@ -24,6 +24,8 @@ mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
 mock.module('@/lib/pr-re-review', () => ({ resolveReReviewPlan: mockResolveReReviewPlan }));
+const mockCarryForward = mock(async (_p: any) => ({ carried: false, reason: 'PR diff changed' }));
+mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
 
 const WORKSPACES_TABLE = { __name: 'workspaces' };
 const MISSIONS_TABLE = { __name: 'missions' };
@@ -63,6 +65,7 @@ const openWorker = {
   branch: 'buildd/some-branch',
   prUrl: 'https://github.com/org/repo/pull/42',
   lastCommitSha: 'abc123',
+  prBaseRef: 'dev',
   task: {
     id: 't-1',
     title: 'Fix the thing',
@@ -205,6 +208,22 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     // The PR activity entry says this was a delta, not a full re-read.
     const activity = mockAppendPrActivity.mock.calls[0][0] as any;
     expect(activity.entry.detail).toContain('delta re-review');
+  });
+
+  it('carries an approval forward instead of dispatching when only the base moved', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    mockResolveReReviewPlan.mockResolvedValue({
+      kind: 'delta' as const,
+      priorVerdict: { headSha: 'old-sha', verdict: 'approve' as const, confidence: 0.9, summary: 'ok', feedback: null, escalationReason: null },
+    });
+    mockCarryForward.mockResolvedValueOnce({ carried: true, reason: 'PR diff unchanged' });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, carriedForward: true, reason: 'PR diff unchanged' });
+    expect(mockCarryForward.mock.calls.at(-1)![0]).toMatchObject({ prNumber: 42, headSha: 'abc123', baseRef: 'dev' });
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
   });
 
   it('returns the in-flight review instead of stacking a second one', async () => {

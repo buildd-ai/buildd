@@ -5,7 +5,8 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
+import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -42,6 +43,15 @@ export async function POST(
 
     if (!account) {
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+    }
+
+    // Regenerating returns a working key, so only the team's owners and admins may do it.
+    const role = await getUserTeamRole(user.id, account.teamId);
+    if (!canAdministerTeamKeys(role)) {
+      return NextResponse.json(
+        { error: 'Only team owners and admins can regenerate API keys' },
+        { status: 403 },
+      );
     }
 
     // Generate new key

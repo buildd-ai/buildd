@@ -162,7 +162,7 @@ describe('send_worker_message MCP handler', () => {
 
     // Default happy-path setup
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
-    mockWorkersFindFirst.mockResolvedValue({ taskId: SENDER_TASK_ID });
+    mockWorkersFindFirst.mockResolvedValue({ taskId: SENDER_TASK_ID, accountId: 'acc-1', workspace: { teamId: 'team-1' } });
     mockWorkspacesFindFirst.mockResolvedValue(null);
 
     // tasksFindFirst: first call = sender task, second call = recipient task
@@ -173,6 +173,13 @@ describe('send_worker_message MCP handler', () => {
     mockDbUpdate.mockReturnValue({ set: mockTasksUpdateSet });
     mockTasksUpdateSet.mockReturnValue({ where: mockTasksUpdateWhere });
     mockTasksUpdateWhere.mockResolvedValue([{ id: SENDER_TASK_ID }]);
+  });
+
+  it('refuses a ?worker= id that belongs to another account and team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: SENDER_TASK_ID, accountId: 'acc-other', workspace: { teamId: 'team-other' } });
+    const res = await POST(makeToolCallRequest(VALID_ARGS, WORKER_ID, 'worker'));
+    expect(res.status).toBe(403);
+    expect(mockDbUpdate).not.toHaveBeenCalled();
   });
 
   it('rejects trigger-level tokens with forbidden error', async () => {

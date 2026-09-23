@@ -209,7 +209,12 @@ same suffix the `dirty` conflict case uses. That phrasing is load-bearing:
 `classifyMergeFailure` routes it through the identical same-branch
 conflict-retry dispatch (merge the base in, push, let CI re-run on the fresh
 head), so a stale-but-refused PR converges on its own instead of sitting
-parked for a human. The refusal also writes a `merge_base_freshness`
+parked for a human. For a PR that is only behind (not conflicting), the retry
+first asks GitHub's update-branch API to merge the base in server-side,
+pinned to the evaluated head, and only dispatches an agent if that fails. An
+approval given before that push still covers the new head when the PR diff is
+unchanged (`approval-carry-forward.ts`), so the PR merges on the next green CI
+without a re-review. The refusal also writes a `merge_base_freshness`
 gate-ledger row (`packages/core/gate-slugs.ts`), so the rate this actually
 fires at is measurable rather than inferred from incidents.
 

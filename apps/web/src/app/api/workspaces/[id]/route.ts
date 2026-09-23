@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
+import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 
 export async function GET(
   req: NextRequest,
@@ -71,22 +72,26 @@ export async function PATCH(
   }
 
   try {
+    // The workspace's current team — every check below is made against it.
+    let workspaceTeamId: string | undefined;
     // For session auth, verify workspace access via team membership
     if (user && !apiAccount) {
       const access = await verifyWorkspaceAccess(user.id, id);
       if (!access) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
+      workspaceTeamId = access.teamId;
     }
-    // For API key auth, verify workspace belongs to the API key's team or is open-access
+    // For API key auth, the workspace must belong to the API key's own team.
     if (apiAccount) {
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, id),
-        columns: { teamId: true, accessMode: true },
+        columns: { teamId: true },
       });
-      if (!ws || (ws.teamId !== apiAccount.teamId && ws.accessMode !== 'open')) {
+      if (!ws || ws.teamId !== apiAccount.teamId) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
+      workspaceTeamId = ws.teamId;
     }
 
     const body = await req.json();
@@ -121,15 +126,23 @@ export async function PATCH(
       // Auto-link GitHub repo: resolve owner/name and look it up in githubRepos.
       const fullName = normalizeRepoFullName(repoValue);
       if (fullName) {
-        const ghRepo = await db.query.githubRepos.findFirst({
+        const candidates = await db.query.githubRepos.findMany({
           // Normalized equality, not `ilike`: repo names may contain `_`,
           // which LIKE treats as a single-character wildcard, so `owner/my_app`
           // would also match `owner/myXapp`.
           where: sql`${normalizedRepoSql(githubRepos.fullName)} = ${fullName.toLowerCase()}`,
         });
-        if (ghRepo) {
-          updates.githubRepoId = ghRepo.id;
-          updates.githubInstallationId = ghRepo.installationId;
+        // Link only through an installation that belongs to the workspace's
+        // team (see lib/github-installation-access.ts). Otherwise the declared
+        // repo is kept but left unlinked.
+        const linkTeamId = (updates.teamId as string | undefined) ?? workspaceTeamId;
+        for (const ghRepo of candidates) {
+          const ownerTeamIds = await getInstallationOwnerTeamIds(ghRepo.installationId);
+          if (linkTeamId && ownerTeamIds.includes(linkTeamId)) {
+            updates.githubRepoId = ghRepo.id;
+            updates.githubInstallationId = ghRepo.installationId;
+            break;
+          }
         }
       }
     }

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations } from '@buildd/core/db/schema';
+import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { auth } from '@/auth';
+import { readInstallState, INSTALL_STATE_TTL_MS } from '@/lib/github-install-state';
 import { createSign, createPrivateKey } from 'crypto';
 
 export async function GET(req: NextRequest) {
@@ -20,15 +21,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL('/app/workspaces?error=no_installation_id', req.url));
   }
 
-  let returnUrl = '/app/workspaces';
-  if (state) {
-    try {
-      const decoded = JSON.parse(Buffer.from(state, 'base64url').toString());
-      returnUrl = decoded.returnUrl || '/app/workspaces';
-    } catch {
-      // Ignore decode errors
-    }
-  }
+  // returnUrl is always a relative in-app path. `boundToUser` is true only when
+  // the state was signed by /api/github/install for this session user.
+  const { returnUrl, bound: boundToUser } = readInstallState(state, session.user.id);
 
   // Fetch installation details from GitHub
   const appJwt = generateAppJWT();
@@ -54,6 +49,14 @@ export async function GET(req: NextRequest) {
 
   let installationDbId: string;
 
+  // Recording the caller as the installer (which is what makes an installation
+  // theirs to use — see lib/github-installation-access.ts) requires that this
+  // user started the install flow, that GitHub reports the installation as
+  // newly created, and that it is not already owned or in use.
+  const createdAtMs = Date.parse(installation.created_at ?? '');
+  const isNewInstallation = Number.isFinite(createdAtMs) && Date.now() - createdAtMs <= INSTALL_STATE_TTL_MS;
+  const mayRecordInstaller = boundToUser && isNewInstallation && !!session.user.id;
+
   try {
     // Check if installation already exists
     const existing = await db.query.githubInstallations.findFirst({
@@ -64,11 +67,20 @@ export async function GET(req: NextRequest) {
     if (existing) {
       // Update existing installation. installedByUserId is filled only when
       // empty — re-running the flow on a shared org must not reassign it away
-      // from whoever originally installed the App.
+      // from whoever originally installed the App — and only when no workspace
+      // uses the installation yet.
+      let installedByUserId: string | null = existing.installedByUserId ?? null;
+      if (!installedByUserId && mayRecordInstaller) {
+        const inUse = await db.query.workspaces.findFirst({
+          where: eq(workspaces.githubInstallationId, existing.id),
+          columns: { id: true },
+        });
+        if (!inUse) installedByUserId = session.user.id!;
+      }
       await db
         .update(githubInstallations)
         .set({
-          installedByUserId: existing.installedByUserId ?? session.user.id,
+          installedByUserId,
           accountLogin: installation.account.login,
           accountAvatarUrl: installation.account.avatar_url,
           permissions: installation.permissions,
@@ -85,7 +97,7 @@ export async function GET(req: NextRequest) {
         .insert(githubInstallations)
         .values({
           installationId: parseInt(installationId),
-          installedByUserId: session.user.id,
+          installedByUserId: mayRecordInstaller ? session.user.id! : null,
           accountType: installation.account.type,
           accountLogin: installation.account.login,
           accountId: installation.account.id,

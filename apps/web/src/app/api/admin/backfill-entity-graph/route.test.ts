@@ -2,15 +2,13 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 /**
- * Invariant: the admin backfill endpoints are reachable only with an
- * admin-level API key.
+ * Invariant: the admin backfill endpoints are reachable only with an API key
+ * whose account is listed in BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS.
  *
- * These routes run bulk, workspace-scoped writes with a 300s budget, so
- * "authenticated" is not a sufficient bar — the caller must be an admin
- * principal. There is no platform-admin concept for browser sessions in this
- * codebase, so an admin-level API key is the only principal that can satisfy
- * the requirement, and it is the same bar `admin/refresh-model-aliases`
- * already enforces.
+ * These routes run bulk, cross-tenant writes with a 300s budget, so neither
+ * "authenticated" nor "admin within a team" is a sufficient bar — the caller
+ * must be a platform operator. Browser sessions are never accepted, and an
+ * unset allowlist refuses everyone. Same gate as `admin/refresh-model-aliases`.
  */
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -57,6 +55,7 @@ describe('POST /api/admin/backfill-entity-graph — authorization', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
+    delete process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS;
   });
 
   it('rejects an unauthenticated caller', async () => {
@@ -93,12 +92,30 @@ describe('POST /api/admin/backfill-entity-graph — authorization', () => {
     expect(res.status).toBe(403);
   });
 
-  it('admits an admin-level API key', async () => {
+  it('admits a key listed in the platform admin allowlist', async () => {
+    process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acct-1';
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'admin' });
 
     const res = await POST(makeRequest());
 
     expect(res.status).not.toBe(401);
     expect(res.status).not.toBe(403);
+  });
+
+  it('refuses an admin-level key that is not on the platform admin allowlist', async () => {
+    process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acct-operator';
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'admin' });
+
+    const res = await POST(makeRequest());
+
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses every key when the platform admin allowlist is unset', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'admin' });
+
+    const res = await POST(makeRequest());
+
+    expect(res.status).toBe(403);
   });
 });

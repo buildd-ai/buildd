@@ -70,6 +70,14 @@ const mockUpdateSet = mock(() => ({ where: mockInsertWhere }));
 const mockUpdate = mock(() => ({ set: mockUpdateSet }));
 const mockReleaseFindFirst = mock(async () => null);
 
+// Mirrors the real helper's contract: admin key → its own team; worker key →
+// none; session user → the teams listed in adminTeamsByUser.
+const adminTeamsByUser: Record<string, string[]> = {};
+const mockGetCallerAdminTeamIds = mock(async (caller: any) => {
+  if (caller.kind === 'account') return caller.level === 'admin' ? [caller.teamId] : [];
+  return adminTeamsByUser[caller.userId] ?? [];
+});
+mock.module('@/lib/team-access', () => ({ getCallerAdminTeamIds: mockGetCallerAdminTeamIds }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/github', () => ({ isGitHubAppConfigured: mockIsGitHubAppConfigured, githubApi: mockGithubApi }));
@@ -192,16 +200,57 @@ describe('POST /api/releases/trigger', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 401 for non-admin API key', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'worker' }));
+  it('returns 403 for non-admin API key', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'worker' }));
     const { POST } = await import('./route');
     const res = await POST(makeRequest('bld_workerkey'));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(mockResolveReleaseTarget).not.toHaveBeenCalled();
+  });
+
+  it('an admin-level key resolves the target only within its own team', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
+    const { POST } = await import('./route');
+    await POST(makeRequest('bld_adminkey', { repo: 'acme/app' }));
+    expect(mockResolveReleaseTarget).toHaveBeenCalledWith({
+      workspaceId: undefined,
+      repo: 'acme/app',
+      scope: { teamIds: ['team-1'] },
+    });
+  });
+
+  it('a signed-in user with no admin/owner team role is refused before any lookup', async () => {
+    mockGetCurrentUser.mockImplementation(() => ({ id: 'user-member' }));
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(undefined, { workspaceId: 'ws-1', workflowFile: 'x.yml', ref: 'main' }));
+    expect(res.status).toBe(403);
+    expect(mockResolveReleaseTarget).not.toHaveBeenCalled();
+  });
+
+  it('a signed-in admin resolves the target only within the teams they administer', async () => {
+    adminTeamsByUser['user-admin'] = ['team-admin'];
+    mockGetCurrentUser.mockImplementation(() => ({ id: 'user-admin' }));
+    const { POST } = await import('./route');
+    await POST(makeRequest(undefined, { workspaceId: 'ws-1' }));
+    expect(mockResolveReleaseTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      repo: undefined,
+      scope: { teamIds: ['team-admin'] },
+    });
+  });
+
+  it('a target outside the caller scope is not found', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockImplementation(() => ({ ok: false, status: 404, error: 'Workspace ws-x not found' }));
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-x' }));
+    expect(res.status).toBe(404);
+    expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
   });
 
   it('returns 500 when GitHub App is not configured', async () => {
     mockIsGitHubAppConfigured.mockImplementation(() => false);
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     const { POST } = await import('./route');
     const res = await POST(makeRequest('bld_adminkey'));
     expect(res.status).toBe(500);
@@ -210,7 +259,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('happy path: row inserted, runUrl populated, releaseId in response', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     const { POST } = await import('./route');
     const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
     expect(res.status).toBe(200);
@@ -225,7 +274,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('none archetype: no row inserted, returns skipped', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockDetectArchetype.mockImplementation(() => 'none');
     const insertCallsBefore = mockInsert.mock.calls.length;
     const { POST } = await import('./route');
@@ -240,7 +289,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('dedup: second dispatch with same headSha returns existing row without double-insert', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockReleaseFindFirst.mockImplementation(async () => ({
       id: 'existing-release-id',
       workspaceId: 'ws-1',
@@ -262,7 +311,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('force=true bypasses dedup and dispatches even with an existing in-flight row for the same headSha', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockReleaseFindFirst.mockImplementation(async () => ({
       id: 'existing-release-id',
       workspaceId: 'ws-1',
@@ -282,7 +331,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('force=true upserts via onConflictDoUpdate instead of a raw insert that would hit the unique constraint', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockReleaseFindFirst.mockImplementation(async () => ({
       id: 'existing-release-id',
       workspaceId: 'ws-1',
@@ -309,7 +358,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('attribution job called once on happy path', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockAttributeRelease.mockReset();
     mockAttributeRelease.mockImplementation(async () => ({ attributed: 1, skipped: 0 }));
     const { POST } = await import('./route');
@@ -324,7 +373,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('passes workflow_id=release.yml and ref=dev to dispatch', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     const { POST } = await import('./route');
     await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
     expect(mockDispatchWorkflowRelease.mock.calls.length).toBeGreaterThan(0);
@@ -334,7 +383,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('returns 422 for unconfigured workspace (not_configured)', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseStrategy.mockImplementation(() => ({
       ok: false,
       reason: 'not_configured',
@@ -349,7 +398,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('returns 409 for disabled workspace', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseStrategy.mockImplementation(() => ({
       ok: false,
       reason: 'disabled',
@@ -361,7 +410,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('returns 502 with GitHub error message when dispatch throws', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockDispatchWorkflowRelease.mockImplementation(async () => {
       throw new Error('GitHub API error: 403 Resource not accessible by integration');
     });
@@ -374,7 +423,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('returns 502 with detail when GitHub returns 404 (missing workflow)', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockDispatchWorkflowRelease.mockImplementation(async () => {
       throw new Error('GitHub API error: 404 Not Found');
     });
@@ -388,7 +437,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('returns 500 JSON (not empty body) when resolveReleaseTarget throws', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseTarget.mockImplementation(() => {
       throw new Error('invalid input syntax for type uuid: "buildd"');
     });
@@ -402,6 +451,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('accepts session auth (OAuth owner), sets triggeredBy=user', async () => {
+    adminTeamsByUser['user-1'] = ['team-1'];
     mockGetCurrentUser.mockImplementation(() => ({ id: 'user-1' }));
     const { POST } = await import('./route');
     const res = await POST(makeRequest(undefined, { workspaceId: 'ws-1' }));
@@ -411,7 +461,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('proceeds without T1 data when preflight throws', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockReleasePreflight.mockImplementation(async () => { throw new Error('network failure'); });
     const { POST } = await import('./route');
     const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
@@ -425,7 +475,7 @@ describe('POST /api/releases/trigger', () => {
   });
 
   it('refuses to dispatch when no head sha can be resolved at all', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockReleasePreflight.mockImplementation(async () => { throw new Error('network failure'); });
     mockGithubApi.mockImplementation(async () => { throw new Error('ref not found'); });
     const { POST } = await import('./route');

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getUserFromRequest } from '@/lib/auth-helpers';
+import { requireSessionUser } from '@/lib/auth-helpers';
 import crypto from 'crypto';
 
 // GET /api/teams/[id]/invitations — list pending invitations
@@ -12,10 +12,9 @@ export async function GET(
 ) {
   const { id: teamId } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireSessionUser(req);
+  if (session.response) return session.response;
+  const user = session.user;
 
   // Verify user is owner or admin of this team
   const membership = await db.query.teamMembers.findFirst({
@@ -57,10 +56,9 @@ export async function POST(
 ) {
   const { id: teamId } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireSessionUser(req);
+  if (session.response) return session.response;
+  const user = session.user;
 
   // Verify user is owner or admin of this team
   const membership = await db.query.teamMembers.findFirst({

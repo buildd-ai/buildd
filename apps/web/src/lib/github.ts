@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { createSign, createPrivateKey } from 'crypto';
+import { createSign, createPrivateKey, createHmac, timingSafeEqual } from 'crypto';
 
 // GitHub App configuration
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
@@ -194,25 +194,22 @@ export async function listInstallationRepos(installationId: number) {
   return allRepos;
 }
 
-// Verify webhook signature
+// Verify a webhook delivery's `X-Hub-Signature-256` header. Fails closed: with
+// no GITHUB_APP_WEBHOOK_SECRET configured nothing verifies, so an environment
+// that receives webhooks must set it. Read per call (not at module load) so the
+// configured value is always the one in effect.
 export async function verifyWebhookSignature(payload: string, signature: string): Promise<boolean> {
-  if (!GITHUB_APP_WEBHOOK_SECRET) {
-    console.warn('GITHUB_APP_WEBHOOK_SECRET not set, skipping signature verification');
-    return true;
+  const secret = process.env.GITHUB_APP_WEBHOOK_SECRET;
+  if (!secret) {
+    console.error('GITHUB_APP_WEBHOOK_SECRET not set — rejecting webhook delivery');
+    return false;
   }
+  if (typeof signature !== 'string' || !signature.startsWith('sha256=')) return false;
 
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(GITHUB_APP_WEBHOOK_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
-  const expectedSignature = `sha256=${arrayBufferToHex(sig)}`;
-
-  return signature === expectedSignature;
+  const expected = Buffer.from(`sha256=${createHmac('sha256', secret).update(payload).digest('hex')}`);
+  const provided = Buffer.from(signature);
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(provided, expected);
 }
 
 // Helper functions for JWT encoding
@@ -224,12 +221,6 @@ function base64UrlEncode(data: string | Buffer): string {
     base64 = data.toString('base64');
   }
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function arrayBufferToHex(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
 }
 
 // GitHub GraphQL API client for a specific installation

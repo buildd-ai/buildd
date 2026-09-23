@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
-const mockGetUserFromRequest = mock(() => Promise.resolve(null as any));
-mock.module('@/lib/auth-helpers', () => ({ getUserFromRequest: mockGetUserFromRequest }));
+const mockRequireSessionUser = mock(() => Promise.resolve(null as any));
+mock.module('@/lib/auth-helpers', () => ({
+  requireSessionUser: mockRequireSessionUser,
+  getRequestPrincipal: async () => null,
+}));
 
 let membership: any = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
 let teamRow: any = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
@@ -44,8 +47,8 @@ function patchReq(body: unknown): NextRequest {
 }
 
 beforeEach(() => {
-  mockGetUserFromRequest.mockReset();
-  mockGetUserFromRequest.mockResolvedValue({ id: 'user-1' });
+  mockRequireSessionUser.mockReset();
+  mockRequireSessionUser.mockResolvedValue({ user: { id: 'user-1' } });
   membership = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
   teamRow = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
   capturedUpdates.length = 0;

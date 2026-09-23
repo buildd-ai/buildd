@@ -60,6 +60,11 @@ export interface PrReviewStatus {
    * later push has superseded — see `review-verdict-gate.ts`.
    */
   reviewHeadSha: string | null;
+  /**
+   * Later heads an approval was carried to because the PR diff was unchanged
+   * (see approval-carry-forward.ts). Empty unless a carry-forward happened.
+   */
+  reviewEquivalentHeadShas: string[];
   prState: 'open' | 'merged' | 'closed' | 'unknown';
   merged: boolean;
   /** Set when an approved PR will not be merged by buildd. */
@@ -176,6 +181,9 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     iteration: numberOrNull(ctx.iteration),
     maxIterations: numberOrNull(ctx.maxIterations),
     reviewHeadSha: stringOrNull(ctx.headSha),
+    reviewEquivalentHeadShas: Array.isArray(ctx.equivalentHeadShas)
+      ? ctx.equivalentHeadShas.filter((s): s is string => typeof s === 'string')
+      : [],
     prState,
     merged,
     mergeBlocked,

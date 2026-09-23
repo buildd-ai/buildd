@@ -70,6 +70,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
@@ -541,6 +542,19 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // (the same authorization merge_pr's self-merge escape hatch uses),
           // so retry the merge here instead of leaving it to a poller that
           // does not exist.
+          // An approval made before a rebase/base-merge still covers this head
+          // when the PR diff is unchanged. The synchronize handler records that
+          // too; repeating it here covers a lost push webhook.
+          if (pr.base?.ref) {
+            await carryForwardApprovalIfUnchanged({
+              installationId: installation.id,
+              repoFullName: repository.full_name,
+              workspaceId: workspace.id,
+              prNumber: pr.number,
+              baseRef: pr.base.ref,
+              headSha,
+            }).catch((err) => console.warn(`[review] carry-forward check failed for PR #${pr.number}:`, err));
+          }
           const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber: pr.number });
           const hasUnconsumedApprove =
             reviewStatus.state === 'approved' &&
@@ -1840,17 +1854,8 @@ async function maybeDispatchReviewer(
       console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
     }
 
-    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
-    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
-      basePolicy,
-      policyConfig,
-      prFiles.map((f) => f.filename),
-    );
-
-    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
-
-    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
+    // Classify migrations first: the schema risk class keys off the verdict
+    // (EXPAND passes), not off the mere presence of a schema/migration path.
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -1858,6 +1863,19 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
     });
+
+    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
+    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
+    const policy = applyPolicyConfigToMergePolicy(
+      basePolicy,
+      policyConfig,
+      prFiles.map((f) => f.filename),
+      migrationSafety,
+    );
+
+    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
+
+    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
     const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig ?? undefined);
     const shouldEscalateToHuman = preflight.shouldEscalate || policy.tier === 'human';
     if (shouldEscalateToHuman) {
@@ -2021,6 +2039,25 @@ async function maybeReDispatchReviewer(
         callerOrigin: 'system',
         detail: { prNumber: pr.number, reviewTaskId: status.reviewTaskId },
       });
+      return;
+    }
+
+    // An approval is not re-reviewed on push. If the push left the PR diff
+    // unchanged (rebase / base merge), record that the approval covers the
+    // new head so the review gate does not treat it as stale; otherwise the
+    // gate blocks it as stale_approval, as before.
+    if (status.state === 'approved') {
+      if (pr.base?.ref) {
+        await carryForwardApprovalIfUnchanged({
+          installationId,
+          repoFullName,
+          workspaceId: openWorker.workspaceId,
+          prNumber: pr.number,
+          baseRef: pr.base.ref,
+          headSha: pr.head.sha,
+          deps: { readStatus: async () => status },
+        });
+      }
       return;
     }
 

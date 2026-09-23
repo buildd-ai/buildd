@@ -11,10 +11,11 @@
  *   `workspaceId` is given and the account can reach it, else the account's
  *   own team. Role follows the token level: an admin token acts as `admin`,
  *   anything below as `member` — the same line the MCP action gating draws.
- * - OAuth bearer: authenticateApiKey forces these to admin level for every
- *   human, whatever their team role. Here the human's real team_members role
- *   is used instead, so an OAuth-connected member cannot see or change an
- *   admins-only experiment that the dashboard would hide from them.
+ * - OAuth bearer: the human's team_members row on the resolved team, read
+ *   directly. authenticateApiKey already sets the session level from that
+ *   role on the token's own workspace team, but this path also needs the
+ *   exact role on the team a `workspaceId` resolves to and the user id (for
+ *   `createdBy`), which the account level does not carry.
  */
 import type { NextRequest } from 'next/server';
 import { and, eq } from 'drizzle-orm';

@@ -47,7 +47,7 @@ describe('GET /api/github/install', () => {
   });
 
   it('returns 500 when GitHub app not configured', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockIsGitHubAppConfigured.mockReturnValue(false);
 
     const response = await GET(createRequest());
@@ -58,7 +58,7 @@ describe('GET /api/github/install', () => {
   });
 
   it('redirects to GitHub install URL with state parameter', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockIsGitHubAppConfigured.mockReturnValue(true);
     mockGetGitHubAppConfig.mockReturnValue({
       installUrl: 'https://github.com/apps/buildd/installations/new',
@@ -74,14 +74,14 @@ describe('GET /api/github/install', () => {
     // Decode the state parameter
     const url = new URL(location);
     const state = url.searchParams.get('state')!;
-    const decoded = JSON.parse(Buffer.from(state, 'base64url').toString());
+    const decoded = JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString());
 
-    expect(decoded.userId).toBe('user@test.com');
+    expect(decoded.uid).toBe('user-1');
     expect(decoded.returnUrl).toBe('/app/workspaces');
   });
 
   it('encodes returnUrl in state parameter', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'admin@example.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-admin', email: 'admin@example.com' } });
     mockIsGitHubAppConfigured.mockReturnValue(true);
     mockGetGitHubAppConfig.mockReturnValue({
       installUrl: 'https://github.com/apps/buildd/installations/new',
@@ -93,9 +93,22 @@ describe('GET /api/github/install', () => {
     const location = response.headers.get('location')!;
     const url = new URL(location);
     const state = url.searchParams.get('state')!;
-    const decoded = JSON.parse(Buffer.from(state, 'base64url').toString());
+    const decoded = JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString());
 
-    expect(decoded.userId).toBe('admin@example.com');
+    expect(decoded.uid).toBe('user-admin');
     expect(decoded.returnUrl).toBe('/app/workspaces/ws-123');
+  });
+
+  it('never encodes an off-site returnUrl', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
+    mockIsGitHubAppConfigured.mockReturnValue(true);
+    mockGetGitHubAppConfig.mockReturnValue({
+      installUrl: 'https://github.com/apps/buildd/installations/new',
+    });
+
+    const response = await GET(createRequest({ returnUrl: 'https://elsewhere.example/x' }));
+    const state = new URL(response.headers.get('location')!).searchParams.get('state')!;
+    const decoded = JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString());
+    expect(decoded.returnUrl).toBe('/app/workspaces');
   });
 });

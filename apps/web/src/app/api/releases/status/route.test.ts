@@ -49,6 +49,16 @@ const mockDeploymentOnlyPreflight = mock(() => ({
   failingChecks: [],
 }) as any);
 
+// Mirrors the real helper's contract: admin key → its own team; worker key →
+// none; session user → the teams listed in adminTeamsByUser.
+const adminTeamsByUser: Record<string, string[]> = { 'user-1': ['team-1'] };
+mock.module('@/lib/team-access', () => ({
+  getCallerAdminTeamIds: async (caller: any) => {
+    if (caller.kind === 'account') return caller.level === 'admin' ? [caller.teamId] : [];
+    return adminTeamsByUser[caller.userId] ?? [];
+  },
+}));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -104,15 +114,36 @@ describe('GET /api/releases/status', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 401 for a non-admin API key', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'worker' }));
+  it('returns 403 for a non-admin API key', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'worker' }));
     const { GET } = await import('./route');
     const res = await GET(makeRequest('bld_workerkey'));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 for a signed-in user with no admin/owner team role', async () => {
+    mockGetCurrentUser.mockImplementation(() => ({ id: 'user-member' }));
+    mockResolveReleaseTarget.mockClear();
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(403);
+    expect(mockResolveReleaseTarget).not.toHaveBeenCalled();
+  });
+
+  it('resolves the target only within the teams the caller administers', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockClear();
+    const { GET } = await import('./route');
+    await GET(makeRequest('bld_adminkey', { workspaceId: 'ws-9' }));
+    expect(mockResolveReleaseTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-9',
+      repo: undefined,
+      scope: { teamIds: ['team-1'] },
+    });
   });
 
   it('allows an admin API key', async () => {
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     const { GET } = await import('./route');
     const res = await GET(makeRequest('bld_adminkey'));
     expect(res.status).toBe(200);
@@ -123,7 +154,7 @@ describe('GET /api/releases/status', () => {
   it('allows an OAuth JWT token (owner-level access)', async () => {
     // authenticateApiKey() resolves OAuth JWTs to an account with level='admin'
     mockAuthenticateApiKey.mockImplementation((key: string) => {
-      if (key.startsWith('eyJ')) return { id: 'acc-owner', level: 'admin', authType: 'oauth' };
+      if (key.startsWith('eyJ')) return { id: 'acc-owner', teamId: 'team-1', level: 'admin', authType: 'oauth' };
       return null;
     });
     const { GET } = await import('./route');
@@ -142,7 +173,7 @@ describe('GET /api/releases/status', () => {
 
   it('returns 500 when GitHub App is not configured', async () => {
     mockIsGitHubAppConfigured.mockImplementation(() => false);
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     const { GET } = await import('./route');
     const res = await GET(makeRequest('bld_adminkey'));
     expect(res.status).toBe(500);
@@ -151,7 +182,7 @@ describe('GET /api/releases/status', () => {
   it('resolves ref and prodBranch from releaseConfig when not passed explicitly', async () => {
     // Regression: workflow_dispatch workspace with prodBranch=main, defaultBranch=dev.
     // Calling release_status without explicit params must use (dev → main), not (dev → dev).
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseTarget.mockImplementationOnce(() => ({
       ok: true,
       target: {
@@ -193,7 +224,7 @@ describe('GET /api/releases/status', () => {
     // ref and prodBranch to defaultBranch. Comparing a branch to itself is always
     // zero and misleads the preflight, but the endpoint must stay queryable —
     // it degrades to a deploy-only status instead of refusing outright.
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseTarget.mockImplementationOnce(() => ({
       ok: true,
       target: {
@@ -228,7 +259,7 @@ describe('GET /api/releases/status', () => {
     // executeRelease already reads) — releaseConfig.ref only ever applies to
     // workflow_dispatch/script. Before the fix this always fell through to
     // defaultBranch, colliding with prodBranch and 422ing every time.
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseTarget.mockImplementationOnce(() => ({
       ok: true,
       target: {
@@ -268,7 +299,7 @@ describe('GET /api/releases/status', () => {
     // Regression: resolveReleaseTarget validates UUID format and returns 400 instead
     // of letting Postgres throw "invalid input syntax for type uuid" which caused a
     // bare 500 with empty body.
-    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     mockResolveReleaseTarget.mockImplementationOnce(() => ({
       ok: false,
       status: 400,

@@ -1,6 +1,6 @@
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
-import { teamMembers, workspaces, accountWorkspaces, teams } from '@buildd/core/db/schema';
+import { teamMembers, workspaces, accountWorkspaces, teams, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, sql } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
 
@@ -37,11 +37,10 @@ export const verifyWorkspaceAccess = cache(async (
 
   if (!workspace) return null;
 
-  // Open workspaces are accessible to any authenticated user (matches API key auth behavior)
-  if ((workspace as any).accessMode === 'open' && !requiredRole) {
-    return { teamId: workspace.teamId, role: 'member' };
-  }
-
+  // Access is always decided by membership of the workspace's own team.
+  // `accessMode: 'open'` does not widen session access beyond that team: it
+  // governs which of the team's API accounts may act without an explicit
+  // accountWorkspaces link (see verifyAccountWorkspaceAccess).
   const membership = await db.query.teamMembers.findFirst({
     where: and(
       eq(teamMembers.teamId, workspace.teamId),
@@ -62,7 +61,11 @@ export const verifyWorkspaceAccess = cache(async (
 
 /**
  * Verify an API key account has access to a workspace.
- * Checks accountWorkspaces link or workspace accessMode === 'open'.
+ *
+ * Two ways in:
+ *   1. the workspace is `accessMode: 'open'` AND the account belongs to the
+ *      workspace's own team — "open" means open within the owning team; or
+ *   2. an explicit accountWorkspaces link (with the requested permission).
  *
  * Cached per-request via React cache() so layout + page share the same result.
  */
@@ -74,12 +77,18 @@ export const verifyAccountWorkspaceAccess = cache(async (
   // Check workspace access mode first
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    columns: { id: true, accessMode: true },
+    columns: { id: true, teamId: true, accessMode: true },
   });
 
   if (!workspace) return false;
 
-  if (workspace.accessMode === 'open') return true;
+  if (workspace.accessMode === 'open') {
+    const account = await db.query.accounts.findFirst({
+      where: eq(accounts.id, accountId),
+      columns: { teamId: true },
+    });
+    if (account && account.teamId === workspace.teamId) return true;
+  }
 
   // Check explicit link
   const link = await db.query.accountWorkspaces.findFirst({
@@ -96,6 +105,58 @@ export const verifyAccountWorkspaceAccess = cache(async (
 
   return true;
 });
+
+const ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
+
+/**
+ * Team IDs in which the user holds admin or owner. Includes the user's
+ * personal team (slug = personal-{userId}), which they own by definition —
+ * mirrors the getUserTeamIds fallback for accounts missing a teamMembers row.
+ *
+ * Cached per-request via React cache().
+ */
+export const getUserAdminTeamIds = cache(async (userId: string): Promise<string[]> => {
+  const [memberships, personalTeam] = await Promise.all([
+    db.query.teamMembers.findMany({
+      where: eq(teamMembers.userId, userId),
+      columns: { teamId: true, role: true },
+    }),
+    db.query.teams.findFirst({
+      where: eq(teams.slug, `personal-${userId}`),
+      columns: { id: true },
+    }),
+  ]);
+  const ids = new Set(memberships.filter(m => ADMIN_ROLES.has(m.role)).map(m => m.teamId));
+  if (personalTeam) ids.add(personalTeam.id);
+  return [...ids];
+});
+
+/**
+ * The principal behind a request, in the shape the team-scope helpers need.
+ * A session resolves to its user; an API key resolves to its account, whose
+ * reach is its own team.
+ */
+export type TeamScopeCaller =
+  | { kind: 'user'; userId: string }
+  | { kind: 'account'; accountId: string; teamId: string; level: string | null | undefined };
+
+/**
+ * Teams the caller may perform admin-tier actions in: for a session, teams
+ * where the user is admin/owner; for an API key, the key's own team when the
+ * key is admin level, otherwise none.
+ */
+export async function getCallerAdminTeamIds(caller: TeamScopeCaller): Promise<string[]> {
+  if (caller.kind === 'account') {
+    return caller.level === 'admin' ? [caller.teamId] : [];
+  }
+  return getUserAdminTeamIds(caller.userId);
+}
+
+/** Whether the caller may perform admin-tier actions in `teamId`. */
+export async function canCallerAdminTeam(caller: TeamScopeCaller, teamId: string): Promise<boolean> {
+  const ids = await getCallerAdminTeamIds(caller);
+  return ids.includes(teamId);
+}
 
 /**
  * Get all workspace IDs accessible to a user via their team memberships.
@@ -194,9 +255,11 @@ export const getUserTeamIds = cache(async (userId: string): Promise<string[]> =>
 });
 
 /**
- * Resolve all team IDs accessible to an API account or session user.
- * Handles personal teams (no teamMembers rows) by extracting userId from
- * the team slug and resolving through teamMembers.
+ * Resolve the team IDs a request may act on.
+ *
+ * An API account is scoped to exactly its own team — it never inherits the
+ * teams of any user who happens to be a member of that team. A session user
+ * resolves to every team they belong to (plus their personal team).
  *
  * NOT React cache()-wrapped, unlike its siblings: both parameters are objects,
  * and cache() keys non-primitives on referential identity — fresh object
@@ -207,31 +270,32 @@ export async function resolveAccountTeamIds(
   user: { id: string } | null | undefined,
   apiAccount: { teamId: string } | null
 ): Promise<string[]> {
-  if (apiAccount) {
-    // Try to find a user via teamMembers on the account's team
-    const membership = await db.query.teamMembers.findFirst({
-      where: eq(teamMembers.teamId, apiAccount.teamId),
-      columns: { userId: true },
-    });
-    if (membership?.userId) {
-      return getUserTeamIds(membership.userId);
-    }
-    // Fallback: if the account is on a personal team (slug = personal-{userId}),
-    // extract the userId and resolve their real teams
-    const team = await db.query.teams.findFirst({
-      where: eq(teams.id, apiAccount.teamId),
-      columns: { slug: true },
-    });
-    if (team?.slug?.startsWith('personal-')) {
-      const userId = team.slug.replace('personal-', '');
-      const teamIds = await getUserTeamIds(userId);
-      if (teamIds.length > 0) return teamIds;
-    }
-    return [apiAccount.teamId];
-  }
+  if (apiAccount) return [apiAccount.teamId];
   if (user) return getUserTeamIds(user.id);
   return [];
 }
+
+/**
+ * The user's current role on a team, or null when they do not belong to it.
+ * A user's own personal team (slug = personal-{userId}) counts as owner even
+ * without a teamMembers row, mirroring the getUserTeamIds fallback.
+ *
+ * Cached per-request via React cache() (primitive args).
+ */
+export const getUserTeamRole = cache(async (userId: string, teamId: string): Promise<TeamRole | null> => {
+  const membership = await db.query.teamMembers.findFirst({
+    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    columns: { role: true },
+  });
+  if (membership?.role) return membership.role as TeamRole;
+
+  const team = await db.query.teams.findFirst({
+    where: eq(teams.id, teamId),
+    columns: { slug: true },
+  });
+  if (team?.slug === `personal-${userId}`) return 'owner';
+  return null;
+});
 
 /**
  * Get the user's default (personal) team ID.

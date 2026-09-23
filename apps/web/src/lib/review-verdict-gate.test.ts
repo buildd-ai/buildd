@@ -26,12 +26,39 @@ function status(over: Partial<PrReviewStatus> = {}): PrReviewStatus {
     iteration: null,
     maxIterations: null,
     reviewHeadSha: null,
+    reviewEquivalentHeadShas: [],
     prState: 'open',
     merged: false,
     mergeBlocked: null,
     ...over,
   };
 }
+
+describe('evaluateReviewVerdictGate — approval carried across a content-preserving rebase', () => {
+  it('passes an approval made at A when head B is recorded as content-equivalent', () => {
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'approved', reviewHeadSha: SHA_A, reviewEquivalentHeadShas: [SHA_B] }),
+      SHA_B,
+    );
+    expect(result.blocks).toBe(false);
+  });
+
+  it('still blocks as stale when head B is not recorded as equivalent', () => {
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'approved', reviewHeadSha: SHA_A, reviewEquivalentHeadShas: ['c'.repeat(40)] }),
+      SHA_B,
+    );
+    expect(result.kind).toBe('stale_approval');
+  });
+
+  it('an equivalence record never clears a request-changes verdict', () => {
+    const result = evaluateReviewVerdictGate(
+      status({ state: 'changes_requested', reviewHeadSha: SHA_A, reviewEquivalentHeadShas: [SHA_B] }),
+      SHA_B,
+    );
+    expect(result.blocks).toBe(true);
+  });
+});
 
 describe('evaluateReviewVerdictGate', () => {
   it('blocks a request-changes verdict made against the commit being merged', () => {

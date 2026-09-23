@@ -34,6 +34,10 @@ const mockHandleLearnAction = mock(() =>
 mock.module('@/lib/oauth/tokens', () => ({ verifyAccessToken: mockVerifyAccessToken }));
 mock.module('@/lib/oauth/config', () => ({ getIssuer: () => 'https://buildd.dev' }));
 mock.module('@/lib/memory-helper', () => ({ getMemoryStoreForTeam: mockGetMemoryStoreForTeam }));
+// Session resolution (membership + level) is covered in route.level.test.ts.
+mock.module('@/lib/api-auth', () => ({
+  authenticateApiKey: async () => ({ id: 'acct-1', teamId: TEAM_ID, level: 'admin', authType: 'oauth' }),
+}));
 
 mock.module('@buildd/core/db', () => ({
   db: { query: { workspaces: { findFirst: mockWorkspacesFindFirst } } },

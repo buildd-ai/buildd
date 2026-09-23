@@ -495,6 +495,19 @@ describe('POST /api/tasks', () => {
     expect(data.error).toContain('No workspace found matching');
   });
 
+  it('resolves the workspace identifier within the session user\'s teams', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockResolveWorkspace.mockResolvedValue(null);
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'some-project', title: 'Test Task' },
+    });
+    await POST(request);
+
+    expect(mockResolveWorkspace).toHaveBeenCalledWith('some-project', { userId: 'user-123' });
+  });
+
   it('creates task with API key auth', async () => {
     const createdTask = {
       id: 'task-123',

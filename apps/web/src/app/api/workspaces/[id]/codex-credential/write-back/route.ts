@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { workspaces, workers } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { writeBackCodexTokens } from '@/lib/codex-credential';
 
@@ -39,6 +39,19 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   });
   if (!workspace) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+
+  // The tokens are stored as the workspace team's credential. Accept them from
+  // an account of that team, or from a runner account that has run a worker in
+  // this workspace (the credential was leased to it at claim time).
+  if (account.teamId !== workspace.teamId) {
+    const ranHere = await db.query.workers.findFirst({
+      where: and(eq(workers.accountId, account.id), eq(workers.workspaceId, id)),
+      columns: { id: true },
+    });
+    if (!ranHere) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
   }
 
   let body: unknown;
