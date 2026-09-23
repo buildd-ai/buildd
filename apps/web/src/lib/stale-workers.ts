@@ -1050,10 +1050,12 @@ export async function cleanupUnresumedAnswers(
     delete coldDelivery.ackDeadlineAt;
 
     if (task?.id) {
-      // No transactions on neon-http: compensate by hand so a failed insert
-      // does not leave the worker permanently superseded with the answer
-      // discarded and no continuation task to recover it — the same hazard
-      // `respondByContinuation` guards against for the live-answer path.
+      // No transactions on neon-http: if this insert throws (network blip,
+      // constraint violation), compensate by hand — undo the CAS above so the
+      // worker goes back to `waiting_input` with the answer still queued,
+      // instead of sitting `superseded` forever with the answer discarded and
+      // no continuation to pick it up (the candidate query only looks at
+      // `waiting_input`).
       try {
         await db
           .insert(tasks)
@@ -1071,7 +1073,7 @@ export async function cleanupUnresumedAnswers(
           }))
           .returning({ id: tasks.id });
       } catch (err) {
-        console.error(`[Worker ${worker.id}] Continuation task insert failed, restoring answer:`, err);
+        console.error(`[Worker ${worker.id}] Cold-continuation insert failed, restoring answer:`, err);
         await db
           .update(workers)
           .set({
@@ -1084,24 +1086,30 @@ export async function cleanupUnresumedAnswers(
         continue;
       }
 
-      await db
-        .update(tasks)
-        .set({
-          context: { ...((task.context as Record<string, unknown>) || {}), answerDelivery: coldDelivery },
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, task.id));
+      // Best-effort from here: the continuation task exists, so the answer is
+      // safe even if these two writes fail.
+      try {
+        await db
+          .update(tasks)
+          .set({
+            context: { ...((task.context as Record<string, unknown>) || {}), answerDelivery: coldDelivery },
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, task.id));
 
-      await db.insert(missionNotes).values({
-        missionId: task.missionId ?? null,
-        taskId: task.id,
-        workerId: worker.id,
-        authorType: 'system',
-        type: 'warning',
-        title: 'Answer never reached the parked session',
-        body: describeAnswerPath(coldDecision),
-        status: 'open',
-      });
+        await db.insert(missionNotes).values({
+          missionId: task.missionId ?? null,
+          taskId: task.id,
+          workerId: worker.id,
+          authorType: 'system',
+          type: 'warning',
+          title: 'Answer never reached the parked session',
+          body: describeAnswerPath(coldDecision),
+          status: 'open',
+        });
+      } catch (err) {
+        console.error(`[Worker ${worker.id}] Post-continuation bookkeeping failed:`, err);
+      }
     }
 
     degraded++;

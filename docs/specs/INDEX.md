@@ -65,7 +65,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### runners (6)
 
-- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-20
+- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-23
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 - [Codebase Memory Graph](./codebase-memory-graph.md) · @max — verified 2026-09-12
   Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through four named reasons, and MUST never fail a task.
