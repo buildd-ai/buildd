@@ -391,9 +391,26 @@ mock.module('@/lib/merge-policy', () => ({
 
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }));
 const mockPreflightEscalationCheck = mock(() => ({ shouldEscalate: false as const }));
+const mockSupersedeReviewerTaskOnMerge = mock(() =>
+  Promise.resolve({ superseded: false, reviewerTaskId: null as string | null }),
+);
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mockCreateReviewerTask,
   preflightEscalationCheck: mockPreflightEscalationCheck,
+  supersedeReviewerTaskOnMerge: mockSupersedeReviewerTaskOnMerge,
+}));
+
+// Gate ledger — captured so the merge telemetry can be asserted. The slug
+// catalogue is the real one (dependency-free).
+const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
+const mockFireGateEvent = mock((_input: any) => 'gate-event-1');
+mock.module('@/lib/gate-ledger', () => ({
+  GATE_SLUGS: REAL_GATE_SLUGS,
+  fireGateEvent: mockFireGateEvent,
+  fireDeferralEvent: mock(() => {}),
+  fireGateEventForWorkspaceRef: mock(() => 'gate-event-1'),
+  gateCallerOrigin: () => 'system',
+  gateFrictionSignature: (gate: string, reason: string) => `${gate}:${reason}`,
 }));
 
 const mockInspectPullRequestMigrations = mock(() => Promise.resolve({ safe: true as const }));
@@ -447,9 +464,16 @@ const mockReadPrReviewStatus = mock(() => Promise.resolve({
   merged: false,
   mergeBlocked: null,
 }));
+// The workspace's roles, for the reviewer-role existence check.
+const DEFAULT_ROLES = [
+  { slug: 'reviewer', isRole: true },
+  { slug: 'builder', isRole: true },
+];
+const mockListWorkspaceRoles = mock((_workspaceId: string, _teamId: string) => Promise.resolve(DEFAULT_ROLES as any[]));
 mock.module('@/lib/pr-review-request', () => ({
   deliverPrReviewCallback: mockDeliverPrReviewCallback,
   readPrReviewStatus: mockReadPrReviewStatus,
+  listWorkspaceRoles: mockListWorkspaceRoles,
 }));
 
 // Import handler AFTER mocks
@@ -574,6 +598,13 @@ function resetAll() {
     iteration: null, maxIterations: null, prState: 'open', merged: false, mergeBlocked: null,
   }));
   mockCreateReviewerTask.mockReset();
+  mockListWorkspaceRoles.mockReset();
+  mockListWorkspaceRoles.mockImplementation(() => Promise.resolve(DEFAULT_ROLES as any[]));
+  mockSupersedeReviewerTaskOnMerge.mockReset();
+  mockSupersedeReviewerTaskOnMerge.mockImplementation(() =>
+    Promise.resolve({ superseded: false, reviewerTaskId: null }),
+  );
+  mockFireGateEvent.mockClear();
   mockPreflightEscalationCheck.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
   mockDispatchWorkflowRelease.mockReset();
@@ -3266,6 +3297,61 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
+
+    // N10: create_pr's auto-review got there first. Its reviewer was already
+    // dispatched and announced — a second dispatch sends a second runner.
+    it('does not dispatch or announce a reviewer another producer already filed', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockCreateReviewerTask.mockReturnValue(Promise.resolve({ id: 'reviewer-other', deduplicated: true } as any));
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      // Still handled: the PR is under review, so no auto-merge.
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    // The payload already carries the base; without it the reviewer context
+    // makes one extra PR read per full review to learn it.
+    it('passes the PR base ref from the payload to the reviewer', async () => {
+      withAgentReviewWorkspaceAndWorker();
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload({
+        pull_request: { base: { ref: 'dev' } },
+      })));
+
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({ baseRef: 'dev' });
+    });
+
+    // V11: the policy names a role; the workspace may not have it. A reviewer
+    // task routed to a nonexistent role is claimable by no runner.
+    it('routes the review to a role the workspace has when the policy role does not exist', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockListWorkspaceRoles.mockImplementation(() => Promise.resolve([
+        { slug: 'builder', isRole: true },
+        { slug: 'researcher', isRole: true },
+      ]));
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({ reviewerRole: 'builder' });
+    });
+
+    it('files no reviewer and does not auto-merge when the workspace has no roles at all', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockListWorkspaceRoles.mockImplementation(() => Promise.resolve([]));
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      // The PR still needs review — holding it is the safe side.
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
   });
 
   // The other half of the reviewer-loop-never-closes fix: `maybeDispatchReviewer`
@@ -3414,6 +3500,27 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
 
       expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('re-dispatches to a role the workspace has when the policy role does not exist', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockListWorkspaceRoles.mockImplementation(() => Promise.resolve([{ slug: 'builder', isRole: true }]));
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({ reviewerRole: 'builder' });
+    });
+
+    it('does not re-dispatch when the workspace has no roles', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockListWorkspaceRoles.mockImplementation(() => Promise.resolve([]));
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
@@ -4433,6 +4540,118 @@ describe('pull_request merged — effects that belong to the merge, not the tran
 
     expect(updateCalls.some(c => (c.setValues as any).status === 'completed')).toBe(true);
     expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
+  });
+
+  // ── V8 / V14: a merge on GitHub versus the review ────────────────────────
+  function taskPrWorker(overrides: Record<string, any> = {}) {
+    return {
+      id: 'w-task',
+      workspaceId: 'ws1',
+      taskId: 't-task',
+      mergedAt: null,
+      task: {
+        id: 't-task',
+        status: 'in_progress',
+        taskClass: 'work',
+        workspaceId: 'ws1',
+        release: 'false',
+        title: 'Do the work',
+        missionId: null,
+      },
+      ...overrides,
+    };
+  }
+  const taskPrPayload = () => mergedPrPayload({
+    pull_request: { head: { ref: 'buildd/abc12345-fix', sha: 'sha-77' } },
+  });
+  function reviewStatus(over: Record<string, any>) {
+    return {
+      state: 'not_requested', terminal: true, reviewTaskId: null, adoptedTaskId: 't-task',
+      verdict: null, confidence: null, summary: null, feedback: null, escalationReason: null,
+      iteration: 0, maxIterations: 3, reviewHeadSha: null, reviewEquivalentHeadShas: [],
+      prState: 'merged', merged: true, mergeBlocked: null,
+      ...over,
+    } as any;
+  }
+  const mergeTelemetry = () =>
+    mockFireGateEvent.mock.calls
+      .map(c => c[0])
+      .filter((e: any) => e?.detail?.event === 'merged_over_verdict' || e?.detail?.event === 'merged_unreviewed');
+
+  it('supersedes a still-live reviewer when the PR merges on GitHub', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockSupersedeReviewerTaskOnMerge).toHaveBeenCalledTimes(1);
+    expect(mockSupersedeReviewerTaskOnMerge.mock.calls[0][0]).toMatchObject({
+      originalTaskId: 't-task',
+      installationId: 5000,
+      repoFullName: 'test-org/test-repo',
+      prNumber: 77,
+    });
+  });
+
+  it('does not supersede on a PR closed without merging', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({
+      pull_request: { merged: false, head: { ref: 'buildd/abc12345-fix', sha: 'sha-77' } },
+    })));
+
+    expect(mockSupersedeReviewerTaskOnMerge).not.toHaveBeenCalled();
+  });
+
+  it('records merged_over_verdict when the PR merges over a request-changes verdict', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+    mockReadPrReviewStatus.mockResolvedValue(reviewStatus({
+      state: 'changes_requested', verdict: 'request-changes', reviewTaskId: 'review-9', reviewHeadSha: 'sha-77',
+    }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    const events = mergeTelemetry();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      gate: 'review_verdict',
+      outcome: 'bypassed',
+      workspaceId: 'ws1',
+      detail: { event: 'merged_over_verdict', prNumber: 77, reviewState: 'changes_requested', reviewTaskId: 'review-9' },
+    });
+  });
+
+  it('records merged_unreviewed when the PR merges while its review is still running', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+    mockReadPrReviewStatus.mockResolvedValue(reviewStatus({ state: 'reviewing', reviewTaskId: 'review-9' }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    const events = mergeTelemetry();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ outcome: 'warned', detail: { event: 'merged_unreviewed' } });
+    // The verdict is read before the reviewer is superseded — cancelling it
+    // first would erase the state being measured.
+    expect(mockReadPrReviewStatus.mock.invocationCallOrder[0])
+      .toBeLessThan(mockSupersedeReviewerTaskOnMerge.mock.invocationCallOrder[0]);
+  });
+
+  it('records nothing for a PR no review was requested for', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mergeTelemetry()).toHaveLength(0);
+  });
+
+  it('a redelivered merge records no second telemetry event', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ mergedAt: new Date('2026-01-01T00:00:00Z') }));
+    mockReadPrReviewStatus.mockResolvedValue(reviewStatus({
+      state: 'changes_requested', verdict: 'request-changes', reviewHeadSha: 'sha-77',
+    }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mergeTelemetry()).toHaveLength(0);
   });
 });
 

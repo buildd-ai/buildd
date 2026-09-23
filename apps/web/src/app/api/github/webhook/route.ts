@@ -69,11 +69,12 @@ import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
-import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
-import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -1008,6 +1009,16 @@ async function handlePullRequestEvent(event: {
         .update(workers)
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
+      await reconcileReviewWithMerge({
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        prNumber: pr.number,
+        mergedHeadSha: pr.head.sha,
+        mergeIsNew,
+        installationId: event.installation?.id ?? null,
+        repoFullName: repository.full_name,
+      });
     } else {
       // PR closed without merge (abandoned/superseded)
       await db
@@ -1820,6 +1831,104 @@ async function handleCheckSuiteFailure(
  * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
  * and the caller should skip the normal no-CI auto-merge path.
  */
+/**
+ * A PR merged — on github.com, with `gh pr merge`, or through a buildd door —
+ * measured against, and then closing, its agent review.
+ *
+ *  1. Telemetry (first delivery only): a merge while a request-changes or
+ *     escalate verdict was outstanding is `merged_over_verdict`; a merge no
+ *     verdict covered is `merged_unreviewed`. Read BEFORE step 2, because
+ *     superseding the reviewer changes the state being measured.
+ *  2. Supersede a still-live reviewer. A GitHub-side merge passes no buildd
+ *     door, so without this the reviewer runs on (or is claimed later) against
+ *     a PR that has already landed. Idempotent: the dashboard merge door
+ *     already calls the same helper, and a redelivery finds nothing live.
+ *
+ * Best-effort throughout: nothing here may fail the merge bookkeeping.
+ */
+async function reconcileReviewWithMerge(params: {
+  workspaceId: string;
+  taskId: string | null;
+  workerId: string;
+  prNumber: number;
+  mergedHeadSha: string;
+  mergeIsNew: boolean;
+  installationId: number | null;
+  repoFullName: string;
+}): Promise<void> {
+  if (params.mergeIsNew) {
+    try {
+      const status = await readPrReviewStatus({ workspaceId: params.workspaceId, prNumber: params.prNumber });
+      const merge = classifyMergeAgainstReview(status, params.mergedHeadSha);
+      if (merge) {
+        fireGateEvent({
+          gate: GATE_SLUGS.REVIEW_VERDICT,
+          surface: 'webhook pull_request.closed (merged)',
+          outcome: merge.event === 'merged_over_verdict' ? 'bypassed' : 'warned',
+          reason: merge.event === 'merged_over_verdict'
+            ? 'PR merged while a reviewer verdict against it was outstanding'
+            : 'PR merged with no reviewer verdict covering the merged commit',
+          workspaceId: params.workspaceId,
+          taskId: params.taskId,
+          workerId: params.workerId,
+          callerOrigin: 'system',
+          detail: {
+            event: merge.event,
+            prNumber: params.prNumber,
+            mergedHeadSha: params.mergedHeadSha,
+            reviewState: merge.state,
+            reviewKind: merge.kind,
+            reviewTaskId: merge.reviewTaskId,
+            reviewHeadSha: merge.reviewHeadSha,
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`[webhook] merge review telemetry failed for PR #${params.prNumber}:`, err);
+    }
+  }
+
+  if (params.taskId && params.installationId) {
+    const superseded = await supersedeReviewerTaskOnMerge({
+      originalTaskId: params.taskId,
+      installationId: params.installationId,
+      repoFullName: params.repoFullName,
+      prNumber: params.prNumber,
+    });
+    if (superseded.superseded) {
+      console.log(
+        `[webhook] PR #${params.prNumber} merged — superseded live reviewer task ${superseded.reviewerTaskId}`,
+      );
+    }
+  }
+}
+
+/**
+ * The role a webhook-dispatched review runs as, checked against the roles the
+ * workspace actually has — the same `pickReviewerRole` rule the create_pr,
+ * manual-review and re-review routes apply. The policy's role slug is only a
+ * preference: a reviewer task routed to a role no runner advertises is never
+ * claimed. Null when the workspace has no role at all.
+ */
+async function resolveReviewerRoleForDispatch(
+  workspace: { id: string; teamId: string },
+  policyRole: string | null,
+  prNumber: number,
+): Promise<string | null> {
+  const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
+  const picked = pickReviewerRole({ requested: null, policyRole, available: roles });
+  if (!picked.role) {
+    console.warn(`[reviewer] Not dispatching a reviewer for PR #${prNumber}: ${picked.error}`);
+    return null;
+  }
+  if (policyRole && picked.role !== policyRole) {
+    console.warn(
+      `[reviewer] PR #${prNumber}: policy reviewer role '${policyRole}' does not exist in this workspace — using '${picked.role}'`,
+    );
+  }
+  return picked.role;
+}
+
 async function maybeDispatchReviewer(
   installationId: number,
   repoFullName: string,
@@ -1940,6 +2049,20 @@ async function maybeDispatchReviewer(
 
     if (policy.tier !== 'agent-review') return false;
 
+    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
+    if (!reviewerRole) {
+      // No role can run the review. Hold the PR for a human rather than fall
+      // through to auto-merge: the policy asked for a review.
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber: pr.number,
+        entry: { kind: 'human_review_required', note: 'the workspace has no role that can run the agent review' },
+        workspaceId: openWorker.workspaceId,
+      });
+      return true;
+    }
+
     // iteration/maxIterations are stored in task.context JSONB (not columns)
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
     const originalTask = {
@@ -1961,7 +2084,7 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       prUrl: pr.html_url,
       headSha: pr.head.sha,
-      reviewerRole: policy.agentReview!.reviewerRole,
+      reviewerRole,
       installationId,
       repoFullName,
       policyConfig: policyConfig ?? undefined,
@@ -1973,9 +2096,13 @@ async function maybeDispatchReviewer(
       // its lede only. Passing it saves a GET the context builder would
       // otherwise make per reviewed PR.
       prBody: pr.body ?? null,
+      // Same for the base branch the reviewer diffs against.
+      baseRef: pr.base?.ref ?? null,
     });
 
-    if (reviewerTask) {
+    // A deduplicated result is another producer's reviewer: it was dispatched
+    // and announced by whoever created it.
+    if (reviewerTask && !reviewerTask.deduplicated) {
       // dispatchNewTask needs more than just the id — pass the reviewer task details
       // we know from the params rather than re-querying the DB.
       const reviewerTaskFull = {
@@ -2115,6 +2242,9 @@ async function maybeReDispatchReviewer(
     // workspace no longer wants an agent re-reviewing it.
     if (policy.tier !== 'agent-review') return;
 
+    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
+    if (!reviewerRole) return;
+
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
     const originalTask = {
       title: task.title,
@@ -2134,7 +2264,7 @@ async function maybeReDispatchReviewer(
       prNumber: pr.number,
       prUrl: pr.html_url,
       headSha: pr.head.sha,
-      reviewerRole: policy.agentReview!.reviewerRole,
+      reviewerRole,
       installationId,
       repoFullName,
       policyConfig: workspace.gitConfig?.policyConfig ?? undefined,

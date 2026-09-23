@@ -10,6 +10,10 @@ let reviewerTaskFindFirstResult: any = null;
 let liveReviewerTaskResult: any = null;
 let liveReviewerProbeArgs: any[] = [];
 let taskUpdateReturning: any[] = [];
+// When set, the reviewer task insert conflicts (a concurrent producer already
+// inserted this row) and the live probe then finds the winner.
+let reviewerInsertConflictWinner: { id: string } | null = null;
+let onConflictDoNothingCalls = 0;
 let workerUpdateCalls: Array<{ set: any }> = [];
 // Fixture for the mission-criteria lookup createReviewerTask does when the
 // original task belongs to a mission. Null = task has no mission.
@@ -42,7 +46,21 @@ mock.module('@buildd/core/db', () => ({
         } else {
           insertedTask = values;
         }
-        return { returning: mock(() => Promise.resolve([{ id: 'task-1' }])) };
+        const returning = mock(() => Promise.resolve([{ id: 'task-1' }]));
+        return {
+          returning,
+          // A reviewer insert that lost the race to a concurrent producer:
+          // the partial unique index turns it into zero rows.
+          onConflictDoNothing: mock(() => {
+            onConflictDoNothingCalls++;
+            if (table !== 'missionNotes' && table !== 'taskSubjectReports' && reviewerInsertConflictWinner) {
+              insertedTask = undefined;
+              liveReviewerTaskResult = reviewerInsertConflictWinner;
+              return { returning: mock(() => Promise.resolve([])) };
+            }
+            return { returning };
+          }),
+        };
       }),
     })),
     update: mock((table: string) => ({
@@ -103,6 +121,19 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => args,
   inArray: (a: any, b: any) => ({ a, b }),
   desc: (a: any) => ({ desc: a }),
+}));
+
+const pusherCalls: Array<{ channel: string; event: string; data: any }> = [];
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock((channel: string, event: string, data: any) => {
+    pusherCalls.push({ channel, event, data });
+    return Promise.resolve();
+  }),
+  channels: {
+    worker: (id: string) => `private-worker-${id}`,
+    workspace: (id: string) => `workspace-${id}`,
+  },
+  events: { WORKER_COMMAND: 'worker:command', TASK_UPDATED: 'task:updated' },
 }));
 
 mock.module('@/lib/pr-activity-comment', () => ({
@@ -268,7 +299,31 @@ describe('createReviewerTask subject anchor', () => {
     insertedSubjectReport = undefined;
     liveReviewerTaskResult = null;
     liveReviewerProbeArgs = [];
+    reviewerInsertConflictWinner = null;
+    onConflictDoNothingCalls = 0;
   }
+
+  // Two producers (the create_pr auto-review and the pull_request webhook)
+  // fire for the same PR head within milliseconds. Both pass the live probe
+  // before either row exists, so the probe alone cannot stop the second one.
+  it('a producer that loses the insert race returns the winner instead of dispatching a second reviewer', async () => {
+    reset();
+    reviewerInsertConflictWinner = { id: 'reviewer-winner' };
+
+    const result = await createReviewerTask(params());
+
+    expect(onConflictDoNothingCalls).toBe(1);
+    expect(result).toEqual({ id: 'reviewer-winner', deduplicated: true });
+  });
+
+  it('the reviewer insert is conflict-tolerant, so the idempotency index cannot throw a producer', async () => {
+    reset();
+
+    const result = await createReviewerTask(params());
+
+    expect(onConflictDoNothingCalls).toBe(1);
+    expect(result).toEqual({ id: 'task-1' });
+  });
 
   it('stamps the PR generation key on the reviewer task it creates', async () => {
     reset();
@@ -550,6 +605,7 @@ function resetSupersedeFixtures() {
   reviewerTaskFindFirstResult = null;
   taskUpdateReturning = [];
   workerUpdateCalls = [];
+  pusherCalls.length = 0;
   mockAppendPrActivity.mockClear();
 }
 
@@ -592,6 +648,51 @@ describe('supersedeReviewerTaskOnMerge', () => {
     expect(workerUpdateCalls).toHaveLength(1);
     expect(workerUpdateCalls[0].set.status).toBe('failed');
     expect(workerUpdateCalls[0].set.exitCause).toBe('condition_unmet');
+    // Merges on this path are not only human (gh pr merge, automation).
+    expect(workerUpdateCalls[0].set.error).not.toContain('human');
+    expect(workerUpdateCalls[0].set.error).toContain('PR merged before review completed');
+  });
+
+  it('pushes an abort to the running reviewer session and broadcasts the cancel', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = {
+      id: 'reviewer-task-6',
+      missionId: 'mission-1',
+      workspaceId: 'ws-1',
+      workers: [{ id: 'worker-7', status: 'running' }],
+    };
+    taskUpdateReturning = [{ id: 'reviewer-task-6' }];
+
+    await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-6',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 7005,
+    });
+
+    const abort = pusherCalls.find(c => c.event === 'worker:command');
+    expect(abort?.channel).toBe('private-worker-worker-7');
+    expect(abort?.data.action).toBe('abort');
+    const updated = pusherCalls.find(c => c.event === 'task:updated');
+    expect(updated?.channel).toBe('workspace-ws-1');
+    expect(updated?.data.task).toMatchObject({ id: 'reviewer-task-6', status: 'cancelled' });
+    expect(insertedMissionNote?.title).not.toContain('human');
+  });
+
+  it('sends no abort when the reviewer task has no live worker', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = { id: 'reviewer-task-7', missionId: null, workspaceId: 'ws-1', workers: [] };
+    taskUpdateReturning = [{ id: 'reviewer-task-7' }];
+
+    await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-7',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 8006,
+    });
+
+    expect(pusherCalls.find(c => c.event === 'worker:command')).toBeUndefined();
+    expect(pusherCalls.find(c => c.event === 'task:updated')).toBeDefined();
   });
 
   it('is a no-op when no reviewer task exists for the merged PR', async () => {

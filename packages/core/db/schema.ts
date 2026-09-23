@@ -1179,6 +1179,18 @@ export const tasks = pgTable('tasks', {
   onePendingCiRetryPerPrIdx: uniqueIndex('tasks_one_pending_ci_retry_per_pr_unique')
     .on(t.workspaceId, t.ciRetryPrNumber)
     .where(sql`${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL`),
+  // Partial unique index — the review idempotency key: at most one pending
+  // review per (workspace, PR, head SHA). Several producers file reviews for the
+  // same PR head (create_pr's auto-review and the PR `opened` webhook fire
+  // within milliseconds), and createReviewerTask's live probe cannot stop two
+  // that both probe before either inserts. Pending-only because every review is
+  // pending at insert time; claimed rows are covered by the probe. Conflict and
+  // CI retries carry the same subject anchor, so `category` scopes it to reviews;
+  // `creation_source = 'webhook'` + a parent scopes it to createReviewerTask rows,
+  // so a human/API filing auto-classified as 'review' never collides with it.
+  onePendingReviewPerHeadIdx: uniqueIndex('tasks_one_pending_review_per_head_unique')
+    .on(t.workspaceId, t.subjectPrNumber, t.subjectHeadSha)
+    .where(sql`${t.category} = 'review' AND ${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.parentTaskId} IS NOT NULL AND ${t.subjectPrNumber} IS NOT NULL AND ${t.subjectHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(

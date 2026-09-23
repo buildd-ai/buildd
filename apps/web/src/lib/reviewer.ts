@@ -28,6 +28,7 @@ import {
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { inheritPhaseFromParent } from './mission-phase';
 import { appendPrActivity } from './pr-activity-comment';
+import { triggerEvent, channels, events } from './pusher';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import {
@@ -596,7 +597,23 @@ export async function createReviewerTask(
       creationSource: 'webhook',
       ...subjectValues,
     })
+    // The pending-review idempotency index (one pending review per workspace,
+    // PR and head SHA). Two producers can both pass the live probe above
+    // before either row exists — create_pr's auto-review and the PR `opened`
+    // webhook fire within milliseconds — so the index decides, and the loser
+    // gets no row back.
+    .onConflictDoNothing()
     .returning({ id: tasks.id });
+
+  if (!reviewerTask && subjectAnchor?.headSha) {
+    const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, subjectAnchor.headSha);
+    if (winner) {
+      console.log(
+        `[reviewer] PR #${prNumber} at ${subjectAnchor.headSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
+      );
+      return { id: winner.id, deduplicated: true };
+    }
+  }
 
   return reviewerTask ?? null;
 }
@@ -1372,7 +1389,7 @@ export async function supersedeReviewerTaskOnMerge(
         .update(workers)
         .set({
           status: 'failed',
-          error: 'Superseded — PR merged by a human before review completed',
+          error: 'Superseded — PR merged before review completed',
           exitCause: 'condition_unmet',
           completedAt: new Date(),
           updatedAt: new Date(),
@@ -1391,14 +1408,32 @@ export async function supersedeReviewerTaskOnMerge(
 
     if (!cancelled) return { superseded: false, reviewerTaskId: null };
 
+    // Marking the worker failed does not stop a session that is already
+    // running — it keeps spending budget until its next API call. Push the
+    // same abort a task cancel sends, and broadcast the cancel so dashboards
+    // and runners see it without polling. Best-effort: the rows are written.
+    const push = (send: () => Promise<unknown>) =>
+      Promise.resolve().then(send).catch((err) =>
+        console.warn(`[reviewer] supersede push failed for reviewer task ${reviewerTask.id}:`, err));
+    await Promise.all([
+      push(() => triggerEvent(channels.workspace(reviewerTask.workspaceId), events.TASK_UPDATED, {
+        task: { id: reviewerTask.id, status: 'cancelled', workspaceId: reviewerTask.workspaceId, missionId: reviewerTask.missionId },
+      })),
+      liveWorker
+        ? push(() => triggerEvent(channels.worker(liveWorker.id), events.WORKER_COMMAND, {
+            action: 'abort', reason: 'pr_merged', timestamp: Date.now(),
+          }))
+        : Promise.resolve(),
+    ]);
+
     if (reviewerTask.missionId) {
       await db.insert(missionNotes).values({
         missionId: reviewerTask.missionId,
         taskId: originalTaskId,
         authorType: 'system',
         type: 'reviewer_superseded',
-        title: `PR #${prNumber}: review cancelled — merged by a human`,
-        body: 'A human merged this PR while the agent review was still pending or running. The review task was cancelled so it does not run against an already-merged PR.',
+        title: `PR #${prNumber}: review cancelled — PR merged before review completed`,
+        body: 'This PR was merged while the agent review was still pending or running. The review task was cancelled so it does not run against an already-merged PR.',
         status: 'open',
       });
     }
