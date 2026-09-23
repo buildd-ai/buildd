@@ -106,8 +106,16 @@ function getDb(): Database {
   return db;
 }
 
-/** Extract cost/token data from a worker's resultMeta */
-function extractMetrics(worker: LocalWorker): {
+/**
+ * Extract cost/token data from a worker's resultMeta.
+ *
+ * `modelUsage` is the per-model breakdown and wins when present. On seat-based
+ * (OAuth) auth it is always `{}` — the SDK only reports top-level usage — so
+ * fall back to `totalUsage` (all-in input: fresh + cache read + cache write),
+ * `totalCostUsd`, and `actualModel` / `reportedModel`. Without the fallback
+ * every OAuth session was archived with 0 tokens and no model.
+ */
+export function extractMetrics(worker: LocalWorker): {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
@@ -132,10 +140,23 @@ function extractMetrics(worker: LocalWorker): {
         maxTokens = tokens;
         model = m;
       }
-      totalInputTokens += usage.inputTokens + (usage.cacheReadInputTokens || 0);
+      // All-in input (fresh + cache read + cache write), matching the
+      // totalUsage fallback below so the column means one thing on both auths.
+      totalInputTokens += usage.inputTokens + (usage.cacheReadInputTokens || 0) + (usage.cacheCreationInputTokens || 0);
       totalOutputTokens += usage.outputTokens;
       totalCostUsd += usage.costUSD || 0;
     }
+  }
+
+  if (totalInputTokens === 0 && totalOutputTokens === 0 && meta?.totalUsage) {
+    totalInputTokens = meta.totalUsage.inputTokens || 0;
+    totalOutputTokens = meta.totalUsage.outputTokens || 0;
+  }
+  if (totalCostUsd === 0 && typeof meta?.totalCostUsd === 'number') {
+    totalCostUsd = meta.totalCostUsd;
+  }
+  if (!model) {
+    model = meta?.actualModel || worker.reportedModel || null;
   }
 
   // Duration: use SDK's durationMs if available, otherwise compute from timestamps
@@ -155,6 +176,23 @@ function extractMetrics(worker: LocalWorker): {
   };
 }
 
+/**
+ * PR URL for the history row. `worker.prUrl` is set from a successful
+ * create_pr result and is the reliable source; milestone labels only carry a
+ * URL occasionally, so they are the fallback.
+ */
+export function resolvePrUrl(worker: LocalWorker): string | null {
+  if (worker.prUrl) return worker.prUrl;
+  let prUrl: string | null = null;
+  for (const m of worker.milestones) {
+    if ('label' in m && m.label && m.label.includes('PR #')) {
+      const match = m.label.match(/https?:\/\/\S+/);
+      if (match) prUrl = match[0];
+    }
+  }
+  return prUrl;
+}
+
 /** Archive a completed/errored worker session to SQLite + gzip */
 export function archiveSession(worker: LocalWorker): void {
   try {
@@ -169,15 +207,7 @@ export function archiveSession(worker: LocalWorker): void {
 
     const metrics = extractMetrics(worker);
 
-    // Find PR URL from commits or milestones
-    let prUrl: string | null = null;
-    for (const m of worker.milestones) {
-      if ('label' in m && m.label && m.label.includes('PR #')) {
-        // Extract URL from milestone label if present
-        const match = m.label.match(/https?:\/\/\S+/);
-        if (match) prUrl = match[0];
-      }
-    }
+    const prUrl = resolvePrUrl(worker);
 
     const startedAt = worker.milestones.length > 0
       ? worker.milestones[0].ts
@@ -428,6 +458,46 @@ export function getStats(): HistoryStats {
   };
 }
 
+/**
+ * Rebuild a minimal LocalWorker from a persisted worker-store record for
+ * archiveSession. Carries resultMeta / prUrl / reportedModel so backfilled
+ * sessions get the same usage, model and PR URL as live-archived ones.
+ */
+export function workerFromPersisted(data: Record<string, any>): LocalWorker {
+  return {
+    id: data.id,
+    taskId: data.taskId,
+    taskTitle: data.taskTitle || 'Unknown',
+    taskDescription: data.taskDescription,
+    workspaceId: data.workspaceId || '',
+    workspaceName: data.workspaceName || 'Unknown',
+    branch: data.branch || '',
+    status: data.status,
+    error: data.error,
+    completedAt: data.completedAt || data._savedAt,
+    lastActivity: data.lastActivity || data._savedAt || Date.now(),
+    messages: data.messages || [],
+    milestones: data.milestones || [],
+    toolCalls: data.toolCalls || [],
+    commits: data.commits || [],
+    output: data.output || [],
+    lastAssistantMessage: data.lastAssistantMessage,
+    resultMeta: data.resultMeta,
+    prUrl: data.prUrl,
+    reportedModel: data.reportedModel,
+    // Transient defaults
+    hasNewActivity: false,
+    currentAction: '',
+    subagentTasks: [],
+    checkpoints: [],
+    checkpointEvents: new Set(),
+    phaseText: null,
+    phaseStart: null,
+    phaseToolCount: 0,
+    phaseTools: [],
+  };
+}
+
 /** Backfill: scan existing worker JSON files for completed workers not already in SQLite */
 export function backfillFromWorkerFiles(): number {
   if (!existsSync(workersDir())) return 0;
@@ -450,37 +520,7 @@ export function backfillFromWorkerFiles(): number {
         const exists = db.query('SELECT id FROM sessions WHERE id = ?').get(data.id);
         if (exists) continue;
 
-        // Reconstruct minimal LocalWorker for archiveSession
-        const worker: LocalWorker = {
-          id: data.id,
-          taskId: data.taskId,
-          taskTitle: data.taskTitle || 'Unknown',
-          taskDescription: data.taskDescription,
-          workspaceId: data.workspaceId || '',
-          workspaceName: data.workspaceName || 'Unknown',
-          branch: data.branch || '',
-          status: data.status,
-          error: data.error,
-          completedAt: data.completedAt || data._savedAt,
-          lastActivity: data.lastActivity || data._savedAt || Date.now(),
-          messages: data.messages || [],
-          milestones: data.milestones || [],
-          toolCalls: data.toolCalls || [],
-          commits: data.commits || [],
-          output: data.output || [],
-          lastAssistantMessage: data.lastAssistantMessage,
-          // Transient defaults
-          hasNewActivity: false,
-          currentAction: '',
-          subagentTasks: [],
-          checkpoints: [],
-          checkpointEvents: new Set(),
-          phaseText: null,
-          phaseStart: null,
-          phaseToolCount: 0,
-          phaseTools: [],
-        };
-
+        const worker = workerFromPersisted(data);
         archiveSession(worker);
         backfilled++;
       } catch {
