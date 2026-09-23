@@ -24,9 +24,26 @@ mock.module('child_process', () => ({
 }));
 
 // Import after mocking
-const { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable } = await import('../../src/updater');
+const { getCurrentCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable } = await import('../../src/updater');
+import type { UpdateExecOps } from '../../src/updater';
 
 const NODE_MODULES = join(TMP_HOME, 'node_modules');
+
+/**
+ * A fake UpdateExecOps that never touches a real git repo or spawns a real
+ * `bun install` — applyUpdate/rollbackTo now run entirely through Bun.spawn
+ * (see updater.ts's gitAsync/bunVersionAsync/bunInstallAsync), so mocking
+ * child_process.execSync (still done above for getCurrentCommit/hasTrackedChanges,
+ * which stay execSync-based) no longer reaches the apply path at all.
+ */
+function fakeExecOps(overrides: Partial<UpdateExecOps> = {}): UpdateExecOps {
+  return {
+    git: mock(async () => 'sha'),
+    bunVersion: mock(async () => {}),
+    bunInstall: mock(async () => {}),
+    ...overrides,
+  };
+}
 
 afterAll(() => {
   nodeFs.rmSync(TMP_HOME, { recursive: true, force: true });
@@ -80,46 +97,67 @@ describe('checkForUpdate', () => {
 describe('applyUpdate', () => {
   beforeEach(() => {
     mockExecSync.mockReset();
+    // getCurrentCommit() (previousCommit/newCommit) still goes through
+    // execSync — only the fetch/reset/install chain moved to Bun.spawn.
+    mockExecSync.mockReturnValue('sha\n');
     // Rebuild a node_modules tree (with a stale .bun store dir) that the clean
     // reinstall is expected to blow away.
     nodeFs.rmSync(NODE_MODULES, { recursive: true, force: true });
     nodeFs.mkdirSync(join(NODE_MODULES, '.bun', '@aws-sdk+client-s3@3.1.0'), { recursive: true });
   });
 
-  test('clean-reinstalls: removes node_modules before a frozen bun install', () => {
-    const commands: string[] = [];
+  test('is async and never shells out via execSync for fetch/reset/checkout/bun', async () => {
+    const execOps = fakeExecOps();
+    const pending = applyUpdate(TMP_HOME, nodeFs, execOps);
+    expect(pending).toBeInstanceOf(Promise);
+    await pending;
+    // getCurrentCommit() (a plain `git rev-parse HEAD`) still legitimately goes
+    // through execSync — it's the reinstall chain that must not.
+    const execSyncCmds = mockExecSync.mock.calls.map((c: any[]) => c[0]);
+    for (const banned of ['fetch', 'reset', 'checkout', 'bun ']) {
+      expect(execSyncCmds.some((cmd: string) => typeof cmd === 'string' && cmd.includes(banned))).toBe(false);
+    }
+  });
+
+  test('clean-reinstalls: removes node_modules before a frozen bun install', async () => {
     let nodeModulesPresentAtInstall: boolean | null = null;
-    mockExecSync.mockImplementation((cmd: string) => {
-      commands.push(cmd);
-      if (typeof cmd === 'string' && cmd.includes('bun install')) {
+    const execOps = fakeExecOps({
+      bunInstall: mock(async () => {
         // Ordering guarantee: node_modules must already be gone by install time.
         nodeModulesPresentAtInstall = nodeFs.existsSync(NODE_MODULES);
-      }
-      if (typeof cmd === 'string' && cmd.includes('rev-parse')) return 'sha\n';
-      return '';
+      }),
     });
 
-    const result = applyUpdate(TMP_HOME, nodeFs);
+    const result = await applyUpdate(TMP_HOME, nodeFs, execOps);
 
     expect(result.success).toBe(true);
-    // The install step is a frozen (fail-fast) install.
-    expect(commands.some(c => c.includes('bun install --frozen-lockfile'))).toBe(true);
+    expect(execOps.bunInstall).toHaveBeenCalledWith(TMP_HOME);
     // rm happened strictly before the install ran...
     expect(nodeModulesPresentAtInstall).toBe(false);
     // ...and (since the mocked install is a no-op) the tree stays removed.
     expect(nodeFs.existsSync(NODE_MODULES)).toBe(false);
   });
 
-  test('verifies bun is runnable before removing node_modules', () => {
-    mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('bun --version')) {
-        throw new Error('bun: command not found');
-      }
-      if (typeof cmd === 'string' && cmd.includes('rev-parse')) return 'sha\n';
-      return '';
+  test('resets to the tracked branch and fetches before resetting', async () => {
+    const execOps = fakeExecOps();
+    await applyUpdate(TMP_HOME, nodeFs, execOps);
+
+    const calls = (execOps.git as ReturnType<typeof mock>).mock.calls.map((c: any[]) => c[0]);
+    expect(calls).toContainEqual(['fetch', 'origin', 'main']);
+    expect(calls).toContainEqual(['reset', '--hard', 'origin/main']);
+    // fetch must precede the reset.
+    const fetchIdx = calls.findIndex((c: string[]) => c[0] === 'fetch');
+    const resetIdx = calls.findIndex((c: string[]) => c[0] === 'reset');
+    expect(fetchIdx).toBeGreaterThanOrEqual(0);
+    expect(fetchIdx).toBeLessThan(resetIdx);
+  });
+
+  test('verifies bun is runnable before removing node_modules', async () => {
+    const execOps = fakeExecOps({
+      bunVersion: mock(async () => { throw new Error('bun: command not found'); }),
     });
 
-    const result = applyUpdate(TMP_HOME, nodeFs);
+    const result = await applyUpdate(TMP_HOME, nodeFs, execOps);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('bun: command not found');
@@ -127,36 +165,74 @@ describe('applyUpdate', () => {
     expect(nodeFs.existsSync(NODE_MODULES)).toBe(true);
   });
 
-  test('returns failure without throwing when bun install fails after the rm', () => {
-    mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('bun install')) {
-        throw new Error('lockfile out of sync');
-      }
-      if (typeof cmd === 'string' && cmd.includes('rev-parse')) return 'sha\n';
-      return '';
+  test('returns failure without throwing when bun install fails after the rm', async () => {
+    const execOps = fakeExecOps({
+      bunInstall: mock(async () => { throw new Error('lockfile out of sync'); }),
     });
 
-    let result: any;
     // Preserve the contract the caller relies on: a failed reinstall never throws
     // (so the live process keeps serving) and reports success:false (so no exit 75).
-    expect(() => { result = applyUpdate(TMP_HOME, nodeFs); }).not.toThrow();
+    let result: any;
+    await expect((async () => { result = await applyUpdate(TMP_HOME, nodeFs, execOps); })()).resolves.toBeUndefined();
     expect(result.success).toBe(false);
     expect(result.error).toContain('lockfile out of sync');
   });
 
-  test('returns failure when git fetch fails (node_modules untouched)', () => {
-    mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('fetch')) {
-        throw new Error('network error');
-      }
-      return 'abc1234\n';
+  test('returns failure when git fetch fails (node_modules untouched)', async () => {
+    const execOps = fakeExecOps({
+      git: mock(async (args: string[]) => {
+        if (args[0] === 'fetch') throw new Error('network error');
+        return 'sha';
+      }),
     });
 
-    const result = applyUpdate(TMP_HOME, nodeFs);
+    const result = await applyUpdate(TMP_HOME, nodeFs, execOps);
     expect(result.success).toBe(false);
     expect(result.error).toContain('network error');
     // Failure occurred before the rm, so node_modules is intact.
     expect(nodeFs.existsSync(NODE_MODULES)).toBe(true);
+  });
+});
+
+describe('rollbackTo', () => {
+  beforeEach(() => {
+    mockExecSync.mockReset();
+    mockExecSync.mockReturnValue('sha\n');
+    nodeFs.rmSync(NODE_MODULES, { recursive: true, force: true });
+    nodeFs.mkdirSync(NODE_MODULES, { recursive: true });
+  });
+
+  test('resets to the given commit without fetching first', async () => {
+    const execOps = fakeExecOps();
+    const result = await rollbackTo('deadbeef', TMP_HOME, nodeFs, execOps);
+
+    expect(result.success).toBe(true);
+    const calls = (execOps.git as ReturnType<typeof mock>).mock.calls.map((c: any[]) => c[0]);
+    expect(calls).toContainEqual(['reset', '--hard', 'deadbeef']);
+    expect(calls.some((c: string[]) => c[0] === 'fetch')).toBe(false);
+  });
+
+  test('still does a clean reinstall (removes node_modules before install)', async () => {
+    let nodeModulesPresentAtInstall: boolean | null = null;
+    const execOps = fakeExecOps({
+      bunInstall: mock(async () => {
+        nodeModulesPresentAtInstall = nodeFs.existsSync(NODE_MODULES);
+      }),
+    });
+
+    await rollbackTo('deadbeef', TMP_HOME, nodeFs, execOps);
+    expect(nodeModulesPresentAtInstall).toBe(false);
+  });
+
+  test('returns failure without throwing when the reset itself fails', async () => {
+    const execOps = fakeExecOps({
+      git: mock(async () => { throw new Error('could not resolve deadbeef'); }),
+    });
+
+    let result: any;
+    await expect((async () => { result = await rollbackTo('deadbeef', TMP_HOME, nodeFs, execOps); })()).resolves.toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('could not resolve deadbeef');
   });
 });
 

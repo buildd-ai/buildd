@@ -4448,8 +4448,17 @@ async function handleReviewerOutcomeIfNeeded(
           context: {
             iteration: currentIteration + 1,
             maxIterations,
-            baseBranch: workerBranch, // MUST continue on same branch — no new branch
-            resumeBranch: workerBranch,
+            // baseBranch is the DECLARED base resolveWorktreeBase() falls back to when
+            // resumeBranch (workerBranch, below) turns out to be gone from the remote —
+            // e.g. the PR merged and its branch got deleted between review and retry
+            // claim. Using the PR's actual base (mission integration branch, or trunk)
+            // here, not workerBranch again, is what makes that fallback meaningful: two
+            // identical values collapse the cascade back to workerBranch, which is
+            // already known missing, and resolveWorktreeBase gives up and cuts the
+            // worktree from trunk instead — silently dropping the mission's prior work.
+            baseBranch: gatedWorker?.prBaseRef ?? workerBranch,
+            resumeBranch: workerBranch, // MUST continue on same branch — no new branch
+
             ...(reviewerLastCommitSha ? { lastCommitSha: reviewerLastCommitSha } : {}),
             failureContext: {
               summary: output.feedback ?? output.summary ?? 'Reviewer requested changes',
