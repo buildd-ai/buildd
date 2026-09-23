@@ -110,7 +110,7 @@ Test UI components in isolation without database dependencies. Useful for:
 - Demonstrating component states
 
 ### Usage
-Navigate to: `http://localhost:3001/app/dev/fixtures?state=<state>`
+Navigate to: `http://localhost:3000/app/dev/fixtures?state=<state>`
 
 Available states:
 - `waiting-input` - Worker waiting for user input
@@ -130,8 +130,6 @@ UI components have `data-testid` attributes for reliable E2E test selectors.
 | Test ID | Component | Location |
 |---------|-----------|----------|
 | `task-header-status` | Status badge | Task detail page header |
-| `sidebar-task-item` | Task link | Sidebar navigation |
-| `sidebar-task-question` | Question text | Sidebar (when waiting_input) |
 | `worker-needs-input-banner` | Banner container | Active worker section |
 | `worker-needs-input-label` | "Needs input" label | Banner |
 | `worker-needs-input-prompt` | Question text | Banner |
@@ -146,8 +144,8 @@ Some elements include additional data attributes:
 
 ### Example Playwright/Cypress Usage
 ```javascript
-// Find tasks in waiting_input state
-const waitingTasks = page.locator('[data-testid="sidebar-task-item"][data-status="waiting_input"]');
+// Task detail header in waiting_input state
+const header = page.locator('[data-testid="task-header-status"][data-status="waiting_input"]');
 
 // Verify the needs-input banner is visible
 await expect(page.locator('[data-testid="worker-needs-input-banner"]')).toBeVisible();

@@ -12,12 +12,12 @@ assertions:
   - id: "randomiser-extraction"
     type: "symbol"
     name: "assignExperimentArm"
-    path: "apps/runner/src/experiment-randomizer.ts"
+    path: "packages/core/experiment-randomizer.ts"
 ---
 # Task-Scoped Workspace Memory (experiment arm, concluded)
 
-**Status:** Implemented and retired — the experiment concluded (see Decision below) and `task_scoped` is now the unconditional rendering of the `## Workspace Memory` block. There is no longer an arm, a draw, or an enrolment fraction: `assignMemoryDigestArm` is deleted, and the reusable randomiser it was built from lives on as `assignExperimentArm` in `apps/runner/src/experiment-randomizer.ts` for the next experiment. The policy-version pin guards named below are removed with it — see "Releasing pin guards".
-**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/experiment-randomizer.ts`, `apps/runner/src/prompt-builder.ts`, `apps/runner/src/workers.ts`, `packages/core/db/schema.ts` → `worker_prompt_composition_events`, `docs/design/mission-context-clusters.md`, `docs/design/experiment-lifecycle.md`
+**Status:** Implemented and retired — the experiment concluded (see Decision below) and `task_scoped` is now the unconditional rendering of the `## Workspace Memory` block. There is no longer an arm, a draw, or an enrolment fraction: `assignMemoryDigestArm` is deleted, and the reusable randomiser it was built from lives on as `assignExperimentArm` in `packages/core/experiment-randomizer.ts` for the next experiment. The policy-version pin guards named below are removed with it — see "Releasing pin guards".
+**Related:** `apps/runner/src/memory-digest-policy.ts`, `packages/core/experiment-randomizer.ts`, `apps/runner/src/prompt-builder.ts`, `apps/runner/src/workers.ts`, `packages/core/db/schema.ts` → `worker_prompt_composition_events`, `docs/design/mission-context-clusters.md`, `docs/design/experiment-lifecycle.md`
 
 ## Problem
 
@@ -304,7 +304,7 @@ source any more.
 
 ### Releasing pin guards — done
 
-Recording this decision released the policy-version pin guards in `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts` and `packages/core/__tests__/memory-digest-readout-policy-pin.test.ts`. The follow-on default-flip task removed both, along with `assignMemoryDigestArm`, `hashUnitInterval` and `resolveTaskScopedFraction` from `apps/runner/src/memory-digest-policy.ts` and the `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` config surface — `task_scoped` is now the only rendering, unconditionally. The randomiser survives as `assignExperimentArm` in `apps/runner/src/experiment-randomizer.ts`, generalised to take the experiment id, version, arm set and fraction as parameters instead of compiling them in. `worker_prompt_composition_events` keeps its historical `full` rows and keeps being written to — every new row now carries `arm: 'task_scoped'`, `propensity: 1`, `fraction: 1` — and the readout module, its CLI, and the published `memory-digest-readout:memory-digest-v4` artifact are untouched.
+Recording this decision released the policy-version pin guards in `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts` and `packages/core/__tests__/memory-digest-readout-policy-pin.test.ts`. The follow-on default-flip task removed both, along with `assignMemoryDigestArm`, `hashUnitInterval` and `resolveTaskScopedFraction` from `apps/runner/src/memory-digest-policy.ts` and the `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` config surface — `task_scoped` is now the only rendering, unconditionally. The randomiser survives as `assignExperimentArm` in `packages/core/experiment-randomizer.ts`, generalised to take the experiment id, version, arm set and fraction as parameters instead of compiling them in. `worker_prompt_composition_events` keeps its historical `full` rows and keeps being written to — every new row now carries `arm: 'task_scoped'`, `propensity: 1`, `fraction: 1` — and the readout module, its CLI, and the published `memory-digest-readout:memory-digest-v4` artifact are untouched.
 
 ### Post-ship guardrail check — no regression found, monitor now standing
 
