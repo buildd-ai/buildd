@@ -1117,14 +1117,13 @@ describe('POST /api/github/webhook', () => {
       // A force-rebasing bot (renovate) can fire several check_suite failures for
       // the same PR within minutes, each carrying a distinct head_sha — the exact
       // (workspace, PR, headSha) unique index does not fire because the SHA really
-      // did change. `tasks_one_open_attempt_per_parent_unique` (schema.ts) is the
-      // guard for this case: it blocks a second PENDING "attempt" child under the
-      // same parent task regardless of SHA, until the first one is claimed. This
-      // test exercises the app's handling of that conflict via the same
-      // `jobInsertConflicts` mock idiom the exact-SHA test above uses — it does not
-      // exercise live Postgres partial-index semantics (this suite runs against a
-      // fully mocked DB with no schema enforcement); the migration SQL itself
-      // (drizzle/0176_organic_shocker.sql) is the source of truth for that.
+      // did change. `tasks_one_pending_ci_retry_per_pr_unique` (schema.ts) is the
+      // guard for this case: it blocks a second PENDING webhook CI retry for the
+      // same PR regardless of SHA, until the first one is claimed. This test
+      // exercises the app's handling of that conflict via the same
+      // `jobInsertConflicts` mock idiom the exact-SHA test above uses — the mocked
+      // DB enforces no schema, so the index shape itself is pinned by
+      // packages/core/__tests__/ci-retry-pending-dedup-index.test.ts.
       withFailedWorkerPr();
       jobInsertConflicts = true;
 
@@ -1135,7 +1134,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(1);
       const attempted = insertCalls[0].values;
-      expect(attempted.parentTaskId).toBe('t1');
+      expect(attempted.ciRetryPrNumber).toBe(42); // the key the pending-retry index dedupes on
       expect(attempted.ciRetryHeadSha).toBe('def456'); // genuinely a new SHA, not a literal duplicate delivery
       expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockDispatchNewTask).not.toHaveBeenCalled();

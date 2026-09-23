@@ -1,5 +1,5 @@
 {
-  "id": "d58d7ca8-a949-4492-aaed-d1305577a486",
+  "id": "07eac924-9d7a-4489-b365-9922796d124d",
   "prevId": "cdef077c-eab7-487e-b9fb-a5e5cb9ba8a8",
   "version": "7",
   "dialect": "postgresql",
@@ -8804,8 +8804,8 @@
           "method": "btree",
           "with": {}
         },
-        "tasks_one_open_attempt_per_parent_unique": {
-          "name": "tasks_one_open_attempt_per_parent_unique",
+        "tasks_one_pending_ci_retry_per_pr_unique": {
+          "name": "tasks_one_pending_ci_retry_per_pr_unique",
           "columns": [
             {
               "expression": "workspace_id",
@@ -8814,14 +8814,14 @@
               "nulls": "last"
             },
             {
-              "expression": "parent_task_id",
+              "expression": "ci_retry_pr_number",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"tasks\".\"status\" = 'pending' AND \"tasks\".\"task_class\" = 'attempt' AND \"tasks\".\"creation_source\" = 'webhook' AND \"tasks\".\"parent_task_id\" IS NOT NULL",
+          "where": "\"tasks\".\"status\" = 'pending' AND \"tasks\".\"creation_source\" = 'webhook' AND \"tasks\".\"ci_retry_pr_number\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
