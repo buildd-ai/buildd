@@ -117,7 +117,7 @@
     "./signal-registry": "./signal-registry.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.272",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
