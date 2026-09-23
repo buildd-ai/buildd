@@ -69,6 +69,7 @@ import {
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
 import MissionSituationBlock, { affordanceFor } from '@/components/missions/MissionSituationBlock';
+import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 export const dynamic = 'force-dynamic';
 
@@ -1239,7 +1240,7 @@ export default async function MissionDetailPage({
                 </div>
                 <p className="text-[13px] text-text-secondary">
                   {spendUsd != null
-                    ? `$${spendUsd.toFixed(4)} spent vs $${parseFloat(costBudgetUsd).toFixed(2)} budget — no new tasks will spawn.`
+                    ? `${formatEstimatedUsd(spendUsd, 4)} spent vs $${parseFloat(costBudgetUsd).toFixed(2)} budget — no new tasks will spawn.`
                     : `Budget of $${parseFloat(costBudgetUsd).toFixed(2)} reached — no new tasks will spawn.`}
                   {' '}Raise the budget to resume.
                 </p>
@@ -1256,8 +1257,8 @@ export default async function MissionDetailPage({
           <div className="card p-3 mb-4">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] text-text-muted">Cost budget</span>
-              <span className={`text-[12px] font-mono tabular-nums ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'text-status-warning' : 'text-text-secondary'}`}>
-                ${spendUsd.toFixed(2)} / ${parseFloat(costBudgetUsd).toFixed(2)}
+              <span className={`text-[12px] font-mono tabular-nums ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'text-status-warning' : 'text-text-secondary'}`} title={ESTIMATED_COST_TITLE}>
+                {formatEstimatedUsd(spendUsd)} / ${parseFloat(costBudgetUsd).toFixed(2)}
               </span>
             </div>
             <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] overflow-hidden">

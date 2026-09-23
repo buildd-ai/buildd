@@ -16,6 +16,7 @@ const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockAccountsFindMany = mock(() => Promise.resolve([]));
 const mockMissionsFindMany = mock(() => Promise.resolve([]));
 const mockTenantBudgetsFindFirst = mock(() => Promise.resolve(null));
+const mockBackendPausesFindFirst = mock((_opts?: any) => Promise.resolve(null));
 
 // Builder chain for db.select().from().where() and db.select().from().innerJoin().where()
 const mockInnerJoinChain = {
@@ -34,6 +35,7 @@ mock.module('@buildd/core/db', () => ({
       accounts: { findMany: mockAccountsFindMany },
       missions: { findMany: mockMissionsFindMany },
       tenantBudgets: { findFirst: mockTenantBudgetsFindFirst },
+      backendPauses: { findFirst: mockBackendPausesFindFirst },
     },
     select: mockDbSelect,
   },
@@ -77,6 +79,11 @@ mock.module('@buildd/core/db/schema', () => ({
   tenantBudgets: {
     teamId: 'tenantBudgets.teamId', updatedAt: 'tenantBudgets.updatedAt',
     budgetExhaustedAt: 'tenantBudgets.budgetExhaustedAt', budgetResetsAt: 'tenantBudgets.budgetResetsAt',
+  },
+  backendPauses: {
+    teamId: 'backendPauses.teamId', backend: 'backendPauses.backend',
+    resetsAt: 'backendPauses.resetsAt', createdAt: 'backendPauses.createdAt',
+    reason: 'backendPauses.reason',
   },
   oauthBudgetEpisodes: {},
 }));
@@ -201,5 +208,59 @@ describe('getBudgetForecast — team-level (null workspaceId) mission filtering'
     );
     const forecast = await getBudgetForecast(TEAM_ID, [WS_ID]);
     expect(forecast.missions).toHaveLength(1);
+  });
+});
+
+// A.7: the "Codex budget" line used to be built from tenant_budgets, which
+// records Dispatch-tenant *Claude* walls. Codex walls live in backend_pauses.
+describe('getBudgetForecast — Codex vs Claude tenant walls', () => {
+  const future = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const past = new Date(Date.now() - 60 * 60 * 1000);
+
+  beforeEach(() => {
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockImplementation(() => Promise.resolve([]));
+    mockTenantBudgetsFindFirst.mockReset();
+    mockTenantBudgetsFindFirst.mockImplementation(() => Promise.resolve(null));
+    mockBackendPausesFindFirst.mockReset();
+    mockBackendPausesFindFirst.mockImplementation(() => Promise.resolve(null));
+  });
+
+  it('an exhausted Claude tenant row is reported as a Claude tenant wall, not Codex', async () => {
+    mockTenantBudgetsFindFirst.mockImplementation(() =>
+      Promise.resolve({ budgetExhaustedAt: past, budgetResetsAt: future } as any),
+    );
+    const forecast = await getBudgetForecast(TEAM_ID, [WS_ID]);
+    expect(forecast.codex).toBeNull();
+    expect(forecast.claudeTenant?.isExhausted).toBe(true);
+    expect(forecast.claudeTenant?.resetsAt).toBe(future.toISOString());
+  });
+
+  it('reads the Codex line from the newest codex backend pause for the team', async () => {
+    mockBackendPausesFindFirst.mockImplementation(() =>
+      Promise.resolve({ resetsAt: future, createdAt: past, reason: 'budget' } as any),
+    );
+    const forecast = await getBudgetForecast(TEAM_ID, [WS_ID]);
+    expect(forecast.codex).toEqual({
+      kind: 'codex',
+      isExhausted: true,
+      reason: 'budget',
+      resetsAt: future.toISOString(),
+      exhaustedAt: past.toISOString(),
+    });
+    expect(forecast.claudeTenant).toBeNull();
+
+    const opts = mockBackendPausesFindFirst.mock.calls[0][0];
+    expect(JSON.stringify(opts.where)).toContain('"f":"backendPauses.backend","v":"codex"');
+    expect(JSON.stringify(opts.where)).toContain('"f":"backendPauses.teamId","v":"team-abc"');
+  });
+
+  it('an elapsed codex pause is not exhausted', async () => {
+    mockBackendPausesFindFirst.mockImplementation(() =>
+      Promise.resolve({ resetsAt: past, createdAt: past, reason: 'budget' } as any),
+    );
+    const forecast = await getBudgetForecast(TEAM_ID, [WS_ID]);
+    expect(forecast.codex?.isExhausted).toBe(false);
+    expect(forecast.codex?.resetsAt).toBeNull();
   });
 });

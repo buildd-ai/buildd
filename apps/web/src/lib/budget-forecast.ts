@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { accounts, teams, missions, workers, tasks, tenantBudgets, oauthBudgetEpisodes } from '@buildd/core/db/schema';
+import { accounts, teams, missions, workers, tasks, tenantBudgets, backendPauses, oauthBudgetEpisodes } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, isNotNull, isNull, or, desc, sql } from 'drizzle-orm';
 import {
   learnOauthCapacity,
@@ -53,8 +53,26 @@ export interface MissionBudgetForecast {
   status: string;
 }
 
+/**
+ * Codex provider wall, read from the newest `backend_pauses` row with
+ * backend='codex' for the team. Null when Codex has never been paused.
+ */
 export interface CodexBudgetForecast {
   kind: 'codex';
+  isExhausted: boolean;
+  /** 'budget' (usage/rate limit) | 'auth' (credential rejected). */
+  reason: string;
+  /** ISO string; null if not currently exhausted */
+  resetsAt: string | null;
+  exhaustedAt: string | null;
+}
+
+/**
+ * Dispatch multi-tenant Claude wall, read from `tenant_budgets`. This is a
+ * Claude pool, not Codex. It used to be reported as the Codex line.
+ */
+export interface ClaudeTenantBudgetForecast {
+  kind: 'claude_tenant';
   isExhausted: boolean;
   /** ISO string; null if not currently exhausted */
   resetsAt: string | null;
@@ -65,6 +83,7 @@ export interface BudgetForecast {
   oauthSessions: OauthSessionForecast[];
   monthly: MonthlyBudgetForecast | null;
   codex: CodexBudgetForecast | null;
+  claudeTenant: ClaudeTenantBudgetForecast | null;
   missions: MissionBudgetForecast[];
 }
 
@@ -218,7 +237,7 @@ export async function getBudgetForecast(
 ): Promise<BudgetForecast> {
   const now = new Date();
 
-  const [teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows] = await Promise.all([
+  const [teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow] = await Promise.all([
     // Team monthly budget
     db.query.teams.findFirst({
       where: eq(teams.id, teamId),
@@ -266,7 +285,7 @@ export async function getBudgetForecast(
       },
     }).catch(() => [] as MissionQueryRow[]),
 
-    // Codex tenant budget exhaustion
+    // Dispatch-tenant Claude budget exhaustion (a Claude pool, not Codex)
     db.query.tenantBudgets.findFirst({
       where: eq(tenantBudgets.teamId, teamId),
       orderBy: [desc(tenantBudgets.updatedAt)],
@@ -288,6 +307,14 @@ export async function getBudgetForecast(
           ))
           .catch(() => [] as { costUsd: string }[])
       : Promise.resolve([] as { costUsd: string }[]),
+
+    // Codex provider wall — newest codex pause for the team. Provider pools
+    // are team-wide, so this is not scoped by workspace.
+    db.query.backendPauses.findFirst({
+      where: and(eq(backendPauses.teamId, teamId), eq(backendPauses.backend, 'codex')),
+      orderBy: [desc(backendPauses.resetsAt)],
+      columns: { resetsAt: true, createdAt: true, reason: true },
+    }).catch(() => null),
   ]);
 
   // ── Monthly budget ──────────────────────────────────────────────────────────
@@ -388,18 +415,32 @@ export async function getBudgetForecast(
     }
   }
 
-  // ── Codex tenant budget ─────────────────────────────────────────────────────
+  // ── Codex provider wall ─────────────────────────────────────────────────────
   let codex: CodexBudgetForecast | null = null;
-  if (tenantRow) {
-    const resetsAt = new Date((tenantRow as { budgetResetsAt: Date }).budgetResetsAt);
+  if (codexPauseRow) {
+    const row = codexPauseRow as { resetsAt: Date; createdAt: Date; reason: string };
+    const resetsAt = new Date(row.resetsAt);
     const isExhausted = resetsAt.getTime() > now.getTime();
     codex = {
       kind: 'codex',
       isExhausted,
+      reason: row.reason,
       resetsAt: isExhausted ? resetsAt.toISOString() : null,
-      exhaustedAt: (tenantRow as { budgetExhaustedAt: Date }).budgetExhaustedAt
-        ? new Date((tenantRow as { budgetExhaustedAt: Date }).budgetExhaustedAt).toISOString()
-        : null,
+      exhaustedAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    };
+  }
+
+  // ── Dispatch-tenant Claude budget ───────────────────────────────────────────
+  let claudeTenant: ClaudeTenantBudgetForecast | null = null;
+  if (tenantRow) {
+    const row = tenantRow as { budgetResetsAt: Date; budgetExhaustedAt: Date | null };
+    const resetsAt = new Date(row.budgetResetsAt);
+    const isExhausted = resetsAt.getTime() > now.getTime();
+    claudeTenant = {
+      kind: 'claude_tenant',
+      isExhausted,
+      resetsAt: isExhausted ? resetsAt.toISOString() : null,
+      exhaustedAt: row.budgetExhaustedAt ? new Date(row.budgetExhaustedAt).toISOString() : null,
     };
   }
 
@@ -407,6 +448,7 @@ export async function getBudgetForecast(
     oauthSessions,
     monthly,
     codex,
+    claudeTenant,
     missions: computeMissionBudgetForecast(missionForecasts),
   };
 }
