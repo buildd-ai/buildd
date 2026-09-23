@@ -100,6 +100,7 @@ export function deriveDriveState(mission: {
 export type Health = 'NOMINAL' | 'BLOCKED' | 'FAILING' | 'STALLED';
 
 const LIVE_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
+const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
 
 /**
  * The legacy, family-scoped predicate: everything except coordination/planning
@@ -187,12 +188,13 @@ export function deriveTaskHealthSignal(
   const activeTasks = countable.filter(t =>
     ['pending', 'assigned', 'in_progress'].includes(t.status),
   );
-  // Liveness reads every non-cancelled task, not just deliverables: a retry or
+  // Liveness reads every still-open task, not just deliverables: a retry or
   // reviewer attempt running against a pending deliverable is the mission
-  // moving, not stalling.
+  // moving, not stalling. Terminal tasks are excluded — an orphaned
+  // non-terminal worker row on a completed/failed task is not live work.
   if (
     activeTasks.length > 0 &&
-    !tasks.some(t => t.status !== 'cancelled' && t.workers?.some(w => LIVE_STATUSES.has(w.status)))
+    !tasks.some(t => OPEN_TASK_STATUSES.has(t.status) && t.workers?.some(w => LIVE_STATUSES.has(w.status)))
   ) {
     return 'STALLED';
   }

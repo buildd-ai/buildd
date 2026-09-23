@@ -750,7 +750,8 @@ export default async function TaskDetailPage({
           // need not be the newest one.
           const prBlockers = unresolvedDeps.flatMap(dep => {
             const w = dep.status === 'completed' ? findBlockingPrWorker(dep.workers ?? []) : undefined;
-            return w?.prUrl && w.prNumber ? [{ dep, w }] : [];
+            // prUrl alone blocks (the gate's rule); prNumber only shapes the label.
+            return w?.prUrl ? [{ dep, w }] : [];
           });
           const inProgressBlockers = unresolvedDeps.filter(d => d.status !== 'completed');
           return (
@@ -771,7 +772,7 @@ export default async function TaskDetailPage({
                         rel="noopener noreferrer"
                         className="text-sm font-medium text-accent-text hover:underline"
                       >
-                        Merge PR #{w.prNumber} ↗
+                        {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
                       <span className="text-[12px] text-text-muted">
                         {dep.title}

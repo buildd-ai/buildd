@@ -624,6 +624,13 @@ describe('deriveTaskHealthSignal', () => {
     ])).toBe<Health>('NOMINAL');
   });
 
+  it('a stale live worker on a completed task does not keep a workerless pending deliverable out of STALLED', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'completed', taskClass: 'work', title: 'Done it', workers: [{ status: 'running' }] },
+      { status: 'pending', taskClass: 'work', title: 'Build it', workers: [] },
+    ])).toBe<Health>('STALLED');
+  });
+
   it("family scope still counts attempts: a task's failed attempt reads FAILING", () => {
     expect(deriveTaskHealthSignal({}, [
       { status: 'pending', taskClass: 'bookkeeping', title: 'Review PR', workers: [] },

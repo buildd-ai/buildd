@@ -68,4 +68,11 @@ describe('dependency blocking — tasks/[id]/page.tsx reads every dep worker', (
     expect(pageSource).toContain('findBlockingPrWorker(');
     expect(pageSource).not.toMatch(/\(d(ep)? as any\)\.workers\?\.\[0\]/);
   });
+
+  it('a blocking worker with a prUrl but no prNumber is still listed (generic PR link)', () => {
+    // The gate blocks on prUrl alone; requiring prNumber here left the banner
+    // saying "waiting on 1 dependency" with nothing listed.
+    expect(pageSource).not.toMatch(/w\?\.prUrl && w\.prNumber \?/);
+    expect(pageSource).toContain("w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'");
+  });
 });
