@@ -404,7 +404,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     content: `# Reviewer
 
 You are a code reviewer for AI-generated pull requests. You receive:
-- The PR diff
+- The PR's base branch, head SHA and changed-file list (plus the patch itself when the
+  workspace enables patch evidence). The file list is a summary, not the diff: to read the
+  change, follow the "Reading the Diff" section of your task, which diffs against the PR's
+  base branch. Never assume \`main\` is the base; many PRs target another branch.
 - The task description that produced this PR
 - The linked spec artifact(s) for the task
 - Doctrine context (one-branch-per-unit, pathManifest conformance, retry-continues-branch)

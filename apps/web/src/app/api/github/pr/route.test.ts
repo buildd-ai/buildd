@@ -4808,9 +4808,28 @@ describe('closeAncestorRetryPrs', () => {
       .map((c: any[]) => Number(String(c[1]).match(/\/pulls\/(\d+)/)?.[1]));
   }
 
+  // GitHub's view of each ancestor PR, read before anything is posted to it.
+  // Default: open and unmerged, the only state a supersession close applies to.
+  let prState: Record<number, { state: string; merged: boolean } | Error> = {};
+
+  function postedCommentPrNumbers(): number[] {
+    return mockGithubApi.mock.calls
+      .filter((c: any[]) => c[2]?.method === 'POST' && /\/comments$/.test(String(c[1])))
+      .map((c: any[]) => Number(String(c[1]).match(/\/issues\/(\d+)\//)?.[1]));
+  }
+
   beforeEach(() => {
+    prState = {};
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockImplementation(async (_inst: number, path: string, init?: any) => {
+      if (!init?.method || init.method === 'GET') {
+        const n = Number(String(path).match(/\/pulls\/(\d+)$/)?.[1]);
+        const s = prState[n];
+        if (s instanceof Error) throw s;
+        return { number: n, ...(s ?? { state: 'open', merged: false }) };
+      }
+      return {};
+    });
     mockTasksFindFirst.mockReset();
     mockTasksFindFirst.mockImplementation(async (args: any) => {
       const id = args?.where?.value;
@@ -4848,5 +4867,50 @@ describe('closeAncestorRetryPrs', () => {
     });
 
     expect(closedPrNumbers().sort()).toEqual([10, 20]);
+  });
+
+  it('leaves an ancestor PR that already merged alone — no "rejected, closing" comment, no close', async () => {
+    prState[10] = { state: 'closed', merged: true };
+
+    await closeAncestorRetryPrs({
+      parentTaskId: 'retry-b',
+      successorPrNumber: 30,
+      installationId: 123,
+      repoFullName: 'org/repo',
+    });
+
+    expect(postedCommentPrNumbers()).not.toContain(10);
+    expect(closedPrNumbers()).not.toContain(10);
+    // The open ancestor in the same chain is still superseded.
+    expect(closedPrNumbers()).toEqual([20]);
+    expect(postedCommentPrNumbers()).toEqual([20]);
+  });
+
+  it('skips an ancestor PR that is already closed', async () => {
+    prState[20] = { state: 'closed', merged: false };
+
+    await closeAncestorRetryPrs({
+      parentTaskId: 'retry-b',
+      successorPrNumber: 30,
+      installationId: 123,
+      repoFullName: 'org/repo',
+    });
+
+    expect(postedCommentPrNumbers()).toEqual([10]);
+    expect(closedPrNumbers()).toEqual([10]);
+  });
+
+  it('does not comment on or close an ancestor PR whose state cannot be read', async () => {
+    prState[10] = new Error('GitHub 502');
+
+    await closeAncestorRetryPrs({
+      parentTaskId: 'retry-b',
+      successorPrNumber: 30,
+      installationId: 123,
+      repoFullName: 'org/repo',
+    });
+
+    expect(postedCommentPrNumbers()).not.toContain(10);
+    expect(closedPrNumbers()).toEqual([20]);
   });
 });

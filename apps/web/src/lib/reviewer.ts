@@ -376,6 +376,8 @@ export interface CreateReviewerTaskParams {
   prFiles?: GithubPrFile[];
   /** The PR's body, when the caller already has it. Read for its lede only. */
   prBody?: string | null;
+  /** The PR's base branch, when the caller already has it. See BuildContextParams. */
+  baseRef?: string | null;
   /**
    * Where to push this review's outcome, for a requester waiting in code.
    * Stored on the reviewer task so whichever handler reaches the terminal
@@ -529,6 +531,7 @@ export async function createReviewerTask(
         migrationSafety: params.migrationSafety,
         prFiles: params.prFiles,
         prBody: params.prBody,
+        baseRef: params.baseRef,
         missionCriteria,
         specSource,
       });
@@ -628,6 +631,14 @@ interface BuildContextParams {
    * Fetched lazily when absent; a failed fetch simply omits the lede section.
    */
   prBody?: string | null;
+  /**
+   * The branch this PR merges into, when the caller already has it. Rendered
+   * with a diff recipe so the reviewer diffs against the PR's real base rather
+   * than guessing one (reviewers left to guess picked `main` on PRs targeting
+   * `dev`). Read from the PR when absent; an unreadable base is rendered as
+   * unknown, never defaulted.
+   */
+  baseRef?: string | null;
   /**
    * The mission's `description` criteria, when it has any. Empty or omitted
    * leaves the assembled prompt byte-identical to the pre-criteria one.
@@ -852,6 +863,43 @@ export async function renderSpecConformanceGuidance(params: {
   return { doctrine, section };
 }
 
+/**
+ * Where the PR merges and how to read its full diff. The file list and the
+ * optional patch are summaries; a reviewer that wants the real diff has to
+ * rebuild it, and without the base ref it guesses, usually `main`, which on a
+ * PR targeting `dev` yields a diff the PR never had. Three-dot is the
+ * merge-base form GitHub shows, so base-branch commits since the fork point
+ * stay out of it.
+ *
+ * @internal exported for tests.
+ */
+export function renderDiffRecipe(params: {
+  baseRef: string | null;
+  headSha: string;
+  prNumber: number;
+}): string {
+  const { baseRef, headSha, prNumber } = params;
+  if (!baseRef) {
+    return [
+      '## Reading the Diff',
+      '',
+      'Base branch: unknown (it could not be read). Do NOT assume `main`. Read it first:',
+      `  gh pr view ${prNumber} --json baseRefName --jq .baseRefName`,
+      `then diff against it: \`git diff origin/<base>...${headSha}\`, or use \`gh pr diff ${prNumber}\`.`,
+    ].join('\n');
+  }
+  return [
+    '## Reading the Diff',
+    '',
+    `Base branch: \`${baseRef}\`. This PR merges into \`${baseRef}\`; diff against it and no other branch.`,
+    'The file list below is a summary. To read the full change:',
+    `  git fetch origin ${baseRef} ${headSha}`,
+    `  git diff origin/${baseRef}...${headSha}            # the whole PR (three dots: from the merge-base)`,
+    `  git diff origin/${baseRef}...${headSha} -- <path>  # one file`,
+    `or \`gh pr diff ${prNumber}\`, which shows the same diff.`,
+  ].join('\n');
+}
+
 /** @internal exported for tests — the assembled prompt is the unit under test. */
 export async function buildReviewerContext(params: BuildContextParams): Promise<string> {
   const { originalTaskId, originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig } = params;
@@ -913,13 +961,23 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
   // workspace's reviewer prompt is not opt-in.
   const patchBlock = patchSection ? `\n\n${patchSection}` : '';
 
-  // Fetch task artifacts
+  // Fetch task artifacts. An artifact hangs off the WORKER that produced it,
+  // never the task, so resolve the task's workers first (every attempt's, not
+  // just the latest) and look artifacts up by those ids. Comparing the task id
+  // to `artifacts.workerId` directly can never match.
   let artifactsSection = '';
   try {
-    const taskArtifacts = await db.query.artifacts.findMany({
-      where: eq(artifacts.workerId, originalTaskId),
-      columns: { id: true, title: true, type: true, content: true, storageKey: true },
+    const taskWorkers = await db.query.workers.findMany({
+      where: eq(workers.taskId, originalTaskId),
+      columns: { id: true },
     });
+    const workerIds = taskWorkers.map((w) => w.id);
+    const taskArtifacts = workerIds.length > 0
+      ? await db.query.artifacts.findMany({
+          where: inArray(artifacts.workerId, workerIds),
+          columns: { id: true, title: true, type: true, content: true, storageKey: true },
+        })
+      : [];
 
     if (taskArtifacts.length > 0) {
       const artifactLines = taskArtifacts.map((a) => {
@@ -932,19 +990,28 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
     console.warn(`[reviewer] Failed to fetch artifacts for task ${originalTaskId}:`, err);
   }
 
-  // The PR body, read for its lede only. Fetched lazily and defensively: a
-  // reviewer that cannot see the lede simply is not asked about it.
+  // The PR body (read for its lede only) and base ref (for the diff recipe).
+  // One lazy, defensive read serves whichever the caller did not supply: a
+  // reviewer that cannot see the lede simply is not asked about it, and one
+  // that cannot be told the base is told it is unknown.
   let prBody: string | null | undefined = params.prBody;
-  if (prBody === undefined) {
+  let baseRef: string | null | undefined =
+    typeof params.baseRef === 'string' && params.baseRef ? params.baseRef : undefined;
+  if (prBody === undefined || baseRef === undefined) {
     try {
       const { githubApi } = await import('@/lib/github');
       const pr = await githubApi(params.installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-      prBody = typeof pr?.body === 'string' ? pr.body : null;
+      if (prBody === undefined) prBody = typeof pr?.body === 'string' ? pr.body : null;
+      if (baseRef === undefined) {
+        baseRef = typeof pr?.base?.ref === 'string' && pr.base.ref ? pr.base.ref : null;
+      }
     } catch (err) {
-      console.warn(`[reviewer] Failed to fetch PR body for #${prNumber}:`, err);
-      prBody = null;
+      console.warn(`[reviewer] Failed to fetch PR #${prNumber}:`, err);
+      if (prBody === undefined) prBody = null;
+      if (baseRef === undefined) baseRef = null;
     }
   }
+  const diffRecipe = renderDiffRecipe({ baseRef: baseRef ?? null, headSha, prNumber });
   const { doctrine: ledeDoctrine, section: ledeSection } = renderLedeGuidance(prBody);
   const ledeBlock = ledeSection ? `\n${ledeSection}\n` : '';
   const ledeOutputLine = ledeSection
@@ -1051,6 +1118,8 @@ ${uncoveredSection}
 
 ${manifestSection}
 ${ledeBlock}
+${diffRecipe}
+
 ${diffSummary}${patchBlock}
 
 ${artifactsSection}

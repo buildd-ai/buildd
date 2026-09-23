@@ -190,6 +190,16 @@ describe('DEFAULT_ROLES', () => {
     it('never lets either security branch merge without review', () => {
       expect(c()).toMatch(/Both paths block the merge/);
     });
+
+    it('does not claim the reviewer receives the diff, and points it at the base branch', () => {
+      // The prompt carries a file list (and the patch only when a workspace
+      // opts in), so "you receive the diff" sent reviewers to rebuild it
+      // against whatever branch they guessed.
+      expect(c()).not.toMatch(/^- The PR diff$/m);
+      expect(c()).toMatch(/base branch/i);
+      expect(c()).toMatch(/Reading the Diff/);
+      expect(c()).toMatch(/never assume `main`/i);
+    });
   });
 
   it('Organizer prompt names roleSlug as the real routing lever and documents tier', () => {

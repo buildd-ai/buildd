@@ -118,6 +118,8 @@ async function requestIntegrationBranchReview(params: {
       reviewerRole: picked.role,
       installationId: params.installationId,
       repoFullName: params.repoFullName,
+      // The caller already has the PR base; saves the reviewer context a PR read.
+      baseRef: params.baseRef,
     });
 
     if (reviewerTask?.id && !reviewerTask.deduplicated) {
@@ -1703,6 +1705,27 @@ export async function closeAncestorRetryPrs(opts: {
 
   for (const prNumber of prNumbers) {
     try {
+      // Only an OPEN ancestor is superseded. A retry chain routinely holds an
+      // ancestor whose PR already merged (an earlier attempt shipped, a later
+      // one reworked it) or was already closed, and telling a merged PR it was
+      // "a rejected attempt" is simply false. Read GitHub rather than the
+      // worker row: merge state recorded by the webhook can lag. If GitHub's
+      // answer can't be read, leave the PR untouched: a missed close is
+      // recoverable, a false comment on a merged PR isn't.
+      let live: { state?: string; merged?: boolean } | null = null;
+      try {
+        live = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      } catch (err) {
+        console.warn(`[create_pr] Could not read ancestor PR #${prNumber} — not closing it:`, err);
+        continue;
+      }
+      if (live?.state !== 'open' || live?.merged) {
+        console.log(
+          `[create_pr] Ancestor PR #${prNumber} is ${live?.merged ? 'merged' : (live?.state ?? 'unknown')} — not superseding`,
+        );
+        continue;
+      }
+
       // Post supersession comment
       const comment =
         `This pull request has been superseded by #${successorPrNumber} ` +
