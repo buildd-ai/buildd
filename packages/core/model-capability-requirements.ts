@@ -19,6 +19,7 @@
  */
 export const MODEL_MIN_CLI_VERSION: Readonly<Record<string, string>> = {
   'claude-fable-5-1': '2.1.251',
+  'claude-opus-5-5': '2.1.280',
 };
 
 /**
