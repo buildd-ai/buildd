@@ -666,8 +666,10 @@ export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
     opening = [
       'The `codebase-memory` MCP server is mounted for this task, but the index build for this repo'
         + ' failed before your first turn — the graph is NOT available.',
-      'A graph call will likely report the project as not indexed. Call mcp__codebase-memory__index_repository'
-        + ` yourself to retry it, or just use a ${dialect.before} for this session.`,
+      opts.sharedBaseIndex
+        ? `A graph call will likely report the project as not indexed. Use a ${dialect.before} for this session.`
+        : 'A graph call will likely report the project as not indexed. Call mcp__codebase-memory__index_repository'
+          + ` yourself to retry it, or just use a ${dialect.before} for this session.`,
     ];
   } else if (opts.sharedBaseIndex) {
     opening = [
@@ -679,20 +681,35 @@ export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
   } else {
     opening = ['This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.'];
   }
+  // Shared-seed mode points CBM at the fleet-wide seed cache. An agent-issued
+  // index_repository there would index THIS worktree into that shared dir — a
+  // project .db no seed record owns — so the not-indexed fallback in that mode
+  // is to name the seeded project, never to index. Keyed on sharedBaseIndex
+  // alone (not also bootstrapState === 'warm'): the shared+building/unavailable
+  // combinations are unreachable today only because of how workers.ts reports
+  // a shared-cache hit, and the guidance must stay safe if that changes.
+  const notIndexedFallback = opts.sharedBaseIndex
+    ? 'If a query reports the project is not indexed, pass project `' + (opts.project ?? 'unknown')
+      + '` explicitly; do not index it yourself — this graph is a shared seed.'
+    : 'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.';
+  // Tool routing follows the CBM server's own split: search_graph/trace_path are
+  // the structural tools; search_code is its grep wrapper, for literal text only.
+  // Sending "locating a symbol" to search_code steered agents onto the text path.
   return [
     ...opening,
     '',
     'When a task touches existing code you have not read yet, make a graph call your FIRST navigation step,',
     `before any ${dialect.before}. One call is usually enough to know where to look:`,
     '- orienting in an unfamiliar area, or "how is this laid out?" -> mcp__codebase-memory__get_architecture',
+    '- locating a symbol (function/class/type) before reading it -> mcp__codebase-memory__search_graph (name_pattern), then get_code_snippet',
     '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path',
-    '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph',
-    '- locating a symbol before reading it -> mcp__codebase-memory__search_code, then get_code_snippet',
+    '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__trace_path (inbound)',
+    '- literal strings, error messages, config keys -> mcp__codebase-memory__search_code (text search, not structure)',
     '',
     `Then use ${dialect.use} to read what the graph located, for non-code files, for a greenfield file that`,
     'does not exist yet, and whenever the graph returns nothing useful — it is an accelerator, never a gate.',
     `${dialect.sweep} that a single graph query would have answered is the specific waste to avoid.`,
-    'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.',
+    notIndexedFallback,
     '',
     'The graph answers structural questions ONLY. It is not a source of intent, history, or prior',
     'decisions — use the buildd knowledge tools (recall) for those.',

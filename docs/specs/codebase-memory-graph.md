@@ -136,7 +136,7 @@ agent does not spend turn one on infrastructure.
   `codebase-memory-mcp cli index_repository --repo-path <worktree>`. The path MUST
   travel as the **value of the `--repo-path` flag**, never as a bare trailing
   positional. No `--mode` is passed; CBM's default applies.
-- **CBM-7**: `CBM_INDEX_WAIT_MS` (60 000 ms, overridable per host by
+- **CBM-7**: `CBM_INDEX_WAIT_MS` (10 000 ms, overridable per host by
   `BUILDD_CBM_INDEX_WAIT_MS`) bounds **how long startup waits**, not how long the
   build may run. When it expires the build is **handed off, never aborted**: no
   signal is sent to the indexer, the cache dir is left intact, and the session
@@ -158,7 +158,10 @@ agent does not spend turn one on infrastructure.
   error, and wait-budget expiry all produce `{ ok: false, reason }`, the last
   distinguished by `backgrounded: true`. The session starts with `codebase-memory`
   **still mounted**; the injected system prompt tells the agent to call
-  `index_repository` once if a query reports the project is not indexed. Neither
+  `index_repository` once if a query reports the project is not indexed — except
+  in shared-seed mode, where the cache dir is the fleet-wide seed cache and the
+  prompt MUST NOT suggest `index_repository` (it names the seeded project
+  instead). Neither
   indexing failure nor indexing slowness MUST fail the task.
 - Outcome is recorded in every case:
   `bootstrapResult: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm'` plus
