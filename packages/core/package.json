@@ -121,7 +121,7 @@
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.155.0",
+    "@openai/codex-sdk": "^0.156.0",
     "dotenv": "^18.0.0",
     "drizzle-orm": "^0.45.2",
     "server-only": "^0.0.1",
