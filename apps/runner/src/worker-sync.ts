@@ -9,7 +9,19 @@ import { cleanupWorktree } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS, isWorktreePathOwnedByOtherLiveWorker } from './worktree-utils';
 import { sessionLog } from './session-logger';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
+import { teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
+
+/**
+ * Grace period after a worker's own completion/failure before checkStale()
+ * reaps a still-live SDK session. Three paths set status `done`/`error`
+ * while the session keeps running (worker:completed, the syncWorkerToServer
+ * sync-race branch, markDone) — a hung tool/MCP call after complete_task
+ * becomes an untracked `claude` CLI subprocess whose concurrency slot
+ * already reads as free. checkStale only ever watched working/stale
+ * workers, so this window was invisible to it.
+ */
+const POST_COMPLETION_SESSION_GRACE_MS = 5 * 60 * 1000;
 
 /**
  * Server-side worker statuses that genuinely end a lease. A 409 that names one
@@ -604,7 +616,7 @@ export class WorkerSync {
         }
         sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
         this.ctx.workers.delete(id);
-        this.ctx.sessions.delete(id);
+        teardownSession(this.ctx.sessions, id);
         this.lastSeenUserMessageTs.delete(id);
         // Every terminal worker passes through here before leaving memory —
         // whether it already unsubscribed via an explicit abort (redundant,
@@ -640,6 +652,27 @@ export class WorkerSync {
     const HARD_TIMEOUT_MS = WORKER_HARD_TIMEOUT_MS;
 
     for (const worker of this.ctx.workers.values()) {
+      // Post-completion watchdog: the worker record is already terminal, but
+      // its SDK session is still alive (e.g. complete_task returned and then
+      // the process hung on a stuck tool/MCP call). Reap the session once it
+      // has outlived a grace period past completion — but never touch the
+      // worker record or call the server: the worker already legitimately
+      // finished, and ctx.abort()/a PATCH here would misreport a real
+      // completion as a failure.
+      if (worker.status === 'done' || worker.status === 'error') {
+        const session = this.ctx.sessions.get(worker.id);
+        if (session) {
+          const referenceTs = worker.completedAt ?? worker.lastActivity;
+          const idleMs = now - referenceTs;
+          if (idleMs > POST_COMPLETION_SESSION_GRACE_MS) {
+            sessionLog(worker.id, 'warn', 'post_completion_session_reaped',
+              `Reaping live SDK session ${Math.round(idleMs / 1000)}s after worker reached status=${worker.status}`);
+            teardownSession(this.ctx.sessions, worker.id);
+          }
+        }
+        continue;
+      }
+
       // Skip stale check for workers waiting on user input (plan approval, questions)
       if (worker.status === 'waiting') continue;
 
