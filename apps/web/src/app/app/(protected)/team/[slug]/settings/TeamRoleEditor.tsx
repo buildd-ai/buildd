@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
+import { useConfirm } from '@/components/useConfirm';
 
 type Scope = 'team' | 'workspace';
 
@@ -323,6 +324,7 @@ function WorkspaceOverrideEditor({
 }
 
 export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, delegateOptions }: Props) {
+  const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -409,7 +411,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   }
 
   async function handleDelete() {
-    if (!confirm(`Delete role "${role.name}"? This will also remove all workspace overrides and cannot be undone.`)) return;
+    if (!(await confirm({ title: `Delete role "${role.name}"?`, message: 'This will also remove all workspace overrides and cannot be undone.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/roles/${role.id}`, { method: 'DELETE' });
@@ -437,7 +439,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   }
 
   async function handleDeleteOverride(overrideId: string) {
-    if (!confirm('Remove this workspace override? The workspace will use the team default instead.')) return;
+    if (!(await confirm({ title: 'Remove workspace override?', message: 'The workspace will use the team default instead.', confirmLabel: 'Remove override', variant: 'danger' }))) return;
     const res = await fetch(`/api/roles/${overrideId}`, { method: 'DELETE' });
     if (res.ok) {
       setOverrideList(prev => prev.filter(o => o.id !== overrideId));
@@ -857,6 +859,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           )}
         </div>
       </div>
+      {confirmDialog}
     </main>
   );
 }
