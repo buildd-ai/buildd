@@ -12,10 +12,11 @@ import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker'
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
-import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
+import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
   reapChild, withTimeout, TRACKED_BRANCH } from './updater';
+import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -159,11 +160,6 @@ async function getChangelog(fromCommit: string, toCommit: string): Promise<{ ent
 // workers/, roles/) never block an update — only real edits to tracked files do.
 function isWorkingTreeClean(): boolean {
   return !hasTrackedChanges(BUILDD_DIR);
-}
-
-// Detect current branch
-async function getCurrentBranch(): Promise<string> {
-  try { return await gitAsync(['rev-parse', '--abbrev-ref', 'HEAD']); } catch { return 'unknown'; }
 }
 
 /**
@@ -967,6 +963,23 @@ function scheduleGracefulRestart(reason: string) {
   }
 }
 
+// Wires the shared manual-update orchestration (update-gate.ts) to this
+// process's real git/install/health/restart machinery. Both /api/update and
+// /api/update/apply call performManualUpdate with this same object, so they
+// cannot drift back apart the way they did before.
+const manualUpdateDeps: ManualUpdateDeps = {
+  clearSkippedTargets: () => skippedUpdateTargets.clear(),
+  setUpdating,
+  broadcast,
+  applyUpdate: () => applyUpdate(),
+  rollbackTo: (targetCommit) => rollbackTo(targetCommit),
+  runHealthProbe,
+  scheduleGracefulRestart,
+  abandonUpdateTarget,
+  getLatestCommit: () => updateState.latestCommit,
+  isNoProgressUpdate,
+};
+
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
@@ -1162,145 +1175,18 @@ const server = DEBUG_MODE ? Bun.serve({
 
     // Safe auto-update: preflight checks → git pull → health check → graceful restart
     if (path === '/api/update' && req.method === 'POST') {
-      // Only a loopback peer (by socket address) may trigger an update.
-      if (!isLocalPeer) {
-        return Response.json({ error: 'Update can only be triggered from localhost' }, { status: 403, headers: corsHeaders });
+      const gate = evaluateManualUpdateGate({
+        isLocalPeer,
+        updating: updateState.updating,
+        workers: workerManager ? workerManager.getWorkers() : [],
+        treeClean: isWorkingTreeClean(),
+      });
+      if (!gate.ok) {
+        return Response.json(gate.body, { status: gate.status, headers: corsHeaders });
       }
 
-      if (updateState.updating) {
-        return Response.json({ error: 'Update already in progress' }, { status: 409, headers: corsHeaders });
-      }
-
-      // Check for active workers — don't update while tasks are running
-      const activeWorkers = workerManager
-        ? Array.from(workerManager.getWorkers()).filter(
-            (w: any) => w.status === 'working' || w.status === 'waiting' || w.status === 'stale'
-          )
-        : [];
-
-      if (activeWorkers.length > 0) {
-        return Response.json({
-          error: 'Cannot update while tasks are running',
-          activeWorkers: activeWorkers.length,
-          hint: 'Wait for active tasks to complete or stop them first',
-        }, { status: 409, headers: corsHeaders });
-      }
-
-      // Check for dirty working tree (tracked files only)
-      const clean = isWorkingTreeClean();
-      if (!clean) {
-        return Response.json({
-          error: 'Working tree has uncommitted changes',
-          hint: 'Commit or stash changes in ~/.buildd before updating',
-        }, { status: 409, headers: corsHeaders });
-      }
-
-      // Ensure we're on main branch (switch if needed)
-      const branch = await getCurrentBranch();
-
-      // An operator asking for an update explicitly clears the skip latch: the
-      // manual endpoint is how a human-driven deploy overrides a runner that
-      // has given up on a target.
-      skippedUpdateTargets.clear();
-
-      setUpdating(true);
-      const prevCommit = updateState.currentCommit;
-      broadcast({ type: 'update_started' });
-
-      try {
-        // Fetch latest and ensure we're on the tracked branch
-        await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000);
-        if (branch !== BRANCH) {
-          await gitAsync(['checkout', BRANCH], BUILDD_DIR, 10_000);
-        }
-        await gitAsync(['reset', '--hard', `origin/${BRANCH}`], BUILDD_DIR, 10_000);
-
-        // Install dependencies
-        const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-        const installTimeout = setTimeout(() => { try { installProc.kill(); } catch { /* ignore */ } }, 120_000);
-        const installExit = await installProc.exited;
-        clearTimeout(installTimeout);
-        if (installExit !== 0) {
-          throw new Error('bun install failed');
-        }
-
-        // Read the on-disk commit. Note this deliberately does NOT touch
-        // updateState.currentCommit, which means "the commit this process
-        // loaded" — the drift check compares the two, and moving it here would
-        // make the rollback path below look like external drift.
-        await initCurrentCommit();
-        const newCommit = getCurrentCommit();
-
-        // Same no-progress guard as the idle path. This endpoint resets to
-        // origin/$BRANCH too, so it has exactly the same failure mode: a reset
-        // that lands where we already were, reported as a successful update and
-        // followed by a pointless restart.
-        if (isNoProgressUpdate(prevCommit, newCommit)) {
-          const detail =
-            `the reset did not move HEAD (still ${newCommit?.slice(0, 7) ?? 'unknown'}) — origin/${BRANCH} ` +
-            'is already checked out, so there is nothing to update to';
-          console.error(`Update FAILED — ${detail}. Not restarting: a no-op update is not a success.`);
-          abandonUpdateTarget(updateState.latestCommit);
-          setUpdating(false);
-          broadcast({ type: 'update_failed', error: `Update made no progress — ${detail}` });
-          return Response.json({
-            error: 'Update made no progress — the commit did not move',
-            detail,
-            currentCommit: newCommit?.slice(0, 7),
-          }, { status: 409, headers: corsHeaders });
-        }
-
-        // Health check: boot the new code on a spare port and verify it serves
-        // /health before restarting into it.
-        console.log(`Health check: booting new version on port ${PORT + 1}...`);
-        const health = await runHealthProbe();
-        const healthOk = health.ok;
-
-        if (!healthOk) {
-          // Rollback: revert to previous commit
-          console.error(`Health check failed — rolling back: ${health.detail}`);
-          if (prevCommit) {
-            await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
-            const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-            const rollbackTimeout = setTimeout(() => { try { rollbackInstall.kill(); } catch { /* ignore */ } }, 120_000);
-            await rollbackInstall.exited;
-            clearTimeout(rollbackTimeout);
-            await initCurrentCommit();
-          }
-          setUpdating(false);
-          broadcast({ type: 'update_failed', error: `New version failed health check — rolled back: ${health.detail}` });
-          return Response.json({
-            error: 'Update rolled back — new version failed health check',
-            detail: health.detail,
-            rolledBackTo: prevCommit?.slice(0, 7),
-          }, { status: 500, headers: corsHeaders });
-        }
-
-        console.log(`Updated ${prevCommit?.slice(0, 7)} → ${newCommit?.slice(0, 7)} (health check passed)`);
-        broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
-
-        scheduleGracefulRestart('manual update via /api/update');
-
-        return Response.json({ ok: true, newCommit: newCommit?.slice(0, 7), prevCommit: prevCommit?.slice(0, 7) }, { headers: corsHeaders });
-      } catch (err: any) {
-        // Rollback on any failure
-        if (prevCommit) {
-          try {
-            await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
-            const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-            const rollbackTimeout = setTimeout(() => { try { rollbackInstall.kill(); } catch { /* ignore */ } }, 120_000);
-            await rollbackInstall.exited;
-            clearTimeout(rollbackTimeout);
-            await initCurrentCommit();
-            console.error(`Update failed, rolled back to ${prevCommit.slice(0, 7)}: ${err.message}`);
-          } catch (rollbackErr: any) {
-            console.error(`Update failed AND rollback failed: ${rollbackErr.message}`);
-          }
-        }
-        setUpdating(false);
-        broadcast({ type: 'update_failed', error: err.message });
-        return Response.json({ error: 'Update failed (rolled back)', detail: err.message }, { status: 500, headers: corsHeaders });
-      }
+      const outcome = await performManualUpdate('manual update via /api/update', manualUpdateDeps);
+      return Response.json(outcome.body, { status: outcome.status, headers: corsHeaders });
     }
 
     // Auth & Config endpoints (work without API key)
@@ -2446,37 +2332,24 @@ const server = DEBUG_MODE ? Bun.serve({
       }, { headers: corsHeaders });
     }
 
+    // Routed through the exact same gate + orchestration as /api/update (see
+    // manualUpdateDeps above) — this used to only check `updateState.updating`,
+    // which meant it could fire from a non-local caller, while tasks were
+    // running, or with a dirty tree, and it applied the update synchronously
+    // (execSync) with no health probe before restarting.
     if (path === '/api/update/apply' && req.method === 'POST') {
-      if (updateState.updating) {
-        return Response.json({ error: 'Update already in progress' }, { status: 409, headers: corsHeaders });
+      const gate = evaluateManualUpdateGate({
+        isLocalPeer,
+        updating: updateState.updating,
+        workers: workerManager ? workerManager.getWorkers() : [],
+        treeClean: isWorkingTreeClean(),
+      });
+      if (!gate.ok) {
+        return Response.json(gate.body, { status: gate.status, headers: corsHeaders });
       }
 
-      setUpdating(true);
-      broadcast({ type: 'update_progress', status: 'updating' });
-
-      skippedUpdateTargets.clear();
-      const result = applyUpdate();
-
-      if (result.success && isNoProgressUpdate(result.previousCommit ?? null, result.newCommit ?? null)) {
-        // applyUpdate reports success for a reset that changed nothing. Restarting
-        // on that is the unbounded loop — see isNoProgressUpdate.
-        const detail = `the reset did not move HEAD (still ${result.newCommit?.slice(0, 7) ?? 'unknown'})`;
-        console.error(`Update FAILED — ${detail}. Not restarting: a no-op update is not a success.`);
-        abandonUpdateTarget(updateState.latestCommit);
-        setUpdating(false);
-        broadcast({ type: 'update_progress', status: 'error', error: `no progress — ${detail}` });
-        return Response.json({ success: false, error: `Update made no progress — ${detail}` }, { status: 409, headers: corsHeaders });
-      }
-
-      if (result.success) {
-        broadcast({ type: 'update_progress', status: 'restarting' });
-        scheduleGracefulRestart('manual update via /api/update/apply');
-        return Response.json({ success: true, ...result }, { headers: corsHeaders });
-      } else {
-        setUpdating(false);
-        broadcast({ type: 'update_progress', status: 'error', error: result.error });
-        return Response.json({ success: false, error: result.error }, { status: 500, headers: corsHeaders });
-      }
+      const outcome = await performManualUpdate('manual update via /api/update/apply', manualUpdateDeps);
+      return Response.json(outcome.body, { status: outcome.status, headers: corsHeaders });
     }
 
     // =============================================================================
@@ -2915,7 +2788,6 @@ setInterval(async () => {
     setUpdating(true);
     updateState.autoUpdateRetries++;
     const prevCommit = updateState.currentCommit;
-    const prevBranch = await getCurrentBranch();
     broadcast({ type: 'update_started' });
 
     // `updating` gates both this block and the drift check, so it MUST be
@@ -2943,24 +2815,18 @@ setInterval(async () => {
         return;
       }
 
-      if (prevBranch !== BRANCH) {
-        await gitAsync(['checkout', '-f', BRANCH], BUILDD_DIR, 10_000);
+      // Same clean-reinstall the manual endpoints use (fetches again — cheap
+      // and idempotent — then resets to origin/$BRANCH and reinstalls).
+      const applied = await applyUpdate();
+      if (!applied.success) {
+        throw new Error(applied.error || 'Update failed');
       }
-      await gitAsync(['reset', '--hard', `origin/${BRANCH}`], BUILDD_DIR, 10_000);
-      const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-      const installTimeout = setTimeout(() => { try { installProc.kill(); } catch {} }, 120_000);
-      const installExit = await installProc.exited;
-      clearTimeout(installTimeout);
-      if (installExit !== 0) {
-        throw new Error(`bun install failed with exit code ${installExit}`);
-      }
-      await initCurrentCommit();
+      const newCommit = applied.newCommit ?? null;
 
       // The no-progress guard, BEFORE the health probe: if the tree did not
       // move there is nothing new to boot, and booting the same code to justify
       // a restart into the same code is the whole defect. `Auto-updated to
       // <the same commit>` is now impossible to log.
-      const newCommit = getCurrentCommit();
       if (isNoProgressUpdate(prevCommit, newCommit)) {
         const detail =
           `the reset did not move HEAD (still ${newCommit?.slice(0, 7) ?? 'unknown'}) while target was ` +
@@ -2987,12 +2853,7 @@ setInterval(async () => {
         // went undiagnosed for days while the fleet silently reset itself to the
         // same stale commit three times a release. Say so, and say why.
         console.error(`Auto-update health check failed — rolling back to ${prevCommit.slice(0, 7)}: ${health.detail}`);
-        await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
-        const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-        const rbTimeout = setTimeout(() => { try { rb.kill(); } catch { /* ignore */ } }, 120_000);
-        await rb.exited;
-        clearTimeout(rbTimeout);
-        await initCurrentCommit();
+        await rollbackTo(prevCommit);
         broadcast({ type: 'update_failed', error: `Auto-update health check failed — rolled back: ${health.detail}` });
         return;
       }
@@ -3012,12 +2873,7 @@ setInterval(async () => {
     } catch (err: any) {
       if (prevCommit) {
         try {
-          await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
-          const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
-          const rbTimeout = setTimeout(() => { try { rb.kill(); } catch { /* ignore */ } }, 120_000);
-          await rb.exited;
-          clearTimeout(rbTimeout);
-          await initCurrentCommit();
+          await rollbackTo(prevCommit);
         } catch { /* best effort */ }
       }
       console.error('Auto-update failed:', err.message);

@@ -443,6 +443,19 @@ export interface ResultMeta {
    * no Bash call or predates the classifier — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /**
+   * Outcome of the one-shot "closing turn" a session that ends without
+   * calling complete_task gets before the runner falls back to
+   * summarySource:'fallback' — see startSession's isClosingTurn handling.
+   * 'authored' = the closing turn called complete_task itself. 'declined' =
+   * it ran but still didn't. `skipped:<reason>` = none was attempted (not
+   * resumable, or the original session ended by error/abort/rate-limit/
+   * credential-failure/cancellation). Absent when the agent's own
+   * complete_task call already won the race before the decision was made.
+   * Mirrors packages/core/db/schema.ts's ResultMeta — kept in sync manually,
+   * same as every other field in this local copy.
+   */
+  closingTurnOutcome?: 'authored' | 'declined' | `skipped:${string}`;
 }
 
 // Loop exit condition (spec §1)

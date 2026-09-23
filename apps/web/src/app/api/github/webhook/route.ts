@@ -68,7 +68,7 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
@@ -817,7 +817,8 @@ async function handlePullRequestEvent(event: {
           prNumber: pr.number,
           entry: {
             kind: 'changes_pushed',
-            detail: `\`${pr.head.sha.slice(0, 7)}\` on \`${pr.head.ref}\``,
+            sha: pr.head.sha.slice(0, 7),
+            url: `${pr.html_url}/commits/${pr.head.sha}`,
           },
           onlyIfPresent: true,
           workspaceId: openWorker.workspaceId,
@@ -1629,7 +1630,12 @@ async function handleCheckSuiteFailure(
             installationId,
             repoFullName: repository.full_name,
             prNumber: pr.number,
-            entry: { kind: 'ci_fixing', detail: 'schema drift detected — dispatched diagnose-only task, no auto-fix', url: ciLogs.runUrl },
+            entry: {
+              kind: 'ci_fixing',
+              detail: 'schema drift · diagnose only',
+              url: ciLogs.runUrl,
+              taskUrl: taskActivityUrl(newDiagnoseTask.id),
+            },
             workspaceId: diagnoseTask.workspaceId,
           });
         } else {
@@ -1722,7 +1728,7 @@ async function handleCheckSuiteFailure(
           installationId,
           repoFullName: repository.full_name,
           prNumber: pr.number,
-          entry: { kind: 'ci_exhausted', detail: exhaustionDetail, url: ciLogs.runUrl },
+          entry: { kind: 'ci_exhausted', note: exhaustionDetail, url: ciLogs.runUrl },
           workspaceId: task.workspaceId,
         });
         continue;
@@ -1788,10 +1794,13 @@ async function handleCheckSuiteFailure(
           installationId,
           repoFullName: repository.full_name,
           prNumber: pr.number,
+          // Queued: the claim route writes `fix_started` once a worker has it.
           entry: {
             kind: 'ci_fixing',
-            detail: `attempt ${retryTask.context.iteration} of ${retryTask.context.maxIterations}`,
+            iteration: typeof retryTask.context.iteration === 'number' ? retryTask.context.iteration : null,
+            maxIterations: typeof retryTask.context.maxIterations === 'number' ? retryTask.context.maxIterations : null,
             url: ciLogs.runUrl,
+            taskUrl: taskActivityUrl(newTask.id),
           },
           workspaceId: retryTask.workspaceId,
         });
@@ -1923,7 +1932,7 @@ async function maybeDispatchReviewer(
         installationId,
         repoFullName,
         prNumber: pr.number,
-        entry: { kind: 'human_review_required', detail: reason },
+        entry: { kind: 'human_review_required', note: reason },
         workspaceId: openWorker.workspaceId,
       });
       return true; // handled — skip auto-merge
@@ -1983,10 +1992,7 @@ async function maybeDispatchReviewer(
         installationId,
         repoFullName,
         prNumber: pr.number,
-        entry: {
-          kind: 'reviewing',
-          detail: `reviewer role \`${policy.agentReview!.reviewerRole}\``,
-        },
+        entry: { kind: 'reviewing' },
         workspaceId: openWorker.workspaceId,
       });
     }
@@ -2157,10 +2163,8 @@ async function maybeReDispatchReviewer(
       installationId,
       repoFullName,
       prNumber: pr.number,
-      entry: {
-        kind: 'reviewing',
-        detail: `reviewer role \`${policy.agentReview!.reviewerRole}\` — re-review dispatched after a push superseded the ${status.state === 'escalated' ? 'escalated' : 'request-changes'} verdict`,
-      },
+      // The renderer words this "Re-reviewing · after fix N" from the log.
+      entry: { kind: 'reviewing' },
       workspaceId: openWorker.workspaceId,
     });
   } catch (err) {

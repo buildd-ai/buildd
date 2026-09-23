@@ -6781,8 +6781,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('Review passed');
-      expect(body).toContain('confidence 0.90');
+      expect(body).toContain('**Approved**');
     });
 
     // ── Corrected lede ────────────────────────────────────────────────────
@@ -6937,8 +6936,13 @@ describe('PATCH /api/workers/[id]', () => {
       );
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
-      expect(body).toContain('Applying review feedback');
-      expect(body).toContain('iteration 1 of 3');
+      // Queued, not "applying": the fix task has no worker yet.
+      expect(body).toContain('Fix 1 of 3 queued');
+      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('/app/tasks/');
+      expect(body).not.toContain('Applying review feedback');
+      // The feedback is collapsed under its row, not pasted into it.
+      expect(body).toContain('<details><summary>Reviewer feedback</summary>');
       expect(body).toContain('Fix the missing handler');
     });
 
@@ -7497,6 +7501,68 @@ describe('PATCH /api/workers/[id]', () => {
       // Dedup key fields must be set so a second reviewer completion is a no-op
       expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
+    });
+
+    it('request-changes: on a mission-branch PR, baseBranch is the PR\'s recorded base, not workerBranch', async () => {
+      // Regression: baseBranch used to be set to workerBranch — the SAME value as
+      // resumeBranch. If workerBranch is later gone from the remote (e.g. the PR
+      // merged and GitHub auto-deleted the branch before this retry was claimed),
+      // resolveWorktreeBase()'s fallback from resumeBranch cascades to baseBranch —
+      // but that was the identical, already-missing branch, so it gave up and cut
+      // the worktree from trunk instead of the mission integration branch, silently
+      // losing every commit the mission had already merged. baseBranch must carry
+      // the PR's actual base (workers.prBaseRef) so that fallback lands somewhere real.
+      setupReviewerTaskCompletion('request-changes');
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          turns: 3,
+          pendingInstructions: null,
+        })
+        .mockResolvedValue({
+          id: 'original-worker',
+          workspaceId: 'ws-1',
+          taskId: 'original-task-1',
+          prNumber: 42,
+          prBaseRef: 'mission/mission-example-goal-a1b2c3d4',
+        });
+      mockTasksFindFirst
+        .mockResolvedValueOnce({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        })
+        .mockResolvedValueOnce({
+          id: 'original-task-1',
+          title: 'Build feature X',
+          description: 'Description',
+          missionId: 'mission-1',
+          pathManifest: ['apps/web/src/lib/feature-x.ts'],
+        });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeDefined();
+      expect(lastInsertValues.context?.baseBranch).toBe('mission/mission-example-goal-a1b2c3d4');
+      expect(lastInsertValues.context?.resumeBranch).toBe('buildd/original-branch');
     });
 
     it('request-changes: titles the retry task as a builder attempt, not a reviewer one', async () => {

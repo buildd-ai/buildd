@@ -140,6 +140,19 @@ function causeLinksFor(
       ];
 
     case 'task':
+      if (w.attempt) {
+        const t = (extra.openTasks ?? []).find(o => w.taskIds.includes(o.id));
+        const name = t ? `"${t.title ?? t.id}"` : 'A fix attempt';
+        return [
+          link(
+            w.attempt.claimed
+              ? `Fix attempt ${name} is ${t?.status ?? 'open'} — a worker has it.`
+              : `Fix attempt ${name} is queued with no worker yet.`,
+            'tasks.status + workers.status',
+            { ...base, taskId: w.taskIds[0] },
+          ),
+        ];
+      }
       return (extra.openTasks ?? []).slice(0, 10).map(t =>
         link(
           `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`,

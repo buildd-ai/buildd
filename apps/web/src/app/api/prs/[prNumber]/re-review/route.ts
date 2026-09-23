@@ -207,8 +207,8 @@ export async function POST(
       entry: {
         kind: 'reviewing',
         detail: plan.kind === 'delta'
-          ? `reviewer role \`${picked.role}\` — delta re-review requested by ${user.email} (since ${plan.priorVerdict.headSha.slice(0, 7)})`
-          : `reviewer role \`${picked.role}\` — re-review requested by ${user.email}`,
+          ? `manual · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
+          : 'manual',
       },
       workspaceId: worker.workspaceId,
     });
