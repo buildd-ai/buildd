@@ -7,6 +7,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   WORKER_FIELD_VISIBILITY,
+  WITHHELD_WORKER_FIELDS,
   toPublicWorker,
   toPublicWorkers,
   toPublicEvent,
@@ -122,6 +123,20 @@ describe('toPublicEvent', () => {
     expect(json).not.toContain(SENTINEL);
   });
 
+  it('leaves non-worker elements of a workers array intact', () => {
+    const ev = { type: 'x', workers: ['w-1', 'w-2'] };
+    expect(toPublicEvent(ev)).toEqual(ev);
+    const summaries = { type: 'x', workers: [{ id: 'w-1', name: 'a' }] };
+    expect(toPublicEvent(summaries)).toEqual(summaries);
+  });
+
+  it('still projects worker-shaped elements mixed with other entries', () => {
+    const json = JSON.stringify(toPublicEvent({ type: 'x', workers: ['w-0', workerWithCredentials()] }));
+    expect(json).not.toContain(SENTINEL);
+    expect(json).toContain('"w-0"');
+    expect(json).toContain('"id":"w-1"');
+  });
+
   it('passes other events through unchanged', () => {
     const ev = { type: 'output', workerId: 'w-1', line: 'hi' };
     expect(toPublicEvent(ev)).toBe(ev);
@@ -136,6 +151,13 @@ describe('WORKER_FIELD_VISIBILITY', () => {
 
   it('withholds every credential field', () => {
     for (const k of CREDENTIAL_KEYS) expect(WORKER_FIELD_VISIBILITY[k]).toBe(false);
+  });
+
+  it('WITHHELD_WORKER_FIELDS (which PublicWorker omits) is exactly the withheld set', () => {
+    const withheld = Object.keys(WORKER_FIELD_VISIBILITY).filter(
+      (k) => !WORKER_FIELD_VISIBILITY[k as keyof typeof WORKER_FIELD_VISIBILITY],
+    );
+    expect([...WITHHELD_WORKER_FIELDS].sort()).toEqual(withheld.sort());
   });
 });
 
@@ -160,6 +182,60 @@ describe('index.ts serialisation points', () => {
   });
 
   it('no response serialises a raw worker', () => {
-    expect(index).not.toMatch(/Response\.json\(\{\s*worker\s*[,}]/);
+    expect(rawWorkerSerialisations(index)).toEqual([]);
   });
+});
+
+/**
+ * Serialisation calls (`Response.json(`, `JSON.stringify(`, `new Response(`)
+ * whose argument references a worker-named variable as a whole value (not a
+ * property of it, not an object key) without a toPublicWorker(s) wrapper.
+ */
+function rawWorkerSerialisations(src: string): string[] {
+  const hits: string[] = [];
+  const call = /(?:Response\.json|JSON\.stringify|new Response)\(/g;
+  const workerIdent = /(?<![.\w$])(w|worker|workers|\w+Worker|\w+Workers)\b(?!\s*(?:[.:\[(]|\?\.))/g;
+  let m: RegExpExecArray | null;
+  while ((m = call.exec(src))) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    const start = i;
+    while (i < src.length && depth > 0) {
+      const c = src[i];
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+      i++;
+    }
+    const arg = src
+      .slice(start, i - 1)
+      .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""')
+      .replace(/toPublicWorkers?\([^()]*(?:\([^()]*\)[^()]*)*\)/g, '0');
+    if (workerIdent.test(arg)) hits.push(arg.trim());
+    workerIdent.lastIndex = 0;
+  }
+  return hits;
+}
+
+describe('rawWorkerSerialisations (the guard itself)', () => {
+  const flagged = [
+    'Response.json({ worker }, { headers })',
+    'Response.json({ worker, ok: true })',
+    'Response.json({ worker: worker })',
+    'Response.json({ worker: w })',
+    'Response.json(worker)',
+    'new Response(JSON.stringify(worker))',
+    'Response.json({ workers: workerManager!.getWorkers().map(x => x), list: allWorkers })',
+    'JSON.stringify({ data: targetWorker })',
+  ];
+  const clean = [
+    'Response.json({ worker: toPublicWorker(worker) }, { headers })',
+    'Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) })',
+    'Response.json({ checkpoints: worker.checkpoints || [] })',
+    'Response.json({ team: worker.teamState || null })',
+    "Response.json({ error: 'Worker not found' }, { status: 404 })",
+    'Response.json({ toolCalls: worker.toolCalls, messages: worker?.messages })',
+    'JSON.stringify(toPublicEvent(event))',
+  ];
+  for (const s of flagged) it(`flags ${s}`, () => expect(rawWorkerSerialisations(s)).not.toEqual([]));
+  for (const s of clean) it(`allows ${s}`, () => expect(rawWorkerSerialisations(s)).toEqual([]));
 });

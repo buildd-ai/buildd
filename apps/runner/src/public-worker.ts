@@ -15,8 +15,29 @@
  */
 import type { LocalWorker } from './types';
 
+/**
+ * Credential material and credential handles — never serialised. PublicWorker
+ * omits these at the type level, and WORKER_FIELD_VISIBILITY's type forces each
+ * of them to `false` (and every other field to `true`).
+ */
+export const WITHHELD_WORKER_FIELDS = [
+  'mcpSecrets',
+  'serverApiKey',
+  'serverOauthToken',
+  'claudeAccessToken',
+  'claudeTokenExpiresAt',
+  'claudeCredentialId',
+  'codexCredential',
+  'roleConfig', // carries a presigned download URL
+  'assertionTokenCache',
+  'assertionReAuthFailed',
+] as const satisfies ReadonlyArray<keyof LocalWorker>;
+
+export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
+
 /** true = safe to serialise to clients; false = withheld. */
-export const WORKER_FIELD_VISIBILITY: Record<keyof LocalWorker, boolean> = {
+export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, WithheldWorkerField>, true> &
+  Record<WithheldWorkerField, false> = {
   id: true,
   taskId: true,
   taskTitle: true,
@@ -91,7 +112,7 @@ export const WORKER_FIELD_VISIBILITY: Record<keyof LocalWorker, boolean> = {
   commandLifecycle: true,
   modelCapabilities: true,
 
-  // Credential material and credential handles — never serialised.
+  // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
   serverApiKey: false,
   serverOauthToken: false,
@@ -99,16 +120,17 @@ export const WORKER_FIELD_VISIBILITY: Record<keyof LocalWorker, boolean> = {
   claudeTokenExpiresAt: false,
   claudeCredentialId: false,
   codexCredential: false,
-  roleConfig: false, // carries a presigned download URL
+  roleConfig: false,
   assertionTokenCache: false,
   assertionReAuthFailed: false,
 };
 
 const PUBLIC_FIELDS: ReadonlyArray<keyof LocalWorker> = (
   Object.keys(WORKER_FIELD_VISIBILITY) as Array<keyof LocalWorker>
-).filter((k) => WORKER_FIELD_VISIBILITY[k]);
+).filter((k) => (WORKER_FIELD_VISIBILITY as Record<string, boolean>)[k]);
 
-export type PublicWorker = Partial<LocalWorker>;
+/** A projected worker. Credential fields are absent from the type itself. */
+export type PublicWorker = Partial<Omit<LocalWorker, WithheldWorkerField>>;
 
 /** Project a worker onto its allowlisted, client-safe fields. */
 export function toPublicWorker(worker: LocalWorker): PublicWorker {
@@ -124,19 +146,30 @@ export function toPublicWorkers(workers: Iterable<LocalWorker>): PublicWorker[] 
   return Array.from(workers, toPublicWorker);
 }
 
+/** A LocalWorker always carries a string `id` and `status`. */
+function isWorkerShaped(value: unknown): value is LocalWorker {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as any).id === 'string' &&
+    typeof (value as any).status === 'string'
+  );
+}
+
 /**
- * Project any runner event before it is broadcast to SSE clients. Events that
- * carry a `worker` (e.g. `worker_update`) or `workers` payload have those
- * projected; everything else passes through unchanged.
+ * Project any runner event before it is broadcast to SSE clients. A `worker`
+ * payload (e.g. `worker_update`) and each element of a `workers` payload are
+ * projected when they are worker-shaped; ids, summaries and everything else
+ * pass through unchanged.
  */
 export function toPublicEvent<T>(event: T): T {
   if (!event || typeof event !== 'object') return event;
   const e = event as any;
-  const hasWorker = e.worker && typeof e.worker === 'object';
-  const hasWorkers = Array.isArray(e.workers);
+  const hasWorker = isWorkerShaped(e.worker);
+  const hasWorkers = Array.isArray(e.workers) && e.workers.some(isWorkerShaped);
   if (!hasWorker && !hasWorkers) return event;
   const out = { ...e };
   if (hasWorker) out.worker = toPublicWorker(e.worker);
-  if (hasWorkers) out.workers = toPublicWorkers(e.workers);
+  if (hasWorkers) out.workers = e.workers.map((x: unknown) => (isWorkerShaped(x) ? toPublicWorker(x) : x));
   return out;
 }
