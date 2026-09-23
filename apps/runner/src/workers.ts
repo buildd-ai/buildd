@@ -251,13 +251,59 @@ function buildUserMessage(
 // from the (unmodified) task fields buildPromptWithComposition reads, so
 // repeating them here would just be a second copy to drift out of sync.
 const CLOSING_TURN_INSTRUCTION =
-  'Your last session ended without calling `complete_task`. You have exactly ' +
-  'one turn to fix that: call `complete_task` now with a factual summary of ' +
+  'Your last session ended without calling `complete_task`. You have one ' +
+  'short closing turn to fix that: call `complete_task` now with a factual summary of ' +
   'what you actually delivered (including the PR or artifact link, if any), ' +
   'plus every structured field described above this task requires — the ' +
   '`plan` array if this is a planning task, your `handoff` object if one is ' +
   'requested, and any other field named by the Output Requirement section. ' +
   'Do no other work — no new investigation, no additional edits.';
+
+/**
+ * SDK maxTurns for a closing turn. The SDK counts model round trips, and
+ * calling `complete_task` is itself a tool_use: the call is one turn and the
+ * model's reply after the tool result is a second. A cap of 1 therefore ends
+ * with error_max_turns (stopReason tool_use) on the very path the closing turn
+ * exists to allow. 2 fits exactly that call plus its reply; the third is slack
+ * for a single preliminary round trip — loading a deferred MCP tool schema
+ * before the tool is callable — so a well-behaved agent is never cut off
+ * mid-completion. It stays a small FIXED cost regardless of the task's own
+ * configured cap, which is what keeps a closing turn bounded.
+ */
+const CLOSING_TURN_MAX_TURNS = 3;
+
+/**
+ * Wraps a closing turn's backend event stream so that its failure can never
+ * become the task's failure. The main session already ended; the closing turn
+ * is a bonus attempt at an authored summary, and when it doesn't land the
+ * runner must fall back exactly as it would have without one. So an `error`
+ * event (the SDK reporting error_max_turns or any other error result) or a
+ * thrown backend error just ENDS the stream here, reported via `onFailure`,
+ * instead of throwing into startSession's catch-all failure path.
+ *
+ * Aborts and server refusals still propagate: those are decisions made about
+ * this worker (user cancel, loop detection, first-writer refusal), not the
+ * closing turn failing, and they have their own handling in that catch.
+ */
+async function* guardClosingTurnStream<T extends { type: string; error?: string }>(
+  stream: AsyncIterable<T>,
+  signal: AbortSignal,
+  onFailure: (error: string) => void,
+): AsyncGenerator<T> {
+  try {
+    for await (const event of stream) {
+      if (event.type === 'error') {
+        onFailure(event.error ?? 'error result');
+        return;
+      }
+      yield event;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (signal.aborted || isServerRefusal(err) || /aborted/i.test(msg)) throw err;
+    onFailure(msg);
+  }
+}
 
 /**
  * Bounded tail of the session's own assistant text, newest last — the
@@ -2299,6 +2345,10 @@ export class WorkerManager {
     // behind — try/catch/finally are separate lexical scopes, so a `let`
     // inside try is invisible to catch.
     let resultSubtype: string | undefined;
+    // Set only on a closing turn whose own stream ended in an error result or
+    // a thrown backend error (see guardClosingTurnStream): the reason it
+    // didn't land, recorded as `declined:<reason>`.
+    let closingTurnFailure: 'max_turns' | 'error' | undefined;
 
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
@@ -3169,9 +3219,10 @@ export class WorkerManager {
       // Resolve max turns for SDK-level turn limiting. A closing turn is a
       // single bounded attempt regardless of the task/workspace cap — it
       // exists to let the agent call complete_task, not to resume normal
-      // work, and bounding it to exactly 1 is what keeps it a fixed one-time
-      // cost even when the original session burned its own cap in full.
-      const maxTurns = isClosingTurn ? 1 : resolveMaxTurns(workspaceConfig, this.config.maxTurns);
+      // work, and a small fixed budget is what keeps it a one-time cost even
+      // when the original session burned its own cap in full. See
+      // CLOSING_TURN_MAX_TURNS for why that budget is not 1.
+      const maxTurns = isClosingTurn ? CLOSING_TURN_MAX_TURNS : resolveMaxTurns(workspaceConfig, this.config.maxTurns);
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (task.context as any)?.thinking;
@@ -3866,7 +3917,7 @@ export class WorkerManager {
         ? undefined
         : sessionModel;
 
-      for await (const event of backend.runStreamed({
+      const backendStream = backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
         sessionId: invocationSessionId,
         cwd,
@@ -3899,7 +3950,17 @@ export class WorkerManager {
           }
           await this.handleMessage(worker, sdkMsg as SDKMessage);
         },
-      })) {
+      });
+      // A closing turn's own error result / thrown error ends its stream
+      // instead of throwing: see guardClosingTurnStream. The post-loop logic
+      // below then records the outcome and runs the ordinary fallback.
+      const eventStream = isClosingTurn
+        ? guardClosingTurnStream(backendStream, abortController.signal, (err) => {
+          closingTurnFailure = resultSubtype === 'error_max_turns' ? 'max_turns' : 'error';
+          sessionLog(worker.id, 'warn', 'closing_turn_failed', `reason=${closingTurnFailure} subtype=${resultSubtype ?? 'none'} error=${err.slice(0, 200)}`, worker.taskId);
+        })
+        : backendStream;
+      for await (const event of eventStream) {
         if (event.type === 'error') {
           throw new Error(event.error);
         }
@@ -4049,7 +4110,7 @@ export class WorkerManager {
         storeSaveWorker(worker);
         // Burn-loop guard (cache invalidation + exponential backoff) is applied
         // by the circuit-breaker block below, which classifies worker.error.
-      } else if (resultSubtype === 'error_max_budget_usd') {
+      } else if (resultSubtype === 'error_max_budget_usd' && !closingTurnFailure) {
         // Budget exceeded - report as error with specific message
         sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
@@ -4115,9 +4176,14 @@ export class WorkerManager {
         // always falls straight through to the completion payload below,
         // authored or not — recursing a second time would turn a bounded
         // one-shot into an unbounded chain.
-        let closingTurnOutcome: 'authored' | 'declined' | `skipped:${string}` | undefined;
+        let closingTurnOutcome: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}` | undefined;
         if (isClosingTurn) {
-          closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker)) ? 'authored' : 'declined';
+          // Server state is the authority on whether complete_task landed —
+          // so a closing turn that made the call and THEN ran out of turns
+          // (or errored) still counts as authored.
+          closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker))
+            ? 'authored'
+            : closingTurnFailure ? `declined:${closingTurnFailure}` : 'declined';
         } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
           if (!resumeId) {
@@ -4530,7 +4596,12 @@ export class WorkerManager {
         // When this is a resume attempt, re-throw so the caller (resumeSession)
         // can fall through to Layer 2 (reconstructed context). Without this,
         // startSession swallows the error and Layer 2 never gets a chance.
-        if (resumeSessionId) throw error;
+        //
+        // Never from a closing turn: its caller is the parent startSession,
+        // not resumeSession, and this invocation has already reported the
+        // terminal outcome — re-throwing would make the parent report it a
+        // second time.
+        if (resumeSessionId && !isClosingTurn) throw error;
       }
     } finally {
       if (isSensitive) deactivateRedaction();

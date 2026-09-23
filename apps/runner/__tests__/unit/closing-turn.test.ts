@@ -40,6 +40,10 @@ mock.module('../../src/backends/index.js', () => ({
       async *runStreamed(opts: any) {
         runStreamedCalls.push(opts);
         for (const msg of script) {
+          // A `{ __throw: '<message>' }` entry makes the backend itself throw
+          // mid-stream (a crashed CLI / transport error), as opposed to the
+          // SDK reporting an error result.
+          if (msg.__throw) throw new Error(msg.__throw);
           await opts.onProgress?.(msg);
           if (msg.type === 'assistant') {
             const text = msg.message?.content?.find((b: any) => b.type === 'text')?.text;
@@ -333,9 +337,9 @@ describe('closing turn', () => {
 
     expect(createBackendCalls.length).toBe(2);
     expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
-    // Bounded to exactly one turn past the cap, regardless of the original's
-    // configured maxTurns.
-    expect(runStreamedCalls[1]?.maxTurns).toBe(1);
+    // Bounded to one small fixed budget past the cap, regardless of the
+    // original's configured maxTurns — see CLOSING_TURN_MAX_TURNS.
+    expect(runStreamedCalls[1]?.maxTurns).toBe(3);
 
     const call = completionCall();
     expect(call).toBeDefined();
@@ -380,5 +384,103 @@ describe('closing turn', () => {
     // Codex resume rides RunStreamedOpts.resumeThreadId (per-call), not the
     // Claude-only queryOptions.resume baked into createBackend's config.
     expect(runStreamedCalls[1]?.resumeThreadId).toBe('thread-1');
+  });
+
+  // ─── A closing turn's own failure is never the task's failure ────────────
+  //
+  // The main session already ended fine; the closing turn is a bonus attempt
+  // at an authored summary. Whatever goes wrong inside it, the worker must
+  // land exactly where it would have without the feature: a completed PATCH
+  // carrying the fallback summary.
+
+  function maxTurnsResult(sessionId = 'sess-1') {
+    return { type: 'result', subtype: 'error_max_turns', is_error: true, stop_reason: 'tool_use', session_id: sessionId, num_turns: 2 };
+  }
+
+  function completeTaskToolUse() {
+    return {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'tu-1', name: 'mcp__buildd__buildd', input: { action: 'complete_task', params: { summary: 'Done.' } } }] },
+    };
+  }
+
+  test('closing turn that runs out of turns falls back instead of failing the task', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Reviewed the PR; looks good.'), successResult('sess-1')],
+      [assistantText('Let me check one thing first.'), maxTurnsResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-max-turns');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    expect(call!.payload.summary).toContain('Reviewed the PR; looks good.');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:max_turns');
+    expect(manager.getWorker('w-closing-max-turns')?.status).toBe('done');
+  });
+
+  test('closing turn that calls complete_task and then hits max turns counts as authored', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Reviewed the PR; looks good.'), successResult('sess-1')],
+      [completeTaskToolUse(), maxTurnsResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    // First terminal check (the closing-turn decision) sees "not terminal";
+    // every later one sees the closing turn's complete_task having landed.
+    let terminalChecks = 0;
+    mockGetWorkerRemote.mockImplementation(async () => {
+      terminalChecks++;
+      return terminalChecks > 1 ? { status: 'completed' } : null;
+    });
+    mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+      updateCalls.push({ id, payload });
+      if (payload?.status === 'completed' && terminalChecks > 1) {
+        return { abort: true, actualStatus: 'completed' };
+      }
+      return {};
+    });
+
+    await runSession(manager, 'w-closing-authored-max-turns');
+
+    expect(failedCall()).toBeUndefined();
+    const metricsOnlyCall = updateCalls.find(c => c.payload?.metricsOnly === true);
+    expect(metricsOnlyCall).toBeDefined();
+    expect(metricsOnlyCall!.payload.resultMeta?.closingTurnOutcome).toBe('authored');
+  });
+
+  test('closing turn that throws falls back instead of failing the task', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Reviewed the PR; looks good.'), successResult('sess-1')],
+      [{ __throw: 'Claude Code process exited with code 1' }],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-throws');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:error');
+    expect(manager.getWorker('w-closing-throws')?.status).toBe('done');
+  });
+
+  test('turn-cap closing turn that itself runs out of turns falls back too', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Most of the work is done.'), { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+      [assistantText('Checking one more file.'), maxTurnsResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-cap-then-closing-cap');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:max_turns');
   });
 });
