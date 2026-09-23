@@ -7,6 +7,7 @@ import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
+import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
@@ -768,7 +769,8 @@ const sseClients = new Set<ReadableStreamDefaultController>();
 
 // Broadcast to all SSE clients
 function broadcast(event: any) {
-  const data = `data: ${JSON.stringify(event)}\n\n`;
+  // Never serialise credential material — see public-worker.ts.
+  const data = `data: ${JSON.stringify(toPublicEvent(event))}\n\n`;
   for (const controller of sseClients) {
     try {
       controller.enqueue(new TextEncoder().encode(data));
@@ -1658,7 +1660,7 @@ const server = DEBUG_MODE ? Bun.serve({
       const init = {
         type: 'init',
         configured: !!config.apiKey,
-        workers: activeWorkers,
+        workers: toPublicWorkers(activeWorkers),
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
@@ -1751,7 +1753,7 @@ const server = DEBUG_MODE ? Bun.serve({
     }
 
     if (path === '/api/workers' && req.method === 'GET') {
-      return Response.json({ workers: workerManager!.getWorkers() }, { headers: corsHeaders });
+      return Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) }, { headers: corsHeaders });
     }
 
     if (path === '/api/workers/purge' && req.method === 'POST') {
@@ -1780,7 +1782,7 @@ const server = DEBUG_MODE ? Bun.serve({
             error: `Cannot claim task "${task.title}" right now — account context is temporarily paused (rate limit). Try again shortly.`,
           }, { status: 400, headers: corsHeaders });
         }
-        return Response.json({ worker }, { headers: corsHeaders });
+        return Response.json({ worker: toPublicWorker(worker) }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to claim' }, { status: 400, headers: corsHeaders });
       }
@@ -1878,7 +1880,7 @@ const server = DEBUG_MODE ? Bun.serve({
           return Response.json({ error: 'Failed to claim task after reassign' }, { status: 400, headers: corsHeaders });
         }
 
-        return Response.json({ worker, reassigned: true }, { headers: corsHeaders });
+        return Response.json({ worker: toPublicWorker(worker), reassigned: true }, { headers: corsHeaders });
       } catch (err: any) {
         // Check for auth error
         if (err.message?.includes('401')) {
