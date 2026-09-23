@@ -61,3 +61,69 @@ export function checkModelClientCapability(
   if (compareCliVersions(runnerCliVersion, required) >= 0) return { ok: true };
   return { ok: false, requiredVersion: required };
 }
+
+/** The slice of a catalog entry the servability check needs (see model-catalog.ts). */
+export interface CatalogModelRef {
+  id: string;
+  canonicalId: string | null;
+  /** Release time, unix seconds. */
+  created: number;
+}
+
+const releaseDay = (createdSeconds: number) => Math.floor(createdSeconds / 86_400);
+
+/**
+ * Builds the `isServable` filter for a catalog-driven tier pick. Fails CLOSED
+ * on models the floor table cannot vouch for.
+ *
+ * `checkModelClientCapability` alone treats "no recorded floor" as "no floor",
+ * which is only true for models released before the table's newest entry: when
+ * someone last edited the table, those models already existed and nobody
+ * recorded a floor for them. A catalog release NEWER than every model in the
+ * table is different. Nobody has looked at it, so its floor is unknown, and a
+ * new model has so far always raised the floor. Picking it lets the catalog
+ * self-heal onto a model that old runners 400 on for every attempt, until
+ * someone adds a row.
+ *
+ * So a model is servable from the catalog only when:
+ *   - it has a recorded floor and the runner meets it (the usual gate, which
+ *     still fails open on a missing runner version), or
+ *   - it has no recorded floor and was released no later than the newest
+ *     recorded model's release day. Same-day siblings count as recognized,
+ *     matching pickTierModel's day granularity.
+ *
+ * An unrecognized model is refused whatever CLI the runner reports, because
+ * a current CLI proves nothing about a floor that nobody has recorded. The
+ * pick falls back to the newest recognized in-band release. To adopt the
+ * new model, add it to MODEL_MIN_CLI_VERSION. If no recorded model appears in
+ * the catalog at all, every unrecorded model is unrecognized and the caller
+ * lands on TIER_DEFAULTS.
+ *
+ * This only governs the catalog step. An explicit registry row or a caller pin
+ * is an operator's choice and still goes through `checkModelClientCapability`
+ * alone.
+ */
+export function makeCatalogServabilityCheck(
+  entries: readonly CatalogModelRef[],
+  runnerCliVersion: string | null | undefined,
+): (id: string) => boolean {
+  const recordedId = (e: CatalogModelRef) =>
+    e.id in MODEL_MIN_CLI_VERSION || (e.canonicalId !== null && e.canonicalId in MODEL_MIN_CLI_VERSION);
+
+  let newestRecordedDay = -Infinity;
+  for (const e of entries) {
+    if (recordedId(e)) newestRecordedDay = Math.max(newestRecordedDay, releaseDay(e.created));
+  }
+
+  const byId = new Map(entries.map((e) => [e.id, e]));
+
+  return (id) => {
+    const entry = byId.get(id);
+    if (!entry) return false;
+    if (recordedId(entry)) {
+      const floorKey = id in MODEL_MIN_CLI_VERSION ? id : entry.canonicalId!;
+      return checkModelClientCapability(floorKey, runnerCliVersion).ok;
+    }
+    return releaseDay(entry.created) <= newestRecordedDay;
+  };
+}

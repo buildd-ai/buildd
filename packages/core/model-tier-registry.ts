@@ -25,7 +25,7 @@ import type { Tier, TierEntry, TierProvider } from './model-tier-defaults';
 import { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
 import { pickTierModel } from './model-catalog';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
-import { checkModelClientCapability } from './model-capability-requirements';
+import { makeCatalogServabilityCheck } from './model-capability-requirements';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
 export function mapRouterAlias(alias: string): Tier {
@@ -62,7 +62,9 @@ export function invalidateTierCache(teamId: string, workspaceId?: string | null)
  * `runnerCliVersion`, when supplied, excludes a candidate the claiming runner
  * cannot actually serve (its CLI predates the model's version floor) — the
  * newest-wins sort in `pickTierModel` then lands on the previous in-band
- * release instead of deferring the task entirely.
+ * release instead of deferring the task entirely. A release newer than every
+ * model in MODEL_MIN_CLI_VERSION is excluded regardless of version, because
+ * its floor is unknown (see makeCatalogServabilityCheck).
  */
 async function resolveFromCatalog(
   tier: Tier,
@@ -73,7 +75,7 @@ async function resolveFromCatalog(
     if (entries.length === 0) return null;
 
     const pick = pickTierModel(tier, entries, 'anthropic', {
-      isServable: (id) => checkModelClientCapability(id, runnerCliVersion).ok,
+      isServable: makeCatalogServabilityCheck(entries, runnerCliVersion),
     });
     if (!pick) return null;
 

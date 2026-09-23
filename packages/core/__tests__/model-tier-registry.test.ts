@@ -244,6 +244,21 @@ describe('resolveTierEntry — catalog fallback', () => {
     expect(current.model).toBe('claude-fable-5-1');
   });
 
+  it('a catalog release newer than every model in the floor table is not picked — falls back to the newest recorded one', async () => {
+    mockFindMany.mockResolvedValue([]);
+    mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      catalogEntry({ id: 'claude-opus-5-5', created: 1_780_000_000, input: 6 }),
+      // Unknown to MODEL_MIN_CLI_VERSION and newer than its newest entry: its
+      // CLI floor is unknown, so an old runner would 400 on every attempt.
+      catalogEntry({ id: 'claude-opus-99', created: 1_780_000_000 + 86_400 * 30, input: 6 }),
+    ]));
+    invalidateTierCache(TEAM_A, null);
+
+    const entry = await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
+    expect(entry.model).toBe('claude-opus-5-5');
+    expect(entry.source).toBe('catalog');
+  });
+
   it('an unparseable/missing runner CLI version fails open — no filtering applied', async () => {
     mockFindMany.mockResolvedValue([]);
     mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
