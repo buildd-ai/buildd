@@ -74,6 +74,7 @@ export async function PATCH(
   try {
     // The workspace's current team — every check below is made against it.
     let workspaceTeamId: string | undefined;
+    let sessionRole: string | undefined;
     // For session auth, verify workspace access via team membership
     if (user && !apiAccount) {
       const access = await verifyWorkspaceAccess(user.id, id);
@@ -81,6 +82,7 @@ export async function PATCH(
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
       workspaceTeamId = access.teamId;
+      sessionRole = access.role;
     }
     // For API key auth, the workspace must belong to the API key's own team.
     if (apiAccount) {
@@ -99,6 +101,21 @@ export async function PATCH(
       name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass, teamId,
       gitConfig, maxConcurrentTasks, connectorAdvisoryMode,
     } = body;
+
+    // Merge policy / git config, access mode, data class and the connector
+    // claim gate are workspace-admin settings (POST /config applies the same
+    // bar): owner or admin in the workspace's team for a session, admin level
+    // for an API key. Checked before any write so a mixed body is all-or-nothing.
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode]
+      .some(v => v !== undefined);
+    if (touchesAdminSettings) {
+      const isAdmin = apiAccount
+        ? apiAccount.level === 'admin'
+        : sessionRole === 'owner' || sessionRole === 'admin';
+      if (!isAdmin) {
+        return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
+      }
+    }
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),

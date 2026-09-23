@@ -1,13 +1,35 @@
 // Request-scope checks for the /api/mcp entry point. The MCP URL carries
-// caller-supplied `?worker=` and `?repo=` parameters; both are resolved only
-// within the authenticated account's reach before any tool runs.
+// caller-supplied `?workspace=`, `?worker=` and `?repo=` parameters; each is
+// resolved only within the authenticated account's reach before any tool runs.
 
 import { db } from '@buildd/core/db';
-import { workspaces, workers } from '@buildd/core/db/schema';
+import { accountWorkspaces, workspaces, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 
 type McpAccount = { id: string; teamId: string };
+
+/**
+ * A `?workspace=` id pins the workspace this MCP session acts in. It must
+ * belong to the calling account's team, or the account must hold an explicit
+ * accountWorkspaces link to it. An unknown id is simply not in scope.
+ */
+export async function isWorkspaceInCallerScope(workspaceId: string, account: McpAccount): Promise<boolean> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return false;
+  if (ws.teamId === account.teamId) return true;
+  const link = await db.query.accountWorkspaces.findFirst({
+    where: and(
+      eq(accountWorkspaces.accountId, account.id),
+      eq(accountWorkspaces.workspaceId, workspaceId),
+    ),
+    columns: { workspaceId: true },
+  });
+  return !!link;
+}
 
 /**
  * A `?worker=` id names the worker this MCP session acts as. It must be a
