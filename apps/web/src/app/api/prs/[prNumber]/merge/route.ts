@@ -19,14 +19,13 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
-import { escalateConflictExhaustion, isBehindBaseRefusal } from '@/lib/auto-merge';
+import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 
 export async function POST(
   req: NextRequest,
@@ -369,7 +368,7 @@ export async function POST(
   };
 
   // Perform the merge
-  let result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';
@@ -406,47 +405,6 @@ export async function POST(
     console.error(
       `[pr-merge] GitHub rejected merge of PR #${prNumber} on ${repoFullName}: ${rawMessage}`,
     );
-
-    // Auto-rebase on base-drift (PR behind base branch). Try GitHub's
-    // update-branch API first — if it succeeds, retry the merge. This handles
-    // the common case of multiple concurrent PRs landing while others are
-    // waiting for approval (see PR #2593 friction report).
-    if (isBehindBaseRefusal(rawMessage)) {
-      console.log(`[pr-merge] PR #${prNumber} is behind its base — attempting auto-rebase via GitHub API`);
-      const updateResult = await updateBehindPrBranch({
-        installationId,
-        repoFullName,
-        prNumber,
-        headSha: liveHeadSha,
-      });
-      if (updateResult.updated) {
-        console.log(`[pr-merge] PR #${prNumber} auto-rebased successfully, retrying merge`);
-        // Retry the merge after the branch update. Use a fresh head SHA lookup
-        // since GitHub's update-branch merges the base in and creates a new commit.
-        let updatedHeadSha: string | null = null;
-        try {
-          const updatedPr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-          updatedHeadSha = typeof updatedPr?.head?.sha === 'string' ? updatedPr.head.sha : null;
-        } catch (e) {
-          console.warn(`[pr-merge] could not read updated PR head SHA for PR #${prNumber}:`, e);
-        }
-        if (updatedHeadSha) {
-          result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', updatedHeadSha);
-          if (result.merged) {
-            return finalizeSuccessfulMerge();
-          }
-          // Fall through to normal error handling if the retry still fails
-          console.warn(`[pr-merge] merge still failed after auto-rebase for PR #${prNumber}: ${result.message}`);
-        } else {
-          return NextResponse.json(
-            { error: 'PR was auto-rebased but the updated commit could not be verified — please retry manually' },
-            { status: 409 },
-          );
-        }
-      } else {
-        console.warn(`[pr-merge] auto-rebase failed for PR #${prNumber}: ${updateResult.reason}`);
-      }
-    }
 
     const failureClass = classifyMergeFailure(rawMessage);
 
