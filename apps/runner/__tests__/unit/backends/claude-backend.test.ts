@@ -209,6 +209,50 @@ describe('ClaudeBackend.runStreamed', () => {
       expect(errorEvent?.error).toBe('Claude Agent SDK returned an error result');
     });
 
+    // subtype 'success' with is_error:true and empty result/errors was the
+    // remaining dead end #2678 didn't cover: the SDK's own SDKResultSuccess
+    // type still carries stop_reason/terminal_reason/permission_denials/
+    // api_error_status on this shape, so surface those instead of the fully
+    // generic fallback.
+    test('surfaces stop_reason when result and errors[] are both empty', async () => {
+      const events = await collectEvents([
+        { type: 'result', subtype: 'success', is_error: true, stop_reason: 'refusal' },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe(
+        'Claude Agent SDK returned an error result (stop_reason=refusal)'
+      );
+    });
+
+    test('surfaces terminal_reason and permission_denials together', async () => {
+      const events = await collectEvents([
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          terminal_reason: 'aborted_tools',
+          permission_denials: [{ tool_name: 'Bash' }, { tool: 'Write' }],
+        },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe(
+        'Claude Agent SDK returned an error result (terminal_reason=aborted_tools permission_denials=[Bash, Write])'
+      );
+    });
+
+    test('surfaces api_error_status', async () => {
+      const events = await collectEvents([
+        { type: 'result', subtype: 'success', is_error: true, api_error_status: 529 },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe(
+        'Claude Agent SDK returned an error result (api_error_status=529)'
+      );
+    });
+
     // SDKResultError (subtype error_during_execution / error_max_turns /
     // error_max_budget_usd / error_max_structured_output_retries) has no
     // `result` string field at all — the detail lives in `errors: string[]`.
