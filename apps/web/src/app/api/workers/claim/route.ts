@@ -1149,10 +1149,22 @@ export async function POST(req: NextRequest) {
     // manifest, defer this claim. Prevents two tasks editing the same file in
     // parallel when the orchestrator forgot to serialize them with dependsOn edges.
     // (Regression guard for the PRs #1126/#1129 incident.)
+    //
+    // Exception: conflict-retry tasks are exempt from blocking on their own PR.
+    // A conflict-retry task works on the same PR as its original (to rebase &
+    // resolve conflicts), so the original's open PR should not block the retry.
+    // Exclude the conflict-retry PR number from the overlap check.
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
-      const blocking = findBlockingPr(taskManifest, openPrTasks);
+      const conflictRetryPrNumber = (task as any).conflictRetryPrNumber as number | null | undefined;
+      // Filter out the conflict-retry PR if this task is retrying a conflict.
+      // The original PR is on the same task/branch being worked on, so overlap
+      // is not a conflict risk — it's the expected case.
+      const filterOpenPrTasks = conflictRetryPrNumber
+        ? openPrTasks.filter(pr => pr.prNumber !== conflictRetryPrNumber)
+        : openPrTasks;
+      const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         deferTask(task, 'path_overlap', { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null });
