@@ -24,6 +24,13 @@ export const ROLLUP_DEFAULT_LIMIT = 20;
 export const ROLLUP_MAX_LIMIT = 100;
 /** Example task ids returned per pattern. */
 const EXAMPLE_TASKS = 3;
+/**
+ * Newest trace task ids fetched per pattern before de-duplication. Postgres
+ * rejects `array_agg(distinct x order by ts)`, so ids come back newest-first
+ * with repeats and are de-duplicated in JS. A task that floods the window can
+ * yield fewer than EXAMPLE_TASKS examples; they are still the most recent ones.
+ */
+const EXAMPLE_SCAN = 50;
 
 export interface RollupOptions {
   workspaceId: string;
@@ -74,7 +81,7 @@ export function buildWorkspaceErrorTraceRollupQuery(
       lastSeen: sql<Date | string>`${lastSeen}`,
       exampleExcerpt: sql<string>`(array_agg(${workerErrorTraces.excerpt} order by ${workerErrorTraces.ts} desc))[1]`,
       exampleSource: sql<string | null>`(array_agg(${workerErrorTraces.source} order by ${workerErrorTraces.ts} desc))[1]`,
-      exampleTaskIds: sql<unknown>`array_to_json(((array_agg(distinct ${workerErrorTraces.taskId}::text) filter (where ${workerErrorTraces.taskId} is not null)))[1:${sql.raw(String(EXAMPLE_TASKS))}])`,
+      exampleTaskIds: sql<unknown>`array_to_json(((array_agg(${workerErrorTraces.taskId}::text order by ${workerErrorTraces.ts} desc) filter (where ${workerErrorTraces.taskId} is not null)))[1:${sql.raw(String(EXAMPLE_SCAN))}])`,
     })
     .from(workerErrorTraces)
     .innerJoin(workers, eq(workerErrorTraces.workerId, workers.id))
@@ -95,7 +102,13 @@ function toIdList(v: unknown): string[] {
   if (typeof value === 'string') {
     try { value = JSON.parse(value); } catch { return []; }
   }
-  return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const x of value) {
+    if (typeof x === 'string') seen.add(x);
+    if (seen.size >= EXAMPLE_TASKS) break;
+  }
+  return [...seen];
 }
 
 export async function getWorkspaceErrorTraceRollup(opts: RollupOptions): Promise<WorkspaceErrorTracePattern[]> {

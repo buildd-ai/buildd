@@ -161,6 +161,30 @@ describe('get_error_traces', () => {
     expect(mockApi.mock.calls[0][0]).toMatch(/^\/api\/workspaces\//);
   });
 
+  it('an explicit taskId wins over a habitual workspaceId', async () => {
+    mockApi.mockResolvedValueOnce({ traces: [], count: 0 });
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_error_traces',
+      { taskId: 'task-explicit', workspaceId: MOCK_WORKSPACE_ID },
+      ctx(),
+    );
+    expect(mockApi).toHaveBeenCalledTimes(1);
+    expect(mockApi.mock.calls[0][0]).toMatch(/^\/api\/tasks\/task-explicit\/error-traces/);
+  });
+
+  it('an explicit workerId wins over a habitual workspaceId', async () => {
+    mockApi.mockResolvedValueOnce({ traces: [], count: 0 });
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_error_traces',
+      { workerId: 'worker-explicit', workspaceId: MOCK_WORKSPACE_ID },
+      ctx(),
+    );
+    expect(mockApi).toHaveBeenCalledTimes(1);
+    expect(mockApi.mock.calls[0][0]).toMatch(/^\/api\/workers\/worker-explicit\/error-traces/);
+  });
+
   it('without a worker context, defaults to the session workspace rollup', async () => {
     mockApi.mockResolvedValueOnce({ patterns: [] });
     const res = await handleBuilddAction(

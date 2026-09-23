@@ -61,6 +61,16 @@ describe('buildWorkspaceErrorTraceRollupQuery — scoping', () => {
   });
 });
 
+describe('buildWorkspaceErrorTraceRollupQuery — example tasks', () => {
+  // `array_agg(distinct …)[1:3]` returned the three lowest-SORTING uuids, so a
+  // pattern recurring today could cite tasks from a week ago.
+  it('aggregates example task ids newest-first, not in uuid sort order', () => {
+    const { sql } = render();
+    expect(sql).toMatch(/array_agg\("worker_error_traces"."task_id"::text order by "worker_error_traces"."ts" desc\)/);
+    expect(sql).not.toContain('array_agg(distinct "worker_error_traces"."task_id"');
+  });
+});
+
 describe('parseRollupParams', () => {
   it('defaults to a 7-day window and a limit of 20', () => {
     const p = parseRollupParams(new URLSearchParams(), NOW);
@@ -120,5 +130,17 @@ describe('getWorkspaceErrorTraceRollup', () => {
     });
     expect(res[1].exampleTaskIds).toEqual([]);
     expect(res[1].firstSeen).toBe('2026-08-23T00:00:00.000Z');
+  });
+
+  it('dedupes the newest-first ids and keeps the first three distinct', async () => {
+    mockRows.mockResolvedValueOnce([
+      {
+        pattern: 'p', count: 6, taskCount: 4, firstSeen: SINCE, lastSeen: SINCE,
+        exampleExcerpt: 'x', exampleSource: null,
+        exampleTaskIds: ['t-new', 't-new', 't-mid', 't-new', 't-old', 't-oldest'],
+      },
+    ]);
+    const res = await getWorkspaceErrorTraceRollup({ workspaceId: 'ws-1', since: SINCE, limit: 20 });
+    expect(res[0].exampleTaskIds).toEqual(['t-new', 't-mid', 't-old']);
   });
 });

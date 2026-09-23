@@ -3528,11 +3528,16 @@ export async function handleBuilddAction(
     }
 
     case 'get_error_traces': {
-      // Three resolution modes, in priority:
+      // Resolution modes, in priority:
       //   1. explicit workerId in params
       //   2. explicit taskId in params (returns cumulative traces across all
       //      workers that ran on this task — useful when retrying)
-      //   3. infer from ctx.workerId (default: this agent's session)
+      //   3. explicit workspaceId → per-pattern rollup across the workspace
+      //   4. infer from ctx.workerId (default: this agent's task)
+      //   5. the session workspace rollup
+      // An explicit worker/task scope always beats workspaceId: agents pass
+      // workspaceId out of habit, and silently widening a narrow question to a
+      // workspace rollup would hide that the narrow scope was ignored.
       const limitNum = typeof params.limit === 'number'
         ? Math.min(Math.max(params.limit, 1), 500)
         : 50;
@@ -3541,9 +3546,10 @@ export async function handleBuilddAction(
         ? `&since=${encodeURIComponent(params.since)}`
         : '';
 
-      // 0. explicit workspaceId → per-pattern rollup across the workspace
       const hasWorkspaceParam = typeof params.workspaceId === 'string' && params.workspaceId.length > 0;
-      if (hasWorkspaceParam || (!params.workerId && !params.taskId && !ctx.workerId)) {
+      const hasNarrowScope = (typeof params.workerId === 'string' && params.workerId.length > 0)
+        || (typeof params.taskId === 'string' && params.taskId.length > 0);
+      if (!hasNarrowScope && (hasWorkspaceParam || !ctx.workerId)) {
         const wsId = await resolveWorkspaceId(api, hasWorkspaceParam ? params.workspaceId : undefined, ctx);
         if (!wsId) {
           return errorResult(hasWorkspaceParam
