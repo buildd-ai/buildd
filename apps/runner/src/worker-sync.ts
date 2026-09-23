@@ -24,6 +24,13 @@ import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 const POST_COMPLETION_SESSION_GRACE_MS = 5 * 60 * 1000;
 
 /**
+ * How long a done/error worker stays in memory before eviction — it may still
+ * be resumed by a follow-up message. The on-disk terminal worktree sweep
+ * (workers.ts) uses the same window.
+ */
+export const TERMINAL_WORKER_RETENTION_MS = 10 * 60 * 1000;
+
+/**
  * Server-side worker statuses that genuinely end a lease. A 409 that names one
  * of these is a real termination; anything else is coordination noise and must
  * not kill a live SDK session.
@@ -563,7 +570,7 @@ export class WorkerSync {
    * Workers remain on disk (24h TTL) so getWorkers() can still serve them.
    */
   evictCompletedWorkers() {
-    const RETENTION_MS = 10 * 60 * 1000;
+    const RETENTION_MS = TERMINAL_WORKER_RETENTION_MS;
     const now = Date.now();
     for (const [id, worker] of this.ctx.workers.entries()) {
       // Abandoned `waiting` workers are NEVER evicted from memory/disk (kept for
