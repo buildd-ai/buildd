@@ -722,6 +722,30 @@ describe('recall — files filter', () => {
     expect(res.content[0].text).toContain('nested file');
   });
 
+  it('matches a directory prefix without a trailing slash, in either direction', async () => {
+    const store = makeStore([
+      { content: 'nested file', sourcePath: 'packages/core/mcp-tools.ts' } as any,
+      { content: 'dir-filed memory', metadata: { files: ['apps/web'] } },
+    ]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory', files: ['packages/core', 'apps/web/src/x.ts'] }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('nested file');
+    expect(out).toContain('dir-filed memory');
+  });
+
+  it('does not treat a partial path segment as a directory prefix', async () => {
+    const store = makeStore([
+      { content: 'sibling package', sourcePath: 'packages/core-utils/index.ts' } as any,
+      { content: 'short-name memory', metadata: { files: ['a'] } },
+    ]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory', files: ['packages/core', 'apps/web/x.ts'] }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).not.toContain('sibling package');
+    expect(out).not.toContain('short-name memory');
+  });
+
   it('matches against metadata.files on memory-corpus entries', async () => {
     const store = makeStore([
       { content: 'memory entry', metadata: { files: ['src/foo.ts'] } },

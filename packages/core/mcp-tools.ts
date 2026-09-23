@@ -5440,6 +5440,18 @@ function chooseModeForQuery(query: string): 'lexical' | 'hybrid' {
  * a caller narrowing to `packages/core/` should hit a chunk filed under
  * `packages/core/mcp-tools.ts`, and vice versa.
  */
+/**
+ * True when `prefix` equals `path` or names a directory containing it, on a
+ * path-segment boundary — `packages/core` covers `packages/core/x.ts` but not
+ * `packages/core-utils/x.ts`.
+ */
+function isPathOrDirPrefix(prefix: string, path: string): boolean {
+  if (!prefix) return false;
+  if (path === prefix) return true;
+  const dir = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  return path.startsWith(dir);
+}
+
 function matchesRecallFilters(
   r: QueryResult,
   params: { type?: string; files?: string[] },
@@ -5451,7 +5463,7 @@ function matchesRecallFilters(
     if (Array.isArray(r.metadata?.files)) {
       candidates.push(...(r.metadata.files as unknown[]).filter((f): f is string => typeof f === 'string'));
     }
-    const hit = params.files.some(f => candidates.some(p => p === f || p.startsWith(f) || f.startsWith(p)));
+    const hit = params.files.some(f => candidates.some(p => isPathOrDirPrefix(f, p) || isPathOrDirPrefix(p, f)));
     if (!hit) return false;
   }
   return true;
