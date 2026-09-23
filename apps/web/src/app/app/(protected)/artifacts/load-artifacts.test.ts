@@ -44,6 +44,7 @@ mock.module('@buildd/core/db', () => ({
 import {
   loadArtifactsPage,
   parseArtifactLimit,
+  parseArtifactScope,
   ARTIFACTS_PAGE_SIZE,
   ARTIFACTS_MAX_LIMIT,
 } from './load-artifacts';
@@ -84,6 +85,15 @@ describe('parseArtifactLimit', () => {
   });
 });
 
+describe('parseArtifactScope', () => {
+  it('defaults to review and accepts only known values', () => {
+    expect(parseArtifactScope(undefined)).toBe('review');
+    expect(parseArtifactScope('bogus')).toBe('review');
+    expect(parseArtifactScope('all')).toBe('all');
+    expect(parseArtifactScope(['all', 'review'])).toBe('all');
+  });
+});
+
 describe('loadArtifactsPage', () => {
   beforeEach(() => {
     artifactRows = [];
@@ -100,6 +110,23 @@ describe('loadArtifactsPage', () => {
     const { sql } = render(args.where);
     expect(sql).toContain('"artifacts"."workspace_id" in');
     expect(sql).toContain('select "workers"."id" from "workers"');
+  });
+
+  it('pushes the review filter into SQL for the review scope', async () => {
+    await loadArtifactsPage(['ws-1'], 50, 'review');
+    const { sql } = render(artifactsFindMany.mock.calls[0][0].where);
+    expect(sql).toContain('"artifacts"."workspace_id" in');
+    expect(sql).toContain('"artifacts"."visibility" =');
+    expect(sql).toContain('"artifacts"."type" in');
+    // Counts stay unfiltered by scope: total is every visible artifact.
+    const countSql = render(countWhere.mock.calls[0][0]).sql;
+    expect(countSql).not.toContain('"artifacts"."visibility"');
+  });
+
+  it('does not apply the review filter for the all scope', async () => {
+    await loadArtifactsPage(['ws-1'], 50, 'all');
+    const { sql } = render(artifactsFindMany.mock.calls[0][0].where);
+    expect(sql).not.toContain('"artifacts"."visibility"');
   });
 
   it('never loads the full worker list — only the workers behind shown artifacts', async () => {

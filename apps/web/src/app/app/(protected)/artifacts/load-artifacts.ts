@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaces, artifacts, workers, tasks } from '@buildd/core/db/schema';
-import { count, desc, inArray, sql } from 'drizzle-orm';
+import { and, count, desc, inArray, sql } from 'drizzle-orm';
 import { isSystemWorkspace } from '@buildd/shared';
 import { reviewArtifactScope, workspaceArtifactScope } from '@/lib/artifact-scope';
 
@@ -14,6 +14,18 @@ export function parseArtifactLimit(raw: string | string[] | undefined): number {
   const n = Number.parseInt(value ?? '', 10);
   if (!Number.isFinite(n) || n <= 0) return ARTIFACTS_PAGE_SIZE;
   return Math.min(n, ARTIFACTS_MAX_LIMIT);
+}
+
+/**
+ * Which rows the page lists. `review` is the default view, and it is applied
+ * in SQL: filtering a loaded page on the client would leave the review view
+ * empty whenever the newest rows happen to be byproducts.
+ */
+export type ArtifactScope = 'review' | 'all';
+
+export function parseArtifactScope(raw: string | string[] | undefined): ArtifactScope {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === 'all' ? 'all' : 'review';
 }
 
 export interface ArtifactPageItem {
@@ -39,6 +51,7 @@ export interface ArtifactsPage {
   total: number;
   /** Review-worthy artifacts among `total`, counted in SQL. */
   reviewCount: number;
+  /** More rows exist in the current scope beyond the loaded page. */
   hasMore: boolean;
   workspaceCount: number;
 }
@@ -52,8 +65,15 @@ export interface ArtifactsPage {
  * The previous version loaded every artifact with full content and every
  * worker the workspaces had ever run.
  */
-export async function loadArtifactsPage(wsIds: string[], limit: number): Promise<ArtifactsPage> {
+export async function loadArtifactsPage(
+  wsIds: string[],
+  limit: number,
+  listScope: ArtifactScope = 'all',
+): Promise<ArtifactsPage> {
   const scope = workspaceArtifactScope(wsIds);
+  // Tenancy first, then the review predicate — `and` keeps the tenancy arms
+  // intact so the review filter can only narrow, never widen.
+  const listWhere = listScope === 'review' ? and(scope, reviewArtifactScope())! : scope;
 
   const [userWorkspaces, rows, counts] = await Promise.all([
     db.query.workspaces.findMany({
@@ -62,7 +82,7 @@ export async function loadArtifactsPage(wsIds: string[], limit: number): Promise
     }),
     // One sentinel row past the page tells us whether there is more.
     db.query.artifacts.findMany({
-      where: scope,
+      where: listWhere,
       orderBy: desc(artifacts.createdAt),
       limit: limit + 1,
     }),
