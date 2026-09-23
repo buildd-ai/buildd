@@ -206,7 +206,7 @@ watching GitHub can see an agent is on it without opening the dashboard.
 - The comment carries its own history in a hidden state block
   (`<!-- buildd-activity-state:{...} -->`). No DB column stores the comment id;
   the comment is located by scanning the PR's issue comments for the marker.
-- A repeat of the newest entry (same kind + detail) MUST be dropped, so a
+- A repeat of the newest entry (same kind, detail, iteration and sha) MUST be dropped, so a
   webhook redelivery does not stack identical lines. Corrupt state parses as an
   empty log — never as an error.
 - Posting is best-effort: a GitHub failure logs and returns `failed`. It MUST
@@ -215,9 +215,20 @@ watching GitHub can see an agent is on it without opening the dashboard.
 - A push to the branch (`pull_request.synchronize`) is recorded only when the
   comment already exists (`onlyIfPresent`) — buildd announces its own follow-up
   commits, not a human's.
-- The header MUST carry an animated spinner while the newest entry is an
-  in-flight state, and a static icon once it is terminal — movement means "an
-  agent is on it right now" and MUST NOT persist on a finished PR.
+- The header MUST state only what is true now. A fix task that is queued (no
+  worker has claimed it) MUST read as queued ("Fix 1 of 3 queued · waiting for
+  a worker", with a link to the task) and MUST NOT claim that buildd is fixing
+  or pushing. "Fixing" (`fix_started`) is written only by the claim route,
+  after a worker has atomically claimed a fix attempt (`reviewerRetryPrNumber`
+  or `ciRetryPrNumber` set).
+- The header MUST carry an animated spinner only while an agent is working
+  right now (reviewing, fixing), and a static glyph otherwise — queued, waiting
+  on checks, approved and every terminal state are not motion, and movement
+  MUST NOT persist on a finished PR.
+- Long text (reviewer feedback, escalation reasons, the original lede) MUST be
+  collapsed under its row in `<details>`, never pasted inline. Copy rules —
+  status vocabulary, length limits, glyph set — are in
+  `apps/web/src/lib/pr-activity-comment.STYLE.md`.
 - The PR's own close is the last word: on `pull_request.closed` an existing
   comment MUST be resolved to `merged` or `closed_unmerged` (both terminal), so
   a header left mid-flight ("Review passed — merging once checks are green")
@@ -227,24 +238,29 @@ watching GitHub can see an agent is on it without opening the dashboard.
   origin. GitHub fetches comment images server-side through camo, so animated
   SVG/CSS does not survive sanitization and a localhost origin renders broken;
   a non-public `NEXT_PUBLIC_APP_URL` MUST fall back to production.
-- Timestamps MUST render in the owning team's timezone (`teams.timezone`,
-  resolved from the workspace), and MUST carry the zone label so a reader
-  elsewhere is not misled. A team with no zone renders UTC.
+- The comment carries ONE absolute timestamp (the footer's "Started …");
+  timeline rows show offsets from it (`+9m`), which never go stale between
+  edits. That timestamp MUST render in the owning team's timezone
+  (`teams.timezone`, resolved from the workspace), and MUST carry the zone
+  label so a reader elsewhere is not misled. A team with no zone renders UTC.
 - The zone MUST be applied at render time and MUST NOT be stored in the state
   block, so changing a team's zone re-stamps the whole log on the next edit.
 
 **Acceptance criteria**:
 - AC-10: WHEN a reviewer task is dispatched for a PR THEN a comment containing
-  the marker and "Reviewing changes" exists on that PR.
+  the marker and "Reviewing" exists on that PR.
 - AC-11: WHEN CI fails on a worker PR and a fix task is dispatched THEN the
-  existing comment is PATCHed with a "CI failed — fixing" entry including the
-  attempt number, and no second comment is created.
+  existing comment is PATCHed with a "CI failed · fix N of M queued" entry
+  linking the fix task, with no spinner, and no second comment is created.
+- AC-11a: WHEN a reviewer requests changes THEN the header reads "Fix N of M
+  queued · waiting for a worker" with no spinner; WHEN a worker then claims
+  that fix task THEN the header reads "Fixing · fix N of M" with the spinner.
 
 - AC-12: WHEN the newest entry is a terminal state THEN the rendered comment
   contains no reference to the spinner asset.
 - AC-13: GIVEN a team with `timezone = 'America/New_York'` WHEN an entry stamped
-  `14:03Z` is rendered THEN the comment reads `Aug 29, 10:03 EDT`; GIVEN the
-  team has no zone THEN it reads `Aug 29, 14:03 UTC`.
+  `14:03Z` starts the log THEN the footer reads `Started Aug 29, 10:03 EDT`;
+  GIVEN the team has no zone THEN it reads `Started Aug 29, 14:03 UTC`.
 - AC-14: WHEN a PR with an existing activity comment is closed THEN the comment
   is PATCHed to a terminal header ("Merged" if merged, "Closed without merging"
   otherwise) carrying no spinner reference; WHEN the closed PR has no activity
@@ -257,7 +273,10 @@ watching GitHub can see an agent is on it without opening the dashboard.
 - Callers: `apps/web/src/app/api/github/webhook/route.ts` (reviewer dispatch,
   pre-flight escalation, CI retry/exhaustion, branch pushes, PR close),
   `apps/web/src/app/api/workers/[id]/route.ts` (reviewer verdicts),
-  `apps/web/src/app/api/github/pr/review/route.ts` (on-demand review requests)
+  `apps/web/src/app/api/github/pr/review/route.ts` (on-demand review requests),
+  `apps/web/src/app/api/workers/claim/route.ts` via
+  `apps/web/src/lib/pr-activity-fix-claimed.ts` (fix claimed → "Fixing")
+- Copy style guide: `apps/web/src/lib/pr-activity-comment.STYLE.md`
 - Timezone resolution: `packages/core/timezone.ts`,
   `apps/web/src/lib/team-timezone.ts`
 

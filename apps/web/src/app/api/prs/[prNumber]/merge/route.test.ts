@@ -584,7 +584,7 @@ describe('POST /api/prs/[prNumber]/merge — override (Merge anyway)', () => {
         prNumber: 42,
         entry: expect.objectContaining({
           kind: 'human_override_merge',
-          detail: expect.stringContaining('Touches packages/core/db/schema.ts'),
+          note: expect.stringContaining('Touches packages/core/db/schema.ts'),
         }),
       }),
     );

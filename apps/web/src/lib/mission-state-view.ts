@@ -115,7 +115,8 @@ export type MissionStateSource =
   | 'classifyMissionWait'
   | 'evaluateMissionWorkState'
   | 'gateEvents.claimLoopDeferral'
-  | 'workers.prUrl + workers.mergedAt';
+  | 'workers.prUrl + workers.mergedAt'
+  | 'tasks.parentTaskId + tasks.taskClass';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -157,6 +158,12 @@ export type WaitingOnDescriptor =
       taskIds: string[];
       /** Status histogram of the open rows, e.g. `{ pending: 2 }`. */
       byStatus: Record<string, number>;
+      /**
+       * Set when the open row is a fix attempt on work that already produced a
+       * PR (builder-after-review, CI retry). `claimed` separates "queued" from
+       * "a worker has it" — the two read very differently to someone waiting.
+       */
+      attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean };
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -369,6 +376,20 @@ export interface MissionStateInput {
    * silently drops the one thing its owner had to do.
    */
   unmergedPrs?: Array<{ taskId: string; title?: string | null; prNumber: number | null; prUrl: string | null }>;
+  /**
+   * An open fix attempt (taskClass `attempt`) on this subject — the builder a
+   * request-changes review or a red CI run queued. While one exists the PR is
+   * not ready to merge: the platform owes the next push, not the owner.
+   */
+  openAttempt?: {
+    taskId: string;
+    title?: string | null;
+    status: string;
+    iteration: number | null;
+    maxIterations: number | null;
+    /** A worker has picked it up (task left `pending`, or a live worker is on it). */
+    claimed: boolean;
+  } | null;
 }
 
 /** The subset of `MissionCompletionDecision` this accessor reads. */
@@ -581,6 +602,15 @@ function resolve(input: MissionStateInput): Resolution {
   const failed = failedFact(input);
   if (failed) return failed;
 
+  // 6½. A fix attempt is queued on work that already has a PR. This outranks
+  //     the merge rule below: an unmerged PR with a pending builder-after-review
+  //     is waiting on the platform's next push, and "waiting on you to merge"
+  //     over the top of it sends the owner to merge a PR the reviewer just
+  //     rejected. Reached only with no live worker — a claimed fix is `running`
+  //     by rule 5, and still named through `outstanding`.
+  const attempt = attemptFact(input);
+  if (attempt) return attempt;
+
   // 7. The work is done and has not reached trunk. `canCompleteMission` owns
   //    this refusal (`awaiting_merge` for a task PR, `awaiting_mission_pr` for
   //    the mission's own integration PR); `evaluateMissionWorkState` is the
@@ -701,8 +731,36 @@ function failedFact(input: MissionStateInput): Resolution | null {
   return null;
 }
 
+/** Rule 6½ — a fix attempt is open on work that already has a PR. */
+function attemptFact(input: MissionStateInput): Resolution | null {
+  const a = input.openAttempt;
+  if (!a) return null;
+  return {
+    kind: 'waiting',
+    waitingOn: {
+      kind: 'task',
+      tone: 'neutral',
+      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued — no worker yet'}`,
+      count: 1,
+      taskIds: [a.taskId],
+      byStatus: { [a.status]: 1 },
+      attempt: { iteration: a.iteration, maxIterations: a.maxIterations, claimed: a.claimed },
+    },
+    displayState: 'active',
+    source: 'tasks.parentTaskId + tasks.taskClass',
+  };
+}
+
+function fixLabel(a: { iteration: number | null; maxIterations: number | null }): string {
+  if (a.iteration == null) return 'Fix';
+  return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
+}
+
 /** Rule 7 — the work is done and has not reached trunk. */
 function mergeFact(input: MissionStateInput): Resolution | null {
+  // An open fix attempt means the PR is about to change; asking the owner to
+  // merge it now is the false headline rule 6½ exists to prevent.
+  if (input.openAttempt) return null;
   const { completion } = input;
   if (completion && isMergeBlockCode(completion.code)) {
     const details = completion.awaitingMergeDetails ?? [];
@@ -952,6 +1010,7 @@ function collectOutstanding(input: MissionStateInput, resolved: Resolution): Out
     resolved.waitingOn ? { fact: resolved.waitingOn, source: resolved.source } : null,
     entry(deferralFact(input), 'gateEvents.claimLoopDeferral'),
     fromResolution(failedFact(input)),
+    fromResolution(attemptFact(input)),
     fromResolution(mergeFact(input)),
     fromResolution(criteriaFact(input)),
     fromResolution(openTaskFact(input, live)),
@@ -991,6 +1050,10 @@ function situationPhrase(d: WaitingOnDescriptor): string {
     case 'dependency':
       return 'waiting on an upstream mission to meet its gate condition';
     case 'task':
+      if (d.attempt) {
+        const fix = fixLabel(d.attempt).toLowerCase();
+        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued — no worker yet)`;
+      }
       return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
     case 'task_failed':
       return d.infra
@@ -1109,6 +1172,11 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'dependency':
       return 'Complete the upstream mission, or clear the dependency gate on this one.';
     case 'task':
+      if (waitingOn.attempt) {
+        return waitingOn.attempt.claimed
+          ? 'Nothing to do yet — the fix is in progress; review runs again after it pushes.'
+          : 'Nothing to do yet — the fix is queued for the next free worker. Cancel it if the work is no longer wanted.';
+      }
       return 'Dispatch a worker for the open task(s), or cancel them if the work is no longer wanted.';
     case 'task_failed':
       return waitingOn.infra

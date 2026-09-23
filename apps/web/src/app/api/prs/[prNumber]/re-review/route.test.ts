@@ -207,7 +207,9 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
 
     // The PR activity entry says this was a delta, not a full re-read.
     const activity = mockAppendPrActivity.mock.calls[0][0] as any;
-    expect(activity.entry.detail).toContain('delta re-review');
+    // Short and public-safe: no requester email, just "manual · since <sha>".
+    expect(activity.entry.detail).toContain('manual · since');
+    expect(activity.entry.detail).not.toContain('@');
   });
 
   it('carries an approval forward instead of dispatching when only the base moved', async () => {

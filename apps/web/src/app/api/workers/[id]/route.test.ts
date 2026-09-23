@@ -6781,8 +6781,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('Review passed');
-      expect(body).toContain('confidence 0.90');
+      expect(body).toContain('**Approved**');
     });
 
     // ── Corrected lede ────────────────────────────────────────────────────
@@ -6937,8 +6936,13 @@ describe('PATCH /api/workers/[id]', () => {
       );
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
-      expect(body).toContain('Applying review feedback');
-      expect(body).toContain('iteration 1 of 3');
+      // Queued, not "applying": the fix task has no worker yet.
+      expect(body).toContain('Fix 1 of 3 queued');
+      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('/app/tasks/');
+      expect(body).not.toContain('Applying review feedback');
+      // The feedback is collapsed under its row, not pasted into it.
+      expect(body).toContain('<details><summary>Reviewer feedback</summary>');
       expect(body).toContain('Fix the missing handler');
     });
 

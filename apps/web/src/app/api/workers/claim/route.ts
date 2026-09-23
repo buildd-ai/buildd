@@ -68,6 +68,7 @@ import {
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
+import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -1867,6 +1868,9 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
+      // A fix attempt just got a worker: the PR's activity comment may now say
+      // "Fixing" instead of "fix queued". No-op for any other task.
+      await announceFixClaimed(claimedTask);
     }
   }
 
