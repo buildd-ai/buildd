@@ -4,6 +4,8 @@ import {
   consumeAuthCode,
   consumeRefreshToken,
   createRefreshToken,
+  userHasWorkspaceMembership,
+  revokeRefreshTokensForUserWorkspace,
 } from '@/lib/oauth/storage';
 import { signAccessToken } from '@/lib/oauth/tokens';
 import { db } from '@buildd/core/db';
@@ -124,6 +126,11 @@ export async function POST(req: NextRequest) {
     const result = await consumeAuthCode({ code, clientId, redirectUri, codeVerifier });
     if ('error' in result) return tokenError(result.error);
 
+    // Tokens are issued only to a current member of the workspace's team.
+    if (!(await userHasWorkspaceMembership(result.userId, result.workspaceId))) {
+      return tokenError('invalid_grant', 'no longer a member of this workspace team');
+    }
+
     await ensureUserAccount(result.userId, result.workspaceId);
 
     const scope = result.scope ?? 'mcp';
@@ -161,6 +168,14 @@ export async function POST(req: NextRequest) {
 
     const result = await consumeRefreshToken({ token: refreshToken, clientId });
     if ('error' in result) return tokenError(result.error);
+
+    // Membership is re-checked on every refresh. A user who has left the
+    // workspace's team gets no new pair, and their remaining refresh tokens
+    // for the workspace are revoked (the presented one already is).
+    if (!(await userHasWorkspaceMembership(result.userId, result.workspaceId))) {
+      await revokeRefreshTokensForUserWorkspace(result.userId, result.workspaceId);
+      return tokenError('invalid_grant', 'no longer a member of this workspace team');
+    }
 
     await ensureUserAccount(result.userId, result.workspaceId);
 
