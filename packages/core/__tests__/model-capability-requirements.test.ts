@@ -53,3 +53,18 @@ describe('checkModelClientCapability', () => {
     expect(checkModelClientCapability('claude-fable-5-1', null)).toEqual({ ok: true });
   });
 });
+
+describe('claude-opus-5-5 floor', () => {
+  // A catalog-picked premium model with no floor here passes the claim gate and
+  // then 400s on every attempt from an older runner CLI.
+  it('refuses a runner below the floor the API names for it', () => {
+    expect(checkModelClientCapability('claude-opus-5-5', '2.1.272')).toEqual({
+      ok: false,
+      requiredVersion: '2.1.280',
+    });
+  });
+
+  it('allows a runner at the floor', () => {
+    expect(checkModelClientCapability('claude-opus-5-5', '2.1.280')).toEqual({ ok: true });
+  });
+});
