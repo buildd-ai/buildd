@@ -45,7 +45,7 @@ import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-ga
 import { missionNotHeld } from './held-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
-import { isBudgetExhausted } from '@/lib/budget-errors';
+import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -74,6 +74,18 @@ import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '
 // the dominant burn-loop cause is fast-fail budget/auth errors that bounce in
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
+
+/**
+ * A review task the reviewer dispatched: `category: 'review'` plus
+ * `context.reviewerFor` naming the reviewed task (the same pair
+ * handleReviewerOutcomeIfNeeded requires). Only these skip the mission
+ * concurrency cap and pacing gate — the category alone is caller-settable.
+ */
+function isDispatchedReview(category: unknown, context: unknown): boolean {
+  if (category !== 'review') return false;
+  const reviewerFor = (context as Record<string, unknown> | null | undefined)?.reviewerFor;
+  return typeof reviewerFor === 'string' && reviewerFor.length > 0;
+}
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -550,6 +562,27 @@ export async function POST(req: NextRequest) {
     return pauses;
   };
 
+  /**
+   * Earliest reset across every wall this request saw, or null. Only instants
+   * still in the future qualify: the runner schedules its resume poll at this
+   * time, and a past instant means "poll now", every time — a hot claim loop.
+   * The account's own reset is a candidate only while its wall is actually in
+   * force (the in-memory `account` still carries a reset this request has just
+   * auto-cleared), and a missing one resolves to the derived session end.
+   */
+  const earliestFutureReset = (): string | null => {
+    const nowMs = Date.now();
+    const candidates: Date[] = [];
+    if (accountBudgetExhausted && account.budgetExhaustedAt) {
+      candidates.push(effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
+    }
+    for (const pauses of teamPauseCache.values()) {
+      for (const pause of pauses.values()) candidates.push(pause.resetsAt);
+    }
+    const future = candidates.filter(d => d.getTime() > nowMs).sort((x, y) => x.getTime() - y.getTime());
+    return future.length > 0 ? future[0].toISOString() : null;
+  };
+
   // Apply the team toggle's SAFE direction up front: if a task's backend is
   // disabled team-wide and the fallback is Claude, rewrite it to Claude now —
   // before the capability filter — so a Codex task with Codex disabled isn't
@@ -1003,6 +1036,13 @@ export async function POST(req: NextRequest) {
     integrationBranchEnabled: boolean | null;
   };
   const missionClaimMap = new Map<string, MissionClaimData>();
+  /**
+   * missionId → in-flight NON-review tasks. Reviewer-dispatched tasks
+   * (`isDispatchedReview`) inherit the reviewed PR's missionId but are not mission work: they are
+   * exempt from the mission concurrency cap and pacing gate below, so they must
+   * not occupy a slot either — otherwise a running reviewer pushes back the
+   * next builder, and the builder queue pushes back the review.
+   */
   const missionActiveCountMap = new Map<string, number>();
   /**
    * missionId → ids of that mission's in-flight tasks that declared no file
@@ -1053,7 +1093,7 @@ export async function POST(req: NextRequest) {
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
     const missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category })
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
@@ -1062,7 +1102,9 @@ export async function POST(req: NextRequest) {
       ));
     for (const row of missionInFlightRows) {
       if (!row.missionId) continue;
-      missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
+      if (!isDispatchedReview(row.category, row.context)) {
+        missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
+      }
       if (row.category !== 'review' && declaresNoScope(row.pathManifest as string[] | null)) {
         const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
         if (row.taskId) set.add(row.taskId);
@@ -1150,6 +1192,14 @@ export async function POST(req: NextRequest) {
     // ── Mission-level gates ──────────────────────────────────────────────────────
     // Applied before workspace concurrency and model routing (cheap short-circuits).
     const taskMissionId = (task as any).missionId as string | null;
+    // Reviews read a diff and post a verdict; they are not mission work. They
+    // keep the budget gate below and every workspace/account cap further down,
+    // but skip the mission's concurrency cap and pacing interval, and never
+    // consume either (see the post-claim bookkeeping). Gating them made
+    // reviews start long after their PR opened, in bursts — widening the
+    // window in which a PR can merge with no verdict. Only reviewer-dispatched
+    // rows qualify: any task creator can set `category: 'review'`.
+    const isReviewTask = isDispatchedReview((task as any).category, (task as any).context);
     if (taskMissionId) {
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData) {
@@ -1170,7 +1220,8 @@ export async function POST(req: NextRequest) {
 
         // 2. Mission-level concurrency cap. Enforces missions.maxConcurrentTasks, which
         //    previously existed in the schema but was never read by the claim loop.
-        const concurrencyBlock = checkMissionConcurrencyGate(
+        //    Review tasks are exempt (isReviewTask above) and are not counted.
+        const concurrencyBlock = !isReviewTask && checkMissionConcurrencyGate(
           missionData.maxConcurrentTasks,
           missionActiveCountMap.get(taskMissionId) ?? 0,
         );
@@ -1182,7 +1233,8 @@ export async function POST(req: NextRequest) {
 
         // 3. Pacing gate: paced missions enforce a minimum interval between task starts.
         //    Skipping is cheap — the task stays pending and is eligible on the next poll.
-        const pacingBlock = checkMissionPacingGate(missionData, now);
+        //    Review tasks are exempt and never stamp lastTaskStartedAt.
+        const pacingBlock = !isReviewTask && checkMissionPacingGate(missionData, now);
         if (pacingBlock) {
           console.log(
             `[claim] task ${task.id} deferred: mission ${taskMissionId} paced ` +
@@ -1597,18 +1649,20 @@ export async function POST(req: NextRequest) {
 
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
-    if (taskMissionId) {
+    // Review tasks consume neither the concurrency count nor the pacing slot.
+    if (taskMissionId && (task as any).category !== 'review'
+      && declaresNoScope((task as any).pathManifest as string[] | null)) {
+      // Reserve the mission's single scope-undeclared slot for the rest of the
+      // batch, so one poll cannot claim two '**' tasks from the same mission.
+      // Keyed on category alone, like both sides of the advisory guard above.
+      const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
+      set.add(task.id);
+      missionAdvisoryInFlight.set(taskMissionId, set);
+    }
+    if (taskMissionId && !isReviewTask) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
       missionActiveCountMap.set(taskMissionId, (missionActiveCountMap.get(taskMissionId) ?? 0) + 1);
-
-      // Reserve the mission's single scope-undeclared slot for the rest of the
-      // batch, so one poll cannot claim two '**' tasks from the same mission.
-      if (declaresNoScope((task as any).pathManifest as string[] | null)) {
-        const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
-        set.add(task.id);
-        missionAdvisoryInFlight.set(taskMissionId, set);
-      }
 
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData?.pacingMode === 'paced') {
@@ -1742,17 +1796,8 @@ export async function POST(req: NextRequest) {
     // by `budget_paused`, so the runner needs the earliest reset across the pauses
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
     if (accountBudgetExhausted || deferrals.budget_paused > 0) {
-      let resetsAt: string | null = account.budgetResetsAt
-        ? new Date(account.budgetResetsAt).toISOString()
-        : null;
-      for (const pauses of teamPauseCache.values()) {
-        for (const pause of pauses.values()) {
-          const iso = pause.resetsAt.toISOString();
-          if (!resetsAt || iso < resetsAt) resetsAt = iso;
-        }
-      }
       return emptyClaim({
-        budgetResetsAt: resetsAt,
+        budgetResetsAt: earliestFutureReset(),
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
       });
     }
@@ -1987,7 +2032,7 @@ export async function POST(req: NextRequest) {
     workers: claimedWorkers,
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     ...(accountBudgetExhausted && {
-      budgetResetsAt: account.budgetResetsAt,
+      budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
   }, undefined, { route: req.nextUrl.pathname });
