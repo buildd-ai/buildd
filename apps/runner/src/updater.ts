@@ -216,14 +216,74 @@ export interface UpdateResult {
   newCommit?: string;
 }
 
+// Non-blocking git command helper. execSync ties up the whole event loop for
+// the duration of the call — fine for the quick reads elsewhere in this file,
+// but `applyUpdate`'s fetch/reset used to run for as long as the network took
+// with the HTTP server unable to answer anything else, including its own
+// /health endpoint, for the whole `bun install` window. Bun.spawn does not
+// block the loop while the child runs.
+async function gitAsync(args: string[], cwd: string, timeoutMs = 10_000): Promise<string> {
+  const proc = Bun.spawn(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
+  try {
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    clearTimeout(timer);
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`git ${args[0]} failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+    return output.trim();
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+async function bunVersionAsync(cwd: string, timeoutMs = 10_000): Promise<void> {
+  const proc = Bun.spawn(['bun', '--version'], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`bun --version failed (exit ${exitCode}): ${stderr.trim()}`);
+  }
+}
+
+async function bunInstallAsync(cwd: string, timeoutMs = 120_000): Promise<void> {
+  const proc = Bun.spawn(['bun', 'install', '--frozen-lockfile'], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`bun install --frozen-lockfile failed (exit ${exitCode}): ${stderr.trim()}`);
+  }
+}
+
 /**
- * Applies the update: git fetch + reset --hard origin/main, then a CLEAN
- * `bun install` (node_modules removed first). Returns a result object; the
- * caller should `process.exit(75)` ONLY on success so the launcher restarts the
- * process. On failure this returns `{ success: false }` WITHOUT exiting, leaving
- * the running process serving from its already-loaded in-memory modules until a
- * later attempt repairs the tree. Every destructive step is inside the single
- * try/catch, so a failure can never throw past this function.
+ * The exec seam `applyUpdate`/`rollbackTo` run through. Injectable for the
+ * same reason `fsOps` is: tests supply fakes that never touch a real git repo
+ * or spawn a real `bun install`, so the whole suite stays fast, deterministic
+ * and offline. Production callers get the real Bun.spawn-backed versions.
+ */
+export interface UpdateExecOps {
+  git: (args: string[], cwd: string, timeoutMs?: number) => Promise<string>;
+  bunVersion: (cwd: string) => Promise<void>;
+  bunInstall: (cwd: string) => Promise<void>;
+}
+
+const defaultExecOps: UpdateExecOps = {
+  git: gitAsync,
+  bunVersion: bunVersionAsync,
+  bunInstall: bunInstallAsync,
+};
+
+/**
+ * Clean reinstall shared by the forward path (`applyUpdate`) and rollback
+ * (`rollbackTo`): verify bun is runnable, then remove node_modules and do a
+ * frozen-lockfile install.
  *
  * Why a clean reinstall (rm + install) instead of a plain `bun install`:
  * bun's isolated store (`node_modules/.bun`) never garbage-collects superseded
@@ -234,52 +294,89 @@ export interface UpdateResult {
  * lockfile-referenced tree (7.7GB -> 1.8GB observed); installs relink from the
  * warm global cache (`~/.bun/install/cache`) in a few seconds.
  *
- * `installDir`/`fsOps` are injectable purely for unit tests (the runner test
- * suite installs leaky `mock.module('fs', ...)` mocks that would otherwise make
- * the real `rmSync` a no-op); both default to production values.
+ * Verifying bun BEFORE deleting node_modules matters: if bun is missing or
+ * broken this throws here (node_modules untouched) rather than after the rm,
+ * so a bad bun can never leave the install with a wiped tree it can't rebuild.
  */
-export function applyUpdate(
+async function cleanReinstall(
+  installDir: string,
+  fsOps: Pick<typeof fs, 'rmSync'>,
+  execOps: UpdateExecOps,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await execOps.bunVersion(installDir);
+    fsOps.rmSync(join(installDir, 'node_modules'), { recursive: true, force: true });
+    await execOps.bunInstall(installDir);
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Update failed' };
+  }
+}
+
+/**
+ * Applies the update: git fetch + reset --hard origin/$BRANCH, then a clean
+ * reinstall (see `cleanReinstall`). Returns a result object; the caller
+ * should `process.exit(75)` ONLY on success so the launcher restarts the
+ * process. On failure this returns `{ success: false }` WITHOUT exiting, leaving
+ * the running process serving from its already-loaded in-memory modules until a
+ * later attempt repairs the tree. Every destructive step is inside the single
+ * try/catch, so a failure can never throw past this function.
+ *
+ * `installDir`/`fsOps`/`execOps` are injectable purely for unit tests; all
+ * three default to production values.
+ */
+export async function applyUpdate(
   installDir: string = installDirDefault(),
   fsOps: Pick<typeof fs, 'rmSync'> = fs,
-): UpdateResult {
+  execOps: UpdateExecOps = defaultExecOps,
+): Promise<UpdateResult> {
   const previousCommit = getCurrentCommit();
-  const nodeModules = join(installDir, 'node_modules');
   try {
     // Ensure we're on the correct branch before resetting
-    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: installDir, encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
-    }).trim();
-    execSync(
-      `git fetch origin ${BRANCH}` +
-      (currentBranch !== BRANCH ? ` && git checkout -f -B ${BRANCH} origin/${BRANCH}` : '') +
-      ` && git reset --hard origin/${BRANCH}`,
-      { cwd: installDir, encoding: 'utf-8', timeout: 30_000, stdio: 'pipe' },
-    );
+    const currentBranch = await execOps.git(['rev-parse', '--abbrev-ref', 'HEAD'], installDir, 5000);
+    await execOps.git(['fetch', 'origin', BRANCH], installDir, 30_000);
+    if (currentBranch !== BRANCH) {
+      await execOps.git(['checkout', '-f', '-B', BRANCH, `origin/${BRANCH}`], installDir, 10_000);
+    }
+    await execOps.git(['reset', '--hard', `origin/${BRANCH}`], installDir, 10_000);
 
-    // Verify bun is runnable BEFORE deleting node_modules. If bun is missing or
-    // broken this throws here (node_modules untouched) rather than after the rm,
-    // so a bad bun can never leave the install with a wiped tree it can't rebuild.
-    execSync('bun --version', {
-      cwd: installDir, encoding: 'utf-8', timeout: 10_000, stdio: 'pipe',
-    });
-
-    // Clean reinstall. rm immediately before install to keep the window in which
-    // node_modules is absent as small as possible (install is ~seconds from the
-    // warm cache). `--frozen-lockfile` fails fast if the freshly-reset bun.lock
-    // has drifted from package.json instead of silently mutating the tree.
-    fsOps.rmSync(nodeModules, { recursive: true, force: true });
-
-    execSync('bun install --frozen-lockfile', {
-      cwd: installDir,
-      encoding: 'utf-8',
-      timeout: 120_000,
-      stdio: 'pipe',
-    });
+    const reinstall = await cleanReinstall(installDir, fsOps, execOps);
+    if (!reinstall.success) {
+      return { success: false, error: reinstall.error };
+    }
 
     const newCommit = getCurrentCommit();
     return { success: true, previousCommit: previousCommit || undefined, newCommit: newCommit || undefined };
   } catch (err: any) {
     return { success: false, error: err.message || 'Update failed' };
+  }
+}
+
+/**
+ * Resets to an already-known commit (typically the `previousCommit` from an
+ * `applyUpdate` result) and reinstalls — the rollback half of a manual update
+ * whose health probe failed. No fetch: the target is expected to already be
+ * reachable locally, since it is where this install was sitting a moment ago.
+ */
+export async function rollbackTo(
+  targetCommit: string,
+  installDir: string = installDirDefault(),
+  fsOps: Pick<typeof fs, 'rmSync'> = fs,
+  execOps: UpdateExecOps = defaultExecOps,
+): Promise<UpdateResult> {
+  const previousCommit = getCurrentCommit();
+  try {
+    await execOps.git(['reset', '--hard', targetCommit], installDir, 10_000);
+
+    const reinstall = await cleanReinstall(installDir, fsOps, execOps);
+    if (!reinstall.success) {
+      return { success: false, error: reinstall.error };
+    }
+
+    const newCommit = getCurrentCommit();
+    return { success: true, previousCommit: previousCommit || undefined, newCommit: newCommit || undefined };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Rollback failed' };
   }
 }
 
