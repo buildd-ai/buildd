@@ -31,11 +31,22 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
 }));
 
+const mockGetInstallationOwnerTeamIds = mock(async (_id: string) => ['team-1'] as string[]);
+mock.module('@/lib/github-installation-access', () => ({
+  getInstallationOwnerTeamIds: mockGetInstallationOwnerTeamIds,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workspaces: { findFirst: mockWorkspacesFindFirst },
-      githubRepos: { findFirst: mockGithubReposFindFirst },
+      githubRepos: {
+        findFirst: mockGithubReposFindFirst,
+        findMany: async (...args: any[]) => {
+          const row = await (mockGithubReposFindFirst as any)(...args);
+          return row ? [row] : [];
+        },
+      },
     },
     update: () => mockWorkspacesUpdate(),
     delete: () => mockWorkspacesDelete(),
@@ -142,6 +153,8 @@ describe('PATCH /api/workspaces/[id]', () => {
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockGetUserTeamIds.mockReset();
     mockGetUserTeamIds.mockResolvedValue([]);
+    mockGetInstallationOwnerTeamIds.mockReset();
+    mockGetInstallationOwnerTeamIds.mockImplementation(async () => ['team-1']);
     capturedUpdates = {};
     process.env.NODE_ENV = 'production';
 
@@ -453,6 +466,44 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.repo).toBe('some-org/linked-repo');
     expect(capturedUpdates.githubRepoId).toBe('github-repo-uuid');
     expect(capturedUpdates.githubInstallationId).toBe('installation-uuid');
+  });
+
+  it('does not link a repo whose installation belongs to a different team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'github-repo-uuid',
+      installationId: 'installation-of-another-team',
+      fullName: 'some-org/linked-repo',
+    });
+    mockGetInstallationOwnerTeamIds.mockImplementation(async () => ['team-other']);
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { repoUrl: 'https://github.com/some-org/linked-repo' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // The declared repo is kept; only the installation link is withheld.
+    expect(capturedUpdates.repo).toBe('some-org/linked-repo');
+    expect(capturedUpdates.githubRepoId).toBeUndefined();
+    expect(capturedUpdates.githubInstallationId).toBeUndefined();
+    expect(mockGetInstallationOwnerTeamIds).toHaveBeenCalledWith('installation-of-another-team');
+  });
+
+  it('returns 404 for an API key of another team even when the workspace is open', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-other', accessMode: 'open' });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { name: 'Renamed' },
+      headers: { authorization: 'Bearer bld_testkey123' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
   });
 
   it('sets repo without githubRepoId when no matching GitHub repo found', async () => {

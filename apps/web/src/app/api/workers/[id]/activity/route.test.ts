@@ -77,6 +77,52 @@ describe('POST /api/workers/[id]/activity', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 for an account that neither runs the worker nor administers its team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2', teamId: 'team-2', level: 'admin' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      milestones: [],
+      workspace: { teamId: 'team-1' },
+    });
+
+    const req = createMockRequest({ toolName: 'Read' }, 'bld_other');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a non-admin account of the same team that does not run the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-3', teamId: 'team-1', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      milestones: [],
+      workspace: { teamId: 'team-1' },
+    });
+
+    const req = createMockRequest({ toolName: 'Read' }, 'bld_sameteam');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('accepts an admin-level account of the worker\'s team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-9', teamId: 'team-1', level: 'admin' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      milestones: [],
+      workspace: { teamId: 'team-1' },
+    });
+
+    const req = createMockRequest({ toolName: 'Read' }, 'bld_admin');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+  });
+
   it('returns 400 when toolName missing', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({

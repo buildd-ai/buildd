@@ -11,6 +11,9 @@ const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockListInstallationRepos = mock(() => [] as any[]);
 const mockSyncInstallationRepos = mock(() => ({ synced: 0, linked: 0, linkedWorkspaceIds: [] }) as any);
 
+const defaultAccess = { canView: true, canManage: true, otherTeamsUsingIt: [] as string[] };
+const mockGetAccess = mock(async () => defaultAccess as any);
+mock.module('@/lib/github-installation-access', () => ({ getInstallationAccessForUser: mockGetAccess }));
 mock.module('@/auth', () => ({ auth: mockAuth }));
 mock.module('@/lib/github', () => ({ listInstallationRepos: mockListInstallationRepos }));
 mock.module('@/lib/github-repo-link', () => ({ syncInstallationRepos: mockSyncInstallationRepos }));
@@ -49,6 +52,8 @@ describe('GET /api/github/installations/[id]/repos', () => {
     mockWorkspacesFindMany.mockReset();
     mockListInstallationRepos.mockReset();
     mockSyncInstallationRepos.mockReset();
+    mockGetAccess.mockReset();
+    mockGetAccess.mockImplementation(async () => defaultAccess);
     process.env.NODE_ENV = 'production';
   });
 
@@ -75,7 +80,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
   });
 
   it('returns 404 when installation not found', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue(null);
 
     const mockParams = Promise.resolve({ id: 'inst-1' });
@@ -86,8 +91,28 @@ describe('GET /api/github/installations/[id]/repos', () => {
     expect(data.error).toBe('Installation not found');
   });
 
+  it('returns 404 when the caller cannot view the installation', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
+    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
+
+    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(404);
+    expect(mockListInstallationRepos).not.toHaveBeenCalled();
+  });
+
+  it('POST returns 404 when the caller cannot view the installation', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
+    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', { method: 'POST' }), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(404);
+    expect(mockSyncInstallationRepos).not.toHaveBeenCalled();
+  });
+
   it('returns repos with hasWorkspace correctly mapped', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({
       id: 'inst-1',
       installationId: 12345,
@@ -163,7 +188,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
   });
 
   it('POST returns synced, linked, and linkedWorkspaceIds on success', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345 });
     mockSyncInstallationRepos.mockResolvedValue({
       synced: 3,
@@ -184,7 +209,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
   });
 
   it('POST returns linked=0 with empty linkedWorkspaceIds when no workspace repo matches', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345 });
     mockSyncInstallationRepos.mockResolvedValue({
       synced: 5,
@@ -205,7 +230,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
   });
 
   it('returns 500 on error', async () => {
-    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({
       id: 'inst-1',
       installationId: 12345,

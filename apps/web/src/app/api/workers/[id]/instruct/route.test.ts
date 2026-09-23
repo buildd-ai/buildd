@@ -135,9 +135,26 @@ describe('POST /api/workers/[id]/instruct', () => {
     expect(data.ok).toBe(true);
   });
 
-  it('allows admin-level API token', async () => {
+  it('allows an admin-level API token from the worker\'s team', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      status: 'running',
+      workspace: { teamId: 'team-1' },
+      instructionHistory: [],
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequestWithAuth({ message: 'Fix the bug' }, 'bld_admin');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 404 for an admin-level API token from a different team', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
       status: 'running',
@@ -149,7 +166,25 @@ describe('POST /api/workers/[id]/instruct', () => {
     const req = createMockRequestWithAuth({ message: 'Fix the bug' }, 'bld_admin');
     const res = await POST(req, { params: mockParams });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
+  });
+
+  it('requires the admin role in the worker\'s team for session callers', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      workspace: { teamId: 'team-1' },
+    });
+
+    const req = createMockRequest({ message: 'Fix the bug' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-1', 'admin');
   });
 
   it('returns 404 when worker not found', async () => {
@@ -337,11 +372,11 @@ describe('POST /api/workers/[id]/instruct', () => {
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'running',
-        workspace: { dataClass: 'standard' },
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: null,
       });
@@ -370,11 +405,11 @@ describe('POST /api/workers/[id]/instruct', () => {
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'running',
-        workspace: { dataClass: 'standard' },
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: null,
         supportsInstructionAck: true,
@@ -401,11 +436,11 @@ describe('POST /api/workers/[id]/instruct', () => {
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'running',
-        workspace: { dataClass: 'standard' },
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: null,
         supportsInstructionAck: false,
@@ -428,11 +463,11 @@ describe('POST /api/workers/[id]/instruct', () => {
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'running',
-        workspace: { dataClass: 'standard' },
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: 'Use the device flow',
       });
@@ -451,11 +486,11 @@ describe('POST /api/workers/[id]/instruct', () => {
   describe('unreachable worker statuses', () => {
     function errorWorker() {
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'error',
-        workspace: { dataClass: 'standard' },
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: null,
         supportsInstructionAck: true,
@@ -510,11 +545,11 @@ describe('POST /api/workers/[id]/instruct', () => {
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'running',
-        workspace: { dataClass: 'sensitive' },
+        workspace: { teamId: 'team-1', dataClass: 'sensitive' },
         instructionHistory: [],
         pendingInstructions: null,
       });
@@ -540,11 +575,11 @@ describe('POST /api/workers/[id]/instruct', () => {
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
         status: 'running',
-        workspace: { dataClass: 'standard' },
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: null,
       });

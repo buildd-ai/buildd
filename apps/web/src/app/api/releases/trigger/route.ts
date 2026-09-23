@@ -6,6 +6,7 @@ import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
+import { getCallerAdminTeamIds } from '@/lib/team-access';
 
 /**
  * Trigger a release on a workspace's repo. The workspace declares HOW it
@@ -21,7 +22,11 @@ import { detectArchetype } from '@buildd/core/release-archetype';
  * unconfigured workspace, pass `workflowFile` + `ref` explicitly (an ad-hoc
  * dispatch) — there is no buildd-specific default.
  *
- * Auth: admin-level token only — same gate as manage_missions / manage_secrets.
+ * Auth: the caller must be able to administer the target workspace's team —
+ * a session user with admin/owner role in that team, or an admin-level API key
+ * belonging to it. The target (workspaceId or repo) is resolved only among
+ * those teams' workspaces, so anything outside them is "not found". Ad-hoc
+ * `workflowFile` / `inputs` overrides are therefore admin/owner-only too.
  */
 
 interface TriggerBody {
@@ -33,15 +38,23 @@ interface TriggerBody {
   force?: boolean;
 }
 
-async function resolveAuth(req: NextRequest): Promise<{ authorized: boolean; triggeredBy: 'user' | 'agent' }> {
+async function resolveAuth(
+  req: NextRequest,
+): Promise<{ authenticated: boolean; adminTeamIds: string[]; triggeredBy: 'user' | 'agent' }> {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   if (apiKey) {
     const account = await authenticateApiKey(apiKey);
-    return { authorized: account?.level === 'admin', triggeredBy: 'agent' };
+    if (!account) return { authenticated: false, adminTeamIds: [], triggeredBy: 'agent' };
+    const adminTeamIds = await getCallerAdminTeamIds({
+      kind: 'account', accountId: account.id, teamId: account.teamId, level: account.level,
+    });
+    return { authenticated: true, adminTeamIds, triggeredBy: 'agent' };
   }
   const user = await getCurrentUser();
-  return { authorized: Boolean(user), triggeredBy: 'user' };
+  if (!user) return { authenticated: false, adminTeamIds: [], triggeredBy: 'user' };
+  const adminTeamIds = await getCallerAdminTeamIds({ kind: 'user', userId: user.id });
+  return { authenticated: true, adminTeamIds, triggeredBy: 'user' };
 }
 
 export async function POST(req: NextRequest) {
@@ -49,9 +62,15 @@ export async function POST(req: NextRequest) {
     if (!isGitHubAppConfigured()) {
       return NextResponse.json({ error: 'GitHub App not configured on this buildd instance' }, { status: 500 });
     }
-    const { authorized, triggeredBy } = await resolveAuth(req);
-    if (!authorized) {
+    const { authenticated, adminTeamIds, triggeredBy } = await resolveAuth(req);
+    if (!authenticated) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (adminTeamIds.length === 0) {
+      return NextResponse.json(
+        { error: 'Forbidden: requires admin or owner role in the workspace team (or an admin-level API key)' },
+        { status: 403 },
+      );
     }
 
     let body: TriggerBody;
@@ -65,7 +84,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'workspaceId or repo is required' }, { status: 400 });
     }
 
-    const targetResult = await resolveReleaseTarget({ workspaceId: body.workspaceId, repo: body.repo });
+    const targetResult = await resolveReleaseTarget({
+      workspaceId: body.workspaceId,
+      repo: body.repo,
+      scope: { teamIds: adminTeamIds },
+    });
     if (!targetResult.ok) {
       return NextResponse.json({ error: targetResult.error }, { status: targetResult.status });
     }

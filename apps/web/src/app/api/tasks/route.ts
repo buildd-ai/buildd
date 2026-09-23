@@ -502,8 +502,12 @@ export async function POST(req: NextRequest) {
     let workspaceId: string | undefined;
 
     if (rawWorkspaceId) {
-      // Resolve by UUID, repo name, or workspace name
-      const resolved = await resolveWorkspace(rawWorkspaceId);
+      // Resolve by UUID, repo name, or workspace name — only among the
+      // workspaces the caller can reach (its teams, plus explicit links).
+      const resolved = await resolveWorkspace(
+        rawWorkspaceId,
+        apiAccount ? { account: apiAccount } : { userId: user!.id },
+      );
       if (!resolved) {
         return NextResponse.json(
           { error: `No workspace found matching "${rawWorkspaceId}"` },
