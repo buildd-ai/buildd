@@ -30,6 +30,7 @@ const findManyQueues: Record<string, any[][]> = {
   pathClaims: [],
   pathClaimWaiters: [],
   missionNotes: [],
+  workers: [],
 };
 
 function queueFindMany(table: keyof typeof findManyQueues, rows: any[]) {
@@ -71,6 +72,7 @@ const mockInsert = mock((_table: any) => {
 let pathClaimsFindMany = makeFindMany('pathClaims');
 let pathClaimWaitersFindMany = makeFindMany('pathClaimWaiters');
 let missionNotesFindMany = makeFindMany('missionNotes');
+let workersFindMany = makeFindMany('workers');
 
 // ── Module mocks (must come before import) ───────────────────────────────────
 
@@ -84,6 +86,7 @@ mock.module('../db/client', () => ({
       pathClaims: { findMany: (...args: any[]) => pathClaimsFindMany(...args) },
       pathClaimWaiters: { findMany: (...args: any[]) => pathClaimWaitersFindMany(...args) },
       missionNotes: { findMany: (...args: any[]) => missionNotesFindMany(...args) },
+      workers: { findMany: (...args: any[]) => workersFindMany(...args) },
     },
     update: (...args: any[]) => mockUpdate(...args),
     insert: (...args: any[]) => mockInsert(...args),
@@ -95,6 +98,7 @@ mock.module('../db/schema', () => ({
   pathClaims: { workspaceId: 'workspace_id', taskId: 'task_id', releasedAt: 'released_at', id: 'id', path: 'path' },
   pathClaimWaiters: { workspaceId: 'workspace_id', blockingTaskId: 'blocking_task_id', waitingTaskId: 'waiting_task_id', notifiedAt: 'notified_at', id: 'id', registeredAt: 'registered_at', blockedPath: 'blocked_path' },
   missionNotes: { missionId: 'mission_id' },
+  workers: { taskId: 'task_id', status: 'status', updatedAt: 'updated_at' },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -129,6 +133,7 @@ import {
   registerWaiter,
   getActiveClaimsByWorkspace,
 } from '../path-claim';
+import { PARKED_HOLDER_TTL_MS } from '../path-claim-ttl';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -142,6 +147,7 @@ function resetQueues() {
   pathClaimsFindMany = makeFindMany('pathClaims');
   pathClaimWaitersFindMany = makeFindMany('pathClaimWaiters');
   missionNotesFindMany = makeFindMany('missionNotes');
+  workersFindMany = makeFindMany('workers');
   mockPathsOverlap.mockReset();
   mockUpdate.mockReset();
   mockInsert.mockReset();
@@ -242,6 +248,64 @@ describe('getActiveClaimsByWorkspace', () => {
     expect(map.size).toBe(2);
     expect(map.get(TASK_A)).toEqual(['src/a.ts', 'src/b.ts']);
     expect(map.get(TASK_B)).toEqual(['src/c.ts']);
+  });
+
+  it('drops a holder parked on a question past the TTL — it no longer defers anyone', async () => {
+    queueFindMany('pathClaims', [
+      { taskId: TASK_A, path: 'src/a.ts' },
+      { taskId: TASK_B, path: 'src/b.ts' },
+    ]);
+    queueFindMany('workers', [
+      { taskId: TASK_A, status: 'waiting_input', updatedAt: new Date(Date.now() - PARKED_HOLDER_TTL_MS - 60_000) },
+      { taskId: TASK_B, status: 'running', updatedAt: new Date(Date.now() - PARKED_HOLDER_TTL_MS * 5) },
+    ]);
+
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect([...map.keys()]).toEqual([TASK_B]);
+  });
+
+  it('keeps a parked holder inside the TTL, and a holder with no live worker (PR awaiting merge)', async () => {
+    queueFindMany('pathClaims', [
+      { taskId: TASK_A, path: 'src/a.ts' },
+      { taskId: TASK_B, path: 'src/b.ts' },
+    ]);
+    queueFindMany('workers', [
+      { taskId: TASK_A, status: 'waiting_input', updatedAt: new Date(Date.now() - 60_000) },
+    ]);
+
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect(map.size).toBe(2);
+  });
+
+  it('asks only about live workers of the holding tasks', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A, path: 'src/a.ts' }]);
+    await getActiveClaimsByWorkspace(WS);
+    const where = (workersFindMany.mock.calls[0]?.[0] as any)?.where;
+    expect(JSON.stringify(where)).toContain('waiting_input');
+    expect(JSON.stringify(where)).toContain(TASK_A);
+    expect(JSON.stringify(where)).not.toContain('completed');
+  });
+
+  it('keeps blocking when the holder lookup fails', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A, path: 'src/a.ts' }]);
+    workersFindMany = mock(async () => { throw new Error('db down'); });
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect(map.size).toBe(1);
+  });
+});
+
+describe('checkPathClaimConflict — parked holder TTL', () => {
+  beforeEach(resetQueues);
+
+  it('an overlapping claim held by a task parked past the TTL is not a conflict', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_B, path: 'src/shared.ts' }]);
+    queueFindMany('workers', [
+      { taskId: TASK_B, status: 'waiting_input', updatedAt: new Date(Date.now() - PARKED_HOLDER_TTL_MS * 2) },
+    ]);
+    mockPathsOverlap.mockReturnValue(true);
+
+    const result = await checkPathClaimConflict(WS, TASK_A, ['src/shared.ts']);
+    expect(result).toBeNull();
   });
 });
 
