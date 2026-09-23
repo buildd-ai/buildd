@@ -2,16 +2,24 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import {
   isBudgetExhaustionError,
+  isSessionBudgetCapError,
   CODEX_USAGE_LIMIT_PATTERN,
   CLAUDE_SESSION_LIMIT_PATTERN,
 } from '../budget-error-classifier';
 
 describe('isBudgetExhaustionError', () => {
-  it('detects API-key dollar-budget exhaustion', () => {
-    expect(isBudgetExhaustionError('Budget limit exceeded (maxBudgetUsd)')).toBe(true);
-    expect(isBudgetExhaustionError('error_max_budget_usd')).toBe(true);
+  it('detects the provider extra-usage wall', () => {
     expect(isBudgetExhaustionError('You are out of extra usage')).toBe(true);
-    expect(isBudgetExhaustionError('hit max budget')).toBe(true);
+  });
+
+  // Regression: a per-session dollar cap (the SDK's maxBudgetUsd) is a limit
+  // THIS task hit, not a provider wall. Matching it here paused the team's
+  // Claude backend, flagged every seat exhausted for a session window and
+  // failed tasks over to another provider, all for one task's own ceiling.
+  it('does not treat a per-session dollar cap as a provider wall', () => {
+    expect(isBudgetExhaustionError('Budget limit exceeded (maxBudgetUsd)')).toBe(false);
+    expect(isBudgetExhaustionError('error_max_budget_usd')).toBe(false);
+    expect(isBudgetExhaustionError('hit max budget')).toBe(false);
   });
 
   it('detects OAuth session-limit exhaustion', () => {
@@ -64,6 +72,24 @@ describe('isBudgetExhaustionError', () => {
     expect(isBudgetExhaustionError('')).toBe(false);
     expect(isBudgetExhaustionError(undefined)).toBe(false);
     expect(isBudgetExhaustionError(null)).toBe(false);
+  });
+});
+
+describe('isSessionBudgetCapError', () => {
+  it('recognises the legacy per-session dollar-cap texts', () => {
+    expect(isSessionBudgetCapError('Budget limit exceeded (maxBudgetUsd)')).toBe(true);
+    expect(isSessionBudgetCapError('Budget limit exceeded')).toBe(true);
+    expect(isSessionBudgetCapError('error_max_budget_usd')).toBe(true);
+    expect(isSessionBudgetCapError('max budget exceeded')).toBe(true);
+  });
+
+  it('does not match provider walls or unrelated failures', () => {
+    expect(isSessionBudgetCapError("You've hit your session limit · resets 3am (UTC)")).toBe(false);
+    expect(isSessionBudgetCapError('You are out of extra usage')).toBe(false);
+    expect(isSessionBudgetCapError('git fatal: not a repository')).toBe(false);
+    expect(isSessionBudgetCapError('')).toBe(false);
+    expect(isSessionBudgetCapError(undefined)).toBe(false);
+    expect(isSessionBudgetCapError(null)).toBe(false);
   });
 });
 

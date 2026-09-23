@@ -27,7 +27,7 @@ import { notify } from '@/lib/pushover';
 import { githubApi } from '@/lib/github';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
-import { inheritPhaseFromParent } from '@/lib/mission-phase';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -526,8 +526,9 @@ export async function dispatchConflictRetry(
     }
   }
 
-  // Rule P1-7: an attempt inherits the phase of the task it re-attempts.
-  const phase = await inheritPhaseFromParent(retryTask.parentTaskId);
+  // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+  // of the task it re-attempts.
+  const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
   const [newTask] = await db
     .insert(tasks)
@@ -537,7 +538,7 @@ export async function dispatchConflictRetry(
       description: retryTask.description,
       parentTaskId: retryTask.parentTaskId,
       missionId: retryTask.missionId,
-      ...phase,
+      ...identity,
       context: retryTask.context,
       creationSource: retryTask.creationSource,
       taskClass: 'attempt',

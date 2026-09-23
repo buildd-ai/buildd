@@ -178,6 +178,7 @@ export async function POST(
     prUrl: worker.prUrl,
     headSha,
     reviewerRole: picked.role,
+    confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
     installationId,
     repoFullName,
     policyConfig: (workspace as any).gitConfig?.policyConfig,

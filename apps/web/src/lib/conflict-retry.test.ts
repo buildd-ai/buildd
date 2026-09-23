@@ -492,6 +492,31 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.dependsOn).toBeUndefined();
   });
 
+  // Regression: only the phase was copied, so a Codex task's conflict fix ran
+  // on Claude and a role-routed task lost its role and routing kind.
+  it('keeps the original task\'s backend, role, kind and phase on the attempt', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      backend: 'codex',
+      roleSlug: 'builder',
+      kind: 'engineering',
+      complexity: 'normal',
+      missionPhaseIndex: 1,
+      missionPhaseLabel: 'Build',
+    });
+
+    await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(capturedInsertValues).toMatchObject({
+      backend: 'codex',
+      roleSlug: 'builder',
+      kind: 'engineering',
+      complexity: 'normal',
+      missionPhaseIndex: 1,
+      missionPhaseLabel: 'Build',
+    });
+  });
+
   it('sets pathManifest on the inserted task', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,

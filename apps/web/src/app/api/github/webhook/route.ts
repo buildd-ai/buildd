@@ -45,7 +45,7 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
-import { inheritPhaseFromParent } from '@/lib/mission-phase';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
@@ -1772,8 +1772,9 @@ async function handleCheckSuiteFailure(
         origin: 'webhook',
       });
 
-      // Rule P1-7: an attempt inherits the phase of the task it re-attempts.
-      const retryPhase = await inheritPhaseFromParent(retryTask.parentTaskId);
+      // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+      // of the task it re-attempts.
+      const retryIdentity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
       const [newTask] = await db
         .insert(tasks)
@@ -1782,7 +1783,7 @@ async function handleCheckSuiteFailure(
           title: retryTask.title,
           description: retryTask.description,
           parentTaskId: retryTask.parentTaskId,
-          ...retryPhase,
+          ...retryIdentity,
           ciRetryPrNumber: pr.number,
           ciRetryHeadSha: checkSuite.head_sha,
           missionId: retryTask.missionId,
@@ -2092,6 +2093,7 @@ async function maybeDispatchReviewer(
       prUrl: pr.html_url,
       headSha: pr.head.sha,
       reviewerRole,
+      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
       installationId,
       repoFullName,
       policyConfig: policyConfig ?? undefined,
@@ -2272,6 +2274,7 @@ async function maybeReDispatchReviewer(
       prUrl: pr.html_url,
       headSha: pr.head.sha,
       reviewerRole,
+      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
       installationId,
       repoFullName,
       policyConfig: workspace.gitConfig?.policyConfig ?? undefined,

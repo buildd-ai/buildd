@@ -1117,6 +1117,34 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
     });
 
+    // Regression: the CI fix attempt copied only the phase, so a Codex task's
+    // fix ran on Claude and a role-routed task lost its role and routing kind.
+    it('the CI fix attempt keeps the original task\'s backend, role, kind and phase', async () => {
+      withFailedWorkerPr();
+      // Answer only the attempt-identity read (the one that asks for roleSlug);
+      // every other task read keeps the default.
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        opts?.columns?.roleSlug
+          ? {
+              backend: 'codex', roleSlug: 'builder', kind: 'engineering', complexity: 'normal',
+              missionPhaseIndex: 1, missionPhaseLabel: 'Build',
+            }
+          : null,
+      );
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(insertCalls.length).toBe(1);
+      expect(insertCalls[0].values).toMatchObject({
+        backend: 'codex',
+        roleSlug: 'builder',
+        kind: 'engineering',
+        complexity: 'normal',
+        missionPhaseIndex: 1,
+        missionPhaseLabel: 'Build',
+      });
+    });
+
     it('posts a sticky buildd activity comment when it picks up the CI failure', async () => {
       withFailedWorkerPr();
 

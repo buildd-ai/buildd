@@ -252,6 +252,7 @@ export class BuilddClient {
     budgetExhausted?: boolean;
     // The session hit its own per-session dollar cap (maxBudgetUsd): a
     // task-level failure, NOT a provider wall — must not pause the backend.
+    // The server fails the task alone, without retry.
     sessionBudgetCapped?: boolean;
     // Steering-delivery crash: classify as infra_failure (must not consume retry)
     steeringDelivery?: boolean;
