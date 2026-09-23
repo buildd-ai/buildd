@@ -321,6 +321,7 @@ export async function POST(req: NextRequest) {
     policyConfig: (workspace.gitConfig as any)?.policyConfig,
     // Already fetched — the reviewer reads it for its lede only.
     prBody: typeof pr.body === 'string' ? pr.body : null,
+    baseRef: typeof pr.base?.ref === 'string' ? pr.base.ref : null,
     ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
     ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });

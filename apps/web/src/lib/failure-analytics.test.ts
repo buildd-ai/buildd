@@ -40,8 +40,10 @@ import {
   computeFailureAnalytics,
   buildSignatureFamily,
   findSupersededErrorMatch,
+  findFailureSignature,
   type FailureWorkerRow,
 } from './failure-analytics';
+import { NEVER_STARTED_ERROR } from './worker-exit-taxonomy';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -379,11 +381,74 @@ describe('computeFailureAnalytics — totals', () => {
       worker({ status: 'completed', error: null, exitCause: null }),
     ];
     const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
-    expect(a.totals.terminal).toBe(3);
-    // Only the genuine code failure counts — needs_input is terminal but not
-    // chargeable, and completed is not a failure at all.
+    // needs_input is bookkeeping: out of the numerator AND the denominator, so
+    // the rate is over outcomes that could genuinely have gone either way.
+    expect(a.totals.terminal).toBe(2);
     expect(a.totals.failed).toBe(1);
-    expect(a.totals.failureRatePct).toBe(33);
+    expect(a.totals.failureRatePct).toBe(50);
+  });
+
+  // never_started (a claim no runner began) and condition_unmet (a Codex
+  // deferral / unmet loop condition) are bookkeeping by the taxonomy's own
+  // definition, and used to inflate the rate, the died-early cohort and the
+  // top signatures.
+  it('excludes every bookkeeping exit from the rate, died-early and top signatures', () => {
+    const workers = [
+      worker({ status: 'failed', exitCause: 'code_failure', error: API_ERROR }),
+      worker({ status: 'failed', exitCause: 'code_failure', error: API_ERROR }),
+      worker({ status: 'failed', exitCause: 'never_started', error: NEVER_STARTED_ERROR, turns: 0, costUsd: 0 }),
+      worker({ status: 'failed', exitCause: 'condition_unmet', error: DEFERRED, turns: 0, costUsd: 0 }),
+      worker({ status: 'completed', error: null, exitCause: null }),
+      worker({ status: 'completed', error: null, exitCause: null }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.totals.failed).toBe(2);
+    expect(a.totals.terminal).toBe(4);
+    expect(a.totals.failureRatePct).toBe(50);
+    expect(a.totals.diedEarly).toBe(0);
+    expect(a.byExitCause.map(r => r.exitCause)).toEqual(['code_failure']);
+    const sigs = a.signatures.map(s => s.signature);
+    expect(sigs).toEqual([normalizeErrorSignature(API_ERROR)]);
+    expect(a.diedEarlySignatures).toEqual([]);
+    expect(a.byRole[0]).toMatchObject({ terminal: 4, failed: 2, failureRatePct: 50 });
+    expect(a.byWorkspace[0]).toMatchObject({ terminal: 4, failed: 2, failureRatePct: 50 });
+
+    // ...but friction dedupe still sees them: an exact `error=` lookup and a
+    // prefix family both scan every failed row.
+    const deferred = findFailureSignature(workers, normalizeErrorSignature(DEFERRED));
+    expect(deferred).not.toBeNull();
+    expect(deferred!.count).toBe(1);
+    expect(deferred!.exitCauses).toEqual(['condition_unmet']);
+    expect(buildSignatureFamily(workers, 'Deferred:').count).toBe(1);
+  });
+
+  it('keeps infra_failure and silent_start counted as failures', () => {
+    const workers = [
+      worker({ status: 'failed', exitCause: 'infra_failure', error: 'Process restarted' }),
+      worker({ status: 'failed', exitCause: 'silent_start', error: 'silent', turns: 0, costUsd: 0 }),
+      worker({ status: 'completed', error: null, exitCause: null }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.totals.failed).toBe(2);
+    expect(a.totals.terminal).toBe(3);
+  });
+});
+
+describe('findFailureSignature', () => {
+  it('returns null when no failed row carries the signature', () => {
+    const rows = [worker({ status: 'completed', error: DEFERRED, exitCause: null })];
+    expect(findFailureSignature(rows, normalizeErrorSignature(DEFERRED))).toBeNull();
+  });
+
+  it('aggregates every failed row with the signature regardless of exit cause', () => {
+    const rows = [
+      worker({ status: 'failed', error: DEFERRED, exitCause: 'condition_unmet' }),
+      worker({ status: 'error', error: DEFERRED, exitCause: 'code_failure' }),
+      worker({ status: 'failed', error: STALE, exitCause: 'infra_failure' }),
+    ];
+    const hit = findFailureSignature(rows, normalizeErrorSignature(DEFERRED));
+    expect(hit!.count).toBe(2);
+    expect(hit!.exitCauses).toEqual(['code_failure', 'condition_unmet']);
   });
 });
 

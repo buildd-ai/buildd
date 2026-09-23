@@ -157,15 +157,26 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     expect(html).toContain('Doc fix PR open');
   });
 
-  it('CTA set — a stale doc-fix claim (rechecked post-merge, still open) reads exactly like a fresh code_ahead card', () => {
-    // buildDiscrepancyItems already released the claim server-side, so the
-    // card never even sees docFixTaskId/chip FIXING_SPEC for this case — this
-    // pins that the card renders the live CTA set, not the agent-handled one.
+  it('CTA set — a released claim with no merged fix behind it reads exactly like a fresh code_ahead card', () => {
+    // buildDiscrepancyItems released the claim server-side, so the card never
+    // sees docFixTaskId/chip FIXING_SPEC. With no mergedDocFixTaskId either
+    // (the merged case is pinned below), it renders the live CTA set.
     const html = renderToStaticMarkup(
       <WaitingOnYouDiscrepancyCard item={item({ chip: 'DISCREPANCY', direction: 'code_ahead' })} />,
     );
     expect(ctas(html)).toEqual(['Dispatch doc fix', 'Accept']);
     expect(html).not.toContain('awaiting the conformance re-run');
+  });
+
+  it('CTA set — a doc fix already merged and the gap is still open: Accept only, never a second Dispatch', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard
+        item={item({ chip: 'DISCREPANCY', direction: 'code_ahead', mergedDocFixTaskId: 'task-merged' })}
+      />,
+    );
+    expect(ctas(html)).toEqual(['Accept']);
+    expect(html).toContain('/app/tasks/task-merged');
+    expect(html).toContain('Doc fix merged');
   });
 
   it('renders nothing when the item carries no discrepancyId', () => {

@@ -92,6 +92,40 @@ describe('buildMemoryBlock', () => {
     expect(r.block).not.toContain('### Relevant to This Task');
   });
 
+  // Defect 3: digestBytesAvailable used to be measured from the ALREADY-SLICED
+  // markdown (post getCompactObservations' 150-char-per-item cap), so "how
+  // much context we had to discard" was unrecoverable by construction. The
+  // caller can now report the pre-slice byte count separately.
+  test('reports the pre-cap raw content size when the caller provides it, not the post-cap markdown', () => {
+    const r = buildMemoryBlock({
+      compactResult: { count: 1, markdown: 'short', rawContentBytes: 5000 },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestBytesAvailable).toBe(5000);
+    expect(r.digestBytesAvailable).toBeGreaterThan(Buffer.byteLength('short', 'utf8'));
+    expect(r.digestTruncated).toBe(true);
+  });
+
+  test('digestTruncated is false when nothing was discarded upstream', () => {
+    const r = buildMemoryBlock({
+      compactResult: { count: 1, markdown: 'all of it', rawContentBytes: Buffer.byteLength('all of it', 'utf8') },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestTruncated).toBe(false);
+  });
+
+  test('falls back to the markdown byte length when the caller reports no rawContentBytes', () => {
+    const r = buildMemoryBlock({
+      compactResult: { count: 1, markdown: 'DIGEST BODY' },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestBytesAvailable).toBe(Buffer.byteLength('DIGEST BODY', 'utf8'));
+    expect(r.digestTruncated).toBe(false);
+  });
+
   test('the header carries the count, and agrees with itself on plurals', () => {
     expect(buildMemoryBlock({ compactResult: { count: 1, markdown: 'x' }, taskSearchResults: [], fullObservations: [] }).block)
       .toContain('## Workspace Memory (1 memory)');
@@ -144,6 +178,27 @@ describe('buildPromptCompositionRecord', () => {
     });
     expect(rec.memoryShare).toBe(0);
     expect(Number.isNaN(rec.memoryShare)).toBe(false);
+  });
+
+  test('defaults sections to [] when the caller does not report it', () => {
+    const rec = buildPromptCompositionRecord({
+      memory: buildMemoryBlock({ compactResult: { count: 0 }, taskSearchResults: [], fullObservations: [] }),
+      promptText: 'prompt',
+    });
+    expect(rec.sections).toEqual([]);
+  });
+
+  test('carries the caller-supplied sections vector through unchanged', () => {
+    const sections = [
+      { name: 'task-description', bytes: 42, rendered: true, truncated: false },
+      { name: 'git-workflow', bytes: 0, rendered: false, truncated: false },
+    ];
+    const rec = buildPromptCompositionRecord({
+      memory: buildMemoryBlock({ compactResult: { count: 0 }, taskSearchResults: [], fullObservations: [] }),
+      promptText: 'prompt',
+      sections,
+    });
+    expect(rec.sections).toEqual(sections);
   });
 });
 

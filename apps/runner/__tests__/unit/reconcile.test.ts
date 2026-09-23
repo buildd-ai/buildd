@@ -278,18 +278,43 @@ describe('reconcileLocalWorkers', () => {
     expect(result.cleaned).toBe(3);
   });
 
-  test('handles API errors gracefully without crashing', async () => {
+  // getWorkerRemote only ever resolves null for a confirmed 404 now — a
+  // timeout or a 5xx rejects instead (see apps/runner/src/buildd.ts). The
+  // reconcile loop's per-worker try/catch must swallow that rejection and
+  // leave the worker exactly as it was, rather than treating "couldn't
+  // reach the server" the same as "server confirmed this worker is gone".
+  test('a timeout from the transport leaves a working worker untouched', async () => {
     const manager = new WorkerManager(testConfig);
-    const worker = makeWorker({ id: 'w-api-error', status: 'working' });
+    const worker = makeWorker({ id: 'w-timeout', status: 'working' });
     injectWorker(manager, worker);
 
-    mockGetWorkerRemote.mockRejectedValue(new Error('Network error'));
+    mockGetWorkerRemote.mockRejectedValue(
+      Object.assign(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+    );
 
     const result = await manager.reconcileLocalWorkers();
 
     expect(result.checked).toBe(1);
     expect(result.cleaned).toBe(0);
-    expect(manager.getWorker('w-api-error')?.status).toBe('working');
+    expect(manager.getWorker('w-timeout')?.status).toBe('working');
+  });
+
+  test('a 503 refusal from the transport leaves a working worker untouched', async () => {
+    const manager = new WorkerManager(testConfig);
+    const worker = makeWorker({ id: 'w-503', status: 'working' });
+    injectWorker(manager, worker);
+
+    const refusal = Object.assign(new Error('Server refused GET /api/workers/w-503: HTTP 503'), {
+      name: 'ServerRefusalError',
+      status: 503,
+    });
+    mockGetWorkerRemote.mockRejectedValue(refusal);
+
+    const result = await manager.reconcileLocalWorkers();
+
+    expect(result.checked).toBe(1);
+    expect(result.cleaned).toBe(0);
+    expect(manager.getWorker('w-503')?.status).toBe('working');
   });
 
   test('leaves worker alone when remote status is starting', async () => {

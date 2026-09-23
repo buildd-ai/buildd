@@ -25,7 +25,7 @@ import type { Tier, TierEntry, TierProvider } from './model-tier-defaults';
 import { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
 import { pickTierModel } from './model-catalog';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
-import { checkModelClientCapability } from './model-capability-requirements';
+import { makeCatalogServabilityCheck, type UnrecognizedModelReason } from './model-capability-requirements';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
 export function mapRouterAlias(alias: string): Tier {
@@ -62,8 +62,32 @@ export function invalidateTierCache(teamId: string, workspaceId?: string | null)
  * `runnerCliVersion`, when supplied, excludes a candidate the claiming runner
  * cannot actually serve (its CLI predates the model's version floor) — the
  * newest-wins sort in `pickTierModel` then lands on the previous in-band
- * release instead of deferring the task entirely.
+ * release instead of deferring the task entirely. A release newer than every
+ * model in MODEL_MIN_CLI_VERSION is excluded regardless of version, because
+ * its floor is unknown (see makeCatalogServabilityCheck).
  */
+/**
+ * Ids already warned about as held back, so a refused model is logged once per
+ * process rather than on every claim. Keyed by id + reason.
+ */
+const warnedUnrecognized = new Set<string>();
+
+function warnUnrecognized(id: string, reason: UnrecognizedModelReason): void {
+  const key = `${reason}:${id}`;
+  if (warnedUnrecognized.has(key)) return;
+  warnedUnrecognized.add(key);
+  const why =
+    reason === 'newer_than_floor_table'
+      ? 'it was released after every model in MODEL_MIN_CLI_VERSION, so its CLI floor is unknown'
+      : reason === 'no_recorded_model_in_catalog'
+        ? 'no model in MODEL_MIN_CLI_VERSION is in the catalog, so nothing marks which releases are known (tiers fall back to TIER_DEFAULTS)'
+        : 'the catalog gave no release time for it';
+  console.warn(
+    `[model-tier-registry] catalog pick refused ${id}: ${why}. ` +
+      `To adopt it, add its minimum CLI version to MODEL_MIN_CLI_VERSION in packages/core/model-capability-requirements.ts.`,
+  );
+}
+
 async function resolveFromCatalog(
   tier: Tier,
   runnerCliVersion?: string | null,
@@ -73,7 +97,9 @@ async function resolveFromCatalog(
     if (entries.length === 0) return null;
 
     const pick = pickTierModel(tier, entries, 'anthropic', {
-      isServable: (id) => checkModelClientCapability(id, runnerCliVersion).ok,
+      isServable: makeCatalogServabilityCheck(entries, runnerCliVersion, {
+        onUnrecognized: warnUnrecognized,
+      }),
     });
     if (!pick) return null;
 
@@ -150,8 +176,10 @@ export async function resolveTierEntry(
   }
 
   // No explicit registry row (or the DB was unreachable): try the live
-  // catalog before the hand-maintained default, so a new same-band release
-  // (e.g. a cheaper Opus) is adopted without a deploy or a registry write.
+  // catalog before the hand-maintained default. A same-band release is
+  // adopted without a registry write only if it was released no later than
+  // the newest model in MODEL_MIN_CLI_VERSION; anything newer needs a floor
+  // row there (a code change, so a deploy) first — see resolveFromCatalog.
   // Deliberately NOT cached in `cache` above — the pick can depend on the
   // claiming runner's CLI version, and `cache` is keyed by team:workspace
   // only, so caching it there would serve one runner's pick to another.

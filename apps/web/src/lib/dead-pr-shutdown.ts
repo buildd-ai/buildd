@@ -52,6 +52,7 @@ export interface LoserCandidate {
   conflictDetectedAt: Date | null;
   missionId: string | null;
   workspaceId: string;
+  updatedAt: Date;
 }
 
 export interface ShutdownResult {
@@ -166,20 +167,40 @@ async function supersedePrEscalations(
 
 // ── Tier logic ────────────────────────────────────────────────────────────────
 
-function isTier1Eligible(loser: LoserCandidate): boolean {
+const ACTIVE_WORK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes — don't close if recently worked
+
+function isTier1Eligible(loser: LoserCandidate, workerUpdatedAt: Date | null): boolean {
   // Tier 1: winner merged → close immediately (non-conflict supersession).
   // Conflict-dead PRs go through Tier 2 or 3 so the conflictDeadDays guard applies.
+  //
+  // Safety: never close a PR that's actively being worked on (recent worker updates indicate
+  // active retry attempts or fixes). A loser PR with commits in the current retry window
+  // should not be auto-closed just because an unrelated task's PR shares the same subject.
+  const isRecentlyActive = workerUpdatedAt && (Date.now() - workerUpdatedAt.getTime()) < ACTIVE_WORK_THRESHOLD_MS;
+
   return (
     loser.prLifecycleStatus !== 'closed' &&
     loser.prLifecycleStatus !== 'merged' &&
-    loser.prLifecycleStatus !== 'conflict'
+    loser.prLifecycleStatus !== 'conflict' &&
+    !isRecentlyActive
   );
 }
 
-function isTier2Eligible(loser: LoserCandidate, conflictDeadDays: number): boolean {
+function isTier2Eligible(
+  loser: LoserCandidate,
+  conflictDeadDays: number,
+  workerUpdatedAt: Date | null,
+): boolean {
   // Tier 2: conflict-dead for ≥ conflictDeadDays with a green winner.
   if (loser.prLifecycleStatus !== 'conflict') return false;
   if (!loser.conflictDetectedAt) return false;
+
+  // Safety: same active-work guard as Tier 1 — a worker actively retrying the
+  // conflict resolution that made this loser Tier-2-eligible should not be
+  // closed out from under it.
+  const isRecentlyActive = workerUpdatedAt && (Date.now() - workerUpdatedAt.getTime()) < ACTIVE_WORK_THRESHOLD_MS;
+  if (isRecentlyActive) return false;
+
   const ageMs = Date.now() - loser.conflictDetectedAt.getTime();
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
   return ageDays >= conflictDeadDays;
@@ -281,6 +302,7 @@ export async function shutdownDeadBuilddPrs(
       prLifecycleStatus: true,
       conflictDetectedAt: true,
       workspaceId: true,
+      updatedAt: true,
     },
   });
 
@@ -297,17 +319,18 @@ export async function shutdownDeadBuilddPrs(
       conflictDetectedAt: w.conflictDetectedAt,
       missionId: missionById[w.taskId!] ?? null,
       workspaceId: w.workspaceId,
+      updatedAt: w.updatedAt,
     }));
 
   // ── 4. Apply tier logic to each loser ────────────────────────────────────
 
   for (const loser of losers) {
     try {
-      if (eventMerged && isTier1Eligible(loser)) {
+      if (eventMerged && isTier1Eligible(loser, loser.updatedAt)) {
         // Tier 1: winner merged → immediately close loser
         await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
         result.closedPrNumbers.push(loser.prNumber);
-      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays)) {
+      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays, loser.updatedAt)) {
         // Tier 2: conflict-dead ≥ conflictDeadDays with green winner → close
         await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
         result.closedPrNumbers.push(loser.prNumber);

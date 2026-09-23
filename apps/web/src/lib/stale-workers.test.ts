@@ -2465,4 +2465,29 @@ describe('cleanupUnresumedAnswers', () => {
     // No account seat is released for a worker that was never actually degraded.
     expect(capturedAccountsSet).toBeNull();
   });
+
+  // AC-AQR-26 — once the Continue: task insert has succeeded, the answer is
+  // durably recoverable, so the two remaining writes (context stamp, feed
+  // note) are best-effort: a throw there must not abort the sweep for the
+  // rest of the account's candidates.
+  it('keeps degrading later candidates when the downstream bookkeeping writes throw', async () => {
+    const second = parkedWithQueuedAnswer({ workerId: 'worker-2' });
+    second.id = 'worker-2';
+    second.taskId = 'task-2';
+    second.task = { ...second.task, id: 'task-2' };
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer(), second] as any);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.reject(new Error('context stamp failed'))) })),
+    } as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    // Both candidates still degrade — the throw is swallowed, not propagated.
+    expect(result.degraded).toBe(2);
+    // Neither worker was rolled back: the continuation task already exists
+    // for both, so the answer was never at risk.
+    expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
+    // One OAuth seat released per degraded worker, same as the happy path.
+    expect(capturedAccountsSet).not.toBeNull();
+  });
 });

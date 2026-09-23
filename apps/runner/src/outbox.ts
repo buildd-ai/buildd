@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 
-const CONFIG_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
-const OUTBOX_FILE = join(CONFIG_DIR, 'outbox.json');
+/** Resolved per call so a test runtime without a temp BUILDD_HOME fails closed (see buildd-home.ts). */
+const outboxFile = () => join(resolveBuilddHome(), 'outbox.json');
 
 export interface OutboxEntry {
   id: string;
@@ -47,8 +47,9 @@ export class Outbox {
 
   private load() {
     try {
-      if (existsSync(OUTBOX_FILE)) {
-        const data = JSON.parse(readFileSync(OUTBOX_FILE, 'utf-8'));
+      const file = outboxFile();
+      if (existsSync(file)) {
+        const data = JSON.parse(readFileSync(file, 'utf-8'));
         this.entries = Array.isArray(data.entries) ? data.entries : [];
       }
     } catch {
@@ -58,8 +59,9 @@ export class Outbox {
 
   private save() {
     try {
-      if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
-      writeFileSync(OUTBOX_FILE, JSON.stringify({ entries: this.entries, updatedAt: Date.now() }, null, 2));
+      const dir = resolveBuilddHome();
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'outbox.json'), JSON.stringify({ entries: this.entries, updatedAt: Date.now() }, null, 2));
     } catch (err) {
       console.error('Failed to save outbox:', err);
     }

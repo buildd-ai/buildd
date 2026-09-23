@@ -893,6 +893,21 @@ export interface RoleConfig {
   maxTurns: number | null;
 }
 
+/**
+ * The role's persona text, delivered on every claim whose task resolves a role
+ * row — packaged to object storage or not.
+ *
+ * `RoleConfig` above only exists for roles that were packaged to R2, and a
+ * seeded default role never is. The persona is the one part of a role the agent
+ * cannot do without, so it rides the claim response directly rather than
+ * through the bundle.
+ */
+export interface RoleInstructions {
+  slug: string;
+  name: string;
+  content: string;
+}
+
 export interface SkillMetadata {
   version?: string;
   author?: string;
@@ -1223,8 +1238,10 @@ export interface ClaimTasksResponse {
       apiKey?: string;
       expiresAt: Date | null;
     };
-    /** Role configuration for the claimed task's assigned role */
+    /** Role configuration for the claimed task's assigned role — packaged roles only */
     roleConfig?: RoleConfig;
+    /** Role persona for the claimed task's assigned role — present whenever a role row resolves */
+    roleInstructions?: RoleInstructions;
     /** Connectors that failed availability checks but are not hard-required (advisory mode only).
      *  Present when workspace.connectorAdvisoryMode=true and the task claimed despite connector failures. */
     degradedConnectors?: DegradedConnector[];

@@ -12,7 +12,7 @@ import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
-import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
+import { resolveRoleEnv, getRoleDir, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleConfig, type RoleInstructions } from './roles.js';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -243,6 +243,52 @@ function buildUserMessage(
     },
     parent_tool_use_id: opts?.parentToolUseId || null,
   };
+}
+
+// The one instruction given on a resumed "closing turn" — see startSession's
+// isClosingTurn handling. Deliberately does not restate the task, output
+// requirement, or handoff obligations: those already render into the prompt
+// from the (unmodified) task fields buildPromptWithComposition reads, so
+// repeating them here would just be a second copy to drift out of sync.
+const CLOSING_TURN_INSTRUCTION =
+  'Your last session ended without calling `complete_task`. You have exactly ' +
+  'one turn to fix that: call `complete_task` now with a factual summary of ' +
+  'what you actually delivered (including the PR or artifact link, if any), ' +
+  'plus every structured field described above this task requires — the ' +
+  '`plan` array if this is a planning task, your `handoff` object if one is ' +
+  'requested, and any other field named by the Output Requirement section. ' +
+  'Do no other work — no new investigation, no additional edits.';
+
+/**
+ * Bounded tail of the session's own assistant text, newest last — the
+ * fallback completion summary when the agent never called complete_task.
+ *
+ * Replaces a bare `worker.lastAssistantMessage`: the single last thing an
+ * agent says is frequently a conversational aside ("waiting for CI") rather
+ * than an outcome, and a short tail gives a downstream reader (or the closing
+ * turn's own instruction, since this runs after it too) more of the ending to
+ * judge from. Bounded by both message count and character budget so a chatty
+ * session can't balloon the completion payload.
+ */
+function buildFallbackSummaryTail(worker: LocalWorker): string | undefined {
+  const texts: string[] = [];
+  for (const m of worker.messages) {
+    if (m.type === 'text' && m.content.trim()) texts.push(m.content.trim());
+  }
+  if (texts.length === 0) return worker.lastAssistantMessage;
+
+  const TAIL_COUNT = 5;
+  const MAX_CHARS = 4000;
+  let tail = texts.slice(-TAIL_COUNT);
+  let joined = tail.join('\n\n---\n\n');
+  while (joined.length > MAX_CHARS && tail.length > 1) {
+    tail = tail.slice(1);
+    joined = tail.join('\n\n---\n\n');
+  }
+  if (joined.length > MAX_CHARS) {
+    joined = joined.slice(joined.length - MAX_CHARS);
+  }
+  return joined;
 }
 
 // Worker session state
@@ -1208,27 +1254,12 @@ export class WorkerManager {
       return null;
     }
 
-    let resolvedPath = workspacePath;
-    if ((claimedWorker as any).roleConfig) {
-      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
-      if (roleConfig.type === 'service') {
-        const { cwd } = await syncRoleToLocal(roleConfig);
-        resolvedPath = cwd;
-      } else {
-        // Builder role: sync config, then overlay files into repo
-        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
-        await overlayRoleFiles(roleDir, workspacePath);
-      }
-    } else if (task.roleSlug && !task.workspace?.repo) {
-      // No roleConfig from claim (role registered via MCP but not uploaded to R2
-      // storage — configStorageKey/configHash absent). Fall back to the locally-
-      // synced role directory so service-role workers load the correct .mcp.json,
-      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
-      const localRoleDir = getRoleDir(task.roleSlug as string);
-      if (existsSync(localRoleDir)) {
-        resolvedPath = localRoleDir;
-        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-      }
+    // Role cwd + overlay source. The overlay itself is deferred to
+    // startFromClaim, which runs it against the worktree once one exists.
+    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath);
+    const resolvedPath = roleCwd.cwd;
+    if (resolvedPath !== workspacePath) {
+      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
 
@@ -1241,7 +1272,7 @@ export class WorkerManager {
       notifyBrokerCredentials(pendingRefreshes);
     }
 
-    return this.startFromClaim(claimedWorker, task, resolvedPath);
+    return this.startFromClaim(claimedWorker, task, resolvedPath, roleCwd.overlayFrom);
   }
 
   /**
@@ -1433,36 +1464,24 @@ export class WorkerManager {
       );
     }
 
-    let resolvedPath = workspacePath;
-    if ((claimedWorker as any).roleConfig) {
-      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
-      if (roleConfig.type === 'service') {
-        const { cwd } = await syncRoleToLocal(roleConfig);
-        resolvedPath = cwd;
-      } else {
-        // Builder role: sync config, then overlay files into repo
-        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
-        await overlayRoleFiles(roleDir, workspacePath);
-      }
-    } else if (fullTask.roleSlug && !fullTask.workspace?.repo) {
-      // No roleConfig from claim (role registered via MCP but not uploaded to R2
-      // storage — configStorageKey/configHash absent). Fall back to the locally-
-      // synced role directory so service-role workers load the correct .mcp.json,
-      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
-      const localRoleDir = getRoleDir(fullTask.roleSlug as string);
-      if (existsSync(localRoleDir)) {
-        resolvedPath = localRoleDir;
-        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-      }
+    // Same resolution as the poll-claim path above — one shared rule, so the
+    // two entry points cannot drift on which directory a role-assigned task
+    // runs in.
+    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, fullTask, workspacePath);
+    const resolvedPath = roleCwd.cwd;
+    if (resolvedPath !== workspacePath) {
+      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
-    return this.startFromClaim(claimedWorker, fullTask, resolvedPath);
+    return this.startFromClaim(claimedWorker, fullTask, resolvedPath, roleCwd.overlayFrom);
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions },
     fullTask: BuilddTask,
     workspacePath: string,
+    /** Role directory to overlay into the session cwd once the worktree exists. */
+    roleOverlayDir?: string,
   ): Promise<LocalWorker | null> {
 
     // Refresh the runner heartbeat record immediately so the stale-workers cron
@@ -1618,6 +1637,12 @@ export class WorkerManager {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
     }
+    // The persona rides the claim independently of the bundle — a seeded role
+    // has one and no bundle at all. Both backends read it from here.
+    if (claimedWorker.roleInstructions?.content) {
+      worker.roleInstructions = claimedWorker.roleInstructions;
+      console.log(`[Worker ${claimedWorker.id}] Received role persona: ${claimedWorker.roleInstructions.slug} (${claimedWorker.roleInstructions.content.length} chars)`);
+    }
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
     }
@@ -1658,8 +1683,12 @@ export class WorkerManager {
     const defaultBranch = gitConfig?.defaultBranch || 'main';
 
     let sessionCwd = workspacePath;
+    /** True once `git worktree add` has produced the session cwd. */
+    let worktreeCreated = false;
     /** Set when a structural install fault must kill the session pre-budget. */
     let installBlock: string | undefined;
+    /** Set when the resolved session cwd cannot host the task at all. */
+    let startBlock: string | undefined;
     if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
@@ -1678,6 +1707,7 @@ export class WorkerManager {
       if (setupResult) {
         worker.worktreePath = setupResult.path;
         sessionCwd = setupResult.path;
+        worktreeCreated = true;
         // The base this worktree was actually cut from. Carried on the worker
         // because the CBM seed decision happens later, in startSession, and the
         // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
@@ -1745,9 +1775,43 @@ export class WorkerManager {
         }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
-        // Worktree setup failed — fall back to main repo (legacy behavior)
-        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to main repo`);
-        this.addMilestone(worker, { type: 'status', label: 'Worktree failed, using repo', ts: Date.now() });
+        // Worktree setup failed — fall back to the base checkout. Still a real
+        // git repo, so the session can work; it just shares the clone.
+        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to the base checkout at ${workspacePath}`);
+        this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — using the base checkout', ts: Date.now() });
+      }
+    }
+
+    /**
+     * A repo task must end up in a git checkout, full stop.
+     *
+     * The old cwd rule could hand one `~/.buildd/roles/<slug>` — not a git
+     * directory, and with none of the task's code in it. `setupWorktree` then
+     * failed, the fallback "used the repo" that was never a repo, and the agent
+     * burned a full budget in an empty directory. Fail here instead, before any
+     * budget is spent, with an error that names the directory.
+     *
+     * Only checked when git did NOT produce the cwd: a path `git worktree add`
+     * just created is a checkout by construction.
+     */
+    if (hasRepo && !worktreeCreated && !existsSync(join(sessionCwd, '.git'))) {
+      startBlock = `Session cwd is not a git checkout: ${sessionCwd} (workspace ${fullTask.workspace?.repo})`;
+    }
+
+    // Role overlay — AFTER worktree setup, against the session cwd.
+    //
+    // `git worktree add` only checks out tracked content, so role skills and
+    // .mcp.json written into the base clone first never reached the directory
+    // the agent actually runs in (and `settingSources: 'project'` reads from).
+    if (roleOverlayDir && !startBlock) {
+      try {
+        await overlayRoleFiles(roleOverlayDir, sessionCwd);
+      } catch (err) {
+        // Non-fatal: the persona still arrives via the system prompt. Visible
+        // rather than silent, because missing skills change what the agent can do.
+        const label = `Role file overlay failed: ${err instanceof Error ? err.message : String(err)}`;
+        console.warn(`[Worker ${worker.id}] ${label}`);
+        this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       }
     }
 
@@ -1772,6 +1836,9 @@ export class WorkerManager {
       // blocks here, inside the error boundary, so it is reported and cleaned up
       // like any other session-start failure — with zero agent budget spent.
       if (installBlock) throw new Error(installBlock);
+      // A cwd that cannot host the task blocks on the same rail, for the same
+      // reason: reported, cleaned up, zero agent budget spent.
+      if (startBlock) throw new Error(startBlock);
       if (worker.branch && worker.branch !== claimedWorker.branch) {
         for (let attempt = 1; attempt <= 3; attempt++) {
           const response = await this.buildd.updateWorker(worker.id, { branch: worker.branch }) as
@@ -1901,6 +1968,112 @@ export class WorkerManager {
     }
 
     return true;
+  }
+
+  /**
+   * Whether the agent's own `complete_task` call has already terminalized
+   * this worker server-side — the race a closing-turn decision must check
+   * before attempting one (giving a closing turn to a session that already
+   * completed would waste a whole extra session for nothing).
+   *
+   * `worker.status === 'done'` is the fast local signal (set by the
+   * `worker:completed` Pusher push), but that push can lag the SDK stream
+   * finishing, so a `false` from the local check falls through to the same
+   * remote read the post-loop catch block already uses for the identical
+   * race on the failure side.
+   */
+  private async isAlreadyTerminalOnServer(worker: LocalWorker): Promise<boolean> {
+    if (worker.status === 'done') return true;
+    try {
+      const remote = await this.buildd.getWorkerRemote(worker.id);
+      return remote?.status === 'completed' || remote?.status === 'failed';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Build and send the 'failed' completion PATCH for a session that ended on
+   * a thrown error — the shared tail of startSession's catch-all error
+   * branch and its turn-budget closing-turn path when that has no resume id
+   * to attempt with. Only ever called once a closing turn has been ruled out
+   * entirely, hence the required `closingTurnOutcome`: 'declined' when this
+   * IS (or followed) a closing-turn attempt that still didn't call
+   * complete_task, `skipped:<reason>` when none was attempted at all.
+   *
+   * A budget/rate-limit wall or an infra-side spawn crash is a more specific,
+   * more useful skip reason than a generic caller-supplied one — this method
+   * upgrades to those automatically from the error text/stderr rather than
+   * asking every call site to re-derive the same classification.
+   */
+  private async reportUnexpectedError(
+    worker: LocalWorker,
+    error: unknown,
+    stderrCollector: SessionStderrCollector,
+    spanPayload: Record<string, unknown>,
+    closingTurnOutcome: 'declined' | `skipped:${string}`,
+  ): Promise<void> {
+    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    const errStack = error instanceof Error ? error.stack : undefined;
+    console.error(`Worker ${worker.id} error:`, error);
+    sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
+    worker.status = 'error';
+    worker.error = errMsg;
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+    // OAuth seat session caps ("You've hit your session limit") and Codex
+    // quota walls ("You've hit your usage limit") are a usage exhaustion
+    // just like a dollar budget — flag them so the server fails the task
+    // over (Codex <-> Claude) / holds it until reset instead of hard-
+    // failing. Shared with the web route's isBudgetExhaustionError and the
+    // claim breaker's classifyClaimError so all three can't drift apart.
+    const isBudgetError = isBudgetExhaustionError(errMsg);
+    // Steering-delivery crash: the CLI rejected a malformed spawn invocation
+    // (e.g. --session-id + --resume without --fork-session). This is an infra
+    // failure — must not consume a task retry attempt.
+    const isSteeringDeliveryCrash = stderrCollector.isSteeringDeliveryCrash;
+    // Flush buffered CLI stderr into error traces so get_error_traces surfaces
+    // them. Idempotent — a no-op when the eager stderr-callback flush already
+    // staged this text and nothing new arrived since.
+    flushStderrTrace(worker, stderrCollector);
+    // A provision-gate block carries a stable failure classification — surface
+    // it as structured resultMeta so the server/organizer can act on the code
+    // (escalate a missing secret vs. retry a flaky readiness) rather than
+    // regex-matching the free-text error.
+    const provisionFailure = (error as { provisionFailure?: unknown })?.provisionFailure;
+    // MCP pre-flight failures carry structured failure info for each failed
+    // server — surface so the organizer can escalate a missing connector credential.
+    const mcpPreflightFailures = (error as { mcpPreflightFailures?: McpPreflightFailure[] })?.mcpPreflightFailures;
+    // Drain rather than read: worker-sync's periodic PATCH also ships
+    // pendingErrorTraces, so leaving the buffer populated files the same
+    // stderr twice in worker_error_traces.
+    const terminalTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
+    if (terminalTraces) worker.pendingErrorTraces = [];
+    const resolvedOutcome = closingTurnOutcome === 'declined'
+      ? closingTurnOutcome
+      : isBudgetError ? ('skipped:rate_limit' as const)
+      : isSteeringDeliveryCrash ? ('skipped:infra_failure' as const)
+      : closingTurnOutcome;
+    const errorPayload = {
+      status: 'failed',
+      error: worker.error,
+      ...this.terminalAttributionPayload(worker),
+      ...(isBudgetError && { budgetExhausted: true }),
+      ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+      ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
+      resultMeta: {
+        ...(provisionFailure ? { provisionFailure } : {}),
+        ...(mcpPreflightFailures ? { mcpPreflightFailures } : {}),
+        closingTurnOutcome: resolvedOutcome,
+      },
+      ...spanPayload,
+    };
+    const errorResult = await this.buildd.updateWorker(worker.id, errorPayload)
+      .catch(err => { console.error(`[Worker ${worker.id}] Failed to sync error status:`, err); return null; }) as
+      { abort?: boolean; actualStatus?: string } | null;
+    if (errorResult?.abort === true) {
+      await this.persistTerminalMetrics(worker, errorPayload, errorResult.actualStatus);
+    }
   }
 
   /**
@@ -2060,8 +2233,16 @@ export class WorkerManager {
     storeSaveWorker(worker);
   }
 
-  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
-    sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
+  /**
+   * @param isClosingTurn Set only by the recursive self-call from this same
+   * method's post-loop logic: this invocation IS a session's one bounded
+   * closing turn (see CLOSING_TURN_INSTRUCTION), not a fresh dispatch or an
+   * ordinary follow-up resume. Gates two things: the closing-turn decision
+   * itself never fires twice (no recursion past depth 1), and maxTurns is
+   * forced to exactly 1 regardless of the task/workspace configured cap.
+   */
+  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false) {
+    sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
@@ -2099,6 +2280,24 @@ export class WorkerManager {
     // _bwrapSupported is already false when the retry runs, so a second bwrap
     // abort cannot occur.
     let bwrapRetryAfterCleanup = false;
+
+    // Set right before recursing into a nested closing-turn startSession call
+    // (post-loop, below). That nested call owns this worker's ENTIRE cleanup
+    // lifecycle end to end — session map entry, worktree, credentials,
+    // transcript archive/upload, circuit-breaker bookkeeping — using the
+    // final worker.status the closing turn actually produced. Running this
+    // invocation's own finally block after that would redo all of it against
+    // the same already-final state: a second archive write, a second
+    // transcript upload, a second circuit-breaker classification. The finally
+    // block below checks this flag and returns immediately instead.
+    let delegatedToClosingTurn = false;
+
+    // Declared here (before the try) rather than at its point of first
+    // assignment inside it, so the catch block's turn-budget closing-turn
+    // check below can read the SDK result subtype a thrown error left
+    // behind — try/catch/finally are separate lexical scopes, so a `let`
+    // inside try is invisible to catch.
+    let resultSubtype: string | undefined;
 
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
@@ -2851,6 +3050,31 @@ export class WorkerManager {
           `\n\n## Connector Availability Notice\nThe following MCP connectors are currently unavailable for this task:\n${connectorList}\nTools provided by these connectors will not be accessible. Work around their absence where possible, and note any limitations in your output.`;
       }
 
+      // Role persona. This is the ONLY channel that carries it to a Claude
+      // session: `settingSources: ['project']` loads the session cwd's own
+      // CLAUDE.md, never the role's, and overlayRoleFiles deliberately does not
+      // overlay one. Appended before the tool-channel policy below so the
+      // policy stays the last word on its own subject.
+      const rolePersonaSection = buildRoleSystemPromptSection(worker.roleInstructions);
+      if (rolePersonaSection) {
+        // A session whose cwd IS the role dir (a workspace with no repo) already
+        // loads this exact text as its project CLAUDE.md; appending it there
+        // would spend the persona's byte count twice.
+        let alreadyLoadedFromCwd = false;
+        if (useClaudeMd) {
+          try {
+            const cwdClaudeMd = join(cwd, 'CLAUDE.md');
+            alreadyLoadedFromCwd = existsSync(cwdClaudeMd)
+              && readFileSync(cwdClaudeMd, 'utf-8').trim() === worker.roleInstructions!.content.trim();
+          } catch {
+            alreadyLoadedFromCwd = false;
+          }
+        }
+        if (!alreadyLoadedFromCwd) {
+          systemPrompt.append = (systemPrompt.append ?? '') + rolePersonaSection;
+        }
+      }
+
       // Tool channel policy: agents must not improvise when an MCP tool channel
       // is unavailable. This instruction prevents the credential-scavenging pattern
       // (reading secrets from disk, env vars, or response headers and calling APIs
@@ -2941,8 +3165,12 @@ export class WorkerManager {
         ? ['context-1m-2025-08-07' as const]
         : undefined;
 
-      // Resolve max turns for SDK-level turn limiting
-      const maxTurns = resolveMaxTurns(workspaceConfig, this.config.maxTurns);
+      // Resolve max turns for SDK-level turn limiting. A closing turn is a
+      // single bounded attempt regardless of the task/workspace cap — it
+      // exists to let the agent call complete_task, not to resume normal
+      // work, and bounding it to exactly 1 is what keeps it a fixed one-time
+      // cost even when the original session burned its own cap in full.
+      const maxTurns = isClosingTurn ? 1 : resolveMaxTurns(workspaceConfig, this.config.maxTurns);
 
       // Resolve thinking/effort: task-level override > workspace-level setting
       const taskThinking = (task.context as any)?.thinking;
@@ -3105,8 +3333,15 @@ export class WorkerManager {
         // breakage left the eligible-fallback rate entirely.
         worker.cbmDisableReason = cbmActivation.disableReason;
       }
-      worker.cbmToolCounts = {};
-      worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
+      // A closing turn continues the SAME logical session (it exists purely
+      // to let the agent call complete_task) — resetting these here would
+      // silently drop everything the original invocation already counted,
+      // since the closing turn itself does little to no CBM activity of its
+      // own to replace it with.
+      if (!isClosingTurn) {
+        worker.cbmToolCounts = {};
+        worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
+      }
 
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
@@ -3478,7 +3713,8 @@ export class WorkerManager {
 
       // Phase 2A — Codex role/skills/context via AGENTS.md.
       //
-      // Claude receives its persona via systemPrompt.append, skills via the
+      // Claude receives its persona via systemPrompt.append (see the role
+      // persona block above), skills via the
       // Skill() allowlist, and CLAUDE.md via settingSources. Codex's ThreadOptions
       // has none of these (no instructions/system-prompt option in codex-sdk@0.44.0),
       // and there is no Skill tool. We therefore compose a single instruction
@@ -3490,16 +3726,12 @@ export class WorkerManager {
       // so the prompt pointer below is included.
       if (isCodexTask) {
         try {
-          // Role persona = the role's CLAUDE.md (the same text Claude loads from
-          // the role dir via settingSources). Builder roles don't overlay it into
-          // the repo, so read it straight from the synced role dir.
-          let rolePersona: string | undefined;
-          if (worker.roleConfig) {
-            const rolePersonaPath = join(getRoleDir(worker.roleConfig.slug), 'CLAUDE.md');
-            if (existsSync(rolePersonaPath)) {
-              rolePersona = readFileSync(rolePersonaPath, 'utf-8');
-            }
-          }
+          // Role persona — the same claim-delivered text Claude appends to its
+          // system prompt above, so the two backends cannot disagree about who
+          // the agent is. This used to be read off the role dir's CLAUDE.md,
+          // which only exists for a role packaged to R2: a seeded role gave
+          // Codex no persona at all, and Claude none either.
+          const rolePersona = worker.roleInstructions?.content || undefined;
 
           // Project instructions: include repo CLAUDE.md content when the workspace
           // opts into CLAUDE.md (mirrors Claude's settingSources project). We read
@@ -3557,6 +3789,7 @@ export class WorkerManager {
         promptText,
         backend: task.backend,
         taskMatchDerivedBy: taskMemory.derivedBy,
+        sections: built.sections,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
       // Also on stdout, as a live "is this firing at all" signal. Whether
@@ -3619,7 +3852,7 @@ export class WorkerManager {
 
       // Stream responses, nudging the agent while the session is still alive
       // when an explicit output requirement (PR/artifact) isn't met yet.
-      let resultSubtype: string | undefined;
+      // (resultSubtype itself is declared above the try — see comment there.)
       let structuredOutput: Record<string, unknown> | undefined;
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
@@ -3798,7 +4031,11 @@ export class WorkerManager {
         worker.currentAction = 'Auth failed';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        await this.buildd.updateWorker(worker.id, { status: 'failed', error: 'Agent authentication failed - check API key' });
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: 'Agent authentication failed - check API key',
+          resultMeta: { closingTurnOutcome: 'skipped:auth_error' },
+        });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
         // Burn-loop guard (cache invalidation + exponential backoff) is applied
@@ -3818,6 +4055,7 @@ export class WorkerManager {
           error: 'Budget limit exceeded (maxBudgetUsd)',
           budgetExhausted: true,
           milestones: worker.milestones,
+          resultMeta: { closingTurnOutcome: 'skipped:budget_exhausted' },
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
@@ -3849,12 +4087,54 @@ export class WorkerManager {
           status: 'failed',
           error: errMsg,
           milestones: worker.milestones,
+          resultMeta: { closingTurnOutcome: 'skipped:no_deliverable' },
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
       } else {
         // Actually completed
         sessionLog(worker.id, 'info', 'session_complete', `resultSubtype=${resultSubtype}`, worker.taskId);
+
+        // Closing turn: a session that ends up here ended naturally with no
+        // error signal, which is exactly the shape that silently produces a
+        // summarySource:'fallback' completion when the agent never called
+        // complete_task. Give it ONE resumed turn to author its own outcome
+        // before falling back to whatever it last said.
+        //
+        // Only the top-level invocation (isClosingTurn=false) makes this
+        // decision. The closing turn's own natural end (isClosingTurn=true)
+        // always falls straight through to the completion payload below,
+        // authored or not — recursing a second time would turn a bounded
+        // one-shot into an unbounded chain.
+        let closingTurnOutcome: 'authored' | 'declined' | `skipped:${string}` | undefined;
+        if (isClosingTurn) {
+          closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker)) ? 'authored' : 'declined';
+        } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
+          const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
+          if (!resumeId) {
+            closingTurnOutcome = 'skipped:not_resumable';
+          } else {
+            sessionLog(worker.id, 'info', 'closing_turn_attempt', `resume=${resumeId}`, worker.taskId);
+            this.addMilestone(worker, { type: 'status', label: 'Session ended without complete_task — giving one closing turn', ts: Date.now() });
+            const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
+            delegatedToClosingTurn = true;
+            await this.startSession(worker, cwd, closingTask, resumeId, true);
+            // The nested call above owns this worker's entire completion
+            // lifecycle from here (its own post-loop logic runs this exact
+            // branch again with isClosingTurn=true, decides authored vs
+            // declined, and sends the one completion PATCH). Sending a
+            // second one here would race it.
+            return;
+          }
+        }
+        // Else: already terminal at the top level — the agent's own
+        // complete_task call won the race before this decision was made.
+        // closingTurnOutcome stays undefined and nothing below is aware a
+        // closing turn was ever considered, so this path is byte-identical
+        // to before this feature existed: the completion PATCH below is
+        // still built and sent, the server still refuses it (abort: true),
+        // and persistTerminalMetrics still runs exactly as it always has.
+
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
@@ -3955,12 +4235,32 @@ export class WorkerManager {
           }
         }
 
-        // Re-read AFTER the two blocks above. Both can assign a brand-new
-        // object to worker.resultMeta (the SDK never emitted a result message,
-        // e.g. the provision-failure path), and the completion PATCH used to
-        // spread a const captured before them — so on exactly the path whose
-        // comment promises the metrics "travel with the completion payload",
-        // the cbm/toolCounts objects were built and then silently dropped.
+        // Closing-turn outcome: only present when this invocation actually
+        // made (or explicitly skipped) a closing-turn decision above — never
+        // set on the already-terminal top-level race, which is what keeps
+        // that path's payload byte-identical to before this field existed.
+        if (closingTurnOutcome !== undefined) {
+          if (worker.resultMeta) {
+            worker.resultMeta.closingTurnOutcome = closingTurnOutcome;
+          } else {
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              closingTurnOutcome,
+            };
+          }
+        }
+
+        // Re-read AFTER the three blocks above. All three can assign a
+        // brand-new object to worker.resultMeta (the SDK never emitted a
+        // result message, e.g. the provision-failure path), and the
+        // completion PATCH used to spread a const captured before them — so
+        // on exactly the path whose comment promises the metrics "travel
+        // with the completion payload", the cbm/toolCounts objects were
+        // built and then silently dropped.
         const resultMeta = worker.resultMeta || undefined;
 
         // Loop-until-verified: run verification command and collect evidence (spec §2).
@@ -4010,6 +4310,12 @@ export class WorkerManager {
         const subagentSpans = buildSubagentSpans(worker.subagentTasks);
         const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
 
+        // Fallback summary, only meaningful when this PATCH is actually the
+        // first write (closingTurnOutcome !== 'authored') — an 'authored' or
+        // already-terminal payload gets refused (abort: true) and this field
+        // is dropped with the rest of the status half; see METRICS_ONLY_FIELDS.
+        const fallbackSummary = buildFallbackSummaryTail(worker);
+
         const completionPayload = {
           status: 'completed',
           milestones: worker.milestones,
@@ -4022,13 +4328,14 @@ export class WorkerManager {
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
-          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing).
-          // This fires only when the session ended without the agent calling complete_task itself,
-          // so the "summary" is whatever the agent happened to say last — often a conversational
-          // aside ("waiting for CI"), not an outcome. Tag it 'fallback' so downstream consumers
-          // (KB ingestion, UI) never present it as an authored result. See docs/specs — the agent's
-          // own complete_task PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
-          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage, summarySource: 'fallback' as const } : {}),
+          // Bounded tail of the session's own assistant text (newest last),
+          // used as the summary when the session ended without the agent
+          // calling complete_task itself — after a closing turn if one was
+          // attempted, so this reflects whatever it said too. Tag 'fallback'
+          // so downstream consumers (KB ingestion, UI) never present it as an
+          // authored result. See docs/specs — the agent's own complete_task
+          // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
+          ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
           // Subagent spans — terminal-only flush
@@ -4076,6 +4383,12 @@ export class WorkerManager {
       // Check if this is an expected abort (from loop detection or user)
       const isAbortError = !refusal && error instanceof Error &&
         (error.message.includes('aborted') || error.message.includes('Aborted'));
+
+      // Recomputed rather than reused: the `isCodexTask` declared earlier in
+      // this method lives inside the try block's own lexical scope (a
+      // separate scope from catch), so it isn't visible here. Same
+      // expression, needed below for the turn-budget closing-turn's resume id.
+      const isCodexTask = (task.backend || 'claude') === 'codex';
 
       // Before marking as failed, check if server already has this as completed.
       // This handles the race where complete_task succeeded but sync abort threw.
@@ -4153,6 +4466,7 @@ export class WorkerManager {
           ...(worker.sandboxMountGap && { sandboxMountGap: true }),
           // An aborted session still spent money before it was killed.
           ...this.terminalAttributionPayload(worker),
+          resultMeta: { closingTurnOutcome: 'skipped:aborted' as const },
           ...spanPayload,
         };
         const abortResult = await this.buildd.updateWorker(worker.id, abortPayload)
@@ -4164,61 +4478,30 @@ export class WorkerManager {
         if (abortResult?.abort === true) {
           await this.persistTerminalMetrics(worker, abortPayload, abortResult.actualStatus);
         }
-      } else {
-        // Unexpected error
-        const errMsg = error instanceof Error ? error.message : 'Unknown error';
-        const errStack = error instanceof Error ? error.stack : undefined;
-        console.error(`Worker ${worker.id} error:`, error);
-        sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
-        worker.status = 'error';
-        worker.error = errMsg;
-        worker.hasNewActivity = true;
-        worker.completedAt = Date.now();
-        // OAuth seat session caps ("You've hit your session limit") and Codex
-        // quota walls ("You've hit your usage limit") are a usage exhaustion
-        // just like a dollar budget — flag them so the server fails the task
-        // over (Codex <-> Claude) / holds it until reset instead of hard-
-        // failing. Shared with the web route's isBudgetExhaustionError and the
-        // claim breaker's classifyClaimError so all three can't drift apart.
-        const isBudgetError = isBudgetExhaustionError(errMsg);
-        // Steering-delivery crash: the CLI rejected a malformed spawn invocation
-        // (e.g. --session-id + --resume without --fork-session). This is an infra
-        // failure — must not consume a task retry attempt.
-        const isSteeringDeliveryCrash = stderrCollector.isSteeringDeliveryCrash;
-        // Flush buffered CLI stderr into error traces so get_error_traces surfaces
-        // them. Idempotent — a no-op when the eager stderr-callback flush already
-        // staged this text and nothing new arrived since.
-        flushStderrTrace(worker, stderrCollector);
-        // A provision-gate block carries a stable failure classification — surface
-        // it as structured resultMeta so the server/organizer can act on the code
-        // (escalate a missing secret vs. retry a flaky readiness) rather than
-        // regex-matching the free-text error.
-        const provisionFailure = (error as { provisionFailure?: unknown })?.provisionFailure;
-        // MCP pre-flight failures carry structured failure info for each failed
-        // server — surface so the organizer can escalate a missing connector credential.
-        const mcpPreflightFailures = (error as { mcpPreflightFailures?: McpPreflightFailure[] })?.mcpPreflightFailures;
-        // Drain rather than read: worker-sync's periodic PATCH also ships
-        // pendingErrorTraces, so leaving the buffer populated files the same
-        // stderr twice in worker_error_traces.
-        const terminalTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
-        if (terminalTraces) worker.pendingErrorTraces = [];
-        const errorPayload = {
-          status: 'failed',
-          error: worker.error,
-          ...this.terminalAttributionPayload(worker),
-          ...(isBudgetError && { budgetExhausted: true }),
-          ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
-          ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
-          ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
-          ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
-          ...spanPayload,
-        };
-        const errorResult = await this.buildd.updateWorker(worker.id, errorPayload)
-          .catch(err => { console.error(`[Worker ${worker.id}] Failed to sync error status:`, err); return null; }) as
-          { abort?: boolean; actualStatus?: string } | null;
-        if (errorResult?.abort === true) {
-          await this.persistTerminalMetrics(worker, errorPayload, errorResult.actualStatus);
+      } else if (!isClosingTurn && resultSubtype === 'error_max_turns' && !(await this.isAlreadyTerminalOnServer(worker))) {
+        // Turn-budget closing turn: the loop ended specifically because it
+        // hit its configured maxTurns cap, not because anything broke. That's
+        // still eligible for the same one-shot closing turn as a natural end
+        // — bounded to exactly one turn past the cap (maxTurns override
+        // above), so a session that burned its whole budget refusing to
+        // finish cannot burn a second one doing it again.
+        const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
+        if (resumeId) {
+          sessionLog(worker.id, 'info', 'closing_turn_attempt', `resume=${resumeId} reason=max_turns`, worker.taskId);
+          this.addMilestone(worker, { type: 'status', label: 'Max turns reached — giving one closing turn', ts: Date.now() });
+          const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
+          delegatedToClosingTurn = true;
+          await this.startSession(worker, cwd, closingTask, resumeId, true);
+          return; // nested call owns the rest of this worker's lifecycle
         }
+        // No resume id — fall through to the generic error handling below,
+        // tagged the same as any other unresumable skip.
+        await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, 'skipped:not_resumable');
+      } else {
+        // Unexpected error — a genuine crash/abort-adjacent failure (or a
+        // closing turn's own error-terminated attempt), never eligible for a
+        // closing turn of its own.
+        await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, isClosingTurn ? 'declined' : 'skipped:error');
       }
       if (!bwrapRetryAfterCleanup) {
         this.emit({ type: 'worker_update', worker });
@@ -4230,6 +4513,18 @@ export class WorkerManager {
       }
     } finally {
       if (isSensitive) deactivateRedaction();
+      if (delegatedToClosingTurn) {
+        // The nested closing-turn call above already ran ITS OWN full
+        // try/catch/finally to completion — including this exact cleanup
+        // (session map entry, worktree, credentials) plus the archive/
+        // diagnostics-upload/circuit-breaker bookkeeping further below — off
+        // the same shared `worker` object, ending in its actual final state.
+        // Doing any of that again here would double it: a second transcript
+        // archive write, a second diagnostics upload, a second
+        // circuit-breaker classification of a status this invocation never
+        // itself produced.
+        return;
+      }
       // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {

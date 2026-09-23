@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 const { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } = fs;
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import type { LocalWorker, CheckpointEventType } from './types';
 import { teardownStableCodexHome } from './codex-auth';
 import { sessionLog } from './session-logger';
@@ -35,7 +35,7 @@ let workersDirCache: string | null = null;
 
 function workersDir(): string {
   if (workersDirCache === null) {
-    workersDirCache = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'workers');
+    workersDirCache = join(resolveBuilddHome(), 'workers');
   }
   return workersDirCache;
 }
@@ -54,6 +54,9 @@ const PERSISTED_FIELDS = [
   'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
+  // Read by history-store's backfill so an archived session keeps its usage,
+  // model and PR URL. Not restored onto live workers by loadAllWorkers.
+  'resultMeta', 'prUrl', 'reportedModel',
 ] as const;
 
 // Bounds to keep files reasonable

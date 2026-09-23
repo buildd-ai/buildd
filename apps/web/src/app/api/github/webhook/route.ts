@@ -67,6 +67,7 @@ import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/relea
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -363,27 +364,38 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
     case 'closed': {
       // An externally-closed issue cancels its linked task if still open. When
       // buildd itself closed the issue after a merge, the task is already
-      // terminal, so this no-ops (the guard skips terminal statuses).
-      await db
+      // terminal, so the guard skips it and no side effects run.
+      const cancelled = await db
         .update(tasks)
         .set({ status: 'cancelled', updatedAt: new Date() })
         .where(and(
           eq(tasks.externalId, `issue-${issue.id}`),
           not(inArray(tasks.status, TERMINAL_TASK_STATUSES)),
-        ));
+        ))
+        .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
+      // Only rows this UPDATE actually changed: abort the worker (it would
+      // otherwise keep spending tokens), release path claims, resolve, emit.
+      for (const row of cancelled) {
+        await applyTaskCancelSideEffects(row);
+      }
       break;
     }
 
     case 'reopened': {
       // Reopening resurrects a task that a prior close had cancelled — but never
-      // a task that reached completed/failed on its own.
-      await db
+      // a task that reached completed/failed on its own. Claim fields are cleared
+      // like a PATCH reset to pending, so the task is claimable again.
+      const reopened = await db
         .update(tasks)
-        .set({ status: 'pending', updatedAt: new Date() })
+        .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
         .where(and(
           eq(tasks.externalId, `issue-${issue.id}`),
           eq(tasks.status, 'cancelled'),
-        ));
+        ))
+        .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
+      for (const row of reopened) {
+        await applyTaskReopenSideEffects(row, 'GitHub issue reopened');
+      }
       break;
     }
   }

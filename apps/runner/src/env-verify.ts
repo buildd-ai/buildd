@@ -616,9 +616,20 @@ function provisionFailure(step: StepResult): ProvisionFailure {
 // ─── Warm gate cache ─────────────────────────────────────────────────────────
 // The gate runs BEFORE the agent modifies the worktree, so at gate time the tree
 // is exactly the base commit. For an env-INDEPENDENT manifest (no env.required)
-// the pass is therefore a pure function of (base commit + manifest) — identical
-// across every task branching off that base. On a single runner that's a real
-// win: skip a possibly-expensive readiness probe (e.g. tsc) for repeat tasks.
+// the READINESS result (e.g. tsc, spec-lint) is therefore a pure function of
+// (base commit + manifest) — identical across every task branching off that
+// base. On a single runner that's a real win: skip a possibly-expensive
+// readiness probe for repeat tasks.
+//
+// A cache HIT still runs every OTHER phase for real. install/provision/toolchain
+// have side effects scoped to THIS worktree specifically — `bun install`
+// populates node_modules in this directory, not "the base commit" in the
+// abstract — so a fresh worktree cut from an already-verified commit has none of
+// that until its own install actually runs. Skipping the whole gate on a cache
+// hit (the original design) left exactly that worktree looking "Environment
+// verified" with zero node_modules; only readiness is provably worktree-path-
+// independent enough to skip. See docs/testing.md's worktree node_modules
+// gotcha for the symptom this produced before the fix.
 //
 // Safety: only PASSES are cached (a failure may be fixed → always re-check), only
 // for manifests with no env.required (env can't change the result), keyed by the
@@ -666,17 +677,19 @@ export async function runProvisionGate(opts: ExecuteOptions): Promise<ProvisionG
   // env-independent (env.required would make the result depend on per-task secrets).
   const cacheable = !!opts.commit && !manifest.env?.required?.length;
   const cacheKey = cacheable ? `${opts.commit}\0${manifestHash(manifest)}` : null;
-  if (cacheKey) {
+  const warmHit = cacheKey !== null && (() => {
     const at = gateCache.get(cacheKey);
-    if (at !== undefined && now() - at < GATE_CACHE_TTL_MS) {
-      return { source, enforced: true, ok: true, steps: [], cached: true };
-    }
-  }
+    return at !== undefined && now() - at < GATE_CACHE_TTL_MS;
+  })();
 
-  const steps = await executeSteps(planSteps(manifest), opts);
+  // A warm hit only proves readiness already passed for this exact tree — every
+  // other phase still runs, because install/provision/toolchain act on THIS
+  // worktree, not "the base commit" in the abstract.
+  const runOpts = warmHit ? { ...opts, skipPhases: [...(opts.skipPhases ?? []), 'readiness' as const] } : opts;
+  const steps = await executeSteps(planSteps(manifest), runOpts);
   const firstFail = steps.find((s) => s.status === 'fail');
   const ok = !firstFail;
-  if (cacheKey && ok) gateCache.set(cacheKey, now());
+  if (cacheKey && ok && !warmHit) gateCache.set(cacheKey, now());
 
   return {
     source,
@@ -685,6 +698,7 @@ export async function runProvisionGate(opts: ExecuteOptions): Promise<ProvisionG
     steps,
     reason: firstFail ? provisionReason(firstFail) : undefined,
     failure: firstFail ? provisionFailure(firstFail) : undefined,
+    ...(warmHit ? { cached: true } : {}),
   };
 }
 

@@ -11,6 +11,7 @@
 
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import * as realMcpTools from '@buildd/core/mcp-tools';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TEAM_ID = 'team-1';
@@ -18,6 +19,10 @@ const TEAM_ID = 'team-1';
 // ── Mocks must be declared before importing the route ───────────────────────
 
 const mockAuthenticateApiKey = mock(() => null as any);
+// Rows returned by any `db.select().from().where().limit()` — used by the
+// "does this caller reach a sensitive workspace" lookup.
+const mockSelectLimit = mock(() => Promise.resolve([] as any[]));
+const selectWheres: unknown[] = [];
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
 const mockGetMemoryStoreForTeam = mock(() => Promise.resolve(null as any));
 const mockHandleMemoryAction = mock(async () => ({ content: [{ type: 'text', text: '{"handled":true}' }] }));
@@ -33,6 +38,10 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      accountWorkspaces: {
+        findFirst: mock(() => Promise.resolve(null)),
+        findMany: mock(() => Promise.resolve([])),
+      },
       teams: { findFirst: mock(() => Promise.resolve(null)) },
       workers: { findFirst: mock(() => Promise.resolve(null)) },
       tasks: { findFirst: mock(() => Promise.resolve(null)) },
@@ -40,7 +49,7 @@ mock.module('@buildd/core/db', () => ({
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve([])) })) })),
     insert: mock(() => ({ values: mock(() => Promise.resolve([])) })),
     select: mock(() => ({
-      from: mock(() => ({ where: mock(() => ({ limit: mock(() => Promise.resolve([])) })) })),
+      from: mock(() => ({ where: mock((w: unknown) => { selectWheres.push(w); return { limit: mockSelectLimit }; }) })),
     })),
   },
 }));
@@ -131,14 +140,14 @@ describe('MCP tool gating — workspace data class', () => {
   });
 
   it('offers the knowledge tools for a standard workspace', async () => {
-    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID });
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
   });
 
   it('withholds the knowledge tools for a sensitive workspace', async () => {
-    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive', teamId: TEAM_ID });
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
@@ -151,7 +160,11 @@ describe('MCP tool gating — workspace data class', () => {
     // Defaulting to 'standard' here would expose team knowledge to exactly the
     // workspaces that opted out of it, and only while the database is unhappy —
     // which is why resolveWorkspaceDataClass is fail-closed.
-    mockWorkspacesFindFirst.mockRejectedValue(new Error('connection terminated'));
+    // The request-scope check (teamId only) succeeds; the data-class read fails.
+    mockWorkspacesFindFirst.mockImplementation(async (opts: any) => {
+      if (opts?.columns?.dataClass) throw new Error('connection terminated');
+      return { teamId: TEAM_ID };
+    });
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
@@ -159,7 +172,7 @@ describe('MCP tool gating — workspace data class', () => {
   });
 
   it('refuses a knowledge tool call in a sensitive workspace even if it was somehow invoked', async () => {
-    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive', teamId: TEAM_ID });
 
     const result = await callTool('recall', { query: 'anything' }, `?workspace=${WORKSPACE_ID}`);
     expect(result.isError).toBe(true);
@@ -294,5 +307,151 @@ describe('MCP tool gating — OAuth workspace ambiguity', () => {
     const result = await callTool('recall', { query: 'x' });
     expect(result.isError).toBeUndefined();
     expect(mockHandleRecallAction).toHaveBeenCalled();
+  });
+});
+
+describe('MCP tool gating — lazily resolved workspace', () => {
+  // No ?workspace= / ?repo= pin: the route infers the workspace from the
+  // account's own tasks. The data-class gate must apply to that inferred
+  // workspace just as it does to a pinned one.
+  const LAZY_WS = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const realFetch = globalThis.fetch;
+
+  function workspaceIs(dataClass: 'standard' | 'sensitive') {
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass, teamId: TEAM_ID, repo: null, name: 'ws' });
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGetMemoryStoreForTeam.mockReset();
+    mockHandleMemoryAction.mockClear();
+    mockHandleRecallAction.mockClear();
+    mockHandleLearnAction.mockClear();
+    mockHandleBuilddAction.mockClear();
+    mockGetMemoryStoreForTeam.mockResolvedValue({ id: 'store-1' });
+    authenticateAs({ level: 'worker', authType: 'api' });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ tasks: [{ id: 't1', workspaceId: LAZY_WS, status: 'pending' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as any;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  for (const [tool, args] of [
+    ['recall', { query: 'x' }],
+    ['learn', { type: 'gotcha', title: 't', content: 'c' }],
+    ['buildd_memory', { action: 'search', params: { query: 'x' } }],
+  ] as const) {
+    it(`refuses ${tool} when the inferred workspace is sensitive`, async () => {
+      workspaceIs('sensitive');
+
+      const result = await callTool(tool, args);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('not available in sensitive workspaces');
+      expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+      expect(mockHandleMemoryAction).not.toHaveBeenCalled();
+      expect(mockHandleRecallAction).not.toHaveBeenCalled();
+      expect(mockHandleLearnAction).not.toHaveBeenCalled();
+    });
+  }
+
+  it('still serves recall when the inferred workspace is standard', async () => {
+    workspaceIs('standard');
+
+    const result = await callTool('recall', { query: 'x' });
+    expect(result.isError).toBeUndefined();
+    expect(mockHandleRecallAction).toHaveBeenCalled();
+  });
+
+  it('does not read the workspace memory resource for an inferred sensitive workspace', async () => {
+    workspaceIs('sensitive');
+
+    await POST(makeRequest({
+      jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'buildd://workspace/memory' },
+    }));
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+
+  it('does not read the workspace memory resource for a pinned sensitive workspace', async () => {
+    workspaceIs('sensitive');
+
+    await POST(makeRequest({
+      jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'buildd://workspace/memory' },
+    }, `?workspace=${WORKSPACE_ID}`));
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+
+  it('gives buildd actions no memory client for an inferred sensitive workspace', async () => {
+    workspaceIs('sensitive');
+
+    await callTool('buildd', { action: 'list_tasks', params: {} });
+    expect(mockHandleBuilddAction).toHaveBeenCalled();
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    // Resolve the workspace the way a claim would, then ask for memory.
+    await ctx.getWorkspaceId();
+    expect(await ctx.getMemoryClient()).toBeNull();
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+
+  // claim_task resolves its own workspace (an explicit id, or any workspace the
+  // account can claim from), which the connection never learns. On an unpinned
+  // connection the memory client is therefore withheld whenever the caller
+  // can reach a sensitive workspace at all.
+  it('gives a claim on an unpinned connection no memory client when the caller reaches a sensitive workspace', async () => {
+    workspaceIs('standard');
+    mockSelectLimit.mockResolvedValueOnce([{ id: WORKSPACE_ID }]);
+
+    await callTool('buildd', { action: 'claim_task', params: { workspaceId: WORKSPACE_ID } });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    // Exactly what claim_task does with an explicit UUID: no getWorkspaceId().
+    expect(await ctx.getMemoryClient()).toBeNull();
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+
+  it("scopes the sensitive-reach lookup to sensitive workspaces of the caller's team", async () => {
+    workspaceIs('standard');
+    selectWheres.length = 0;
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    await ctx.getMemoryClient();
+    expect(selectWheres.length).toBe(1);
+    const q = new PgDialect().sqlToQuery(selectWheres[0] as any);
+    expect(q.sql).toContain('"data_class"');
+    expect(q.sql).toContain('"team_id"');
+    expect(q.params).toContain('sensitive');
+    expect(q.params).toContain(TEAM_ID);
+  });
+
+  it('withholds the memory client when the sensitive-reach lookup fails', async () => {
+    workspaceIs('standard');
+    mockSelectLimit.mockRejectedValueOnce(new Error('db down'));
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient()).toBeNull();
+  });
+
+  it('keeps the memory client for a claim when the caller reaches no sensitive workspace', async () => {
+    workspaceIs('standard');
+
+    await callTool('buildd', { action: 'claim_task', params: { workspaceId: WORKSPACE_ID } });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient()).toEqual({ id: 'store-1' });
+  });
+
+  it('gives buildd actions a memory client for an inferred standard workspace', async () => {
+    workspaceIs('standard');
+
+    await callTool('buildd', { action: 'list_tasks', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    await ctx.getWorkspaceId();
+    expect(await ctx.getMemoryClient()).toEqual({ id: 'store-1' });
   });
 });

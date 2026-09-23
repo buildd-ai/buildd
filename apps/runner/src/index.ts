@@ -3,10 +3,12 @@ import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
-import { homedir, hostname } from 'os';
+import { hostname } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
+import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
@@ -21,7 +23,8 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
 const PORT = parseInt(process.env.PORT || '8766');
-const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+// Entrypoint: resolving once at load is fine here (see buildd-home.ts).
+const BUILDD_DIR = resolveBuilddHome();
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json');
 const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
@@ -768,7 +771,8 @@ const sseClients = new Set<ReadableStreamDefaultController>();
 
 // Broadcast to all SSE clients
 function broadcast(event: any) {
-  const data = `data: ${JSON.stringify(event)}\n\n`;
+  // Never serialise credential material — see public-worker.ts.
+  const data = `data: ${JSON.stringify(toPublicEvent(event))}\n\n`;
   for (const controller of sseClients) {
     try {
       controller.enqueue(new TextEncoder().encode(data));
@@ -1658,7 +1662,7 @@ const server = DEBUG_MODE ? Bun.serve({
       const init = {
         type: 'init',
         configured: !!config.apiKey,
-        workers: activeWorkers,
+        workers: toPublicWorkers(activeWorkers),
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
@@ -1751,7 +1755,7 @@ const server = DEBUG_MODE ? Bun.serve({
     }
 
     if (path === '/api/workers' && req.method === 'GET') {
-      return Response.json({ workers: workerManager!.getWorkers() }, { headers: corsHeaders });
+      return Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) }, { headers: corsHeaders });
     }
 
     if (path === '/api/workers/purge' && req.method === 'POST') {
@@ -1780,7 +1784,7 @@ const server = DEBUG_MODE ? Bun.serve({
             error: `Cannot claim task "${task.title}" right now — account context is temporarily paused (rate limit). Try again shortly.`,
           }, { status: 400, headers: corsHeaders });
         }
-        return Response.json({ worker }, { headers: corsHeaders });
+        return Response.json({ worker: toPublicWorker(worker) }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to claim' }, { status: 400, headers: corsHeaders });
       }
@@ -1878,7 +1882,7 @@ const server = DEBUG_MODE ? Bun.serve({
           return Response.json({ error: 'Failed to claim task after reassign' }, { status: 400, headers: corsHeaders });
         }
 
-        return Response.json({ worker, reassigned: true }, { headers: corsHeaders });
+        return Response.json({ worker: toPublicWorker(worker), reassigned: true }, { headers: corsHeaders });
       } catch (err: any) {
         // Check for auth error
         if (err.message?.includes('401')) {

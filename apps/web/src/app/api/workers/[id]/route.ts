@@ -55,7 +55,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
@@ -963,6 +963,10 @@ export async function PATCH(
         memoryBlockBytes: e.memoryBlockBytes,
         promptBytes: e.promptBytes,
         memoryShare: String(e.memoryShare),
+        // Same absent-from-the-strict-filter treatment as taskMatchDerivedBy/
+        // backend above: a runner predating this field cannot report it, and
+        // NULL is the honest record of "unknown" rather than "empty".
+        sections: Array.isArray(e.sections) ? e.sections.slice(0, 32) : null,
       }));
     if (rows.length > 0) {
       try {
@@ -1775,8 +1779,14 @@ export async function PATCH(
   // producer of the same 'needs_input:' prefix) so a parked question can never
   // fall through classifyReportedFailure's code_failure default.
   const isNeedsInput = (status === 'failed' || status === 'error') && typeof error === 'string' && error.startsWith('needs_input');
+  // The runner reconciling a session its own previous process lost (boot-time
+  // `Process restarted` report). A runner restart says nothing about the task:
+  // it is infra, and it rides the infra retry budget below rather than the
+  // task's retry count — which is 0 for a non-mission task.
+  const isCrashReconciled = status === 'failed' && crashReconciled === true;
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
+      crashReconciled: isCrashReconciled,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
@@ -2469,8 +2479,8 @@ export async function PATCH(
           }
         }
 
-        // Infra failure override (steeringDelivery = true, or a non-gate server
-        // refusal):
+        // Infra failure override (steeringDelivery = true, a non-gate server
+        // refusal, or a crash-reconciled runner restart):
         // CLI startup errors (session collision, env collision) are infra — not code bugs.
         // Use a separate infraRetryCount so infra burns don't consume code-failure retry
         // slots. Apply exponential backoff and cap at MAX_INFRA_RETRIES_PATCH attempts.
@@ -2480,8 +2490,10 @@ export async function PATCH(
         // task retries forever — so the ceiling is this one, already built,
         // already backed off, already ending in infraStalledFail. An
         // output-gate refusal is excluded: that one IS charged, so it belongs
-        // to the ordinary retry budget.
-        if ((isSteeringDelivery || isNonGateRefusal) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // to the ordinary retry budget. A crash-reconciled restart rides it for
+        // the same reason: without it, one runner self-update permanently
+        // failed every in-flight non-mission task.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -2569,6 +2581,21 @@ export async function PATCH(
       const workerDeliveredSomething = expectsStructuredPlan
         ? workerHasPR || (await hasDeliverableArtifact())
         : false;
+      // A session that never produced a turn (≤2 turns, no tokens, $0 — the
+      // reaper's silent_start shape) did not break either contract below: it
+      // never got to write a plan or a verdict, prose or otherwise. Evaluated on
+      // this PATCH's values merged over the row, after the budget check (a
+      // budget wall is the more specific diagnosis). A turns-less PATCH
+      // auto-increments the row by one, so count that turn here too.
+      const isSilentStartCompletion = status === 'completed' && !shouldAutoRetry && !completionBudgetError &&
+        isSilentStartShape({
+          turns: typeof updates.turns === 'number'
+            ? updates.turns
+            : (worker.turns ?? 0) + (updates.turns !== undefined ? 1 : 0),
+          costUsd: (updates.costUsd as string | undefined) ?? worker.costUsd,
+          inputTokens: (updates.inputTokens as number | undefined) ?? worker.inputTokens,
+          outputTokens: (updates.outputTokens as number | undefined) ?? worker.outputTokens,
+        });
       const planningContractViolation = (
         status === 'completed' &&
         !shouldAutoRetry &&
@@ -2598,15 +2625,18 @@ export async function PATCH(
         );
         // Also mark the worker row failed so UI shows the correct terminal state.
         updates.status = 'failed';
-        updates.error = 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created';
+        updates.error = isSilentStartCompletion
+          ? SILENT_START_ERROR
+          : 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created';
         // The classification block above only runs for a *reported* terminal
         // failure, so a completed→failed override arrives here with exitCause
         // still unset. NULL is chargeable (consumesRetryAttempt treats it as
         // an unclassified failure) but it is also indistinguishable from a
         // genuinely unclassified one, so state the cause instead of inheriting
         // the default by accident: not returning the contract's output is the
-        // agent's own failure, so it is a code_failure and it should be charged.
-        updates.exitCause = 'code_failure';
+        // agent's own failure, so it is a code_failure and it should be charged
+        // — unless the session never produced a turn at all (silent_start).
+        updates.exitCause = isSilentStartCompletion ? 'silent_start' : 'code_failure';
       } else if (planningBudgetLimited) {
         console.error(
           `[planning-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
@@ -2664,8 +2694,17 @@ export async function PATCH(
         typeof reviewTaskCtx.reviewContractRetryCount === 'number'
           ? reviewTaskCtx.reviewContractRetryCount
           : 0;
+      // A reviewer that never produced a turn did not write its verdict as
+      // prose, so it must not spend the one contract retry that exists for
+      // that. It rides the infra budget (same cap and backoff as a steering
+      // crash) so it still cannot requeue forever.
+      const reviewSilentStart = reviewContractViolation && isSilentStartCompletion;
+      const reviewInfraRetryCount =
+        typeof reviewTaskCtx.infraRetryCount === 'number' ? reviewTaskCtx.infraRetryCount : 0;
       if (reviewContractViolation) {
-        const willRequeue = reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
+        const willRequeue = reviewSilentStart
+          ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
+          : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
         console.error(
           `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
           `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
@@ -2674,14 +2713,24 @@ export async function PATCH(
         );
         // This worker's review is discarded either way.
         updates.status = 'failed';
-        updates.error = 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+        updates.error = reviewSilentStart
+          ? SILENT_START_ERROR
+          : 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
         // Same override-after-classification shape as the planning guard: state
         // the cause rather than leaving exitCause NULL. Writing the verdict as
         // prose is the agent's own contract violation, so it stays chargeable —
         // the requeue above has its own separate budget
         // (MAX_REVIEW_CONTRACT_RETRIES) and does not rely on this being exempt.
-        updates.exitCause = 'code_failure';
-        if (willRequeue) {
+        updates.exitCause = reviewSilentStart ? 'silent_start' : 'code_failure';
+        if (willRequeue && reviewSilentStart) {
+          shouldAutoRetry = true;
+          const backoffMins = INFRA_BACKOFF_MINUTES_PATCH[reviewInfraRetryCount] ?? 30;
+          infraRetryStartAt = new Date(Date.now() + backoffMins * 60_000);
+          taskCtxForRetry = {
+            ...reviewTaskCtx,
+            infraRetryCount: reviewInfraRetryCount + 1,
+          };
+        } else if (willRequeue) {
           // Piggyback on the shouldAutoRetry machinery to reset the task to pending
           // (same pattern as the loop requeue above).
           shouldAutoRetry = true;
@@ -2726,6 +2775,11 @@ export async function PATCH(
           expiresAt: null,
           context: taskCtxForRetry,
           ...(infraRetryStartAt ? { startAt: infraRetryStartAt } : {}),
+        } : (planningContractViolation || reviewContractViolation) && isSilentStartCompletion ? {
+          result: {
+            error: SILENT_START_ERROR,
+            errorType: 'silent_start',
+          },
         } : planningContractViolation ? {
           result: {
             error: 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created. Mission will retry.',

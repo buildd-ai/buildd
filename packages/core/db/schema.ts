@@ -679,6 +679,20 @@ export interface ResultMeta {
    * or made no Bash call — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /**
+   * Outcome of the one-shot "closing turn" the runner gives a session that
+   * ended without the agent calling `complete_task`, before it falls back to
+   * `summarySource: 'fallback'`. 'authored' = the closing turn called
+   * complete_task itself (the ordinary fallback text/tagging never applied).
+   * 'declined' = the closing turn ran but still didn't call it, so the
+   * fallback summary was used anyway. `skipped:<reason>` = no closing turn was
+   * attempted at all (session not resumable, or the original session ended by
+   * error/abort/rate-limit/credential-failure/cancellation rather than
+   * naturally) — reason names why. Absent entirely when the agent's own
+   * complete_task call already won the race before this decision was made,
+   * which keeps that path byte-identical to before this field existed.
+   */
+  closingTurnOutcome?: 'authored' | 'declined' | `skipped:${string}`;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -1694,6 +1708,13 @@ export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_
   memoryBlockBytes: integer('memory_block_bytes').notNull(),
   promptBytes: integer('prompt_bytes').notNull(),
   memoryShare: decimal('memory_share', { precision: 5, scale: 4 }).notNull(),
+  // Per-section byte accounting for every block the runner's prompt builder
+  // considers (see PromptSectionRecord in apps/runner/src/memory-digest-policy.ts):
+  // name, bytes, whether it rendered, whether it was truncated. NULLABLE, same
+  // discipline as backend/taskMatchDerivedBy above — a row from a runner that
+  // predates this field genuinely does not have it, and defaulting to `[]`
+  // would read as "every section was empty" rather than "unknown".
+  sections: jsonb('sections').$type<Array<{ name: string; bytes: number; rendered: boolean; truncated: boolean }>>(),
 }, (t) => ({
   workerBuildIdx: uniqueIndex('worker_prompt_composition_events_worker_build_idx').on(t.workerId, t.buildIndex),
   taskTsIdx: index('worker_prompt_composition_events_task_ts_idx').on(t.taskId, t.ts),

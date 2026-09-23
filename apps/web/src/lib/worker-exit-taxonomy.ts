@@ -120,9 +120,18 @@ export function classifyReportedFailure(input: {
    * narrower than `serverRefused` and checked first.
    */
   outputGateRefused?: boolean;
+  /**
+   * The runner is reconciling a session its own process lost — on boot it
+   * reports every mid-session worker `failed` / `Process restarted` with this
+   * flag set. A runner self-update or crash says nothing about the task, so it
+   * is an infra failure; left unclassified it fell through to code_failure,
+   * and a non-mission task (0 retries) was failed permanently by one restart.
+   */
+  crashReconciled?: boolean;
 }): WorkerExitCause {
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
+  if (input.crashReconciled) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed
   // invocation, not a code defect. Must not consume a retry attempt.
   if (input.steeringDelivery) return 'infra_failure';
@@ -173,6 +182,24 @@ export function classifyStaleExit(worker: {
   if (!worker.startedAt) {
     return { exitCause: 'never_started', error: NEVER_STARTED_ERROR };
   }
+  if (isSilentStartShape(worker)) {
+    return { exitCause: 'silent_start', error: SILENT_START_ERROR };
+  }
+  return { exitCause: 'infra_failure', error: STALE_EXPIRED_ERROR };
+}
+
+/**
+ * A session that streamed nothing: at most SILENT_START_MAX_TURNS turns, $0,
+ * and no tokens in either direction. Shared by the reaper (classifyStaleExit)
+ * and the PATCH route's contract guards, which must not book a session that
+ * never produced a turn as the agent breaking its output contract.
+ */
+export function isSilentStartShape(worker: {
+  turns?: number | null;
+  costUsd?: string | number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+}): boolean {
   const turns = worker.turns ?? 0;
   const rawCost = worker.costUsd;
   const cost = typeof rawCost === 'string' ? parseFloat(rawCost) : (rawCost ?? 0);
@@ -184,10 +211,21 @@ export function classifyStaleExit(worker: {
   // by the runner's periodic progress reports regardless of terminal state, so
   // they are the signal that actually discriminates "did something" from "dead".
   const tokensUsed = (worker.inputTokens ?? 0) > 0 || (worker.outputTokens ?? 0) > 0;
-  if (turns <= SILENT_START_MAX_TURNS && spent <= 0 && !tokensUsed) {
-    return { exitCause: 'silent_start', error: SILENT_START_ERROR };
-  }
-  return { exitCause: 'infra_failure', error: STALE_EXPIRED_ERROR };
+  return turns <= SILENT_START_MAX_TURNS && spent <= 0 && !tokensUsed;
+}
+
+/**
+ * Exits the taxonomy itself calls bookkeeping rather than failure: a parked
+ * question that timed out, a claim no runner ever started, a deferral /
+ * unmet loop condition. They stay `failed` rows (and stay searchable by
+ * signature), but they are not the workspace failing and must not move its
+ * failure rate. infra_failure and silent_start are deliberately NOT here —
+ * they are real failures, just not chargeable ones.
+ */
+export function isBookkeepingExit(exitCause: WorkerExitCause | null | undefined): boolean {
+  return exitCause === 'needs_input'
+    || exitCause === 'never_started'
+    || exitCause === 'condition_unmet';
 }
 
 export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefined): boolean {

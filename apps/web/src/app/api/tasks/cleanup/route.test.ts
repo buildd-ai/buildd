@@ -55,6 +55,37 @@ mock.module('@/lib/task-dependencies', () => ({
 }));
 
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
+const mockAccountsFindMany = mock(() => [] as any[]);
+const mockWorkspacesFindMany = mock(() => [] as any[]);
+
+// The caller's reach: every team the session user belongs to, or the API
+// key's own team. The route turns this into account/workspace id sets.
+const mockResolveAccountTeamIds = mock((_user: any, _apiAccount: any) => Promise.resolve(['team-a']));
+mock.module('@/lib/team-access', () => ({
+  resolveAccountTeamIds: mockResolveAccountTeamIds,
+}));
+
+// Tables are proxies so every column reference is a readable string
+// (e.g. 'workers.accountId') — that keeps the WHERE scoping observable
+// through the stubbed predicate builders below.
+function table(name: string): any {
+  return new Proxy({ __table: name }, {
+    get: (target: any, prop) => (prop in target ? target[prop] : `${name}.${String(prop)}`),
+  });
+}
+const workersTable = table('workers');
+const tasksTable = table('tasks');
+const heartbeatsTable = table('workerHeartbeats');
+const accountsTable = table('accounts');
+const workspacesTable = table('workspaces');
+
+/** Every inArray(field, values) predicate nested anywhere in a where clause. */
+function inArrays(where: any): Array<{ field: string; values: any[] }> {
+  if (!where || typeof where !== 'object') return [];
+  if (where.type === 'inArray') return [{ field: where.field, values: where.values }];
+  if (where.type === 'and') return where.args.flatMap(inArrays);
+  return [];
+}
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -62,9 +93,11 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkersFindMany },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       workerHeartbeats: { findMany: mockHeartbeatsFindMany },
+      accounts: { findMany: mockAccountsFindMany },
+      workspaces: { findMany: mockWorkspacesFindMany },
     },
-    update: (table: any) => {
-      if (table === 'workers') return mockWorkersUpdate();
+    update: (t: any) => {
+      if (t === workersTable) return mockWorkersUpdate();
       return mockTasksUpdate();
     },
     delete: () => mockHeartbeatsDelete(),
@@ -79,9 +112,11 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  workers: 'workers',
-  tasks: 'tasks',
-  workerHeartbeats: { id: 'id', accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
+  workers: workersTable,
+  tasks: tasksTable,
+  workerHeartbeats: heartbeatsTable,
+  accounts: accountsTable,
+  workspaces: workspacesTable,
 }));
 
 import { POST } from './route';
@@ -120,6 +155,14 @@ describe('POST /api/tasks/cleanup', () => {
 
     // Default: no stale heartbeats
     mockHeartbeatsFindMany.mockResolvedValue([]);
+
+    // Default caller scope: team-a, which owns account-1 and ws-1.
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-a']);
+    mockAccountsFindMany.mockReset();
+    mockAccountsFindMany.mockResolvedValue([{ id: 'account-1' }]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
 
     // Default mock chains
     mockWorkersUpdate.mockReturnValue({
@@ -481,7 +524,11 @@ describe('POST /api/tasks/cleanup', () => {
       .mockResolvedValueOnce([{ id: 'w1' }])
       .mockResolvedValueOnce([{ id: 'w2' }]);
 
-    mockTasksFindMany.mockResolvedValue([]); // No orphaned tasks
+    mockTasksFindMany
+      .mockResolvedValueOnce([]) // No orphaned assigned tasks
+      // Both orphan tasks are in the caller's workspaces
+      .mockResolvedValueOnce([{ id: 'task-1' }, { id: 'task-2' }]);
+    mockTasksUpdate.mockClear();
 
     // Stale heartbeats found
     mockHeartbeatsFindMany.mockResolvedValue([
@@ -494,5 +541,158 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cleaned.heartbeatOrphans).toBe(2);
+    // Both in-scope tasks were reset to pending.
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('POST /api/tasks/cleanup — caller scope', () => {
+  // Reuses the module-level mocks; reset the ones these tests read.
+  beforeEach(() => {
+    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockWorkersFindMany, mockTasksFindMany,
+      mockHeartbeatsFindMany, mockAccountsFindMany, mockWorkspacesFindMany, mockResolveAccountTeamIds,
+      mockCleanupStaleWorkers, mockCleanupStuckWaitingInput, mockHeartbeatsDelete] as any[]) m.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksFindFirst.mockResolvedValue({ context: {}, workspaceId: 'ws-a' });
+    mockHeartbeatsFindMany.mockResolvedValue([]);
+    mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockHeartbeatsDelete.mockReturnValue({ where: mock(() => ({ returning: mock(() => []) })) });
+  });
+
+  function adminKeyForTeamA() {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-a', teamId: 'team-a', level: 'admin' });
+    mockResolveAccountTeamIds.mockResolvedValue(['team-a']);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-a' }]);
+    // Team A has a second account; an API key still only reaches its own.
+    mockAccountsFindMany.mockResolvedValue([{ id: 'account-a' }, { id: 'account-a2' }]);
+  }
+
+  it("does not touch other tenants' stalled workers or assigned tasks", async () => {
+    adminKeyForTeamA();
+
+    await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    // Phase 1: the stalled-worker query is bounded to the key's own account.
+    const stalledWhere = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(stalledWhere)).toContainEqual({ field: 'workers.accountId', values: ['account-a'] });
+
+    // Phase 2: the assigned-task query is bounded to the caller's workspaces.
+    const assignedWhere = (mockTasksFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(assignedWhere)).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
+    expect(mockResolveAccountTeamIds).toHaveBeenCalled();
+  });
+
+  it('runs the per-account sweeps only for accounts in scope', async () => {
+    adminKeyForTeamA();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])                           // stalled running
+      .mockResolvedValueOnce([{ accountId: 'account-a' }]) // active accounts (scoped by the query)
+      .mockResolvedValue([]);
+
+    await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    const activeWhere = (mockWorkersFindMany.mock.calls[1] as any[])[0].where;
+    expect(inArrays(activeWhere)).toContainEqual({ field: 'workers.accountId', values: ['account-a'] });
+    expect(mockCleanupStaleWorkers.mock.calls.map(c => (c as any[])[0])).toEqual(['account-a']);
+  });
+
+  it('scopes session callers to their own teams', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-a' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-a']);
+    mockAccountsFindMany.mockResolvedValue([{ id: 'account-a' }, { id: 'account-a2' }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-a' }]);
+
+    await POST(createMockRequest());
+
+    expect(mockResolveAccountTeamIds).toHaveBeenCalledWith({ id: 'user-a' }, null);
+    const accountsWhere = (mockAccountsFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(accountsWhere)).toContainEqual({ field: 'accounts.teamId', values: ['team-a'] });
+    const workspacesWhere = (mockWorkspacesFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(workspacesWhere)).toContainEqual({ field: 'workspaces.teamId', values: ['team-a'] });
+
+    const stalledWhere = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(stalledWhere)).toContainEqual({ field: 'workers.accountId', values: ['account-a', 'account-a2'] });
+    const assignedWhere = (mockTasksFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(assignedWhere)).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
+  });
+
+  it('only reads and deletes heartbeats for the caller account', async () => {
+    adminKeyForTeamA();
+    const deleteWhere = mock((_w: any) => ({ returning: mock(() => []) }));
+    mockHeartbeatsDelete.mockReturnValue({ where: deleteWhere });
+
+    await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    const hbWhere = (mockHeartbeatsFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(hbWhere)).toContainEqual({ field: 'workerHeartbeats.accountId', values: ['account-a'] });
+    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    expect(inArrays(deleteWhere.mock.calls[0][0])).toContainEqual({
+      field: 'workerHeartbeats.accountId', values: ['account-a'],
+    });
+  });
+
+  it("does not reset a stalled worker's task that lives outside the caller's workspaces", async () => {
+    adminKeyForTeamA();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-b' }]) // stalled running (own account)
+      .mockResolvedValue([]);
+    // The DB applies the workspace filter; a task in another team's workspace is not returned.
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksUpdate.mockClear();
+
+    await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    const stillAssignedWhere = (mockTasksFindMany.mock.calls[0] as any[])[0].where;
+    expect(inArrays(stillAssignedWhere)).toContainEqual({ field: 'tasks.id', values: ['task-b'] });
+    expect(inArrays(stillAssignedWhere)).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not change a heartbeat orphan's task that lives outside the caller's workspaces", async () => {
+    adminKeyForTeamA();
+    mockHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'account-a' }]);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])                               // stalled running
+      .mockResolvedValueOnce([])                               // active accounts
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-b' }]) // heartbeat orphans (own account)
+      .mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksUpdate.mockClear();
+
+    const res = await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
+
+    // The orphaned worker itself is still the caller's to fail...
+    expect((await res.json()).cleaned.heartbeatOrphans).toBe(1);
+    // ...but its task is only touched if it is in one of the caller's workspaces.
+    const lookup = mockTasksFindMany.mock.calls
+      .map(c => inArrays((c as any[])[0].where))
+      .find(preds => preds.some(p => p.field === 'tasks.id'));
+    expect(lookup).toBeDefined();
+    expect(lookup).toContainEqual({ field: 'tasks.id', values: ['task-b'] });
+    expect(lookup).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('touches nothing when the caller has no accounts or workspaces in scope', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-lonely' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue([]);
+    mockAccountsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+
+    const res = await POST(createMockRequest());
+
+    expect(res.status).toBe(200);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+    expect(mockHeartbeatsFindMany).not.toHaveBeenCalled();
+    expect(mockHeartbeatsDelete).not.toHaveBeenCalled();
+    expect(mockCleanupStaleWorkers).not.toHaveBeenCalled();
   });
 });

@@ -491,6 +491,89 @@ describe('fireMissionReleaseIfComplete', () => {
       expect(String(noteInserts[0]?.body)).toContain('github 502');
     });
 
+    // Only a release that actually merged may consume the mission's release.
+    // Any outcome that stopped BEFORE the merge must hand the claim back, or
+    // the mission reads as released while nothing reached production and no
+    // later completion ever retries.
+    it('a pre-merge failure (no mergedAt) is not recorded as released', async () => {
+      mockExecuteRelease.mockResolvedValue({
+        status: 'failed',
+        message: 'Release: FAILED — could not merge to main: PR merge failed',
+        error: 'PR merge failed',
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(missionWrites.some(w => w.releasedAt instanceof Date)).toBe(false);
+      expect(missionWrites.some(w => w.releaseAttemptedAt === null)).toBe(true);
+      expect(String(noteInserts[0]?.body)).toContain('execute_failed');
+      expect(String(noteInserts[0]?.body)).toContain('could not merge');
+    });
+
+    it('a not_configured outcome is not recorded as released', async () => {
+      mockExecuteRelease.mockResolvedValue({
+        status: 'not_configured',
+        message: 'Release: needs prodBranch',
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(missionWrites.some(w => w.releasedAt instanceof Date)).toBe(false);
+      expect(missionWrites.some(w => w.releaseAttemptedAt === null)).toBe(true);
+      expect(String(noteInserts[0]?.body)).toContain('not_configured');
+    });
+
+    it('a pending_ci outcome is not recorded as released', async () => {
+      // The mission path does not persist the release PR for the check_suite
+      // webhook to finish, so nothing else will ever merge it: the claim must
+      // come back for a retry.
+      mockExecuteRelease.mockResolvedValue({
+        status: 'pending_ci',
+        message: 'Release: CI pending on release PR #7',
+        releasePrNumber: 7,
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(missionWrites.some(w => w.releasedAt instanceof Date)).toBe(false);
+      expect(missionWrites.some(w => w.releaseAttemptedAt === null)).toBe(true);
+      expect(String(noteInserts[0]?.body)).toContain('pending_ci');
+    });
+
+    it('a pending_ci note says "waiting", not "failed", and names the manual path', async () => {
+      // Waiting on CI is not a failure, and nothing schedules a retry once CI
+      // settles — so the note must not cry failure, and must not promise an
+      // automatic retry that only a later completion in this mission provides.
+      mockExecuteRelease.mockResolvedValue({
+        status: 'pending_ci',
+        message: 'Release: CI pending on release PR #7',
+        releasePrNumber: 7,
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(noteInserts[0]?.title).toBe('Mission release waiting on CI');
+      expect(String(noteInserts[0]?.body)).toContain('trigger_release');
+      expect(String(noteInserts[0]?.body)).not.toContain('will be retried on the next task completion');
+    });
+
+    it('a post-merge failure (mergedAt set) IS recorded as released — prod already moved', async () => {
+      // The merge went out and only the deploy check failed. Retrying would
+      // re-merge nothing, and abandoning would let a later completion fire a
+      // second release for code that already shipped.
+      mockExecuteRelease.mockResolvedValue({
+        status: 'failed',
+        message: 'Release: FAILED — Vercel deploy ERROR',
+        mergedAt: '2026-01-01T00:00:00.000Z',
+        error: 'Deploy state: ERROR',
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(missionWrites.filter(w => w.releasedAt instanceof Date)).toHaveLength(1);
+      expect(missionWrites.some(w => w.releaseAttemptedAt === null)).toBe(false);
+    });
+
     it('records a decision note rather than terminating in a console.log', async () => {
       // Invariant 1 of docs/design/mission-delivery-arc.md: no automated release
       // decision may end in a log line alone.

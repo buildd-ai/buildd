@@ -1,11 +1,17 @@
 ---
-status: proposed
-# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
-# Unverified against the doc's own Acceptance Criteria / Implementation Breakdown
-# beyond what each assertion checks; core-model and SVG-renderer items have
-# shipped further than the Implementation Breakdown's own "status: partially
-# preempted" note suggests (FlightStrip.tsx, FlightDetailSheet.tsx, and the
-# backfill script all exist) — flagged for manual review, not resolved here.
+status: partially
+# Reconciled 2026-09-23. All four assertions below pass, and each passes for
+# the reason it names: computeMissionFlightStrip, FlightStrip.tsx,
+# FlightDetailSheet.tsx, the flight_strip_cache migration + backfill script,
+# and missions/page.tsx's cursor-based pagination have all genuinely shipped
+# — as has essentially all of Implementation Breakdown items 2, 3a, 3b, 3c.
+# Status stays `partially`, not `implemented`, because one real gap survives
+# outside what these assertions check: Rule L-4's swap of
+# computeMissionFlightStrip's lane source from `deriveWorkLane` to a
+# `deriveWorkKind`-based Rule L-1 adapter hasn't happened, so the pre-spec
+# `computeMissionSkyline`/`SkylineBlock`/`MissionSkylineData` model AC-1 calls
+# for deleting is also still live (missions/[id]/page.tsx's completed-mission
+# stats row still calls it). See "Implementation Status" below.
 assertions:
   - id: "compute-mission-flight-strip"
     type: "symbol"
@@ -28,8 +34,24 @@ assertions:
 
 # Mission Flight Strip: Chart Encoding, Detail Alignment, Performance
 
-**Status:** Proposed
-**Related:** `packages/core/mission-helpers.ts` (`computeMissionSkyline`, `workerBlockState`), `apps/web/src/components/MissionSkylineChart.tsx`, `apps/web/src/lib/task-presentation.ts` (`deriveWorkKind`), `apps/web/src/app/app/(protected)/missions/page.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx`, `apps/web/src/lib/artifact-prominence.ts`, `docs/specs/mission-legibility.md`, mission-card-density spec (key `mission-card-density-spec` — not yet committed to `docs/design/`)
+**Status:** Partially — see "Implementation Status" below.
+**Related:** `packages/core/mission-helpers.ts` (`computeMissionSkyline`, `workerBlockState`, `computeMissionFlightStrip`, `deriveWorkLane`), `apps/web/src/components/FlightStrip.tsx`, `apps/web/src/components/FlightDetailSheet.tsx`, `apps/web/src/lib/task-presentation.ts` (`deriveWorkKind`), `apps/web/src/lib/missions-query.ts`, `apps/web/src/lib/flight-strip-nav.ts`, `apps/web/src/app/app/(protected)/missions/page.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx`, `apps/web/src/lib/artifact-prominence.ts`, `docs/specs/mission-legibility.md`, mission-card-density spec (key `mission-card-density-spec` — not yet committed to `docs/design/`)
+
+---
+
+## Implementation Status (reconciled 2026-09-23)
+
+If you were dispatched here to reconcile this doc again: check `git log -- docs/design/mission-flight-strip.md` first — the table below may already be current. It was as of task `b71ed5d3`'s re-verification (2026-09-23, zero drift from the reconciliation above): every symbol, line reference, and test cited in this doc still matches the code exactly. This doc's `compute-mission-flight-strip` / `flight-strip-reachable-from-detail-page` / `flight-strip-cache-migration` ledger rows will keep re-opening after every checker run regardless — they test narrow code facts (a symbol export, a route, a migration) that pass independently of Rule L-4, so they can never carry this doc's status to a terminal value on their own, and a `code_ahead` row whose fix doesn't reach terminal status releases its claim for redispatch. That's expected per spec-conformance.md's claim-release rule, not a doc bug. Only Rule L-4 actually landing (Implementation Breakdown item 1) moves the status to `implemented` and lets those rows close for good.
+
+| Item | Status |
+|---|---|
+| 1 — Core model | **Partially.** `computeMissionFlightStrip` ships with Rules X-1–X-5, C-1–C-3, S-1–S-3, and A-1/A-2 all implemented and covered by `packages/core/__tests__/mission-flight-strip.test.ts` — including the per-`exitCause` classification test (AC-4/AC-5) and the literal 14-vs-15-minute elision test (AC-8). Rule P-1's `flight_strip_cache` migration (`0172_eminent_riptide.sql`) and Rule P-5's backfill script (`packages/core/scripts/backfill-flight-strip-cache.ts`) have also shipped. **Not done:** Rule L-4 items (a)–(c) below — `computeMissionFlightStrip` still sources every bar's lane from `deriveWorkLane` (`mission-helpers.ts:1517,1526,1538`), not a Rule L-1 table over `deriveWorkKind`, and `deriveWorkLane` has not been deleted. AC-1 is therefore also unmet: `computeMissionSkyline`, `SkylineBlock`, and `MissionSkylineData` are still exported from `mission-helpers.ts`, and `missions/[id]/page.tsx:1378` still calls `computeMissionSkyline` for the completed-mission stats row's agent-time/wall-clock numbers — a live consumer, not a stray import. |
+| 2 — SVG component | **Done.** `apps/web/src/components/FlightStrip.tsx` renders `MissionFlightStripData` (lanes, concurrency fill, failure fill, breaks, phase dividers, now-line, queued/dashed bars, fold summary), pure rendering with no data fetching. |
+| 3a — List card wiring | **Done.** `missions/page.tsx` and `apps/web/src/lib/missions-query.ts` add the `roleSlug`/`exitCause` columns, the `mission_notes authorType='user'` steering aggregate, Rule P-2's cache-read branch for completed missions, and Rule P-4's `completedCursor` keyset pagination. |
+| 3b — Detail page navigator | **Done.** `missions/[id]/page.tsx` pins `MissionFlightStripNav` under the title, groups the task list via `groupTasksByPhase` (`@/lib/flight-strip-nav`), selects the Records row via `selectMissionRecords`, summarizes the orchestrator row via `countOrchestratorPlans` + `schedule.totalChecks`, and relocates `MissionSettings` behind the overflow menu. |
+| 3c — Flight detail sheet | **Done.** `apps/web/src/components/FlightDetailSheet.tsx` renders the expanded four-lane view over the same `MissionFlightStripData`. |
+
+**One outstanding item:** finish Rule L-4 — add the Rule L-1 kind→lane adapter over `deriveWorkKind`, re-point `computeMissionFlightStrip` at it, delete `deriveWorkLane`, and migrate the detail page's completed-mission stats row off `computeMissionSkyline` onto the flight strip's own `agentTimeMin`/`axisSpanMin` (§6) — only then can `computeMissionSkyline`/`SkylineBlock`/`MissionSkylineData` be deleted to satisfy AC-1. Status stays `partially` until that lands.
 
 ---
 
@@ -50,14 +72,23 @@ result as unlabelled colored rectangles. Three concrete failures:
    frequently indistinguishable at the fixed 15-minute quantum
    (`SKYLINE_SLOT_MS`) — most bars collapse to the same 1-slot minimum width
    regardless of how long the task actually took.
-3. **It silently misreports failure.** `workerBlockState` paints a block green
-   (`merged`) unless `w.status === 'error'` — but the real worker status value
-   for a failed run is `'failed'`, not `'error'`; `'error'` is not a value this
-   codebase writes in ordinary operation. Every genuinely failed worker falls
-   through to the `mergedAt ? merged : prUrl ? awaiting : merged` branch and
-   renders as a win. A regression test at
-   `packages/core/__tests__/mission-helpers.test.ts:930` locks in the
-   `status === 'error'` check, which is why the gap has persisted.
+3. **It silently misreported failure.** `workerBlockState` used to paint a
+   block green (`merged`) unless `w.status === 'error'` — but the real worker
+   status value for a failed run is `'failed'`, not `'error'`; `'error'` is
+   not a value this codebase writes in ordinary operation. That specific
+   string check has since been corrected independently of this design
+   (`workerBlockState` now checks `status === 'failed'` —
+   `packages/core/mission-helpers.ts:1222`, with
+   `packages/core/__tests__/mission-helpers.test.ts:921-933` covering both the
+   fixed case and the `'error'` non-case). The deeper problem this design
+   actually fixes is coarser than a status-string typo: neither the old
+   function nor a naive `status === 'failed'` check can tell a genuine
+   failure (`exitCause: 'code_failure'`) from an interrupted-but-not-wrong
+   exit (`exitCause: 'budget_limited'`, `'condition_unmet'`, ...) — Rule C-2
+   below is what actually distinguishes them, and it ships only in the new
+   model (`computeMissionFlightStrip`), covered by
+   `packages/core/__tests__/mission-flight-strip.test.ts`'s per-`exitCause`
+   classification test.
 
 The design boards for this mission (three `.dc.html` boards copied into
 mission artifacts `design:flight-strip/missions-list`,
@@ -469,9 +500,12 @@ retried after a partial run without side effects.
    regression coverage for the specific case this spec's Rule C-2 must not
    overcorrect into "paint everything red."
 5. A worker with `status = 'failed'`, `exitCause = 'code_failure'` renders
-   `#d2584b` — the direct regression test for the bug in §Problem, replacing
-   the `status === 'error'` assertion at
-   `packages/core/__tests__/mission-helpers.test.ts:930`.
+   `#d2584b` (Rule C-2) — covered by the per-`exitCause` classification test
+   in `packages/core/__tests__/mission-flight-strip.test.ts`. (Not by
+   `packages/core/__tests__/mission-helpers.test.ts:930` as this criterion
+   originally described: that line tests the *old* `computeMissionSkyline`
+   model, whose `status === 'error'` bug was fixed in place, not replaced —
+   see §Problem.)
 6. A mission where no task has `missionPhaseIndex` set renders zero phase
    dividers and zero phase labels (Rule X-3).
 7. A mission with tasks split across two `missionPhaseIndex` values renders
@@ -517,43 +551,50 @@ parallel-safe within a group since the listed groups touch disjoint files.
 
 **1. Core model** *(first, alone — everything else imports its types)* —
 **status: partially preempted, see Rule L-4.** `computeMissionFlightStrip`
-and the `status === 'error'` fix already shipped, but reading `deriveWorkLane`
-instead of this spec's Rule L-1 table, and two more tasks (the SVG renderer,
-the detail-page/flight-detail-sheet wiring) already ship against that output.
-What remains under this item: (a) the Rule L-1 kind→lane table plus an
-adapter over `deriveWorkKind`'s result, colocated with `deriveWorkKind` in
+ships (with Rule C-2's exitCause-based failure classification and its own
+regression tests in `mission-flight-strip.test.ts`, satisfying AC-4/AC-5),
+and the `flightStripCache` migration (Rule P-1) plus its backfill script
+(Rule P-5) have also shipped — see "Implementation Status" above. But
+`computeMissionFlightStrip` still reads `deriveWorkLane` instead of this
+spec's Rule L-1 table, and the three downstream consumers (the SVG renderer,
+the list-card wiring, the detail-page/flight-detail-sheet wiring — items 2,
+3a, 3b, 3c, all shipped) all ship against that `deriveWorkLane`-sourced
+output. What remains under this item: (a) the Rule L-1 kind→lane table plus
+an adapter over `deriveWorkKind`'s result, colocated with `deriveWorkKind` in
 `apps/web/src/lib/task-presentation.ts`; (b) re-point `computeMissionFlightStrip`
 at that adapter instead of `deriveWorkLane`; (c) delete `deriveWorkLane` and
 its dedicated tests once no call site reads it, and re-verify the SVG
 renderer and detail-page/flight-detail-sheet wiring against the new lane
 source — same field shape, different source, so this is a swap-and-reverify
-pass on those two, not a rewrite; (d) the `flightStripCache` migration (Rule
-P-1) and the regression test for Rule C-2/AC-4/AC-5, neither of which has
-shipped yet. The list-card wiring (item 3a) also hasn't shipped and can build
-directly on whichever lane source lands here, with no follow-up needed there.
+pass on those two, not a rewrite. Only once (a)-(c) land can
+`computeMissionSkyline`/`SkylineBlock`/`MissionSkylineData` be deleted (AC-1)
+— the detail page's completed-mission stats row is the one remaining live
+caller and needs to move onto the flight strip's own §6 metrics first.
 
-**2. SVG component** *(second, depends on 1)*
-New `apps/web/src/components/FlightStrip.tsx` replacing
-`MissionSkylineChart.tsx` — pure rendering over `computeFlightStrip`'s output,
-no data fetching, so it can be exercised with fixtures independent of the
-wiring tasks below.
+**2. SVG component** *(second, depends on 1)* — **Shipped.** See
+"Implementation Status" above.
+`apps/web/src/components/FlightStrip.tsx` replaces `MissionSkylineChart.tsx` —
+pure rendering over `computeMissionFlightStrip`'s output, no data fetching, so
+it can be exercised with fixtures independent of the wiring tasks below.
 
-**3a. List card wiring** *(depends on 1, 2 — parallel-safe with 3b/3c)*
-`missions/page.tsx`: query changes (add `roleSlug`, `exitCause`, the
+**3a. List card wiring** *(depends on 1, 2 — parallel-safe with 3b/3c)* —
+**Shipped.** See "Implementation Status" above.
+`missions/page.tsx`: query changes (added `roleSlug`, `exitCause`, the
 `mission_notes` `authorType = 'user'` aggregate — `missionPhaseIndex`/
-`missionPhaseLabel` and `taskClass` are already selected), Rule P-2's
+`missionPhaseLabel` and `taskClass` were already selected), Rule P-2's
 cache-read branch, Rule P-4's pagination, the now-line/queued-bar rendering
 (Rules A-1/A-2), and Rule P-5's backfill script.
 
-**3b. Detail page navigator** *(depends on 1, 2 — parallel-safe with 3a/3c)*
+**3b. Detail page navigator** *(depends on 1, 2 — parallel-safe with 3a/3c)* —
+**Shipped.** See "Implementation Status" above.
 `missions/[id]/page.tsx`: pinned strip as navigator with scroll-and-outline,
 phase-grouped task list, Verified-pill collapse of goal criteria, per-task
 artifact rows, the review-gated Records row, the Orchestrator summary row,
 and the Archive/Delete relocation behind the overflow bottom sheet.
 
-**3c. Flight detail sheet** *(depends on 1, 2 — parallel-safe with 3a/3b)*
-New expanded-view component per `design:flight-strip/flight-detail-sheet`,
-reached from a list-card bar tap: the four-row expanded strip (STEER/THINK/
-BUILD/CHECK), the stat grid (agent time, idle elided, build↔check loop count),
-and the prose summary line. Natural first home for the HUMAN % metric (§6,
-Open Questions).
+**3c. Flight detail sheet** *(depends on 1, 2 — parallel-safe with 3a/3b)* —
+**Shipped.** See "Implementation Status" above.
+`apps/web/src/components/FlightDetailSheet.tsx`, reached from a list-card bar
+tap: the four-row expanded strip (STEER/THINK/BUILD/CHECK), the stat grid
+(agent time, idle elided, build↔check loop count), and the prose summary
+line. Natural first home for the HUMAN % metric (§6, Open Questions).

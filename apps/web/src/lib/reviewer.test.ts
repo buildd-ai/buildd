@@ -53,6 +53,7 @@ mock.module('@buildd/core/db', () => ({
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
+      workers: { findMany: mock(() => Promise.resolve([])) },
       missions: { findFirst: mock(() => Promise.resolve(missionFindFirstResult)) },
       // Two different callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
       // passes a `with: { workers }` relation; the pre-dispatch duplicate probe in

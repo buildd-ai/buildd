@@ -98,18 +98,29 @@ export async function attachSkillBundles(
 }
 
 /**
- * Resolve the task's role (`task.roleSlug`) and attach its packaged config.
+ * Resolve the task's role (`task.roleSlug`) and attach it to the claim.
  *
  * Precedence is workspace override > team default (§C.2), with a legacy
- * account-level fallback. Requires R2 to hand out a config URL, but the CBM
- * opt-out is checked independently so it still works without storage.
+ * account-level fallback.
+ *
+ * Two things ride the response, and only one of them needs R2:
+ *
+ * - `roleInstructions` — the persona — is attached whenever a role row
+ *   resolves. This is the agent's identity, and a role that was never packaged
+ *   to object storage (every seeded default role, and every role registered
+ *   through `register_skill`) still has one. It used to reach nobody.
+ * - `roleConfig` — the packaged bundle (skills, .mcp.json, env mapping) — needs
+ *   a presigned download URL, so it is attached only when storage is configured
+ *   AND the row carries both a key and a hash.
+ *
+ * The CBM opt-out is likewise a property of the row, not the bundle.
  */
 export async function attachRoleConfig(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   accountId: string,
 ): Promise<void> {
-  if (!isStorageConfigured()) return;
+  const storageConfigured = isStorageConfigured();
 
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);
@@ -153,7 +164,18 @@ export async function attachRoleConfig(
       });
     }
 
-    if (role?.configStorageKey && role?.configHash) {
+    // Persona first — independent of packaging. A blank body attaches nothing
+    // rather than an empty "## Role: X" section.
+    const personaContent = role?.content?.trim();
+    if (role && personaContent) {
+      (cw as any).roleInstructions = {
+        slug: role.slug,
+        name: role.name?.trim() || role.slug,
+        content: role.content,
+      };
+    }
+
+    if (storageConfigured && role?.configStorageKey && role?.configHash) {
       const configUrl = await generateDownloadUrl(role.configStorageKey);
       (cw as any).roleConfig = {
         slug: role.slug,
