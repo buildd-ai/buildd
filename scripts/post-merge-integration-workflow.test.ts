@@ -106,6 +106,16 @@ describe('post-merge integration on dev', () => {
     expect(name.toLowerCase().startsWith(POST_MERGE_INTEGRATION_CHECK_PREFIX)).toBe(true);
   });
 
+  // Every job in this workflow posts a check-run on the dev SHA that is also
+  // the release PR head. One without the prefix (a bare "changes") would count
+  // toward the release PR's ciState: pending while it runs, failing if it errs.
+  test('every job carries the advisory prefix, not only the integration job', () => {
+    for (const [id, job] of Object.entries<any>(wf.jobs)) {
+      expect({ id, name: String(job.name ?? id).toLowerCase().startsWith(POST_MERGE_INTEGRATION_CHECK_PREFIX) })
+        .toEqual({ id, name: true });
+    }
+  });
+
   test('diffs against main — what the release would ship — not the previous push', () => {
     const detect = wf.jobs.changes.steps.find((s: any) => s.id === 'filter');
     expect(detect.run).toContain('origin/main...HEAD');

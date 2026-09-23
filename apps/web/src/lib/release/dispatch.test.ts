@@ -72,8 +72,35 @@ describe('summarizePostMergeIntegration', () => {
     expect(summarizePostMergeIntegration([pm()]).state).toBe('passing');
     expect(summarizePostMergeIntegration([pm({ conclusion: 'skipped' })]).state).toBe('skipped');
   });
-  it('treats a cancelled run as failing so it is not read as coverage', () => {
-    expect(summarizePostMergeIntegration([pm({ conclusion: 'cancelled' })]).state).toBe('failing');
+  // Cancelled is how a run superseded on the shared concurrency groups ends:
+  // nothing ran, so it is neither coverage nor a failure. It gets its own state
+  // so release_status never tells a human "integration failed" for it.
+  it('reports a cancelled run as cancelled, not failing and not coverage', () => {
+    expect(summarizePostMergeIntegration([pm({ conclusion: 'cancelled' })]).state).toBe('cancelled');
+  });
+  it('a real failure outranks a cancelled sibling', () => {
+    expect(summarizePostMergeIntegration([
+      pm({ conclusion: 'cancelled' }),
+      pm({ name: 'post-merge integration / changes', conclusion: 'failure' }),
+    ]).state).toBe('failing');
+  });
+
+  // The workflow's `changes` gate job also carries the prefix (so it never
+  // gates the release PR). Its success is not test coverage.
+  const gate = (over: Partial<CheckRun> = {}) => pm({ name: 'post-merge integration / changes', ...over });
+  it('is skipped, not passing, when only the gate job passed and the tests were skipped', () => {
+    expect(summarizePostMergeIntegration([gate(), pm({ name: 'post-merge integration', conclusion: 'skipped' })]).state)
+      .toBe('skipped');
+    expect(summarizePostMergeIntegration([gate()]).state).toBe('skipped');
+  });
+  it('is pending while the gate job is still running', () => {
+    expect(summarizePostMergeIntegration([gate({ status: 'in_progress', conclusion: null })]).state).toBe('pending');
+  });
+  it('is failing when the gate job itself failed', () => {
+    expect(summarizePostMergeIntegration([gate({ conclusion: 'failure' })]).state).toBe('failing');
+  });
+  it('is passing when the gate passed and the tests passed', () => {
+    expect(summarizePostMergeIntegration([gate(), pm()]).state).toBe('passing');
   });
   it('names the checks it summarised', () => {
     expect(summarizePostMergeIntegration([pm({ conclusion: 'failure' })]).checks).toEqual([

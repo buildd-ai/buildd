@@ -36,6 +36,9 @@ permissions:
 
 jobs:
   changes:
+    # Also posts a check-run on the release PR head, so it needs the advisory
+    # prefix too; a bare "changes" would count toward the release PR's ciState.
+    name: post-merge integration / changes
     runs-on: ubuntu-latest
     outputs:
       api: ${{ steps.filter.outputs.api }}

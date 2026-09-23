@@ -123,8 +123,18 @@ export function isPostMergeIntegrationCheck(name: string): boolean {
 export interface PostMergeIntegrationSummary {
   // not_run: no post-merge run exists for this SHA (not yet triggered, or the
   // workflow is absent). skipped: it ran and found no API change to test.
-  state: 'passing' | 'failing' | 'pending' | 'skipped' | 'not_run';
+  // cancelled: superseded on a shared concurrency group before it tested
+  // anything — neither coverage nor a failure; re-dispatch the workflow on dev
+  // (workflow_dispatch) to get a verdict for this head.
+  state: 'passing' | 'failing' | 'pending' | 'skipped' | 'cancelled' | 'not_run';
   checks: string[];
+}
+
+// The workflow's `changes` job only decides whether to test. It carries the
+// advisory prefix so it never gates the release PR, but its success is not
+// coverage, so it counts toward pending/failing and never toward passing.
+function isPostMergeGateJob(name: string): boolean {
+  return name.toLowerCase().endsWith(' / changes');
 }
 
 export function summarizePostMergeIntegration(runs: CheckRun[]): PostMergeIntegrationSummary {
@@ -132,12 +142,12 @@ export function summarizePostMergeIntegration(runs: CheckRun[]): PostMergeIntegr
   const checks = mine.map((r) => r.name);
   if (mine.length === 0) return { state: 'not_run', checks };
   if (mine.some((r) => r.status !== 'completed')) return { state: 'pending', checks };
-  // Anything other than success/neutral/skipped — including cancelled, which is
-  // how a superseded run on the shared test machine ends — is not coverage.
-  if (mine.some((r) => !r.conclusion || !['success', 'neutral', 'skipped'].includes(r.conclusion))) {
-    return { state: 'failing', checks };
-  }
-  if (mine.every((r) => r.conclusion === 'skipped')) return { state: 'skipped', checks };
+  const ok = (c: string | null) => c === 'success' || c === 'neutral' || c === 'skipped';
+  // A real failure outranks a cancelled sibling; cancelled alone means nothing ran.
+  if (mine.some((r) => !ok(r.conclusion) && r.conclusion !== 'cancelled')) return { state: 'failing', checks };
+  if (mine.some((r) => r.conclusion === 'cancelled')) return { state: 'cancelled', checks };
+  const tests = mine.filter((r) => !isPostMergeGateJob(r.name));
+  if (tests.every((r) => r.conclusion === 'skipped')) return { state: 'skipped', checks };
   return { state: 'passing', checks };
 }
 
