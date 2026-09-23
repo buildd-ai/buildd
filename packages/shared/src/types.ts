@@ -1118,7 +1118,11 @@ export interface ClaimDiagnostics {
   activeWorkers?: number;
   maxConcurrent?: number;
   availableSlots?: number;
-  /** Populated when reason=path_overlap_blocked: the PR that conflicts with this task's pathManifest */
+  /**
+   * Set when any candidate in this poll was deferred on layer-1 path overlap
+   * (its pathManifest overlaps an open PR): the first such PR. Appears on
+   * all_candidates_deferred and race_lost responses.
+   */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
   /**
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why

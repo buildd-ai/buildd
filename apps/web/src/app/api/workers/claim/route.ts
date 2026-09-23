@@ -890,7 +890,8 @@ export async function POST(req: NextRequest) {
   // lock contention occurred and `race_lost` would be a misnomer.
   let lockAttempts = 0;
   // First PR that deferred a candidate on path overlap — surfaced as
-  // `diagnostics.blockedByPr` so an idle runner can say which PR it waits on.
+  // `diagnostics.blockedByPr` (no runner reads it yet; it is there for callers
+  // that want to name the PR an idle runner is waiting on).
   let firstBlockingPr: { prNumber: number | null; prUrl: string | null } | null = null;
 
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
@@ -974,6 +975,10 @@ export async function POST(req: NextRequest) {
     // from claiming (it was abandoned, not merged; treating it as open would
     // block dependent tasks forever if the PR branch is never re-opened).
     // Also exclude holders parked on a question past the TTL (path-claim-ttl.ts).
+    // Per worker on purpose, unlike layer 2 / check_path_claim (per task via
+    // expiredParkedTaskIds): this layer is keyed on the PR, and the PR belongs
+    // to the one worker that opened it. A fresh sibling worker on the same task
+    // with no PR still blocks through its path_claims at layer 2.
     const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed' && !isExpiredParkedHolder(w));
     if (activeOpenPrWorkers.length > 0) {
       const prTaskIds = activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
