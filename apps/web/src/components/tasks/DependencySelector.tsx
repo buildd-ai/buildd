@@ -91,8 +91,9 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
                   type="button"
                   onClick={() => onChange(selectedIds.filter(id => id !== t.id))}
                   className="hover:text-status-error transition-colors"
+                  aria-label={`Remove dependency ${t.title}`}
                 >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg aria-hidden="true" className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
@@ -110,8 +111,9 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
                   type="button"
                   onClick={() => onChange(selectedIds.filter(sid => sid !== id))}
                   className="hover:text-status-error transition-colors"
+                  aria-label={`Remove dependency ${id.slice(0, 8)}`}
                 >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg aria-hidden="true" className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>

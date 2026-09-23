@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useContext, createContext, useEffect, useId, type ReactNode, type JSX } from 'react';
+import { useConfirm } from './useConfirm';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -303,7 +304,8 @@ export interface CancelTaskDeps {
   /** Status from the rendered snapshot; may be stale by the time of the click. */
   taskStatus?: string | null;
   patch: (taskId: string, status: string) => Promise<PatchTaskStatusResult>;
-  confirm: (message: string) => boolean;
+  /** Asks the user to confirm an irreversible cancel. Resolves true to proceed. */
+  confirm: (message: string) => Promise<boolean>;
   setDismissed: (dismissed: boolean) => void;
   notify: (message: string) => void;
   registerUndo: (message: string, undo: () => unknown) => void;
@@ -323,7 +325,7 @@ export async function runCancelTask(
 ): Promise<'declined' | 'failed' | 'cancelled' | 'cancelled-undoable'> {
   const { taskId, taskTitle, patch, setDismissed, notify, registerUndo } = deps;
   const undoStatus = cancelUndoStatus(deps.taskStatus);
-  if (!undoStatus && !deps.confirm(`Cancel "${taskTitle}"? This stops its worker and cannot be undone.`)) {
+  if (!undoStatus && !(await deps.confirm(`Cancel "${taskTitle}"? This stops its worker and cannot be undone.`))) {
     return 'declined';
   }
   setDismissed(true);
@@ -347,6 +349,25 @@ export async function runCancelTask(
     }
   });
   return 'cancelled-undoable';
+}
+
+/**
+ * Runs at most one async job at a time: a call made while a previous job is
+ * still pending is dropped and resolves `undefined`. A cancel now waits on a
+ * confirm dialog, and the row stays swipeable behind it, so without this a
+ * second swipe or menu tap could start a second cancel flow.
+ */
+export function createSingleFlight() {
+  let busy = false;
+  return async function run<T>(job: () => Promise<T>): Promise<T | undefined> {
+    if (busy) return undefined;
+    busy = true;
+    try {
+      return await job();
+    } finally {
+      busy = false;
+    }
+  };
 }
 
 // ─── Undo context ─────────────────────────────────────────────────────────────
@@ -465,6 +486,8 @@ export function SwipeableRow({
   onMenuAction,
 }: SwipeableRowProps) {
   const { registerUndo, notify } = useContext(SwipeContext);
+  const { confirm: askConfirm, confirmDialog } = useConfirm();
+  const [cancelOnce] = useState(createSingleFlight);
   const [dismissed, setDismissed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [translateX, setTranslateX] = useState(0);
@@ -566,16 +589,25 @@ export function SwipeableRow({
         }
         case 'cancel-task': {
           if (taskId) {
-            void runCancelTask({
-              taskId,
-              taskTitle,
-              taskStatus,
-              patch: patchTaskStatus,
-              confirm: (message) => typeof window === 'undefined' || window.confirm(message),
-              setDismissed,
-              notify,
-              registerUndo,
-            });
+            void cancelOnce(() =>
+              runCancelTask({
+                taskId,
+                taskTitle,
+                taskStatus,
+                patch: patchTaskStatus,
+                confirm: (message) =>
+                  askConfirm({
+                    title: 'Cancel task?',
+                    message,
+                    confirmLabel: 'Cancel task',
+                    cancelLabel: 'Keep it',
+                    variant: 'danger',
+                  }),
+                setDismissed,
+                notify,
+                registerUndo,
+              }),
+            );
           } else {
             onMenuAction?.('cancel-task');
           }
@@ -586,7 +618,7 @@ export function SwipeableRow({
           springBack();
       }
     },
-    [springBack, registerUndo, notify, taskId, taskStatus, taskTitle, subjectKey, onMenuAction],
+    [springBack, registerUndo, notify, askConfirm, cancelOnce, taskId, taskStatus, taskTitle, subjectKey, onMenuAction],
   );
 
   // ── Pointer event handlers ───────────────────────────────────────────────
@@ -826,6 +858,9 @@ export function SwipeableRow({
           </div>
         </div>
       )}
+
+      {/* Confirms an irreversible "Cancel task" (see runCancelTask). */}
+      {confirmDialog}
     </div>
   );
 }

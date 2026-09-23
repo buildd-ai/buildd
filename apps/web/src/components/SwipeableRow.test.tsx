@@ -10,6 +10,7 @@ import {
   cancelUndoStatus,
   patchTaskStatus,
   runCancelTask,
+  createSingleFlight,
   taskSwipeCardType,
   SwipeableRow,
   MENU_BTN_WIDTH,
@@ -521,7 +522,11 @@ describe('taskSwipeCardType', () => {
 
 describe('runCancelTask', () => {
   type Patch = Awaited<ReturnType<typeof patchTaskStatus>>;
-  function harness(opts: { taskStatus?: string | null; confirm?: boolean; responses?: Patch[] }) {
+  function harness(opts: {
+    taskStatus?: string | null;
+    confirm?: boolean | Promise<boolean>;
+    responses?: Patch[];
+  }) {
     const log: string[] = [];
     const patches: Array<{ taskId: string; status: string }> = [];
     const responses: Patch[] = [...(opts.responses ?? [{ ok: true, task: { claimedBy: null } }])];
@@ -534,7 +539,7 @@ describe('runCancelTask', () => {
         patches.push({ taskId, status });
         return responses.shift() ?? { ok: true, task: null };
       },
-      confirm: (msg: string) => { log.push(`confirm:${msg}`); return opts.confirm ?? true; },
+      confirm: async (msg: string) => { log.push(`confirm:${msg}`); return opts.confirm ?? true; },
       setDismissed: (v: boolean) => { log.push(`dismissed:${v}`); },
       notify: (msg: string) => { log.push(`notify:${msg}`); },
       registerUndo: (msg: string, fn: () => unknown) => { log.push(`undo:${msg}`); undo = fn; },
@@ -547,6 +552,20 @@ describe('runCancelTask', () => {
     expect(await runCancelTask(h.deps)).toBe('declined');
     expect(h.patches).toEqual([]);
     expect(h.log.some(l => l.startsWith('dismissed'))).toBe(false);
+  });
+
+  it('does nothing until the confirm dialog is answered', async () => {
+    let answer!: (ok: boolean) => void;
+    const h = harness({ taskStatus: 'in_progress', confirm: new Promise<boolean>(r => { answer = r; }) });
+    const outcome = runCancelTask(h.deps);
+    await Promise.resolve();
+    await Promise.resolve();
+    // Dialog is open: the row is still shown and nothing was PATCHed.
+    expect(h.log).toEqual(['confirm:Cancel "Do thing"? This stops its worker and cannot be undone.']);
+    expect(h.patches).toEqual([]);
+    answer(true);
+    expect(await outcome).toBe('cancelled');
+    expect(h.patches).toEqual([{ taskId: 't1', status: 'cancelled' }]);
   });
 
   it('does not ask for confirmation on a queued (undoable) cancel', async () => {
@@ -603,5 +622,36 @@ describe('runCancelTask', () => {
   it('offers no Undo when the cancel response body is unreadable', async () => {
     const h = harness({ taskStatus: 'pending', responses: [{ ok: true, task: null }] });
     expect(await runCancelTask(h.deps)).toBe('cancelled');
+  });
+
+  it('a second cancel while the first awaits its confirm does not PATCH twice', async () => {
+    let answer!: (ok: boolean) => void;
+    const h = harness({ taskStatus: 'in_progress', confirm: new Promise<boolean>(r => { answer = r; }) });
+    const cancelOnce = createSingleFlight();
+    const first = cancelOnce(() => runCancelTask(h.deps));
+    const second = cancelOnce(() => runCancelTask(h.deps));
+    expect(await second).toBeUndefined();
+    answer(true);
+    expect(await first).toBe('cancelled');
+    expect(h.patches).toEqual([{ taskId: 't1', status: 'cancelled' }]);
+    expect(h.log.filter(l => l.startsWith('confirm:'))).toHaveLength(1);
+  });
+});
+
+describe('createSingleFlight', () => {
+  it('drops a call made while one is pending, then accepts the next', async () => {
+    const run = createSingleFlight();
+    let release!: () => void;
+    const first = run(() => new Promise<string>(r => { release = () => r('a'); }));
+    expect(await run(async () => 'b')).toBeUndefined();
+    release();
+    expect(await first).toBe('a');
+    expect(await run(async () => 'c')).toBe('c');
+  });
+
+  it('frees the slot when a job throws', async () => {
+    const run = createSingleFlight();
+    await expect(run(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(await run(async () => 'ok')).toBe('ok');
   });
 });

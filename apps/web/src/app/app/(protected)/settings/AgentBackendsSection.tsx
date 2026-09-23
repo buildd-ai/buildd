@@ -8,6 +8,7 @@ import {
   ALL_INFERENCE_CAPABILITIES,
   type InferenceCapability,
 } from '@buildd/core/inference-policy';
+import { useConfirm } from '@/components/useConfirm';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -854,6 +855,7 @@ interface ClaudeCredentialStatus {
 // invisible — which is the point. No onCredentialChange: adding or revoking a
 // Claude credential cannot change whether Claude can run work.
 function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null }) {
+  const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1009,7 +1011,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
   }
 
   async function revoke() {
-    if (!confirm('Remove this Claude connected account?')) return;
+    if (!(await confirm({ title: 'Remove Claude account?', message: 'This removes the stored Claude connected account.', confirmLabel: 'Remove', variant: 'danger' }))) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -1127,6 +1129,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -1197,6 +1200,7 @@ interface CodexStatus {
 }
 
 function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void }) {
+  const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1389,7 +1393,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
   }
 
   async function revoke() {
-    if (!confirm('Remove this Codex credential?')) return;
+    if (!(await confirm({ title: 'Remove Codex credential?', message: 'This removes the stored Codex credential.', confirmLabel: 'Remove', variant: 'danger' }))) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -1493,6 +1497,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
+      {confirmDialog}
     </div>
   );
 }
