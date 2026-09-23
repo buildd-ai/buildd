@@ -129,6 +129,60 @@ describe('derivePrReviewStatus — review progress', () => {
       expect(status.terminal).toBe(true);
     }
   });
+
+  // A verdict that landed is a verdict, whatever happened to the task after
+  // it. Reading it as review_failed turns a request-changes into a PASS at
+  // every merge door (blockKindFor does not block review_failed).
+  it('a failed or cancelled reviewer task that holds a blocking verdict reports that verdict', () => {
+    const cases = [
+      ['request-changes', 'changes_requested'],
+      ['escalate', 'escalated'],
+    ] as const;
+    for (const s of ['failed', 'cancelled'] as const) {
+      for (const [verdict, state] of cases) {
+        const status = derivePrReviewStatus({
+          reviewTask: reviewTask({ status: s, result: verdictResult(verdict) }),
+        });
+        expect(status.state).toBe(state);
+        expect(status.verdict).toBe(verdict);
+        expect(status.terminal).toBe(true);
+      }
+    }
+  });
+
+  // Only blocking verdicts survive a failed/cancelled task. An approve from a
+  // reviewer that never completed must not read as `approved` — that is the
+  // state the CI-green retry and create_pr/merge_pr self-merge on.
+  it('a failed or cancelled reviewer task holding an approve is review_failed, not approved', () => {
+    for (const s of ['failed', 'cancelled'] as const) {
+      const status = derivePrReviewStatus({
+        reviewTask: reviewTask({ status: s, result: verdictResult('approve') }),
+      });
+      expect(status.state).not.toBe('approved');
+      expect(status.state).toBe('review_failed');
+      expect(status.terminal).toBe(true);
+    }
+  });
+
+  it('a failed reviewer task whose server-side effective verdict is approve stays review_failed', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'cancelled',
+        result: { ...verdictResult('request-changes'), effectiveVerdict: 'approve' },
+      }),
+    });
+    expect(status.state).toBe('review_failed');
+  });
+
+  it('a failed reviewer task honours the server-side effective verdict over the raw one', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'failed',
+        result: { ...verdictResult('approve'), effectiveVerdict: 'escalate' },
+      }),
+    });
+    expect(status.state).toBe('escalated');
+  });
 });
 
 describe('derivePrReviewStatus — PR outcome', () => {
