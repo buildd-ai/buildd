@@ -126,15 +126,28 @@ export class BuilddClient {
     }
   }
 
-  /** Fetch remote worker state (returns null if 404/error) */
+  /**
+   * Fetch remote worker state.
+   *
+   * Returns null ONLY for a confirmed 404 — the server explicitly says this
+   * worker doesn't exist. Every other failure (timeout, network error, 5xx,
+   * a 401/403 refusal) is rethrown instead of collapsing to null: reconcile
+   * treats null as "worker no longer exists" and flips the LOCAL worker to
+   * 'error', abandoning the still-running session — while the server reaps
+   * the worker it never heard back from and re-queues its task onto a
+   * second one. A body with no `status` field (e.g. an outbox-queued `{}`
+   * placeholder) is likewise unknown, not confirmed-absent, so it throws
+   * too rather than being read as valid worker state. Callers must handle
+   * the throw; the two current call sites already wrap this in a try/catch
+   * that leaves the worker untouched on failure.
+   */
   async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
-    try {
-      const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
-      if (!data || data.error) return null;
-      return data;
-    } catch {
-      return null;
+    const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
+    if (!data || data.error) return null;
+    if (typeof data.status !== 'string') {
+      throw new Error(`getWorkerRemote(${id}): response missing status field`);
     }
+    return data;
   }
 
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
