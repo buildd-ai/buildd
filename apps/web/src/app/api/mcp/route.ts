@@ -23,7 +23,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
-import { isWorkerInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
+import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
 import { eq } from "drizzle-orm";
@@ -169,7 +169,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -210,6 +210,19 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   const ctxEmbedder = getVoyageEmbedder();
   const ctxKnowledgeStore = new PgVectorStore(ctxEmbedder, getVoyageReranker());
 
+  /**
+   * Whether the knowledge surfaces (memory store, recall/learn, the memory
+   * resource) are closed for `wsId`. A pinned workspace's data class is
+   * computed once per request (`isSensitive`); a workspace inferred later by
+   * getWorkspaceId() gets the same fail-closed lookup here, so an unpinned
+   * connection cannot reach a sensitive workspace's knowledge.
+   */
+  const knowledgeBlockedFor = async (wsId: string | null): Promise<boolean> => {
+    if (isSensitive) return true;
+    if (!wsId || wsId === workspaceId) return false;
+    return (await resolveWorkspaceDataClass(wsId)) === 'sensitive';
+  };
+
   const ctx: ActionContext = {
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
@@ -219,7 +232,18 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     appBaseUrl,
     knowledgeStore: ctxKnowledgeStore,
     embedder: ctxEmbedder,
-    getMemoryClient: () => getMemoryClientForTeam(resolvedWorkspaceId, accountTeamId),
+    getMemoryClient: async () => {
+      if (await knowledgeBlockedFor(resolvedWorkspaceId)) return null;
+      // Without a pinned workspace, the calling action may target a workspace
+      // this connection never resolves (claim_task with an explicit id, or a
+      // claim across all of the account's workspaces). Fail closed if any
+      // workspace the caller reaches is sensitive.
+      if (!workspaceId && accountTeamId && accountId
+        && await callerReachesSensitiveWorkspace({ id: accountId, teamId: accountTeamId })) {
+        return null;
+      }
+      return getMemoryClientForTeam(resolvedWorkspaceId, accountTeamId);
+    },
   };
 
   /** Shared refusal when the team's memory store cannot be resolved. */
@@ -249,11 +273,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
    *   an admin pruning knowledge has to keep working. recall / learn /
    *   buildd_memory do forward it, as defence in depth behind their own
    *   sensitive-workspace check.
+   * - `sensitiveRefusalTool`: when set, refuse if the resolved workspace —
+   *   pinned or inferred — is sensitive, naming this tool in the refusal.
    */
   const resolveMemoryContext = async (opts: {
     ambiguousWorkspaceMessage: string;
     memoryStoreRequired: boolean;
     forwardIsSensitive: boolean;
+    sensitiveRefusalTool?: string;
   }) => {
     const wsId = await getWorkspaceId();
     if (!wsId && authType === 'oauth') {
@@ -261,6 +288,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         ok: false as const,
         refusal: {
           content: [{ type: "text" as const, text: opts.ambiguousWorkspaceMessage }],
+          isError: true,
+        },
+      };
+    }
+
+    const sensitiveNow = await knowledgeBlockedFor(wsId);
+    if (sensitiveNow && opts.sensitiveRefusalTool) {
+      return {
+        ok: false as const,
+        refusal: {
+          content: [{ type: "text" as const, text: `Error: ${opts.sensitiveRefusalTool} is not available in sensitive workspaces.` }],
           isError: true,
         },
       };
@@ -286,7 +324,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         knowledgeStore,
         embedder,
         api,
-        ...(opts.forwardIsSensitive ? { isSensitive } : {}),
+        ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
       },
     };
   };
@@ -386,6 +424,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           ambiguousWorkspaceMessage: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
           memoryStoreRequired: true,
           forwardIsSensitive: true,
+          sensitiveRefusalTool: "buildd_memory",
         });
         if (!resolved.ok) return resolved.refusal;
 
@@ -404,6 +443,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           ambiguousWorkspaceMessage: "Cannot resolve workspace for knowledge action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
           memoryStoreRequired: true,
           forwardIsSensitive: true,
+          sensitiveRefusalTool: name,
         });
         if (!resolved.ok) return resolved.refusal;
         // Non-null by construction: memoryStoreRequired refused above otherwise.
@@ -817,6 +857,11 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       case "buildd://workspace/memory": {
         try {
           const wsId = await getWorkspaceId();
+          if (await knowledgeBlockedFor(wsId)) {
+            return {
+              contents: [{ uri, mimeType: "text/plain", text: "Workspace memory is not available in sensitive workspaces." }],
+            };
+          }
           const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
           if (memClient) {
             const data = await memClient.getContext(await resolveProjectKey(wsId, repoName));
@@ -876,6 +921,14 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   let workspaceId: string | undefined;
 
   if (workspaceParam) {
+    // Same generic refusal for an unknown workspace and another team's, so the
+    // response cannot be used to probe which workspaces exist.
+    if (!(await isWorkspaceInCallerScope(workspaceParam, account))) {
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     workspaceId = workspaceParam;
   } else if (repoParam) {
     // Resolved only among the account's own team's workspaces and the ones it
@@ -902,7 +955,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

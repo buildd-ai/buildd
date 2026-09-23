@@ -15,6 +15,7 @@ const mockWorkspacesDelete = mock(() => ({
 }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+const mockGetUserTeamRole = mock(async (_userId: string, _teamId: string) => null as string | null);
 
 let capturedUpdates: Record<string, unknown> = {};
 
@@ -29,6 +30,7 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   getUserTeamIds: mockGetUserTeamIds,
+  getUserTeamRole: mockGetUserTeamRole,
 }));
 
 const mockGetInstallationOwnerTeamIds = mock(async (_id: string) => ['team-1'] as string[]);
@@ -401,7 +403,7 @@ describe('PATCH /api/workspaces/[id]', () => {
 
   it('merges partial gitConfig via API key auth, preserving existing fields', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-1', level: 'admin' });
     // Same mock answers the team check (teamId) and the gitConfig merge read.
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { defaultBranch: 'dev', autoCreatePR: true } });
 
@@ -578,6 +580,208 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/gitConfig\.mergePolicy/);
+  });
+});
+
+describe('PATCH /api/workspaces/[id] — privilege gates', () => {
+  // Merge policy / git config, access mode, data class and the connector claim
+  // gate are workspace-admin settings: a session caller needs owner or admin in
+  // the workspace's team, an API key needs admin level.
+  const PRIVILEGED_BODIES: Array<[string, Record<string, unknown>]> = [
+    ['gitConfig', { gitConfig: { mergePolicy: { tier: 'human' } } }],
+    ['accessMode', { accessMode: 'restricted' }],
+    ['dataClass', { dataClass: 'standard' }],
+    ['connectorAdvisoryMode', { connectorAdvisoryMode: true }],
+  ];
+
+  let updateCalled = false;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { defaultBranch: 'dev' } });
+    mockVerifyWorkspaceAccess.mockReset();
+    mockWorkspacesUpdate.mockReset();
+    capturedUpdates = {};
+    updateCalled = false;
+    process.env.NODE_ENV = 'production';
+    mockWorkspacesUpdate.mockReturnValue({
+      set: mock((updates: Record<string, unknown>) => {
+        updateCalled = true;
+        capturedUpdates = updates;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  for (const [field, body] of PRIVILEGED_BODIES) {
+    it(`refuses ${field} from a session member (403, nothing written)`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body }), { params: mockParams });
+
+      expect(res.status).toBe(403);
+      expect(updateCalled).toBe(false);
+    });
+
+    it(`refuses ${field} from a worker-level API key of the owning team`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'worker' });
+
+      const res = await PATCH(
+        createMockRequest({ method: 'PATCH', body, headers: { authorization: 'Bearer bld_k' } }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(403);
+      expect(updateCalled).toBe(false);
+    });
+  }
+
+  it('refuses a mixed body from a member without applying the unprivileged part', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await PATCH(
+      createMockRequest({ method: 'PATCH', body: { name: 'Renamed', gitConfig: { autoMergePR: true } } }),
+      { params: mockParams },
+    );
+
+    expect(res.status).toBe(403);
+    expect(updateCalled).toBe(false);
+  });
+
+  it('still lets a session member rename the workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { name: 'Renamed' } }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.name).toBe('Renamed');
+  });
+
+  it('lets a session admin merge gitConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+
+    const res = await PATCH(
+      createMockRequest({ method: 'PATCH', body: { gitConfig: { autoMergePR: true } } }),
+      { params: mockParams },
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.gitConfig).toEqual({ defaultBranch: 'dev', autoMergePR: true });
+  });
+
+  it('lets an admin-level API key of the owning team set accessMode', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
+
+    const res = await PATCH(
+      createMockRequest({ method: 'PATCH', body: { accessMode: 'restricted' }, headers: { authorization: 'Bearer bld_k' } }),
+      { params: mockParams },
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.accessMode).toBe('restricted');
+  });
+});
+
+describe('PATCH /api/workspaces/[id] — moving a workspace to another team', () => {
+  // Moving a workspace is a workspace-admin action on BOTH sides: the caller
+  // must be owner/admin of the current team and of the target team. API keys
+  // cannot move a workspace here at all (the migrate flow owns that).
+  let updateCalled = false;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+    mockVerifyWorkspaceAccess.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockGetUserTeamRole.mockReset();
+    mockWorkspacesUpdate.mockReset();
+    capturedUpdates = {};
+    updateCalled = false;
+    process.env.NODE_ENV = 'production';
+    mockWorkspacesUpdate.mockReturnValue({
+      set: mock((updates: Record<string, unknown>) => {
+        updateCalled = true;
+        capturedUpdates = updates;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  for (const level of ['trigger', 'worker', 'admin'] as const) {
+    it(`rejects teamId from a ${level}-level API key and writes nothing`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level });
+
+      const res = await PATCH(
+        createMockRequest({ method: 'PATCH', body: { teamId: 'team-2' }, headers: { authorization: 'Bearer bld_k' } }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(400);
+      expect(updateCalled).toBe(false);
+    });
+  }
+
+  it('refuses teamId from a session member of the current team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockGetUserTeamRole.mockResolvedValue('owner');
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { teamId: 'team-2' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect(updateCalled).toBe(false);
+  });
+
+  it('refuses teamId when the session admin is only a member of the target team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+    mockGetUserTeamRole.mockImplementation(async (_u, teamId) => (teamId === 'team-2' ? 'member' : 'admin'));
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { teamId: 'team-2' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect(updateCalled).toBe(false);
+  });
+
+  it('refuses teamId for a target team the session user does not belong to', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockGetUserTeamRole.mockResolvedValue(null);
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { teamId: 'team-9' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect(updateCalled).toBe(false);
+  });
+
+  it('moves the workspace when the session user is admin of both teams', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockGetUserTeamRole.mockResolvedValue('admin');
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { teamId: 'team-2' } }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.teamId).toBe('team-2');
   });
 });
 
