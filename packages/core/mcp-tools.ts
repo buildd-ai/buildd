@@ -4783,6 +4783,13 @@ export async function handleBuilddAction(
         data.ciState === 'failing'
           ? `failing (${(data.failingChecks ?? []).join(', ') || 'unknown checks'})`
           : data.ciState;
+      // Advisory and never folded into ciState (apps/web/src/lib/release/
+      // dispatch.ts), so this line is the only place a caller sees it.
+      const pmi = data.postMergeIntegration as { state?: string; checks?: string[] } | undefined;
+      const pmiLine = pmi?.state
+        ? `\nPost-merge integration (advisory): ${pmi.state}` +
+          (pmi.state === 'failing' && (pmi.checks ?? []).length ? ` (${(pmi.checks ?? []).join(', ')})` : '')
+        : '';
       const prLine = data.openReleasePr
         ? `\nOpen release PR: #${data.openReleasePr.number} — ${data.openReleasePr.url}`
         : '\nNo open release PR.';
@@ -4792,7 +4799,7 @@ export async function handleBuilddAction(
         .join('\n');
       return text(
         `Release preflight for ${data.repo} (${data.ref} → ${data.prodBranch}):\n` +
-          `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${prLine}` +
+          `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${pmiLine}${prLine}` +
           (commits ? `\nWould ship:\n${commits}` : '\nNothing to ship.'),
       );
     }
