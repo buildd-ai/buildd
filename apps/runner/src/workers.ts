@@ -1267,10 +1267,7 @@ export class WorkerManager {
         this.onClaimServerErrorStreak(status);
         throw err;
       }
-      if (this.claimDegradedAlerted && !claimHealth.isDegraded()) {
-        this.claimDegradedAlerted = false;
-        this.emit({ type: 'claim_health', degraded: false });
-      }
+      this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
 
       // Credential discovery. This is the ONLY path by which an idle runner
@@ -1472,12 +1469,23 @@ export class WorkerManager {
   /** True once the current claim-5xx streak has been alerted (one alert per streak). */
   private claimDegradedAlerted = false;
 
+  /** Emit the recovery event once the alerted streak has ended (by a 2xx or a 4xx). */
+  private clearClaimDegradedAlertIfRecovered(): void {
+    if (this.claimDegradedAlerted && !claimHealth.isDegraded()) {
+      this.claimDegradedAlerted = false;
+      this.emit({ type: 'claim_health', degraded: false });
+    }
+  }
+
   /**
    * N3: while the claim endpoint is returning a run of 5xx, alert once and
    * poll every 5 minutes instead of waiting for the hourly fallback tick.
    * The streak itself is counted in BuilddClient.claimTask.
    */
   private onClaimServerErrorStreak(status: number): void {
+    // A 4xx ends the streak (BuilddClient.claimTask records it as a success)
+    // but lands here on the catch path, so release the latch here too.
+    this.clearClaimDegradedAlertIfRecovered();
     if (status < 500 || !claimHealth.isDegraded()) return;
     if (!this.claimDegradedAlerted) {
       this.claimDegradedAlerted = true;

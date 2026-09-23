@@ -89,6 +89,27 @@ export class ClaimHealth {
 /** Process-wide tracker, fed by BuilddClient.claimTask. */
 export const claimHealth = new ClaimHealth();
 
+/** Heartbeat goes DEGRADED once no HTTP response has arrived for this long. */
+export const SERVER_CONTACT_STALE_MS = 5 * 60_000;
+
+/**
+ * What the liveness heartbeat reports. A 5xx still counts as server contact,
+ * so a claim-5xx streak is checked separately — otherwise a failing claim
+ * route logs "alive" for hours. `lastOk` of 0/undefined means never.
+ */
+export function heartbeatState(
+  lastOk: number | undefined,
+  now: number,
+  health: ClaimHealth = claimHealth,
+): { degraded: boolean; reason: string } {
+  const ageMs = lastOk ? now - lastOk : Infinity;
+  if (ageMs >= SERVER_CONTACT_STALE_MS) {
+    const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
+    return { degraded: true, reason: `no successful server contact (last: ${since}); claims are failing` };
+  }
+  return { degraded: health.isDegraded(), reason: `claim endpoint failing: ${health.describe()}` };
+}
+
 /** Log-safe rendering of a 5xx body; an empty body is named rather than logged as nothing. */
 export function describeClaimErrorBody(raw: string | undefined | null): string {
   const text = (raw ?? '').trim();

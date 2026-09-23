@@ -1058,5 +1058,43 @@ describe('WorkerManager — lifecycle', () => {
         claimHealth.recordSuccess();
       }
     });
+
+    // A 4xx ends the 5xx streak (BuilddClient.claimTask records it as a
+    // success) but arrives on the catch path. The alert latch must clear there
+    // too, or the UI never sees recovery and the next streak is silent.
+    test('a 4xx between two 5xx streaks clears the alert so the second streak alerts again', async () => {
+      const { claimHealth } = await import('../../src/claim-budget-signals');
+      claimHealth.recordSuccess();
+      manager = new WorkerManager(makeConfig());
+      const events: any[] = [];
+      manager.onEvent((e: any) => { if (e.type === 'claim_health') events.push(e); });
+      const fail500 = async () => {
+        claimHealth.recordServerError(500);
+        throw new Error('API error: 500 - ');
+      };
+      const fail4xx = async () => {
+        claimHealth.recordSuccess(); // what BuilddClient.claimTask does on a 4xx
+        throw new Error('API error: 409 - {"error":"gate"}');
+      };
+      const origError = console.error;
+      console.error = () => {};
+      try {
+        mockClaimTask.mockImplementation(fail500);
+        for (let i = 0; i < 3; i++) { await manager.claimPendingTasks().catch(() => {}); disarm(manager); }
+        expect(events.filter(e => e.degraded === true).length).toBe(1);
+
+        mockClaimTask.mockImplementation(fail4xx);
+        await manager.claimPendingTasks().catch(() => {});
+        disarm(manager);
+        expect(events.at(-1)).toEqual({ type: 'claim_health', degraded: false });
+
+        mockClaimTask.mockImplementation(fail500);
+        for (let i = 0; i < 3; i++) { await manager.claimPendingTasks().catch(() => {}); disarm(manager); }
+        expect(events.filter(e => e.degraded === true).length).toBe(2);
+      } finally {
+        console.error = origError;
+        claimHealth.recordSuccess();
+      }
+    });
   });
 });

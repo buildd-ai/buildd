@@ -21,7 +21,7 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
-import { claimHealth, withClaimHealthCheck } from './claim-budget-signals';
+import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -2923,16 +2923,8 @@ setInterval(async () => {
 // every claim — which is exactly what hid the 2026-06-22 outage. When contact is
 // stale we emit a DEGRADED line instead, so a host monitor keyed on "runner alive"
 // freshness (and humans reading the log) see the truth.
-const SERVER_CONTACT_STALE_MS = 5 * 60_000;
+// The stale threshold and the claim-5xx-streak rule live in heartbeatState.
 setInterval(() => {
-  const lastOk = getLastServerContactAt();
-  const ageMs = lastOk ? Date.now() - lastOk : Infinity;
-  const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
-  // A 5xx still counts as server contact, so a claim-5xx streak is checked
-  // separately — otherwise a failing claim route logs "alive" for hours.
-  if (ageMs >= SERVER_CONTACT_STALE_MS) {
-    emitHeartbeatTick(true, `no successful server contact (last: ${since}); claims are failing`);
-  } else {
-    emitHeartbeatTick(claimHealth.isDegraded(), `claim endpoint failing: ${claimHealth.describe()}`);
-  }
+  const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now());
+  emitHeartbeatTick(degraded, reason);
 }, 60_000);

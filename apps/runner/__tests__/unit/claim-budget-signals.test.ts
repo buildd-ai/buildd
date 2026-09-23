@@ -16,6 +16,8 @@ import {
   isSessionBudgetCapError,
   claudeSessionIsMetered,
   sdkMaxBudgetUsd,
+  heartbeatState,
+  SERVER_CONTACT_STALE_MS,
 } from '../../src/claim-budget-signals';
 import { classifyClaimError } from '../../src/claim-breaker';
 
@@ -148,5 +150,37 @@ describe('sdkMaxBudgetUsd (A.3: no dollar cap on seat credentials)', () => {
 
   test('no configured cap stays undefined', () => {
     expect(sdkMaxBudgetUsd(undefined, { backend: 'claude', env: { ANTHROPIC_API_KEY: 'sk' } })).toBeUndefined();
+  });
+});
+
+describe('heartbeatState (N3 heartbeat)', () => {
+  const now = 10_000_000;
+  const degradedHealth = () => {
+    const h = new ClaimHealth();
+    for (let i = 0; i < CLAIM_5XX_DEGRADED_THRESHOLD; i++) h.recordServerError(503);
+    return h;
+  };
+
+  test('recent contact and a healthy claim endpoint is alive', () => {
+    expect(heartbeatState(now - 1_000, now, new ClaimHealth()).degraded).toBe(false);
+  });
+
+  test('a claim-5xx streak is DEGRADED even while server contact is recent', () => {
+    const s = heartbeatState(now - 1_000, now, degradedHealth());
+    expect(s.degraded).toBe(true);
+    expect(s.reason).toContain('claim endpoint failing');
+    expect(s.reason).toContain('503');
+  });
+
+  test('stale server contact is DEGRADED regardless of claim health', () => {
+    const s = heartbeatState(now - SERVER_CONTACT_STALE_MS, now, new ClaimHealth());
+    expect(s.degraded).toBe(true);
+    expect(s.reason).toContain('no successful server contact');
+  });
+
+  test('never contacted is DEGRADED', () => {
+    const s = heartbeatState(undefined, now, new ClaimHealth());
+    expect(s.degraded).toBe(true);
+    expect(s.reason).toContain('never');
   });
 });

@@ -179,7 +179,9 @@ export class BuilddClient {
       } else if (isServerRefusal(err)) {
         // A 4xx is the server answering on purpose (budget, auth, gate) —
         // the endpoint is healthy, so it ends a 5xx streak.
-        claimHealth.recordSuccess();
+        if (claimHealth.recordSuccess()) {
+          console.log(`[claim] claim endpoint recovered (HTTP ${err.status}) — health no longer degraded`);
+        }
       }
       throw err;
     }
