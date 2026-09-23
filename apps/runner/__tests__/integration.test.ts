@@ -9,6 +9,8 @@
  * Run: bun test:integration
  */
 
+import { readLocalToken, LOCAL_TOKEN_HEADER } from '../src/local-server-auth';
+const LOCAL_TOKEN = readLocalToken();
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 
 const BASE_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
@@ -33,7 +35,7 @@ const createdWorkerIds: string[] = [];
 async function api<T = any>(path: string, method = 'GET', body?: any): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(LOCAL_TOKEN ? { [LOCAL_TOKEN_HEADER]: LOCAL_TOKEN } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
 

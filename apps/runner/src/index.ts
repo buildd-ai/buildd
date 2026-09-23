@@ -18,6 +18,7 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -83,6 +84,11 @@ if (
 // --debug flag: opt-in to HTTP server + debug UI (default: headless)
 // Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
 const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
+
+// The local UI server listens on loopback unless BUILDD_UI_BIND names another
+// interface (e.g. a Tailscale address for remote viewing).
+const BIND_HOST = resolveBindHost(process.env as Record<string, string | undefined>);
+const BIND_IS_LOOPBACK = isLoopbackAddress(BIND_HOST) || BIND_HOST === 'localhost';
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
@@ -427,6 +433,7 @@ function resolveLocalUiUrl(): string {
   }
   if (process.env.LOCAL_UI_URL) return process.env.LOCAL_UI_URL;
   if (savedConfig.localUiUrl) return savedConfig.localUiUrl;
+  if (BIND_IS_LOOPBACK) return `http://localhost:${PORT}`;
   const tsIp = detectTailscaleIp();
   if (tsIp) {
     console.log(`  Tailscale IP detected: ${tsIp}`);
@@ -868,7 +875,7 @@ async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 1000));
     try {
-      const res = await fetch(`http://localhost:${probePort}/health`, { signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`http://127.0.0.1:${probePort}/health`, { signal: AbortSignal.timeout(3000) });
       if (res.ok) { ok = true; break; }
     } catch { /* not listening yet */ }
     // A build that cannot even load its modules exits in about a second. Give
@@ -900,7 +907,7 @@ async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
   // teardown, a previous probe is still alive and this probe's verdict may not
   // even be about the code we just installed. Fail rather than restart into a
   // half-torn-down state.
-  const stillListening = await fetch(`http://localhost:${probePort}/health`, { signal: AbortSignal.timeout(2000) })
+  const stillListening = await fetch(`http://127.0.0.1:${probePort}/health`, { signal: AbortSignal.timeout(2000) })
     .then(() => true)
     .catch(() => false);
   if (stillListening) {
@@ -1056,53 +1063,64 @@ if (!DEBUG_MODE) {
   // Tasks are claimed from and reported to the buildd server; the dashboard is the only UI.
 }
 
+// Local token for state-changing requests to the local UI server. Written to
+// the runner's config dir (mode 0600) so local tools can read it; the runner's
+// own UI receives it injected into the served page.
+const localToken = DEBUG_MODE ? loadOrCreateLocalToken(BUILDD_DIR, process.env as Record<string, string | undefined>) : null;
+
+// One-time state values for the /auth/login -> /auth/callback round trip.
+const pendingAuthStates = new Map<string, number>();
+const AUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+function builddServerOrigin(): string | null {
+  try { return config.builddServer ? new URL(config.builddServer).origin : null; } catch { return null; }
+}
+
 const server = DEBUG_MODE ? Bun.serve({
   port: PORT,
+  hostname: BIND_HOST,
   development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
   idleTimeout: 120, // 2 minutes for long-running requests
-  async fetch(req) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
     const path = url.pathname;
 
-    // CORS headers
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    };
+    // No wildcard CORS. The only cross-origin read is the dashboard's capacity
+    // ping to GET /health, allowed for the configured buildd server origin.
+    const corsHeaders: Record<string, string> = {};
+    const dashboardOrigin = builddServerOrigin();
+    const requestOrigin = req.headers.get('origin');
+    const isHealthPing = path === '/health' && (req.method === 'GET' || req.method === 'OPTIONS');
+    if (isHealthPing && dashboardOrigin && requestOrigin === dashboardOrigin) {
+      corsHeaders['Access-Control-Allow-Origin'] = dashboardOrigin;
+      corsHeaders['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
+      corsHeaders['Vary'] = 'Origin';
+    }
 
     if (req.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // viewerToken auth for remote access to worker data endpoints
-    // Localhost and private IP requests bypass auth; remote requests need ?token= or Authorization header
-    const isPrivateOrLocalhost = (hostname: string): boolean => {
-      // localhost variants
-      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
-
-      // Private IPv4 ranges: 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 100.64-127.x.x (CGNAT/Tailscale)
-      const ipv4Match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-      if (ipv4Match) {
-        const [, a, b] = ipv4Match.map(Number);
-        return a === 10 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31 || a === 100 && b >= 64 && b <= 127;
-      }
-
-      // Private IPv6 (fc00::/7, fe80::/10)
-      if (hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80:')) return true;
-
-      return false;
-    };
-
-    const viewerProtectedPaths = ['/api/workers', '/api/events', '/health'];
-    const needsViewerAuth = !isPrivateOrLocalhost(url.hostname) && viewerProtectedPaths.some(p => path === p || path.startsWith(p + '/'));
-    if (needsViewerAuth) {
-      const expectedToken = workerManager?.getViewerToken();
-      const providedToken = url.searchParams.get('token') || req.headers.get('authorization')?.replace('Bearer ', '');
-      if (!expectedToken || providedToken !== expectedToken) {
-        return Response.json({ error: 'Unauthorized - invalid viewer token' }, { status: 401, headers: corsHeaders });
-      }
+    // Local peer = socket remote address, never the Host/Origin headers.
+    const remoteAddr = srv.requestIP(req)?.address ?? null;
+    const ownOrigins = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`];
+    if (!BIND_IS_LOOPBACK) ownOrigins.push(`http://${BIND_HOST}:${PORT}`);
+    try { if (config.localUiUrl) ownOrigins.push(new URL(config.localUiUrl).origin); } catch { /* ignore */ }
+    const denial = authorizeLocalRequest({
+      method: req.method,
+      path,
+      headers: req.headers,
+      query: url.searchParams,
+      remoteAddr,
+      token: localToken!.token,
+      viewerToken: workerManager?.getViewerToken() ?? null,
+      // The dashboard's /health ping is the one cross-origin read accepted.
+      ownOrigins: isHealthPing && dashboardOrigin ? [...ownOrigins, dashboardOrigin] : ownOrigins,
+    });
+    if (denial) {
+      return Response.json({ error: denial.error }, { status: denial.status, headers: corsHeaders });
     }
+    const isLocalPeer = isLoopbackAddress(remoteAddr);
 
     // Health check for browser-side capacity pings
     if (path === '/health' && req.method === 'GET') {
@@ -1140,8 +1158,8 @@ const server = DEBUG_MODE ? Bun.serve({
 
     // Safe auto-update: preflight checks → git pull → health check → graceful restart
     if (path === '/api/update' && req.method === 'POST') {
-      // Auth: only allow from localhost/private IPs
-      if (!isPrivateOrLocalhost(url.hostname)) {
+      // Only a loopback peer (by socket address) may trigger an update.
+      if (!isLocalPeer) {
         return Response.json({ error: 'Update can only be triggered from localhost' }, { status: 403, headers: corsHeaders });
       }
 
@@ -1551,7 +1569,11 @@ const server = DEBUG_MODE ? Bun.serve({
 
     // OAuth: Redirect to server login
     if (path === '/auth/login') {
-      const callbackUrl = `http://localhost:${PORT}/auth/callback`;
+      const now = Date.now();
+      for (const [k, exp] of pendingAuthStates) if (exp < now) pendingAuthStates.delete(k);
+      const state = crypto.randomUUID();
+      pendingAuthStates.set(state, now + AUTH_STATE_TTL_MS);
+      const callbackUrl = `http://localhost:${PORT}/auth/callback?state=${encodeURIComponent(state)}`;
       const loginUrl = `${config.builddServer}/api/auth/cli?client=runner&callback=${encodeURIComponent(callbackUrl)}`;
       return Response.redirect(loginUrl, 302);
     }
@@ -1560,6 +1582,22 @@ const server = DEBUG_MODE ? Bun.serve({
     if (path === '/auth/callback') {
       const token = url.searchParams.get('token');
       const error = url.searchParams.get('error');
+      const state = url.searchParams.get('state');
+      const stateExpiry = state ? pendingAuthStates.get(state) : undefined;
+      if (state) pendingAuthStates.delete(state);
+      if (!stateExpiry || stateExpiry < Date.now()) {
+        return new Response(`
+          <!DOCTYPE html>
+          <html>
+          <head><title>Auth Error</title></head>
+          <body style="font-family: system-ui; padding: 40px; text-align: center;">
+            <h1>Authentication Failed</h1>
+            <p>This sign-in link has expired or was not started from this runner.</p>
+            <a href="/auth/login">Try again</a>
+          </body>
+          </html>
+        `, { status: 400, headers: { 'Content-Type': 'text/html' } });
+      }
 
       if (error) {
         return new Response(`
@@ -1568,7 +1606,7 @@ const server = DEBUG_MODE ? Bun.serve({
           <head><title>Auth Error</title></head>
           <body style="font-family: system-ui; padding: 40px; text-align: center;">
             <h1>Authentication Failed</h1>
-            <p>${error}</p>
+            <p>${escapeHtml(error)}</p>
             <a href="/">Go back</a>
           </body>
           </html>
@@ -2563,7 +2601,9 @@ const server = DEBUG_MODE ? Bun.serve({
     if (path === '/' || path === '/index.html') {
       const debugHtml = join(import.meta.dir, '..', 'ui-debug', 'debug.html');
       try {
-        const content = readFileSync(debugHtml);
+        const raw = readFileSync(debugHtml, 'utf8');
+        // Only a local peer receives the local token; a remote viewer gets the read-only page.
+        const content = isLocalPeer ? injectLocalToken(raw, localToken!.token) : raw;
         return new Response(content, {
           headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
         });
@@ -2584,7 +2624,7 @@ const server = DEBUG_MODE ? Bun.serve({
     console.error('Unhandled server error:', err.message);
     return Response.json(
       { error: err.message || 'Internal server error' },
-      { status: 500, headers: { 'Access-Control-Allow-Origin': '*' } },
+      { status: 500 },
     );
   },
 }) : null;
@@ -2634,6 +2674,10 @@ if (DEBUG_MODE) {
   console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
   if (config.localUiUrl && config.localUiUrl !== localUrl) {
     console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
+  }
+  console.log(`   ${WARM}bind${RESET}     ${DIM}${BIND_HOST}:${PORT}${RESET}`);
+  if (localToken) {
+    console.log(`   ${WARM}token${RESET}    ${DIM}${localToken.path} (send as X-Buildd-Local-Token for POST/DELETE)${RESET}`);
   }
 }
 

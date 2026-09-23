@@ -702,6 +702,16 @@ jobs:
           echo "::endgroup::"
           INNER
 
+      - name: Generate runner local token
+        # The runner's local server binds to loopback and requires a local token
+        # by default. The tests below drive it from this job over the tailnet, so
+        # the runner is started with an explicit bind and a per-run token.
+        if: steps.sync.outputs.machine_online != 'false'
+        run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "BUILDD_LOCAL_TOKEN=$token" >> "$GITHUB_ENV"
+
       - name: Start preview runner
         if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.runner == 'true'
         run: |
@@ -712,6 +722,8 @@ jobs:
               screen -dmS buildd-test bash -c '
                 export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
+                export BUILDD_UI_BIND=0.0.0.0
+                export BUILDD_LOCAL_TOKEN=$BUILDD_LOCAL_TOKEN
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
