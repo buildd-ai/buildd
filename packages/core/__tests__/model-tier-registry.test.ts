@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, spyOn } from 'bun:test';
 
 // ── mock the DB before importing the module under test ─────────────────────
 const mockFindMany = mock();
@@ -176,8 +176,10 @@ describe('resolveTierEntry', () => {
 // ── resolveTierEntry — live catalog fallback ───────────────────────────────
 //
 // No registry row pinning a tier is the DEFAULT state for most teams — this
-// is the self-healing path: a newer same-band release is adopted without a
-// deploy or an explicit registry write.
+// is the self-healing path: a same-band release is adopted without a deploy
+// or a registry write, but only if it was released no later than the newest
+// model in MODEL_MIN_CLI_VERSION. Anything newer needs a floor row (a code
+// change, so a deploy) before the catalog will pick it.
 
 describe('resolveTierEntry — catalog fallback', () => {
   it('resolves to the newer in-band model when the catalog has one and no row pins the tier', async () => {
@@ -257,6 +259,25 @@ describe('resolveTierEntry — catalog fallback', () => {
     const entry = await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
     expect(entry.model).toBe('claude-opus-5-5');
     expect(entry.source).toBe('catalog');
+  });
+
+  it('warns once, naming the refused id and the floor table, when a newer release is held back', async () => {
+    mockFindMany.mockResolvedValue([]);
+    mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      catalogEntry({ id: 'claude-opus-5-5', created: 1_780_000_000, input: 6 }),
+      catalogEntry({ id: 'claude-opus-98', created: 1_780_000_000 + 86_400 * 30, input: 6 }),
+    ]));
+    invalidateTierCache(TEAM_A, null);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
+      await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
+      const hits = warn.mock.calls.filter((c) => String(c[0]).includes('claude-opus-98'));
+      expect(hits).toHaveLength(1);
+      expect(String(hits[0][0])).toContain('MODEL_MIN_CLI_VERSION');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('an unparseable/missing runner CLI version fails open — no filtering applied', async () => {

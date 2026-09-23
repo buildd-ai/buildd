@@ -124,4 +124,43 @@ describe('makeCatalogServabilityCheck — unknown models fail closed', () => {
   it('refuses an id that is not in the catalog at all', () => {
     expect(makeCatalogServabilityCheck([newestKnown], '2.1.280')('claude-ghost')).toBe(false);
   });
+
+  it('refuses an unrecorded model with no release time — missing data is not "old"', () => {
+    const catalog = [newestKnown, entry('claude-mystery', 0)];
+    expect(makeCatalogServabilityCheck(catalog, '2.1.280')('claude-mystery')).toBe(false);
+  });
+
+  it('does not mistake an Object.prototype key for a recorded model', () => {
+    const catalog = [newestKnown, entry('constructor', T0 + 10 * DAY), entry('toString', T0 + 10 * DAY)];
+    const check = makeCatalogServabilityCheck(catalog, '2.1.280');
+    expect(check('constructor')).toBe(false);
+    expect(check('toString')).toBe(false);
+  });
+
+  it('reports each refused unrecognized id with the reason', () => {
+    const seen: Array<[string, string]> = [];
+    const onUnrecognized = (id: string, reason: string) => { seen.push([id, reason]); };
+    const catalog = [newestKnown, entry('claude-opus-6', T0 + 10 * DAY), entry('claude-mystery', 0)];
+    const check = makeCatalogServabilityCheck(catalog, '2.1.280', { onUnrecognized });
+    check('claude-opus-6');
+    check('claude-mystery');
+    check('claude-opus-5-5');
+    expect(seen).toEqual([
+      ['claude-opus-6', 'newer_than_floor_table'],
+      ['claude-mystery', 'missing_release_time'],
+    ]);
+
+    const orphaned: Array<[string, string]> = [];
+    makeCatalogServabilityCheck([entry('claude-sonnet-5', T0)], '2.1.280', {
+      onUnrecognized: (id, reason) => { orphaned.push([id, reason]); },
+    })('claude-sonnet-5');
+    expect(orphaned).toEqual([['claude-sonnet-5', 'no_recorded_model_in_catalog']]);
+  });
+});
+
+describe('checkModelClientCapability — prototype keys', () => {
+  it('treats an Object.prototype key as having no recorded floor', () => {
+    expect(checkModelClientCapability('constructor', '2.1.0')).toEqual({ ok: true });
+    expect(checkModelClientCapability('toString', '2.1.0')).toEqual({ ok: true });
+  });
 });

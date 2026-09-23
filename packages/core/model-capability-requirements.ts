@@ -23,6 +23,14 @@ export const MODEL_MIN_CLI_VERSION: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The recorded CLI floor for `model`, or undefined. Own keys only, so an id
+ * such as "constructor" never resolves to an Object.prototype member.
+ */
+function recordedFloor(model: string): string | undefined {
+  return Object.hasOwn(MODEL_MIN_CLI_VERSION, model) ? MODEL_MIN_CLI_VERSION[model] : undefined;
+}
+
+/**
  * Compares two dot-separated numeric version strings, e.g. "2.1.251".
  * Returns -1 if `a` < `b`, 0 if equal, 1 if `a` > `b`. Missing trailing
  * components compare as 0 ("2.1" == "2.1.0").
@@ -55,7 +63,7 @@ export function checkModelClientCapability(
   model: string,
   runnerCliVersion: string | null | undefined,
 ): ModelCapabilityCheck {
-  const required = MODEL_MIN_CLI_VERSION[model];
+  const required = recordedFloor(model);
   if (!required) return { ok: true };
   if (!runnerCliVersion) return { ok: true };
   if (compareCliVersions(runnerCliVersion, required) >= 0) return { ok: true };
@@ -97,22 +105,45 @@ const releaseDay = (createdSeconds: number) => Math.floor(createdSeconds / 86_40
  * pick falls back to the newest recognized in-band release. To adopt the
  * new model, add it to MODEL_MIN_CLI_VERSION. If no recorded model appears in
  * the catalog at all, every unrecorded model is unrecognized and the caller
- * lands on TIER_DEFAULTS.
+ * lands on TIER_DEFAULTS. An unrecorded model with no release time (the feed
+ * omitted `created`, which normalizes to 0) is also refused: missing data is
+ * not evidence that the model is old.
+ *
+ * `options.onUnrecognized` is told about every refusal of an unrecorded
+ * model, so the caller can say which release is being held back.
  *
  * This only governs the catalog step. An explicit registry row or a caller pin
  * is an operator's choice and still goes through `checkModelClientCapability`
  * alone.
  */
+/** Why the catalog check refused a model it has no recorded floor for. */
+export type UnrecognizedModelReason =
+  /** Released after the newest model in MODEL_MIN_CLI_VERSION. */
+  | 'newer_than_floor_table'
+  /** No model in MODEL_MIN_CLI_VERSION appears in the catalog, so nothing anchors "recognized". */
+  | 'no_recorded_model_in_catalog'
+  /** The feed gave no release time, so "released before the anchor" cannot be shown. */
+  | 'missing_release_time';
+
+export interface CatalogServabilityOptions {
+  /** Called each time an in-band model is refused for having no recorded floor. */
+  onUnrecognized?: (id: string, reason: UnrecognizedModelReason) => void;
+}
+
 export function makeCatalogServabilityCheck(
   entries: readonly CatalogModelRef[],
   runnerCliVersion: string | null | undefined,
+  options?: CatalogServabilityOptions,
 ): (id: string) => boolean {
-  const recordedId = (e: CatalogModelRef) =>
-    e.id in MODEL_MIN_CLI_VERSION || (e.canonicalId !== null && e.canonicalId in MODEL_MIN_CLI_VERSION);
+  const floorKey = (e: CatalogModelRef): string | null => {
+    if (recordedFloor(e.id)) return e.id;
+    if (e.canonicalId !== null && recordedFloor(e.canonicalId)) return e.canonicalId;
+    return null;
+  };
 
   let newestRecordedDay = -Infinity;
   for (const e of entries) {
-    if (recordedId(e)) newestRecordedDay = Math.max(newestRecordedDay, releaseDay(e.created));
+    if (floorKey(e) !== null) newestRecordedDay = Math.max(newestRecordedDay, releaseDay(e.created));
   }
 
   const byId = new Map(entries.map((e) => [e.id, e]));
@@ -120,10 +151,16 @@ export function makeCatalogServabilityCheck(
   return (id) => {
     const entry = byId.get(id);
     if (!entry) return false;
-    if (recordedId(entry)) {
-      const floorKey = id in MODEL_MIN_CLI_VERSION ? id : entry.canonicalId!;
-      return checkModelClientCapability(floorKey, runnerCliVersion).ok;
-    }
-    return releaseDay(entry.created) <= newestRecordedDay;
+    const key = floorKey(entry);
+    if (key !== null) return checkModelClientCapability(key, runnerCliVersion).ok;
+
+    let reason: UnrecognizedModelReason | null = null;
+    if (newestRecordedDay === -Infinity) reason = 'no_recorded_model_in_catalog';
+    else if (!(entry.created > 0)) reason = 'missing_release_time';
+    else if (releaseDay(entry.created) > newestRecordedDay) reason = 'newer_than_floor_table';
+
+    if (reason === null) return true;
+    options?.onUnrecognized?.(id, reason);
+    return false;
   };
 }
