@@ -54,6 +54,9 @@ const PERSISTED_FIELDS = [
   'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
+  // Read by history-store's backfill so an archived session keeps its usage,
+  // model and PR URL. Not restored onto live workers by loadAllWorkers.
+  'resultMeta', 'prUrl', 'reportedModel',
 ] as const;
 
 // Bounds to keep files reasonable

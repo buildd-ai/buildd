@@ -281,3 +281,23 @@ describe('the 24h TTL is measured from activity, not from the last write', () =>
     expect(existsSync(workerFile(worker.id))).toBe(false);
   });
 });
+
+describe('history-relevant fields survive persistence', () => {
+  // history-store backfills from these files; without them a backfilled
+  // session was archived with 0 tokens, no model and no PR URL.
+  test('saveWorker persists resultMeta, prUrl and reportedModel', () => {
+    const resultMeta = {
+      stopReason: 'end_turn', durationMs: 1, durationApiMs: 1, numTurns: 1,
+      modelUsage: {}, totalUsage: { inputTokens: 40, outputTokens: 7 },
+    };
+    const worker = makeWorker({
+      resultMeta, prUrl: 'https://github.com/org/repo/pull/3', reportedModel: 'claude-opus-4-8',
+    } as Partial<LocalWorker>);
+    store.saveWorker(worker);
+
+    const persisted = JSON.parse(readFileSync(workerFile(worker.id), 'utf-8'));
+    expect(persisted.resultMeta).toEqual(resultMeta);
+    expect(persisted.prUrl).toBe('https://github.com/org/repo/pull/3');
+    expect(persisted.reportedModel).toBe('claude-opus-4-8');
+  });
+});

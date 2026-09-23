@@ -8,7 +8,7 @@
  * history-store must fall back to them.
  */
 import { describe, test, expect } from 'bun:test';
-import { extractMetrics, resolvePrUrl } from '../../src/history-store';
+import { extractMetrics, resolvePrUrl, workerFromPersisted } from '../../src/history-store';
 import type { LocalWorker } from '../../src/types';
 
 function worker(overrides: Partial<LocalWorker> = {}): LocalWorker {
@@ -38,7 +38,8 @@ describe('extractMetrics', () => {
       resultMeta: {
         ...baseMeta,
         modelUsage: {},
-        totalUsage: { inputTokens: 1500, outputTokens: 300, cacheReadInputTokens: 1000 },
+        // All-in input: 200 fresh + 1000 cache read + 300 cache write.
+        totalUsage: { inputTokens: 1500, outputTokens: 300, cacheReadInputTokens: 1000, cacheCreationInputTokens: 300 },
         totalCostUsd: 0,
         actualModel: 'claude-sonnet-4-6',
       },
@@ -69,18 +70,18 @@ describe('extractMetrics', () => {
     expect(m.totalCostUsd).toBe(0.25);
   });
 
-  test('API-key session: modelUsage path is unchanged', () => {
+  test('API-key session: input tokens are all-in (fresh + cache read + cache write), same as OAuth', () => {
     const m = extractMetrics(worker({
       resultMeta: {
         ...baseMeta,
         modelUsage: {
-          'claude-sonnet-4-6': { inputTokens: 900, outputTokens: 120, cacheReadInputTokens: 100, costUSD: 0.02 } as any,
+          'claude-sonnet-4-6': { inputTokens: 900, outputTokens: 120, cacheReadInputTokens: 100, cacheCreationInputTokens: 50, costUSD: 0.02 },
         },
         totalUsage: { inputTokens: 99999, outputTokens: 99999 },
         actualModel: 'something-else',
       },
     }));
-    expect(m.totalInputTokens).toBe(1000);
+    expect(m.totalInputTokens).toBe(1050);
     expect(m.totalOutputTokens).toBe(120);
     expect(m.totalCostUsd).toBe(0.02);
     expect(m.model).toBe('claude-sonnet-4-6');
@@ -91,6 +92,31 @@ describe('extractMetrics', () => {
     expect(m.totalInputTokens).toBe(0);
     expect(m.totalOutputTokens).toBe(0);
     expect(m.model).toBeNull();
+  });
+});
+
+describe('workerFromPersisted (backfill)', () => {
+  test('carries resultMeta, prUrl and reportedModel so backfilled OAuth sessions keep usage', () => {
+    const w = workerFromPersisted({
+      id: 'w1', taskId: 't1', taskTitle: 'T', workspaceId: 'ws1', workspaceName: 'ws',
+      status: 'done', _savedAt: 1,
+      resultMeta: { ...baseMeta, modelUsage: {}, totalUsage: { inputTokens: 40, outputTokens: 7 } },
+      prUrl: 'https://github.com/org/repo/pull/3',
+      reportedModel: 'claude-opus-4-8',
+    });
+    const m = extractMetrics(w);
+    expect(m.totalInputTokens).toBe(40);
+    expect(m.totalOutputTokens).toBe(7);
+    expect(m.model).toBe('claude-opus-4-8');
+    expect(resolvePrUrl(w)).toBe('https://github.com/org/repo/pull/3');
+  });
+
+  test('older files without those fields still reconstruct', () => {
+    const w = workerFromPersisted({ id: 'w1', taskId: 't1', status: 'error', _savedAt: 5 });
+    expect(w.taskTitle).toBe('Unknown');
+    expect(w.completedAt).toBe(5);
+    expect(extractMetrics(w).totalInputTokens).toBe(0);
+    expect(resolvePrUrl(w)).toBeNull();
   });
 });
 

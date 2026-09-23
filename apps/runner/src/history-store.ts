@@ -138,7 +138,9 @@ export function extractMetrics(worker: LocalWorker): {
         maxTokens = tokens;
         model = m;
       }
-      totalInputTokens += usage.inputTokens + (usage.cacheReadInputTokens || 0);
+      // All-in input (fresh + cache read + cache write), matching the
+      // totalUsage fallback below so the column means one thing on both auths.
+      totalInputTokens += usage.inputTokens + (usage.cacheReadInputTokens || 0) + (usage.cacheCreationInputTokens || 0);
       totalOutputTokens += usage.outputTokens;
       totalCostUsd += usage.costUSD || 0;
     }
@@ -454,6 +456,46 @@ export function getStats(): HistoryStats {
   };
 }
 
+/**
+ * Rebuild a minimal LocalWorker from a persisted worker-store record for
+ * archiveSession. Carries resultMeta / prUrl / reportedModel so backfilled
+ * sessions get the same usage, model and PR URL as live-archived ones.
+ */
+export function workerFromPersisted(data: Record<string, any>): LocalWorker {
+  return {
+    id: data.id,
+    taskId: data.taskId,
+    taskTitle: data.taskTitle || 'Unknown',
+    taskDescription: data.taskDescription,
+    workspaceId: data.workspaceId || '',
+    workspaceName: data.workspaceName || 'Unknown',
+    branch: data.branch || '',
+    status: data.status,
+    error: data.error,
+    completedAt: data.completedAt || data._savedAt,
+    lastActivity: data.lastActivity || data._savedAt || Date.now(),
+    messages: data.messages || [],
+    milestones: data.milestones || [],
+    toolCalls: data.toolCalls || [],
+    commits: data.commits || [],
+    output: data.output || [],
+    lastAssistantMessage: data.lastAssistantMessage,
+    resultMeta: data.resultMeta,
+    prUrl: data.prUrl,
+    reportedModel: data.reportedModel,
+    // Transient defaults
+    hasNewActivity: false,
+    currentAction: '',
+    subagentTasks: [],
+    checkpoints: [],
+    checkpointEvents: new Set(),
+    phaseText: null,
+    phaseStart: null,
+    phaseToolCount: 0,
+    phaseTools: [],
+  };
+}
+
 /** Backfill: scan existing worker JSON files for completed workers not already in SQLite */
 export function backfillFromWorkerFiles(): number {
   if (!existsSync(WORKERS_DIR)) return 0;
@@ -476,37 +518,7 @@ export function backfillFromWorkerFiles(): number {
         const exists = db.query('SELECT id FROM sessions WHERE id = ?').get(data.id);
         if (exists) continue;
 
-        // Reconstruct minimal LocalWorker for archiveSession
-        const worker: LocalWorker = {
-          id: data.id,
-          taskId: data.taskId,
-          taskTitle: data.taskTitle || 'Unknown',
-          taskDescription: data.taskDescription,
-          workspaceId: data.workspaceId || '',
-          workspaceName: data.workspaceName || 'Unknown',
-          branch: data.branch || '',
-          status: data.status,
-          error: data.error,
-          completedAt: data.completedAt || data._savedAt,
-          lastActivity: data.lastActivity || data._savedAt || Date.now(),
-          messages: data.messages || [],
-          milestones: data.milestones || [],
-          toolCalls: data.toolCalls || [],
-          commits: data.commits || [],
-          output: data.output || [],
-          lastAssistantMessage: data.lastAssistantMessage,
-          // Transient defaults
-          hasNewActivity: false,
-          currentAction: '',
-          subagentTasks: [],
-          checkpoints: [],
-          checkpointEvents: new Set(),
-          phaseText: null,
-          phaseStart: null,
-          phaseToolCount: 0,
-          phaseTools: [],
-        };
-
+        const worker = workerFromPersisted(data);
         archiveSession(worker);
         backfilled++;
       } catch {
