@@ -104,8 +104,16 @@ function getDb(): Database {
   return db;
 }
 
-/** Extract cost/token data from a worker's resultMeta */
-function extractMetrics(worker: LocalWorker): {
+/**
+ * Extract cost/token data from a worker's resultMeta.
+ *
+ * `modelUsage` is the per-model breakdown and wins when present. On seat-based
+ * (OAuth) auth it is always `{}` — the SDK only reports top-level usage — so
+ * fall back to `totalUsage` (all-in input: fresh + cache read + cache write),
+ * `totalCostUsd`, and `actualModel` / `reportedModel`. Without the fallback
+ * every OAuth session was archived with 0 tokens and no model.
+ */
+export function extractMetrics(worker: LocalWorker): {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
@@ -136,6 +144,17 @@ function extractMetrics(worker: LocalWorker): {
     }
   }
 
+  if (totalInputTokens === 0 && totalOutputTokens === 0 && meta?.totalUsage) {
+    totalInputTokens = meta.totalUsage.inputTokens || 0;
+    totalOutputTokens = meta.totalUsage.outputTokens || 0;
+  }
+  if (totalCostUsd === 0 && typeof meta?.totalCostUsd === 'number') {
+    totalCostUsd = meta.totalCostUsd;
+  }
+  if (!model) {
+    model = meta?.actualModel || worker.reportedModel || null;
+  }
+
   // Duration: use SDK's durationMs if available, otherwise compute from timestamps
   const durationMs = meta?.durationMs ||
     (worker.completedAt && worker.lastActivity
@@ -153,6 +172,23 @@ function extractMetrics(worker: LocalWorker): {
   };
 }
 
+/**
+ * PR URL for the history row. `worker.prUrl` is set from a successful
+ * create_pr result and is the reliable source; milestone labels only carry a
+ * URL occasionally, so they are the fallback.
+ */
+export function resolvePrUrl(worker: LocalWorker): string | null {
+  if (worker.prUrl) return worker.prUrl;
+  let prUrl: string | null = null;
+  for (const m of worker.milestones) {
+    if ('label' in m && m.label && m.label.includes('PR #')) {
+      const match = m.label.match(/https?:\/\/\S+/);
+      if (match) prUrl = match[0];
+    }
+  }
+  return prUrl;
+}
+
 /** Archive a completed/errored worker session to SQLite + gzip */
 export function archiveSession(worker: LocalWorker): void {
   try {
@@ -167,15 +203,7 @@ export function archiveSession(worker: LocalWorker): void {
 
     const metrics = extractMetrics(worker);
 
-    // Find PR URL from commits or milestones
-    let prUrl: string | null = null;
-    for (const m of worker.milestones) {
-      if ('label' in m && m.label && m.label.includes('PR #')) {
-        // Extract URL from milestone label if present
-        const match = m.label.match(/https?:\/\/\S+/);
-        if (match) prUrl = match[0];
-      }
-    }
+    const prUrl = resolvePrUrl(worker);
 
     const startedAt = worker.milestones.length > 0
       ? worker.milestones[0].ts
