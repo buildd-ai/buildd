@@ -133,7 +133,7 @@ describe('WorkerSync.checkStale — post-completion session watchdog', () => {
     mockUpdateWorker.mockClear();
   });
 
-  test('tears down a session still running 6 minutes after the worker completed', () => {
+  test('reaps a session still running 6 minutes after the worker completed', () => {
     const { sync, ctx } = makeSync();
     const session = makeSession();
     const completedAt = Date.now() - 6 * 60 * 1000;
@@ -144,7 +144,9 @@ describe('WorkerSync.checkStale — post-completion session watchdog', () => {
 
     expect(session.abortController.abort).toHaveBeenCalledTimes(1);
     expect(session.inputStream.end).toHaveBeenCalledTimes(1);
-    expect(ctx.sessions.has('w-1')).toBe(false);
+    // Entry stays until the session's own finally block runs its cleanup.
+    expect(ctx.sessions.has('w-1')).toBe(true);
+    expect(typeof (ctx.sessions.get('w-1') as any).reapedAt).toBe('number');
     // A real completion must not be undone: no server call, no ctx.abort.
     expect(mockAbort).not.toHaveBeenCalled();
     expect(mockUpdateWorker).not.toHaveBeenCalled();
@@ -152,7 +154,7 @@ describe('WorkerSync.checkStale — post-completion session watchdog', () => {
     expect(ctx.workers.get('w-1')?.status).toBe('done');
   });
 
-  test('tears down an errored worker whose session outlived its grace period', () => {
+  test('reaps an errored worker whose session outlived its grace period', () => {
     const { sync, ctx } = makeSync();
     const session = makeSession();
     const completedAt = Date.now() - 10 * 60 * 1000;
@@ -162,7 +164,7 @@ describe('WorkerSync.checkStale — post-completion session watchdog', () => {
     sync.checkStale();
 
     expect(session.abortController.abort).toHaveBeenCalledTimes(1);
-    expect(ctx.sessions.has('w-err')).toBe(false);
+    expect((ctx.sessions.get('w-err') as any).reapedAt).toBeDefined();
     expect(mockAbort).not.toHaveBeenCalled();
   });
 
@@ -199,6 +201,35 @@ describe('WorkerSync.checkStale — post-completion session watchdog', () => {
     sync.checkStale();
 
     expect(session.abortController.abort).toHaveBeenCalledTimes(1);
+    expect((ctx.sessions.get('w-1') as any).reapedAt).toBeDefined();
+  });
+
+  test('does not re-abort an already-reaped session within the second grace period', () => {
+    const { sync, ctx } = makeSync();
+    const session: any = makeSession();
+    const completedAt = Date.now() - 20 * 60 * 1000;
+    session.reapedAt = Date.now() - 60 * 1000;
+    ctx.workers.set('w-1', makeWorker({ status: 'done', completedAt, lastActivity: completedAt }));
+    ctx.sessions.set('w-1', session);
+
+    sync.checkStale();
+
+    expect(session.abortController.abort).not.toHaveBeenCalled();
+    expect(ctx.sessions.has('w-1')).toBe(true);
+  });
+
+  test('drops the entry when a reaped session ignored the abort for a full grace period', () => {
+    const { sync, ctx } = makeSync();
+    const session: any = makeSession();
+    const completedAt = Date.now() - 20 * 60 * 1000;
+    session.reapedAt = Date.now() - 6 * 60 * 1000;
+    ctx.workers.set('w-1', makeWorker({ status: 'done', completedAt, lastActivity: completedAt }));
+    ctx.sessions.set('w-1', session);
+
+    sync.checkStale();
+
     expect(ctx.sessions.has('w-1')).toBe(false);
+    expect(mockAbort).not.toHaveBeenCalled();
+    expect(ctx.workers.get('w-1')?.status).toBe('done');
   });
 });

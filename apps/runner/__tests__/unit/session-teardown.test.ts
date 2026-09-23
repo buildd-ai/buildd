@@ -12,7 +12,7 @@ mock.module('../../src/session-logger', () => ({
   sessionLog: mock(() => {}),
 }));
 
-import { teardownSession } from '../../src/session-teardown';
+import { reapSession, teardownSession } from '../../src/session-teardown';
 
 function makeSession(overrides: Partial<{ abort: () => void; end: () => void }> = {}) {
   const abortController = { abort: mock(overrides.abort ?? (() => {})) } as unknown as AbortController;
@@ -74,5 +74,37 @@ describe('teardownSession', () => {
 
     expect(() => teardownSession(sessions, 'w-1')).not.toThrow();
     expect(sessions.has('w-1')).toBe(false);
+  });
+});
+
+describe('reapSession', () => {
+  test('marks reapedAt, aborts and ends the stream, but keeps the map entry', () => {
+    const sessions = new Map<string, any>();
+    const session = makeSession();
+    sessions.set('w-1', session);
+
+    reapSession(session as any, 1234, 'w-1');
+
+    expect((session as any).reapedAt).toBe(1234);
+    expect(session.abortController.abort).toHaveBeenCalledTimes(1);
+    expect(session.inputStream.end).toHaveBeenCalledTimes(1);
+    // The session's own finally block needs the entry to run its cleanup.
+    expect(sessions.has('w-1')).toBe(true);
+  });
+
+  test('sets reapedAt before abort fires, so the abort handler can see it', () => {
+    let seen: number | undefined;
+    const session: any = makeSession({ abort: () => { seen = session.reapedAt; } });
+
+    reapSession(session, 99, 'w-1');
+
+    expect(seen).toBe(99);
+  });
+
+  test('still ends the stream when abort() throws', () => {
+    const session = makeSession({ abort: () => { throw new Error('boom'); } });
+
+    expect(() => reapSession(session as any, 1, 'w-1')).not.toThrow();
+    expect(session.inputStream.end).toHaveBeenCalledTimes(1);
   });
 });

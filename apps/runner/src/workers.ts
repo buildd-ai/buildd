@@ -301,6 +301,7 @@ interface WorkerSession {
   generation: number;  // Session generation counter — used to detect stale post-loop cleanup
   backend?: ClaudeBackend;  // Stored for queryInstance access after runStreamed() starts
   sessionId: string;  // Per-invocation CLI session ID (decoupled from worker.id so bwrap retries get a fresh ID)
+  reapedAt?: number;  // Set by the post-completion watchdog (reapSession) — the abort is cleanup, not an outcome
 }
 
 // Constants for repetition detection
@@ -3991,6 +3992,14 @@ export class WorkerManager {
         return;
       }
 
+      // Post-completion reap (checkStale watchdog): the worker already reached
+      // done/error before its session was aborted. Nothing here describes an
+      // outcome — let finally clean up and leave the worker record alone.
+      if (currentSession?.reapedAt !== undefined) {
+        sessionLog(worker.id, 'info', 'post_completion_reap_settled', `status=${worker.status} (post-loop)`, worker.taskId);
+        return;
+      }
+
       // inputAsRetry: AskUserQuestion triggered an abort. The worker is
       // PARKED waiting_input, not failed — a hard blocker with a pending
       // question is not a crash. Reporting this as 'failed' used to feed the
@@ -4379,6 +4388,18 @@ export class WorkerManager {
       // a refusal worded "completion aborted: …" would otherwise be handled as
       // a clean session abort and reported with no refusal signal at all.
       const refusal = isServerRefusal(error) ? error : null;
+
+      // Post-completion reap (checkStale watchdog → reapSession): this abort is
+      // cleanup of a session whose worker ALREADY reached done/error. It is not
+      // an outcome, so it must not be reported as one — the abort arm below
+      // would PATCH `failed`, flip a `done` worker to `error` and overwrite
+      // completedAt whenever the server did not answer "completed" to the
+      // reconciliation probe. finally still runs the session's cleanup.
+      const reapedSession = this.sessions.get(worker.id);
+      if (reapedSession?.reapedAt !== undefined && reapedSession.generation === generation) {
+        sessionLog(worker.id, 'info', 'post_completion_reap_settled', `status=${worker.status}`, worker.taskId);
+        return;
+      }
 
       // Check if this is an expected abort (from loop detection or user)
       const isAbortError = !refusal && error instanceof Error &&

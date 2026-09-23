@@ -9,7 +9,7 @@ import { cleanupWorktree } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS, isWorktreePathOwnedByOtherLiveWorker } from './worktree-utils';
 import { sessionLog } from './session-logger';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
-import { teardownSession } from './session-teardown';
+import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 
 /**
@@ -129,7 +129,7 @@ export interface WorkerSyncContext {
   config: LocalUIConfig;
   buildd: BuilddClient;
   workers: Map<string, LocalWorker>;
-  sessions: Map<string, { inputStream: any; abortController: AbortController }>;
+  sessions: Map<string, { inputStream: any; abortController: AbortController; reapedAt?: number }>;
   dirtyWorkers: Set<string>;
   dirtyForDisk: Set<string>;
   emit: (event: any) => void;
@@ -660,13 +660,25 @@ export class WorkerSync {
       // finished, and ctx.abort()/a PATCH here would misreport a real
       // completion as a failure.
       if (worker.status === 'done' || worker.status === 'error') {
+        //
+        // Two stages. First abort and leave the map entry: the session's own
+        // finally block needs it to clean up credentials/config/CBM dirs, and
+        // `reapedAt` tells its catch path not to report a failure. Only if the
+        // entry is STILL there a full grace period later (the process ignored
+        // the abort, so finally never ran) is it dropped outright.
         const session = this.ctx.sessions.get(worker.id);
         if (session) {
-          const referenceTs = worker.completedAt ?? worker.lastActivity;
-          const idleMs = now - referenceTs;
-          if (idleMs > POST_COMPLETION_SESSION_GRACE_MS) {
-            sessionLog(worker.id, 'warn', 'post_completion_session_reaped',
-              `Reaping live SDK session ${Math.round(idleMs / 1000)}s after worker reached status=${worker.status}`);
+          if (session.reapedAt === undefined) {
+            const referenceTs = worker.completedAt ?? worker.lastActivity;
+            const idleMs = now - referenceTs;
+            if (idleMs > POST_COMPLETION_SESSION_GRACE_MS) {
+              sessionLog(worker.id, 'warn', 'post_completion_session_reaped',
+                `Reaping live SDK session ${Math.round(idleMs / 1000)}s after worker reached status=${worker.status}`);
+              reapSession(session, now, worker.id);
+            }
+          } else if (now - session.reapedAt > POST_COMPLETION_SESSION_GRACE_MS) {
+            sessionLog(worker.id, 'warn', 'post_completion_session_dropped',
+              `Session ignored abort for ${Math.round((now - session.reapedAt) / 1000)}s — dropping its entry`);
             teardownSession(this.ctx.sessions, worker.id);
           }
         }
