@@ -593,6 +593,7 @@ describe('queue-stall cron — what is NOT a stall', () => {
 });
 
 describe('queue-stall cron — notification and dedupe', () => {
+  // @notify-fire: queue-stall-gate-ladder
   it('sends one Pushover alert that names the gate, and stamps the task', async () => {
     candidateTasks = [task({ dependsOn: ['dep-1'] })];
     depTasks = [{ id: 'dep-1', title: 'Upstream migration', status: 'failed' }];
@@ -821,10 +822,8 @@ describe('OAuth budget pacing', () => {
   });
 
   it('does not blame pacing for a task carrying an explicit model', async () => {
-    // The router returns `explicit_override` before the pause gate, so such a
-    // task can never be paced. The claim route writes `context.model` onto every
-    // task it claims and the requeue paths do not clear it, so this is the
-    // common re-queued-task shape — not an exotic one.
+    // The router returns `explicit_override` before the pause gate, so a
+    // caller-pinned task can never be paced.
     candidateTasks = [task({ roleSlug: 'builder', priority: 0, context: { model: 'claude-opus-4-6' } })];
     pacingVerdict = { pct: 0.97 };
 
@@ -832,6 +831,23 @@ describe('OAuth budget pacing', () => {
 
     const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
     expect(arg.explicitModel).toBe('claude-opus-4-6');
+  });
+
+  it('treats a requeued task\'s routed model as routable, not as a pin', async () => {
+    // The claim route writes its routed model into context.model and a requeue
+    // keeps it. The next claim routes afresh (model-pin.ts), so pacing CAN
+    // pause it — passing it as explicit would hide the real gate.
+    candidateTasks = [task({
+      roleSlug: 'builder',
+      priority: 0,
+      context: { model: 'claude-opus-4-6', routingReason: 'baseline', modelPinned: false },
+    })];
+    pacingVerdict = { pct: 0.97 };
+
+    await (await POST(makeRequest())).json();
+
+    const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
+    expect(arg.explicitModel).toBeNull();
   });
 
   it('does not assert pacing as the sole cause of an hours-old stall', async () => {
@@ -889,6 +905,7 @@ function workspaceRow(over: Record<string, unknown> = {}) {
 }
 
 describe('fleet-idle pass — alive but claiming nothing', () => {
+  // @notify-fire: queue-stall-fleet-idle
   it('alarms when a heartbeating fleet has claimable work and has started nothing', async () => {
     fleetHeartbeats = [heartbeat()];
     fleetPendingTasks = [pendingTask()];
@@ -904,6 +921,10 @@ describe('fleet-idle pass — alive but claiming nothing', () => {
 
     const arg = mockReportOps.mock.calls[0][0] as any;
     expect(arg.source).toBe('fleet-idle');
+    // Must not depend on the OPS_ALERTS_ENABLED opt-in flag being set in every
+    // environment — this detector exists precisely because that dependency let
+    // a real outage page nobody for a full night.
+    expect(arg.force).toBe(true);
     // Names the cause, the volume and the duration — not a guess about roles.
     expect(arg.message).toContain('1 claimable');
     expect(arg.message).toContain('180m');

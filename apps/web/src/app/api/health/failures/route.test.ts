@@ -39,6 +39,7 @@ const EMPTY_FAMILY = {
 
 const mockGetFailureSignatureFamily = mock(() => Promise.resolve(EMPTY_FAMILY as any));
 const mockFindSupersededErrorMatch = mock(() => Promise.resolve(null as any));
+const mockGetFailureSignatureMatch = mock(() => Promise.resolve(null as any));
 
 // Stands in for the real normalizer (unit tested in the lib): first non-empty
 // line, whitespace collapsed, digits → <n>. Spied so the lookup tests can prove
@@ -54,6 +55,7 @@ mock.module('@/lib/failure-analytics', () => ({
   getFailureAnalytics: mockGetFailureAnalytics,
   getFailureSignatureFamily: mockGetFailureSignatureFamily,
   findSupersededErrorMatch: mockFindSupersededErrorMatch,
+  getFailureSignatureMatch: mockGetFailureSignatureMatch,
   normalizeErrorSignature: mockNormalizeErrorSignature,
   FAILURE_WINDOWS: ['24h', '7d', '30d'],
   parseFailureWindow: (raw: string | null | undefined) =>
@@ -248,6 +250,7 @@ describe('GET /api/health/failures — signature lookup', () => {
     mockGetFailureAnalytics.mockReset();
     mockGetFailureSignatureFamily.mockReset();
     mockFindSupersededErrorMatch.mockReset();
+    mockGetFailureSignatureMatch.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockNormalizeErrorSignature.mockClear();
@@ -257,6 +260,7 @@ describe('GET /api/health/failures — signature lookup', () => {
     mockGetFailureAnalytics.mockResolvedValue(analyticsWith([STALE_CLUSTER], 12));
     mockGetFailureSignatureFamily.mockResolvedValue(EMPTY_FAMILY);
     mockFindSupersededErrorMatch.mockResolvedValue(null);
+    mockGetFailureSignatureMatch.mockResolvedValue(null);
   });
 
   it('omits the lookup block entirely when no error param is given', async () => {
@@ -395,6 +399,34 @@ describe('GET /api/health/failures — signature lookup', () => {
       expect(body.lookup.firstSeen).toBe('2026-08-22T00:00:00.000Z');
       expect(body.lookup.lastSeen).toBe('2026-08-27T00:00:00.000Z');
       expect(body.lookup.exampleTaskId).toBe('task-1');
+    });
+
+    // Bookkeeping exits (a `Deferred:` codex deferral, never_started,
+    // needs_input) are out of the ranked signatures by design, but friction
+    // dedupe still has to find them — or every report files a duplicate.
+    it('resolves a bookkeeping-exit signature that the ranking leaves out', async () => {
+      mockGetFailureSignatureMatch.mockResolvedValue({
+        signature: 'Deferred: another Codex worker is already active',
+        count: 7,
+        firstSeen: '2026-08-22T00:00:00.000Z',
+        lastSeen: '2026-08-27T00:00:00.000Z',
+        exampleWorkerIds: ['w1'],
+        exampleError: 'Deferred: another Codex worker is already active',
+        exampleTaskId: 'task-9',
+        diedEarlyCount: 7,
+        exitCauses: ['condition_unmet'],
+      });
+      mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
+      const res = await GET(makeRequest(`${URL_BASE}?window=30d&error=${encodeURIComponent('Deferred: another Codex worker is already active')}`));
+      const body = await res.json();
+      expect(body.lookup.known).toBe(true);
+      expect(body.lookup.count).toBe(7);
+      expect(body.lookup.exitCauses).toEqual(['condition_unmet']);
+      expect(body.lookup.exampleTaskId).toBe('task-9');
+      expect(body.lookup.supersededOnly).toBeUndefined();
+      expect(mockGetFailureSignatureMatch.mock.calls[0][0]).toEqual([VALID_UUID]);
+      expect(mockGetFailureSignatureMatch.mock.calls[0][1]).toBe('30d');
+      expect(mockFindSupersededErrorMatch).not.toHaveBeenCalled();
     });
 
     it('does not call the superseded fallback when a ranked cluster already matched', async () => {

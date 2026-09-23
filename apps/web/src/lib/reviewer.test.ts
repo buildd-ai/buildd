@@ -53,6 +53,7 @@ mock.module('@buildd/core/db', () => ({
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
+      workers: { findMany: mock(() => Promise.resolve([])) },
       missions: { findFirst: mock(() => Promise.resolve(missionFindFirstResult)) },
       // Two different callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
       // passes a `with: { workers }` relation; the pre-dispatch duplicate probe in
@@ -1046,22 +1047,36 @@ describe('enforceServerSideEscalation', () => {
     expect(result.overrideReason).toContain('infra/terraform/main.tf');
   });
 
-  it('overrides approve for a risk class the workspace policy reserves for humans', () => {
+  const CAUTIOUS_SCHEMA = {
+    preset: 'cautious' as const,
+    riskClasses: [
+      { name: 'destructive_schema_change' as const, detectedPaths: ['packages/core/db/schema.ts', 'packages/core/drizzle/'] },
+    ],
+  };
+
+  it('overrides approve for a destructive migration the workspace policy reserves for humans', () => {
     const result = enforceServerSideEscalation({
       verdict: 'approve',
-      prFiles: [{ filename: 'packages/core/db/schema.ts' }],
+      prFiles: [{ filename: 'packages/core/db/schema.ts' }, { filename: 'packages/core/drizzle/0200_drop.sql' }],
       policy: OPEN_POLICY,
-      policyConfig: {
-        preset: 'cautious',
-        riskClasses: [
-          { name: 'destructive_schema_change', detectedPaths: ['packages/core/db/schema.ts'] },
-        ],
-      },
-      migrationSafety: { safe: true, operations: [] },
+      policyConfig: CAUTIOUS_SCHEMA,
+      migrationSafety: { safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' },
     });
 
     expect(result.verdict).toBe('escalate');
-    expect(result.overrideReason).toContain('human review');
+    expect(result.overrideReason).toContain('drops column tasks.legacy');
+  });
+
+  it('lets an additive (EXPAND) schema change through without a human', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [{ filename: 'packages/core/db/schema.ts' }, { filename: 'packages/core/drizzle/0200_add.sql' }],
+      policy: OPEN_POLICY,
+      policyConfig: CAUTIOUS_SCHEMA,
+      migrationSafety: { safe: true, operationClass: 'EXPAND' },
+    });
+
+    expect(result).toEqual({ verdict: 'approve', overrideReason: null });
   });
 
   it('passes a clean approve through untouched', () => {

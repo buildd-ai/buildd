@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authorizePlatformAdmin } from '@/lib/platform-admin';
 import { db } from '@buildd/core/db';
 import { sql, eq } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
@@ -29,24 +29,16 @@ import { shouldMarkUnresolvable } from '@/lib/pr-freshness';
  * Rows GitHub cannot resolve at all are written to terminal `unresolvable`
  * rather than left to be retried forever.
  *
- * Admin-level API key required.
+ * Platform admin API key required (see lib/platform-admin.ts).
  * Returns { total, refreshed, unresolvable, skipped }.
  */
 export async function POST(req: NextRequest) {
-  // Admin-level API key required. A browser session is deliberately NOT
-  // accepted: there is no platform-admin concept for sessions in this codebase,
-  // so accepting one would let any signed-in user drive a bulk GitHub-backed
-  // write across every workspace. Same bar as admin/refresh-model-aliases.
-  const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
-
-  if (!apiAccount) {
-    return NextResponse.json({ error: 'Requires an admin-level API key' }, { status: 401 });
-  }
-  if (apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
-  }
+  // Platform operators only (BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS). This drives a
+  // bulk GitHub-backed write across every workspace, so a team-admin key is not
+  // enough and a browser session is never accepted. Same gate as
+  // admin/refresh-model-aliases.
+  const gate = await authorizePlatformAdmin(req);
+  if (gate.response) return gate.response;
 
   // Every row with a PR that has not landed and is not already terminal —
   // regardless of how the originating task ended.

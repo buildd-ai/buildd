@@ -2,7 +2,7 @@
 title: Answered-Question Resume
 status: active
 owner: max
-last_verified: 2026-09-20
+last_verified: 2026-09-23
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
 surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
@@ -308,6 +308,21 @@ could not be refreshed. A revoked credential never reaches the gates.
 - The sweep MUST be idempotent: once it has written `answerDelivery.path:
   'cold_continuation'` and superseded the worker, a second pass creates no
   second continuation.
+- `cleanupUnresumedAnswers` supersedes the worker and inserts the
+  `Continue:` task in two separate statements — neon-http has no
+  transactions. If the insert throws, the worker MUST be rolled back to
+  `waiting_input` with the answer restored on `pendingInstructions`, not left
+  `superseded` with the answer gone and no continuation to pick it up (the
+  candidate query only looks at `waiting_input`, so a worker stuck
+  `superseded` here is never revisited). This mirrors the same compensation
+  `respondByContinuation` (`apps/web/src/app/api/workers/[id]/respond/route.ts`)
+  already does for the equivalent hazard on the primary answer path.
+- Once that `Continue:` task exists, the two remaining writes (stamping
+  `answerDelivery` on the parent task's `context`, posting the feed note) are
+  best-effort: the answer is already durably recoverable, so a failure there
+  MUST NOT propagate out of `cleanupUnresumedAnswers` and abort the sweep for
+  the rest of that account's candidates. The worker stays `superseded` and
+  counts toward `degraded`; the failure is logged, not raised.
 
 **Acceptance criteria**:
 - AC-AQR-14: GIVEN an answer that falls back for any reason WHEN `POST
@@ -326,6 +341,15 @@ could not be refreshed. A revoked credential never reaches the gates.
 - AC-AQR-18: GIVEN a worker whose queued answer WAS acknowledged (its
   `instructionHistory` entry reads `delivered` and `pendingInstructions` is
   null) WHEN `cleanupUnresumedAnswers` runs THEN it is left alone.
+- AC-AQR-19: GIVEN a worker superseded by the sweep's CAS WHEN the
+  compensating `Continue:` task insert throws THEN the worker is rolled back
+  to `status: 'waiting_input'` with the answer restored on
+  `pendingInstructions`, no continuation task exists, and the OAuth seat is
+  not released.
+- AC-AQR-26: GIVEN a `Continue:` task that was inserted successfully WHEN the
+  `answerDelivery` context stamp or the feed-note insert then throws THEN
+  `cleanupUnresumedAnswers` does not raise, the worker still counts toward
+  `degraded`, and any later candidate in the same call is still processed.
 
 **Code surface**:
 - `apps/web/src/lib/answer-resume.ts` — `buildContinuationTaskValues`,

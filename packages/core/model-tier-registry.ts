@@ -4,10 +4,14 @@
  * Resolution chain (first match wins):
  *   1. Workspace override row  (team_id=X, workspace_id=Y, tier=T)
  *   2. Team default row        (team_id=X, workspace_id=NULL, tier=T)
- *   3. TIER_DEFAULTS           (code-level fallback, last resort)
+ *   3. Live catalog pick       (newest release in the tier's price band — see
+ *                                model-catalog.ts; self-heals without a deploy)
+ *   4. TIER_DEFAULTS           (code-level fallback, last resort — catalog empty/failed)
  *
  * Resolution happens at claim time so a registry update affects already-queued tasks
- * within the next 60-second cache window — no deploy needed.
+ * within the next 60-second cache window — no deploy needed. The catalog step
+ * carries its own 24h cache (model-catalog-cache.ts), so it self-heals on the
+ * same "no deploy" property without hitting OpenRouter on every claim.
  *
  * See docs/design/model-tiers.md for the full spec.
  */
@@ -19,6 +23,9 @@ export type { Tier, TierProvider, TierEntry } from './model-tier-defaults';
 export { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
 import type { Tier, TierEntry, TierProvider } from './model-tier-defaults';
 import { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
+import { pickTierModel } from './model-catalog';
+import { getCachedOpenRouterCatalog } from './model-catalog-cache';
+import { makeCatalogServabilityCheck, type UnrecognizedModelReason } from './model-capability-requirements';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
 export function mapRouterAlias(alias: string): Tier {
@@ -47,17 +54,78 @@ export function invalidateTierCache(teamId: string, workspaceId?: string | null)
 }
 
 /**
+ * Resolve a tier from the live catalog when no registry row pins it — the
+ * self-healing path. Null means "learned nothing" (empty/failed catalog, or
+ * nothing in-band survives the capability filter): the caller falls back to
+ * TIER_DEFAULTS rather than inventing a pick.
+ *
+ * `runnerCliVersion`, when supplied, excludes a candidate the claiming runner
+ * cannot actually serve (its CLI predates the model's version floor) — the
+ * newest-wins sort in `pickTierModel` then lands on the previous in-band
+ * release instead of deferring the task entirely. A release newer than every
+ * model in MODEL_MIN_CLI_VERSION is excluded regardless of version, because
+ * its floor is unknown (see makeCatalogServabilityCheck).
+ */
+/**
+ * Ids already warned about as held back, so a refused model is logged once per
+ * process rather than on every claim. Keyed by id + reason.
+ */
+const warnedUnrecognized = new Set<string>();
+
+function warnUnrecognized(id: string, reason: UnrecognizedModelReason): void {
+  const key = `${reason}:${id}`;
+  if (warnedUnrecognized.has(key)) return;
+  warnedUnrecognized.add(key);
+  const why =
+    reason === 'newer_than_floor_table'
+      ? 'it was released after every model in MODEL_MIN_CLI_VERSION, so its CLI floor is unknown'
+      : reason === 'no_recorded_model_in_catalog'
+        ? 'no model in MODEL_MIN_CLI_VERSION is in the catalog, so nothing marks which releases are known (tiers fall back to TIER_DEFAULTS)'
+        : 'the catalog gave no release time for it';
+  console.warn(
+    `[model-tier-registry] catalog pick refused ${id}: ${why}. ` +
+      `To adopt it, add its minimum CLI version to MODEL_MIN_CLI_VERSION in packages/core/model-capability-requirements.ts.`,
+  );
+}
+
+async function resolveFromCatalog(
+  tier: Tier,
+  runnerCliVersion?: string | null,
+): Promise<TierEntry | null> {
+  try {
+    const entries = await getCachedOpenRouterCatalog();
+    if (entries.length === 0) return null;
+
+    const pick = pickTierModel(tier, entries, 'anthropic', {
+      isServable: makeCatalogServabilityCheck(entries, runnerCliVersion, {
+        onUnrecognized: warnUnrecognized,
+      }),
+    });
+    if (!pick) return null;
+
+    return { provider: 'anthropic', model: pick.id, source: 'catalog' };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the effective tier entry for a given team and optional workspace.
- * Returns the entry + source annotation ('workspace' | 'team' | 'default').
+ * Returns the entry + source annotation ('workspace' | 'team' | 'catalog' | 'default').
  *
  * The returned entry is what gets passed to the runner as { model, provider, ... }.
  * For provider='openrouter', the backend implementation is out of scope but the
  * entry is stored and retrievable — dispatch throws a clear error if dispatched.
+ *
+ * `runnerCliVersion` (the claiming runner's reported CLI version) only affects
+ * the catalog step — an explicit registry row is an operator's deliberate
+ * choice and is never second-guessed by a client capability check.
  */
 export async function resolveTierEntry(
   tier: Tier,
   teamId: string,
   workspaceId?: string | null,
+  runnerCliVersion?: string | null,
 ): Promise<TierEntry> {
   const key = cacheKey(teamId, workspaceId);
   const now = Date.now();
@@ -104,8 +172,21 @@ export async function resolveTierEntry(
       return entry;
     }
   } catch {
-    // DB unavailable — fall through to defaults
+    // DB unavailable — fall through to the catalog, then defaults.
   }
+
+  // No explicit registry row (or the DB was unreachable): try the live
+  // catalog before the hand-maintained default. A same-band release is
+  // adopted without a registry write only if it was released no later than
+  // the newest model in MODEL_MIN_CLI_VERSION; anything newer needs a floor
+  // row there (a code change, so a deploy) first — see resolveFromCatalog.
+  // Deliberately NOT cached in `cache` above — the pick can depend on the
+  // claiming runner's CLI version, and `cache` is keyed by team:workspace
+  // only, so caching it there would serve one runner's pick to another.
+  // getCachedOpenRouterCatalog() already caches the expensive part (the
+  // network fetch); pickTierModel is a cheap in-memory scan.
+  const catalogEntry = await resolveFromCatalog(tier, runnerCliVersion);
+  if (catalogEntry) return catalogEntry;
 
   return { ...TIER_DEFAULTS[tier] };
 }

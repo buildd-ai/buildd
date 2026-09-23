@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/lib/signing-key-windows.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
 related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, mcp-action-contracts]
 keywords: [rfc 7591, dynamic client registration, rfc 9728, resource_metadata, jwks, kid, es256, hs256, code_challenge, signing_key, assertion grant]
-verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts]
+verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/lib/oauth/storage.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts]
 assertions:
   - id: jwks-route-get
     type: route
@@ -134,10 +134,20 @@ system.
 - Every minted `oauthCodes` row MUST carry `(clientId, userId, workspaceId,
   redirectUri, codeChallenge)`. There is no "all workspaces" code: the column
   is `NOT NULL`.
+- `GET` MUST NOT mint a code. With a valid request, a session and a reachable
+  workspace it renders a consent page naming the client, the workspace, and
+  the access the connection will have (the user's team role, via
+  `levelForTeamRole()`). The page MUST NOT be frameable
+  (`X-Frame-Options: DENY`, `frame-ancestors 'none'`).
+- A code is minted only by a `POST` of that consent form with
+  `decision=approve`, an `Origin` equal to this site's origin, and a consent
+  token (HMAC over the session user and every authorize parameter, 10-minute
+  lifetime) that matches the submitted parameters. Anything else is HTTP 403
+  and mints nothing. `decision=deny` redirects (303) with
+  `error=access_denied`.
 - After minting, the user MUST see an interstitial naming the workspace the
-  connector was scoped to before the redirect fires. This exists because of the
-  2026-05-25 misroute incident, where a user with three buildd connectors could
-  not tell which workspace they had just authorized.
+  connector was scoped to before the redirect fires, so a user with several
+  buildd connectors can tell which workspace they just authorized.
 
 **Acceptance criteria**:
 - AC-6: GIVEN a client registered with `http://localhost:41776/callback/x` WHEN
@@ -155,12 +165,19 @@ system.
 - AC-10: GIVEN a logged-in user with ≥1 workspace and no `workspace` param
   WHEN authorize is called THEN the response is HTTP 200 `text/html` listing
   each accessible workspace (picker), not a redirect.
+- AC-10a: GIVEN a valid request with a `workspace` WHEN `GET` is called THEN
+  no `oauthCodes` row is created and the response is a consent form.
+- AC-10b: GIVEN that consent form WHEN it is POSTed without its token, with a
+  token for different parameters, from another origin, or with no `Origin`
+  THEN the server returns HTTP 403 and no code is minted.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/oauth/authorize/route.ts:83-176`
 - Redirect-URI matcher: same file `:23-51` — `isRegisteredRedirectUri()`
 - Access re-check: same file `:57-69` — `workspacesForUser()`
-- Consent interstitial: same file `:230-268` — `renderAuthorizedInterstitial()`
+- Consent page + decision: same file — `renderConsentPage()`, `POST`,
+  `verifyConsentToken()`, `isSameOriginPost()`
+- Post-approval interstitial: same file — `renderAuthorizedInterstitial()`
 - Code persistence: `apps/web/src/lib/oauth/storage.ts:36-59` — `createAuthCode()`
 - Schema: `packages/core/db/schema.ts:2085-2099` — `oauthCodes`
 
@@ -180,10 +197,17 @@ system.
   base64url(SHA-256(`code_verifier`)) equals the stored `codeChallenge`. Every
   failure collapses to `invalid_grant` — the response MUST NOT distinguish
   which check failed.
-- Redemption MUST set `consumedAt`, making the code single-use.
-  `AUTH_CODE_TTL_SECONDS` is 600.
-- `consumeRefreshToken()` MUST set `revokedAt` on the presented token before
-  the caller mints a replacement, so refresh tokens rotate on every use.
+- Redemption MUST claim the code with one conditional
+  `UPDATE ... SET consumed_at WHERE consumed_at IS NULL RETURNING` before the
+  other checks run, so the code is single-use even under concurrent exchanges
+  (neon-http has no interactive transactions). `AUTH_CODE_TTL_SECONDS` is 600.
+- `consumeRefreshToken()` MUST revoke the presented token the same way
+  (`WHERE revoked_at IS NULL RETURNING`) before the caller mints a
+  replacement, so refresh tokens rotate on every use and mint at most once.
+- Both grants MUST confirm the user still has a `team_members` row on the
+  workspace's team (`userHasWorkspaceMembership()`); a refresh that fails this
+  returns `invalid_grant` and revokes the user's remaining refresh tokens for
+  that workspace (`revokeRefreshTokensForUserWorkspace()`).
   `REFRESH_TOKEN_TTL_SECONDS` is 90 days and bounds the absolute chain length.
 - Every issued access token MUST carry `sub` (userId), `client_id`, `scope`,
   `workspace_id`, `iss = getIssuer()`, and

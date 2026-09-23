@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { auth } from '@/auth';
+import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 import { listInstallationRepos } from '@/lib/github';
 import { syncInstallationRepos } from '@/lib/github-repo-link';
 
@@ -27,6 +28,12 @@ export async function GET(
     });
 
     if (!installation) {
+      return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
+    }
+
+    // Listed only for members of a team the installation belongs to (or its installer).
+    const access = await getInstallationAccessForUser(session.user.id!, installation);
+    if (!access.canView) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }
 
@@ -94,6 +101,11 @@ export async function POST(
       where: eq(githubInstallations.id, id),
     });
     if (!installation) {
+      return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
+    }
+
+    const access = await getInstallationAccessForUser(session.user.id!, installation);
+    if (!access.canView) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }
 

@@ -170,6 +170,14 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         with:
+          # This workflow only ever fires from a `dev` push (job-level `if` above),
+          # authored by a human or by one of these two known bots — buildd-ai (worker
+          # commits) or buildd-release (the release process). A large share of failures
+          # were the action refusing to run at all because its default
+          # `allowed_bots: ""` rejects any Bot actor; naming the two bots this
+          # repo actually produces (never '*') fixes that without opening the action to
+          # an arbitrary external bot on this public repo.
+          allowed_bots: "buildd-ai,buildd-release"
           prompt: |
             The CI build failed on the dev branch. Here are the last 100 lines of the failed job logs:
 
@@ -187,4 +195,9 @@ jobs:
             IMPORTANT: Do NOT spend turns downloading or re-reading CI logs - they are provided above.
             Use `git push origin dev` to push your fix.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--max-turns 30 --allowedTools "Bash(*),Edit,Read,Write,Glob,Grep"'
+          # 30 was the other main failure cause: runs that got past the bot-actor check
+          # above and actually succeeded were finishing just under the cap — it was
+          # already close to binding on a WORKING fix, so on a harder one
+          # it was undersized rather than a genuine "this is unfixable" signal. 50 gives
+          # real headroom without being unbounded.
+          claude_args: '--max-turns 50 --allowedTools "Bash(*),Edit,Read,Write,Glob,Grep"'

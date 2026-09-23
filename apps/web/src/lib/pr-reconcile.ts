@@ -163,6 +163,14 @@ export interface ReconcileResult {
    * is catching real webhook misses" stays distinguishable from an idle run.
    */
   subjectsReconciled: number;
+  /**
+   * Rows newly stamped `prLifecycleStatus='conflict'` because a direct GET
+   * showed `mergeable_state: 'dirty'`. The webhook's `mergeable` field is
+   * computed asynchronously by GitHub and is very often still null at
+   * delivery time — this sweep is the reliable read that does not depend on
+   * that race, for every open PR (not just the dead-zone subset).
+   */
+  conflictsDetected: number;
 }
 
 /**
@@ -246,6 +254,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       completedAt: true,
       createdAt: true,
       prCheckFailureCount: true,
+      conflictDetectedAt: true,
     },
     // The mission link, for the Option A' opener below. Fetched with the batch
     // rather than re-read per row: a merge healed here may be the event that
@@ -264,6 +273,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     errors: 0,
     unresolvable: 0,
     subjectsReconciled: 0,
+    conflictsDetected: 0,
   };
   if (candidates.length === 0) return result;
 
@@ -412,7 +422,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         const pr = await githubApi(
           installationId,
           `/repos/${repo}/pulls/${worker.prNumber}`,
-        ) as { state: string; merged: boolean; merged_at: string | null };
+        ) as { state: string; merged: boolean; merged_at: string | null; mergeable_state: string | null };
 
         if (pr.merged && pr.merged_at) {
           await recordCheck(worker.id, {
@@ -492,7 +502,23 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // Still open — record the check and clear the failure streak. The PR
           // resolved fine; it simply has not landed yet. GitHub gave a real
           // answer, so this advances the verification clock too.
-          await recordCheck(worker.id, { prCheckFailureCount: 0 }, { verified: true });
+          //
+          // `mergeable_state` here comes from a direct GET, unlike the webhook's
+          // `pull_request.mergeable`, which GitHub computes asynchronously and is
+          // very often still null on `opened`/`synchronize` deliveries. This is
+          // the reliable read for every open PR on this sweep's tiered SLA (as
+          // little as 30 minutes for a fresh one), not just the terminal-task
+          // subset dead-zone-sweep covers. Only stamp on the FIRST observation —
+          // never overwrite an existing conflictDetectedAt — matching the
+          // webhook's own guard.
+          const newlyConflicted = pr.mergeable_state === 'dirty' && !worker.conflictDetectedAt;
+          await recordCheck(worker.id, {
+            prCheckFailureCount: 0,
+            ...(newlyConflicted
+              ? { conflictDetectedAt: new Date(), prLifecycleStatus: 'conflict' as const }
+              : {}),
+          }, { verified: true });
+          if (newlyConflicted) result.conflictsDetected++;
           result.skipped++;
         }
       } catch (err) {

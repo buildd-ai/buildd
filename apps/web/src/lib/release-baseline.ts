@@ -91,7 +91,7 @@ export async function resolveGatedReleaseState(workspaceId: string, now: Date = 
 async function resolveProdBranchHeadAsOf(workspaceId: string): Promise<string | null> {
   if (!isGitHubAppConfigured()) return null;
 
-  const targetResult = await resolveReleaseTarget({ workspaceId });
+  const targetResult = await resolveReleaseTarget({ workspaceId, scope: { internal: true } });
   if (!targetResult.ok) return null;
   const target = targetResult.target;
   const prodBranch = target.releaseConfig?.prodBranch ?? target.defaultBranch;

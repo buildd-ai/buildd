@@ -5,6 +5,7 @@
  * for server + runner integration tests.
  */
 
+import { readLocalToken, LOCAL_TOKEN_HEADER } from '../../apps/runner/src/local-server-auth';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -132,6 +133,9 @@ export class LocalUIClient {
       ...init,
       headers: {
         'Content-Type': 'application/json',
+        // The runner's local server requires its local token for config
+        // reads and every state-changing request.
+        ...(readLocalToken() ? { [LOCAL_TOKEN_HEADER]: readLocalToken()! } : {}),
         ...(init?.headers || {}),
       },
     });
@@ -262,7 +266,10 @@ export async function startLocalUI(localUIUrl: string): Promise<void> {
     await pollUntil(
       async () => {
         try {
-          const res = await fetch(`${localUIUrl}/api/config`);
+          const token = readLocalToken();
+          const res = await fetch(`${localUIUrl}/api/config`, {
+            headers: token ? { [LOCAL_TOKEN_HEADER]: token } : {},
+          });
           return res.ok || null;
         } catch {
           return null;
@@ -300,7 +307,10 @@ export async function startLocalUI(localUIUrl: string): Promise<void> {
   await pollUntil(
     async () => {
       try {
-        const res = await fetch(`${localUIUrl}/api/config`);
+        const token = readLocalToken();
+        const res = await fetch(`${localUIUrl}/api/config`, {
+          headers: token ? { [LOCAL_TOKEN_HEADER]: token } : {},
+        });
         return res.ok || null;
       } catch {
         return null;

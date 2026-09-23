@@ -351,9 +351,9 @@ that identifies the caller but never resolves scope is a cross-team read.
   that task.
 - Scope resolution is a **widening** function and its width is part of the
   contract: `verifyAccountWorkspaceAccess` returns true for any account when
-  `workspaces.accessMode = 'open'` (the column default), and
-  `resolveAccountTeamIds` maps an API account to *every team any member of its
-  team belongs to*. A reader auditing tenancy must treat "workspace member" as
+  `workspaces.accessMode = 'open'` (the column default). `resolveAccountTeamIds`
+  maps an API account to exactly its own team (a session user to all of their
+  teams). A reader auditing tenancy must treat "workspace member" as
   "any authenticated caller" for open workspaces. Narrowing this is a
   `team-namespace-scoping` concern, not an artifact-route concern; what this spec
   requires is that no artifact route skip the resolution entirely.

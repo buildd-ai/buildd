@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { oauthClients, oauthCodes, oauthRefreshTokens } from '@buildd/core/db/schema';
+import { oauthClients, oauthCodes, oauthRefreshTokens, teamMembers, workspaces } from '@buildd/core/db/schema';
 import {
   AUTH_CODE_BYTES,
   AUTH_CODE_TTL_SECONDS,
@@ -100,6 +100,13 @@ export type ConsumedAuthCode = {
   scope: string | null;
 };
 
+/**
+ * Exchange an auth code. Single use: the code is claimed by one conditional
+ * UPDATE ... WHERE consumed_at IS NULL RETURNING, so of two concurrent
+ * exchanges exactly one gets the row (neon-http has no interactive
+ * transactions, so a read-then-write would not be). The remaining checks run
+ * on the claimed row; a code that fails them stays consumed.
+ */
 export async function consumeAuthCode(args: {
   code: string;
   clientId: string;
@@ -107,10 +114,10 @@ export async function consumeAuthCode(args: {
   codeVerifier: string;
 }): Promise<ConsumedAuthCode | { error: string }> {
   const rows = await db
-    .select()
-    .from(oauthCodes)
+    .update(oauthCodes)
+    .set({ consumedAt: new Date() })
     .where(and(eq(oauthCodes.code, args.code), isNull(oauthCodes.consumedAt)))
-    .limit(1);
+    .returning();
   const row = rows[0];
   if (!row) return { error: 'invalid_grant' };
   if (row.expiresAt.getTime() < Date.now()) return { error: 'invalid_grant' };
@@ -120,8 +127,6 @@ export async function consumeAuthCode(args: {
   // PKCE verification: SHA256(codeVerifier) base64url-encoded must match codeChallenge.
   const computed = createHash('sha256').update(args.codeVerifier).digest('base64url');
   if (computed !== row.codeChallenge) return { error: 'invalid_grant' };
-
-  await db.update(oauthCodes).set({ consumedAt: new Date() }).where(eq(oauthCodes.code, args.code));
 
   return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
 }
@@ -151,25 +156,50 @@ export type ConsumedRefreshToken = {
   scope: string | null;
 };
 
+/**
+ * Rotate a refresh token. Single use: revoked by one conditional
+ * UPDATE ... WHERE revoked_at IS NULL RETURNING, so a token can mint at most
+ * one new pair even under concurrent refreshes. The caller mints the new one.
+ */
 export async function consumeRefreshToken(args: {
   token: string;
   clientId: string;
 }): Promise<ConsumedRefreshToken | { error: string }> {
   const rows = await db
-    .select()
-    .from(oauthRefreshTokens)
+    .update(oauthRefreshTokens)
+    .set({ revokedAt: new Date() })
     .where(and(eq(oauthRefreshTokens.token, args.token), isNull(oauthRefreshTokens.revokedAt)))
-    .limit(1);
+    .returning();
   const row = rows[0];
   if (!row) return { error: 'invalid_grant' };
   if (row.expiresAt.getTime() < Date.now()) return { error: 'invalid_grant' };
   if (row.clientId !== args.clientId) return { error: 'invalid_grant' };
 
-  // Rotate: revoke the old refresh token. Caller will mint a new one.
+  return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
+}
+
+/** True when the user has a team_members row on the workspace's team. */
+export async function userHasWorkspaceMembership(userId: string, workspaceId: string): Promise<boolean> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return false;
+  const membership = await db.query.teamMembers.findFirst({
+    where: and(eq(teamMembers.teamId, ws.teamId), eq(teamMembers.userId, userId)),
+    columns: { role: true },
+  });
+  return !!membership;
+}
+
+/** Revoke every outstanding refresh token a user holds for a workspace. */
+export async function revokeRefreshTokensForUserWorkspace(userId: string, workspaceId: string): Promise<void> {
   await db
     .update(oauthRefreshTokens)
     .set({ revokedAt: new Date() })
-    .where(eq(oauthRefreshTokens.token, args.token));
-
-  return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
+    .where(and(
+      eq(oauthRefreshTokens.userId, userId),
+      eq(oauthRefreshTokens.workspaceId, workspaceId),
+      isNull(oauthRefreshTokens.revokedAt),
+    ));
 }

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 const { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } = fs;
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import type { LocalWorker, CheckpointEventType } from './types';
 import { teardownStableCodexHome } from './codex-auth';
 import { sessionLog } from './session-logger';
@@ -35,7 +35,7 @@ let workersDirCache: string | null = null;
 
 function workersDir(): string {
   if (workersDirCache === null) {
-    workersDirCache = join(process.env.BUILDD_HOME || join(homedir(), '.buildd'), 'workers');
+    workersDirCache = join(resolveBuilddHome(), 'workers');
   }
   return workersDirCache;
 }
@@ -50,8 +50,13 @@ const PERSISTED_FIELDS = [
   'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'taskBackend', 'workspaceId', 'workspaceName',
   'branch', 'status', 'error', 'completedAt', 'startedAt', 'lastActivity', 'sessionId', 'codexThreadId',
   'waitingFor',
+  // So a resume after a runner restart keeps the model the session ran on.
+  'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
+  // Read by history-store's backfill so an archived session keeps its usage,
+  // model and PR URL. Not restored onto live workers by loadAllWorkers.
+  'resultMeta', 'prUrl', 'reportedModel',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -360,6 +365,52 @@ export function loadWorker(workerId: string): LocalWorker | null {
   } catch {
     return null;
   }
+}
+
+// `getWorkers()` (workers.ts) merges in-memory workers with the done/error
+// workers still on disk (24h history). It's called from several HTTP route
+// handlers — `GET /health`, `GET /api/workers`, the `GET /api/events` SSE
+// init payload, `POST /api/update` — plus a 60s watchdog and the periodic
+// reconcile pass. Before this cache, every one of those calls paid a full
+// `readdirSync` + JSON.parse of the whole store — a 23-day audit of the live
+// runner found several hundred files there routinely, so this was the actual
+// bottleneck on hot paths. (Pusher event handlers use a separate, already-
+// cheap in-memory Map callback of the same name and were never part of this.)
+//
+// Bounded instead of invalidated on write: the disk-only terminal set only
+// gains members when a worker is evicted from memory (a 5-minute timer) or
+// restored at startup, so a short TTL trades at most a few seconds of
+// staleness on a history listing for turning O(calls x files) into
+// O(files / ttl).
+const TERMINAL_CACHE_TTL_MS = 5_000;
+let terminalWorkersCache: { workers: LocalWorker[]; expiresAt: number } | null = null;
+let diskScanCountForTests = 0;
+
+/**
+ * Cached, filtered view of `loadAllWorkers()` for hot paths that only need
+ * the terminal (done/error) disk history, not the live workers already held
+ * in memory. `now` is injectable for deterministic tests.
+ */
+export function loadTerminalWorkersCached(now: number = Date.now()): LocalWorker[] {
+  if (!terminalWorkersCache || terminalWorkersCache.expiresAt <= now) {
+    diskScanCountForTests += 1;
+    terminalWorkersCache = {
+      workers: loadAllWorkers().filter(w => w.status === 'done' || w.status === 'error'),
+      expiresAt: now + TERMINAL_CACHE_TTL_MS,
+    };
+  }
+  return terminalWorkersCache.workers;
+}
+
+/** Test-only: drop the cache and its scan counter so the next call re-scans. */
+export function __resetDiskWorkersCache(): void {
+  terminalWorkersCache = null;
+  diskScanCountForTests = 0;
+}
+
+/** Test-only: how many real disk scans loadTerminalWorkersCached has performed. */
+export function __getDiskScanCountForTests(): number {
+  return diskScanCountForTests;
 }
 
 /** Delete a worker's persisted state */

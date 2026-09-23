@@ -101,6 +101,7 @@ ALLOW_MUST_TRIGGER = [
 
 import os
 import subprocess
+import tempfile
 
 SCRIPT = HERE.parent / "check_no_prod_data.py"
 
@@ -130,7 +131,42 @@ def guard_integrity_failures(tmp: Path) -> list[str]:
         bad.append(f"SET IDENTIFIERS FAILED A CLEAN TREE: rc={r.returncode} "
                    f"{r.stdout.strip()[:120]!r}")
 
-    # 3. An identifier finding must never echo the match. mask() only redacts
+    # 3a. NO_PROD_DATA_LOCAL is the one exception to rule 1: a workstation never
+    #     has the secret, so failing closed there trains people to ignore the
+    #     check. It must downgrade the missing-secret case to a warning on an
+    #     otherwise-clean tree...
+    r = run_main({"NO_PROD_DATA_IDENTIFIERS": "", "NO_PROD_DATA_LOCAL": "1"}, tmp)
+    if r.returncode != 0:
+        bad.append(f"LOCAL MODE FAILED A CLEAN TREE OVER A MISSING SECRET: "
+                   f"rc={r.returncode} {(r.stdout + r.stderr).strip()[:160]!r}")
+    if "skipped" not in (r.stdout + r.stderr).lower():
+        bad.append("LOCAL MODE DIDN'T SAY IT SKIPPED THE IDENTIFIER SCAN")
+
+    # 3b. ...but must NOT paper over a real finding. The count/UUID rules need
+    #     no secret, so local mode has no excuse to go quiet on those.
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+        tf.write("fix: scope to team d2cb1c29-3f92-4ea1-ba0c-fe8b41ccf3b5\n")
+        title_path = tf.name
+    try:
+        env = {**os.environ, "NO_PROD_DATA_IDENTIFIERS": "", "NO_PROD_DATA_LOCAL": "1"}
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT), "HEAD", "--body", "/dev/null",
+             "--title", title_path],
+            capture_output=True, text=True, cwd=tmp, env=env)
+        if r.returncode == 0:
+            bad.append("LOCAL MODE SUPPRESSED A REAL UUID FINDING, NOT JUST THE "
+                       "MISSING-SECRET CASE")
+    finally:
+        os.unlink(title_path)
+
+    # 3c. CI never sets NO_PROD_DATA_LOCAL, so its fail-closed behavior (case 1
+    #     above) must be exactly what it was before this mode existed -- this
+    #     is a regression guard on that independence, not new behavior.
+    r = run_main({"NO_PROD_DATA_IDENTIFIERS": ""}, tmp)
+    if r.returncode == 0:
+        bad.append("CI-MODE (NO_PROD_DATA_LOCAL UNSET) NO LONGER FAILS CLOSED")
+
+    # 4. An identifier finding must never echo the match. mask() only redacts
     #    [0-9a-f], so a name made of other letters survives it almost intact —
     #    and Actions logs on a public repo are world-readable, so printing the
     #    excerpt republishes the private name the check exists to catch.
@@ -161,16 +197,18 @@ def guard_integrity_failures(tmp: Path) -> list[str]:
 def added_source_uuid_failures() -> list[str]:
     bad = []
 
-    def diff_for(path: str, body: str) -> str:
-        return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n+{body}\n"
+    def diff_for(path: str, body: str, new_start: int = 1) -> str:
+        return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+                f"@@ -{new_start},1 +{new_start},1 @@\n+{body}\n")
 
     real = "bf442fcb-6179-43b3-aa92-2564b1ad24b8"
 
     # 1. A UUID added to a source file must be reported.
-    got = chk.added_source_lines(diff_for("packages/core/scripts/seed.ts",
-                                          f"const WS = '{real}';"))
-    if not any(chk.UUID_RE.search(l) for _, l in got):
-        bad.append("SOURCE UUID NOT SEEN: added_source_lines dropped a "
+    got = chk.diff_added_lines(diff_for("packages/core/scripts/seed.ts",
+                                        f"const WS = '{real}';"),
+                                exclude_tests=True)
+    if not any(chk.UUID_RE.search(l) for _, _, l in got):
+        bad.append("SOURCE UUID NOT SEEN: diff_added_lines dropped a "
                    "non-test source line carrying a UUID")
 
     # 2. The path must travel with the line, or the finding cannot name a file.
@@ -183,14 +221,63 @@ def added_source_uuid_failures() -> list[str]:
     for p in ("apps/web/src/lib/task-id.test.ts",
               "packages/core/__tests__/foo.ts",
               "tests/e2e/flow.test.ts"):
-        if chk.added_source_lines(diff_for(p, f"const id = '{real}';")):
+        if chk.diff_added_lines(diff_for(p, f"const id = '{real}';"), exclude_tests=True):
             bad.append(f"TEST FIXTURE FLAGGED: {p} was scanned for UUIDs")
 
     # 4. A deletion must not count. Removing a UUID is the fix, not the offence.
     d = diff_for("packages/core/scripts/seed.ts", "ok")
     d = d.replace("+const", "-const").replace("+ok", f"-const WS = '{real}';")
-    if any(chk.UUID_RE.search(l) for _, l in chk.added_source_lines(d)):
+    if any(chk.UUID_RE.search(l) for _, _, l in chk.diff_added_lines(d, exclude_tests=True)):
         bad.append("DELETED LINE FLAGGED: a removed UUID was treated as added")
+
+    return bad
+
+
+# ── Line-number accuracy ─────────────────────────────────────────────────────
+# A real bug, not a hypothetical: the reported line number used to be an index
+# into the filtered `+`-only lines, which only equals the real file line when
+# a diff is a single hunk starting at line 1. Any other shape -- a hunk that
+# starts mid-file, multiple hunks, unchanged context lines mixed with added
+# ones -- pointed the reported line at the wrong place, which is exactly the
+# shape a real PR's diff has. This made a finding hard to locate and invited
+# re-pushing blindly instead of fixing the actual line.
+
+def line_number_accuracy_failures() -> list[str]:
+    bad = []
+    real = "bf442fcb-6179-43b3-aa92-2564b1ad24b8"
+
+    # A hunk starting well past line 1, with a context line before the added
+    # one -- the shape of inserting one line into an existing file.
+    diff = (
+        "diff --git a/packages/core/scripts/seed.ts b/packages/core/scripts/seed.ts\n"
+        "--- a/packages/core/scripts/seed.ts\n"
+        "+++ b/packages/core/scripts/seed.ts\n"
+        "@@ -48,2 +48,3 @@\n"
+        " const untouched = 1;\n"
+        f"+const WS = '{real}';\n"
+        " const alsoUntouched = 2;\n"
+    )
+    got = chk.diff_added_lines(diff, exclude_tests=True)
+    lines_with_uuid = [ln for _, ln, l in got if chk.UUID_RE.search(l)]
+    if lines_with_uuid != [49]:
+        bad.append(f"WRONG LINE NUMBER: expected [49] (context at 48, added "
+                   f"line at 49), got {lines_with_uuid!r}")
+
+    # A second hunk must resume from its own header, not keep counting from
+    # the first hunk's end.
+    diff2 = (
+        "diff --git a/packages/core/scripts/seed.ts b/packages/core/scripts/seed.ts\n"
+        "--- a/packages/core/scripts/seed.ts\n"
+        "+++ b/packages/core/scripts/seed.ts\n"
+        "@@ -5,1 +5,1 @@\n"
+        f"+const A = '{real}';\n"
+        "@@ -200,1 +201,1 @@\n"
+        f"+const B = '{real}';\n"
+    )
+    got2 = chk.diff_added_lines(diff2, exclude_tests=True)
+    lines2 = sorted(ln for _, ln, l in got2 if chk.UUID_RE.search(l))
+    if lines2 != [5, 201]:
+        bad.append(f"SECOND HUNK DIDN'T RESET: expected [5, 201], got {lines2!r}")
 
     return bad
 
@@ -212,6 +299,7 @@ def main() -> int:
             bad.append(f"ALLOW NOT HONOURED: {line!r}")
 
     bad.extend(added_source_uuid_failures())
+    bad.extend(line_number_accuracy_failures())
 
     import tempfile
     with tempfile.TemporaryDirectory() as td:
@@ -223,7 +311,8 @@ def main() -> int:
         bad.append(f"MASK LEAKS DIGITS: {masked!r}")
 
     total = (len(MUST_PASS) + len(MUST_FAIL)
-             + len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER) + 1 + 3)
+             + len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER)
+             + 1 + 7 + 6 + 2)
     if bad:
         print(f"{len(bad)} of {total} failed:")
         for b in bad:
@@ -232,7 +321,8 @@ def main() -> int:
     print(f"all {total} cases pass "
           f"({len(MUST_PASS)} must-pass, {len(MUST_FAIL)} must-fail, "
           f"{len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER)} escape-hatch, "
-          f"1 masking, 3 guard-integrity)")
+          f"1 masking, 7 guard-integrity, 6 added-source-uuid, "
+          f"2 line-number-accuracy)")
     return 0
 
 

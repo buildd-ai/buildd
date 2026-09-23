@@ -17,6 +17,16 @@ const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockReleaseAndNotify = mock(() => Promise.resolve());
+const mockResolveCompletedTask = mock(() => Promise.resolve());
+const mockDispatchUnblockedTask = mock(() => Promise.resolve());
+const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
+
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mockResolveCompletedTask,
+}));
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchUnblockedTask: mockDispatchUnblockedTask,
+}));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -44,7 +54,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
-      tasks: { findFirst: mockTasksFindFirst },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workers: { findFirst: mockWorkersFindFirst, findMany: mockWorkersFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
     },
@@ -69,6 +79,7 @@ mock.module('@/lib/pusher', () => ({
   },
   events: {
     WORKER_COMMAND: 'worker:command',
+    TASK_UPDATED: 'task:updated',
   },
 }));
 
@@ -428,6 +439,105 @@ describe('PATCH /api/tasks/[id]', () => {
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     mockWorkersFindFirst.mockResolvedValue(null);
+    mockResolveCompletedTask.mockReset();
+    mockResolveCompletedTask.mockResolvedValue(undefined);
+    mockDispatchUnblockedTask.mockReset();
+    mockDispatchUnblockedTask.mockResolvedValue(undefined);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+  });
+
+  describe('status-change side effects', () => {
+    const baseTask = {
+      id: TASK_ID,
+      title: 'Test Task',
+      status: 'assigned',
+      mode: 'execution',
+      missionId: null,
+      dependsOn: [],
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+    };
+
+    function setup(task: Record<string, unknown>, updated: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task);
+      const mockWhere = mock(() => ({ returning: mock(() => [updated]) }));
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mockWhere })) });
+    }
+
+    async function patch(body: Record<string, unknown>) {
+      return callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+    }
+
+    it('manual complete on a task with no missionId runs resolveCompletedTask', async () => {
+      setup(baseTask, { ...baseTask, status: 'completed' });
+      const res = await patch({ status: 'completed' });
+      expect(res.status).toBe(200);
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith(TASK_ID, 'ws-1');
+    });
+
+    it('manual fail runs resolveCompletedTask so dependents cascade', async () => {
+      setup(baseTask, { ...baseTask, status: 'failed' });
+      await patch({ status: 'failed' });
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith(TASK_ID, 'ws-1');
+    });
+
+    it('manual fail on a planning task skips resolveCompletedTask (no auto mission retrigger)', async () => {
+      const planning = { ...baseTask, mode: 'planning', missionId: 'm-1' };
+      setup(planning, { ...planning, status: 'failed' });
+      await patch({ status: 'failed' });
+      expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    });
+
+    it('cancel with no missionId still runs resolveCompletedTask', async () => {
+      setup(baseTask, { ...baseTask, status: 'cancelled' });
+      await patch({ status: 'cancelled' });
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith(TASK_ID, 'ws-1');
+    });
+
+    it.each(['completed', 'failed', 'cancelled', 'pending'])(
+      'status change to %s emits TASK_UPDATED on the workspace channel',
+      async (status) => {
+        setup(baseTask, { ...baseTask, status });
+        await patch({ status });
+        expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-1', 'task:updated', {
+          task: { id: TASK_ID, status, workspaceId: 'ws-1', missionId: null },
+        });
+      },
+    );
+
+    it('reset to pending with no dependencies dispatches to runners', async () => {
+      setup(baseTask, { ...baseTask, status: 'pending' });
+      await patch({ status: 'pending' });
+      expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+      expect((mockDispatchUnblockedTask.mock.calls[0] as any[])[0]).toMatchObject({ id: TASK_ID });
+    });
+
+    it('reset to pending with satisfied dependencies dispatches', async () => {
+      const t = { ...baseTask, dependsOn: ['dep-1'] };
+      setup(t, { ...t, status: 'pending' });
+      mockTasksFindMany.mockResolvedValue([{ id: 'dep-1', status: 'completed', loopState: null }]);
+      await patch({ status: 'pending' });
+      expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('reset to pending with an unfinished dependency does not dispatch', async () => {
+      const t = { ...baseTask, dependsOn: ['dep-1'] };
+      setup(t, { ...t, status: 'pending' });
+      mockTasksFindMany.mockResolvedValue([{ id: 'dep-1', status: 'in_progress', loopState: null }]);
+      await patch({ status: 'pending' });
+      expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    });
+
+    it('title-only PATCH emits nothing and resolves nothing', async () => {
+      setup(baseTask, { ...baseTask, title: 'New' });
+      await patch({ title: 'New' });
+      expect(mockTriggerEvent).not.toHaveBeenCalled();
+      expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+      expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+      expect(mockReleaseAndNotify).not.toHaveBeenCalled();
+    });
   });
 
   // A budget/rate-limit pause parks the task behind a start_at floor for the
@@ -498,6 +608,120 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(sets[0]?.backend).toBe('claude');
       expect(sets[0]?.startAt).toBeUndefined();
+    });
+  });
+
+  // tier/model are USER PINS for the next claim/retry. The claim route reads a
+  // pin only via readModelPin (context.modelPinned), so the PATCH must set the
+  // marker, and clearing must leave routing free to decide again.
+  describe('tier / model pin', () => {
+    const baseTask = (context: Record<string, unknown> = {}) => ({
+      id: TASK_ID,
+      title: 'Pin me',
+      workspaceId: 'ws-1',
+      status: 'pending',
+      backend: 'claude',
+      tier: null,
+      context,
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
+
+    function captureUpdate() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          sets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      return sets;
+    }
+
+    async function patch(task: any, body: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(task);
+      const sets = captureUpdate();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+      return { res, sets };
+    }
+
+    it('model sets context.model as a pin and keeps the rest of the context', async () => {
+      const { res, sets } = await patch(
+        baseTask({ model: 'haiku', routingReason: 'baseline', modelPinned: false, other: 1 }),
+        { model: 'claude-opus-4-8' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBe('claude-opus-4-8');
+      expect(sets[0].context.modelPinned).toBe(true);
+      expect(sets[0].context.other).toBe(1);
+    });
+
+    it('model: null clears the pin so routing decides at the next claim', async () => {
+      const { res, sets } = await patch(
+        baseTask({ model: 'claude-opus-4-8', modelPinned: true, other: 1 }),
+        { model: null },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBeUndefined();
+      expect(sets[0].context.modelPinned).toBe(false);
+      expect(sets[0].context.other).toBe(1);
+    });
+
+    it('rejects a model id that is not Anthropic-shaped', async () => {
+      const { res, sets } = await patch(baseTask(), { model: 'not a model' });
+      expect(res.status).toBe(400);
+      expect(sets.length).toBe(0);
+    });
+
+    it('tier sets tasks.tier and drops an existing model pin (latest instruction wins)', async () => {
+      const { res, sets } = await patch(
+        baseTask({ model: 'claude-opus-4-8', modelPinned: true }),
+        { tier: 'premium' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('premium');
+      expect(sets[0].context.model).toBeUndefined();
+      expect(sets[0].context.modelPinned).toBe(false);
+    });
+
+    it('tier alone on a task without a pin leaves context untouched', async () => {
+      const { res, sets } = await patch(baseTask({ model: 'haiku', routingReason: 'baseline' }), { tier: 'budget' });
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('budget');
+      expect(sets[0].context).toBeUndefined();
+    });
+
+    it('tier: null clears the tier override', async () => {
+      const { res, sets } = await patch({ ...baseTask(), tier: 'premium' }, { tier: null });
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBeNull();
+    });
+
+    it('rejects an out-of-vocabulary tier', async () => {
+      const { res, sets } = await patch(baseTask(), { tier: 'opus' });
+      expect(res.status).toBe(400);
+      expect(sets.length).toBe(0);
+    });
+
+    it('tier + model in one call keeps the model pin', async () => {
+      const { res, sets } = await patch(baseTask(), { tier: 'premium', model: 'claude-opus-4-8' });
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('premium');
+      expect(sets[0].context.model).toBe('claude-opus-4-8');
+      expect(sets[0].context.modelPinned).toBe(true);
+    });
+
+    it('composes with a backend switch that also rewrites context', async () => {
+      const { res, sets } = await patch(
+        { ...baseTask({ budgetExhausted: true, budgetResetsAt: 'x' }), backend: 'codex', startAt: new Date() },
+        { backend: 'claude', model: 'claude-opus-4-8' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].context.budgetExhausted).toBeUndefined();
+      expect(sets[0].context.switchedBackendFrom).toBe('codex');
+      expect(sets[0].context.model).toBe('claude-opus-4-8');
+      expect(sets[0].context.modelPinned).toBe(true);
     });
   });
 
@@ -949,7 +1173,8 @@ describe('PATCH /api/tasks/[id]', () => {
     const data = await response.json();
     expect(data.status).toBe('cancelled');
     // No active worker → no Pusher abort event
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    const commands = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:command');
+    expect(commands).toHaveLength(0);
   });
 
   it('releases the cancelled task\'s own path claims even with no active/cooperating worker', async () => {

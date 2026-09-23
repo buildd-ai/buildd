@@ -5,7 +5,8 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
+import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
+import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage } from '@/lib/key-level-policy';
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 
 function generateApiKey(): string {
@@ -60,6 +61,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
     }
 
+    const requestedLevel = level === undefined || level === null || level === '' ? 'worker' : parseKeyLevel(level);
+    if (!requestedLevel) {
+      return NextResponse.json({ error: 'level must be one of trigger, worker, admin' }, { status: 400 });
+    }
+
     const plaintextKey = generateApiKey();
 
     // Use requested teamId if provided and user is a member, otherwise fall back to default
@@ -77,10 +83,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
     }
 
+    // A key can never do more than its creator's team role allows.
+    const role = await getUserTeamRole(user.id, teamId);
+    if (!role) {
+      return NextResponse.json({ error: 'You are not a member of this team' }, { status: 403 });
+    }
+    if (!isKeyLevelAllowed(role, requestedLevel)) {
+      return NextResponse.json({ error: keyLevelNotAllowedMessage(role, requestedLevel) }, { status: 403 });
+    }
+
     const insertValues: Record<string, unknown> = {
       name,
       type: type as 'user' | 'service' | 'action',
-      level: level as 'trigger' | 'worker' | 'admin' || 'worker',
+      level: requestedLevel,
       authType: authType as 'api' | 'oauth' || 'oauth',
       apiKey: hashApiKey(plaintextKey),
       apiKeyPrefix: extractApiKeyPrefix(plaintextKey),

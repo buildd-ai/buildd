@@ -21,6 +21,7 @@ import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -71,7 +72,7 @@ async function resolveTarget(
   workspaceIdInput: string | null,
 ): Promise<ResolvedTarget | { error: string; status: number; candidates?: string[] }> {
   if (workspaceIdInput) {
-    const ws = await resolveWorkspace(workspaceIdInput);
+    const ws = await resolveWorkspace(workspaceIdInput, { teamIds: [account.teamId] });
     if (!ws) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     if (ws.teamId !== account.teamId) {
       return { error: 'Workspace belongs to a different team', status: 403 };
@@ -240,6 +241,42 @@ export async function POST(req: NextRequest) {
     ? priorVerdict
     : undefined;
 
+  // An approval whose PR diff is unchanged since it was given (the head only
+  // moved by a rebase or base merge) needs no second agent: record that it
+  // covers the new head and return it, instead of paying for a delta review
+  // of an empty delta. Only an approve carries forward.
+  if (existingReview && deltaPriorVerdict?.verdict === 'approve' && pr.base?.ref && pr.head?.sha) {
+    const carry = await carryForwardApprovalIfUnchanged({
+      installationId: repo.installationId,
+      repoFullName: repo.fullName,
+      workspaceId: workspace.id,
+      prNumber,
+      baseRef: pr.base.ref,
+      headSha: pr.head.sha,
+    }).catch((err) => {
+      console.warn(`[pr-review] carry-forward check failed for PR #${prNumber}:`, err);
+      return { carried: false, reason: 'carry-forward check failed' };
+    });
+    if (carry.carried) {
+      const policy = await resolveEffectivePolicy(workspace, null);
+      return NextResponse.json({
+        ok: true,
+        alreadyRequested: true,
+        carriedForward: true,
+        carriedForwardReason: carry.reason,
+        prNumber,
+        reviewTaskId: existingReview.id,
+        taskId: existingWorker?.taskId ?? null,
+        autoMergeExpected: autoMergeExpectedFor(policy),
+        status: derivePrReviewStatus({
+          reviewTask: existingReview,
+          worker: existingWorker ?? null,
+          autoMergeExpected: autoMergeExpectedFor(policy),
+        }),
+      });
+    }
+  }
+
   // Adopt the PR when buildd has no worker for it: every downstream surface
   // keys off "the worker that owns this PR", so adoption is what lets an
   // externally-authored PR use the existing review rails unchanged.
@@ -284,6 +321,7 @@ export async function POST(req: NextRequest) {
     policyConfig: (workspace.gitConfig as any)?.policyConfig,
     // Already fetched — the reviewer reads it for its lede only.
     prBody: typeof pr.body === 'string' ? pr.body : null,
+    baseRef: typeof pr.base?.ref === 'string' ? pr.base.ref : null,
     ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
     ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });

@@ -342,26 +342,93 @@ describe('authenticateApiKey', () => {
       expect(result).toBeNull();
     });
 
-    it('returns account with admin level for valid JWT', async () => {
+    // The session's level is the caller's current team role, not a constant:
+    // owner|admin act as admin, member acts as worker, and anything else
+    // (unknown or missing role) falls to worker — never admin.
+    const roleCases: [string | undefined, 'admin' | 'worker'][] = [
+      ['owner', 'admin'],
+      ['admin', 'admin'],
+      ['member', 'worker'],
+      ['some-future-role', 'worker'],
+      [undefined, 'worker'],
+    ];
+    for (const [role, level] of roleCases) {
+      it(`team role ${role ?? '(missing)'} → level ${level}`, async () => {
+        spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+        mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+        mockTeamMembersFindFirst.mockResolvedValue(role === undefined ? { teamId: 'team-1' } : { teamId: 'team-1', role });
+        const mockAccount = { id: 'acct-1', type: 'user', level: 'admin', teamId: 'team-1', name: 'My Account' };
+        mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+        const result = await authenticateApiKey(JWT_TOKEN);
+        expect(result).toEqual({ ...mockAccount, level });
+      });
+    }
+
+    it('a stored account level never raises a member above worker', async () => {
       spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
-      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
-      const mockAccount = { id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1', name: 'My Account' };
-      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'admin', teamId: 'team-1' });
 
       const result = await authenticateApiKey(JWT_TOKEN);
-      expect(result).toEqual({ ...mockAccount, level: 'admin' });
+      expect(result?.level).toBe('worker');
     });
 
-    it('overrides any existing level to admin', async () => {
+    it('reads the membership role from team_members', async () => {
       spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
-      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
-      const mockAccount = { id: 'acct-1', type: 'user', level: 'trigger', teamId: 'team-1', name: 'My Account' };
-      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1' });
 
-      const result = await authenticateApiKey(JWT_TOKEN);
-      expect(result?.level).toBe('admin');
+      await authenticateApiKey(JWT_TOKEN);
+      const arg = (mockTeamMembersFindFirst.mock.calls[0] as any[])[0];
+      expect(arg.columns?.role).toBe(true);
+    });
+
+    describe('role changes take effect within 60s', () => {
+      const realNow = Date.now;
+      let now = 1_000_000;
+      beforeEach(() => { now = 1_000_000; Date.now = () => now; });
+      afterAll(() => { Date.now = realNow; });
+
+      it('a removed member stops authenticating once the short cache window passes', async () => {
+        spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+        mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+        mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+        mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1' });
+
+        expect((await authenticateApiKey(JWT_TOKEN))?.level).toBe('admin');
+
+        mockTeamMembersFindFirst.mockResolvedValue(null);
+        now += 31_000;
+        expect(await authenticateApiKey(JWT_TOKEN)).toBeNull();
+      });
+
+      it('a downgraded admin gets worker level once the short cache window passes', async () => {
+        spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+        mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+        mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+        mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1' });
+
+        expect((await authenticateApiKey(JWT_TOKEN))?.level).toBe('admin');
+
+        mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+        now += 31_000;
+        expect((await authenticateApiKey(JWT_TOKEN))?.level).toBe('worker');
+      });
+
+      it('writes OAuth entries to the shared cache with a TTL of at most 30s', async () => {
+        spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+        mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+        mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+        mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1' });
+
+        await authenticateApiKey(JWT_TOKEN);
+        const ttl = (mockSetCachedApiKey.mock.calls[0] as any[])[2];
+        expect(typeof ttl).toBe('number');
+        expect(ttl).toBeLessThanOrEqual(30);
+      });
     });
 
     it('caches the result so JWT is only verified once', async () => {

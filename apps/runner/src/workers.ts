@@ -12,7 +12,7 @@ import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
-import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
+import { resolveRoleEnv, getRoleDir, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleConfig, type RoleInstructions } from './roles.js';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -37,7 +37,7 @@ import {
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
-import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
+import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
@@ -93,7 +93,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -682,6 +682,7 @@ export class WorkerManager {
       probedWorkers: this.probedWorkers,
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       buildUserMessage: (content, opts) => buildUserMessage(content, opts),
+      unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
     });
 
     // Check for stale workers every 30s
@@ -955,6 +956,7 @@ export class WorkerManager {
         this.workerTeamKeys.delete(id);
         clearWorkerThrottle(id);
         storeDeleteWorker(id);
+        this.pusherManager.unsubscribeFromWorker(id);
         // Terminal teardown: now safe to delete the stable Codex home (and its
         // resumable sessions) — the worker is fully purged, no follow-up possible.
         if (worker.taskBackend === 'codex') teardownStableCodexHome(id, this.config.workspaceIsolationRoot, worker.workspaceId);
@@ -969,6 +971,9 @@ export class WorkerManager {
         count++;
       }
     }
+    // getWorkers() serves its disk-side merge from a short-TTL cache; without
+    // this, a purge would stay invisible there for up to the cache's TTL.
+    __resetDiskWorkersCache();
     return count;
   }
 
@@ -1049,12 +1054,16 @@ export class WorkerManager {
   }
 
   getWorkers(): LocalWorker[] {
-    // Merge in-memory workers with completed workers persisted on disk (24h history)
+    // Merge in-memory workers with completed workers persisted on disk (24h
+    // history). Called from several hot HTTP route handlers (GET /health,
+    // GET /api/workers, the GET /api/events SSE init payload) plus a 60s
+    // watchdog and the periodic reconcile pass, so the disk side is a bounded
+    // cache (loadTerminalWorkersCached) rather than a fresh readdirSync+parse
+    // of the whole store on every call.
     const inMemory = Array.from(this.workers.values());
     const inMemoryIds = new Set(inMemory.map(w => w.id));
 
-    const diskWorkers = loadAllWorkers()
-      .filter(w => !inMemoryIds.has(w.id) && (w.status === 'done' || w.status === 'error'));
+    const diskWorkers = loadTerminalWorkersCached().filter(w => !inMemoryIds.has(w.id));
 
     return [...inMemory, ...diskWorkers];
   }
@@ -1245,27 +1254,12 @@ export class WorkerManager {
       return null;
     }
 
-    let resolvedPath = workspacePath;
-    if ((claimedWorker as any).roleConfig) {
-      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
-      if (roleConfig.type === 'service') {
-        const { cwd } = await syncRoleToLocal(roleConfig);
-        resolvedPath = cwd;
-      } else {
-        // Builder role: sync config, then overlay files into repo
-        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
-        await overlayRoleFiles(roleDir, workspacePath);
-      }
-    } else if (task.roleSlug && !task.workspace?.repo) {
-      // No roleConfig from claim (role registered via MCP but not uploaded to R2
-      // storage — configStorageKey/configHash absent). Fall back to the locally-
-      // synced role directory so service-role workers load the correct .mcp.json,
-      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
-      const localRoleDir = getRoleDir(task.roleSlug as string);
-      if (existsSync(localRoleDir)) {
-        resolvedPath = localRoleDir;
-        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-      }
+    // Role cwd + overlay source. The overlay itself is deferred to
+    // startFromClaim, which runs it against the worktree once one exists.
+    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath);
+    const resolvedPath = roleCwd.cwd;
+    if (resolvedPath !== workspacePath) {
+      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
 
@@ -1278,7 +1272,7 @@ export class WorkerManager {
       notifyBrokerCredentials(pendingRefreshes);
     }
 
-    return this.startFromClaim(claimedWorker, task, resolvedPath);
+    return this.startFromClaim(claimedWorker, task, resolvedPath, roleCwd.overlayFrom);
   }
 
   /**
@@ -1470,36 +1464,24 @@ export class WorkerManager {
       );
     }
 
-    let resolvedPath = workspacePath;
-    if ((claimedWorker as any).roleConfig) {
-      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
-      if (roleConfig.type === 'service') {
-        const { cwd } = await syncRoleToLocal(roleConfig);
-        resolvedPath = cwd;
-      } else {
-        // Builder role: sync config, then overlay files into repo
-        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
-        await overlayRoleFiles(roleDir, workspacePath);
-      }
-    } else if (fullTask.roleSlug && !fullTask.workspace?.repo) {
-      // No roleConfig from claim (role registered via MCP but not uploaded to R2
-      // storage — configStorageKey/configHash absent). Fall back to the locally-
-      // synced role directory so service-role workers load the correct .mcp.json,
-      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
-      const localRoleDir = getRoleDir(fullTask.roleSlug as string);
-      if (existsSync(localRoleDir)) {
-        resolvedPath = localRoleDir;
-        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-      }
+    // Same resolution as the poll-claim path above — one shared rule, so the
+    // two entry points cannot drift on which directory a role-assigned task
+    // runs in.
+    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, fullTask, workspacePath);
+    const resolvedPath = roleCwd.cwd;
+    if (resolvedPath !== workspacePath) {
+      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
-    return this.startFromClaim(claimedWorker, fullTask, resolvedPath);
+    return this.startFromClaim(claimedWorker, fullTask, resolvedPath, roleCwd.overlayFrom);
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions },
     fullTask: BuilddTask,
     workspacePath: string,
+    /** Role directory to overlay into the session cwd once the worktree exists. */
+    roleOverlayDir?: string,
   ): Promise<LocalWorker | null> {
 
     // Refresh the runner heartbeat record immediately so the stale-workers cron
@@ -1655,6 +1637,12 @@ export class WorkerManager {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
     }
+    // The persona rides the claim independently of the bundle — a seeded role
+    // has one and no bundle at all. Both backends read it from here.
+    if (claimedWorker.roleInstructions?.content) {
+      worker.roleInstructions = claimedWorker.roleInstructions;
+      console.log(`[Worker ${claimedWorker.id}] Received role persona: ${claimedWorker.roleInstructions.slug} (${claimedWorker.roleInstructions.content.length} chars)`);
+    }
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
     }
@@ -1695,8 +1683,12 @@ export class WorkerManager {
     const defaultBranch = gitConfig?.defaultBranch || 'main';
 
     let sessionCwd = workspacePath;
+    /** True once `git worktree add` has produced the session cwd. */
+    let worktreeCreated = false;
     /** Set when a structural install fault must kill the session pre-budget. */
     let installBlock: string | undefined;
+    /** Set when the resolved session cwd cannot host the task at all. */
+    let startBlock: string | undefined;
     if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
@@ -1715,6 +1707,7 @@ export class WorkerManager {
       if (setupResult) {
         worker.worktreePath = setupResult.path;
         sessionCwd = setupResult.path;
+        worktreeCreated = true;
         // The base this worktree was actually cut from. Carried on the worker
         // because the CBM seed decision happens later, in startSession, and the
         // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
@@ -1782,9 +1775,43 @@ export class WorkerManager {
         }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
-        // Worktree setup failed — fall back to main repo (legacy behavior)
-        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to main repo`);
-        this.addMilestone(worker, { type: 'status', label: 'Worktree failed, using repo', ts: Date.now() });
+        // Worktree setup failed — fall back to the base checkout. Still a real
+        // git repo, so the session can work; it just shares the clone.
+        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to the base checkout at ${workspacePath}`);
+        this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — using the base checkout', ts: Date.now() });
+      }
+    }
+
+    /**
+     * A repo task must end up in a git checkout, full stop.
+     *
+     * The old cwd rule could hand one `~/.buildd/roles/<slug>` — not a git
+     * directory, and with none of the task's code in it. `setupWorktree` then
+     * failed, the fallback "used the repo" that was never a repo, and the agent
+     * burned a full budget in an empty directory. Fail here instead, before any
+     * budget is spent, with an error that names the directory.
+     *
+     * Only checked when git did NOT produce the cwd: a path `git worktree add`
+     * just created is a checkout by construction.
+     */
+    if (hasRepo && !worktreeCreated && !existsSync(join(sessionCwd, '.git'))) {
+      startBlock = `Session cwd is not a git checkout: ${sessionCwd} (workspace ${fullTask.workspace?.repo})`;
+    }
+
+    // Role overlay — AFTER worktree setup, against the session cwd.
+    //
+    // `git worktree add` only checks out tracked content, so role skills and
+    // .mcp.json written into the base clone first never reached the directory
+    // the agent actually runs in (and `settingSources: 'project'` reads from).
+    if (roleOverlayDir && !startBlock) {
+      try {
+        await overlayRoleFiles(roleOverlayDir, sessionCwd);
+      } catch (err) {
+        // Non-fatal: the persona still arrives via the system prompt. Visible
+        // rather than silent, because missing skills change what the agent can do.
+        const label = `Role file overlay failed: ${err instanceof Error ? err.message : String(err)}`;
+        console.warn(`[Worker ${worker.id}] ${label}`);
+        this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       }
     }
 
@@ -1809,6 +1836,9 @@ export class WorkerManager {
       // blocks here, inside the error boundary, so it is reported and cleaned up
       // like any other session-start failure — with zero agent budget spent.
       if (installBlock) throw new Error(installBlock);
+      // A cwd that cannot host the task blocks on the same rail, for the same
+      // reason: reported, cleaned up, zero agent budget spent.
+      if (startBlock) throw new Error(startBlock);
       if (worker.branch && worker.branch !== claimedWorker.branch) {
         for (let attempt = 1; attempt <= 3; attempt++) {
           const response = await this.buildd.updateWorker(worker.id, { branch: worker.branch }) as
@@ -3020,6 +3050,31 @@ export class WorkerManager {
           `\n\n## Connector Availability Notice\nThe following MCP connectors are currently unavailable for this task:\n${connectorList}\nTools provided by these connectors will not be accessible. Work around their absence where possible, and note any limitations in your output.`;
       }
 
+      // Role persona. This is the ONLY channel that carries it to a Claude
+      // session: `settingSources: ['project']` loads the session cwd's own
+      // CLAUDE.md, never the role's, and overlayRoleFiles deliberately does not
+      // overlay one. Appended before the tool-channel policy below so the
+      // policy stays the last word on its own subject.
+      const rolePersonaSection = buildRoleSystemPromptSection(worker.roleInstructions);
+      if (rolePersonaSection) {
+        // A session whose cwd IS the role dir (a workspace with no repo) already
+        // loads this exact text as its project CLAUDE.md; appending it there
+        // would spend the persona's byte count twice.
+        let alreadyLoadedFromCwd = false;
+        if (useClaudeMd) {
+          try {
+            const cwdClaudeMd = join(cwd, 'CLAUDE.md');
+            alreadyLoadedFromCwd = existsSync(cwdClaudeMd)
+              && readFileSync(cwdClaudeMd, 'utf-8').trim() === worker.roleInstructions!.content.trim();
+          } catch {
+            alreadyLoadedFromCwd = false;
+          }
+        }
+        if (!alreadyLoadedFromCwd) {
+          systemPrompt.append = (systemPrompt.append ?? '') + rolePersonaSection;
+        }
+      }
+
       // Tool channel policy: agents must not improvise when an MCP tool channel
       // is unavailable. This instruction prevents the credential-scavenging pattern
       // (reading secrets from disk, env vars, or response headers and calling APIs
@@ -3355,6 +3410,7 @@ export class WorkerManager {
         systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
           project: cbmActivation.cbmProject,
           sharedBaseIndex: cbmActivation.sharedCache,
+          bootstrapState: cbmBootstrapGuidanceState(worker.cbmBootstrapResult),
         });
       }
 
@@ -3657,7 +3713,8 @@ export class WorkerManager {
 
       // Phase 2A — Codex role/skills/context via AGENTS.md.
       //
-      // Claude receives its persona via systemPrompt.append, skills via the
+      // Claude receives its persona via systemPrompt.append (see the role
+      // persona block above), skills via the
       // Skill() allowlist, and CLAUDE.md via settingSources. Codex's ThreadOptions
       // has none of these (no instructions/system-prompt option in codex-sdk@0.44.0),
       // and there is no Skill tool. We therefore compose a single instruction
@@ -3669,16 +3726,12 @@ export class WorkerManager {
       // so the prompt pointer below is included.
       if (isCodexTask) {
         try {
-          // Role persona = the role's CLAUDE.md (the same text Claude loads from
-          // the role dir via settingSources). Builder roles don't overlay it into
-          // the repo, so read it straight from the synced role dir.
-          let rolePersona: string | undefined;
-          if (worker.roleConfig) {
-            const rolePersonaPath = join(getRoleDir(worker.roleConfig.slug), 'CLAUDE.md');
-            if (existsSync(rolePersonaPath)) {
-              rolePersona = readFileSync(rolePersonaPath, 'utf-8');
-            }
-          }
+          // Role persona — the same claim-delivered text Claude appends to its
+          // system prompt above, so the two backends cannot disagree about who
+          // the agent is. This used to be read off the role dir's CLAUDE.md,
+          // which only exists for a role packaged to R2: a seeded role gave
+          // Codex no persona at all, and Claude none either.
+          const rolePersona = worker.roleInstructions?.content || undefined;
 
           // Project instructions: include repo CLAUDE.md content when the workspace
           // opts into CLAUDE.md (mirrors Claude's settingSources project). We read
@@ -3700,6 +3753,7 @@ export class WorkerManager {
                 dialect: 'codex',
                 project: cbmActivation.cbmProject,
                 sharedBaseIndex: cbmActivation.sharedCache,
+                bootstrapState: cbmBootstrapGuidanceState(worker.cbmBootstrapResult),
               })
             : undefined;
 
@@ -3735,6 +3789,7 @@ export class WorkerManager {
         promptText,
         backend: task.backend,
         taskMatchDerivedBy: taskMemory.derivedBy,
+        sections: built.sections,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
       // Also on stdout, as a live "is this firing at all" signal. Whether

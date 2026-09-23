@@ -1,17 +1,21 @@
+import { createHmac, timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { createAuthCode, getClient, isSafeRedirectUri } from '@/lib/oauth/storage';
+import { getIssuer, getJwtSecret } from '@/lib/oauth/config';
+import { levelForTeamRole } from '@/lib/oauth/session-level';
 import { db } from '@buildd/core/db';
 import { teamMembers, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 
-function redirectWithError(redirectUri: string, error: string, state?: string | null) {
+function redirectWithError(redirectUri: string, error: string, state?: string | null, status?: number) {
   const url = new URL(redirectUri);
   url.searchParams.set('error', error);
   if (state) url.searchParams.set('state', state);
-  return NextResponse.redirect(url);
+  // 303 after a POST so the browser follows with a GET, not a re-POST.
+  return status ? NextResponse.redirect(url, status) : NextResponse.redirect(url);
 }
 
 function plainError(message: string, status = 400) {
@@ -56,67 +60,174 @@ export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: 
 }
 
 /**
- * Returns workspaces the user can access through team membership.
- * Used to populate the workspace selector during OAuth consent.
+ * Returns workspaces the user can access through team membership, with the
+ * user's role on each workspace's team. Used for the workspace picker and to
+ * state on the consent page what access the connection will have.
  */
 async function workspacesForUser(userId: string) {
   const memberships = await db.query.teamMembers.findMany({
     where: eq(teamMembers.userId, userId),
-    columns: { teamId: true },
+    columns: { teamId: true, role: true },
   });
+  const roleByTeam = new Map(memberships.map((m) => [m.teamId, m.role as string | null | undefined]));
   const teamIds = memberships.map((m) => m.teamId);
   if (teamIds.length === 0) return [];
-  return db.query.workspaces.findMany({
+  const rows = await db.query.workspaces.findMany({
     where: inArray(workspaces.teamId, teamIds),
     columns: { id: true, name: true, teamId: true },
     orderBy: (w, { asc }) => [asc(w.name)],
   });
+  return rows.map((w) => ({ ...w, role: roleByTeam.get(w.teamId) ?? null }));
 }
+
+/** The authorize parameters, read from the GET query or the consent POST body. */
+interface AuthorizeParams {
+  responseType: string | null;
+  clientId: string | null;
+  redirectUri: string | null;
+  codeChallenge: string | null;
+  codeChallengeMethod: string;
+  state: string | null;
+  scope: string | null;
+  workspaceId: string | null;
+}
+
+function readParams(params: URLSearchParams): AuthorizeParams {
+  return {
+    responseType: params.get('response_type'),
+    clientId: params.get('client_id'),
+    redirectUri: params.get('redirect_uri'),
+    codeChallenge: params.get('code_challenge'),
+    codeChallengeMethod: params.get('code_challenge_method') ?? 'plain',
+    state: params.get('state'),
+    scope: params.get('scope'),
+    workspaceId: params.get('workspace'),
+  };
+}
+
+type Validated = {
+  client: NonNullable<Awaited<ReturnType<typeof getClient>>>;
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+};
+
+/**
+ * Client, redirect_uri and PKCE checks shared by GET and POST. Errors before
+ * the redirect_uri is trusted are plain responses; after, they redirect back
+ * to the client per OAuth 2.1.
+ */
+async function validateRequest(
+  p: AuthorizeParams,
+  redirectStatus?: number,
+): Promise<{ ok: true; v: Validated } | { ok: false; response: NextResponse }> {
+  if (!p.clientId || !p.redirectUri) {
+    return { ok: false, response: plainError('missing client_id or redirect_uri') };
+  }
+  const client = await getClient(p.clientId);
+  if (!client) {
+    return { ok: false, response: plainError('unknown client_id', 400) };
+  }
+  if (!isRegisteredRedirectUri(client.redirectUris, p.redirectUri)) {
+    return { ok: false, response: plainError('redirect_uri not registered for this client', 400) };
+  }
+  if (p.responseType !== 'code') {
+    return { ok: false, response: redirectWithError(p.redirectUri, 'unsupported_response_type', p.state, redirectStatus) };
+  }
+  if (!p.codeChallenge || p.codeChallengeMethod !== 'S256') {
+    return { ok: false, response: redirectWithError(p.redirectUri, 'invalid_request', p.state, redirectStatus) };
+  }
+  return { ok: true, v: { client, clientId: p.clientId, redirectUri: p.redirectUri, codeChallenge: p.codeChallenge } };
+}
+
+// ── Consent token ────────────────────────────────────────────────────────────
+//
+// The consent form carries an HMAC over the signed-in user and every authorize
+// parameter, so only the page this server rendered for this user and this
+// exact request can be approved. Stateless: no cookie or table needed.
+
+const CONSENT_TOKEN_TTL_SECONDS = 10 * 60;
+
+function consentMac(userId: string, p: AuthorizeParams, issuedAt: number): string {
+  const payload = JSON.stringify([
+    'buildd-oauth-consent-v1',
+    userId,
+    p.clientId,
+    p.redirectUri,
+    p.workspaceId,
+    p.codeChallenge,
+    p.codeChallengeMethod,
+    p.scope ?? '',
+    p.state ?? '',
+    p.responseType,
+    issuedAt,
+  ]);
+  return createHmac('sha256', getJwtSecret()).update(payload).digest('base64url');
+}
+
+function createConsentToken(userId: string, p: AuthorizeParams, now = Date.now()): string {
+  const issuedAt = Math.floor(now / 1000);
+  return `${issuedAt}.${consentMac(userId, p, issuedAt)}`;
+}
+
+function verifyConsentToken(token: string | null, userId: string, p: AuthorizeParams, now = Date.now()): boolean {
+  if (!token) return false;
+  const [issuedAtRaw, mac] = token.split('.');
+  const issuedAt = Number(issuedAtRaw);
+  if (!Number.isInteger(issuedAt) || !mac) return false;
+  const age = Math.floor(now / 1000) - issuedAt;
+  if (age < 0 || age > CONSENT_TOKEN_TTL_SECONDS) return false;
+  const expected = Buffer.from(consentMac(userId, p, issuedAt));
+  const given = Buffer.from(mac);
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+/**
+ * The consent POST must come from a page on this origin. Browsers send
+ * `Origin` on form POSTs; a missing or foreign one is refused.
+ */
+function isSameOriginPost(req: NextRequest): boolean {
+  const origin = req.headers.get('origin');
+  if (!origin) return false;
+  const allowed = new Set([req.nextUrl.origin]);
+  try {
+    allowed.add(new URL(getIssuer()).origin);
+  } catch {
+    // ignore a malformed issuer; the request origin still applies
+  }
+  return allowed.has(origin);
+}
+
+const HTML_HEADERS = {
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+  'x-frame-options': 'DENY',
+  'content-security-policy': "frame-ancestors 'none'",
+};
 
 /**
  * OAuth 2.1 authorize endpoint.
  *
- * Flow:
+ * GET (a browser redirect from the OAuth client):
  *   1. Validate client_id + redirect_uri (must match registered values)
  *   2. Validate PKCE params (S256 only — plain forbidden by OAuth 2.1)
  *   3. Require a logged-in NextAuth session; redirect to signin if absent
  *   4. Require a workspace param. If absent, render a workspace picker.
  *   5. Verify the user has access to the chosen workspace
- *   6. Mint a one-shot auth code keyed to (clientId, userId, workspaceId)
- *   7. Redirect back to client with the code + state
+ *   6. Render a consent page: client, workspace, and the access the
+ *      connection will have (the user's team role). No code is issued.
+ *
+ * POST (the consent form):
+ *   7. Same-origin + consent token bound to the user and every parameter
+ *   8. Deny → redirect back with access_denied
+ *   9. Approve → mint a one-shot auth code keyed to (clientId, userId,
+ *      workspaceId) and hand it back to the client.
  */
 export async function GET(req: NextRequest) {
-  const params = req.nextUrl.searchParams;
-  const responseType = params.get('response_type');
-  const clientId = params.get('client_id');
-  const redirectUri = params.get('redirect_uri');
-  const codeChallenge = params.get('code_challenge');
-  const codeChallengeMethod = params.get('code_challenge_method') ?? 'plain';
-  const state = params.get('state');
-  const scope = params.get('scope');
-  const workspaceId = params.get('workspace');
-
-  if (!clientId || !redirectUri) {
-    return plainError('missing client_id or redirect_uri');
-  }
-  const client = await getClient(clientId);
-  if (!client) {
-    return plainError('unknown client_id', 400);
-  }
-  if (!isRegisteredRedirectUri(client.redirectUris, redirectUri)) {
-    return plainError('redirect_uri not registered for this client', 400);
-  }
-
-  // From here on, redirect errors back to the client per OAuth 2.1.
-  if (responseType !== 'code') {
-    return redirectWithError(redirectUri, 'unsupported_response_type', state);
-  }
-  if (!codeChallenge) {
-    return redirectWithError(redirectUri, 'invalid_request', state);
-  }
-  if (codeChallengeMethod !== 'S256') {
-    return redirectWithError(redirectUri, 'invalid_request', state);
-  }
+  const p = readParams(req.nextUrl.searchParams);
+  const checked = await validateRequest(p);
+  if (!checked.ok) return checked.response;
+  const { client, clientId } = checked.v;
 
   const session = await auth();
   const userId = session?.user?.id;
@@ -127,8 +238,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(signinUrl);
   }
 
-  // Workspace selection: when omitted, show a picker that posts back here with ?workspace=<id>.
-  if (!workspaceId) {
+  // Workspace selection: when omitted, show a picker that links back here with ?workspace=<id>.
+  if (!p.workspaceId) {
     const available = await workspacesForUser(userId);
     if (available.length === 0) {
       return plainError(
@@ -138,36 +249,78 @@ export async function GET(req: NextRequest) {
     }
     return new NextResponse(renderWorkspacePicker(req, available, client.clientName ?? clientId), {
       status: 200,
-      headers: { 'content-type': 'text/html; charset=utf-8' },
+      headers: HTML_HEADERS,
     });
   }
 
   // Verify access to the chosen workspace.
   const allowed = await workspacesForUser(userId);
-  const chosen = allowed.find((w) => w.id === workspaceId);
+  const chosen = allowed.find((w) => w.id === p.workspaceId);
   if (!chosen) {
+    return plainError('you do not have access to that workspace', 403);
+  }
+
+  return new NextResponse(
+    renderConsentPage({
+      clientName: client.clientName ?? clientId,
+      workspaceName: chosen.name,
+      level: levelForTeamRole(chosen.role),
+      redirectUri: checked.v.redirectUri,
+      params: p,
+      consentToken: createConsentToken(userId, p),
+    }),
+    { status: 200, headers: HTML_HEADERS },
+  );
+}
+
+export async function POST(req: NextRequest) {
+  const contentType = req.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/x-www-form-urlencoded') && !contentType.includes('multipart/form-data')) {
+    return plainError('unsupported content-type', 400);
+  }
+  const form = new URLSearchParams(await req.text());
+  const p = readParams(form);
+
+  const checked = await validateRequest(p, 303);
+  if (!checked.ok) return checked.response;
+  const { client, clientId, redirectUri, codeChallenge } = checked.v;
+
+  const session = await auth();
+  const userId = session?.user?.id;
+  if (!userId) return plainError('sign in required', 401);
+
+  if (!isSameOriginPost(req)) return plainError('consent must be submitted from this site', 403);
+  if (!verifyConsentToken(form.get('csrf_token'), userId, p)) {
+    return plainError('consent expired or invalid — start the connection again', 403);
+  }
+
+  if (form.get('decision') !== 'approve') {
+    return redirectWithError(redirectUri, 'access_denied', p.state, 303);
+  }
+
+  // Re-check access at approval time; membership may have changed since GET.
+  const allowed = p.workspaceId ? await workspacesForUser(userId) : [];
+  const chosen = allowed.find((w) => w.id === p.workspaceId);
+  if (!chosen || !p.workspaceId) {
     return plainError('you do not have access to that workspace', 403);
   }
 
   const code = await createAuthCode({
     clientId,
     userId,
-    workspaceId,
+    workspaceId: p.workspaceId,
     redirectUri,
     codeChallenge,
-    codeChallengeMethod,
-    scope: scope ?? null,
+    codeChallengeMethod: p.codeChallengeMethod,
+    scope: p.scope ?? null,
   });
 
   const cbUrl = new URL(redirectUri);
   cbUrl.searchParams.set('code', code);
-  if (state) cbUrl.searchParams.set('state', state);
+  if (p.state) cbUrl.searchParams.set('state', p.state);
 
-  // Render a brief confirmation interstitial before redirecting back to the
-  // OAuth client. Without this, the user (and any future Claude reading
-  // screenshots) never sees which workspace the token was scoped to — the
-  // root cause of the 2026-05-25 misroute incident, where the user couldn't
-  // tell which of three buildd connectors they had just authorized.
+  // Brief confirmation interstitial before redirecting back to the OAuth
+  // client, so the user sees which workspace the connection is scoped to.
   //
   // The page auto-redirects via meta refresh after 1s, with a visible fallback
   // link. The URL is deliberately never inlined into a <script>: JSON.stringify
@@ -175,11 +328,101 @@ export async function GET(req: NextRequest) {
   // raw angle brackets in the opaque path of a non-special scheme.
   return new NextResponse(
     renderAuthorizedInterstitial(chosen.name, cbUrl.toString(), client.clientName ?? clientId),
-    {
-      status: 200,
-      headers: { 'content-type': 'text/html; charset=utf-8' },
-    },
+    { status: 200, headers: HTML_HEADERS },
   );
+}
+
+const ACCESS_DESCRIPTIONS: Record<'admin' | 'worker', { label: string; detail: string }> = {
+  admin: {
+    label: 'Admin',
+    detail: 'Everything you can do as a team admin here, including schedules, missions, secrets and workspace settings.',
+  },
+  worker: {
+    label: 'Member',
+    detail: 'Task work: read, create, claim and update tasks, artifacts and pull requests. Admin actions are not available.',
+  },
+};
+
+/**
+ * Consent page. A plain HTML form POSTing back to this endpoint with the
+ * original parameters and the consent token; nothing is issued until the
+ * user clicks Approve. Every value is HTML-escaped; no inline script.
+ */
+function renderConsentPage(args: {
+  clientName: string;
+  workspaceName: string;
+  level: 'admin' | 'worker';
+  redirectUri: string;
+  params: AuthorizeParams;
+  consentToken: string;
+}): string {
+  const { params: p } = args;
+  const hidden: Array<[string, string | null]> = [
+    ['response_type', p.responseType],
+    ['client_id', p.clientId],
+    ['redirect_uri', p.redirectUri],
+    ['code_challenge', p.codeChallenge],
+    ['code_challenge_method', p.codeChallengeMethod],
+    ['state', p.state],
+    ['scope', p.scope],
+    ['workspace', p.workspaceId],
+    ['csrf_token', args.consentToken],
+  ];
+  const inputs = hidden
+    .filter(([, v]) => v !== null)
+    .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v as string)}">`)
+    .join('\n');
+  const access = ACCESS_DESCRIPTIONS[args.level];
+  let redirectHost = args.redirectUri;
+  try {
+    const u = new URL(args.redirectUri);
+    redirectHost = u.host || u.protocol;
+  } catch {
+    // keep the raw value; it is escaped below
+  }
+  const safeClient = escapeHtml(args.clientName);
+  const safeWs = escapeHtml(args.workspaceName);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Authorize ${safeClient}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #fafafa; margin: 0; padding: 2rem; }
+  .wrap { max-width: 480px; margin: 2rem auto 0; }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  dl { background: #171717; border: 1px solid #262626; border-radius: 0.5rem; padding: 1rem; margin: 0 0 1.5rem; }
+  dt { color: #a3a3a3; font-size: 0.8rem; margin-top: 0.75rem; }
+  dt:first-child { margin-top: 0; }
+  dd { margin: 0.25rem 0 0; }
+  .detail { color: #a3a3a3; font-size: 0.875rem; margin-top: 0.25rem; line-height: 1.4; }
+  .actions { display: flex; gap: 0.75rem; }
+  button { flex: 1; padding: 0.75rem; border-radius: 0.5rem; font-size: 1rem; cursor: pointer; border: 1px solid #262626; }
+  .approve { background: #fafafa; color: #0a0a0a; }
+  .deny { background: #171717; color: #fafafa; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Allow ${safeClient} to access buildd?</h1>
+<dl>
+  <dt>Application</dt><dd>${safeClient}</dd>
+  <dt>Workspace</dt><dd>${safeWs}</dd>
+  <dt>Access</dt><dd data-access-level="${args.level}">${access.label} (your team role)<div class="detail">${escapeHtml(access.detail)}</div></dd>
+  <dt>Returns to</dt><dd>${escapeHtml(redirectHost)}</dd>
+</dl>
+<form method="post" action="/api/oauth/authorize">
+${inputs}
+<div class="actions">
+  <button class="deny" type="submit" name="decision" value="deny">Cancel</button>
+  <button class="approve" type="submit" name="decision" value="approve">Approve</button>
+</div>
+</form>
+</div>
+</body>
+</html>`;
 }
 
 /**
@@ -228,8 +471,8 @@ ${items}
 }
 
 /**
- * Confirmation page rendered after the user picks a workspace and before the
- * OAuth code-redirect fires. Two paths complete the redirect, both of which put
+ * Confirmation page rendered after the user approves and before the OAuth
+ * code-redirect fires. Two paths complete the redirect, both of which put
  * the URL in an HTML context that escapeHtml fully neutralises:
  *   - <meta http-equiv="refresh"> (works without JS, ~1s delay)
  *   - a visible <a> for users the meta refresh doesn't move

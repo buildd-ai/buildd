@@ -11,10 +11,15 @@
  * This module turns those crashes into a forecast. Each exhaustion records how
  * much work the window actually held (`oauth_budget_episodes`); from the recent
  * episodes we learn a conservative capacity and express the current window's
- * usage as a 0..1 pressure value. That value is fed to the existing model router
- * as `dailyBudgetPct`, so the behaviour we already have for API accounts —
- * downshift tiers under pressure, pause priority-0 work at 95% — starts working
- * for OAuth accounts too, *before* the wall instead of after it.
+ * usage as a 0..1 pressure value.
+ *
+ * The forecast is NOT trusted to hold work back. Where the 5h wall really sits
+ * is too uncertain to delay, deny, pause or downshift a claim on. Its only
+ * permitted effect is `oauthParallelismCap`: a lower per-seat concurrency as the
+ * window fills, never below one session, and back to the full limit once the
+ * window resets (pressure is measured per window, so it falls with the reset).
+ * Low confidence fails open. It deliberately does not feed the router's
+ * `dailyBudgetPct`, whose 95% rule pauses priority-0 work outright.
  *
  * Design notes:
  * - Capacity is the **p25** of observed episodes, not the mean: we would rather
@@ -79,16 +84,32 @@ export interface OauthEpisode {
 }
 
 /**
- * Model cost weights, in sonnet-equivalents, from published per-token pricing
- * ratios (opus ≈ 5× sonnet, haiku ≈ 0.27× sonnet). A plan window is consumed by
- * *cost*, not by raw turn or token count: 100 opus turns eat roughly 5× the
- * window that 100 haiku turns do. Weighting normalises for that so a capacity
- * learned during an opus-heavy week still applies during a haiku-heavy one.
+ * Model cost weights, in sonnet-equivalents. A plan window is consumed by
+ * *cost*, not by raw turn or token count, so weighting normalises for model mix:
+ * a capacity learned during a premium-heavy week still applies during a
+ * budget-heavy one.
+ *
+ * Basis: published per-token list-price ratios between the models the tier
+ * registry serves by default (TIER_DEFAULTS in ./model-tier-defaults.ts) —
+ * premium ≈ 2.5× standard, budget ≈ 0.5× standard. List price is a proxy:
+ * subscription windows are not billed per token, but price is the best public
+ * signal of relative consumption. Re-derive these when TIER_DEFAULTS moves to a
+ * new model generation — the previous values (opus 5×, haiku 0.27×) described
+ * a generation where premium cost five times standard, and outlived it.
+ *
+ * Why an over-weight matters, not just an imprecise one: pressure narrows the
+ * seat's parallelism (`oauthParallelismCap`). With opus over-weighted, every
+ * premium task reads as far more window than it uses, pressure rises early, and
+ * the seat runs fewer sessions than it could.
+ *
+ * Unit caveat: oauth_budget_episodes store weighted totals as computed when the
+ * episode was recorded, so capacity learned from episodes before this change is
+ * in the old units until those episodes age out of the learning window.
  *
  * Unknown models weigh 1 (sonnet) — never 0 (would read as free) and never the
  * maximum (would throttle everything on a naming change).
  */
-export const MODEL_WEIGHTS = { opus: 5, sonnet: 1, haiku: 0.27 } as const;
+export const MODEL_WEIGHTS = { opus: 2.5, sonnet: 1, haiku: 0.5 } as const;
 
 export function modelWeight(model: string | null | undefined): number {
   if (!model) return MODEL_WEIGHTS.sonnet;
@@ -313,6 +334,33 @@ export function inferWindowStart(input: {
     if (start >= windowStart + OAUTH_WINDOW_MS) windowStart = start;
   }
   return new Date(windowStart);
+}
+
+/** Below this pressure the seat keeps its full concurrency. */
+export const PARALLELISM_PRESSURE_FLOOR = 0.5;
+
+/**
+ * The per-seat session limit learned pressure allows, or null for "no change".
+ *
+ * Linear from `baseMax` at PARALLELISM_PRESSURE_FLOOR down to 1 at a full window.
+ * The floor of 1 is the invariant that keeps this from ever blocking: a seat
+ * with nothing running always gets its next claim, so the worst case of a bad
+ * forecast is running one session at a time, not running none.
+ *
+ * Returns null (fail open) unless the estimate is 'good' — with only a few
+ * episodes the learned wall is too noisy to act on at all.
+ */
+export function oauthParallelismCap(input: {
+  pressure: OauthBudgetPressure | null;
+  baseMax: number;
+}): number | null {
+  const { pressure } = input;
+  if (!pressure || pressure.confidence !== 'good' || pressure.limiter === null) return null;
+  if (!(pressure.pct >= PARALLELISM_PRESSURE_FLOOR)) return null;
+  const base = Math.max(1, Math.floor(input.baseMax));
+  const headroom = (1 - Math.min(1, pressure.pct)) / (1 - PARALLELISM_PRESSURE_FLOOR);
+  const cap = Math.max(1, Math.min(base, Math.round(1 + (base - 1) * headroom)));
+  return cap >= base ? null : cap;
 }
 
 /** When the inferred window expires — the earliest time the budget can reopen. */

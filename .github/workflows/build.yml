@@ -161,6 +161,16 @@ jobs:
           bun run scripts/lint-model-ids.ts --self-test
           bun run scripts/lint-model-ids.ts
 
+      - name: Lint hand-built SQL
+        # Same self-test-first shape as the model-ID lint above, replaying the
+        # two historical defects (ANY(${array}) as a param list; a bare
+        # camelCase property Postgres folds to a nonexistent column) as
+        # fixtures that must fail, alongside fixed/clean forms that must pass.
+        # See scripts/lint-hand-built-sql.ts for the incidents this traces to.
+        run: |
+          bun run scripts/lint-hand-built-sql.ts --self-test
+          bun run scripts/lint-hand-built-sql.ts
+
       - name: Type check
         run: bun run type-check
 
@@ -692,6 +702,16 @@ jobs:
           echo "::endgroup::"
           INNER
 
+      - name: Generate runner local token
+        # The runner's local server binds to loopback and requires a local token
+        # by default. The tests below drive it from this job over the tailnet, so
+        # the runner is started with an explicit bind and a per-run token.
+        if: steps.sync.outputs.machine_online != 'false'
+        run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "BUILDD_LOCAL_TOKEN=$token" >> "$GITHUB_ENV"
+
       - name: Start preview runner
         if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.runner == 'true'
         run: |
@@ -702,6 +722,9 @@ jobs:
               screen -dmS buildd-test bash -c '
                 export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
+                export BUILDD_UI_BIND=0.0.0.0
+                export LOCAL_UI_URL=http://$TEST_MACHINE_HOST:8767
+                export BUILDD_LOCAL_TOKEN=$BUILDD_LOCAL_TOKEN
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
@@ -711,6 +734,9 @@ jobs:
           sleep 5
         env:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          # The runner only answers requests whose Host is one of its own
+          # addresses; the tests below reach it under this name.
+          TEST_MACHINE_HOST: ${{ vars.TEST_MACHINE_HOST }}
 
       - name: Integration tests
         if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.api == 'true'

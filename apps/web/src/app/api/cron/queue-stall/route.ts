@@ -86,6 +86,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 // module: it shares no code path with the gate ladder and must not be able to
 // reach one.
 import { detectFleetIdle } from './fleet-idle';
+import { readModelPin } from '@buildd/core/model-pin';
 
 export const maxDuration = 60;
 
@@ -411,8 +412,10 @@ async function resolveStallGate(
     }
   }
 
-  // ── OAuth budget pacing ───────────────────────────────────────────────────
-  // Soft and self-clearing (pressure falls when the provider window resets), so
+  // ── Budget pacing (API-key spend) ─────────────────────────────────────────
+  // Learned OAuth pressure never pauses a task (it only narrows seat
+  // parallelism), so this is API-key spend against the daily cap.
+  // Soft and self-clearing (pressure falls when the daily spend resets), so
   // it sits below every permanent gate — but it MUST precede the fallback.
   // `routing_paused` is by far the most common real reason a claimable task
   // sits unclaimed, and reporting it as `no_gate_identified` actively misleads:
@@ -422,7 +425,7 @@ async function resolveStallGate(
       teamId: task.workspace?.teamId ?? null,
       priority: task.priority,
       kind: task.kind,
-      explicitModel: typeof ctx.model === 'string' ? ctx.model : null,
+      explicitModel: readModelPin(ctx),
     });
     if (paced) {
       return {
@@ -432,8 +435,8 @@ async function resolveStallGate(
           + `${Math.round(paced.pct * 100)}% and priority-0 non-coordination tasks pause above 95%. `
           + `That is very likely why it is unclaimed, but it is measured now and not over the whole `
           + `stall, and pacing applies per claiming account — so verify before ruling other causes out. `
-          + `It resumes when the window resets; to run it now, raise its priority, press Start (an `
-          + `explicit start bypasses pacing), or set OAUTH_BUDGET_PACING=off`,
+          + `It resumes when daily spend resets; to run it now, raise its priority, pin its model (a `
+          + `pinned model bypasses pacing), or raise the account's daily cost limit`,
       };
     }
   }

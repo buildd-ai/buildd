@@ -23,9 +23,10 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
+import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
-import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
+import { eq } from "drizzle-orm";
 import {
   appendPathManifest,
   checkPathClaimConflict,
@@ -168,7 +169,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -209,6 +210,19 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   const ctxEmbedder = getVoyageEmbedder();
   const ctxKnowledgeStore = new PgVectorStore(ctxEmbedder, getVoyageReranker());
 
+  /**
+   * Whether the knowledge surfaces (memory store, recall/learn, the memory
+   * resource) are closed for `wsId`. A pinned workspace's data class is
+   * computed once per request (`isSensitive`); a workspace inferred later by
+   * getWorkspaceId() gets the same fail-closed lookup here, so an unpinned
+   * connection cannot reach a sensitive workspace's knowledge.
+   */
+  const knowledgeBlockedFor = async (wsId: string | null): Promise<boolean> => {
+    if (isSensitive) return true;
+    if (!wsId || wsId === workspaceId) return false;
+    return (await resolveWorkspaceDataClass(wsId)) === 'sensitive';
+  };
+
   const ctx: ActionContext = {
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
@@ -218,7 +232,18 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     appBaseUrl,
     knowledgeStore: ctxKnowledgeStore,
     embedder: ctxEmbedder,
-    getMemoryClient: () => getMemoryClientForTeam(resolvedWorkspaceId, accountTeamId),
+    getMemoryClient: async () => {
+      if (await knowledgeBlockedFor(resolvedWorkspaceId)) return null;
+      // Without a pinned workspace, the calling action may target a workspace
+      // this connection never resolves (claim_task with an explicit id, or a
+      // claim across all of the account's workspaces). Fail closed if any
+      // workspace the caller reaches is sensitive.
+      if (!workspaceId && accountTeamId && accountId
+        && await callerReachesSensitiveWorkspace({ id: accountId, teamId: accountTeamId })) {
+        return null;
+      }
+      return getMemoryClientForTeam(resolvedWorkspaceId, accountTeamId);
+    },
   };
 
   /** Shared refusal when the team's memory store cannot be resolved. */
@@ -248,11 +273,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
    *   an admin pruning knowledge has to keep working. recall / learn /
    *   buildd_memory do forward it, as defence in depth behind their own
    *   sensitive-workspace check.
+   * - `sensitiveRefusalTool`: when set, refuse if the resolved workspace —
+   *   pinned or inferred — is sensitive, naming this tool in the refusal.
    */
   const resolveMemoryContext = async (opts: {
     ambiguousWorkspaceMessage: string;
     memoryStoreRequired: boolean;
     forwardIsSensitive: boolean;
+    sensitiveRefusalTool?: string;
   }) => {
     const wsId = await getWorkspaceId();
     if (!wsId && authType === 'oauth') {
@@ -260,6 +288,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         ok: false as const,
         refusal: {
           content: [{ type: "text" as const, text: opts.ambiguousWorkspaceMessage }],
+          isError: true,
+        },
+      };
+    }
+
+    const sensitiveNow = await knowledgeBlockedFor(wsId);
+    if (sensitiveNow && opts.sensitiveRefusalTool) {
+      return {
+        ok: false as const,
+        refusal: {
+          content: [{ type: "text" as const, text: `Error: ${opts.sensitiveRefusalTool} is not available in sensitive workspaces.` }],
           isError: true,
         },
       };
@@ -285,7 +324,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         knowledgeStore,
         embedder,
         api,
-        ...(opts.forwardIsSensitive ? { isSensitive } : {}),
+        ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
       },
     };
   };
@@ -385,6 +424,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           ambiguousWorkspaceMessage: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
           memoryStoreRequired: true,
           forwardIsSensitive: true,
+          sensitiveRefusalTool: "buildd_memory",
         });
         if (!resolved.ok) return resolved.refusal;
 
@@ -403,6 +443,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           ambiguousWorkspaceMessage: "Cannot resolve workspace for knowledge action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
           memoryStoreRequired: true,
           forwardIsSensitive: true,
+          sensitiveRefusalTool: name,
         });
         if (!resolved.ok) return resolved.refusal;
         // Non-null by construction: memoryStoreRequired refused above otherwise.
@@ -496,9 +537,15 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             mcpTask.missionId !== null && mcpTask.missionId !== undefined &&
             blocker?.missionId !== mcpTask.missionId;
 
-          const message = isCrossMission
+          const hasDeadlock = 'deadlock' in waiterResult && waiterResult.deadlock;
+
+          let message = isCrossMission
             ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`
             : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
+
+          if (hasDeadlock) {
+            message += ` DEADLOCK DETECTED: A circular wait cycle exists (${waiterResult.cycle.length} tasks involved). A waiter will never be notified. You must either: (1) cancel this task and retry later, (2) have the blocking task cancel, or (3) use mission-level maxConcurrentTasks=1 to serialize conflicting tasks.`;
+          }
 
           const result: Record<string, unknown> = {
             claimed: false,
@@ -508,9 +555,23 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             message,
           };
 
-          if ('deadlock' in waiterResult && waiterResult.deadlock) {
+          if (hasDeadlock) {
             result.deadlock = true;
             result.cycle = waiterResult.cycle;
+            // Post a warning for human resolution (best-effort)
+            if (mcpTask.missionId) {
+              try {
+                await db.insert(missionNotes).values({
+                  missionId: mcpTask.missionId,
+                  taskId: taskId,
+                  authorType: 'system',
+                  type: 'warning',
+                  title: 'Deadlock detected in path claims',
+                  body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
+                  status: 'open',
+                });
+              } catch { /* non-fatal */ }
+            }
           }
 
           return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
@@ -796,6 +857,11 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       case "buildd://workspace/memory": {
         try {
           const wsId = await getWorkspaceId();
+          if (await knowledgeBlockedFor(wsId)) {
+            return {
+              contents: [{ uri, mimeType: "text/plain", text: "Workspace memory is not available in sensitive workspaces." }],
+            };
+          }
           const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
           if (memClient) {
             const data = await memClient.getContext(await resolveProjectKey(wsId, repoName));
@@ -855,37 +921,41 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   let workspaceId: string | undefined;
 
   if (workspaceParam) {
+    // Same generic refusal for an unknown workspace and another team's, so the
+    // response cannot be used to probe which workspaces exist.
+    if (!(await isWorkspaceInCallerScope(workspaceParam, account))) {
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     workspaceId = workspaceParam;
   } else if (repoParam) {
-    // Try exact match first, then case-insensitive
-    const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.repo, repoParam),
-      columns: { id: true },
-    });
-    if (workspace) {
-      workspaceId = workspace.id;
-    } else {
-      // Case-insensitive fallback
-      const [wsRow] = await db
-        .select({ id: workspaces.id })
-        .from(workspaces)
-        .where(sql`LOWER(${workspaces.repo}) = LOWER(${repoParam})`)
-        .limit(1);
-      workspaceId = wsRow?.id;
-      if (!workspaceId) {
-        console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
-      }
+    // Resolved only among the account's own team's workspaces and the ones it
+    // is explicitly linked to.
+    workspaceId = await resolveRepoParamWorkspaceId(repoParam, account);
+    if (!workspaceId) {
+      console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
     }
+  }
+
+  // A `?worker=` id is the worker this session acts as; it must be one the
+  // calling account runs, or one in its own team's workspaces.
+  const workerParam = url.searchParams.get("worker");
+  if (workerParam && !(await isWorkerInCallerScope(workerParam, account))) {
+    return new Response(JSON.stringify({ error: "Worker not found for this account" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey);
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
-  const workerParam = url.searchParams.get("worker");
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

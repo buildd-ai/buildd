@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { tasks } from '@buildd/core/db/schema';
 import {
   BYPASS_DEPS_GATE_KEY,
   BYPASS_HELD_GATE_KEY,
@@ -58,5 +60,44 @@ describe('bypassFlagCondition', () => {
   it('every live bypass key is a distinct context key', () => {
     const keys = [BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY];
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+// ─── The emitted SQL ─────────────────────────────────────────────────────────
+//
+// The `walk`-based assertion above proves the key literal reaches the fragment
+// somewhere, but never renders it — a wrong operator (`->` instead of `->>`,
+// `=` flipped to `!=`) or a mis-cast column would pass it just the same. This
+// is the same class of invisibility that shipped the ANY(${array}) and
+// dependsOn/depends_on bugs: a route test that mocks the query builder can
+// never see a malformed fragment, only a real dialect render can.
+describe('bypassFlagCondition() — emitted SQL', () => {
+  const dialect = new PgDialect();
+  const render = (key: typeof CAP_EXEMPT_KEY) => dialect.sqlToQuery(bypassFlagCondition(tasks.context, key));
+
+  it('reads the key via ->> so both the boolean and string forms compare as text', () => {
+    const { sql: text } = render(CAP_EXEMPT_KEY);
+    // `->` returns jsonb, and jsonb `true` would then need a jsonb literal on
+    // the right-hand side rather than the text comparison this predicate uses.
+    expect(text).toContain('->>');
+    expect(text).not.toMatch(/->[^>]/);
+  });
+
+  it("compares against the text 'true', not a boolean or jsonb literal", () => {
+    expect(render(CAP_EXEMPT_KEY).sql).toMatch(/= 'true'$/);
+    expect(render(CAP_EXEMPT_KEY).params).toEqual([CAP_EXEMPT_KEY]);
+  });
+
+  it('COALESCEs a missing key to empty string rather than leaving it NULL', () => {
+    // NULL = 'true' is NULL (neither true nor false) in Postgres, which would
+    // make the predicate silently inert for a task with no context at all.
+    expect(render(CAP_EXEMPT_KEY).sql).toContain("COALESCE(");
+    expect(render(CAP_EXEMPT_KEY).sql).toContain(", '')");
+  });
+
+  it('binds the requested key as a parameter, not string-interpolated text', () => {
+    const { sql: text, params } = render(BYPASS_HELD_GATE_KEY);
+    expect(params[0]).toBe(BYPASS_HELD_GATE_KEY);
+    expect(text).not.toContain(BYPASS_HELD_GATE_KEY);
   });
 });

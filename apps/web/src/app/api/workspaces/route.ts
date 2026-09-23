@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
+import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
@@ -175,6 +176,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name is required (or provide repoUrl to auto-derive)' }, { status: 400 });
     }
 
+    // Resolve team: API key uses its team, session user uses requested or default team
+    let teamId: string | null = null;
+    if (apiAccount) {
+      teamId = apiAccount.teamId;
+    } else {
+      if (requestedTeamId) {
+        const memberTeamIds = await getUserTeamIds(user!.id);
+        if (memberTeamIds.includes(requestedTeamId)) {
+          teamId = requestedTeamId;
+        }
+      }
+      if (!teamId) {
+        teamId = await getUserDefaultTeamId(user!.id);
+      }
+    }
+    if (!teamId) {
+      return NextResponse.json({ error: 'No team found' }, { status: 500 });
+    }
+
+    // A GitHub installation may only be linked into a team it belongs to (see
+    // lib/github-installation-access.ts).
+    if (githubInstallationId) {
+      const ownerTeamIds = await getInstallationOwnerTeamIds(githubInstallationId);
+      if (!ownerTeamIds.includes(teamId)) {
+        return NextResponse.json(
+          { error: 'That GitHub installation is not connected to this team' },
+          { status: 403 },
+        );
+      }
+    }
+
     // If a GitHub repo is selected, persist it on-demand
     let githubRepoDbId: string | null = null;
     if (githubRepo && githubInstallationId) {
@@ -193,6 +225,8 @@ export async function POST(req: NextRequest) {
         })
         .onConflictDoUpdate({
           target: githubRepos.repoId,
+          // Only refresh a row that already belongs to this installation.
+          setWhere: eq(githubRepos.installationId, githubInstallationId),
           set: {
             fullName: githubRepo.fullName,
             name: githubRepo.name,
@@ -205,26 +239,13 @@ export async function POST(req: NextRequest) {
           },
         })
         .returning();
+      if (!upserted) {
+        return NextResponse.json(
+          { error: 'That repository is linked through a different GitHub installation' },
+          { status: 409 },
+        );
+      }
       githubRepoDbId = upserted.id;
-    }
-
-    // Resolve team: API key uses its team, session user uses requested or default team
-    let teamId: string | null = null;
-    if (apiAccount) {
-      teamId = apiAccount.teamId;
-    } else {
-      if (requestedTeamId) {
-        const memberTeamIds = await getUserTeamIds(user!.id);
-        if (memberTeamIds.includes(requestedTeamId)) {
-          teamId = requestedTeamId;
-        }
-      }
-      if (!teamId) {
-        teamId = await getUserDefaultTeamId(user!.id);
-      }
-    }
-    if (!teamId) {
-      return NextResponse.json({ error: 'No team found' }, { status: 500 });
     }
 
     const [workspace] = await db

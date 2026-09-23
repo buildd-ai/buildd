@@ -27,8 +27,9 @@ const NOT_CACHED = [
   // referential identity for non-primitives, so fresh object literals at the
   // call site would miss every time and only grow the cache.
   'resolveAccountTeamIds',
-  // Takes a NextRequest — never referentially equal between calls.
-  'getUserFromRequest',
+  // Take a NextRequest — never referentially equal between calls.
+  'getRequestPrincipal',
+  'requireSessionUser',
   // Pure delegate to the cached getCurrentUser; wrapping adds a second cache
   // for zero additional dedupe.
   'requireUser',

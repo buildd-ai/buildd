@@ -157,17 +157,149 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
     },
   },
   {
+    slug: 'ci-fix-bot-actor-allowlist',
+    name: 'CI auto-fix bot-actor allowlist',
+    watches: 'Whether the claude-code-action repair step is allowed to run when the dev push it is reacting to was authored by a known repo bot (buildd-ai worker commits, buildd-release)',
+    threshold:
+      "allowed_bots names both bots this workflow's trigger can ever produce, never '*'. Previously the " +
+      "default empty allowlist rejected every bot-authored push outright ('Workflow initiated by " +
+      "non-human actor... Add bot to allowed_bots list') — a large share of ci-fix.yml failures, all " +
+      'landing at the claude-code-action step.',
+    location: '.github/workflows/ci-fix.yml (auto-fix job, claude-code-action step)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'allows the two bots this workflow can ever be triggered by, and nothing wider',
+    },
+  },
+  {
+    slug: 'ci-fix-max-turns-headroom',
+    name: 'CI auto-fix turn budget',
+    watches: "The claude-code-action repair step's --max-turns budget against what a working fix has actually needed",
+    threshold:
+      '--max-turns >= 50. Successful repair runs were finishing just under the previous 30-turn cap — ' +
+      'already close to binding on a WORKING fix — while a large share of failures hit the cap outright ' +
+      '(Claude execution failed: Reached maximum number of turns).',
+    location: '.github/workflows/ci-fix.yml (auto-fix job, claude-code-action step claude_args)',
+    fireTest: {
+      file: 'scripts/ci-repair-workflows.test.ts',
+      title: 'gives the fix agent headroom above what a working run has actually needed',
+    },
+  },
+  {
     slug: 'disk-space-alert',
     name: 'Disk-space alert',
     watches: 'Free space on the volume that actually fills on a worker host',
     threshold:
-      'Fixed remaining-space percentage (see disk-cleanup.sh in the infrastructure repo). Currently measures ' +
-      'the host root filesystem instead of the volume workers actually fill, so it can report healthy while ' +
-      'the real volume is full.',
+      'Fixed remaining-space percentage (see disk-cleanup.sh in the infrastructure repo). Fixed to resolve ' +
+      'the volume Docker actually stores data on at runtime (via `docker info`), instead of the host root ' +
+      'filesystem, so it can no longer report healthy while the real volume is full.',
     location: 'disk-cleanup.sh (infrastructure repo, not this codebase)',
     noLocalFireTest: {
       reason: 'implementation lives in the infrastructure repo, not this codebase',
-      trackedBy: 'paired buildd task filed against the infrastructure repo',
+      trackedBy: 'buildd-ai/infrastructure repo: scripts/disk-cleanup.sh (docker_root_dir) + scripts/disk-cleanup.test.sh (fire-test, wired into that repo\'s CI)',
     },
   },
 ];
+
+/**
+ * `withCronRun` (apps/web/src/lib/cron-run.ts) records every scheduled job's
+ * `changed` count and pages when a job's recent runs trend unhealthy. That
+ * trend logic (`evaluateCronHealth`, apps/web/src/lib/cron-health.ts) reads
+ * `changed` as "work landed" — nonzero is evidence of health.
+ *
+ * That reading is backwards for a DETECTOR job, where `changed` counts
+ * problems FOUND, not work performed. A detector finding a real, ongoing
+ * outage every single run reports the same nonzero `changed` a maximally
+ * healthy worker sweep would — and reads healthier the worse the outage gets.
+ * An outage ran a full night on exactly this blind spot: the detector was
+ * right on every run and the supervisor watching it had no way to tell "still
+ * finding the same fire" from "still doing useful work".
+ *
+ * This registry names each job's polarity explicitly so `evaluateCronHealth`
+ * never has to infer it from the result shape — inference silently
+ * misclassifies the next job someone adds. A job not listed here defaults to
+ * `'work'`, which is `evaluateCronHealth`'s original behaviour, so adding this
+ * registry changes nothing until a job opts in.
+ */
+export type CronChangedPolarity = 'work' | 'findings';
+
+/**
+ * The exact marker a notify-test must carry, immediately above the `it`/`test`
+ * block that proves a `findings`-polarity job actually notifies a human when
+ * it reports something. Same convention as SIGNAL_FIRE_MARKER_PREFIX, kept as
+ * a separate constant because it proves a different claim: not "this signal
+ * can trip", but "tripping this signal reaches a human", which is the exact
+ * gap that let a fleet-idle alarm go unnoticed for a full night despite firing
+ * correctly on every run.
+ */
+export const NOTIFY_FIRE_MARKER_PREFIX = '@notify-fire:';
+
+/** Build the exact marker comment text for a slug, e.g. `@notify-fire: foo`. */
+export function formatNotifyFireMarker(slug: string): string {
+  return `${NOTIFY_FIRE_MARKER_PREFIX} ${slug}`;
+}
+
+/** The marker-matching pattern. See signalFireMarkerPattern for why the slug is kebab-restricted. */
+export function notifyFireMarkerPattern(): RegExp {
+  const escaped = NOTIFY_FIRE_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`${escaped}[ \\t]*([a-z0-9]+(?:-[a-z0-9]+)*)`, 'g');
+}
+
+/** Extract every slug referenced by a notify-fire marker comment in `source`, in order. */
+export function parseNotifyFireMarkers(source: string): string[] {
+  return [...source.matchAll(notifyFireMarkerPattern())].map(m => m[1]);
+}
+
+export interface CronJobRegistryEntry {
+  /**
+   * Unique kebab-case identifier, referenced by the notify-fire marker
+   * comment. Distinct from `job` because a `withCronRun` job slug can contain
+   * `:` for a route with more than one cadence (e.g. `queue-stall:fleet-idle`),
+   * which the marker's kebab-case pattern deliberately cannot match.
+   */
+  slug: string;
+  /** The exact `job` string passed to `withCronRun`. */
+  job: string;
+  name: string;
+  changedPolarity: CronChangedPolarity;
+  /** One line: what `changed` counts for this job, since the meaning differs by polarity. */
+  changedMeaning: string;
+  /**
+   * Required for `changedPolarity: 'findings'` — proof this job has a real,
+   * demonstrated path to notify a human when it finds something. A
+   * `findings` job with no notification path can raise an internal alarm
+   * that nobody ever sees, which is precisely the failure this registry
+   * exists to make impossible to ship silently.
+   */
+  notifyTest?: { file: string; title: string };
+}
+
+export const CRON_JOB_REGISTRY: CronJobRegistryEntry[] = [
+  {
+    slug: 'queue-stall-gate-ladder',
+    job: 'queue-stall',
+    name: 'Queue-stall per-task gate ladder',
+    changedPolarity: 'findings',
+    changedMeaning: 'stalled tasks found and notified this run, not work performed',
+    notifyTest: {
+      file: 'apps/web/src/app/api/cron/queue-stall/route.test.ts',
+      title: 'sends one Pushover alert that names the gate, and stamps the task',
+    },
+  },
+  {
+    slug: 'queue-stall-fleet-idle',
+    job: 'queue-stall:fleet-idle',
+    name: 'Queue-stall fleet-idle detector',
+    changedPolarity: 'findings',
+    changedMeaning: 'accounts found alive-but-claiming-nothing and alerted this run',
+    notifyTest: {
+      file: 'apps/web/src/app/api/cron/queue-stall/route.test.ts',
+      title: 'alarms when a heartbeating fleet has claimable work and has started nothing',
+    },
+  },
+];
+
+/** A job's declared polarity, or `'work'` (evaluateCronHealth's original behaviour) if unregistered. */
+export function getCronJobPolarity(job: string): CronChangedPolarity {
+  return CRON_JOB_REGISTRY.find(e => e.job === job)?.changedPolarity ?? 'work';
+}

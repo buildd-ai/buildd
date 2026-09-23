@@ -218,4 +218,36 @@ describe('withCronRun', () => {
     await withCronRun('pr-reconcile:merge-state', reqWith(SECRET), async () => NextResponse.json({}));
     expect(inserted[0].job).toBe('pr-reconcile:merge-state');
   });
+
+  // ── Polarity wiring: a registered findings job inverts, everything else doesn't ──
+
+  const sustainedFindingRuns = [
+    { ok: true, errors: 0, changed: 1, alertedAt: null, startedAt: new Date(Date.now() - 1 * HOUR) },
+    { ok: true, errors: 0, changed: 1, alertedAt: null, startedAt: new Date(Date.now() - 2 * HOUR) },
+    { ok: true, errors: 0, changed: 1, alertedAt: null, startedAt: new Date(Date.now() - 3 * HOUR) },
+  ];
+
+  it('pages when a registered findings job keeps finding something run after run', async () => {
+    mockFindMany.mockResolvedValue(sustainedFindingRuns);
+
+    await withCronRun('queue-stall:fleet-idle', reqWith(SECRET), async (report) => {
+      report({ processed: 1, changed: 1, errors: 0 });
+      return NextResponse.json({ ok: true });
+    });
+
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    const opts = mockNotify.mock.calls[0][0] as any;
+    expect(opts.message).toContain('not resolving on its own');
+  });
+
+  it('does NOT page an unregistered (default work-polarity) job over the identical run history', async () => {
+    mockFindMany.mockResolvedValue(sustainedFindingRuns);
+
+    await withCronRun('example', reqWith(SECRET), async (report) => {
+      report({ processed: 1, changed: 1, errors: 0 });
+      return NextResponse.json({ ok: true });
+    });
+
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
 });

@@ -48,10 +48,11 @@ const NORMALIZED_WORKSPACE_REPO = sql`lower(
  * `UPDATE ... FROM` join. Both are idempotent, so this is safe to call on every
  * installation webhook as well as from the manual sync endpoint.
  *
- * Note: back-linking matches on repo full name alone, so it is installation-
- * scoped but not account-scoped — a workspace owned by a different buildd
- * account that points at the same repo would also be linked. Acceptable today
- * (repos are not shared across accounts); revisit if buildd goes multi-tenant.
+ * Back-linking is also team-scoped: only workspaces in a team the installation
+ * belongs to are linked — teams already using an installation of the same
+ * GitHub account (which carries ownership across a reinstall), plus the
+ * installer's teams. A workspace elsewhere that merely names the same repo is
+ * left unlinked. See lib/github-installation-access.ts for the same rule in TS.
  */
 export async function syncInstallationRepos(installation: {
   id: string;
@@ -103,6 +104,23 @@ export async function syncInstallationRepos(installation: {
     FROM github_repos r
     WHERE r.installation_id = ${installation.id}::uuid
       AND ${NORMALIZED_WORKSPACE_REPO} = lower(r.full_name)
+      AND w.team_id IN (
+        SELECT w2.team_id
+          FROM workspaces w2
+          JOIN github_installations i2 ON i2.id = w2.github_installation_id
+          JOIN github_installations i1 ON i1.account_id = i2.account_id
+         WHERE i1.id = ${installation.id}::uuid
+        UNION
+        SELECT tm.team_id
+          FROM team_members tm
+          JOIN github_installations i3 ON i3.installed_by_user_id = tm.user_id
+         WHERE i3.id = ${installation.id}::uuid
+        UNION
+        SELECT t.id
+          FROM teams t
+          JOIN github_installations i4 ON t.slug = 'personal-' || i4.installed_by_user_id::text
+         WHERE i4.id = ${installation.id}::uuid
+      )
       AND (
         w.github_repo_id IS DISTINCT FROM r.id
         OR w.github_installation_id IS DISTINCT FROM r.installation_id

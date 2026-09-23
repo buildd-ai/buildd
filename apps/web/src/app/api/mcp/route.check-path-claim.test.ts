@@ -8,7 +8,7 @@
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-const WORKER_ID = 'worker-aaa-111';
+const WORKER_ID = 'a1a1a1a1-0000-4000-8000-000000000111';
 const TASK_ID = '11111111-1111-1111-1111-111111111111';
 const SIBLING_ID = '22222222-2222-2222-2222-222222222222';
 const WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -152,7 +152,7 @@ describe('check_path_claim MCP handler', () => {
 
     // Default: authenticated, worker resolves to task, no conflict, append succeeds
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
-    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID });
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, accountId: 'acc-1', workspace: { teamId: 'team-1' } });
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
     mockCheckPathClaimConflict.mockResolvedValue(null);
     mockAppendPathManifest.mockImplementation(async (_taskId: string, paths: string[]) => paths);
@@ -169,6 +169,20 @@ describe('check_path_claim MCP handler', () => {
     const result = body.result;
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('worker');
+  });
+
+  it('refuses a ?worker= id that belongs to another account and team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, accountId: 'acc-other', workspace: { teamId: 'team-other' } });
+    const res = await POST(makeToolCallRequest({ paths: ['src/foo.ts'] }));
+    expect(res.status).toBe(403);
+    expect(mockInsertClaims).not.toHaveBeenCalled();
+    expect(mockAppendPathManifest).not.toHaveBeenCalled();
+  });
+
+  it('accepts a ?worker= id in a workspace of the caller team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, accountId: 'acc-other', workspace: { teamId: 'team-1' } });
+    const res = await POST(makeToolCallRequest({ paths: ['src/foo.ts'] }));
+    expect(res.status).toBe(200);
   });
 
   it('returns isError when paths is empty', async () => {
@@ -307,5 +321,25 @@ describe('check_path_claim MCP handler', () => {
     const result = JSON.parse(body.result.content[0].text);
     expect(result.deadlock).toBe(true);
     expect(result.cycle).toEqual(cycle);
+    expect(result.message).toContain('DEADLOCK DETECTED');
+    expect(result.message).toContain('circular wait cycle');
+    expect(result.message).toContain('cancel this task');
+  });
+
+  it('posts mission note on deadlock with missionId', async () => {
+    mockCheckPathClaimConflict.mockResolvedValue({
+      blockingTaskId: SIBLING_ID,
+      blockingPath: 'src/x.ts',
+    });
+    const cycle = [TASK_ID, SIBLING_ID, TASK_ID];
+    mockRegisterWaiter.mockResolvedValue({ deadlock: true, cycle });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'B', missionId: MISSION_ID });
+
+    const body: any = await callTool({ paths: ['src/x.ts'] });
+    const result = JSON.parse(body.result.content[0].text);
+    expect(result.deadlock).toBe(true);
+    expect(mockInsert).toHaveBeenCalled();
   });
 });

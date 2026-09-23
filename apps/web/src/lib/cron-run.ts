@@ -32,6 +32,7 @@ import { db } from '@buildd/core/db';
 import { cronRuns } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, lt } from 'drizzle-orm';
 import { notify } from '@/lib/pushover';
+import { getCronJobPolarity } from '@buildd/core/signal-registry';
 import {
   evaluateCronHealth,
   HEALTH_WINDOW_MS,
@@ -160,14 +161,18 @@ async function checkHealth(job: string, runId: string | null, now: Date): Promis
     limit: 50,
   });
 
-  const verdict = evaluateCronHealth(rows as CronRunSummary[], now);
+  const polarity = getCronJobPolarity(job);
+  const verdict = evaluateCronHealth(rows as CronRunSummary[], now, polarity);
   if (!verdict.alarm) return;
 
   console.error(`[cron:${job}] UNHEALTHY: ${verdict.reason}`);
   notify({
     app: 'alerts',
     title: `Cron unhealthy: ${job}`,
-    message: `${verdict.reason}. This job is running but accomplishing nothing.`,
+    message:
+      polarity === 'findings'
+        ? `${verdict.reason}. This job keeps finding a real problem that is not resolving on its own.`
+        : `${verdict.reason}. This job is running but accomplishing nothing.`,
     priority: 0,
   });
 

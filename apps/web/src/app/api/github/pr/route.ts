@@ -118,6 +118,8 @@ async function requestIntegrationBranchReview(params: {
       reviewerRole: picked.role,
       installationId: params.installationId,
       repoFullName: params.repoFullName,
+      // The caller already has the PR base; saves the reviewer context a PR read.
+      baseRef: params.baseRef,
     });
 
     if (reviewerTask?.id && !reviewerTask.deduplicated) {
@@ -226,7 +228,15 @@ export async function POST(req: NextRequest) {
     // the `create_pr` action) leads the record buildd stores instead, and the
     // adoption itself never fails for want of a lede.
     if (existingPrUrl) {
-      if (worker.prUrl && worker.prNumber) {
+      // Only short-circuit when the caller is re-asserting the SAME PR already
+      // recorded on this worker — a true idempotent retry. A caller passing a
+      // DIFFERENT prUrl is explicitly overriding the stored value (e.g. the
+      // worker's stored PR was wrong, or came from an earlier misdirected
+      // call), and blindly returning the stale stored PR here silently drops
+      // the caller's correction: `create_pr` would report success while
+      // pointing at a PR the caller never asked for. Fall through so the new
+      // URL goes through the same legality checks and gets recorded below.
+      if (worker.prUrl && worker.prNumber && worker.prUrl === existingPrUrl) {
         await db
           .update(workers)
           .set({ updatedAt: new Date() })
@@ -1226,6 +1236,10 @@ export async function PUT(req: NextRequest) {
         workspaceId: workspace.id,
         prNumber,
         headSha,
+        surface: 'PUT /api/github/pr',
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
       });
       if (reviewGate.blocks) {
         recordMergeGate(
@@ -1253,7 +1267,12 @@ export async function PUT(req: NextRequest) {
         prNumber,
         headSha,
         policy,
-        { releaseConfig: workspace.releaseConfig },
+        {
+          releaseConfig: workspace.releaseConfig,
+          workspaceId: workspace.id,
+          taskId: worker.taskId ?? null,
+          workerId: worker.id ?? null,
+        },
       );
       if (!safety.ok) {
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });
@@ -1686,6 +1705,27 @@ export async function closeAncestorRetryPrs(opts: {
 
   for (const prNumber of prNumbers) {
     try {
+      // Only an OPEN ancestor is superseded. A retry chain routinely holds an
+      // ancestor whose PR already merged (an earlier attempt shipped, a later
+      // one reworked it) or was already closed, and telling a merged PR it was
+      // "a rejected attempt" is simply false. Read GitHub rather than the
+      // worker row: merge state recorded by the webhook can lag. If GitHub's
+      // answer can't be read, leave the PR untouched: a missed close is
+      // recoverable, a false comment on a merged PR isn't.
+      let live: { state?: string; merged?: boolean } | null = null;
+      try {
+        live = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      } catch (err) {
+        console.warn(`[create_pr] Could not read ancestor PR #${prNumber} — not closing it:`, err);
+        continue;
+      }
+      if (live?.state !== 'open' || live?.merged) {
+        console.log(
+          `[create_pr] Ancestor PR #${prNumber} is ${live?.merged ? 'merged' : (live?.state ?? 'unknown')} — not superseding`,
+        );
+        continue;
+      }
+
       // Post supersession comment
       const comment =
         `This pull request has been superseded by #${successorPrNumber} ` +

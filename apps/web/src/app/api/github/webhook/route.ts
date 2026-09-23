@@ -67,9 +67,11 @@ import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/relea
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
@@ -362,27 +364,38 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
     case 'closed': {
       // An externally-closed issue cancels its linked task if still open. When
       // buildd itself closed the issue after a merge, the task is already
-      // terminal, so this no-ops (the guard skips terminal statuses).
-      await db
+      // terminal, so the guard skips it and no side effects run.
+      const cancelled = await db
         .update(tasks)
         .set({ status: 'cancelled', updatedAt: new Date() })
         .where(and(
           eq(tasks.externalId, `issue-${issue.id}`),
           not(inArray(tasks.status, TERMINAL_TASK_STATUSES)),
-        ));
+        ))
+        .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
+      // Only rows this UPDATE actually changed: abort the worker (it would
+      // otherwise keep spending tokens), release path claims, resolve, emit.
+      for (const row of cancelled) {
+        await applyTaskCancelSideEffects(row);
+      }
       break;
     }
 
     case 'reopened': {
       // Reopening resurrects a task that a prior close had cancelled — but never
-      // a task that reached completed/failed on its own.
-      await db
+      // a task that reached completed/failed on its own. Claim fields are cleared
+      // like a PATCH reset to pending, so the task is claimable again.
+      const reopened = await db
         .update(tasks)
-        .set({ status: 'pending', updatedAt: new Date() })
+        .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
         .where(and(
           eq(tasks.externalId, `issue-${issue.id}`),
           eq(tasks.status, 'cancelled'),
-        ));
+        ))
+        .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
+      for (const row of reopened) {
+        await applyTaskReopenSideEffects(row, 'GitHub issue reopened');
+      }
       break;
     }
   }
@@ -541,6 +554,19 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // (the same authorization merge_pr's self-merge escape hatch uses),
           // so retry the merge here instead of leaving it to a poller that
           // does not exist.
+          // An approval made before a rebase/base-merge still covers this head
+          // when the PR diff is unchanged. The synchronize handler records that
+          // too; repeating it here covers a lost push webhook.
+          if (pr.base?.ref) {
+            await carryForwardApprovalIfUnchanged({
+              installationId: installation.id,
+              repoFullName: repository.full_name,
+              workspaceId: workspace.id,
+              prNumber: pr.number,
+              baseRef: pr.base.ref,
+              headSha,
+            }).catch((err) => console.warn(`[review] carry-forward check failed for PR #${pr.number}:`, err));
+          }
           const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber: pr.number });
           const hasUnconsumedApprove =
             reviewStatus.state === 'approved' &&
@@ -1840,17 +1866,8 @@ async function maybeDispatchReviewer(
       console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
     }
 
-    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
-    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
-      basePolicy,
-      policyConfig,
-      prFiles.map((f) => f.filename),
-    );
-
-    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
-
-    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
+    // Classify migrations first: the schema risk class keys off the verdict
+    // (EXPAND passes), not off the mere presence of a schema/migration path.
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -1858,6 +1875,19 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
     });
+
+    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
+    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
+    const policy = applyPolicyConfigToMergePolicy(
+      basePolicy,
+      policyConfig,
+      prFiles.map((f) => f.filename),
+      migrationSafety,
+    );
+
+    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
+
+    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
     const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig ?? undefined);
     const shouldEscalateToHuman = preflight.shouldEscalate || policy.tier === 'human';
     if (shouldEscalateToHuman) {
@@ -2021,6 +2051,25 @@ async function maybeReDispatchReviewer(
         callerOrigin: 'system',
         detail: { prNumber: pr.number, reviewTaskId: status.reviewTaskId },
       });
+      return;
+    }
+
+    // An approval is not re-reviewed on push. If the push left the PR diff
+    // unchanged (rebase / base merge), record that the approval covers the
+    // new head so the review gate does not treat it as stale; otherwise the
+    // gate blocks it as stale_approval, as before.
+    if (status.state === 'approved') {
+      if (pr.base?.ref) {
+        await carryForwardApprovalIfUnchanged({
+          installationId,
+          repoFullName,
+          workspaceId: openWorker.workspaceId,
+          prNumber: pr.number,
+          baseRef: pr.base.ref,
+          headSha: pr.head.sha,
+          deps: { readStatus: async () => status },
+        });
+      }
       return;
     }
 
@@ -2244,6 +2293,9 @@ async function handleReleasePrCiSuccess(
     workspaceId: pendingReleaseTasks[0]!.workspaceId,
     prNumber,
     headSha,
+    surface: 'release-pr ci-success',
+    taskId: pendingReleaseTasks[0]!.id,
+    callerOrigin: 'system',
   });
   if (releaseGate.blocks) {
     console.log(

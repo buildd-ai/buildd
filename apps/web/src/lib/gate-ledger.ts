@@ -16,11 +16,12 @@ import {
   recordGateEvent,
   recordOrCoalesceDeferral,
   GATE_SLUGS,
+  gateFrictionSignature,
   type GateCallerOrigin,
   type RecordGateEventInput,
 } from '@buildd/core/gate-events';
 
-export { GATE_SLUGS };
+export { GATE_SLUGS, gateFrictionSignature };
 export type { GateCallerOrigin };
 
 /**
@@ -47,9 +48,17 @@ export function gateCallerOrigin(input: {
  * `recordGateEvent` already swallows its own errors; the extra `.catch` is for
  * the pathological case where the module itself throws synchronously, which
  * would otherwise surface as an unhandled rejection in the route.
+ *
+ * Returns the `gateFrictionSignature` for this (gate, reason) pair — pure and
+ * synchronous, independent of whether the ledger write itself lands — so a
+ * caller building a 400 body can fold it straight in:
+ * `NextResponse.json({ error, frictionSignature: fireGateEvent({...}) }, { status: 400 })`.
+ * Callers that don't need it (the common case — most gate events are
+ * observability only) simply ignore the return value.
  */
-export function fireGateEvent(input: RecordGateEventInput): void {
+export function fireGateEvent(input: RecordGateEventInput): string {
   void recordGateEvent(input).catch(() => {});
+  return gateFrictionSignature(input.gate, input.reason);
 }
 
 /**
@@ -80,11 +89,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function fireGateEventForWorkspaceRef(
   workspaceRef: unknown,
   input: Omit<RecordGateEventInput, 'workspaceId'>,
-): void {
+): string {
   const ref = typeof workspaceRef === 'string' ? workspaceRef.trim() : '';
   if (!ref) {
-    fireGateEvent(input);
-    return;
+    return fireGateEvent(input);
   }
   void (async () => {
     let workspaceId: string | null = null;
@@ -99,6 +107,7 @@ export function fireGateEventForWorkspaceRef(
       detail: { ...(input.detail ?? {}), workspaceRef: ref },
     }).catch(() => {});
   })();
+  return gateFrictionSignature(input.gate, input.reason);
 }
 
 /**

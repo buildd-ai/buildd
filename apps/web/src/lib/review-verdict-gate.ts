@@ -87,6 +87,7 @@
 
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import type { PrReviewStatus, PrReviewState } from '@/lib/pr-review-status';
+import { fireGateEvent, GATE_SLUGS, type GateCallerOrigin } from '@/lib/gate-ledger';
 
 /** Which review condition is holding the door. */
 export type ReviewGateBlockKind = 'changes_requested' | 'escalated' | 'in_flight' | 'stale_approval';
@@ -114,7 +115,8 @@ const PASS: ReviewVerdictGateResult = { blocks: false };
  * not the worker's last recorded commit, which can lag a push.
  */
 export function evaluateReviewVerdictGate(
-  status: Pick<PrReviewStatus, 'state' | 'merged' | 'reviewTaskId' | 'reviewHeadSha' | 'feedback' | 'summary' | 'escalationReason'>,
+  status: Pick<PrReviewStatus, 'state' | 'merged' | 'reviewTaskId' | 'reviewHeadSha' | 'feedback' | 'summary' | 'escalationReason'> &
+    Partial<Pick<PrReviewStatus, 'reviewEquivalentHeadShas'>>,
   currentHeadSha: string | null | undefined,
 ): ReviewVerdictGateResult {
   // Already merged — there is no merge left to gate, and re-reporting a stale
@@ -131,11 +133,20 @@ export function evaluateReviewVerdictGate(
     // normally a clean pass, and only blocks when staleness is PROVABLE. See
     // the module doc's "stale_approval" section for why this runs in the
     // opposite direction from the other kinds.
-    if (!provablyDifferent) return PASS;
+    if (!provablyDifferent) return { ...PASS, state: status.state };
+    // A push that left the PR diff unchanged (rebase / base merge) was
+    // recorded as covered by this approval — see approval-carry-forward.ts.
+    if (headSha && (status.reviewEquivalentHeadShas ?? []).some((s) => normalizeSha(s) === headSha)) {
+      return { ...PASS, state: status.state };
+    }
     kind = 'stale_approval';
   } else {
     kind = blockKindFor(status.state);
-    if (!kind) return PASS;
+    // `state` rides along on every PASS, not just a block, so a caller can
+    // tell "nothing was ever requested" (not_requested) apart from "a review
+    // ran and permanently failed to produce a verdict" (review_failed) —
+    // both pass, but only the second is worth counting. See guardReviewVerdict.
+    if (!kind) return { ...PASS, state: status.state };
     // No SHA-mismatch escape here (see the module doc's "stale-verdict rule"):
     // a re-review is dispatched automatically now, so a lingering mismatch
     // means one hasn't landed yet, not that a push already resolved it.
@@ -165,6 +176,17 @@ export async function guardReviewVerdict(params: {
   prNumber: number;
   /** The commit being merged. Null is treated as unknown — see "fail closed". */
   headSha: string | null | undefined;
+  /**
+   * Which door called this — e.g. `'auto-merge'`, `'POST /api/prs/[prNumber]/merge'`.
+   * Only used to label the `review_failed` observability row below; every
+   * caller already threads its own surface string through its own `blocks`
+   * gate event, so this mirrors that rather than introducing a new convention.
+   * Defaults to `'unspecified'` so existing/test callers do not need to change.
+   */
+  surface?: string;
+  taskId?: string | null;
+  workerId?: string | null;
+  callerOrigin?: GateCallerOrigin | null;
   deps?: {
     read?: (p: { workspaceId: string; prNumber: number }) => Promise<PrReviewStatus>;
   };
@@ -189,7 +211,36 @@ export async function guardReviewVerdict(params: {
       clearedBy: 'Retry, or merge with an explicit human override, which is recorded as a bypass.',
     };
   }
-  return evaluateReviewVerdictGate(status, params.headSha);
+  const result = evaluateReviewVerdictGate(status, params.headSha);
+
+  // The one PASS worth counting: every other PASS means nothing was ever
+  // outstanding, but `review_failed` means a review ran and permanently
+  // failed to produce a verdict — this merge is proceeding with no finding to
+  // protect AND no finding to have caught one. Every door funnels through
+  // here, so firing it once here (rather than at each of the four call sites)
+  // is the whole reason this module exists in the first place. `warned`, not
+  // `rejected`/`deferred`: this PASS is a deliberate, argued design choice
+  // (see the module doc and `blockKindFor`'s `review_failed` case), not a bug
+  // to flag as a refusal — it is a rate to measure, not a merge to stop.
+  if (!result.blocks && result.state === 'review_failed') {
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: params.surface ?? 'unspecified',
+      outcome: 'warned',
+      reason: 'the reviewer never produced a verdict for this PR — merge proceeded, nothing is blocking it, but no review actually happened',
+      workspaceId: params.workspaceId,
+      taskId: params.taskId ?? status.reviewTaskId ?? null,
+      workerId: params.workerId ?? null,
+      callerOrigin: params.callerOrigin ?? null,
+      detail: {
+        prNumber: params.prNumber,
+        headSha: params.headSha ?? null,
+        reviewTaskId: status.reviewTaskId ?? null,
+      },
+    });
+  }
+
+  return result;
 }
 
 // `approved` is handled directly in evaluateReviewVerdictGate (it starts from

@@ -167,8 +167,9 @@ It reads path/line limits from the resolved `MergePolicy` — `threshold.denyPat
 Gates (in order):
 1. All CI check suites passed
 2. `mergeable_state` not `dirty` (conflict → attempt rebase; if rebase fails, escalate)
-3. No touched file starts with a `denyPaths` prefix
-4. `additions + deletions` ≤ `maxLines` (or `source lines` ≤ `maxSourceLines` when both set) — **`auto-threshold` only**, see §1.5 and the table below
+3. Base freshness: headSha is not behind the base branch's current tip (stale → same rebase-and-retest path as a conflict; see below)
+4. No touched file starts with a `denyPaths` prefix
+5. `additions + deletions` ≤ `maxLines` (or `source lines` ≤ `maxSourceLines` when both set) — **`auto-threshold` only**, see §1.5 and the table below
 
 When all gates pass: squash-merge + branch delete.
 
@@ -187,7 +188,42 @@ gate and in which path list gates paths:
 | Deny/escalate paths (`threshold.denyPaths` / `agentReview.escalateToPaths`) | ✅ | ✅ | function not called |
 | Migration operation-class inspector (EXPAND passes, CONTRACT escalates) | ✅ | ✅ | function not called |
 | Conflict / `mergeable_state` check | ✅ | ✅ | function not called |
+| Base freshness (headSha not behind the base branch's current tip) | ✅ | ✅ | function not called |
 | **Aggregate line-count cap (`threshold.maxLines`, default 800)** | ✅ | **not run** | function not called |
+
+#### Base freshness (gate 3)
+
+`dev` carries no GitHub-side branch protection, so `mergeable_state` never
+reports `behind` here — that value only appears under a "require branches up
+to date" rule. Without a separate check, a PR's CI result is proof about
+`headSha` only, and says nothing about whether the base branch has moved past
+it since. A PR whose checks passed hours ago, against a base since replaced by
+other merges, presents as green and would otherwise be accepted.
+
+`evaluateAutoMergeSafety` compares `headSha` against the PR's live base ref via
+GitHub's compare API (`/repos/{repo}/compare/{baseRef}...{headSha}`) and reads
+`behind_by`. A `behind_by > 0` means the base has commits `headSha` does not —
+no CI run against `headSha`, however recent, has ever seen them — and the
+merge is refused with a reason ending in "needs rebase onto base branch", the
+same suffix the `dirty` conflict case uses. That phrasing is load-bearing:
+`classifyMergeFailure` routes it through the identical same-branch
+conflict-retry dispatch (merge the base in, push, let CI re-run on the fresh
+head), so a stale-but-refused PR converges on its own instead of sitting
+parked for a human. For a PR that is only behind (not conflicting), the retry
+first asks GitHub's update-branch API to merge the base in server-side,
+pinned to the evaluated head, and only dispatches an agent if that fails. An
+approval given before that push still covers the new head when the PR diff is
+unchanged (`approval-carry-forward.ts`), so the PR merges on the next green CI
+without a re-review. The refusal also writes a `merge_base_freshness`
+gate-ledger row (`packages/core/gate-slugs.ts`), so the rate this actually
+fires at is measurable rather than inferred from incidents.
+
+An unreadable compare response (GitHub API error) fails the merge closed too,
+but is phrased without "needs rebase" — the base may not actually have moved,
+only the check couldn't run, so it isn't routed into a rebase attempt that
+might waste a retry iteration on an already-current PR. It parks for the next
+webhook to re-evaluate, the same as any other transient GitHub read failure in
+this function.
 
 Mission-integration-PR and release-PR are exemptions from that one aggregate line-count row
 itself (see the doc comment on `evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts`),

@@ -7,7 +7,7 @@
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-const WORKER_ID = 'worker-aaa-111';
+const WORKER_ID = 'a1a1a1a1-0000-4000-8000-000000000111';
 const SENDER_TASK_ID = '11111111-1111-1111-1111-111111111111';
 const RECIPIENT_TASK_ID = '22222222-2222-2222-2222-222222222222';
 const WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -162,7 +162,7 @@ describe('send_worker_message MCP handler', () => {
 
     // Default happy-path setup
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
-    mockWorkersFindFirst.mockResolvedValue({ taskId: SENDER_TASK_ID });
+    mockWorkersFindFirst.mockResolvedValue({ taskId: SENDER_TASK_ID, accountId: 'acc-1', workspace: { teamId: 'team-1' } });
     mockWorkspacesFindFirst.mockResolvedValue(null);
 
     // tasksFindFirst: first call = sender task, second call = recipient task
@@ -173,6 +173,13 @@ describe('send_worker_message MCP handler', () => {
     mockDbUpdate.mockReturnValue({ set: mockTasksUpdateSet });
     mockTasksUpdateSet.mockReturnValue({ where: mockTasksUpdateWhere });
     mockTasksUpdateWhere.mockResolvedValue([{ id: SENDER_TASK_ID }]);
+  });
+
+  it('refuses a ?worker= id that belongs to another account and team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: SENDER_TASK_ID, accountId: 'acc-other', workspace: { teamId: 'team-other' } });
+    const res = await POST(makeToolCallRequest(VALID_ARGS, WORKER_ID, 'worker'));
+    expect(res.status).toBe(403);
+    expect(mockDbUpdate).not.toHaveBeenCalled();
   });
 
   it('rejects trigger-level tokens with forbidden error', async () => {

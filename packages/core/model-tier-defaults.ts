@@ -22,7 +22,13 @@ export interface TierEntry {
   model: string;
   defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   defaultMaxTurns?: number;
-  source?: 'workspace' | 'team' | 'default';
+  /**
+   * 'catalog' means no registry row exists for this tier and the live catalog
+   * picked the newest in-band release — the self-healing path. 'default'
+   * means even the catalog had nothing (empty/failed fetch), so the
+   * hand-maintained fallback applies.
+   */
+  source?: 'workspace' | 'team' | 'default' | 'catalog';
 }
 
 export const TIER_DEFAULTS: Record<Tier, TierEntry> = {

@@ -223,4 +223,41 @@ describe('pickTierModel', () => {
     expect(pickTierModel('premium', [], 'anthropic')).toBeNull();
     expect(pickTierModel('premium', entries, 'openai')).toBeNull(); // no $3-6 GPT in fixture
   });
+
+  describe('isServable', () => {
+    test('excludes a candidate the caller cannot serve, falling back to the next-newest in-band model', () => {
+      // claude-opus-5 is the only premium-band Anthropic model in the fixture.
+      // Without a filter it wins on its own; marking it unservable must fall
+      // back to null (nothing else qualifies) rather than erroring or picking
+      // out-of-band.
+      expect(
+        pickTierModel('premium', entries, 'anthropic', { isServable: () => false }),
+      ).toBeNull();
+
+      // Add a newer in-band Opus that a runner's CLI cannot yet serve. Plain
+      // newest-wins picks it; filtering it out must fall back to the older,
+      // still-servable claude-opus-5 rather than deferring entirely.
+      const opus = byId('claude-opus-5')!;
+      const newerOpus = {
+        ...opus,
+        id: 'claude-opus-5-5',
+        openRouterId: 'anthropic/claude-opus-5.5',
+        created: opus.created + 86_400 * 30,
+      };
+      const withNewer = [...entries, newerOpus];
+
+      expect(pickTierModel('premium', withNewer, 'anthropic')?.id).toBe('claude-opus-5-5');
+      expect(
+        pickTierModel('premium', withNewer, 'anthropic', {
+          isServable: (id) => id !== 'claude-opus-5-5',
+        })?.id,
+      ).toBe('claude-opus-5');
+    });
+
+    test('an isServable that allows everything behaves exactly like no filter', () => {
+      expect(pickTierModel('standard', entries, 'anthropic', { isServable: () => true })?.id).toBe(
+        pickTierModel('standard', entries, 'anthropic')?.id,
+      );
+    });
+  });
 });

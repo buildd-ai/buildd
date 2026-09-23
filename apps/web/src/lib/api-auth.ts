@@ -4,6 +4,7 @@ import { accounts, users, teamMembers, workspaces } from '@buildd/core/db/schema
 import { eq, and } from 'drizzle-orm';
 import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
+import { levelForTeamRole } from './oauth/session-level';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 
 /**
@@ -56,13 +57,29 @@ async function dbLookupAccount(hashedKey: string) {
 type CachedAccount = NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>;
 
 /**
- * OAuth JWT path — verify, resolve to the user's primary account, override
- * the level to 'admin' since the token represents a real human authorising
- * claude.ai (or any MCP client) against their own resources.
+ * OAuth session cache TTLs. A session's level follows the caller's current
+ * team role, and a removed member must stop authenticating, so these entries
+ * are kept short: 30s in-process (L1) plus 30s in Redis (L2). An L1 refill
+ * from L2 can stack the two, so a role change or membership removal takes
+ * effect within 60s. (bld_ API keys keep the 5-minute accountCache above.)
+ */
+const OAUTH_L1_TTL_MS = 30 * 1000;
+const OAUTH_L2_TTL_SEC = 30;
+
+const oauthAccountCache = new TTLCache<CachedAccount>({
+  maxSize: 500,
+  ttlMs: OAUTH_L1_TTL_MS,
+});
+
+/**
+ * OAuth JWT path — verify the token, confirm the caller is still a member of
+ * the token's workspace team, and act at the level of their team role.
  *
- * Cached by the JWT itself (full token string) so we don't re-verify on every
- * call within the 5-minute TTL. Tokens have a 1-hour lifetime so the cache
- * never outlives the token.
+ * Account resolution: the `accounts` table has no column linking an account
+ * to an individual user (no userId/ownerId/createdBy), so a session resolves
+ * to its team's `type='user'` account — the row /api/oauth/token provisions.
+ * Per-user account attribution would need a schema change; the level, which
+ * is what gates actions, comes from the caller's own membership row.
  */
 async function authenticateOauthJwt(jwt: string) {
   const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
@@ -79,10 +96,11 @@ async function authenticateOauthJwt(jwt: string) {
   });
   if (!workspace) return null;
 
-  // Verify the requesting user still has membership in the workspace's team.
+  // The caller must still be a member of the workspace's team; their role
+  // there sets the session level.
   const membership = await db.query.teamMembers.findFirst({
     where: and(eq(teamMembers.teamId, workspace.teamId), eq(teamMembers.userId, userId)),
-    columns: { teamId: true },
+    columns: { teamId: true, role: true },
   });
   if (!membership) return null;
 
@@ -91,8 +109,7 @@ async function authenticateOauthJwt(jwt: string) {
   });
   if (!account) return null;
 
-  // Force admin level for OAuth-authenticated humans.
-  return { ...account, level: 'admin' as const };
+  return { ...account, level: levelForTeamRole(membership.role) };
 }
 
 /**
@@ -100,8 +117,9 @@ async function authenticateOauthJwt(jwt: string) {
  * Returns the account if found, null otherwise.
  *
  * Two paths:
- *  - OAuth JWT (looks like `eyJ...`): verify signature, resolve user → account,
- *    force admin level. The MCP-OAuth route additionally enforces workspace.
+ *  - OAuth JWT (looks like `eyJ...`): verify signature, check team membership,
+ *    level from the caller's team role (short-lived cache, see OAUTH_L1_TTL_MS).
+ *    The MCP-OAuth route additionally enforces workspace.
  *  - Regular `bld_*` key: hash + DB lookup (cached).
  *
  * Uses an in-memory TTL cache to avoid hitting the DB on every request.
@@ -114,20 +132,20 @@ export async function authenticateApiKey(apiKey: string | null) {
   if (tokensModule.looksLikeJwt(apiKey)) {
     const hashed = hashApiKey(apiKey);
     if (negativeCache.get(hashed)) return null;
-    const cached = accountCache.get(hashed);
+    const cached = oauthAccountCache.get(hashed);
     if (cached) return cached;
 
     // L1 miss — check Redis (L2) before expensive JWT verify + DB round-trips
     const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
     if (redisAccount) {
-      accountCache.set(hashed, redisAccount);
+      oauthAccountCache.set(hashed, redisAccount);
       return redisAccount;
     }
 
     const account = await authenticateOauthJwt(apiKey);
     if (account) {
-      accountCache.set(hashed, account);
-      await setCachedApiKey(hashed, account);
+      oauthAccountCache.set(hashed, account);
+      await setCachedApiKey(hashed, account, OAUTH_L2_TTL_SEC);
     } else {
       negativeCache.set(hashed, true);
     }
@@ -181,6 +199,10 @@ export function invalidateAccountCache(accountId: string): void {
     const entry = accountCache.get(key);
     return entry?.id === accountId;
   });
+  oauthAccountCache.deleteWhere((key) => {
+    const entry = oauthAccountCache.get(key);
+    return entry?.id === accountId;
+  });
 }
 
 /**
@@ -189,6 +211,7 @@ export function invalidateAccountCache(accountId: string): void {
  */
 export function invalidateAccountCacheByHash(hashedKey: string): void {
   accountCache.delete(hashedKey);
+  oauthAccountCache.delete(hashedKey);
   negativeCache.delete(hashedKey);
   void invalidateCachedApiKey(hashedKey);
 }
@@ -198,5 +221,6 @@ export function invalidateAccountCacheByHash(hashedKey: string): void {
  */
 export function clearAccountCache(): void {
   accountCache.clear();
+  oauthAccountCache.clear();
   negativeCache.clear();
 }

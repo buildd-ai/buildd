@@ -147,6 +147,7 @@ function makeLoserTask() {
 function makeLoserWorker(overrides: Partial<{
   prLifecycleStatus: string | null;
   conflictDetectedAt: Date | null;
+  updatedAt: Date;
 }> = {}) {
   return {
     id: 'w-loser',
@@ -156,6 +157,7 @@ function makeLoserWorker(overrides: Partial<{
     prLifecycleStatus: 'pr_open',
     conflictDetectedAt: null,
     workspaceId: WS_ID,
+    updatedAt: new Date(),
     ...overrides,
   };
 }
@@ -216,11 +218,14 @@ describe('shutdownDeadBuilddPrs', () => {
   // ── Tier 1: closed/superseded → immediate closure ───────────────────────────
 
   it('Tier 1: closes a buildd-authored loser PR when the winner merges', async () => {
+    // Loser updated 1 hour ago (not recently active)
+    const oldUpdate = new Date(Date.now() - 60 * 60 * 1000);
+
     mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
     mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
     mockTasksFindFirst.mockImplementation(() => makeEventTask());
     mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
-    mockWorkersFindMany.mockImplementation(() => [makeLoserWorker()]);
+    mockWorkersFindMany.mockImplementation(() => [makeLoserWorker({ updatedAt: oldUpdate })]);
     mockMissionNotesFindFirst.mockImplementation(() => null);
 
     const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
@@ -246,13 +251,15 @@ describe('shutdownDeadBuilddPrs', () => {
   it('Tier 2: closes a conflict-dead loser PR after conflictDeadDays when winner merges', async () => {
     // conflictDetectedAt = 8 days ago (> 7 day threshold)
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    // updatedAt = 2 days ago (not recently active, outside the active work window)
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
 
     mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace({ subjectPolicy: { conflictDeadDays: 7, autoCloseBuilddSupersededPrs: true } }));
     mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
     mockTasksFindFirst.mockImplementation(() => makeEventTask());
     mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
     mockWorkersFindMany.mockImplementation(() => [
-      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: eightDaysAgo }),
+      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: eightDaysAgo, updatedAt: twoDaysAgo }),
     ]);
     mockMissionNotesFindFirst.mockImplementation(() => null);
 
@@ -270,13 +277,15 @@ describe('shutdownDeadBuilddPrs', () => {
   it('Tier 2: does NOT close a conflict-dead loser PR before conflictDeadDays', async () => {
     // conflictDetectedAt = 3 days ago (< 7 day threshold)
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    // updatedAt = 1 day ago (not recently active)
+    const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
 
     mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace({ subjectPolicy: { conflictDeadDays: 7, autoCloseBuilddSupersededPrs: true } }));
     mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
     mockTasksFindFirst.mockImplementation(() => makeEventTask());
     mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
     mockWorkersFindMany.mockImplementation(() => [
-      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: threeDaysAgo }),
+      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: threeDaysAgo, updatedAt: oneDayAgo }),
     ]);
     mockMissionNotesFindFirst.mockImplementation(() => null);
 
@@ -287,15 +296,44 @@ describe('shutdownDeadBuilddPrs', () => {
     expect(result.escalatedPrNumbers).toContain(LOSER_PR);
   });
 
+  it('Tier 2: does NOT close a conflict-dead loser PR when it was recently updated (active work)', async () => {
+    // conflictDetectedAt = 8 days ago (> 7 day threshold, otherwise Tier-2-eligible)
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    // updatedAt within 30 minutes = actively resolving the conflict right now
+    const recentUpdate = new Date(Date.now() - 5 * 60 * 1000);
+
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace({ subjectPolicy: { conflictDeadDays: 7, autoCloseBuilddSupersededPrs: true } }));
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: eightDaysAgo, updatedAt: recentUpdate }),
+    ]);
+    mockMissionNotesFindFirst.mockImplementation(() => null);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    // PR should NOT be closed despite being conflict-dead past the threshold (actively being worked on)
+    expect(result.closedPrNumbers).toHaveLength(0);
+
+    // No GitHub close call for the loser
+    const closeCall = mockGithubApi.mock.calls.find(
+      ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
+    );
+    expect(closeCall).toBeUndefined();
+  });
+
   // ── Tier 3: conflict-dead, no successor ────────────────────────────────────
 
   it('Tier 3: creates escalation note for conflict-dead PR with no green successor', async () => {
+    const oldUpdate = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+
     mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
     mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
     mockTasksFindFirst.mockImplementation(() => makeEventTask());
     mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
     mockWorkersFindMany.mockImplementation(() => [
-      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: new Date() }),
+      makeLoserWorker({ prLifecycleStatus: 'conflict', conflictDetectedAt: new Date(), updatedAt: oldUpdate }),
     ]);
     mockMissionNotesFindFirst.mockImplementation(() => null);
 
@@ -312,14 +350,44 @@ describe('shutdownDeadBuilddPrs', () => {
     expect(closeCall).toBeUndefined();
   });
 
-  // ── GitHub closure failure ──────────────────────────────────────────────────
+  // ── Active work safety ──────────────────────────────────────────────────────
 
-  it('does not stamp worker closed when GitHub close call fails', async () => {
+  it('Tier 1: does NOT close a loser PR when it was recently updated (active work)', async () => {
+    // updatedAt within 30 minutes = actively being worked on
+    const recentUpdate = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago
+
     mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
     mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
     mockTasksFindFirst.mockImplementation(() => makeEventTask());
     mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
-    mockWorkersFindMany.mockImplementation(() => [makeLoserWorker()]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ prLifecycleStatus: 'pr_open', updatedAt: recentUpdate }),
+    ]);
+    mockMissionNotesFindFirst.mockImplementation(() => null);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    // PR should NOT be closed despite winner merging (actively being worked on)
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.skippedPrNumbers).toContain(LOSER_PR);
+
+    // No GitHub API close call should be made
+    const closeCall = mockGithubApi.mock.calls.find(
+      ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
+    );
+    expect(closeCall).toBeUndefined();
+  });
+
+  // ── GitHub closure failure ──────────────────────────────────────────────────
+
+  it('does not stamp worker closed when GitHub close call fails', async () => {
+    const oldUpdate = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+    mockWorkersFindMany.mockImplementation(() => [makeLoserWorker({ updatedAt: oldUpdate })]);
     mockMissionNotesFindFirst.mockImplementation(() => null);
 
     // Make GitHub close throw

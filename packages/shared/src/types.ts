@@ -893,6 +893,21 @@ export interface RoleConfig {
   maxTurns: number | null;
 }
 
+/**
+ * The role's persona text, delivered on every claim whose task resolves a role
+ * row — packaged to object storage or not.
+ *
+ * `RoleConfig` above only exists for roles that were packaged to R2, and a
+ * seeded default role never is. The persona is the one part of a role the agent
+ * cannot do without, so it rides the claim response directly rather than
+ * through the bundle.
+ */
+export interface RoleInstructions {
+  slug: string;
+  name: string;
+  content: string;
+}
+
 export interface SkillMetadata {
   version?: string;
   author?: string;
@@ -993,6 +1008,33 @@ export interface CreateTaskInput {
   // (non-overridable) and requires a non-empty pathManifest naming the spec document
   // this task authors. Default false — every other caller is unaffected.
   emitsPlan?: boolean;
+}
+
+/** Task model tier vocabulary (mirrors @buildd/core model-tier-defaults TIERS). */
+export type TaskModelTier = 'premium-plus' | 'premium' | 'standard' | 'budget';
+
+/**
+ * Body of PATCH /api/tasks/[id] (MCP `update_task`). Every field is optional;
+ * `null` clears an override.
+ */
+export interface UpdateTaskInput {
+  title?: string;
+  description?: string;
+  priority?: number;
+  project?: string | null;
+  status?: 'pending' | 'completed' | 'failed' | 'cancelled';
+  backend?: AgentBackend | null;
+  /**
+   * Tier pin for the NEXT claim or retry (never the running session). Setting
+   * a tier without `model` also drops an existing model pin.
+   */
+  tier?: TaskModelTier | null;
+  /**
+   * Exact model pin (Anthropic id) for the NEXT claim or retry; stored as
+   * `context.model` with `context.modelPinned: true`. Outranks `tier`.
+   */
+  model?: string | null;
+  maxLoops?: number;
 }
 
 export interface CreateMissionInput {
@@ -1196,8 +1238,10 @@ export interface ClaimTasksResponse {
       apiKey?: string;
       expiresAt: Date | null;
     };
-    /** Role configuration for the claimed task's assigned role */
+    /** Role configuration for the claimed task's assigned role — packaged roles only */
     roleConfig?: RoleConfig;
+    /** Role persona for the claimed task's assigned role — present whenever a role row resolves */
+    roleInstructions?: RoleInstructions;
     /** Connectors that failed availability checks but are not hard-required (advisory mode only).
      *  Present when workspace.connectorAdvisoryMode=true and the task claimed despite connector failures. */
     degradedConnectors?: DegradedConnector[];
@@ -1932,4 +1976,60 @@ export interface GateReasonFamily {
   /** Dedupe key derived from the prefix, for friction reports. */
   frictionSignature: string;
   topReasons: { reason: string; count: number }[];
+}
+
+// ── Experiments (/api/experiments, MCP manage_experiments) ──────────────────
+
+export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
+export type ExperimentVisibility = 'admins' | 'team';
+export type ExperimentKind = 'model_routing';
+
+/** An `experiments` row as the API returns it. Dates are ISO strings. */
+export interface Experiment {
+  id: string;
+  key: string;
+  title: string;
+  hypothesis: string | null;
+  status: ExperimentStatus;
+  kind: ExperimentKind;
+  treatmentFraction: number;
+  /**
+   * Salt of the arm draw. Bumped whenever the fraction or config changes after
+   * the experiment first started, so rows drawn under different settings are
+   * read out separately rather than pooled.
+   */
+  policyVersion: number;
+  config: Record<string, unknown>;
+  visibility: ExperimentVisibility;
+  decision: string | null;
+  startedAt: string | null;
+  concludedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/experiments. Status always starts at `draft`. */
+export interface CreateExperimentInput {
+  key: string;
+  title: string;
+  hypothesis?: string | null;
+  kind?: ExperimentKind;
+  treatmentFraction?: number;
+  config?: Record<string, unknown>;
+  visibility?: ExperimentVisibility;
+}
+
+/**
+ * PATCH /api/experiments/[id]. Legal status moves: draft→running,
+ * running⇄paused, draft|running|paused→concluded (needs `decision`).
+ * `concluded` is terminal.
+ */
+export interface UpdateExperimentInput {
+  title?: string;
+  hypothesis?: string | null;
+  treatmentFraction?: number;
+  config?: Record<string, unknown>;
+  visibility?: ExperimentVisibility;
+  status?: ExperimentStatus;
+  decision?: string;
 }

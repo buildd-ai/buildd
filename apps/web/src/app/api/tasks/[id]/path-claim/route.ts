@@ -156,9 +156,15 @@ export async function POST(
       currentTask.missionId !== undefined &&
       blocker?.missionId !== currentTask.missionId;
 
-    const message = isCrossMission
+    const hasDeadlock = 'deadlock' in waiterResult && waiterResult.deadlock;
+
+    let message = isCrossMission
       ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`
       : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`;
+
+    if (hasDeadlock) {
+      message += ` DEADLOCK DETECTED: A circular wait cycle exists (${waiterResult.cycle.length} tasks involved). A waiter will never be notified. You must either: (1) cancel this task and retry later, (2) have the blocking task cancel, or (3) use mission-level maxConcurrentTasks=1 to serialize conflicting tasks.`;
+    }
 
     const response: Record<string, unknown> = {
       claimed: false,
@@ -168,7 +174,7 @@ export async function POST(
       message,
     };
 
-    if ('deadlock' in waiterResult && waiterResult.deadlock) {
+    if (hasDeadlock) {
       response.deadlock = true;
       response.cycle = waiterResult.cycle;
       // Post a warning for human resolution (best-effort)

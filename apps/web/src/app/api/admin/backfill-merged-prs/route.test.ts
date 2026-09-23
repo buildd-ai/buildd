@@ -46,13 +46,38 @@ import { POST } from './route';
 function makeRequest(body?: unknown) {
   return new NextRequest('http://localhost:3000/api/admin/backfill-merged-prs', {
     method: 'POST',
-    headers: new Headers({ 'content-type': 'application/json' }),
+    headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
 
+describe('POST /api/admin/backfill-merged-prs — platform admin allowlist', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+  });
+
+  it('refuses an admin-level key when the allowlist is unset', async () => {
+    delete process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(403);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it('refuses an admin-level key that is not listed', async () => {
+    process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acc-operator';
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(403);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/admin/backfill-merged-prs', () => {
   beforeEach(() => {
+    process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acc-1';
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockRefreshWorkerMergeStateIfStale.mockReset();

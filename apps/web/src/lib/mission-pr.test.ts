@@ -39,6 +39,7 @@ let githubThrows: Record<string, string> = {};
 
 mock.module('drizzle-orm', () => ({
   eq: (col: any, val: any) => ({ _op: 'eq', col, val }),
+  ne: (col: any, val: any) => ({ _op: 'ne', col, val }),
   and: (...args: any[]) => ({ _op: 'and', args }),
   isNull: (col: any) => ({ _op: 'isNull', col }),
   isNotNull: (col: any) => ({ _op: 'isNotNull', col }),
@@ -564,6 +565,32 @@ describe('openMissionIntegrationPr — mission PR body topology', () => {
     expect(prBody).toContain('PR #5');
     expect(prBody).toContain(BRANCH);
     expect(prBody).toContain('dev');
+  });
+
+  it('populates filesChanged/linesAdded/linesRemoved from GitHub instead of leaving them at zero', async () => {
+    // The owner worker is a synthetic 'system' row with no session/cwd — the
+    // runner-side git-stats collector that stamps these for a normal task PR
+    // never runs against it, so this write is the only source for a mission
+    // integration PR. Fragment order matters here: '/pulls/9/files' must be
+    // checked before the plain '/pulls' response, or the mock's substring
+    // match would hand the files fetch the PR-creation payload instead.
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ branch: 'buildd/t-1-thing', prUrl: 'u1', prNumber: 5, mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2 };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls/9/files'] = [
+      { filename: 'apps/web/src/foo.ts', additions: 12, deletions: 3 },
+      { filename: 'apps/web/src/bar.ts', additions: 5, deletions: 0 },
+    ];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    await openMissionIntegrationPr(MISSION_ID);
+
+    const ownerUpdate = updates.find(u => 'filesChanged' in u.setValues);
+    expect(ownerUpdate).toBeDefined();
+    expect(ownerUpdate!.setValues.filesChanged).toBe(2);
+    expect(ownerUpdate!.setValues.linesAdded).toBe(17);
+    expect(ownerUpdate!.setValues.linesRemoved).toBe(3);
   });
 });
 

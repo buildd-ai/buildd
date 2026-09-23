@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // gate-analytics suites in packages/core.
 mock.module('@buildd/core/gate-events', () => ({
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+  gateFrictionSignature: (gate: string, reason: string) => `gate:${gate}_${Buffer.from(reason).toString('hex').slice(0, 12)}`,
   recordGateEvent: async () => null,
   recordOrCoalesceDeferral: async () => null,
 }));
@@ -492,6 +493,19 @@ describe('POST /api/tasks', () => {
     expect(response.status).toBe(400);
     const data = await response.json();
     expect(data.error).toContain('No workspace found matching');
+  });
+
+  it('resolves the workspace identifier within the session user\'s teams', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockResolveWorkspace.mockResolvedValue(null);
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'some-project', title: 'Test Task' },
+    });
+    await POST(request);
+
+    expect(mockResolveWorkspace).toHaveBeenCalledWith('some-project', { userId: 'user-123' });
   });
 
   it('creates task with API key auth', async () => {
@@ -2994,6 +3008,114 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(200);
       expect(captured.values.kind).toBe('observation');
       expect(captured.values.complexity).toBeUndefined();
+    });
+  });
+
+  describe('routing preview + heuristic classification', () => {
+    function setupRoutingAuth() {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_test' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-1',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+    }
+
+    function captureInsert() {
+      const createdTask = { id: 'task-routing', workspaceId: 'ws-1', title: 'Task', status: 'pending' };
+      const captured: { values: any } = { values: null };
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          captured.values = values;
+          return { returning: mock(() => [createdTask]) };
+        }),
+      });
+      return captured;
+    }
+
+    it('echoes a routing preview naming the default when nothing is given', async () => {
+      setupRoutingAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task' },
+      }));
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.routing).toEqual({
+        tier: 'standard',
+        model: 'claude-sonnet-5',
+        reason: expect.stringContaining('no kind/complexity given'),
+      });
+    });
+
+    it('infers and persists a higher complexity from a wide pathManifest, unrequested', async () => {
+      setupRoutingAuth();
+      const captured = captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Task',
+          pathManifest: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'],
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(captured.values.kind).toBeUndefined();
+      expect(captured.values.complexity).toBe('complex');
+      expect(captured.values.classifiedBy).toBe('classifier');
+      expect(captured.values.context.routingInferred).toBe(true);
+      expect(captured.values.context.routingInferredReason).toContain('6 files');
+
+      const data = await response.json();
+      expect(data.routing.tier).toBe('premium');
+    });
+
+    it('never overrides an explicit kind/complexity with an inferred one', async () => {
+      setupRoutingAuth();
+      const captured = captureInsert();
+
+      await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Task',
+          kind: 'writing',
+          complexity: 'simple',
+          pathManifest: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'],
+        },
+      }));
+
+      expect(captured.values.kind).toBe('writing');
+      expect(captured.values.complexity).toBe('simple');
+      expect(captured.values.classifiedBy).toBe('user');
+      expect(captured.values.context.routingInferred).toBeUndefined();
+    });
+
+    it('leaves kind/complexity unset when no heuristic rule fires', async () => {
+      setupRoutingAuth();
+      const captured = captureInsert();
+
+      await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', pathManifest: ['a.ts'] },
+      }));
+
+      expect(captured.values.kind).toBeUndefined();
+      expect(captured.values.complexity).toBeUndefined();
+      expect(captured.values.classifiedBy).toBeUndefined();
+      expect(captured.values.context.routingInferred).toBeUndefined();
     });
   });
 

@@ -1,18 +1,18 @@
 ---
-status: proposed
+status: partially
 # Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
-# The cited reused infrastructure (randomiser, CBM readout, the ad-hoc
-# memory-digest cleanup-task precedent) all check out — genuinely shipped,
-# not false positives — but they predate/support this proposal rather than
-# constitute it. The proposal's own deliverable — a generic `experiments`
-# registry table — has not been built, so the doc must stay 'proposed'
-# indefinitely until it does. Left unsuppressed, the three passing assertions
-# below would reclassify as code_ahead and redispatch a reconcile-spec task
-# against this already-accurate doc forever (same shape as
-# docs/design/mission-context-clusters.md, docs/design/backend-failover-policy.md).
-# Suppressed below (skip_until) instead.
+# The registry this doc proposes now exists in a first, narrower form: the
+# `experiments` table plus `experiment_assignments` (packages/core/db/schema.ts),
+# built for the model-routing experiment (docs/design/model-routing-experiment.md).
+# What it does NOT yet have is most of what this doc is about — the
+# declared/enrolling/frozen/retired lifecycle with write-boundary preconditions
+# (§1), the code-side policy-module registration and surface-fingerprint pin
+# guard (§4), and non-date stopping rules (§3). Hence `partially`, not
+# `implemented`. The three reuse assertions below stay suppressed: they pass,
+# but they certify pre-existing infrastructure rather than this doc's remaining
+# deliverables, and unsuppressing them would read as `implemented`.
 assertions:
-  - id: "experiment-registry-table-not-yet-built"
+  - id: "experiment-registry-table"
     type: "symbol"
     name: "experiments"
     path: "packages/core/db/schema.ts"
@@ -21,25 +21,25 @@ assertions:
     name: "hashUnitInterval"
     path: "apps/runner/src/experiment-randomizer.ts"
     skip_until: "2026-12-19"
-    skip_reason: "hashUnitInterval genuinely shipped (extracted from the memory-digest arm ahead of the registry proposed below) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
+    skip_reason: "hashUnitInterval genuinely shipped (extracted from the memory-digest arm ahead of the registry) — not a false positive — but it is pre-existing infrastructure this doc reuses, not one of its remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
   - id: "cbm-readout-aggregation"
     type: "symbol"
     name: "aggregateCbm"
     path: "apps/web/src/lib/cbm-insight.ts"
     skip_until: "2026-12-19"
-    skip_reason: "aggregateCbm genuinely shipped (existing CBM readout this proposal reuses) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
+    skip_reason: "aggregateCbm genuinely shipped (existing CBM readout this proposal reuses) — not a false positive — but it is pre-existing infrastructure, not one of this doc's remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
   - id: "experiment-cleanup-task-precedent"
     type: "symbol"
     name: "fileExperimentCleanupTask"
     path: "apps/web/src/lib/experiment-cleanup-task.ts"
     skip_until: "2026-12-19"
-    skip_reason: "fileExperimentCleanupTask genuinely shipped (the retirement-cleanup precedent this proposal's §1 generalises) — this isn't a false positive — but the doc must stay 'proposed' until experiment-registry-table-not-yet-built ships, so this assertion will pass forever under a non-terminal status. experiment-registry-table-not-yet-built is the assertion that tracks real remaining progress."
+    skip_reason: "fileExperimentCleanupTask genuinely shipped (the retirement-cleanup precedent this proposal's §1 generalises) — not a false positive — but it is pre-existing infrastructure, not one of this doc's remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
 ---
 
 # Experiment Lifecycle
 
-**Status:** Proposed
-**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/experiment-randomizer.ts`, `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c), `packages/core/experiment-cleanup.ts`, `apps/web/src/lib/experiment-cleanup-task.ts`, `apps/web/src/app/api/cron/memory-digest-readout/route.ts`, `packages/core/memory-digest-readout-source.ts`, `cron-manifest.json`
+**Status:** Partially implemented — a first `experiments` registry and `experiment_assignments` table shipped with the model-routing experiment (`docs/design/model-routing-experiment.md`); the lifecycle states, pin manifest and stopping rules below are not built.
+**Related:** `apps/runner/src/memory-digest-policy.ts`, `packages/core/experiment-randomizer.ts` (canonical; `apps/runner/src/experiment-randomizer.ts` re-exports it), `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `experiments`/`experimentAssignments` (`:2202`, `:2244`), `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c), `packages/core/experiment-cleanup.ts`, `apps/web/src/lib/experiment-cleanup-task.ts`, `apps/web/src/app/api/cron/memory-digest-readout/route.ts`, `packages/core/memory-digest-readout-source.ts`, `cron-manifest.json`, `packages/core/model-routing-experiment.ts`, `packages/core/model-routing-experiment-source.ts`, `packages/core/task-area-prediction.ts`, `packages/core/experiment-readout.ts`, `packages/core/experiment-readout-source.ts`, `apps/web/src/lib/experiments.ts`, `apps/web/src/lib/experiments-store.ts`, `apps/web/src/lib/experiment-access.ts`, `apps/web/src/lib/health-experiments.ts`, `apps/web/src/app/api/experiments/` (`route.ts`, `[id]/route.ts`, `[id]/readout/route.ts`)
 
 **Update, post memory-digest conclusion:** the memory-digest experiment is
 concluded and retired (decision recorded in
@@ -61,6 +61,71 @@ stays exactly as described below: a memory-digest-specific payload table, not
 a generic rail. A future experiment (CBM or otherwise) needs its own payload
 source; that design call is out of scope here and belongs to whoever declares
 that experiment.
+
+
+**Update, registry v1:** a first `experiments` table now exists
+(`packages/core/db/schema.ts`), with per-task `experiment_assignments`, built
+for the model-routing experiment (`docs/design/model-routing-experiment.md`).
+It is deliberately narrower than §2's sketch: a per-team `key` rather than a
+global `slug`; a four-value `status` (`draft | running | paused | concluded`)
+rather than §1's five states, with no write-boundary preconditions yet; one
+`config` jsonb holding arms, eligibility and the minimum sample per arm; and no
+`owner_user_id`, `expires_at`, `readout_state` or stopping rule. The
+assignment rail is generic (experiment id, policy version, unit, arm,
+propensity, served), unlike `worker_prompt_composition_events`. Where the
+"Current state" table below says no registry exists, read it as describing the
+repo before this shipped. §1's lifecycle, §3's stopping rules and §4's pin
+manifest remain the open work.
+
+**Update, CRUD + readout + dashboard:** the "no write-boundary preconditions
+yet" line above is now stale. `apps/web/src/lib/experiments.ts`
+(`planExperimentPatch`) enforces a real state machine behind
+`POST /api/experiments` and `GET/PATCH /api/experiments/[id]`
+(`apps/web/src/app/api/experiments/`): legal status moves only
+(`draft→running|concluded`, `running⇄paused|concluded`, `concluded` terminal
+and requires a non-empty `decision`), and editing `treatmentFraction` or
+`config` after the first start auto-bumps `policyVersion` rather than mutating
+a live draw in place. `experiments-store.ts` / `experiment-access.ts` add
+team scoping and a visibility rule: an `admins`-only experiment 404s for a
+member rather than 403ing, so its existence isn't probable either. A generic
+readout engine — `packages/core/experiment-readout.ts` (intent-to-treat,
+Wilson/Newcombe intervals, an `insufficient_n` verdict below a configured
+`minSamplePerArm`, strata by unit type and by whether `kind` was stated) and
+its query half `experiment-readout-source.ts` — backs both
+`GET /api/experiments/[id]/readout` and a new `/app/health` Experiments panel
+(`apps/web/src/lib/health-experiments.ts`). This is real ground closed from
+§1/§2 — the state machine is enforced, not just a column — but it is still
+four states, not five (no `declared`/`enrolling`/`frozen`/`retired`); there is
+still no accrual/futility/harm/expiry stopping rule beyond the readout's own
+`insufficient_n`; and there is still no per-component surface-fingerprint pin
+guard (§4) for `model_routing` — nothing re-randomises or flags a cohort if
+the router's own logic changes under a running experiment. **§5's MCP-first
+recommendation shipped too, under a different shape than proposed:** a single
+`manage_experiments` action (`packages/core/mcp-tools.ts:218`, case at
+`:5034`) covers `list`/`get`/`readout` at worker level (visibility `'team'`
+only — an `'admins'` row is invisible below admin, same 404-as-nonexistence
+rule as the REST API) and `create`/`update`/`start`/`pause`/`conclude` at
+admin level — one bundled action rather than the doc's proposed standalone
+`get_experiments` plus separate declare/freeze/conclude admin actions, but the
+same read/write split on the same admin boundary. So both halves of §5's
+either/or shipped: the MCP surface it recommended AND the dashboard panel it
+called optional.
+
+**Update, randomiser moved:** the implementation of `hashUnitInterval` /
+`assignExperimentArm` / `resolveEnrolmentFraction` — previously cited
+elsewhere in this doc as living in `apps/runner/src/experiment-randomizer.ts`
+— has moved to `packages/core/experiment-randomizer.ts` (the current-state
+table below is updated to match). The runner file is now a re-export only,
+kept so existing runner import sites keep resolving; a second caller,
+`packages/core/task-area-prediction.ts`, draws its arm server-side at claim
+time, where the runner's module graph is not reachable, which is why the
+implementation had to move rather than stay runner-local. This doc previously
+said the module "has no current caller until the next experiment declares
+one" — also stale: it has two today — `packages/core/model-routing-experiment.ts`
+(the registry-backed experiment above) and `task-area-prediction.ts` (a
+second, simpler experiment — a retrieval path-source A/B test — that draws
+through the same randomiser but does not use the `experiments` table at all;
+its config resolves from `system_cache`/env, not a registry row).
 
 ---
 
@@ -147,10 +212,10 @@ in `tasks.context`), which is not a rollout mechanism.
 
 | Capability | Where it is today | What it gives a general primitive | What it does not |
 |---|---|---|---|
-| **Arm assignment** | Extracted (no longer memory-digest-specific): `apps/runner/src/experiment-randomizer.ts` — `hashUnitInterval` (FNV-1a), `assignExperimentArm`, draw salted `${experimentId}:${policyVersion}:${unitId}`, `resolveEnrolmentFraction` (rejects out-of-range rather than clamping). Retired memory-digest callers are gone; the module has no current caller until the next experiment declares one | A correct, reusable randomiser: per-unit so retries cannot switch arms, version- **and experiment-id-salted** so a bump re-randomises and two experiments on the same unit ids decorrelate, propensity recorded at assignment | Still no registry, no control-plane visibility, and no per-component version stamping (§4b) — it is the assignment primitive alone |
-| **Enrolment fraction** | Retired for memory-digest (`BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` are gone from the runner config surface — `task_scoped` is unconditional). `resolveEnrolmentFraction` in the extracted module remains the primitive a future experiment's knob would resolve through | A per-runner operator knob that defaults to enrolling nobody | Env-only. Not visible to the control plane, so nothing server-side knows an experiment is live |
-| **Event rail** | `worker_prompt_composition_events` (`schema.ts:1503`), index `(policy_version, arm)` at `:1545`. Still written on every prompt build — now unconditionally `arm: 'task_scoped'`, `propensity: 1`, `fraction: 1` — because the counterfactual `digest_bytes_available` column remains useful operational telemetry even with no live arm | The generic spine: `policy_version`, `arm`, `propensity`, `fraction`, unit id, `ts` — plus the nullable-not-defaulted discipline for unknowable fields (`:1532`, `:1538`) | **Memory-specific payload, unchanged by the memory-digest retirement.** `digest_bytes`, `digest_bytes_available`, `digest_truncated`, `task_match_bytes`, `memory_share`, and `arm` typed `'full' \| 'task_scoped'`. A CBM arm cannot reuse it without widening that union and adding columns meaningless to the other experiment — it needs its own payload table, a design call for whoever declares that experiment |
-| **Readout / aggregation** | `cbm-insight.ts`: `aggregateCbm` (`:74`), `computeDeltaPct` (`:69`), `MIN_COHORT` (`:52`), `BY_DESIGN_SKIP_REASONS` (`:45`); query half `cbm-insight-query.ts` (`fetchCbmSummary:28`, `CBM_ROW_LIMIT:17`); route `/api/cbm/metrics` | A two-arm delta readout with a cohort floor, already written, already shipped — and the repo's compute/query split convention (mirrored in `usage-stats.ts` / `usage-stats-query.ts`, `failure-analytics.ts`) | Fed by an observational cohort, not an assignment. Has no power position, no stopping rule, no version segmentation |
+| **Arm assignment** | Canonical implementation moved: `packages/core/experiment-randomizer.ts` — `hashUnitInterval` (FNV-1a), `assignExperimentArm`, draw salted `${experimentId}:${policyVersion}:${unitId}`, `resolveEnrolmentFraction` (rejects out-of-range rather than clamping). `apps/runner/src/experiment-randomizer.ts` is now a re-export only, kept so existing runner import sites keep resolving. Two live callers today: `model-routing-experiment.ts` (registry-backed) and `task-area-prediction.ts` (registry-independent) | A correct, reusable randomiser: per-unit so retries cannot switch arms, version- **and experiment-id-salted** so a bump re-randomises and two experiments on the same unit ids decorrelate, propensity recorded at assignment | No per-component version stamping (§4b) — it is the assignment primitive alone |
+| **Enrolment fraction** | Retired for memory-digest (`BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` are gone from the runner config surface — `task_scoped` is unconditional). For `model_routing`, `resolveEnrolmentFraction` now resolves the registry's own `experiments.treatment_fraction` column (`apps/web/src/lib/experiments.ts`), not an env var; `task-area-prediction.ts` resolves its own knob from `system_cache`/env instead of the registry | A per-experiment fraction visible to and editable through the control plane for `model_routing` | Still no cross-experiment control-plane view; `task-area-prediction.ts` remains env/`system_cache`-only, outside the registry |
+| **Event rail** | `worker_prompt_composition_events` (`schema.ts:1503`), index `(policy_version, arm)` at `:1545`. Still written on every prompt build — now unconditionally `arm: 'task_scoped'`, `propensity: 1`, `fraction: 1` — because the counterfactual `digest_bytes_available` column remains useful operational telemetry even with no live arm. `model_routing` uses the separate, generic `experiment_assignments` table (`schema.ts:2244`) instead, not this rail | The generic spine: `policy_version`, `arm`, `propensity`, `fraction`, unit id, `ts` — plus the nullable-not-defaulted discipline for unknowable fields (`:1532`, `:1538`) | **Memory-specific payload, unchanged by the memory-digest retirement.** `digest_bytes`, `digest_bytes_available`, `digest_truncated`, `task_match_bytes`, `memory_share`, and `arm` typed `'full' \| 'task_scoped'`. A CBM arm cannot reuse it without widening that union and adding columns meaningless to the other experiment |
+| **Readout / aggregation** | For `model_routing`: `packages/core/experiment-readout.ts` (`computeExperimentReadout`, intent-to-treat, Wilson/Newcombe intervals, `insufficient_n` verdict, strata) + query half `experiment-readout-source.ts`, exposed at `GET /api/experiments/[id]/readout` and the `/app/health` Experiments panel. For CBM: `cbm-insight.ts`: `aggregateCbm` (`:74`), `computeDeltaPct` (`:69`), `MIN_COHORT` (`:52`), `BY_DESIGN_SKIP_REASONS` (`:45`); query half `cbm-insight-query.ts` (`fetchCbmSummary:28`, `CBM_ROW_LIMIT:17`); route `/api/cbm/metrics` | Two independent two-arm delta readouts, both already shipped, following the repo's compute/query split convention (mirrored in `usage-stats.ts` / `usage-stats-query.ts`, `failure-analytics.ts`) — the `model_routing` one fed by a real randomised assignment, with a cohort floor and a verdict | CBM's is still fed by an observational cohort, not an assignment, and still has no power position or version segmentation. Neither has a non-date stopping rule (§3) beyond a sample-size floor |
 | **Contamination guard** | The memory-digest pin (`memory-digest-policy-version-pin.test.ts`, fingerprinting 13 injection surfaces against `MEMORY_DIGEST_POLICY_VERSION`) and its readout-side half (`memory-digest-readout-policy-pin.test.ts`) were removed once the experiment's decision was recorded — the cohort they protected is closed and will not be re-analysed under a moved surface. `cbm-version-pin.test.ts` (cross-file binary pin) remains, live, for CBM. `packages/core/__tests__/composition-record-columns.test.ts` still asserts record↔column correspondence by parsing source | A proven pattern for "a coupling the type system cannot see, guarded in CI, that fails on drift" | Hand-written per experiment. Nothing makes a *new* experiment get one |
 | **Declared-spec + last-evaluation storage** | `initiatives.kpis` / `kpi_state` / `auto_verify` (`schema.ts:909-914`), types `InitiativeKPI` / `InitiativeKPIState` (`packages/shared/src/types.ts:1519`, `:1528`) | The exact shape a registry needs: a declared spec, the last evaluation with `evaluatedAt` / `evaluatedBy`, and an auto-verify opt-out | Scoped to initiatives; KPI metrics resolve through `initiative-metric-registry.ts` (`KNOWN_METRIC_KEYS:20`), which knows only release metrics |
 | **Write-boundary validation** | `packages/core/mission-helpers.ts:173-180` rejects a `metric` goal criterion outright, because no evaluator exists and accepting one would hand the author a gate that can never open | The precedent this design follows: refuse at the write boundary rather than filter at read time | — |

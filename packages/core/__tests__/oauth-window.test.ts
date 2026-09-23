@@ -102,6 +102,15 @@ describe('model weighting', () => {
     expect(modelWeight('claude-haiku-4-5-20251001')).toBe(MODEL_WEIGHTS.haiku);
   });
 
+  test('weights track the default tier models\' list-price ratios, not a stale generation', () => {
+    // premium (Opus) is ~2.5x standard (Sonnet) and budget (Haiku) ~0.5x at
+    // current list prices. The old 5x / 0.27x over-weighted premium enough that
+    // premium work downshifted unrelated tasks — see oauth-budget.ts.
+    expect(MODEL_WEIGHTS.opus).toBe(2.5);
+    expect(MODEL_WEIGHTS.haiku).toBe(0.5);
+    expect(MODEL_WEIGHTS.opus).toBeLessThan(3);
+  });
+
   test('tier aliases and unknown models resolve sanely', () => {
     expect(modelWeight('opus')).toBe(MODEL_WEIGHTS.opus);
     expect(modelWeight('premium')).toBe(MODEL_WEIGHTS.opus);
@@ -120,10 +129,10 @@ describe('model weighting', () => {
     expect(usage.workerCount).toBe(3);
     expect(usage.turns).toBe(30);
     expect(usage.tokens).toBe(3_300);
-    // 10*5 + 10*1 + 10*0.27 = 62.7 → floor 62
-    expect(usage.weightedTurns).toBe(62);
-    // 1100*5 + 1100*1 + 1100*0.27 = 6897
-    expect(usage.weightedTokens).toBe(6_897);
+    // 10*2.5 + 10*1 + 10*0.5 = 40
+    expect(usage.weightedTurns).toBe(40);
+    // 1100*2.5 + 1100*1 + 1100*0.5 = 4400
+    expect(usage.weightedTokens).toBe(4_400);
   });
 
   test('a worker that reported nothing still counts as a worker', () => {

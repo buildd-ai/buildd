@@ -306,6 +306,22 @@ source any more.
 
 Recording this decision released the policy-version pin guards in `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts` and `packages/core/__tests__/memory-digest-readout-policy-pin.test.ts`. The follow-on default-flip task removed both, along with `assignMemoryDigestArm`, `hashUnitInterval` and `resolveTaskScopedFraction` from `apps/runner/src/memory-digest-policy.ts` and the `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` config surface — `task_scoped` is now the only rendering, unconditionally. The randomiser survives as `assignExperimentArm` in `apps/runner/src/experiment-randomizer.ts`, generalised to take the experiment id, version, arm set and fraction as parameters instead of compiling them in. `worker_prompt_composition_events` keeps its historical `full` rows and keeps being written to — every new row now carries `arm: 'task_scoped'`, `propensity: 1`, `fraction: 1` — and the readout module, its CLI, and the published `memory-digest-readout:memory-digest-v4` artifact are untouched.
 
+### Post-ship guardrail check — no regression found, monitor now standing
+
+A post-flip audit (raw runner logs) reported the shipped arm looking worse than at ship time — roughly 11.4% fleet-wide against a claimed pre-flip 13.5% (`task_scoped`) vs 5.7% (`full`) — and asked whether the guardrail had drifted the wrong way with nobody watching, since the readout cron that could have watched it was retired along with the experiment (see below).
+
+Checked directly against the durable rail (`worker_prompt_composition_events` joined to `workers` by `taskId`, the same tables and the same failure definition — `status IN ('failed', 'error')` — the terminal readout itself used), neither number held up:
+
+- **Pre-flip, re-confirmed from the terminal artifact** (`memory-digest-readout:memory-digest-v4`, post-boundary cohort): `full` 18.8% (65/346), `task_scoped` 24.1% (83/345). The audit's 13.5%/5.7% does not match this rail under the same methodology.
+- **Post-flip fleet** (shipped `task_scoped`, `propensity=1`, n=228 tasks with a matched session): **8.3% (19/228)** — well *below* both pre-flip arms, not above them. The audit's ~11.4% does not reproduce either.
+- **No-terminal-signal cohort**: the audit's caveat that ~25% of started sessions emit no terminal signal did not reproduce against this rail either — every shipped-arm task in the verification window had a matching worker row, and a fleet-wide scan found zero workers stuck in `running` for more than six hours over the prior three weeks. The audit's figure most likely traces to raw log parsing (documented elsewhere in this repo as an unreliable source for this kind of question), not to a hole in the DB rail the readout and this check both read.
+
+**Primary vs guardrail, restated**: the ship decision was driven by the primary continuous process metrics (prompt bytes, memory share, file reads, shell calls, turns, duration) finding no detectable benefit against a large, settled cost saving. Failure rate was always the guardrail — "a catastrophe check only, never a primary outcome" per `memory-digest-readout.ts` — and its pre-ship confidence interval already crossed zero. Nothing in this check changes that primary/guardrail classification.
+
+**Decision: accept, do not re-open.** The guardrail has not drifted unfavourably post-ship — measured the same way the ship decision measured it, the shipped arm's rolling failure rate is currently better than either pre-flip arm, not worse. There is no basis here to re-examine `task_scoped`.
+
+**Standing monitor.** `packages/core/memory-digest-guardrail-monitor.ts` (pure — rows in, verdict out) plus `POST /api/cron/memory-digest-guardrail` (daily, `cron-manifest.json`) now watch the shipped arm's rolling 7-day failure rate against the ship-time baseline (83/345), using the same Agresti–Caffo risk-difference interval the terminal readout used for the guardrail itself. It pages via `reportOps` (dedupe key `memory-digest-guardrail`) only when the interval excludes zero — credibly worse than what was accepted at ship, not just a noisy week. This is the accepted arm's owner that the retired readout cron left behind (PR #2466 correctly retired the *experiment's* readout; it was never meant to also retire *monitoring* the arm it shipped).
+
 ## Open questions
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes

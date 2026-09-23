@@ -20,6 +20,7 @@ let insertedTasks: any[] = [];
 let deletedTaskIds: any[] = [];
 let dispatchCalls: any[] = [];
 let findFirstCallCount = 0;
+let claimWhereArgs: any[] = [];
 
 mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ _op: 'eq', args }),
@@ -61,7 +62,7 @@ mock.module('@buildd/core/db', () => ({
       },
     }),
     update: () => ({
-      set: () => ({ where: () => ({ returning: () => Promise.resolve(claimReturn) }) }),
+      set: () => ({ where: (cond: any) => { claimWhereArgs.push(cond); return { returning: () => Promise.resolve(claimReturn) }; } }),
     }),
     delete: () => ({ where: (cond: any) => { deletedTaskIds.push(cond); return Promise.resolve(); } }),
   },
@@ -105,6 +106,7 @@ function reset() {
   deletedTaskIds = [];
   dispatchCalls = [];
   findFirstCallCount = 0;
+  claimWhereArgs = [];
 }
 
 function req() {
@@ -250,15 +252,69 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     expect(insertedTasks).toHaveLength(1);
   });
 
-  it('a completed task whose PR merged and was rechecked but the gap is STILL open releases the path (stranded-card regression)', async () => {
-    groupRows[0].docFixTaskId = 'task-stale';
-    groupRows[0].lastCheckedAt = new Date('2026-09-02T00:00:00Z'); // after the merge below
+  it('a merged doc fix that the checker re-ran on and still found open is NOT re-dispatched (re-dispatch loop regression)', async () => {
+    // The assertions behind a code_ahead row can pass regardless of the doc
+    // text, so a second docs-only task against the same claims reproduces the
+    // same result. A merged fix hands the row to the owner, never to a new worker.
+    // The merged fix claimed every row on the path (one doc fix per document).
+    for (const r of groupRows) {
+      r.docFixTaskId = 'task-stale';
+      r.lastCheckedAt = new Date('2026-09-02T00:00:00Z'); // well after the merge below
+    }
     claimedTaskRows = [{ id: 'task-stale', status: 'completed' }];
     claimedWorkerRows = [{ taskId: 'task-stale', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
     const res = await POST(req(), { params: params('d1') });
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.dispatched).toBe(false);
+    expect(data.code).toBe('doc_fix_already_merged');
+    expect(data.taskId).toBe('task-stale');
+    expect(insertedTasks).toHaveLength(0);
+    expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it('a merged-stale row does not block a NEW unclaimed row on the same path — only the new row is dispatched', async () => {
+    // An old row whose merged fix did not close it stays open (and keeps its
+    // docFixTaskId) until the owner accepts it. A code_ahead assertion that
+    // opens later on the same spec has never been attempted and must still be
+    // doc-fixable — refusing the whole path would strand it behind Accept.
+    groupRows = [
+      { id: 'd1', assertionId: 'a1', evidence: { detail: 'a1 passes' }, docFixTaskId: 'task-stale',
+        firstSeenAt: new Date(2026, 7, 1), lastCheckedAt: new Date('2026-09-02T00:00:00Z') },
+      { id: 'd9', assertionId: 'a9', evidence: { detail: 'a9 passes' }, docFixTaskId: null,
+        firstSeenAt: new Date(2026, 8, 10), lastCheckedAt: new Date('2026-09-10T00:00:00Z') },
+    ];
+    claimedTaskRows = [{ id: 'task-stale', status: 'completed' }];
+    claimedWorkerRows = [{ taskId: 'task-stale', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
+    claimReturn = [{ id: 'd9' }];
+
+    const res = await POST(req(), { params: params('d1') });
+    expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.dispatched).toBe(true);
+    expect(data.assertionIds).toEqual(['a9']);
     expect(insertedTasks).toHaveLength(1);
+    expect(insertedTasks[0].context.specDocFix.discrepancyIds).toEqual(['d9']);
+    expect(insertedTasks[0].context.specDocFix.assertionIds).toEqual(['a9']);
+    expect(insertedTasks[0].description).not.toContain('a1 passes');
+
+    // The claim never reaches the merged-stale row: it is scoped to d9 and
+    // only takes unclaimed rows (no stale task ids to take over).
+    const where = JSON.stringify(claimWhereArgs[0]);
+    expect(where).toContain('"d9"');
+    expect(where).not.toContain('"d1"');
+    expect(where).not.toContain('task-stale');
+  });
+
+  it('a merged doc fix rechecked only moments after the merge still holds the path — that run may predate the fix', async () => {
+    groupRows[0].docFixTaskId = 'task-just-merged';
+    groupRows[0].lastCheckedAt = new Date('2026-09-01T00:01:00Z'); // one minute after the merge
+    claimedTaskRows = [{ id: 'task-just-merged', status: 'completed' }];
+    claimedWorkerRows = [{ taskId: 'task-just-merged', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
+    const res = await POST(req(), { params: params('d1') });
+    const data = await res.json();
+    expect(data).toEqual({ ok: true, dispatched: false, taskId: 'task-just-merged' });
+    expect(insertedTasks).toHaveLength(0);
   });
 
   it('a completed task whose PR merged but has NOT been rechecked yet still holds the path', async () => {

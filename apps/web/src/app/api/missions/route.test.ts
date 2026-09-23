@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // gate-analytics suites in packages/core.
 mock.module('@buildd/core/gate-events', () => ({
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+  gateFrictionSignature: (gate: string, reason: string) => `gate:${gate}_${Buffer.from(reason).toString('hex').slice(0, 12)}`,
   recordGateEvent: async () => null,
   recordOrCoalesceDeferral: async () => null,
 }));

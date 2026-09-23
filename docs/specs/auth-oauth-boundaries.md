@@ -86,6 +86,15 @@ workspace.
   skill registration, secret management, spec_compare.
 - The MCP server filters the exposed action list at server-creation time based on
   `accountLevel`; no level-downgrade is possible mid-request.
+- An OAuth JWT session's level MUST come from the caller's current
+  `team_members.role` on the token's workspace team: `owner`/`admin` →
+  `admin`, `member` → `worker`, and any other or missing role → `worker`
+  (`levelForTeamRole()`). A caller with no membership row MUST NOT
+  authenticate. Both `/api/mcp` and `/api/mcp-oauth/[workspace]` act at that
+  level, and so do the `/api/*` self-calls they make with the same bearer.
+- The OAuth session cache MUST bound how long a role change or membership
+  removal can go unseen: 30s in-process plus 30s in Redis, so ≤60s. `bld_`
+  API keys keep their 5-minute cache.
 
 **Acceptance criteria**:
 - AC-5: GIVEN an `admin` token WHEN `ListTools` is called on the MCP server
@@ -94,12 +103,21 @@ workspace.
   is NOT in the `action` enum.
 - AC-7: GIVEN a `worker` token WHEN `send_agent_message` is called THEN the
   response contains `isError: true` (admin-only action).
+- AC-7a: GIVEN an OAuth JWT for a user whose team role is `member` WHEN
+  `authenticateApiKey` resolves it THEN `level` is `worker`; for `owner` or
+  `admin` it is `admin`; with no membership row it returns `null`.
+- AC-7b: GIVEN a member's OAuth session WHEN an admin-only action is called on
+  `/api/mcp-oauth/[workspace]` THEN the result is `{"error":"forbidden",
+  "requiredLevel":"admin"}`.
 
 **Code surface**:
 - Action lists: `packages/core/mcp-tools.ts` — `triggerActions`, `workerActions`,
   `adminActions`
 - Level resolution: `apps/web/src/app/api/mcp/route.ts` —
   `getAccountLevel()`, `createMcpServer()`
+- OAuth role → level: `apps/web/src/lib/oauth/session-level.ts` —
+  `levelForTeamRole()`; applied in `apps/web/src/lib/api-auth.ts`
+  (`authenticateOauthJwt()`)
 
 ---
 
@@ -161,8 +179,14 @@ authorization code + PKCE flow, and the `/api/mcp-oauth/[workspace]` endpoint
 MUST reject tokens whose `workspaceId` claim does not match the URL path.
 
 **Invariants**:
-- Authorization codes MUST be single-use (`consumedAt` set on redemption).
-- Refresh tokens MUST rotate on each use (`revokedAt` set, new token issued).
+- Authorization codes MUST be single-use: redemption is one conditional
+  `UPDATE ... WHERE consumed_at IS NULL RETURNING`, so concurrent exchanges of
+  one code cannot both succeed.
+- Refresh tokens MUST rotate on each use (`revokedAt` set by the same
+  conditional-UPDATE pattern, new token issued).
+- Both grants MUST re-check that the user is still a member of the
+  workspace's team. On refresh, a non-member gets `invalid_grant` and every
+  outstanding refresh token for that user and workspace is revoked.
 - Access tokens carry `workspaceId` in the JWT claim; the workspace-scoped MCP
   endpoint rejects tokens for the wrong workspace.
 - `oauthRefreshTokens.expiresAt` defines the absolute refresh lifetime.

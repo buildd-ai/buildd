@@ -18,13 +18,16 @@ import {
   describeOauthPressure,
   learnOauthCapacity,
   oauthBudgetPressure,
+  oauthParallelismCap,
   readPacingConfig,
   windowEndsAt,
   type OauthBudgetPressure,
 } from '@buildd/core/oauth-budget';
-import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
+import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
+import { readModelPin } from '@buildd/core/model-pin';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
+import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
@@ -42,7 +45,7 @@ import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-ga
 import { missionNotHeld } from './held-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
-import { isBudgetExhausted } from '@/lib/budget-errors';
+import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -56,6 +59,7 @@ import {
   predictTaskAreas,
 } from './context-injection';
 import { attachMissionHandoff } from './mission-handoff-injection';
+import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
   attachClaudeCredentials,
   attachCodexCredentials,
@@ -70,6 +74,18 @@ import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '
 // the dominant burn-loop cause is fast-fail budget/auth errors that bounce in
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
+
+/**
+ * A review task the reviewer dispatched: `category: 'review'` plus
+ * `context.reviewerFor` naming the reviewed task (the same pair
+ * handleReviewerOutcomeIfNeeded requires). Only these skip the mission
+ * concurrency cap and pacing gate — the category alone is caller-settable.
+ */
+function isDispatchedReview(category: unknown, context: unknown): boolean {
+  if (category !== 'review') return false;
+  const reviewerFor = (context as Record<string, unknown> | null | undefined)?.reviewerFor;
+  return typeof reviewerFor === 'string' && reviewerFor.length > 0;
+}
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -268,9 +284,10 @@ export async function POST(req: NextRequest) {
   if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
     const permissions = await getAccountWorkspacePermissions(account.id);
     const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
-    // Also count open workspaces — those are claimable by any account
+    // Also count open workspaces of the account's own team — those are
+    // claimable without an explicit link.
     const openCount = await db.query.workspaces.findMany({
-      where: eq(workspaces.accessMode, 'open'),
+      where: and(eq(workspaces.accessMode, 'open'), eq(workspaces.teamId, account.teamId)),
       columns: { id: true },
     });
     for (const w of openCount) accessibleWorkspaceIds.add(w.id);
@@ -304,11 +321,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Get workspaces this account can claim from
-  // 1. Open workspaces (any account can claim)
-  // 2. Restricted workspaces where account has canClaim permission
+  // 1. Open workspaces of the account's own team ("open" = open within the team)
+  // 2. Any workspace where the account has an explicit canClaim link
   const openWorkspaces = await db.query.workspaces.findMany({
     where: and(
       eq(workspaces.accessMode, 'open'),
+      eq(workspaces.teamId, account.teamId),
       workspaceId ? eq(workspaces.id, workspaceId) : undefined
     ),
   });
@@ -319,15 +337,14 @@ export async function POST(req: NextRequest) {
     .filter((p) => p.canClaim)
     .filter((p) => !workspaceId || p.workspaceId === workspaceId);
 
-  // Resolve which restricted workspaces this account can access
+  // Resolve which linked workspaces still exist. An explicit canClaim link
+  // grants access whatever the workspace's accessMode — it is how an account
+  // outside the owning team is given access to an open workspace.
   const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
   let restrictedIds: string[] = [];
   if (restrictedWsIds.length > 0) {
     const restrictedWorkspaces = await db.query.workspaces.findMany({
-      where: and(
-        inArray(workspaces.id, restrictedWsIds),
-        eq(workspaces.accessMode, 'restricted'),
-      ),
+      where: inArray(workspaces.id, restrictedWsIds),
       columns: { id: true },
     });
     restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
@@ -545,6 +562,27 @@ export async function POST(req: NextRequest) {
     return pauses;
   };
 
+  /**
+   * Earliest reset across every wall this request saw, or null. Only instants
+   * still in the future qualify: the runner schedules its resume poll at this
+   * time, and a past instant means "poll now", every time — a hot claim loop.
+   * The account's own reset is a candidate only while its wall is actually in
+   * force (the in-memory `account` still carries a reset this request has just
+   * auto-cleared), and a missing one resolves to the derived session end.
+   */
+  const earliestFutureReset = (): string | null => {
+    const nowMs = Date.now();
+    const candidates: Date[] = [];
+    if (accountBudgetExhausted && account.budgetExhaustedAt) {
+      candidates.push(effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
+    }
+    for (const pauses of teamPauseCache.values()) {
+      for (const pause of pauses.values()) candidates.push(pause.resetsAt);
+    }
+    const future = candidates.filter(d => d.getTime() > nowMs).sort((x, y) => x.getTime() - y.getTime());
+    return future.length > 0 ? future[0].toISOString() : null;
+  };
+
   // Apply the team toggle's SAFE direction up front: if a task's backend is
   // disabled team-wide and the fallback is Claude, rewrite it to Claude now —
   // before the capability filter — so a Codex task with Codex disabled isn't
@@ -689,18 +727,19 @@ export async function POST(req: NextRequest) {
 
   // Compute router inputs once per claim request. The router is pure; the
   // signals below feed its budget-pressure and spike-detection gates.
-  let dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
+  const dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
     ? Math.min(1, parseFloat(account.totalCost.toString()) / parseFloat(account.maxCostPerDay.toString()))
     : 0;
 
   // OAuth budget pacing. Seat auth reports no cost, so the pressure signal is
   // learned from past exhaustion episodes instead: how many workers/turns/tokens
   // this account's 5h window has historically held (p25, conservative), versus
-  // what the current window has already consumed. Feeding it through the same
-  // `dailyBudgetPct` input means the existing router behaviour applies — tiers
-  // downshift as pressure rises, priority-0 work pauses at 95% — so we throttle
-  // approaching the wall instead of discovering it by failing a build.
-  // Inert until MIN_SAMPLES episodes exist; failures here never block claiming.
+  // what the current window has already consumed. The 5h-wall forecast is not
+  // reliable enough to delay work on, so it does NOT feed `dailyBudgetPct` (the
+  // router would pause priority-0 work at 95%). Its only effect is a lower
+  // per-seat session cap — `oauthSeatSlotsLeft`, never below one live session,
+  // restored when the window resets, off entirely at low confidence.
+  // Failures here never block claiming.
   //
   // Two hard exemptions, both deliberate:
   //  • `taskId` present — this is an explicit start (dashboard Start button or a
@@ -713,6 +752,7 @@ export async function POST(req: NextRequest) {
   const pacingConfig = readPacingConfig(process.env);
   const pacingApplies = pacingConfig.enabled && !taskId;
   let oauthPressure: OauthBudgetPressure | null = null;
+  let oauthSeatSlotsLeft: number | null = null; // null = uncapped
   if (account.authType === 'oauth' && pacingApplies) {
     try {
       const accountIds = await resolveSeatIdPeers({
@@ -731,10 +771,13 @@ export async function POST(req: NextRequest) {
         });
 
         oauthPressure = oauthBudgetPressure({ usage, capacity });
-        dailyBudgetPct = Math.max(dailyBudgetPct, oauthPressure.pct);
+        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: account.maxConcurrentWorkers });
+        if (seatCap !== null) {
+          oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));
+        }
         if (oauthPressure.pct >= 0.5) {
           console.log(
-            `[claim] ${describeOauthPressure(oauthPressure)} ` +
+            `[claim] ${describeOauthPressure(oauthPressure)} seat cap ${seatCap ?? 'none'} ` +
             `window opened ${windowStartedAt.toISOString()}, ends ${windowEndsAt(windowStartedAt).toISOString()}`,
           );
         }
@@ -812,6 +855,7 @@ export async function POST(req: NextRequest) {
     duplicate_worker: 0,
     runner_capability: 0,
     codex_single_flight: 0,
+    oauth_parallelism: 0,
   };
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
@@ -992,6 +1036,13 @@ export async function POST(req: NextRequest) {
     integrationBranchEnabled: boolean | null;
   };
   const missionClaimMap = new Map<string, MissionClaimData>();
+  /**
+   * missionId → in-flight NON-review tasks. Reviewer-dispatched tasks
+   * (`isDispatchedReview`) inherit the reviewed PR's missionId but are not mission work: they are
+   * exempt from the mission concurrency cap and pacing gate below, so they must
+   * not occupy a slot either — otherwise a running reviewer pushes back the
+   * next builder, and the builder queue pushes back the review.
+   */
   const missionActiveCountMap = new Map<string, number>();
   /**
    * missionId → ids of that mission's in-flight tasks that declared no file
@@ -1042,7 +1093,7 @@ export async function POST(req: NextRequest) {
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
     const missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category })
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
@@ -1051,7 +1102,9 @@ export async function POST(req: NextRequest) {
       ));
     for (const row of missionInFlightRows) {
       if (!row.missionId) continue;
-      missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
+      if (!isDispatchedReview(row.category, row.context)) {
+        missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
+      }
       if (row.category !== 'review' && declaresNoScope(row.pathManifest as string[] | null)) {
         const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
         if (row.taskId) set.add(row.taskId);
@@ -1139,6 +1192,14 @@ export async function POST(req: NextRequest) {
     // ── Mission-level gates ──────────────────────────────────────────────────────
     // Applied before workspace concurrency and model routing (cheap short-circuits).
     const taskMissionId = (task as any).missionId as string | null;
+    // Reviews read a diff and post a verdict; they are not mission work. They
+    // keep the budget gate below and every workspace/account cap further down,
+    // but skip the mission's concurrency cap and pacing interval, and never
+    // consume either (see the post-claim bookkeeping). Gating them made
+    // reviews start long after their PR opened, in bursts — widening the
+    // window in which a PR can merge with no verdict. Only reviewer-dispatched
+    // rows qualify: any task creator can set `category: 'review'`.
+    const isReviewTask = isDispatchedReview((task as any).category, (task as any).context);
     if (taskMissionId) {
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData) {
@@ -1159,7 +1220,8 @@ export async function POST(req: NextRequest) {
 
         // 2. Mission-level concurrency cap. Enforces missions.maxConcurrentTasks, which
         //    previously existed in the schema but was never read by the claim loop.
-        const concurrencyBlock = checkMissionConcurrencyGate(
+        //    Review tasks are exempt (isReviewTask above) and are not counted.
+        const concurrencyBlock = !isReviewTask && checkMissionConcurrencyGate(
           missionData.maxConcurrentTasks,
           missionActiveCountMap.get(taskMissionId) ?? 0,
         );
@@ -1171,7 +1233,8 @@ export async function POST(req: NextRequest) {
 
         // 3. Pacing gate: paced missions enforce a minimum interval between task starts.
         //    Skipping is cheap — the task stays pending and is eligible on the next poll.
-        const pacingBlock = checkMissionPacingGate(missionData, now);
+        //    Review tasks are exempt and never stamp lastTaskStartedAt.
+        const pacingBlock = !isReviewTask && checkMissionPacingGate(missionData, now);
         if (pacingBlock) {
           console.log(
             `[claim] task ${task.id} deferred: mission ${taskMissionId} paced ` +
@@ -1366,6 +1429,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
+    // Codex and tenant work draw on other pools, so they are never held by it.
+    // Read the backend fresh: `isCodexTask` was captured before the budget
+    // failover above, which may just have flipped this task to Codex.
+    const usesOauthSeat = (task as any).backend !== 'codex' && !tenantCtx?.tenantId;
+    if (usesOauthSeat && oauthSeatSlotsLeft !== null && oauthSeatSlotsLeft <= 0) {
+      deferTask(task, 'oauth_parallelism', { pct: oauthPressure?.pct ?? null });
+      continue;
+    }
+
     // Workspace/project mismatch guard. If a task is pinned to a project name
     // (set by MCP at task creation), require that project to exist on the
     // workspace. Without this, a misrouted task — e.g. MCP connected to
@@ -1418,7 +1491,9 @@ export async function POST(req: NextRequest) {
     // 'paused'. The resulting model is written to task.predictedModel and
     // injected into task.context.model so worker-runner picks it up.
     const roleSlug = (task as any).roleSlug as string | null;
-    const explicit = (taskContext?.model as string | undefined) || null;
+    // Only a caller PIN counts as explicit — not the model a previous claim of
+    // this task wrote into context.model (a requeue keeps it). See model-pin.ts.
+    const explicit = readModelPin(taskContext);
     const TIER_ALIASES = new Set<string>(['haiku', 'sonnet', 'opus', 'inherit', ...TIERS]);
     const roleModel = roleSlug ? (roleFloorMap.get(roleSlug) ?? null) : null;
     const roleIsFullId = roleModel !== null && !TIER_ALIASES.has(roleModel);
@@ -1451,6 +1526,14 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Model-routing experiment (docs/design/model-routing-experiment.md). Null —
+    // and a no-op below — unless the team has a `running` experiment row and
+    // this task is eligible or inherits an arm. Never throws, never defers.
+    const experimentDraw = await drawModelRoutingArm({
+      teamId: taskTeamId, task: task as any, explicitModel: explicit, routerReason: routingDecision.reason,
+      routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
+    });
+
     // Resolve the concrete model ID via the tier registry.
     // - explicit override: bypass registry, pass full ID to runner as-is.
     // - tier path: task.tier → router alias → registry → full model ID.
@@ -1466,9 +1549,25 @@ export async function POST(req: NextRequest) {
       const derivedTier = taskTier ?? mapRouterAlias(routingDecision.model);
 
       if (taskTeamId) {
-        const entry = await resolveTierEntry(derivedTier, taskTeamId, task.workspaceId);
+        const entry = await resolveTierEntry(
+          derivedTier,
+          taskTeamId,
+          task.workspaceId,
+          body.environment?.claudeCliVersion,
+        );
         resolvedModel = entry.model;
         resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+        if (experimentDraw) {
+          const treatment = await applyModelRoutingTreatment(experimentDraw, {
+            controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
+            resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId),
+            clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
+          });
+          if (treatment) {
+            resolvedModel = treatment.model;
+            resolvedTierMeta = { tier: treatment.tier, provider: treatment.provider, source: treatment.source };
+          }
+        }
       } else {
         // No team — fall back to router alias (resolver would fail without teamId)
         resolvedModel = routingDecision.model;
@@ -1501,9 +1600,15 @@ export async function POST(req: NextRequest) {
     // budget downshift (a surprisingly cheap model) looks like a deliberate
     // choice. Fill-forward: rows claimed before this shipped have no reason and
     // must be reported as unknown rather than guessed at.
+    //
+    // `modelPinned` records whether `model` is a caller pin or this claim's
+    // routed output, so the next claim after a requeue routes afresh instead of
+    // replaying this result as an override. A role full-id pin is not a task
+    // pin: it is re-read from the role on every claim.
     const patchedContext = {
       ...(taskContext || {}),
       model: resolvedModel,
+      modelPinned: explicit !== null,
       routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };
@@ -1528,6 +1633,10 @@ export async function POST(req: NextRequest) {
 
     if (updated.length === 0) continue; // Already claimed by another request
 
+    if (experimentDraw) {
+      await recordModelRoutingAssignment(experimentDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
+    }
+
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
 
@@ -1540,18 +1649,20 @@ export async function POST(req: NextRequest) {
 
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
-    if (taskMissionId) {
+    // Review tasks consume neither the concurrency count nor the pacing slot.
+    if (taskMissionId && (task as any).category !== 'review'
+      && declaresNoScope((task as any).pathManifest as string[] | null)) {
+      // Reserve the mission's single scope-undeclared slot for the rest of the
+      // batch, so one poll cannot claim two '**' tasks from the same mission.
+      // Keyed on category alone, like both sides of the advisory guard above.
+      const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
+      set.add(task.id);
+      missionAdvisoryInFlight.set(taskMissionId, set);
+    }
+    if (taskMissionId && !isReviewTask) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
       missionActiveCountMap.set(taskMissionId, (missionActiveCountMap.get(taskMissionId) ?? 0) + 1);
-
-      // Reserve the mission's single scope-undeclared slot for the rest of the
-      // batch, so one poll cannot claim two '**' tasks from the same mission.
-      if (declaresNoScope((task as any).pathManifest as string[] | null)) {
-        const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
-        set.add(task.id);
-        missionAdvisoryInFlight.set(taskMissionId, set);
-      }
 
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData?.pacingMode === 'paced') {
@@ -1668,6 +1779,7 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
 
   if (claimedWorkers.length === 0) {
@@ -1684,17 +1796,8 @@ export async function POST(req: NextRequest) {
     // by `budget_paused`, so the runner needs the earliest reset across the pauses
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
     if (accountBudgetExhausted || deferrals.budget_paused > 0) {
-      let resetsAt: string | null = account.budgetResetsAt
-        ? new Date(account.budgetResetsAt).toISOString()
-        : null;
-      for (const pauses of teamPauseCache.values()) {
-        for (const pause of pauses.values()) {
-          const iso = pause.resetsAt.toISOString();
-          if (!resetsAt || iso < resetsAt) resetsAt = iso;
-        }
-      }
       return emptyClaim({
-        budgetResetsAt: resetsAt,
+        budgetResetsAt: earliestFutureReset(),
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
       });
     }
@@ -1716,9 +1819,9 @@ export async function POST(req: NextRequest) {
         pendingTasks: claimableTasks.length,
         matchedTasks: filteredTasks.length,
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
-        // Surface learned OAuth pressure so a `routing_paused` deferral is
-        // attributable ("paced at 97% of the learned window") instead of looking
-        // like an unexplained stall.
+        // Surface learned OAuth pressure so an `oauth_parallelism` deferral is
+        // attributable ("seat capped at 97% of the learned window") instead of
+        // looking like an unexplained stall.
         ...(oauthPressure && oauthPressure.confidence !== 'none'
           ? {
               budgetPressure: {
@@ -1814,16 +1917,31 @@ export async function POST(req: NextRequest) {
   const claimedTaskIds = claimedWorkers.map(cw => cw.taskId);
   if (claimedTaskIds.length > 0) {
     const dependentCounts = new Map<string, number>();
-    const dependentRows = await db.execute(sql`
-      SELECT dep_id AS "taskId", count(*)::integer AS "dependentCount"
-      FROM ${tasks}, jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
-      WHERE dep_id = ANY(${claimedTaskIds})
-        AND ${tasks.status} != 'cancelled'
-      GROUP BY dep_id
-    `);
-
-    for (const row of dependentRows.rows as any[]) {
-      dependentCounts.set(row.taskId, Number(row.dependentCount) ?? 0);
+    // This runs AFTER the claim has been committed, so it must never be able to
+    // fail the claim. It did: the predicate interpolated a JS array into a
+    // template fragment, which renders as a parameter list rather than an
+    // array, so `ANY(($1, $2))` was rejected by Postgres on every execution —
+    // turning every successful claim into a 500 the runner threw on and leaving
+    // the worker rows it had just created for the stale sweep to reap. Work
+    // committed, then silently discarded.
+    //
+    // Two independent fixes, because either alone leaves a trap:
+    //   1. the predicate is built by dependentCountQuery, whose rendered SQL is
+    //      asserted in a test (the route's own suite stubs drizzle-orm, so no
+    //      test here can see a malformed fragment);
+    //   2. a failure degrades the handoff ANNOUNCEMENT, which is advisory, and
+    //      never the dispatch. An enrichment query has no business deciding
+    //      whether a runner learns it has work.
+    try {
+      const dependentRows = await db.execute(dependentCountQuery(claimedTaskIds));
+      for (const row of dependentRows.rows as any[]) {
+        dependentCounts.set(row.taskId, Number(row.dependentCount) ?? 0);
+      }
+    } catch (err) {
+      console.error(
+        '[claim] dependent-count query failed; handoff announcement degraded, dispatch unaffected:',
+        err,
+      );
     }
 
     for (const cw of claimedWorkers) {
@@ -1914,7 +2032,7 @@ export async function POST(req: NextRequest) {
     workers: claimedWorkers,
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     ...(accountBudgetExhausted && {
-      budgetResetsAt: account.budgetResetsAt,
+      budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
   }, undefined, { route: req.nextUrl.pathname });

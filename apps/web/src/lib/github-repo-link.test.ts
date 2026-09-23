@@ -163,6 +163,15 @@ describe('syncInstallationRepos', () => {
     expect(backLinkStatement).toContain('r.installation_id =');
   });
 
+  it('only back-links workspaces in teams the installation belongs to', () => {
+    // Ownership = teams already using an installation of the same GitHub
+    // account, plus the installer's teams (incl. their personal team).
+    expect(backLinkStatement).toContain('w.team_id IN (');
+    expect(backLinkStatement).toContain('i1.account_id = i2.account_id');
+    expect(backLinkStatement).toContain('i3.installed_by_user_id = tm.user_id');
+    expect(backLinkStatement).toContain("'personal-' || i4.installed_by_user_id::text");
+  });
+
   it('falls back to full_name for owner/name when the payload omits them', async () => {
     ghRepos = [{ id: 7, full_name: 'someorg/somerepo' }];
     await syncInstallationRepos({ id: 'inst-row-1', installationId: 1 });

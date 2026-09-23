@@ -75,13 +75,14 @@ const SECONDARY_BTN =
  *   - PR merged AND rechecked since (lib/action-queue.ts's isDocFixClaimStale
  *     compares the row's own last_checked_at against the merge time) and the
  *     row is STILL open — the fix demonstrably didn't close it. The claim
- *     releases (buildDiscrepancyItems), the group falls out of `inFlight`
- *     entirely, and the card renders exactly like a fresh code_ahead
- *     discrepancy: Dispatch doc fix primary, Accept secondary. This is the
- *     one case where a completed task's claim does NOT keep the card
- *     agent-handled — a re-run already ran and changed nothing, so citing it
- *     as "awaiting" would be false, and Accept alone would make it look like
- *     a judgment call when it's actually unfinished work.
+ *     releases (buildDiscrepancyItems) and the group falls out of `inFlight`.
+ *     When every open row on the path is held that way the group carries
+ *     `mergedDocFixTaskId`: the card links the merged fix and
+ *     offers Accept only. No Dispatch doc fix — the doc already landed, so the
+ *     row is held open by its assertions, and a second docs-only task would
+ *     reproduce the same result (the dispatch route refuses it with
+ *     `doc_fix_already_merged`). Only the owner can move it now. If some row
+ *     on the path was never attempted, Dispatch stays and covers only those.
  * In every other completed sub-state — PR still open, or a merge lifecycle
  * that is simply unknown (isDocFixClaimStale can never fire without a known
  * merge timestamp to compare against, so that claim would otherwise sit
@@ -232,6 +233,9 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
   // requires a known merge timestamp to compare against) and keeps Accept as
   // the last-resort exit below.
   const docFixPrMerged = docFixShipped && item.docFixPrLifecycleStatus === 'merged';
+  // A doc fix merged and the re-run still finds the gap: the owner's call now,
+  // never a second dispatch (see the header note).
+  const mergedFixTaskId = !inFlight ? item.mergedDocFixTaskId ?? null : null;
   const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
@@ -287,11 +291,20 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
                 : 'Fix in flight →'}
           </Link>
         )}
+
+        {mergedFixTaskId && (
+          <Link
+            href={`/app/tasks/${mergedFixTaskId}`}
+            className="text-[12px] font-medium text-primary hover:underline"
+          >
+            Doc fix merged — still open. Accept, or correct the assertion →
+          </Link>
+        )}
       </div>
 
       {(!inFlight || (docFixShipped && !docFixPrMerged)) && mode === 'idle' && (
-        <div className={`flex items-center gap-2 flex-wrap${docFixShipped ? ' mt-2' : ''}`}>
-          {!inFlight && direction === 'code_ahead' && (
+        <div className={`flex items-center gap-2 flex-wrap${docFixShipped || mergedFixTaskId ? ' mt-2' : ''}`}>
+          {!inFlight && !mergedFixTaskId && direction === 'code_ahead' && (
             <button type="button" onClick={dispatchDocFix} disabled={busy} className={PRIMARY_BTN}>
               {busy ? 'Dispatching…' : 'Dispatch doc fix'}
             </button>

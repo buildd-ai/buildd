@@ -8,7 +8,9 @@
  *  - Workspace is bound by the URL path, not a query string. The JWT's
  *    `workspace_id` claim is validated against the path — mismatched tokens
  *    are rejected (so a token for workspace A can't be replayed against B).
- *  - The user's level is forced to admin (via authenticateApiKey's JWT path).
+ *  - The session acts at the level authenticateApiKey resolves from the
+ *    caller's current team role (owner|admin → admin, member → worker), the
+ *    same level internal self-calls get. A caller no longer on the team is 401.
  *  - Internal HTTP self-calls forward the same JWT bearer; the api-auth helper
  *    accepts it transparently.
  *
@@ -44,6 +46,7 @@ import {
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 
@@ -87,7 +90,24 @@ function createApi(jwt: string): ApiFn {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, isSensitive?: boolean, project?: string) {
+type SessionLevel = 'trigger' | 'worker' | 'admin';
+
+function forbiddenForLevel(action: string, level: SessionLevel) {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        error: 'forbidden',
+        reason: `action '${action}' requires admin token level`,
+        tokenLevel: level,
+        requiredLevel: 'admin',
+      }),
+    }],
+    isError: true,
+  };
+}
+
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -95,7 +115,7 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
     workspaceId,
     teamId: accountTeamId,
     getWorkspaceId: async () => workspaceId,
-    getLevel: async () => 'admin',
+    getLevel: async () => level,
     knowledgeStore: new PgVectorStore(embedder, getVoyageReranker()),
     embedder,
   };
@@ -182,6 +202,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
 
         // Admin-only knowledge management ops (moved from buildd_memory)
         if (action === 'consolidate_knowledge' || action === 'memory_delete') {
+          if (level !== 'admin') return forbiddenForLevel(action, level);
           const memClient = await getMemoryClientForTeam(workspaceId, accountTeamId);
           if (!memClient && action === 'memory_delete') {
             return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
@@ -251,6 +272,12 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   const claims = await verifyAccessToken(jwt, workspace);
   if (!claims) return unauthorized(workspace);
 
+  // Resolve the session exactly as internal self-calls will: team membership
+  // is required and the level comes from the caller's team role.
+  const account = await authenticateApiKey(jwt);
+  if (!account) return unauthorized(workspace);
+  const level = (account.level as SessionLevel) || 'worker';
+
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspace),
@@ -263,7 +290,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   // Same project key /api/mcp resolves, so `learn` writes land in the same
   // scope from either transport instead of unscoped.
   const project = workspaceProjectKey(ws.repo, ws.name) ?? undefined;
-  const server = createMcpServer(api, workspace, ws.teamId, isSensitive, project);
+  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

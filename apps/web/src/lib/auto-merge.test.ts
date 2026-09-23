@@ -91,7 +91,11 @@ mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardR
 const mockFireGateEvent = mock((_input: any) => {});
 mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
-  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict' },
+  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict', MERGE_BASE_FRESHNESS: 'merge_base_freshness' },
+}));
+const mockAppendPrActivity = mock((_input: any) => Promise.resolve({ action: 'updated', commentId: 1 }));
+mock.module('@/lib/pr-activity-comment', () => ({
+  appendPrActivity: mockAppendPrActivity,
 }));
 
 import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure } from './auto-merge';
@@ -201,6 +205,100 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
     ).resolves.toEqual({ ok: true });
+  });
+});
+
+// A green CI result is a claim about headSha only. `dev` carries no GitHub-side
+// branch protection, so `mergeable_state` never reports `behind` — this gate is
+// the only thing that catches a base which moved on since headSha's checks ran.
+describe('evaluateAutoMergeSafety base freshness check', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFireGateEvent.mockReset();
+  });
+
+  it('refuses the merge when headSha is behind the base branch\'s current tip', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })                                          // check-runs
+      .mockResolvedValueOnce([])                                                           // files
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } }) // PR state
+      .mockResolvedValueOnce({ ahead_by: 0, behind_by: 3 });                                // compare
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('needs rebase onto base branch'),
+    });
+  });
+
+  it('writes a distinct merge_base_freshness gate-ledger row on refusal', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ ahead_by: 0, behind_by: 2 });
+
+    await evaluateAutoMergeSafety(
+      1, 'buildd-ai/buildd', 42, 'head-sha', autoThresholdPolicy,
+      { workspaceId: 'ws-1', taskId: 'task-1', workerId: 'worker-1' },
+    );
+
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    const gateCall = mockFireGateEvent.mock.calls[0][0] as any;
+    expect(gateCall.gate).toBe('merge_base_freshness');
+    expect(gateCall.outcome).toBe('rejected');
+    expect(gateCall.workspaceId).toBe('ws-1');
+    expect(gateCall.taskId).toBe('task-1');
+    expect(gateCall.workerId).toBe('worker-1');
+    expect(gateCall.detail.behindBy).toBe(2);
+  });
+
+  it('passes when headSha is level with the base branch\'s current tip', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ ahead_by: 2, behind_by: 0 });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: true });
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
+  });
+
+  it('fails closed, but without the rebase phrasing, when the compare lookup errors', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' }, base: { ref: 'dev' } })
+      .mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+
+    const result = await evaluateAutoMergeSafety(...params, autoThresholdPolicy);
+    expect(result).toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not verify base freshness'),
+    });
+    // Unlike a confirmed stale base, an unverifiable read must not be routed
+    // into the conflict-retry rebase path — we don't know the base moved.
+    expect((result as { reason: string }).reason).not.toContain('needs rebase');
+  });
+
+  it('skips the check entirely when the PR read did not return a base ref', async () => {
+    // Same shape as the pre-existing "mergeable_state is clean" test above —
+    // no base.ref means no freshness call is made, and no behaviour changes
+    // for a caller that never populated it.
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: true });
+    expect(mockGithubApi).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -716,57 +814,66 @@ describe('escalateReviewContractFailure', () => {
   const REPO = 'acme/my-app';
   const PR_NUMBER = 101;
   const HEAD_SHA = 'beef1234567890abcdef';
+  const INSTALLATION_ID = 55;
 
   const baseTask = {
     id: TASK_ID,
     missionId: null as string | null,
     title: '[reviewer] feat: add search',
+    workspaceId: 'ws-1',
     context: {},
   };
+  const call = (overrides: Partial<{ taskId: string; repoFullName: string; prNumber: number; headSha: string; installationId: number }> = {}) =>
+    escalateReviewContractFailure({
+      taskId: TASK_ID,
+      repoFullName: REPO,
+      prNumber: PR_NUMBER,
+      headSha: HEAD_SHA,
+      installationId: INSTALLATION_ID,
+      ...overrides,
+    });
 
   beforeEach(() => {
     mockNotify.mockReset();
     capturedInsertValues = [];
     mockUpdateReturns = [];
     mockFindFirst = mock(() => baseTask);
+    mockFireGateEvent.mockClear();
+    mockAppendPrActivity.mockClear();
   });
 
   it('returns early without firing Pushover when task is not found', async () => {
     mockFindFirst = mock(() => null);
-    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    await call();
     expect(mockNotify).not.toHaveBeenCalled();
   });
 
   it('fires Pushover on first call when CAS succeeds', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }]];
-    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    await call();
     expect(mockNotify).toHaveBeenCalledTimes(1);
-    const call = mockNotify.mock.calls[0][0] as any;
-    expect(call.app).toBe('tasks');
-    expect(call.title).toContain(`PR #${PR_NUMBER}`);
-    expect(call.message).toContain('[reviewer] feat: add search');
+    const notifyCall = mockNotify.mock.calls[0][0] as any;
+    expect(notifyCall.app).toBe('tasks');
+    expect(notifyCall.title).toContain(`PR #${PR_NUMBER}`);
+    expect(notifyCall.message).toContain('[reviewer] feat: add search');
   });
 
   it('does NOT fire Pushover when CAS returns empty (already escalated for this task)', async () => {
     mockUpdateReturns = [[]];
-    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    await call();
     expect(mockNotify).not.toHaveBeenCalled();
   });
 
   it('is idempotent: exactly one Pushover across three concurrent observations', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }], [], []];
-    await Promise.all([
-      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
-      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
-      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
-    ]);
+    await Promise.all([call(), call(), call()]);
     expect(mockNotify).toHaveBeenCalledTimes(1);
   });
 
   it('inserts a reviewer_escalated note when task has a missionId', async () => {
     mockFindFirst = mock(() => ({ ...baseTask, missionId: 'mission-xyz' }));
     mockUpdateReturns = [[{ id: TASK_ID }]];
-    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    await call();
     expect(capturedInsertValues).toHaveLength(1);
     expect(capturedInsertValues[0].type).toBe('reviewer_escalated');
     expect(capturedInsertValues[0].missionId).toBe('mission-xyz');
@@ -778,16 +885,63 @@ describe('escalateReviewContractFailure', () => {
 
   it('fires Pushover but inserts NO note when task has no missionId', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }]];
-    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    await call();
     expect(capturedInsertValues).toHaveLength(0);
     expect(mockNotify).toHaveBeenCalledTimes(1);
   });
 
   it('Pushover URL points to the buildd task page', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }]];
-    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    await call();
     const url = (mockNotify.mock.calls[0][0] as any).url as string;
     expect(url).toContain(`/app/tasks/${TASK_ID}`);
+  });
+
+  // Regression coverage for the "PR merged tonight with no review verdict at
+  // all" incident: before this, a permanently-failed review left NO trace on
+  // the PR itself (activity comment stuck at "Reviewing changes" forever) and
+  // no gate-ledger row, so a human watching the PR had no signal the review
+  // had already died — and no way to measure how often this happens.
+  it('posts a review_failed entry to the PR activity comment on successful escalation', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await call();
+    expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+    const activityCall = mockAppendPrActivity.mock.calls[0][0] as any;
+    expect(activityCall.installationId).toBe(INSTALLATION_ID);
+    expect(activityCall.repoFullName).toBe(REPO);
+    expect(activityCall.prNumber).toBe(PR_NUMBER);
+    expect(activityCall.entry.kind).toBe('review_failed');
+    expect(activityCall.workspaceId).toBe('ws-1');
+  });
+
+  it('does not post PR activity when CAS did not claim (already escalated)', async () => {
+    mockUpdateReturns = [[]];
+    await call();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+  });
+
+  it('skips the PR activity post when repoFullName or installationId is missing', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await call({ repoFullName: '', installationId: 0 });
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+  });
+
+  it('fires a warned review_verdict gate event on successful escalation', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await call();
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    const gateCall = mockFireGateEvent.mock.calls[0][0] as any;
+    expect(gateCall.gate).toBe('review_verdict');
+    expect(gateCall.outcome).toBe('warned');
+    expect(gateCall.taskId).toBe(TASK_ID);
+    expect(gateCall.workspaceId).toBe('ws-1');
+    expect(gateCall.detail.prNumber).toBe(PR_NUMBER);
+  });
+
+  it('does not fire a gate event when CAS did not claim (already escalated)', async () => {
+    mockUpdateReturns = [[]];
+    await call();
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -1786,5 +1940,18 @@ describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
       expect.objectContaining({ outcome: 'bypassed' }),
     );
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('isBehindBaseRefusal', () => {
+  it('matches the base-freshness refusal and nothing else', async () => {
+    const { isBehindBaseRefusal } = await import('./auto-merge');
+    expect(isBehindBaseRefusal(
+      'PR is 3 commits behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+    )).toBe(true);
+    expect(isBehindBaseRefusal(
+      'PR is 1 commit behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+    )).toBe(true);
+    expect(isBehindBaseRefusal('PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch')).toBe(false);
   });
 });

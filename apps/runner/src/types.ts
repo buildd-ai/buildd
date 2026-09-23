@@ -1,4 +1,4 @@
-import type { RoleConfig } from './roles.js';
+import type { RoleConfig, RoleInstructions } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
@@ -325,8 +325,12 @@ export interface LocalWorker {
     accountId: string;
     expiresAt: Date | null;
   };
-  // Role config from claim route (for role env resolution)
+  // Role config from claim route (for role env resolution) — packaged roles only
   roleConfig?: RoleConfig;
+  // Role persona from claim route. Present whenever the task resolved a role
+  // row, packaged or not; the only source of the agent's persona on both the
+  // Claude (systemPrompt.append) and Codex (AGENTS.md) paths.
+  roleInstructions?: RoleInstructions;
   // Degraded connectors (advisory mode) — connectors that are unavailable but
   // task was allowed to proceed. Injected into system prompt in startSession.
   degradedConnectors?: Array<{ id: string; name: string; failureMode: string }>;

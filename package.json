@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
-    "type-check": "cd apps/web && bunx tsc --noEmit && cd ../../packages/core && bunx tsc --noEmit --project tsconfig.test-d.json",
+    "type-check": "cd apps/web && bunx tsc --noEmit && cd ../../packages/core && bunx tsc --noEmit --project tsconfig.test-d.json && cd ../../apps/responder && bunx tsc --noEmit",
     "test": "bun run scripts/run-unit-tests.ts",
     "test:affected": "bash scripts/affected-tests.sh",
     "test:all": "bun run scripts/run-unit-tests.ts",
@@ -43,6 +43,7 @@
     "specs:conformance": "bun run scripts/check-spec-conformance.ts",
     "specs:discrepancies": "bun run packages/core/scripts/write-spec-discrepancies.ts",
     "specs:conformance-gate": "bun run scripts/spec-conformance-delta-gate.ts",
+    "no-prod-data:check": "bash scripts/check-no-prod-data-local.sh",
     "cron:plan": "bun run scripts/sync-crons.ts --dry-run",
     "cron:sync": "bun run scripts/sync-crons.ts",
     "cron:check": "bun run scripts/sync-crons.ts --check",

@@ -534,9 +534,59 @@ export function ensureCbmRuntimeDir(cbmCacheDir: string, explicitDir?: string): 
   return dir;
 }
 
+/**
+ * Whether the index this task's graph queries hit is actually ready. Distinct
+ * from whether the MCP server is mounted — the server starts unconditionally
+ * once CBM is enforced (see the "CBM stays mounted either way" comment on the
+ * bootstrap call site in workers.ts), but a mounted server whose index build
+ * is still running or failed answers queries with "not indexed" or nothing,
+ * not with the truth.
+ *
+ *   - 'warm': the index is ready before the agent's first turn — either a
+ *     per-task build finished in time, or a pre-seeded shared cache was hit.
+ *   - 'building': the build was handed off to the background because it did
+ *     not finish inside the startup budget. It may land mid-session.
+ *   - 'unavailable': the build failed outright. The server is still mounted
+ *     and the agent can retry indexing itself, but there is no graph yet.
+ */
+export type CbmBootstrapState = 'warm' | 'building' | 'unavailable';
+
+/**
+ * Map the persisted bootstrap outcome (worker.cbmBootstrapResult /
+ * CbmMetrics.bootstrapResult) to what the agent should be told. Centralised so
+ * the guidance text and any future consumer cannot drift into their own
+ * classification of the same four values.
+ *
+ * Undefined defaults to 'warm' for backward compatibility with call sites that
+ * predate this field — none exist post-fix, but a default that fails toward
+ * "warm" rather than throwing keeps an untouched caller behaving as it always
+ * did rather than crashing.
+ */
+export function cbmBootstrapGuidanceState(
+  result: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm' | undefined,
+): CbmBootstrapState {
+  switch (result) {
+    case 'backgrounded':
+      return 'building';
+    case 'failed':
+      return 'unavailable';
+    case 'ok':
+    case 'skipped_warm':
+    case undefined:
+      return 'warm';
+  }
+}
+
 export interface CbmGuidanceOpts {
   project?: string;
   sharedBaseIndex?: boolean;
+  /**
+   * Truthful bootstrap state for THIS task — see CbmBootstrapState. Defaults to
+   * 'warm', which reproduces the previous (unconditional) claim; every
+   * production call site now passes the real value via
+   * cbmBootstrapGuidanceState(worker.cbmBootstrapResult).
+   */
+  bootstrapState?: CbmBootstrapState;
   /**
    * Which backend's file-reading vocabulary to use. The ordered, procedural framing
    * is identical either way — only the names of the tools the graph is being
@@ -591,33 +641,75 @@ const FILE_SWEEP_DIALECT = {
  */
 export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
   const dialect = FILE_SWEEP_DIALECT[opts.dialect ?? 'claude'];
+  const bootstrapState = opts.bootstrapState ?? 'warm';
   // Shared mode indexes the base clone, not this worktree, so the graph maps the
   // repo as of the seed and get_code_snippet serves that copy (verified against
   // 0.10.8: an edit made in the worktree does not appear in the snippet).
   // Structure is accurate; file contents on this branch are not — say so rather
   // than let the agent trust a snippet of a file it just edited.
-  const opening = opts.sharedBaseIndex
-    ? [
-        'This repo is already indexed in the `codebase-memory` MCP server as project `'
-          + (opts.project ?? 'unknown') + '` — the graph is warm before your first turn, with no indexing to wait for.',
-        `It maps the base checkout, not your branch: trust it for structure, and ${dialect.readVerb} the file for current content`
-          + ' — especially anything you have edited this session.',
-      ]
-    : ['This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.'];
+  //
+  // Only the 'warm' state distinguishes shared vs. per-worktree wording:
+  // 'building'/'unavailable' only ever occur on the per-task index path (a
+  // shared-cache hit always sets skipBootstrapIndex, which is reported as
+  // 'skipped_warm' — see buildCbmActivation), so there is no shared-cache
+  // "building" or "unavailable" case to word separately.
+  let opening: string[];
+  if (bootstrapState === 'building') {
+    opening = [
+      'This repo\'s index for the `codebase-memory` MCP server is still being built in the background —'
+        + ' it was not ready before your first turn, so the graph is NOT warm yet.',
+      'A graph call may report the project as not indexed, or return nothing, until the build lands —'
+        + ' which can happen mid-session with no action from you. Retry the call later, or fall back to'
+        + ` a ${dialect.before} for now.`,
+    ];
+  } else if (bootstrapState === 'unavailable') {
+    opening = [
+      'The `codebase-memory` MCP server is mounted for this task, but the index build for this repo'
+        + ' failed before your first turn — the graph is NOT available.',
+      opts.sharedBaseIndex
+        ? `A graph call will likely report the project as not indexed. Use a ${dialect.before} for this session.`
+        : 'A graph call will likely report the project as not indexed. Call mcp__codebase-memory__index_repository'
+          + ` yourself to retry it, or just use a ${dialect.before} for this session.`,
+    ];
+  } else if (opts.sharedBaseIndex) {
+    opening = [
+      'This repo is already indexed in the `codebase-memory` MCP server as project `'
+        + (opts.project ?? 'unknown') + '` — the graph is warm before your first turn, with no indexing to wait for.',
+      `It maps the base checkout, not your branch: trust it for structure, and ${dialect.readVerb} the file for current content`
+        + ' — especially anything you have edited this session.',
+    ];
+  } else {
+    opening = ['This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.'];
+  }
+  // Shared-seed mode points CBM at the fleet-wide seed cache. An agent-issued
+  // index_repository there would index THIS worktree into that shared dir — a
+  // project .db no seed record owns — so the not-indexed fallback in that mode
+  // is to name the seeded project, never to index. Keyed on sharedBaseIndex
+  // alone (not also bootstrapState === 'warm'): the shared+building/unavailable
+  // combinations are unreachable today only because of how workers.ts reports
+  // a shared-cache hit, and the guidance must stay safe if that changes.
+  const notIndexedFallback = opts.sharedBaseIndex
+    ? 'If a query reports the project is not indexed, pass project `' + (opts.project ?? 'unknown')
+      + '` explicitly; do not index it yourself — this graph is a shared seed.'
+    : 'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.';
+  // Tool routing follows the CBM server's own split: search_graph/trace_path are
+  // the structural tools; search_code is its grep wrapper, for literal text only.
+  // Sending "locating a symbol" to search_code steered agents onto the text path.
   return [
     ...opening,
     '',
     'When a task touches existing code you have not read yet, make a graph call your FIRST navigation step,',
     `before any ${dialect.before}. One call is usually enough to know where to look:`,
     '- orienting in an unfamiliar area, or "how is this laid out?" -> mcp__codebase-memory__get_architecture',
+    '- locating a symbol (function/class/type) before reading it -> mcp__codebase-memory__search_graph (name_pattern), then get_code_snippet',
     '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path',
-    '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph',
-    '- locating a symbol before reading it -> mcp__codebase-memory__search_code, then get_code_snippet',
+    '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__trace_path (inbound)',
+    '- literal strings, error messages, config keys -> mcp__codebase-memory__search_code (text search, not structure)',
     '',
     `Then use ${dialect.use} to read what the graph located, for non-code files, for a greenfield file that`,
     'does not exist yet, and whenever the graph returns nothing useful — it is an accelerator, never a gate.',
     `${dialect.sweep} that a single graph query would have answered is the specific waste to avoid.`,
-    'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.',
+    notIndexedFallback,
     '',
     'The graph answers structural questions ONLY. It is not a source of intent, history, or prior',
     'decisions — use the buildd knowledge tools (recall) for those.',

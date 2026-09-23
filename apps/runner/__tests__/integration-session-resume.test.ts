@@ -16,6 +16,8 @@
  *   BUILDD_TEST_SERVER=http://localhost:3000 bun test apps/runner/__tests__/integration-session-resume.test.ts
  */
 
+import { readLocalToken, LOCAL_TOKEN_HEADER } from '../src/local-server-auth';
+const LOCAL_TOKEN = readLocalToken();
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -44,7 +46,7 @@ const createdWorkerIds: string[] = [];
 async function api<T = any>(path: string, method = 'GET', body?: any): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(LOCAL_TOKEN ? { [LOCAL_TOKEN_HEADER]: LOCAL_TOKEN } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
 

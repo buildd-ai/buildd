@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { isGitHubAppConfigured, getGitHubAppConfig } from '@/lib/github';
+import { signInstallState } from '@/lib/github-install-state';
 
 export async function GET(req: NextRequest) {
   // Require auth
@@ -18,12 +19,12 @@ export async function GET(req: NextRequest) {
 
   const config = getGitHubAppConfig();
 
-  // Redirect to GitHub App installation page
-  // state parameter will help us identify the user after callback
-  const state = Buffer.from(JSON.stringify({
-    userId: session.user.email,
-    returnUrl: req.nextUrl.searchParams.get('returnUrl') || '/app/workspaces',
-  })).toString('base64url');
+  // Redirect to GitHub App installation page. The signed state binds the
+  // flow to this session user so the callback can attribute the installation.
+  const state = signInstallState({
+    userId: session.user.id!,
+    returnUrl: req.nextUrl.searchParams.get('returnUrl'),
+  });
 
   const installUrl = new URL(config.installUrl);
   installUrl.searchParams.set('state', state);
