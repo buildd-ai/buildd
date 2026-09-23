@@ -29,8 +29,10 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 
 /** null = `git worktree add` failed and the session falls back to the clone. */
 let worktreeResult: { path: string; branch: string; base: string } | null = null;
+/** Called while setupWorktree is running (before it returns). */
+let onSetupWorktree: ((repoPath: string) => void) | null = null;
 mock.module('../../src/git-operations', () => ({
-  setupWorktree: async () => worktreeResult,
+  setupWorktree: async (repoPath: string) => { onSetupWorktree?.(repoPath); return worktreeResult; },
   removeWorktreeIfUnowned: async () => ({ removed: true }),
   removeWorktreeIfUnownedSync: () => ({ removed: true }),
   cleanupWorktree: async () => ({ removed: true }),
@@ -186,6 +188,23 @@ describe('session cwd must be a git checkout for a repo task', () => {
     // failed, using repo" told the operator nothing about where it ended up.
     expect(patch.error).toContain('not a git checkout');
     expect(patch.error).toContain('/tmp/test-workspace');
+  });
+
+  // The new tree exists (and gets a dependency install) before the worker's
+  // worktreePath is set; the terminal-worktree sweep must see the repo as busy
+  // for exactly that window.
+  test('marks the repo busy for the terminal-worktree sweep while setup runs', async () => {
+    worktreeResult = { path: '/tmp/worktrees/w-busy', branch: 'buildd/w-busy', base: 'origin/main' };
+    let busyDuringSetup: boolean | undefined;
+    onSetupWorktree = (repoPath) => { busyDuringSetup = (manager as any).worktreeSetupsInFlight.has(repoPath); };
+    try {
+      await runTask(manager, 'acme/widgets', 'w-busy');
+    } finally {
+      onSetupWorktree = null;
+    }
+
+    expect(busyDuringSetup).toBe(true);
+    expect((manager as any).worktreeSetupsInFlight.size).toBe(0);
   });
 
   test('starts normally when setupWorktree produced the cwd', async () => {

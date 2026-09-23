@@ -24,13 +24,10 @@ import {
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
-import { teardownSession } from './session-teardown';
+import { reapSession } from './session-teardown';
 import { hostUserMemoryExcludes } from './host-memory-excludes';
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
-
-/** Matches WorkerSync.evictCompletedWorkers: a just-finished worker may be resumed. */
-const TERMINAL_WORKTREE_RETENTION_MS = 10 * 60 * 1000;
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -87,7 +84,7 @@ import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBr
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
-import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
@@ -626,6 +623,11 @@ export class WorkerManager {
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private terminalWorktreeSweepTimer?: Timer;
+  /** Repo paths with a setupWorktree in flight (the new tree is not yet owned by any worker record). */
+  private worktreeSetupsInFlight = new Map<string, number>();
+  /** Terminal records whose worktree the sweep kept (archive failed); not retried until restart. */
+  private terminalWorktreesKept = new Set<string>();
+  private terminalWorktreeSweepRunning = false;
   private heartbeatInterval?: Timer;
   private livenessInterval?: Timer;
   private evictionInterval?: Timer;
@@ -760,7 +762,7 @@ export class WorkerManager {
 
     // Already-terminal records stay on disk, unloaded, so eviction never
     // reclaims their worktrees. Deferred so boot doesn't wait on git.
-    this.terminalWorktreeSweepTimer = setTimeout(() => this.sweepTerminalWorktreesOnDisk(), 5_000);
+    this.terminalWorktreeSweepTimer = setTimeout(() => { void this.sweepTerminalWorktreesOnDisk(); }, 5_000);
     this.terminalWorktreeSweepTimer.unref?.();
 
     // Scan environment on startup (sync — runs once, fast enough for init)
@@ -1003,27 +1005,36 @@ export class WorkerManager {
       console.warn('[Cleanup] Worktree sweep failed:', err instanceof Error ? err.message : err);
     }
 
-    this.sweepTerminalWorktreesOnDisk();
+    void this.sweepTerminalWorktreesOnDisk();
   }
 
   /**
    * Reclaim worktrees of terminal workers that live only on disk (see
-   * terminal-worktree-sweep.ts). In-memory workers are skipped: eviction owns
-   * those. A reclaimed record has its worktreePath cleared so it is not
-   * revisited.
+   * terminal-worktree-sweep.ts). In-memory workers are skipped, and any path an
+   * in-memory worker points at (any status) is left alone: eviction owns
+   * those. Repos with a worktree setup in flight are skipped too. A reclaimed
+   * record has its worktreePath cleared so it is not revisited; a kept one is
+   * not retried until restart.
    */
-  private sweepTerminalWorktreesOnDisk(): void {
+  async sweepTerminalWorktreesOnDisk(): Promise<void> {
+    if (this.terminalWorktreeSweepRunning) return;
+    this.terminalWorktreeSweepRunning = true;
     try {
       const records = loadAllWorkers().filter(w => !this.workers.has(w.id));
-      const results = sweepTerminalWorktrees({
+      const results = await sweepTerminalWorktrees({
         records,
-        liveWorkers: this.workers,
+        inMemoryWorkers: this.workers,
+        busyRepos: this.worktreeSetupsInFlight,
+        skipIds: this.terminalWorktreesKept,
         now: Date.now(),
-        retentionMs: TERMINAL_WORKTREE_RETENTION_MS,
+        retentionMs: TERMINAL_WORKER_RETENTION_MS,
         archiveDir: join(resolveBuilddHome(), 'worktree-archive'),
       });
       for (const { id, outcome } of results) {
-        if (outcome === 'kept') continue;
+        if (outcome === 'kept') {
+          this.terminalWorktreesKept.add(id);
+          continue;
+        }
         const rec = storeLoadWorker(id);
         if (rec?.worktreePath) {
           rec.worktreePath = undefined;
@@ -1033,7 +1044,22 @@ export class WorkerManager {
       if (results.length > 0) __resetDiskWorkersCache();
     } catch (err) {
       console.warn('[Cleanup] Terminal worktree sweep failed:', err instanceof Error ? err.message : err);
+    } finally {
+      this.terminalWorktreeSweepRunning = false;
     }
+  }
+
+  /**
+   * Stop a live session whose worker has already been settled (terminal) by
+   * the caller. Uses reapSession, not teardownSession: `reapedAt` makes the
+   * session's catch treat the abort as cleanup (no `failed` PATCH), and its
+   * finally — which is conditioned on the map entry — removes the per-worker
+   * credential/config/CBM dirs and then deletes the entry.
+   */
+  private reapLiveSession(workerId: string): void {
+    const session = this.sessions.get(workerId);
+    if (!session || session.reapedAt !== undefined) return;
+    reapSession(session, Date.now(), workerId);
   }
 
   /** Remove completed/errored workers from memory and disk. Returns count purged. */
@@ -1043,9 +1069,11 @@ export class WorkerManager {
     for (const [id, worker] of this.workers.entries()) {
       if (worker.status === 'done' || worker.status === 'error') {
         this.workers.delete(id);
-        // Abort + end the stream, not just the map delete: the entry is the
-        // last handle on the `claude` subprocess.
-        teardownSession(this.sessions, id);
+        // Stop the `claude` subprocess, but reap rather than tear down: the
+        // session's finally only cleans up (token-bearing config dir, broker
+        // registration, CBM dirs) while its map entry exists, and deletes the
+        // entry itself. A session that ignores the abort keeps its entry.
+        this.reapLiveSession(id);
         this.workerAuthContexts.delete(id);
         this.workerTeamKeys.delete(id);
         clearWorkerThrottle(id);
@@ -1106,7 +1134,7 @@ export class WorkerManager {
           // null is a confirmed 404 only (transport failures throw into the
           // catch below), so the session has no server-side worker left to
           // report to — stop it rather than leave a zombie CLI running.
-          teardownSession(this.sessions, worker.id);
+          this.reapLiveSession(worker.id);
           cleaned++;
           continue;
         }
@@ -1128,8 +1156,9 @@ export class WorkerManager {
           this.dirtyForDisk.add(worker.id);
           this.emit({ type: 'worker_update', worker });
 
-          // Abort any active SDK session for this worker
-          teardownSession(this.sessions, worker.id);
+          // Abort any active SDK session for this worker. Reaped, so the
+          // abort reads as cleanup and the session's finally still runs.
+          this.reapLiveSession(worker.id);
 
           cleaned++;
         }
@@ -1788,16 +1817,29 @@ export class WorkerManager {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
 
-      const setupResult = await setupWorktree(
-        workspacePath,
-        claimedWorker.branch,
-        defaultBranch,
-        worker.id,
-        fullTask.context,
-        // Live-worker view: a path another running session owns must never be
-        // reclaimed, not even when its tree reads clean (committed-but-unpushed).
-        this.workers,
-      );
+      // Until setupWorktree returns, the new tree (created before the
+      // dependency install) is not on any worker record — mark the repo busy
+      // so the terminal-worktree sweep cannot remove it mid-install.
+      // `??=`: some harnesses build the manager with Object.create (no field initializers).
+      const setupsInFlight = (this.worktreeSetupsInFlight ??= new Map());
+      setupsInFlight.set(workspacePath, (setupsInFlight.get(workspacePath) ?? 0) + 1);
+      let setupResult: Awaited<ReturnType<typeof setupWorktree>>;
+      try {
+        setupResult = await setupWorktree(
+          workspacePath,
+          claimedWorker.branch,
+          defaultBranch,
+          worker.id,
+          fullTask.context,
+          // Live-worker view: a path another running session owns must never be
+          // reclaimed, not even when its tree reads clean (committed-but-unpushed).
+          this.workers,
+        );
+      } finally {
+        const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
+        if (n > 0) setupsInFlight.set(workspacePath, n);
+        else setupsInFlight.delete(workspacePath);
+      }
 
       if (setupResult) {
         worker.worktreePath = setupResult.path;

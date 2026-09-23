@@ -15,7 +15,6 @@
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { join } from 'path';
-import { homedir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
 
 import * as realRoles from '../../src/roles';
@@ -297,8 +296,10 @@ describe('assembled system prompt: role persona', () => {
     await runTask(manager, { roleInstructions: ROLE_INSTRUCTIONS }, 'w-role-7');
 
     expect(lastQueryOpts?.options?.settingSources).toContain('user');
-    expect(lastQueryOpts?.options?.settings?.claudeMdExcludes)
-      .toContain(`${homedir().replaceAll('\\', '/')}/.claude/CLAUDE.md`);
+    // Shape only: the exact path is the host home, which this file must not
+    // read (scripts/test-home-isolation.test.ts).
+    const excludes: string[] = lastQueryOpts?.options?.settings?.claudeMdExcludes ?? [];
+    expect(excludes.some(p => p.endsWith('/.claude/CLAUDE.md'))).toBe(true);
   });
 
   test('still appends when the cwd CLAUDE.md is the project, not the role', async () => {

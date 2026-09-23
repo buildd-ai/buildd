@@ -167,7 +167,7 @@ function injectWorker(manager: any, worker: LocalWorker) {
 }
 
 function injectSession(manager: any, workerId: string) {
-  const session = {
+  const session: { inputStream: { end: ReturnType<typeof mock> }; abortController: AbortController; reapedAt?: number } = {
     inputStream: { end: mock(() => {}) },
     abortController: new AbortController(),
   };
@@ -180,8 +180,10 @@ function injectSession(manager: any, workerId: string) {
 describe('purgeCompleted', () => {
   // purgeCompleted drops the worker record; a session still in the map is the
   // last handle on its `claude` subprocess. Deleting the map entry alone (the
-  // old behaviour) orphaned that process — the T8 teardown sequence applies.
-  test('aborts and ends the session of every purged worker', () => {
+  // old behaviour) orphaned that process. The session is REAPED, not torn
+  // down: startSession's finally only cleans up (credential/config/CBM dirs)
+  // while the entry is still there, and deletes it itself.
+  test('reaps the session of every purged worker, leaving the entry for its finally', () => {
     const manager = new WorkerManager(testConfig);
     injectWorker(manager, makeWorker({ id: 'w-purge-done', status: 'done' }));
     injectWorker(manager, makeWorker({ id: 'w-purge-live', status: 'working' }));
@@ -193,7 +195,8 @@ describe('purgeCompleted', () => {
     expect(count).toBe(1);
     expect(done.abortController.signal.aborted).toBe(true);
     expect(done.inputStream.end).toHaveBeenCalled();
-    expect((manager as any).sessions.has('w-purge-done')).toBe(false);
+    expect(done.reapedAt).toBeDefined();
+    expect((manager as any).sessions.has('w-purge-done')).toBe(true);
     // A non-terminal worker's session is untouched.
     expect(live.abortController.signal.aborted).toBe(false);
     expect((manager as any).sessions.has('w-purge-live')).toBe(true);
@@ -239,7 +242,24 @@ describe('reconcileLocalWorkers', () => {
 
     expect(session.abortController.signal.aborted).toBe(true);
     expect(session.inputStream.end).toHaveBeenCalled();
-    expect((manager as any).sessions.has(worker.id)).toBe(false);
+    // Reaped, not deleted: the session's finally owns cleanup + the delete.
+    expect(session.reapedAt).toBeDefined();
+    expect((manager as any).sessions.has(worker.id)).toBe(true);
+  });
+
+  test('reaps the live SDK session when the remote worker is terminal', async () => {
+    const manager = new WorkerManager(testConfig);
+    const worker = makeWorker({ id: 'w-remote-term-live', status: 'working' });
+    injectWorker(manager, worker);
+    const session = injectSession(manager, worker.id);
+
+    mockGetWorkerRemote.mockResolvedValue({ status: 'failed', task: { status: 'failed' } });
+
+    await manager.reconcileLocalWorkers();
+
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(session.reapedAt).toBeDefined();
+    expect((manager as any).sessions.has(worker.id)).toBe(true);
   });
 
   test('a transport failure never aborts the session', async () => {
@@ -253,6 +273,7 @@ describe('reconcileLocalWorkers', () => {
     await manager.reconcileLocalWorkers();
 
     expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.reapedAt).toBeUndefined();
     expect((manager as any).sessions.has(worker.id)).toBe(true);
   });
 
