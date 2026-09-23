@@ -657,3 +657,66 @@ messages this spec originally sketched:
 - Branch is persisted when the runner reports a different checkout branch.
 - Branch is omitted from the DB update when the field is absent from the request body.
 - Branch is omitted from the DB update when the field is an empty string.
+
+---
+
+## 9. Production Bug Fix — reviewer-retry `baseBranch` duplicated `resumeBranch` (shipped)
+
+> Observed as a friction report: a `[builder · after review #1]` worktree under a
+> mission-branch-strategy mission came up tracking `origin/dev` at dev's tip, zero
+> commits ahead, with the reviewed feature code entirely absent. The original
+> task's branch had already been merged and deleted.
+
+### 9.1 Root Cause
+
+`resolveWorktreeBase()` (§4.3) treats `resumeBranch` and `baseBranch` as two
+different ladder rungs on purpose: when `resumeBranch` is missing from the
+remote, it cascades to `baseBranch` — the task's *declared* base (a mission
+integration branch, for a mission-branch task) — before giving up on
+`defaultBranch`. That cascade only helps if `baseBranch` actually names a
+different, still-live ref.
+
+The reviewer-loop retry task builder
+(`apps/web/src/app/api/workers/[id]/route.ts`, `handleReviewerOutcomeIfNeeded`)
+set both fields to the literal same value:
+
+```typescript
+baseBranch: workerBranch, // MUST continue on same branch — no new branch
+resumeBranch: workerBranch,
+```
+
+When `workerBranch` (the original PR's head branch) was gone from the remote —
+e.g. the PR had since merged and GitHub auto-deleted the branch — the cascade
+checked `baseBranch`, found the *same* missing branch, and fell all the way
+through to `defaultBranch` (dev). For a mission-branch task this drops the
+mission's own integration branch and every commit already merged there; the
+worktree comes up on dev with the reviewed feature simply absent.
+
+### 9.2 Fix
+
+`handleReviewerOutcomeIfNeeded` already reads `gatedWorker.prBaseRef` earlier
+in the function (§ Option A' policy resolution) — the PR's actual recorded
+base ref, written at `create_pr` time and kept in sync by the GitHub webhook
+(`workers.prBaseRef`, `packages/core/db/schema.ts`). That is the correct
+`baseBranch`: it names the mission integration branch (or trunk, for a
+non-mission task) regardless of whether `workerBranch` itself still exists.
+
+```typescript
+baseBranch: gatedWorker?.prBaseRef ?? workerBranch,
+resumeBranch: workerBranch, // MUST continue on same branch — no new branch
+```
+
+`resumeBranch` is unchanged — resuming the exact prior branch first is still
+correct when it is available. Only the fallback rung changes. When
+`prBaseRef` is unset (older worker rows, or a non-mission task where it was
+never recorded), the fallback degrades to the old `workerBranch` value —
+identical to pre-fix behavior, never worse.
+
+### 9.3 Regression Test Coverage
+
+`apps/web/src/app/api/workers/[id]/route.test.ts` —
+`"request-changes: on a mission-branch PR, baseBranch is the PR's recorded
+base, not workerBranch"` stages `workers.prBaseRef` as a mission integration
+branch distinct from `workerBranch` and asserts the retry task's
+`context.baseBranch` carries the former while `context.resumeBranch` still
+carries the latter.

@@ -679,6 +679,20 @@ export interface ResultMeta {
    * or made no Bash call — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /**
+   * Outcome of the one-shot "closing turn" the runner gives a session that
+   * ended without the agent calling `complete_task`, before it falls back to
+   * `summarySource: 'fallback'`. 'authored' = the closing turn called
+   * complete_task itself (the ordinary fallback text/tagging never applied).
+   * 'declined' = the closing turn ran but still didn't call it, so the
+   * fallback summary was used anyway. `skipped:<reason>` = no closing turn was
+   * attempted at all (session not resumable, or the original session ended by
+   * error/abort/rate-limit/credential-failure/cancellation rather than
+   * naturally) — reason names why. Absent entirely when the agent's own
+   * complete_task call already won the race before this decision was made,
+   * which keeps that path byte-identical to before this field existed.
+   */
+  closingTurnOutcome?: 'authored' | 'declined' | `skipped:${string}`;
 }
 
 export const workspaces = pgTable('workspaces', {

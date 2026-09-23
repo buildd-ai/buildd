@@ -218,4 +218,30 @@ describe('FlightStrip', () => {
       expect(html).not.toContain(`fill="none" stroke="${FLIGHT_STRIP_NOW_COLOR}" stroke-width="2"`);
     });
   });
+
+  describe('mobile viewport (320pt)', () => {
+    it('renders readable text at 320pt viewport (256px width after padding)', () => {
+      const strip = computeMissionFlightStrip(
+        [{ id: 'a', status: 'completed', roleSlug: 'builder' }],
+        [worker('w1', 'a', 0, 100)],
+      );
+      // 320pt viewport - 32px left padding - 32px right padding = 256px container width
+      const html = renderToStaticMarkup(<FlightStrip data={strip} width={256} />);
+
+      // Label font sizes should remain unchanged (not scaled down to ~6.8px)
+      expect(html).toContain('font-size="8.5"');
+
+      // Lane-label column (LABEL_W = 42) starts at x=0
+      // The lane track should start at x=42 and work area width should be 256-42-4=210
+      expect(html).toContain('x="42"');
+      expect(html).toContain('width="210"');
+
+      // The viewBox should match the container width to maintain 1:1 scaling
+      expect(html).toContain('viewBox="0 0 256');
+
+      // Verify that no universal scaling happens via CSS transforms
+      expect(html).not.toContain('scale(0.8)');
+      expect(html).not.toContain('transform="scale');
+    });
+  });
 });

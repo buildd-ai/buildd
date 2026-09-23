@@ -7499,6 +7499,68 @@ describe('PATCH /api/workers/[id]', () => {
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
     });
 
+    it('request-changes: on a mission-branch PR, baseBranch is the PR\'s recorded base, not workerBranch', async () => {
+      // Regression: baseBranch used to be set to workerBranch — the SAME value as
+      // resumeBranch. If workerBranch is later gone from the remote (e.g. the PR
+      // merged and GitHub auto-deleted the branch before this retry was claimed),
+      // resolveWorktreeBase()'s fallback from resumeBranch cascades to baseBranch —
+      // but that was the identical, already-missing branch, so it gave up and cut
+      // the worktree from trunk instead of the mission integration branch, silently
+      // losing every commit the mission had already merged. baseBranch must carry
+      // the PR's actual base (workers.prBaseRef) so that fallback lands somewhere real.
+      setupReviewerTaskCompletion('request-changes');
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          turns: 3,
+          pendingInstructions: null,
+        })
+        .mockResolvedValue({
+          id: 'original-worker',
+          workspaceId: 'ws-1',
+          taskId: 'original-task-1',
+          prNumber: 42,
+          prBaseRef: 'mission/mission-example-goal-a1b2c3d4',
+        });
+      mockTasksFindFirst
+        .mockResolvedValueOnce({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        })
+        .mockResolvedValueOnce({
+          id: 'original-task-1',
+          title: 'Build feature X',
+          description: 'Description',
+          missionId: 'mission-1',
+          pathManifest: ['apps/web/src/lib/feature-x.ts'],
+        });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeDefined();
+      expect(lastInsertValues.context?.baseBranch).toBe('mission/mission-example-goal-a1b2c3d4');
+      expect(lastInsertValues.context?.resumeBranch).toBe('buildd/original-branch');
+    });
+
     it('request-changes: titles the retry task as a builder attempt, not a reviewer one', async () => {
       // This retry is a builder re-running with reviewer feedback on the same
       // branch — the title must say "builder", never "reviewer", or the UI

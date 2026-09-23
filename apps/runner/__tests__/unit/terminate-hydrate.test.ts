@@ -599,18 +599,28 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       injectWorker(manager, worker);
 
       defaultQueryBehavior = { type: 'success', messages: successMessages('sess-reconstructed') };
+      // The reconstructed session ends without calling complete_task, so it
+      // now gets a sessionId of its own (see successMessages) and is eligible
+      // for the runner's own closing turn. Queue an empty behavior for that
+      // resumed call so it ends immediately instead of replaying the same
+      // script — otherwise every resumed call would itself be eligible for
+      // another closing turn, chaining indefinitely in this mock.
+      queryBehaviors = [{ type: 'success', messages: [] }];
 
       const result = await manager.sendMessage('w-th-1', 'Also update the docs');
       expect(result).toBe(true);
 
       await new Promise(r => setTimeout(r, 300));
 
-      // Should have called query once (no resume attempt)
+      // Should have called query at least once (no resume attempt on the
+      // reconstruction call itself)
       expect(queryCallCount).toBeGreaterThanOrEqual(1);
 
-      // No query should have a resume option
-      const resumeCalls = allQueryOpts.filter(o => o.options?.resume);
-      expect(resumeCalls.length).toBe(0);
+      // The Layer 3 reconstruction call carries no resume option — there was
+      // no sessionId to resume with. (The runner's closing turn does resume,
+      // once the reconstructed session has a sessionId of its own — that's a
+      // later, separate call, not this one.)
+      expect(allQueryOpts[0]?.options?.resume).toBeUndefined();
     });
 
     test('sets error when reconstruction query fails', async () => {
