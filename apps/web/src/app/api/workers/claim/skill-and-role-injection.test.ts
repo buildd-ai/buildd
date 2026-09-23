@@ -238,6 +238,8 @@ describe('attachSkillBundles', () => {
 describe('attachRoleConfig', () => {
   const roleRow = (extra: Record<string, unknown> = {}) => ({
     slug: 'builder',
+    name: 'Builder',
+    content: '# Builder\nYou ship code.',
     configStorageKey: 'roles/builder.tar.gz',
     configHash: 'hash-1',
     repoUrl: null,
@@ -426,13 +428,93 @@ describe('attachRoleConfig', () => {
     expect(mockSelectRows).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when object storage is not configured', async () => {
+  it('attaches no config bundle when object storage is not configured', async () => {
     mockIsStorageConfigured.mockReturnValue(false);
+    mockSelectRows.mockResolvedValue([roleRow()]);
     const workers = [worker('t1')];
 
     await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
 
     expect(workers[0].roleConfig).toBeUndefined();
-    expect(mockSelectRows).not.toHaveBeenCalled();
+    expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
+    // The lookup still runs: the persona and the CBM opt-out are properties of
+    // the role row, not of the bundle, and an unconfigured R2 must not cost the
+    // agent its persona.
+    expect(mockSelectRows).toHaveBeenCalled();
+    expect(workers[0].roleInstructions).toEqual({
+      slug: 'builder',
+      name: 'Builder',
+      content: '# Builder\nYou ship code.',
+    });
+  });
+
+  // The gap this closes: a seeded default role has no configStorageKey/configHash,
+  // so `roleConfig` was the ONLY channel and the agent ran with no persona at all.
+  describe('roleInstructions', () => {
+    it('attaches the persona for a seeded role with no packaged config', async () => {
+      mockSelectRows.mockResolvedValue([roleRow({ configStorageKey: null, configHash: null })]);
+      const workers = [worker('t1')];
+
+      await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+      expect(workers[0].roleConfig).toBeUndefined();
+      expect(workers[0].roleInstructions).toEqual({
+        slug: 'builder',
+        name: 'Builder',
+        content: '# Builder\nYou ship code.',
+      });
+    });
+
+    it('attaches the persona alongside a packaged config', async () => {
+      mockSelectRows.mockResolvedValue([roleRow()]);
+      const workers = [worker('t1')];
+
+      await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+      expect(workers[0].roleConfig).toBeDefined();
+      expect(workers[0].roleInstructions.content).toBe('# Builder\nYou ship code.');
+    });
+
+    it('carries the persona through the legacy account-level fallback', async () => {
+      mockSelectRows.mockResolvedValue([]);
+      mockSkillsFindFirst.mockResolvedValue(roleRow({ slug: 'legacy', name: 'Legacy', content: '# Legacy' }));
+      const workers = [worker('t1')];
+
+      await attachRoleConfig(workers, [task('t1', { roleSlug: 'legacy', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+      expect(workers[0].roleInstructions).toEqual({ slug: 'legacy', name: 'Legacy', content: '# Legacy' });
+    });
+
+    it('attaches nothing when no role row resolves', async () => {
+      mockSelectRows.mockResolvedValue([]);
+      mockSkillsFindFirst.mockResolvedValue(null);
+      const workers = [worker('t9')];
+
+      await attachRoleConfig(workers, [task('t9', { roleSlug: 'ghost', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+      expect(workers[0].roleInstructions).toBeUndefined();
+    });
+
+    // An empty persona would render as a bare "## Role: X" heading in the system
+    // prompt — a section that says nothing but reads as if it should.
+    it('attaches nothing when the role row has no content', async () => {
+      for (const content of [null, '', '   ']) {
+        mockSelectRows.mockResolvedValue([roleRow({ content })]);
+        const workers = [worker('t1')];
+
+        await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+        expect(workers[0].roleInstructions).toBeUndefined();
+      }
+    });
+
+    it('falls back to the slug when the role row has no name', async () => {
+      mockSelectRows.mockResolvedValue([roleRow({ name: null })]);
+      const workers = [worker('t1')];
+
+      await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+      expect(workers[0].roleInstructions.name).toBe('builder');
+    });
   });
 });

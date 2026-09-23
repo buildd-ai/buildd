@@ -18,6 +18,22 @@ export interface RoleConfig {
   maxTurns: number | null;
 }
 
+/**
+ * The role's persona, delivered inline on the claim response.
+ *
+ * Mirrors `RoleInstructions` in packages/shared — declared here for the same
+ * reason `RoleConfig` is, so the runner's role plumbing stands alone.
+ *
+ * Present whenever a role row resolved server-side, whether or not that role
+ * was ever packaged to object storage. `RoleConfig` below is the packaged
+ * bundle and is absent for every seeded default role.
+ */
+export interface RoleInstructions {
+  slug: string;
+  name: string;
+  content: string;
+}
+
 // The JSON config bundle stored in R2
 interface RoleConfigBundle {
   slug: string;
@@ -31,9 +47,15 @@ interface RoleConfigBundle {
 
 /**
  * Returns the local directory for a role: ~/.buildd/roles/<slug>/
+ *
+ * `BUILDD_HOME` overrides the root, matching every other runner module that
+ * resolves a path under `~/.buildd` (doctor, history-store, worker-store, …).
+ * Without it an isolated runner home — the updater's probe, or a test process —
+ * still wrote role bundles into the operator's real one.
  */
 export function getRoleDir(slug: string): string {
-  return join(homedir(), '.buildd', 'roles', slug);
+  const root = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+  return join(root, 'roles', slug);
 }
 
 /**
@@ -146,10 +168,86 @@ export async function resolveRoleEnv(
 }
 
 /**
+ * Render the role persona as a system-prompt section.
+ *
+ * Pure — no disk, no network — and returns `''` when there is nothing to say,
+ * so callers can append unconditionally.
+ *
+ * This is the ONLY channel that carries the persona to a Claude session.
+ * `settingSources: ['project']` loads the repo's own CLAUDE.md, never the
+ * role's, and `overlayRoleFiles` deliberately does not overlay one.
+ */
+export function buildRoleSystemPromptSection(
+  roleInstructions: RoleInstructions | null | undefined,
+): string {
+  const content = roleInstructions?.content?.trim();
+  if (!content) return '';
+  const name = roleInstructions!.name?.trim() || roleInstructions!.slug;
+  return `\n\n## Role: ${name}\n${content}`;
+}
+
+/** Where a role-assigned session should run, and what to overlay into it. */
+export interface RoleCwdResolution {
+  /** The directory to hand the session (before worktree isolation is applied). */
+  cwd: string;
+  /**
+   * Local role directory whose skills/.mcp.json must be overlaid into the
+   * session cwd — set only when the session runs in a repo, where the role's
+   * own directory is not the cwd. The overlay must happen AFTER worktree setup,
+   * against the worktree: `git worktree add` only checks out tracked content,
+   * so anything written into the base clone first never arrives.
+   */
+  overlayFrom?: string;
+}
+
+/**
+ * Decide the session cwd for a task that resolved a role.
+ *
+ * The rule is the WORKSPACE, not the role's packaged `type`: a task whose
+ * workspace has a repo runs in that repo, always. `type` is derived from the
+ * role row's `repoUrl`, which the dashboard role editor never sets — so every
+ * role saved from the UI packages as `'service'`, and keying cwd off it sent
+ * repo tasks to `~/.buildd/roles/<slug>`, a directory that is not a git
+ * checkout and has none of the task's code in it.
+ *
+ * Roles with no packaged bundle are handled the same way: the locally-synced
+ * role dir (from an earlier packaged sync, if any) is still overlaid or used as
+ * cwd on exactly the same condition.
+ */
+export async function resolveRoleCwd(
+  roleConfig: RoleConfig | undefined | null,
+  task: { roleSlug?: string | null; workspace?: { repo?: string | null } | null } | null | undefined,
+  workspacePath: string,
+): Promise<RoleCwdResolution> {
+  const hasRepo = !!task?.workspace?.repo;
+
+  let roleDir: string | undefined;
+  if (roleConfig) {
+    roleDir = (await syncRoleToLocal(roleConfig)).cwd;
+  } else if (task?.roleSlug) {
+    // No bundle on the claim (role never packaged to R2 — every seeded default
+    // role, and anything created via register_skill). A previously-synced local
+    // copy is still worth using.
+    const local = getRoleDir(task.roleSlug);
+    if (existsSync(local)) roleDir = local;
+  }
+
+  if (!roleDir) return { cwd: workspacePath };
+  return hasRepo
+    ? { cwd: workspacePath, overlayFrom: roleDir }
+    : { cwd: roleDir };
+}
+
+/**
  * Overlay role files (skills, .mcp.json) into a repo directory.
- * Used for builder roles where cwd is the repo, not the role dir.
- * CLAUDE.md is NOT overlaid — the repo's own CLAUDE.md takes precedence,
- * and role instructions come via the system prompt / skill bundles.
+ * Used whenever cwd is the repo rather than the role dir.
+ *
+ * CLAUDE.md is NOT overlaid: the repo's own CLAUDE.md is the project's and
+ * must not be clobbered. The role persona reaches the agent through the system
+ * prompt instead — see `buildRoleSystemPromptSection`.
+ *
+ * `repoDir` must be the session cwd (the worktree when worktree isolation is
+ * on), not the base clone — see `RoleCwdResolution.overlayFrom`.
  */
 export async function overlayRoleFiles(roleDir: string, repoDir: string): Promise<void> {
   // Copy .mcp.json if it exists and has content
