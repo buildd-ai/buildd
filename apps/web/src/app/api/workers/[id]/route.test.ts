@@ -5296,6 +5296,38 @@ describe('PATCH /api/workers/[id]', () => {
         expectNoProviderWallSideEffects(taskSets, workerSets);
       });
 
+      it('treats a flagged report that also carries real provider-wall text as a wall', async () => {
+        const { taskSets } = setupSessionCap();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", sessionBudgetCapped: true, budgetExhausted: true },
+        }), { params: mockParams });
+        expect(mockBackendPausesInsert).toHaveBeenCalled();
+        expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(true);
+      });
+
+      // A retry runs under the same cap and would spend another cap's worth
+      // to hit it again, so a capped mission task fails terminally instead of
+      // riding the mission retry.
+      it('does not auto-retry a mission task that hit its session cap', async () => {
+        const { taskSets } = setupSessionCap();
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', context: {}, workspaceId: 'ws-1', missionId: 'mission-1', status: 'in_progress',
+          outputRequirement: 'none', workspace: { teamId: 'team-1' },
+        });
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', sessionBudgetCapped: true },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(taskSets.some((s: any) => s?.status === 'pending')).toBe(false);
+        const failed = taskSets.find((s: any) => s?.status === 'failed');
+        expect(failed?.result?.errorType).toBe('session_budget_capped');
+        expect(failed?.context?.retryCount).toBeUndefined();
+      });
+
       it('still treats a real provider wall as one', async () => {
         const { taskSets } = setupSessionCap();
         await PATCH(createMockRequest({
@@ -5871,9 +5903,9 @@ describe('PATCH /api/workers/[id]', () => {
       expect(alerts[0]).toMatchObject({ app: 'alerts', title: 'Buildd budget 50% used' });
     });
 
-    // The monthly pool is Claude usage on a seat. Codex, API-key and tenant
-    // spend were all added to it, overstating it and firing its alerts early.
-    describe('only seat Claude usage counts toward the Agent SDK credit pool', () => {
+    // The monthly pool is Claude usage on a seat. Codex and tenant spend were
+    // added to it, overstating it and firing its alerts early.
+    describe('Codex and tenant usage do not count toward the Agent SDK credit pool', () => {
       const POOL = { monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [] };
       const completion = () => createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
@@ -5888,10 +5920,13 @@ describe('PATCH /api/workers/[id]', () => {
         expect(budgetNotifies()).toHaveLength(0);
       });
 
-      it('does not count an API-key (metered) session', async () => {
+      // accounts.authType records a CLI-login account as 'api' even on a
+      // seat, so it cannot be used to exclude metered spend yet: doing so
+      // silently stopped the pool counter for those runners.
+      it('still counts a session on an account recorded as api', async () => {
         const getSet = setupCompletion({ authType: 'api' }, POOL);
         await PATCH(completion(), { params: mockParams });
-        expect(getSet()).toBeNull();
+        expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
       });
 
       it('does not count a session on a tenant credential', async () => {

@@ -78,17 +78,18 @@ export function applyBudgetUsage(
 /**
  * Does this session's spend draw on the monthly Agent SDK credit pool?
  *
- * The pool is Claude usage on a seat (OAuth) subscription. Codex has its own
- * pool, API-key work is metered per token, and a tenant runs on its own
- * credential, so none of them belong in the pool total or its threshold
- * alerts. The worker row's cost is still written for every session; this only
- * decides whether the TEAM's pool counter moves.
+ * The pool is Claude usage on a seat subscription. Codex has its own pool and
+ * a tenant runs on its own credential, so neither belongs in the pool total or
+ * its threshold alerts. The worker row's cost is still written for every
+ * session; this only decides whether the TEAM's pool counter moves.
  *
- * `authType` is the account's, which is how the rest of the platform decides
- * seat vs metered today (see the claim route's seat cap). An account created
- * by a CLI login is recorded as `api` even when the runner behind it is on a
- * seat; it is excluded here the same way it is excluded from seat pacing,
- * until the credential's own billing mode is persisted on the worker.
+ * `authType` is accepted but deliberately NOT used yet. The account's
+ * `authType` is not a reliable seat signal: an account created by a CLI login
+ * is recorded as `api` even when the runner behind it is on a seat, so gating
+ * on it would silently stop the pool counter (and its alerts) for those
+ * runners. Metered API-key spend is over-counted instead, which is the loud
+ * failure. Exclude metered work once the credential's own billing mode is
+ * persisted on the worker.
  */
 export function countsTowardAgentSdkCreditPool(input: {
   backend: string | null | undefined;
@@ -97,5 +98,5 @@ export function countsTowardAgentSdkCreditPool(input: {
 }): boolean {
   if (input.backend === 'codex') return false;
   if (input.tenantId) return false;
-  return input.authType === 'oauth';
+  return true;
 }

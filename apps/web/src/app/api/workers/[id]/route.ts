@@ -1732,14 +1732,14 @@ export async function PATCH(
   // Per-session dollar cap (the SDK's maxBudgetUsd): a ceiling THIS task hit.
   // Nothing about the provider pool is implied, so it is an ordinary task
   // failure: no backend pause, no seat exhaustion flag, no pacing episode, no
-  // failover. The runner sends `sessionBudgetCapped`; a runner that predates
-  // the flag sends only the text, alongside the old `budgetExhausted: true`,
-  // which is why the text is checked too and why this beats that flag. A
-  // report that also carries a real provider-wall text is a wall.
-  const isSessionBudgetCap = (status === 'failed' || status === 'error') && (
-    body.sessionBudgetCapped === true ||
-    (isSessionBudgetCapError(error) && !isBudgetExhaustionError(error))
-  );
+  // failover. The runner will send `sessionBudgetCapped` (that half is not
+  // shipped yet); a runner without the flag sends only the text, alongside the
+  // old `budgetExhausted: true`, which is why the text is checked too and why
+  // this beats that flag. A report that also carries a real provider-wall text
+  // is a wall, whichever signal marked it as a cap.
+  const isSessionBudgetCap = (status === 'failed' || status === 'error') &&
+    (body.sessionBudgetCapped === true || isSessionBudgetCapError(error)) &&
+    !isBudgetExhaustionError(error);
 
   // Budget exhaustion detection: a provider wall (session/weekly/quota cap)
   const isBudgetError = status === 'failed' && !isSessionBudgetCap && (
@@ -2295,9 +2295,9 @@ export async function PATCH(
           updates.costUsd = effectiveCost.toString();
         }
 
-        // Only Claude work on a seat draws on the pool: Codex, API-key and
-        // tenant-credential spend are billed elsewhere. The worker row above
-        // still carries the cost either way.
+        // Codex and tenant-credential spend are billed elsewhere, so they do
+        // not draw on the pool. The worker row above still carries the cost
+        // either way.
         const poolTaskRow = terminalTaskRow[0];
         const countsTowardPool = countsTowardAgentSdkCreditPool({
           backend: poolTaskRow?.backend ?? null,
@@ -2483,6 +2483,9 @@ export async function PATCH(
         // abort, but the exemption stays as the guard against any path that
         // still reports it as a reported `failed` outcome.
         if (isNeedsInput) shouldAutoRetry = false;
+        // A session dollar cap is terminal: the retry runs under the same cap
+        // and would spend another cap's worth to hit it again.
+        if (isSessionBudgetCap) shouldAutoRetry = false;
         // Precedence rule: budget_exhausted mission wins over auto-retry requeue.
         // Same guard as the sandbox_mount_gap block above — a pending task in an
         // exhausted mission is skipped by the claim loop and would be silently stuck.
@@ -2865,6 +2868,11 @@ export async function PATCH(
               error: `Task stalled: infra errors prevented startup on ${MAX_INFRA_RETRIES_PATCH} consecutive attempts`,
               errorType: 'infra_stalled',
               infraRetryCount: MAX_INFRA_RETRIES_PATCH,
+            },
+          } : isSessionBudgetCap ? {
+            result: {
+              error: isSensitive ? 'session_budget_capped' : (error ?? 'Session budget cap reached'),
+              errorType: 'session_budget_capped',
             },
           } : {}),
         } : {}),
