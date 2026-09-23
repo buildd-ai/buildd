@@ -48,7 +48,14 @@ function backtickedActionLikeIdentifiers(body: string): string[] {
  * must NOT also be a real action (guarded below), so the exclusion can't
  * quietly cover for an actual rename.
  */
-const NOT_AN_ACTION = new Set(['impl_plan', 'pr_required', 'artifact_required']);
+const NOT_AN_ACTION = new Set([
+  'impl_plan',
+  'pr_required',
+  'artifact_required',
+  // Named only as a contrast case (a global CLAUDE.md tool the skill tells
+  // agents NOT to use in a buildd session) — never a buildd MCP action.
+  'coder_report_task',
+]);
 
 describe('buildd-mcp-consumer skill vs. packages/core/mcp-tools.ts action vocabulary', () => {
   it('found action-like identifiers to check (guards an empty set passing vacuously)', () => {
