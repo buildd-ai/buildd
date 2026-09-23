@@ -179,6 +179,16 @@ describe('authorizeLocalRequest', () => {
     expect(req({ path: '/api/events', remoteAddr: '100.64.0.2', query: new URLSearchParams({ token: VIEWER }) })).toBeNull();
   });
 
+  it('rejects a Host header that is not one of the server\'s own addresses', () => {
+    // Guards the token-bearing UI page and local reads against a foreign
+    // hostname resolving to loopback.
+    const foreign = new Headers({ host: 'rebound.example:8766' });
+    expect(req({ path: '/', headers: foreign })?.status).toBe(403);
+    expect(req({ path: '/api/workers', headers: foreign })?.status).toBe(403);
+    expect(req({ path: '/', headers: new Headers({ host: 'localhost:8766' }) })).toBeNull();
+    expect(req({ path: '/', headers: new Headers({ host: '127.0.0.1:8766' }) })).toBeNull();
+  });
+
   it('does not treat a localhost Host header as proof of a local peer', () => {
     const headers = new Headers({ host: 'localhost:8766' });
     expect(req({ path: '/api/workers', remoteAddr: '203.0.113.9', headers })?.status).toBe(401);

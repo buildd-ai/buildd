@@ -29,7 +29,7 @@
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
-import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, sleep, localUiFetch } from '../../../../tests/test-utils';
 
 // --- Config ---
 
@@ -65,7 +65,7 @@ async function createTask(workspaceId: string, title: string, description: strin
 async function triggerClaim(taskId: string): Promise<string> {
   const maxAttempts = 10;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const res = await fetch(`${LOCAL_UI}/api/claim`, {
+    const res = await localUiFetch(`${LOCAL_UI}/api/claim`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskId }),
@@ -153,7 +153,7 @@ async function waitForTaskClaimed(taskId: string, timeoutMs = 60_000): Promise<a
 }
 
 async function getLocalWorkerOutput(workerId: string): Promise<string[]> {
-  const res = await fetch(`${LOCAL_UI}/api/workers`);
+  const res = await localUiFetch(`${LOCAL_UI}/api/workers`);
   if (!res.ok) throw new Error(`Failed to get workers from runner: ${res.status}`);
   const data = await res.json();
   const worker = data.workers?.find((w: any) => w.id === workerId);
@@ -162,7 +162,7 @@ async function getLocalWorkerOutput(workerId: string): Promise<string[]> {
 
 async function getLocalWorkerStatus(workerId: string): Promise<{ status: string; waitingFor?: any } | null> {
   try {
-    const res = await fetch(`${LOCAL_UI}/api/workers`);
+    const res = await localUiFetch(`${LOCAL_UI}/api/workers`);
     if (!res.ok) return null;
     const data = await res.json();
     const worker = data.workers?.find((w: any) => w.id === workerId);
@@ -176,7 +176,7 @@ async function getLocalWorkerStatus(workerId: string): Promise<{ status: string;
 /** Find a worker on runner by task ID */
 async function findLocalWorkerByTask(taskId: string): Promise<string | null> {
   try {
-    const res = await fetch(`${LOCAL_UI}/api/workers`);
+    const res = await localUiFetch(`${LOCAL_UI}/api/workers`);
     if (!res.ok) return null;
     const data = await res.json();
     const worker = data.workers?.find((w: any) => w.taskId === taskId);
@@ -216,7 +216,7 @@ describe('dogfood', () => {
     // Verify runner is running and configured
     let localUiConfig: any;
     try {
-      const healthRes = await fetch(`${LOCAL_UI}/api/config`);
+      const healthRes = await localUiFetch(`${LOCAL_UI}/api/config`);
       if (!healthRes.ok) throw new Error(`status ${healthRes.status}`);
       localUiConfig = await healthRes.json();
     } catch (err: any) {
@@ -231,7 +231,7 @@ describe('dogfood', () => {
     originalLocalUiServer = localUiConfig.builddServer || null;
     if (localUiConfig.builddServer !== SERVER) {
       console.log(`Repointing runner: ${localUiConfig.builddServer} → ${SERVER}`);
-      await fetch(`${LOCAL_UI}/api/config/server`, {
+      await localUiFetch(`${LOCAL_UI}/api/config/server`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ server: SERVER }),
@@ -257,7 +257,7 @@ describe('dogfood', () => {
     // Restore original server URL
     if (originalLocalUiServer && originalLocalUiServer !== SERVER) {
       try {
-        await fetch(`${LOCAL_UI}/api/config/server`, {
+        await localUiFetch(`${LOCAL_UI}/api/config/server`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ server: originalLocalUiServer }),
@@ -444,7 +444,7 @@ describe('dogfood', () => {
       await sleep(500);
     }
 
-    const abortRes = await fetch(`${LOCAL_UI}/api/abort`, {
+    const abortRes = await localUiFetch(`${LOCAL_UI}/api/abort`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId }),
@@ -480,7 +480,7 @@ describe('dogfood', () => {
     expect(firstResult.status).toBe('completed');
 
     console.log('  Sending follow-up to completed worker...');
-    const sendRes = await fetch(`${LOCAL_UI}/api/workers/${workerId}/send`, {
+    const sendRes = await localUiFetch(`${LOCAL_UI}/api/workers/${workerId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: `Reply with exactly: "${marker}". Nothing else. Do not use any tools.` }),
@@ -730,7 +730,7 @@ describe('dogfood', () => {
     expect(serverWorker.waitingFor).toBeTruthy();
 
     // Send answer via runner
-    const sendRes = await fetch(`${LOCAL_UI}/api/workers/${workerId}/send`, {
+    const sendRes = await localUiFetch(`${LOCAL_UI}/api/workers/${workerId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: 'JSON' }),

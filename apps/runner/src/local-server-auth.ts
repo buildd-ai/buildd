@@ -9,7 +9,8 @@
  *   read (which exposes the viewer token) requires the local token, sent as the
  *   X-Buildd-Local-Token header. The token lives in the runner's config dir with
  *   mode 0600; the runner's own UI receives it injected into the served page.
- * - A request carrying an Origin header must come from the server's own origin.
+ * - A request carrying an Origin header must come from the server's own origin,
+ *   and a Host header must name one of the server's own addresses.
  * - Worker data reads (/api/workers, /api/events, /health) from a non-loopback
  *   peer need the viewer token, as before.
  */
@@ -149,6 +150,20 @@ export function authorizeLocalRequest(info: LocalRequestInfo): LocalAuthDenial |
   const method = info.method.toUpperCase();
   const { path, headers } = info;
   const loopback = isLoopbackAddress(info.remoteAddr);
+
+  // The Host header is never proof of locality (that is the socket address,
+  // above), but it must name one of the server's own addresses: a page served
+  // under any other hostname — e.g. one that merely resolves to loopback —
+  // gets nothing, including the token-bearing UI page.
+  const host = headers.get('host')?.toLowerCase();
+  if (host) {
+    const ownHosts = info.ownOrigins.flatMap((o) => {
+      try { return [new URL(o).host.toLowerCase()]; } catch { return []; }
+    });
+    if (!ownHosts.includes(host)) {
+      return { status: 403, error: 'Unrecognised Host' };
+    }
+  }
 
   const origin = headers.get('origin');
   if (origin && origin !== 'null' && !info.ownOrigins.includes(origin)) {

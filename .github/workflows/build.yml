@@ -723,6 +723,7 @@ jobs:
                 export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
                 export PORT=8767
                 export BUILDD_UI_BIND=0.0.0.0
+                export LOCAL_UI_URL=http://$TEST_MACHINE_HOST:8767
                 export BUILDD_LOCAL_TOKEN=$BUILDD_LOCAL_TOKEN
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
@@ -733,6 +734,9 @@ jobs:
           sleep 5
         env:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          # The runner only answers requests whose Host is one of its own
+          # addresses; the tests below reach it under this name.
+          TEST_MACHINE_HOST: ${{ vars.TEST_MACHINE_HOST }}
 
       - name: Integration tests
         if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.api == 'true'
