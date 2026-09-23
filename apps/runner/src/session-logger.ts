@@ -43,9 +43,9 @@ export function sessionLog(workerId: string, level: SessionLogLevel, event: stri
 
 /** Read recent log entries for a worker (last N lines) */
 export function readSessionLogs(workerId: string, maxLines = 50): SessionLogEntry[] {
-  const path = logPath(workerId);
-  if (!existsSync(path)) return [];
   try {
+    const path = logPath(workerId);
+    if (!existsSync(path)) return [];
     const content = readFileSync(path, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
     return lines.slice(-maxLines).map(line => JSON.parse(line));
@@ -95,9 +95,12 @@ export function claimLog(entry: Omit<ClaimLogEntry, 'ts'>): void {
 
 /** Read recent claim log entries (last N lines) */
 export function readClaimLogs(maxLines = 50): ClaimLogEntry[] {
-  if (!existsSync(CLAIMS_LOG)) return [];
+  // Resolve inside the try: in a test runtime without a temp home the resolver
+  // throws, and a reader must degrade to "no entries", not crash its caller.
   try {
-    const content = readFileSync(CLAIMS_LOG, 'utf-8');
+    const file = join(logsDir(), 'claims.log');
+    if (!existsSync(file)) return [];
+    const content = readFileSync(file, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
     return lines.slice(-maxLines).map(line => JSON.parse(line));
   } catch {

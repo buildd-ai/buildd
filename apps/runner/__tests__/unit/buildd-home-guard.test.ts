@@ -89,10 +89,22 @@ describe('runner stores refuse to write the real home from a test runtime', () =
     });
     const out = `${child.stdout.toString()}${child.stderr.toString()}`;
 
-    // The probe must actually have run every store, or an empty home proves nothing.
-    for (const name of ['session-logger', 'worker-store', 'history-store', 'outbox']) {
+    // The probe must actually have run every store call, or an empty home proves nothing.
+    const calls = [
+      'session-logger.write', 'worker-store.write', 'history-store.write', 'outbox.write',
+      'session-logger.readSessionLogs', 'session-logger.readClaimLogs',
+      'worker-store.loadWorker', 'worker-store.loadAllWorkers',
+      'history-store.getSession', 'history-store.getArchivedData', 'outbox.load',
+    ];
+    for (const name of calls) {
       expect(out).toContain(`${name}:`);
     }
+
+    // A call may succeed (degrading to empty) or refuse with the guard's own
+    // error. Anything else — a ReferenceError from a dangling path constant, a
+    // TypeError — is a store that would crash its production caller too.
+    const foreign = out.split('\n').filter(l => /:refused:/.test(l) && !l.endsWith(':refused:UnisolatedTestHomeError'));
+    expect(foreign).toEqual([]);
 
     const realHome = join(fakeHome, '.buildd');
     const leaked = existsSync(realHome) ? readdirSync(realHome, { recursive: true }) : [];

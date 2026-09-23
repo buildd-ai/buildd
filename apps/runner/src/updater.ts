@@ -8,11 +8,13 @@
 
 import { execSync } from 'child_process';
 import * as fs from 'fs';
-import { homedir } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 
-const INSTALL_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+// Resolved per call (default params included) so a test runtime without a temp
+// BUILDD_HOME fails closed (see buildd-home.ts) instead of resetting the real install.
+const installDirDefault = () => resolveBuilddHome();
 
 /**
  * The branch this install tracks. Every update path resets to
@@ -57,7 +59,7 @@ export const PKG_VERSION = (() => {
 export function getCurrentCommit(): string | null {
   try {
     return execSync('git rev-parse HEAD', {
-      cwd: INSTALL_DIR,
+      cwd: installDirDefault(),
       encoding: 'utf-8',
       timeout: 5000,
     }).trim();
@@ -193,7 +195,7 @@ export function shouldShowUpdateAvailable(
  * --hard is safe regardless of their presence. Only real edits to tracked files
  * should block an update.
  */
-export function hasTrackedChanges(installDir: string = INSTALL_DIR): boolean {
+export function hasTrackedChanges(installDir: string = installDirDefault()): boolean {
   try {
     const status = execSync('git status --porcelain --untracked-files=no', {
       cwd: installDir,
@@ -237,7 +239,7 @@ export interface UpdateResult {
  * the real `rmSync` a no-op); both default to production values.
  */
 export function applyUpdate(
-  installDir: string = INSTALL_DIR,
+  installDir: string = installDirDefault(),
   fsOps: Pick<typeof fs, 'rmSync'> = fs,
 ): UpdateResult {
   const previousCommit = getCurrentCommit();

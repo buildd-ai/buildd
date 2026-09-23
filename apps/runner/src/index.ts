@@ -3,7 +3,8 @@ import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
-import { homedir, hostname } from 'os';
+import { hostname } from 'os';
+import { resolveBuilddHome } from './buildd-home';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
@@ -21,7 +22,8 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
 const PORT = parseInt(process.env.PORT || '8766');
-const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+// Entrypoint: resolving once at load is fine here (see buildd-home.ts).
+const BUILDD_DIR = resolveBuilddHome();
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json');
 const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
