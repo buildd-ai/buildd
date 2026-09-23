@@ -49,6 +49,9 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+const mockUpdateBehindPrBranch = mock(async (_p: any) => ({ updated: true }) as { updated: boolean; reason?: string });
+mock.module('@/lib/pr-branch-update', () => ({ updateBehindPrBranch: mockUpdateBehindPrBranch }));
+
 import {
   classifyMergeFailure,
   isAutoResolveMergeConflictsEnabled,
@@ -370,6 +373,31 @@ describe('dispatchConflictRetry', () => {
     mockInsertOnConflict.mockReturnValue({ returning: mockInsertReturning });
     mockInsertReturning.mockResolvedValue([{ id: 'new-task-id', ...capturedInsertValues }]);
     mockDispatchNewTask.mockResolvedValue(undefined);
+  });
+
+  it('brings a merely-behind PR up to date via GitHub instead of dispatching an agent', async () => {
+    mockUpdateBehindPrBranch.mockClear();
+    mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, behindOnly: true });
+
+    expect(result).toEqual({ dispatched: true, branchUpdated: true });
+    expect(mockUpdateBehindPrBranch).toHaveBeenCalledWith({
+      installationId: 5,
+      repoFullName: 'acme/app',
+      prNumber: 99,
+      headSha: 'sha-abc123',
+    });
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('never uses the branch-update shortcut for a real conflict', async () => {
+    mockUpdateBehindPrBranch.mockClear();
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+    expect(result.dispatched).toBe(true);
+    expect(result.branchUpdated).toBeUndefined();
   });
 
   it('sets subjectAnchor fields on the inserted task', async () => {

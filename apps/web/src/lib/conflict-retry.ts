@@ -25,6 +25,7 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notify } from '@/lib/pushover';
 import { githubApi } from '@/lib/github';
+import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritPhaseFromParent } from '@/lib/mission-phase';
 
@@ -279,6 +280,11 @@ export interface DispatchConflictRetryParams {
   workspaceId: string;
   /** PR's repo URL when it differs from workspace repo (cross-repo case). */
   prRepoUrl?: string | null;
+  /**
+   * The refusal was "behind base", not a conflict (see `isBehindBaseRefusal`).
+   * Try GitHub's update-branch first; an agent is only dispatched if it fails.
+   */
+  behindOnly?: boolean;
 }
 
 export interface DispatchConflictRetryResult {
@@ -294,6 +300,12 @@ export interface DispatchConflictRetryResult {
   successorPrNumber?: number | null;
   /** True when the base branch was force-pushed after the PR was opened. */
   baseRewritten?: boolean;
+  /**
+   * True when a behind-only PR was brought up to date by GitHub's
+   * update-branch API. `dispatched` is also true (the PR is being handled),
+   * but there is no task: the push re-runs CI and the merge retries on green.
+   */
+  branchUpdated?: boolean;
 }
 
 /**
@@ -319,6 +331,25 @@ export async function dispatchConflictRetry(
 
   if (!isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
     return { dispatched: false, disabled: true };
+  }
+
+  // Behind but not conflicting: GitHub can merge the base in server-side —
+  // no agent needed. A PR approved before this push keeps its approval when
+  // the diff is unchanged (approval-carry-forward.ts), so this converges
+  // without a re-review. Any failure falls through to the agent retry.
+  const behindInstallationId = workspace.githubInstallation?.installationId ?? null;
+  if (params.behindOnly && behindInstallationId) {
+    const update = await updateBehindPrBranch({
+      installationId: behindInstallationId,
+      repoFullName,
+      prNumber,
+      headSha,
+    });
+    if (update.updated) {
+      console.log(`[conflict-retry] PR #${prNumber} was behind its base — updated via GitHub, no agent dispatched`);
+      return { dispatched: true, branchUpdated: true };
+    }
+    console.warn(`[conflict-retry] update-branch failed for PR #${prNumber}, dispatching an agent: ${update.reason}`);
   }
 
   // Fetch the original task

@@ -115,7 +115,8 @@ const PASS: ReviewVerdictGateResult = { blocks: false };
  * not the worker's last recorded commit, which can lag a push.
  */
 export function evaluateReviewVerdictGate(
-  status: Pick<PrReviewStatus, 'state' | 'merged' | 'reviewTaskId' | 'reviewHeadSha' | 'feedback' | 'summary' | 'escalationReason'>,
+  status: Pick<PrReviewStatus, 'state' | 'merged' | 'reviewTaskId' | 'reviewHeadSha' | 'feedback' | 'summary' | 'escalationReason'> &
+    Partial<Pick<PrReviewStatus, 'reviewEquivalentHeadShas'>>,
   currentHeadSha: string | null | undefined,
 ): ReviewVerdictGateResult {
   // Already merged — there is no merge left to gate, and re-reporting a stale
@@ -133,6 +134,11 @@ export function evaluateReviewVerdictGate(
     // the module doc's "stale_approval" section for why this runs in the
     // opposite direction from the other kinds.
     if (!provablyDifferent) return { ...PASS, state: status.state };
+    // A push that left the PR diff unchanged (rebase / base merge) was
+    // recorded as covered by this approval — see approval-carry-forward.ts.
+    if (headSha && (status.reviewEquivalentHeadShas ?? []).some((s) => normalizeSha(s) === headSha)) {
+      return { ...PASS, state: status.state };
+    }
     kind = 'stale_approval';
   } else {
     kind = blockKindFor(status.state);

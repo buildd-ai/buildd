@@ -1980,6 +1980,14 @@ export async function handleBuilddAction(
 
       const waitHint = `\n\nWait for the verdict: action=get_pr_review { prNumber: ${data.prNumber}, waitSeconds: 45 } (repeat while terminal is false).`;
 
+      if (data.carriedForward) {
+        return text(
+          `PR #${data.prNumber}: no re-review dispatched — the approval (review task ${data.reviewTaskId}) ` +
+          `still covers the current head (${data.carriedForwardReason ?? 'PR diff unchanged'}). ` +
+          `The merge proceeds once CI is green on this head.`,
+        );
+      }
+
       if (data.alreadyRequested) {
         return text(
           `PR #${data.prNumber} is already under review — state: **${data.status?.state}** ` +
