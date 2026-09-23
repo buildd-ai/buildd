@@ -21,6 +21,7 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { claimHealth, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -2461,7 +2462,7 @@ const server = DEBUG_MODE ? Bun.serve({
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
-      const report = runDiagnostics();
+      const report = withClaimHealthCheck(runDiagnostics());
       return Response.json(report, { headers: corsHeaders });
     }
 
@@ -2470,7 +2471,7 @@ const server = DEBUG_MODE ? Bun.serve({
       const report = runDiagnostics();
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = runDiagnostics();
+      const afterReport = withClaimHealthCheck(runDiagnostics());
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 
@@ -2926,7 +2927,12 @@ const SERVER_CONTACT_STALE_MS = 5 * 60_000;
 setInterval(() => {
   const lastOk = getLastServerContactAt();
   const ageMs = lastOk ? Date.now() - lastOk : Infinity;
-  const degraded = ageMs >= SERVER_CONTACT_STALE_MS;
   const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
-  emitHeartbeatTick(degraded, `no successful server contact (last: ${since}); claims are failing`);
+  // A 5xx still counts as server contact, so a claim-5xx streak is checked
+  // separately — otherwise a failing claim route logs "alive" for hours.
+  if (ageMs >= SERVER_CONTACT_STALE_MS) {
+    emitHeartbeatTick(true, `no successful server contact (last: ${since}); claims are failing`);
+  } else {
+    emitHeartbeatTick(claimHealth.isDegraded(), `claim endpoint failing: ${claimHealth.describe()}`);
+  }
 }, 60_000);
