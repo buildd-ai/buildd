@@ -19,15 +19,20 @@ import { cbmRuntimeDirFor, ensureCbmRuntimeDir } from './cbm-enforcement';
  * Not a timeout on the build — a budget on the wait. Nothing is aborted when it
  * expires; see runCbmBootstrap.
  *
- * Left at 60s deliberately. An uncontended build of a repo this size lands
- * inside it (0.9.0 did it in ~10s; 0.10.x rebuilt the pipeline and adds a daemon
- * cold start, measured in the tens of seconds in the worker image). The builds
- * that overran the old deadline were the CONTENDED ones — several workers
- * indexing the same repo on one host at once — and raising the number only moves
- * where the abort lands. Now that expiry is a hand-off rather than a kill, the
- * value stops being a cliff, so it did not need re-tuning as part of the fix.
+ * 10s. This was 60s on the assumption that an uncontended build lands inside
+ * the budget. On 0.10.x it mostly does not: in-budget successes clustered just
+ * under the old deadline, hand-offs outnumbered them, and the late landings took
+ * over a minute more. So the long wait bought little warmth — a task (typically
+ * an unseeded one: a role clone or a reviewer) blocked for the full minute and
+ * then started cold anyway.
+ *
+ * Expiry is a hand-off, not a kill: the build keeps running and
+ * onLateCompletion (the `graph_index_landed_late` milestone) reports when the
+ * graph lands mid-session. A short budget keeps the fast, uncontended builds
+ * warm on turn one and stops charging every other task a minute of dead time.
+ * Tune per fleet via BUILDD_CBM_INDEX_WAIT_MS (resolveCbmIndexWaitMs).
  */
-export const CBM_INDEX_WAIT_MS = 60_000;
+export const CBM_INDEX_WAIT_MS = 10_000;
 
 /**
  * Fleet-tunable wait budget, so the startup/warmth trade-off can be moved

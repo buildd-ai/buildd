@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, jest } from 'bun:test';
 import {
   runCbmBootstrap,
   resolveCbmIndexWaitMs,
@@ -465,12 +465,52 @@ describe('runCbmBootstrap', () => {
 
   // ── the budget is a WAIT, and it is tunable without a release ───────────────
 
-  it('keeps the default wait budget at 60s — the fix is what expiry does, not the number', () => {
-    // Deliberately unchanged. An uncontended build of a repo this size lands
-    // inside it; the builds that overran were the contended ones, and raising
-    // the number only moves where a kill would land. Expiry is now a hand-off,
-    // so the constant is no longer a cliff and did not need re-tuning.
-    expect(CBM_INDEX_WAIT_MS).toBe(60_000);
+  it('defaults the wait budget to 10s — the late hand-off still delivers the graph', () => {
+    // A 60s wait was dead time: builds that finish at all mostly overrun it, so
+    // the task blocked for the full budget and then started cold anyway. The
+    // hand-off (graph_index_landed_late) is what gets the graph to the session.
+    expect(CBM_INDEX_WAIT_MS).toBe(10_000);
+    expect(resolveCbmIndexWaitMs({})).toBe(10_000);
+  });
+
+  it('hands a never-closing build off at the default budget, not at 60s, and still reports the late landing', async () => {
+    const prev = process.env.BUILDD_CBM_INDEX_WAIT_MS;
+    delete process.env.BUILDD_CBM_INDEX_WAIT_MS;
+    jest.useFakeTimers();
+    const hang = makeHangSpawn();
+    const workerId = `worker-bg-default-${process.pid}`;
+    const late: { ok: boolean; reason?: string }[] = [];
+    let settled: any = null;
+    try {
+      const pending = runCbmBootstrap({
+        worktreePath: '/tmp/worktree',
+        workerId,
+        serverConfig: fakeCbmConfig(),
+        spawnProcess: hang.spawnFn as any,
+        onLateCompletion: r => { late.push(r); },
+      }).then(r => { settled = r; return r; });
+
+      jest.advanceTimersByTime(9_999);
+      await Promise.resolve();
+      expect(settled).toBeNull();
+
+      jest.advanceTimersByTime(1);
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.backgrounded).toBe(true);
+      expect(result.reason).toContain('10000ms');
+
+      hang.proc.emit('close', 0);
+      await Promise.resolve();
+      expect(late.length).toBe(1);
+      expect(late[0]!.ok).toBe(true);
+    } finally {
+      jest.useRealTimers();
+      if (prev === undefined) delete process.env.BUILDD_CBM_INDEX_WAIT_MS;
+      else process.env.BUILDD_CBM_INDEX_WAIT_MS = prev;
+      stopBackgroundCbmIndex(workerId);
+      rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+    }
   });
 
   it('resolves the wait budget from BUILDD_CBM_INDEX_WAIT_MS when set', () => {

@@ -243,10 +243,11 @@ describe('buildCbmGuidanceBody (shared by both backends)', () => {
     for (const dialect of ['claude', 'codex'] as const) {
       const body = buildCbmGuidanceBody({ dialect });
       expect(body).toContain('make a graph call your FIRST navigation step');
+      // search_code (the grep wrapper) stays last: literal text only.
       const order = [
         'mcp__codebase-memory__get_architecture',
-        'mcp__codebase-memory__trace_path',
         'mcp__codebase-memory__search_graph',
+        'mcp__codebase-memory__trace_path',
         'mcp__codebase-memory__search_code',
       ].map(t => body.indexOf(t));
       expect(order.every(i => i > 0)).toBe(true);

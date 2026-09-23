@@ -8,7 +8,7 @@
  * future edit cannot quietly revert to "here are some tools you could use".
  */
 import { describe, test, expect } from 'bun:test';
-import { buildCbmSystemPromptBlock } from '../../src/cbm-enforcement';
+import { buildCbmSystemPromptBlock, buildCbmGuidanceBody } from '../../src/cbm-enforcement';
 
 const block = buildCbmSystemPromptBlock();
 const shared = buildCbmSystemPromptBlock({ project: 'home-coder-project-buildd', sharedBaseIndex: true });
@@ -70,5 +70,71 @@ describe('buildCbmSystemPromptBlock — shared base index', () => {
   test('per-worker mode keeps its original wording', () => {
     expect(block).toContain('This worktree is already indexed');
     expect(block).not.toMatch(/base checkout/i);
+  });
+});
+
+// ── tool routing: symbols go to the graph, literal text to the grep wrapper ────
+//
+// search_code is CBM's grep wrapper; the server's own instructions route symbols
+// to search_graph and callers/blast radius to trace_path. Guidance that sent
+// "locating a symbol" to search_code steered agents to the text path, and the
+// measured call mix followed the guidance.
+describe('buildCbmGuidanceBody — tool routing', () => {
+  const renderings = (['claude', 'codex'] as const).flatMap(dialect =>
+    (['warm', 'building', 'unavailable'] as const).flatMap(bootstrapState => [
+      { dialect, bootstrapState, sharedBaseIndex: false },
+      { dialect, bootstrapState, sharedBaseIndex: true },
+    ]),
+  );
+
+  test('locating a symbol routes to search_graph, not search_code, in both dialects', () => {
+    for (const opts of renderings) {
+      const body = buildCbmGuidanceBody({ ...opts, project: 'p' });
+      const line = body.split('\n').find(l => /locating a symbol/i.test(l));
+      expect(line).toBeDefined();
+      expect(line).toContain('mcp__codebase-memory__search_graph');
+      expect(line).not.toContain('search_code');
+    }
+  });
+
+  test('search_code appears only on the literal-text line', () => {
+    for (const opts of renderings) {
+      const body = buildCbmGuidanceBody({ ...opts, project: 'p' });
+      const lines = body.split('\n').filter(l => l.includes('search_code'));
+      expect(lines.length).toBeGreaterThan(0);
+      for (const l of lines) expect(l).toMatch(/literal|string|text/i);
+    }
+  });
+
+  test('callers and blast-radius questions route to trace_path', () => {
+    for (const opts of renderings) {
+      const body = buildCbmGuidanceBody({ ...opts, project: 'p' });
+      for (const shape of [/what calls X/i, /what breaks if I change X/i]) {
+        const line = body.split('\n').find(l => shape.test(l));
+        expect(line).toBeDefined();
+        expect(line).toContain('mcp__codebase-memory__trace_path');
+      }
+    }
+  });
+});
+
+// ── shared-seed mode: never tell the agent to index ───────────────────────────
+//
+// In shared mode the cache dir is the fleet-wide seed cache. An agent-issued
+// index_repository there writes a project .db for its own worktree into the
+// shared cache — a stray file no seed record owns.
+describe('buildCbmGuidanceBody — shared seed does not suggest index_repository', () => {
+  test('warm shared-seed guidance never names index_repository, in either dialect', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      const body = buildCbmGuidanceBody({ dialect, project: 'p', sharedBaseIndex: true });
+      expect(body).not.toContain('index_repository');
+      expect(body).toMatch(/not indexed/i);
+    }
+  });
+
+  test('per-worktree guidance keeps the index_repository fallback', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      expect(buildCbmGuidanceBody({ dialect })).toContain('mcp__codebase-memory__index_repository');
+    }
   });
 });
