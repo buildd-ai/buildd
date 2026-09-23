@@ -60,7 +60,15 @@ export interface DoctorReport {
  * idle gate, `bun install`, health probe, restart). A doctor-side
  * `checkout -f && reset --hard` from the periodic self-heal was a fourth,
  * ungated update path that left the running process on a different tree.
+ *
+ * The messages promise nothing: the updater only moves the tree when it applies
+ * an advertised update, and `BUILDD_DISABLE_AUTO_UPDATE` turns it off. So they
+ * name the manual repair instead (also what `--doctor --fix` users need).
  */
+function manualGitRepair(): string {
+  return `not auto-fixed; to repair by hand: git -C ${builddDir()} checkout ${BRANCH} && git -C ${builddDir()} pull --ff-only, then restart the runner`;
+}
+
 export function checkGitState(): CheckResult {
   try {
     const head = execSync('git rev-parse HEAD', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
@@ -70,7 +78,7 @@ export function checkGitState(): CheckResult {
       return {
         name: 'git-branch',
         status: 'error',
-        message: `On branch '${branch}' instead of '${BRANCH}' (the gated auto-updater restores it)`,
+        message: `On branch '${branch}' instead of '${BRANCH}' (${manualGitRepair()})`,
       };
     }
 
@@ -82,7 +90,7 @@ export function checkGitState(): CheckResult {
         return {
           name: 'git-branch',
           status: 'warn',
-          message: `${behind} commit(s) behind origin/${BRANCH} (applied by the gated auto-updater)`,
+          message: `${behind} commit(s) behind origin/${BRANCH} (${manualGitRepair()})`,
         };
       }
     } catch { /* fetch failed, non-fatal */ }
@@ -96,7 +104,8 @@ export function checkGitState(): CheckResult {
 /**
  * Tracked modifications only (`-uno`). The fix restores tracked files, so
  * counting untracked entries made a stray untracked file re-trigger the fix on
- * every cycle without it ever sticking.
+ * every cycle without it ever sticking. Untracked files are reported
+ * separately by `checkGitUntracked`, which is never fixable.
  */
 export function checkGitDirty(): CheckResult {
   try {
@@ -114,6 +123,30 @@ export function checkGitDirty(): CheckResult {
     return { name: 'git-clean', status: 'ok', message: 'Working tree clean (tracked files)' };
   } catch {
     return { name: 'git-clean', status: 'error', message: 'Could not check git status' };
+  }
+}
+
+/**
+ * Informational: untracked files under apps/ or packages/ of the install tree.
+ * Never fixable. Deleting files nobody committed is not a safe automatic
+ * repair, and they don't affect what `git-clean` restores.
+ */
+export function checkGitUntracked(): CheckResult {
+  try {
+    const out = execSync('git ls-files --others --exclude-standard -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+    const paths = out.split('\n').map(l => l.trim()).filter(Boolean);
+    if (paths.length > 0) {
+      const shown = paths.slice(0, 10).join(', ') + (paths.length > 10 ? `, +${paths.length - 10} more` : '');
+      return {
+        name: 'git-untracked',
+        status: 'warn',
+        message: `${paths.length} untracked file(s) in the install tree (not auto-fixed): ${shown}`,
+        detail: paths.join('\n'),
+      };
+    }
+    return { name: 'git-untracked', status: 'ok', message: 'No untracked files in apps/ or packages/' };
+  } catch {
+    return { name: 'git-untracked', status: 'ok', message: 'Could not list untracked files (non-fatal)' };
   }
 }
 
@@ -608,7 +641,16 @@ function fixGitClean(check: CheckResult): FixResult {
   const paths = porcelainPaths(check.detail);
   const named = paths.length > 0 ? `: ${paths.join(', ')}` : '';
   try {
-    execSync('git checkout -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
+    // Restore from HEAD, not the index: `git checkout -- <path>` copies the
+    // index to the worktree, so staged edits and staged additions survived it
+    // and the check re-fired every cycle. `restore` (no-overlay) also drops
+    // staged additions.
+    execSync('git restore --source=HEAD --staged --worktree -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
+    // Report what's true afterwards, not what the command intended.
+    const after = checkGitDirty();
+    if (after.status !== 'ok') {
+      return { check: 'git-clean', success: false, message: `Restore ran but tree is still dirty (${after.message})${named}` };
+    }
     return { check: 'git-clean', success: true, message: `Restored ${paths.length} tracked file(s)${named}` };
   } catch (err: any) {
     return { check: 'git-clean', success: false, message: `${err.message}${named}` };
@@ -780,6 +822,7 @@ export function runDiagnostics(): DoctorReport {
     checkConfig(),
     checkGitState(),
     checkGitDirty(),
+    checkGitUntracked(),
     checkBunInstall(),
     checkBwrap(),
     checkScreenSession(),

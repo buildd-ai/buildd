@@ -2735,7 +2735,7 @@ setInterval(async () => {
 
   // Drift check: the on-disk HEAD no longer matches the commit this process
   // loaded. This is a fresh disk read each tick, so it catches drift from
-  // ANY external cause — self-heal's fixGitBranch, a host-level force-reset —
+  // ANY external cause — self-heal's fixGitBranch (since removed), a host-level force-reset —
   // not just this runner's own update paths, and it's cheap enough to run
   // every 60s. See hasCommitDrift's doc comment for why this matters.
   const diskCommit = getDiskCommit();

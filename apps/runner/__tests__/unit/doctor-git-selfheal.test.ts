@@ -74,6 +74,9 @@ describe('git-branch self-heal', () => {
     expect(check.status).toBe('warn');
     expect(check.message).toContain('behind');
     expect(check.fixable).toBeFalsy();
+    // No false promise that something will fix it; say how to do it by hand.
+    expect(check.message).toContain('not auto-fixed');
+    expect(check.message).toContain('git -C');
 
     // Even a report that (wrongly) marks it fixable must not move the tree.
     const fixes = doctor.autoFix(reportOf({ ...check, fixable: true }));
@@ -87,6 +90,8 @@ describe('git-branch self-heal', () => {
       const check = doctor.checkGitState();
       expect(check.status).toBe('error');
       expect(check.fixable).toBeFalsy();
+      expect(check.message).toContain('not auto-fixed');
+      expect(check.message).toContain('checkout main');
     } finally {
       git(home, 'checkout -q main');
     }
@@ -117,5 +122,47 @@ describe('git-clean self-heal', () => {
     expect(fix.success).toBe(true);
     expect(fix.message).toContain('apps/tracked.ts');
     expect(readFileSync(join(home, 'apps', 'tracked.ts'), 'utf-8')).not.toBe('local edit\n');
+  });
+
+  test('staged changes (edit + new file) are cleared and the check comes back clean', () => {
+    writeFileSync(join(home, 'apps', 'tracked.ts'), 'staged edit\n');
+    writeFileSync(join(home, 'apps', 'added.ts'), 'staged add\n');
+    git(home, 'add apps/tracked.ts apps/added.ts');
+    try {
+      const check = doctor.checkGitDirty();
+      expect(check.status).toBe('warn');
+      expect(check.fixable).toBe(true);
+
+      const [fix] = doctor.autoFix(reportOf(check));
+      expect(fix.check).toBe('git-clean');
+      expect(fix.success).toBe(true);
+      expect(doctor.checkGitDirty().status).toBe('ok');
+      expect(git(home, 'status --porcelain -uno -- apps/ packages/')).toBe('');
+    } finally {
+      git(home, 'reset -q --hard');
+      rmSync(join(home, 'apps', 'added.ts'), { force: true });
+    }
+  });
+});
+
+describe('git-untracked (informational)', () => {
+  test('clean tree is ok', () => {
+    const check = doctor.checkGitUntracked();
+    expect(check.name).toBe('git-untracked');
+    expect(check.status).toBe('ok');
+  });
+
+  test('untracked files are listed but never fixable', () => {
+    writeFileSync(join(home, 'apps', 'stray.ts'), 'scratch\n');
+    try {
+      const check = doctor.checkGitUntracked();
+      expect(check.status).toBe('warn');
+      expect(check.fixable).toBeFalsy();
+      expect(check.message).toContain('apps/stray.ts');
+      expect(doctor.autoFix(reportOf({ ...check, fixable: true }))).toEqual([]);
+      expect(readFileSync(join(home, 'apps', 'stray.ts'), 'utf-8')).toBe('scratch\n');
+    } finally {
+      rmSync(join(home, 'apps', 'stray.ts'), { force: true });
+    }
   });
 });
