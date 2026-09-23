@@ -643,6 +643,17 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   const branchMerge = resolution.strategy;
   const { prodBranch } = branchMerge;
 
+  // Config errors must surface before anything merges. Failing after the merge
+  // returns no mergedAt, which mission release reads as "nothing shipped" and
+  // retries against a prod that already moved.
+  if (branchMerge.deployTarget?.type === 'vercel' && !branchMerge.deployTarget.projectId) {
+    return {
+      status: 'failed',
+      message: 'Release: FAILED — deployTarget.projectId is required for Vercel deploys',
+      error: 'Missing Vercel projectId',
+    };
+  }
+
   // Step 1: Merge into prodBranch
   let mergedAt: string | undefined;
   let mergeSha: string | undefined;
@@ -745,18 +756,36 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
 
     // The merge endpoint answers `{ merged: true, sha }` on success. Anything
     // else — including an empty body — is not evidence of a merge.
+    let rbMergeSha: string | undefined;
     if (!mergeResp?.sha && mergeResp?.merged !== true) {
-      return {
-        status: 'failed',
-        message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${mergeResp.message ?? 'merge failed'}`,
-        error: String(mergeResp.message ?? 'merge failed'),
-        releasePrNumber: releasePr.number,
-        releasePrUrl: releasePr.url,
-      };
+      // The merge call failing does not mean prod is unmoved: a human or the
+      // check_suite webhook may have merged the release PR first. Ask GitHub,
+      // as mergeIntoProd does — a `failed` without mergedAt makes mission
+      // release retry a release that already shipped.
+      let alreadyMerged = false;
+      try {
+        const pr = await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/pulls/${releasePr.number}`);
+        if (pr?.merged === true) {
+          alreadyMerged = true;
+          rbMergeSha = (pr.merge_commit_sha as string | undefined) ?? undefined;
+        }
+      } catch { /* fall through to the failure below */ }
+
+      if (!alreadyMerged) {
+        return {
+          status: 'failed',
+          message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${mergeResp?.message ?? 'merge failed'}`,
+          error: String(mergeResp?.message ?? 'merge failed'),
+          releasePrNumber: releasePr.number,
+          releasePrUrl: releasePr.url,
+        };
+      }
+    } else {
+      rbMergeSha = mergeResp.sha as string | undefined;
     }
 
     mergedAt = new Date().toISOString();
-    mergeSha = mergeResp.sha as string | undefined;
+    mergeSha = rbMergeSha;
 
     createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, repo });
   } else if (worker?.branch) {
@@ -811,14 +840,8 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   let deployState: string | undefined;
 
   if (branchMerge.deployTarget?.type === 'vercel') {
-    const { projectId, teamId } = branchMerge.deployTarget;
-    if (!projectId) {
-      return {
-        status: 'failed',
-        message: 'Release: FAILED — deployTarget.projectId is required for Vercel deploys',
-        error: 'Missing Vercel projectId',
-      };
-    }
+    // projectId presence is validated before Step 1, so it is set here.
+    const { projectId, teamId } = branchMerge.deployTarget as { projectId: string; teamId?: string };
 
     try {
       // Only wait for Vercel to pick up the push when we can actually verify.

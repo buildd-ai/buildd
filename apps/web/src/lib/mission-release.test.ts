@@ -540,6 +540,23 @@ describe('fireMissionReleaseIfComplete', () => {
       expect(String(noteInserts[0]?.body)).toContain('pending_ci');
     });
 
+    it('a pending_ci note says "waiting", not "failed", and names the manual path', async () => {
+      // Waiting on CI is not a failure, and nothing schedules a retry once CI
+      // settles — so the note must not cry failure, and must not promise an
+      // automatic retry that only a later completion in this mission provides.
+      mockExecuteRelease.mockResolvedValue({
+        status: 'pending_ci',
+        message: 'Release: CI pending on release PR #7',
+        releasePrNumber: 7,
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(noteInserts[0]?.title).toBe('Mission release waiting on CI');
+      expect(String(noteInserts[0]?.body)).toContain('trigger_release');
+      expect(String(noteInserts[0]?.body)).not.toContain('will be retried on the next task completion');
+    });
+
     it('a post-merge failure (mergedAt set) IS recorded as released — prod already moved', async () => {
       // The merge went out and only the deploy check failed. Retrying would
       // re-merge nothing, and abandoning would let a later completion fire a

@@ -311,6 +311,75 @@ describe('executeRelease — releaseBranch', () => {
     expect(result.status).toBe('failed');
     expect(result.message).toContain('could not merge');
   });
+
+  function queueReleasePrWithGreenCi() {
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 47, head: { sha: 'deadbeef' }, html_url: 'https://github.com/org/repo/pull/47', title: 'Release v0.5.0' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
+  }
+
+  it('a release PR that GitHub reports as already merged counts, with its real merge sha', async () => {
+    // A human or the check_suite webhook may have merged it between the CI
+    // read and the merge call. Prod moved, so this is a release — reporting
+    // `failed` without mergedAt would hand the mission claim back forever.
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub API error: 405 {"message":"Pull Request is not mergeable"}'));
+    mockGithubApi.mockResolvedValueOnce({ merged: true, state: 'closed', merge_commit_sha: 'humanmerge77' });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('completed');
+    expect(result.mergedAt).toBeDefined();
+    const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+    expect(paths.some((p) => p.endsWith('/pulls/47'))).toBe(true);
+  });
+
+  it('an empty merge response is a failure, not a TypeError', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockGithubApi.mockResolvedValueOnce(null); // merge PUT → empty body
+    mockGithubApi.mockResolvedValueOnce({ merged: false, state: 'open' }); // confirm GET
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('failed');
+    expect(result.mergedAt).toBeUndefined();
+    expect(result.message).toContain('could not merge');
+  });
+
+  it('a Vercel deployTarget without projectId fails BEFORE merging anything', async () => {
+    // Failing after the merge would return no mergedAt, which mission release
+    // reads as "nothing shipped" and retries — while prod already moved.
+    setupTask();
+    setupWorker();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      releaseConfig: {
+        enabled: true, strategy: 'branch_merge', prodBranch: 'main', releaseBranch: 'dev',
+        deployTarget: { type: 'vercel' },
+      },
+      githubRepoId: 'repo-1',
+    });
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha123', merged: true });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toContain('projectId');
+    const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+    expect(paths.some((p) => p.includes('/merge'))).toBe(false);
+  });
 });
 
 // ── executeRelease — worker-branch (no releaseBranch) ─────────────────────────
