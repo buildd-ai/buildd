@@ -113,11 +113,10 @@ export function createPacingProbe() {
       priority: number | null | undefined;
       kind: string | null | undefined;
       /**
-       * `context.model`. The router returns `explicit_override` BEFORE the pause
-       * gate, so a task carrying one can never be paced — and the claim route
-       * writes `context.model` onto every task it claims, which the requeue
-       * paths do not clear. Without this, the most common re-queued stall would
-       * be confidently misattributed to spend.
+       * The caller-pinned model (`readModelPin(context)`, NOT raw
+       * `context.model` — the claim route writes its routed model there too and
+       * a requeue keeps it). The router returns `explicit_override` BEFORE the
+       * pause gate, so a pinned task can never be paced.
        */
       explicitModel: string | null | undefined;
     }): Promise<{ pct: number } | null> {

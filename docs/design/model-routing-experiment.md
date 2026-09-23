@@ -1,9 +1,9 @@
 ---
-status: partially
-# The engine (schema, claim-time draw, readout core) is built and off by
-# default. The operator surfaces (REST + MCP `manage_experiments`, the
-# /app/health readout) are the remaining deliverable; the route assertion
-# below tracks them and fails until they land.
+status: implemented
+# Engine (schema, claim-time draw, readout core) and operator surfaces (REST
+# /api/experiments, MCP `manage_experiments`, the /app/health section) are
+# built. Still off by default: nothing enrolls until an admin starts an
+# experiment. The open questions below remain open.
 assertions:
   - id: "experiments-registry"
     type: "symbol"
@@ -22,12 +22,16 @@ assertions:
     method: "GET"
     path: "/api/experiments"
     file: "apps/web/src/app/api/experiments/route.ts"
+  - id: "experiments-mcp"
+    type: "symbol"
+    name: "EXPERIMENT_WRITE_OPS"
+    path: "packages/core/mcp-tools.ts"
 ---
 
 # Model-Routing Experiment
 
-**Status:** Partially implemented — engine shipped, off by default; operator surfaces pending.
-**Related:** `packages/core/model-routing-experiment.ts`, `packages/core/model-routing-experiment-source.ts`, `packages/core/experiment-readout.ts`, `packages/core/experiment-readout-source.ts`, `packages/core/experiment-randomizer.ts`, `apps/web/src/app/api/workers/claim/route.ts`, `packages/core/model-router.ts`, `packages/core/model-tier-registry.ts`, `packages/core/model-capability-requirements.ts`, `packages/core/oauth-budget.ts`, `packages/core/routing-analytics.ts`, `packages/core/db/schema.ts` (`experiments`, `experimentAssignments`, `taskOutcomes`), `docs/design/experiment-lifecycle.md`
+**Status:** Implemented — engine and operator surfaces shipped; off until an admin starts an experiment.
+**Related:** `packages/core/model-routing-experiment.ts`, `packages/core/model-routing-experiment-source.ts`, `packages/core/experiment-readout.ts`, `packages/core/experiment-readout-source.ts`, `packages/core/experiment-randomizer.ts`, `apps/web/src/app/api/workers/claim/route.ts`, `packages/core/model-router.ts`, `packages/core/model-tier-registry.ts`, `packages/core/model-capability-requirements.ts`, `packages/core/oauth-budget.ts`, `packages/core/routing-analytics.ts`, `packages/core/db/schema.ts` (`experiments`, `experimentAssignments`, `taskOutcomes`), `apps/web/src/app/api/experiments/`, `apps/web/src/lib/experiments.ts`, `packages/core/mcp-tools.ts` (`manage_experiments`), `apps/web/src/app/app/(protected)/health/ExperimentsSection.tsx`, `docs/design/experiment-lifecycle.md`
 
 ## Problem
 
@@ -121,6 +125,25 @@ Verdicts: `insufficient_n` below the minimum resolved sample in either arm;
 otherwise `treatment_better` / `treatment_worse` when the difference interval
 excludes zero, else `no_detectable_difference`.
 
+### Operator surfaces
+
+- **REST** `/api/experiments` (list, create), `/api/experiments/[id]` (get,
+  patch), `/api/experiments/[id]/readout`. Writes need team admin or owner.
+  Status moves: draft → running, running ⇄ paused, any non-terminal →
+  concluded (terminal, needs a decision). Starting 409s if another
+  model-routing experiment is running on the team; the guarded UPDATE repeats
+  that check in its WHERE so two concurrent starts cannot both win. Changing
+  the fraction or config after the first start bumps `policyVersion`, so the
+  readout (one version at a time) never pools rows drawn under different
+  settings.
+- **Visibility is existence.** `visibility = 'admins'` experiments are absent
+  from lists and answer 404 (not 403) below admin. API keys map admin level to
+  admin and anything below to member; OAuth bearers use the human's team role.
+- **MCP** `manage_experiments`: list/get/readout at worker level (same
+  visibility rule), create/update/start/pause/conclude at admin level.
+- **Dashboard**: an Experiments section in /app/health's Trend block, hidden
+  for a viewer with nothing visible and no admin rights.
+
 ### Pacing weight
 
 `MODEL_WEIGHTS` moves to published list-price ratios between the tier
@@ -159,6 +182,5 @@ within that minute.
 - Switching a running session's model (the SDK's `setModel`) — out of scope.
 - Fixing requeued tasks keeping a stale `context.model` — separate work; the
   draw takes the claim route's own explicit-model value so it follows that fix.
-- Operator surfaces (REST, MCP, dashboard) — built on this schema separately.
 - The generic lifecycle in `docs/design/experiment-lifecycle.md` (declared →
   enrolling → frozen → retired, pin manifests, stopping rules).

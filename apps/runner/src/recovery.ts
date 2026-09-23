@@ -19,6 +19,17 @@ interface RecoverySession {
 }
 
 /**
+ * The stub tasks built below have no claim payload, so without this
+ * resolveSessionModel() sees no `context.model` and a restarted session runs on
+ * the runner-global default instead of the model the original session used.
+ * Carry the session model through as the only context field.
+ */
+function sessionModelContext(worker: LocalWorker): { context?: { model: string } } {
+  const model = typeof worker.sessionModel === 'string' ? worker.sessionModel.trim() : '';
+  return model ? { context: { model } } : {};
+}
+
+/**
  * Dependencies injected from WorkerManager.
  * This avoids circular imports and keeps the recovery module decoupled.
  */
@@ -224,6 +235,7 @@ export class RecoveryManager {
       status: 'assigned',
       priority: 1,
       mode: worker.taskMode,
+      ...sessionModelContext(worker),
     };
 
     this.deps.startSession(worker, workspacePath, task as any).catch(err => {
@@ -384,6 +396,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
       status: 'assigned',
       priority: 1,
       mode: worker.taskMode,
+      ...sessionModelContext(worker),
     };
 
     // Start a new session with strict budget limits
@@ -434,6 +447,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
         status: 'assigned',
         priority: 1,
         mode: worker.taskMode,
+        ...sessionModelContext(worker),
       };
 
       try {
@@ -561,6 +575,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
       status: 'assigned',
       priority: 1,
       mode: worker.taskMode,
+      ...sessionModelContext(worker),
     };
 
     await this.deps.startSession(worker, workspacePath, task as any);

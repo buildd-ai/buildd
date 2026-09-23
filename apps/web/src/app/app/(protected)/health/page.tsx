@@ -38,6 +38,7 @@ import {
   ERROR_PATTERN_ROW_LIMIT,
 } from '@/lib/error-pattern-cost-query';
 import { countWorkersInWindow } from '@/lib/action-events';
+import { loadHealthExperiments } from '@/lib/health-experiments';
 import { HealthClient } from './HealthClient';
 import Link from 'next/link';
 
@@ -553,6 +554,10 @@ export default async function HealthPage({
     })))
     .catch(() => [] as OrphanedPrRow[]);
 
+  // Team experiments (model routing A/B). Admins-only rows are dropped for
+  // members inside the loader; a failure hides the section, never the page.
+  const experiments = await loadHealthExperiments(activeTeamId, user.id).catch(() => null);
+
   return (
     <HealthClient
       orphanedPrs={orphanedPrs}
@@ -572,6 +577,7 @@ export default async function HealthPage({
       cbm={cbmSummary ?? null}
       subagentDelegation={subagentDelegation ?? null}
       errorPatterns={errorPatterns ?? null}
+      experiments={experiments}
       now={now}
     />
   );

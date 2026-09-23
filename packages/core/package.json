@@ -22,6 +22,7 @@
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
+    "./model-pin": "./model-pin.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",
     "./model-capability-requirements": "./model-capability-requirements.ts",
     "./model-display": "./model-display.ts",

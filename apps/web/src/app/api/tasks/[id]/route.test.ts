@@ -501,6 +501,120 @@ describe('PATCH /api/tasks/[id]', () => {
     });
   });
 
+  // tier/model are USER PINS for the next claim/retry. The claim route reads a
+  // pin only via readModelPin (context.modelPinned), so the PATCH must set the
+  // marker, and clearing must leave routing free to decide again.
+  describe('tier / model pin', () => {
+    const baseTask = (context: Record<string, unknown> = {}) => ({
+      id: TASK_ID,
+      title: 'Pin me',
+      workspaceId: 'ws-1',
+      status: 'pending',
+      backend: 'claude',
+      tier: null,
+      context,
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
+
+    function captureUpdate() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          sets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      return sets;
+    }
+
+    async function patch(task: any, body: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(task);
+      const sets = captureUpdate();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+      return { res, sets };
+    }
+
+    it('model sets context.model as a pin and keeps the rest of the context', async () => {
+      const { res, sets } = await patch(
+        baseTask({ model: 'haiku', routingReason: 'baseline', modelPinned: false, other: 1 }),
+        { model: 'claude-opus-4-8' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBe('claude-opus-4-8');
+      expect(sets[0].context.modelPinned).toBe(true);
+      expect(sets[0].context.other).toBe(1);
+    });
+
+    it('model: null clears the pin so routing decides at the next claim', async () => {
+      const { res, sets } = await patch(
+        baseTask({ model: 'claude-opus-4-8', modelPinned: true, other: 1 }),
+        { model: null },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBeUndefined();
+      expect(sets[0].context.modelPinned).toBe(false);
+      expect(sets[0].context.other).toBe(1);
+    });
+
+    it('rejects a model id that is not Anthropic-shaped', async () => {
+      const { res, sets } = await patch(baseTask(), { model: 'not a model' });
+      expect(res.status).toBe(400);
+      expect(sets.length).toBe(0);
+    });
+
+    it('tier sets tasks.tier and drops an existing model pin (latest instruction wins)', async () => {
+      const { res, sets } = await patch(
+        baseTask({ model: 'claude-opus-4-8', modelPinned: true }),
+        { tier: 'premium' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('premium');
+      expect(sets[0].context.model).toBeUndefined();
+      expect(sets[0].context.modelPinned).toBe(false);
+    });
+
+    it('tier alone on a task without a pin leaves context untouched', async () => {
+      const { res, sets } = await patch(baseTask({ model: 'haiku', routingReason: 'baseline' }), { tier: 'budget' });
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('budget');
+      expect(sets[0].context).toBeUndefined();
+    });
+
+    it('tier: null clears the tier override', async () => {
+      const { res, sets } = await patch({ ...baseTask(), tier: 'premium' }, { tier: null });
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBeNull();
+    });
+
+    it('rejects an out-of-vocabulary tier', async () => {
+      const { res, sets } = await patch(baseTask(), { tier: 'opus' });
+      expect(res.status).toBe(400);
+      expect(sets.length).toBe(0);
+    });
+
+    it('tier + model in one call keeps the model pin', async () => {
+      const { res, sets } = await patch(baseTask(), { tier: 'premium', model: 'claude-opus-4-8' });
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('premium');
+      expect(sets[0].context.model).toBe('claude-opus-4-8');
+      expect(sets[0].context.modelPinned).toBe(true);
+    });
+
+    it('composes with a backend switch that also rewrites context', async () => {
+      const { res, sets } = await patch(
+        { ...baseTask({ budgetExhausted: true, budgetResetsAt: 'x' }), backend: 'codex', startAt: new Date() },
+        { backend: 'claude', model: 'claude-opus-4-8' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].context.budgetExhausted).toBeUndefined();
+      expect(sets[0].context.switchedBackendFrom).toBe('codex');
+      expect(sets[0].context.model).toBe('claude-opus-4-8');
+      expect(sets[0].context.modelPinned).toBe(true);
+    });
+  });
+
   it('returns 401 when no auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue(null);
