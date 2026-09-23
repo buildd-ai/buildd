@@ -78,7 +78,7 @@ export function checkForUpdate(current: string | null, latest: string | null): b
  * True when the on-disk HEAD no longer matches the commit the running
  * process loaded at startup (or after its last successful self-update).
  * This is the exact signature of an external process — self-heal's
- * `fixGitBranch`, a host-level `git reset --hard` — rewriting the install's
+ * `fixGitBranch` (since removed), a host-level `git reset --hard` — rewriting the install's
  * tree without restarting the long-lived runner process, so its in-memory
  * modules keep serving stale code indefinitely.
  */
