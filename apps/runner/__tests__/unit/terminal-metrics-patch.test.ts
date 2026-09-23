@@ -42,7 +42,13 @@ mock.module('pusher-js', () => ({
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
-    const msgs = [...mockMessages];
+    // A resumed invocation is the runner's own closing turn (every session
+    // here has a sessionId and no complete_task call, so it's eligible) — it
+    // must not replay the original script a second time, or every metric
+    // this file asserts on would double. An empty resumed session ends
+    // immediately, same as a closing turn the agent didn't act on.
+    const isResume = Boolean(_opts?.options?.resume);
+    const msgs = isResume ? [] : [...mockMessages];
     let idx = 0;
     return {
       streamInput: () => {},
