@@ -54,7 +54,14 @@ export interface DoctorReport {
 
 // --- Individual checks ---
 
-function checkGitState(): CheckResult {
+/**
+ * Informational only, never `fixable`. Moving the install tree (wrong branch
+ * or behind origin) is the gated updater's job (`updater.ts` `applyUpdate`:
+ * idle gate, `bun install`, health probe, restart). A doctor-side
+ * `checkout -f && reset --hard` from the periodic self-heal was a fourth,
+ * ungated update path that left the running process on a different tree.
+ */
+export function checkGitState(): CheckResult {
   try {
     const head = execSync('git rev-parse HEAD', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
     const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
@@ -63,8 +70,7 @@ function checkGitState(): CheckResult {
       return {
         name: 'git-branch',
         status: 'error',
-        message: `On branch '${branch}' instead of '${BRANCH}'`,
-        fixable: true,
+        message: `On branch '${branch}' instead of '${BRANCH}' (the gated auto-updater restores it)`,
       };
     }
 
@@ -76,8 +82,7 @@ function checkGitState(): CheckResult {
         return {
           name: 'git-branch',
           status: 'warn',
-          message: `${behind} commit(s) behind origin/${BRANCH}`,
-          fixable: true,
+          message: `${behind} commit(s) behind origin/${BRANCH} (applied by the gated auto-updater)`,
         };
       }
     } catch { /* fetch failed, non-fatal */ }
@@ -88,9 +93,14 @@ function checkGitState(): CheckResult {
   }
 }
 
-function checkGitDirty(): CheckResult {
+/**
+ * Tracked modifications only (`-uno`). The fix restores tracked files, so
+ * counting untracked entries made a stray untracked file re-trigger the fix on
+ * every cycle without it ever sticking.
+ */
+export function checkGitDirty(): CheckResult {
   try {
-    const status = execSync('git status --porcelain -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+    const status = execSync('git status --porcelain -uno -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trimEnd(); // not trim(): the XY column's leading space is significant
     if (status) {
       const lines = status.split('\n').filter(Boolean);
       return {
@@ -587,23 +597,21 @@ export interface FixResult {
   telemetry?: WorktreeTelemetry;
 }
 
-function fixGitBranch(): FixResult {
-  try {
-    execSync(`git fetch origin ${BRANCH} && git checkout -f ${BRANCH} && git reset --hard origin/${BRANCH}`, {
-      cwd: builddDir(), encoding: 'utf-8', timeout: 30000, stdio: 'pipe',
-    });
-    return { check: 'git-branch', success: true, message: `Checked out and reset to origin/${BRANCH}` };
-  } catch (err: any) {
-    return { check: 'git-branch', success: false, message: err.message };
-  }
+/** Paths from `git status --porcelain` lines (`XY path` / `XY old -> new`). */
+function porcelainPaths(detail: string | undefined): string[] {
+  if (!detail) return [];
+  return detail.split('\n').map(l => l.slice(3).trim()).filter(Boolean);
 }
 
-function fixGitClean(): FixResult {
+function fixGitClean(check: CheckResult): FixResult {
+  // Name what gets discarded: the self-heal log is the only record of it.
+  const paths = porcelainPaths(check.detail);
+  const named = paths.length > 0 ? `: ${paths.join(', ')}` : '';
   try {
     execSync('git checkout -- apps/ packages/', { cwd: builddDir(), encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
-    return { check: 'git-clean', success: true, message: 'Restored tracked files' };
+    return { check: 'git-clean', success: true, message: `Restored ${paths.length} tracked file(s)${named}` };
   } catch (err: any) {
-    return { check: 'git-clean', success: false, message: err.message };
+    return { check: 'git-clean', success: false, message: `${err.message}${named}` };
   }
 }
 
@@ -753,11 +761,12 @@ function fixRunnerLog(): FixResult {
   }
 }
 
-const fixMap: Record<string, () => FixResult> = {
-  'git-branch': fixGitBranch,
+// No 'git-branch' entry: see checkGitState. Install-tree moves belong to the
+// gated updater only.
+const fixMap: Record<string, (check: CheckResult) => FixResult> = {
   'git-clean': fixGitClean,
   'bun-install': fixBunInstall,
-  'stale-worktrees': fixStaleWorktrees,
+  'stale-worktrees': () => fixStaleWorktrees(),
   'disk-usage': fixDiskUsage,
   'history-db': fixHistoryDb,
   'runner-log': fixRunnerLog,
@@ -801,7 +810,7 @@ export function autoFix(report: DoctorReport): FixResult[] {
     if ((check.status === 'error' || check.status === 'warn') && check.fixable) {
       const fixer = fixMap[check.name];
       if (fixer) {
-        results.push(fixer());
+        results.push(fixer(check));
       }
     }
   }
