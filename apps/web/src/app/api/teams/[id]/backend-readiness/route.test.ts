@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 let currentUser: { id: string } | null = { id: 'user-1' };
-const mockGetUserFromRequest = mock(() => Promise.resolve(currentUser));
-mock.module('@/lib/auth-helpers', () => ({ getUserFromRequest: mockGetUserFromRequest }));
+const mockGetRequestPrincipal = mock(() =>
+  Promise.resolve(currentUser ? { kind: 'session' as const, user: currentUser } : null),
+);
+mock.module('@/lib/auth-helpers', () => ({ getRequestPrincipal: mockGetRequestPrincipal }));
 
 let userTeamIds: string[] = ['team-1'];
 let teamWorkspaceIds: string[] = ['ws-1'];

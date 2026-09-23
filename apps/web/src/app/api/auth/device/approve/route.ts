@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
 import { deviceCodes, accounts } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
+import { getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
+import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -60,46 +61,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Code has expired' }, { status: 400 });
     }
 
-    // Create/update a named account for the user
+    // Create a new named account for this login. Approving never rotates or
+    // returns an existing account's key, even one with the same name.
     const accountName = updated.clientName || 'CLI';
-    const level = updated.level as 'admin' | 'worker';
+    const requestedLevel = parseKeyLevel(updated.level) || 'worker';
 
-    const teamIds = await getUserTeamIds(session.user.id);
-    let account = teamIds.length > 0
-      ? await db.query.accounts.findFirst({
-          where: and(
-            inArray(accounts.teamId, teamIds),
-            eq(accounts.name, accountName)
-          ),
-        })
-      : null;
+    const teamId = await getUserDefaultTeamId(session.user.id);
+    if (!teamId) {
+      return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
+    }
+
+    // The key's level is capped by the approver's current role on that team.
+    const role = await getUserTeamRole(session.user.id, teamId);
+    if (!role) {
+      return NextResponse.json({ error: 'You are not a member of this team' }, { status: 403 });
+    }
+    const level = clampKeyLevel(role, requestedLevel);
 
     const plaintextKey = generateApiKey();
 
-    if (!account) {
-      const teamId = await getUserDefaultTeamId(session.user.id);
-      if (!teamId) {
-        return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
-      }
-
-      await db.insert(accounts).values({
-        name: accountName,
-        type: 'user',
-        level,
-        authType: 'api',
-        apiKey: hashApiKey(plaintextKey),
-        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-        teamId,
-      });
-    } else {
-      await db.update(accounts)
-        .set({
-          apiKey: hashApiKey(plaintextKey),
-          apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-          level,
-        })
-        .where(eq(accounts.id, account.id));
-    }
+    await db.insert(accounts).values({
+      name: accountName,
+      type: 'user',
+      level,
+      authType: 'api',
+      apiKey: hashApiKey(plaintextKey),
+      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+      teamId,
+    });
 
     // Store plaintext in device code record for CLI to retrieve
     await db.update(deviceCodes)

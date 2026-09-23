@@ -3,7 +3,7 @@ import { normalizeInferenceCapabilities } from '@buildd/core/inference-policy';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getUserFromRequest } from '@/lib/auth-helpers';
+import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 
 type TeamRole = 'owner' | 'admin' | 'member';
@@ -43,15 +43,25 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
+  const principal = await getRequestPrincipal(req);
+  if (!principal) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const access = await verifyTeamAccess(user.id, id);
-    if (!access) {
-      return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+    // An API key may read only its own team, and carries no user role.
+    let currentUserRole: TeamRole | null;
+    if (principal.kind === 'api_key') {
+      if (principal.account.teamId !== id) {
+        return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      }
+      currentUserRole = null;
+    } else {
+      const access = await verifyTeamAccess(principal.user.id, id);
+      if (!access) {
+        return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      }
+      currentUserRole = access.role;
     }
 
     // Explicit column list. This response shape is a contract with unknown
@@ -103,7 +113,7 @@ export async function GET(
     return NextResponse.json({
       team,
       members: memberList,
-      currentUserRole: access.role,
+      currentUserRole,
     });
   } catch (error) {
     console.error('Get team error:', error);
@@ -117,10 +127,9 @@ export async function PATCH(
 ) {
   const { id } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireSessionUser(req);
+  if (session.response) return session.response;
+  const user = session.user;
 
   try {
     const access = await verifyTeamAccess(user.id, id, 'admin');
@@ -212,10 +221,9 @@ export async function DELETE(
 ) {
   const { id } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireSessionUser(req);
+  if (session.response) return session.response;
+  const user = session.user;
 
   try {
     const access = await verifyTeamAccess(user.id, id, 'owner');

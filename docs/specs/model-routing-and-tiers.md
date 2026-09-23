@@ -220,10 +220,12 @@ untouched.
   candidate matches any family — an empty write would blank the row
   (`model-aliases.ts:116-130`). Later candidates overwrite earlier ones within
   the same family, so list order decides.
-- `POST /api/admin/refresh-model-aliases` rejects a non-admin API key with HTTP
-  403 and an unauthenticated caller with HTTP 401
-  (`apps/web/src/app/api/admin/refresh-model-aliases/route.ts:24-29`). Omitted
-  aliases keep their `DEFAULT_ALIASES` value.
+- `POST /api/admin/refresh-model-aliases` is a platform-operator route: it
+  admits only an admin-level `bld_` key whose account id is listed in
+  `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS`, returns HTTP 403 for any other key (and
+  for every key when the variable is unset) and HTTP 401 for an unauthenticated
+  caller (`apps/web/src/lib/platform-admin.ts`, `authorizePlatformAdmin`).
+  Omitted aliases keep their `DEFAULT_ALIASES` value.
 - Effort and thinking must stay compatible with the resolved id:
   `requiresThinkingEnabled` matches `claude-opus-5`, and
   `resolveEffectiveThinking` drops a `thinking: { type: 'disabled' }` override
@@ -237,7 +239,8 @@ untouched.
 **Acceptance criteria**:
 - AC-11: WHEN `resolveModelNameSync('claude-haiku-4-5-20251001')` is called
   THEN it returns that id unchanged, with no cache or database access.
-- AC-12 (failure path): GIVEN an API key whose `level` is not `admin` WHEN
+- AC-12 (failure path): GIVEN an API key whose `level` is not `admin`, or an
+  admin-level key not listed in `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS`, WHEN
   `POST /api/admin/refresh-model-aliases` is called THEN the response is HTTP
   403 and `updateModelAliases` is not called.
 - AC-13: GIVEN `{ opus: 'claude-opus-4-8' }` as the request body WHEN the

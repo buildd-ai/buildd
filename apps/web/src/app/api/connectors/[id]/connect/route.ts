@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { connectors } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { getCurrentUser, getUserFromRequest } from '@/lib/auth-helpers';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import {
@@ -81,11 +81,16 @@ export async function POST(
     return NextResponse.json({ error: 'No client ID configured; re-create connector to trigger DCR' }, { status: 400 });
   }
 
-  // Resolve user identity (needed for state JWT)
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Could not resolve user identity' }, { status: 401 });
+  // The OAuth handshake is completed by a person in a browser and the state JWT
+  // records who started it, so it requires a signed-in session — an API key has
+  // no user identity to record.
+  if (auth.type !== 'session') {
+    return NextResponse.json(
+      { error: 'Connecting a connector requires a signed-in session; API keys cannot start the OAuth flow.' },
+      { status: 403 },
+    );
   }
+  const user = auth.user;
 
   try {
     const codeVerifier = generateCodeVerifier();

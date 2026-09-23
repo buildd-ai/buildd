@@ -194,9 +194,11 @@ export const getUserTeamIds = cache(async (userId: string): Promise<string[]> =>
 });
 
 /**
- * Resolve all team IDs accessible to an API account or session user.
- * Handles personal teams (no teamMembers rows) by extracting userId from
- * the team slug and resolving through teamMembers.
+ * Resolve the team IDs a request may act on.
+ *
+ * An API account is scoped to exactly its own team — it never inherits the
+ * teams of any user who happens to be a member of that team. A session user
+ * resolves to every team they belong to (plus their personal team).
  *
  * NOT React cache()-wrapped, unlike its siblings: both parameters are objects,
  * and cache() keys non-primitives on referential identity — fresh object
@@ -207,31 +209,32 @@ export async function resolveAccountTeamIds(
   user: { id: string } | null | undefined,
   apiAccount: { teamId: string } | null
 ): Promise<string[]> {
-  if (apiAccount) {
-    // Try to find a user via teamMembers on the account's team
-    const membership = await db.query.teamMembers.findFirst({
-      where: eq(teamMembers.teamId, apiAccount.teamId),
-      columns: { userId: true },
-    });
-    if (membership?.userId) {
-      return getUserTeamIds(membership.userId);
-    }
-    // Fallback: if the account is on a personal team (slug = personal-{userId}),
-    // extract the userId and resolve their real teams
-    const team = await db.query.teams.findFirst({
-      where: eq(teams.id, apiAccount.teamId),
-      columns: { slug: true },
-    });
-    if (team?.slug?.startsWith('personal-')) {
-      const userId = team.slug.replace('personal-', '');
-      const teamIds = await getUserTeamIds(userId);
-      if (teamIds.length > 0) return teamIds;
-    }
-    return [apiAccount.teamId];
-  }
+  if (apiAccount) return [apiAccount.teamId];
   if (user) return getUserTeamIds(user.id);
   return [];
 }
+
+/**
+ * The user's current role on a team, or null when they do not belong to it.
+ * A user's own personal team (slug = personal-{userId}) counts as owner even
+ * without a teamMembers row, mirroring the getUserTeamIds fallback.
+ *
+ * Cached per-request via React cache() (primitive args).
+ */
+export const getUserTeamRole = cache(async (userId: string, teamId: string): Promise<TeamRole | null> => {
+  const membership = await db.query.teamMembers.findFirst({
+    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    columns: { role: true },
+  });
+  if (membership?.role) return membership.role as TeamRole;
+
+  const team = await db.query.teams.findFirst({
+    where: eq(teams.id, teamId),
+    columns: { slug: true },
+  });
+  if (team?.slug === `personal-${userId}`) return 'owner';
+  return null;
+});
 
 /**
  * Get the user's default (personal) team ID.
