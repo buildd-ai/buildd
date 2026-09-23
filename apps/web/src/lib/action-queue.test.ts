@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge } from './action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge, DOC_FIX_RECHECK_GRACE_MS } from './action-queue';
 import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
@@ -426,13 +426,27 @@ describe('isDocFixClaimStale', () => {
     })).toBe(false);
   });
 
-  it('true when merged and the checker has rechecked at or after the merge', () => {
+  it('true when merged and the checker has rechecked at least one checker interval after the merge', () => {
+    const merged = new Date('2026-09-01T00:00:00Z');
     expect(isDocFixClaimStale({
       docFixTaskStatus: 'completed',
       docFixPrLifecycleStatus: 'merged',
-      docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
-      lastCheckedAt: new Date('2026-09-01T00:00:00Z'),
+      docFixMergedAt: merged,
+      lastCheckedAt: new Date(merged.getTime() + DOC_FIX_RECHECK_GRACE_MS),
     })).toBe(true);
+  });
+
+  it('false when the only recheck landed inside the checker interval after the merge — that run may predate the fix', () => {
+    // A ledger run that started on an earlier dev push and finished just after
+    // the merge stamps last_checked_at past mergedAt without ever reading the
+    // fixed doc. Counting it as "rechecked" re-dispatched fixes that had landed.
+    const merged = new Date('2026-09-01T00:00:00Z');
+    expect(isDocFixClaimStale({
+      docFixTaskStatus: 'completed',
+      docFixPrLifecycleStatus: 'merged',
+      docFixMergedAt: merged,
+      lastCheckedAt: new Date(merged.getTime() + 60_000),
+    })).toBe(false);
   });
 });
 
@@ -535,6 +549,28 @@ describe('buildDiscrepancyItems', () => {
     ]);
     expect(items[0].docFixTaskId).toBeNull();
     expect(items[0].docFixTaskStatus).toBeNull();
+    // ...but the card is told a fix already merged, so it offers the owner's
+    // exits (accept / correct the assertion) rather than a second doc fix.
+    expect(items[0].mergedDocFixTaskId).toBe('task-1');
+  });
+
+  it('a fresh code_ahead group with no prior merged fix carries no mergedDocFixTaskId', () => {
+    const { items } = buildDiscrepancyItems([row()]);
+    expect(items[0].mergedDocFixTaskId ?? null).toBeNull();
+  });
+
+  it('mergedDocFixTaskId survives buildActionQueue onto the card item', () => {
+    const { items } = buildDiscrepancyItems([
+      row({
+        docFixTaskId: 'task-1',
+        docFixTaskStatus: 'completed',
+        docFixPrLifecycleStatus: 'merged',
+        docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+        lastCheckedAt: new Date('2026-09-02T00:00:00Z'),
+      }),
+    ]);
+    const queue = buildActionQueue(items, []);
+    expect(queue[0].mergedDocFixTaskId).toBe('task-1');
   });
 
   it('completed + PR merged but NOT yet rechecked -> claim stays live (genuinely awaiting the re-run)', () => {

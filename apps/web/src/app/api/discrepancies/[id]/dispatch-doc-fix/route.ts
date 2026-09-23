@@ -113,10 +113,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   groupRows.sort((a, b) => new Date(a.firstSeenAt).getTime() - new Date(b.firstSeenAt).getTime());
 
   // Resolve the status of every task already claimed on this group. A claim
-  // held by a live task wins; one held by a failed/cancelled task is stale and
-  // may be taken over — as is one held by a completed task whose PR merged
-  // and was re-evaluated by the checker with the gap still open (§9: the fix
-  // demonstrably didn't close it — see isDocFixClaimStale).
+  // held by a live task wins; one held by a failed/cancelled task is dead and
+  // may be taken over. One held by a completed task whose PR merged and was
+  // re-evaluated with the gap still open (isDocFixClaimStale) is refused
+  // below: the doc fix already landed, so the row is held open by its
+  // assertions, and another docs-only task would reproduce the same result.
   const claimedTaskIds = [...new Set(groupRows.map((r) => r.docFixTaskId).filter(Boolean) as string[])];
   const claimedTasks = claimedTaskIds.length
     ? await db.query.tasks.findMany({
@@ -161,11 +162,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: true, dispatched: false, taskId: liveClaim.docFixTaskId });
   }
 
-  const staleClaimTaskIds = claimedTaskIds.filter((t) => {
-    if (DEAD_DOC_FIX_STATUSES.has(statusByTask.get(t) ?? '')) return true;
-    const r = groupRows.find((row) => row.docFixTaskId === t);
-    return r ? isDocFixClaimStale(rowClaimState(r)) : false;
-  });
+  const mergedClaim = groupRows.find((r) => r.docFixTaskId && isDocFixClaimStale(rowClaimState(r)));
+  if (mergedClaim?.docFixTaskId) {
+    return NextResponse.json(
+      {
+        ok: false,
+        dispatched: false,
+        code: 'doc_fix_already_merged',
+        taskId: mergedClaim.docFixTaskId,
+        error:
+          `A doc fix for ${row.specPath} already merged and the conformance re-run still finds these ` +
+          `assertions open, so another docs-only task would reproduce the same result. Accept the ` +
+          `rows with a reason, add skip_until to the assertion, or rewrite the assertion.`,
+      },
+      { status: 409 },
+    );
+  }
+
+  const staleClaimTaskIds = claimedTaskIds.filter((t) => DEAD_DOC_FIX_STATUSES.has(statusByTask.get(t) ?? ''));
 
   const assertionIds = groupRows.map((r) => r.assertionId);
   const discrepancyIds = groupRows.map((r) => r.id);

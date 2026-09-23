@@ -192,6 +192,25 @@ mock.module('@/lib/criteria-rearm', () => ({
   applyCriteriaRearm: mockApplyCriteriaRearm,
 }));
 
+// Required-skill preflight. Defaults to "every skill available" so the rest
+// of the file keeps exercising dispatch; the missing-skill tests below flip it.
+class MockMissingScheduleSkillError extends Error {
+  missingSlugs: string[];
+  workspaceId: string | null;
+  constructor(missingSlugs: string[], workspaceId: string | null = null) {
+    super(`Required skill(s) not available to this workspace: ${missingSlugs.join(', ')}`);
+    this.missingSlugs = missingSlugs;
+    this.workspaceId = workspaceId;
+  }
+}
+const mockAssertSkills = mock((_ws: string, _ctx: any) => Promise.resolve());
+const mockFileSkillFriction = mock((_input: any) => Promise.resolve('created' as const));
+mock.module('@/lib/schedule-skill-preflight', () => ({
+  assertScheduleSkillsAvailable: mockAssertSkills,
+  fileMissingSkillFriction: mockFileSkillFriction,
+  MissingScheduleSkillError: MockMissingScheduleSkillError,
+}));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -259,6 +278,10 @@ describe('GET /api/cron/schedules', () => {
     mockApplyCriteriaRearm.mockResolvedValue({
       action: 'wait', reason: 'stub', nextCycles: 0, verdictLines: '', fingerprint: 'fp',
     } as any);
+    mockAssertSkills.mockReset();
+    mockAssertSkills.mockResolvedValue(undefined);
+    mockFileSkillFriction.mockReset();
+    mockFileSkillFriction.mockResolvedValue('created');
     taskSchedulesUpdateCalls = [];
     tasksInsertValues = null;
     mockSelectCount = 0;
@@ -415,6 +438,49 @@ describe('GET /api/cron/schedules', () => {
       c => 'lastTaskId' in (c.set ?? {}) && c.set.lastTaskId === undefined,
     );
     expect(badLastTaskId).toBeUndefined();
+  });
+
+  it('fails fast with a reason when a required skill is missing — no task is created', async () => {
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      consecutiveFailures: 0,
+      taskTemplate: { title: 'Update CHANGELOG', mode: 'execution', priority: 0, context: { skillSlugs: ['changelog-generator'] } },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockAssertSkills.mockRejectedValue(new MockMissingScheduleSkillError(['changelog-generator']));
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.created).toBe(0);
+    expect(body.errors).toBe(1);
+
+    // The preflight ran against the schedule's own workspace and template context.
+    expect(mockAssertSkills).toHaveBeenCalledWith('ws-1', expect.objectContaining({ skillSlugs: ['changelog-generator'] }));
+
+    // No task row, so no worker is ever dispatched into a worktree without the skill.
+    expect(tasksInsertValues).toBeNull();
+
+    // The failure is recorded on the schedule with a readable reason.
+    const updateCall = taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 1);
+    expect(updateCall).toBeDefined();
+    expect(updateCall.set.lastError).toContain('changelog-generator');
+
+    // Friction is filed (the filer dedupes, so "once" holds across ticks).
+    expect(mockFileSkillFriction).toHaveBeenCalledTimes(1);
+    expect(mockFileSkillFriction.mock.calls[0][0]).toMatchObject({
+      scheduleId: 'sched-1',
+      workspaceId: 'ws-1',
+      missingSlugs: ['changelog-generator'],
+    });
+  });
+
+  it('a generic failure does not file missing-skill friction', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    insertError = makeNeonError();
+
+    await GET(makeRequest());
+    expect(mockFileSkillFriction).not.toHaveBeenCalled();
   });
 
   it('does NOT page on a single transient failure, but records the diagnosable cause', async () => {

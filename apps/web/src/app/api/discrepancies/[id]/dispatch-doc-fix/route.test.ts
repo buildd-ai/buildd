@@ -250,15 +250,33 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     expect(insertedTasks).toHaveLength(1);
   });
 
-  it('a completed task whose PR merged and was rechecked but the gap is STILL open releases the path (stranded-card regression)', async () => {
+  it('a merged doc fix that the checker re-ran on and still found open is NOT re-dispatched (re-dispatch loop regression)', async () => {
+    // The assertions behind a code_ahead row can pass regardless of the doc
+    // text, so a second docs-only task against the same claims reproduces the
+    // same result. A merged fix hands the row to the owner, never to a new worker.
     groupRows[0].docFixTaskId = 'task-stale';
-    groupRows[0].lastCheckedAt = new Date('2026-09-02T00:00:00Z'); // after the merge below
+    groupRows[0].lastCheckedAt = new Date('2026-09-02T00:00:00Z'); // well after the merge below
     claimedTaskRows = [{ id: 'task-stale', status: 'completed' }];
     claimedWorkerRows = [{ taskId: 'task-stale', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
     const res = await POST(req(), { params: params('d1') });
+    expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.dispatched).toBe(true);
-    expect(insertedTasks).toHaveLength(1);
+    expect(data.dispatched).toBe(false);
+    expect(data.code).toBe('doc_fix_already_merged');
+    expect(data.taskId).toBe('task-stale');
+    expect(insertedTasks).toHaveLength(0);
+    expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it('a merged doc fix rechecked only moments after the merge still holds the path — that run may predate the fix', async () => {
+    groupRows[0].docFixTaskId = 'task-just-merged';
+    groupRows[0].lastCheckedAt = new Date('2026-09-01T00:01:00Z'); // one minute after the merge
+    claimedTaskRows = [{ id: 'task-just-merged', status: 'completed' }];
+    claimedWorkerRows = [{ taskId: 'task-just-merged', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
+    const res = await POST(req(), { params: params('d1') });
+    const data = await res.json();
+    expect(data).toEqual({ ok: true, dispatched: false, taskId: 'task-just-merged' });
+    expect(insertedTasks).toHaveLength(0);
   });
 
   it('a completed task whose PR merged but has NOT been rechecked yet still holds the path', async () => {
