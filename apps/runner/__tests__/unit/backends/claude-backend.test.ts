@@ -209,6 +209,52 @@ describe('ClaudeBackend.runStreamed', () => {
       expect(errorEvent?.error).toBe('Claude Agent SDK returned an error result');
     });
 
+    // SDKResultError (subtype error_during_execution / error_max_turns /
+    // error_max_budget_usd / error_max_structured_output_retries) has no
+    // `result` string field at all — the detail lives in `errors: string[]`.
+    // Before this fix that shape fell straight through to the generic
+    // fallback, discarding the one thing that made the failure actionable.
+    test('surfaces the errors[] array and subtype for a non-success error result', async () => {
+      const events = await collectEvents([
+        {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          errors: ['fetch failed: getaddrinfo ENOTFOUND api.anthropic.com'],
+        },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe(
+        'error_during_execution: fetch failed: getaddrinfo ENOTFOUND api.anthropic.com'
+      );
+    });
+
+    test('joins multiple errors[] entries', async () => {
+      const events = await collectEvents([
+        {
+          type: 'result',
+          subtype: 'error_max_turns',
+          is_error: true,
+          errors: ['turn limit reached', 'partial output discarded'],
+        },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe(
+        'error_max_turns: turn limit reached; partial output discarded'
+      );
+    });
+
+    test('falls back to bare subtype when errors[] is empty on a non-success error result', async () => {
+      const events = await collectEvents([
+        { type: 'result', subtype: 'error_max_budget_usd', is_error: true, errors: [] },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe('error_max_budget_usd');
+    });
+
     test('a normal success result (is_error: false) still yields turn_complete', async () => {
       const events = await collectEvents([
         { type: 'result', subtype: 'success', is_error: false, result: 'all good' },
