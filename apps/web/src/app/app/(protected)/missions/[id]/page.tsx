@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -862,6 +862,7 @@ export default async function MissionDetailPage({
   // BUILD bar. Steering marks are supplied separately, on the options bag.
   const flightStripTasks = timelineTasks.map(t => ({
     id: t.id, status: t.status, taskClass: t.taskClass, roleSlug: t.roleSlug, kind: t.kind, title: t.title,
+    creationSource: t.creationSource, mode: t.mode,
   }));
   const flightStripWorkers = timelineTasks.flatMap(t =>
     ((t.workers ?? []) as any[]).map(w => ({
@@ -1373,22 +1374,16 @@ export default async function MissionDetailPage({
             if (h >= 24) { const d = Math.floor(h / 24); return `${d}d ${h % 24}h`; }
             return `${h}h ${m}m`;
           }
-          // Reuse the skyline computation from the mission card (do not re-derive).
-          // agentTimeMin = Σ worker wall-clock spans; activeSpanMin = first-start → last-end.
-          const skyline = computeMissionSkyline(allTasks);
-          const agentLabel = skyline ? fmtMin(skyline.agentTimeMin) : null;
-          const wallLabel = skyline ? fmtMin(skyline.activeSpanMin) : (() => {
-            const ws = allTasks.flatMap((t: any) => t.workers ?? []);
-            const starts = ws.map((w: any) => w.startedAt ? new Date(w.startedAt).getTime() : null).filter(Boolean) as number[];
-            const ends = ws.map((w: any) => w.completedAt ? new Date(w.completedAt).getTime() : null).filter(Boolean) as number[];
-            if (starts.length === 0 || ends.length === 0) {
-              return fmtMin((new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime()) / 60_000);
-            }
-            return fmtMin((Math.max(...ends) - Math.min(...starts)) / 60_000);
-          })();
+          // Reuse the flight strip's own §6 metrics (already computed above for the
+          // navigator) rather than re-deriving duration from raw worker spans.
+          // agentTimeMin = Σ work-lane span durations (orchestrator ticks excluded,
+          // Rule L-3); axisSpanMin = their idle-elided union — the direct
+          // replacement for the retired skyline's activeSpanMin.
+          const agentLabel = flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : null;
+          const wallLabel = flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null;
           // Show wall-clock secondary only when it meaningfully differs from agent time (>1 min gap).
           const showWall = agentLabel && wallLabel && agentLabel !== wallLabel &&
-            skyline && Math.abs(skyline.activeSpanMin - skyline.agentTimeMin) > 1;
+            Math.abs(flightStripData.axisSpanMin - flightStripData.agentTimeMin) > 1;
           return (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
               {[
