@@ -169,6 +169,26 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
     expect(view.situation.derivedFrom).toBe('gateEvents.claimLoopDeferral');
   });
 
+  it('names the PR a path_overlap deferral is waiting on', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      deferrals: [{
+        taskId: 'task-stuck',
+        reason: 'path_overlap',
+        consecutiveDeferrals: 13,
+        firstDeferredAt: new Date(Date.now() - SURFACE_DEFERRAL_MS * 2).toISOString(),
+        blockedByPr: 1126,
+      }],
+    });
+
+    const fact = factOfKind(view.outstanding, 'claim_deferral');
+    if (fact.kind !== 'claim_deferral') throw new Error('unreachable');
+    expect(fact.reason).toBe('path_overlap');
+    expect(fact.blockedByPr).toBe(1126);
+    expect(view.situation.headline).toContain('blocked by PR #1126');
+  });
+
   it('stays quiet below the surfacing threshold — transient contention is not news', () => {
     const view = deriveMissionStateView(deferred(SURFACE_DEFERRAL_MS - 1000));
     expect(view.outstanding.some(f => f.kind === 'claim_deferral')).toBe(false);

@@ -216,6 +216,8 @@ export type WaitingOnDescriptor =
       consecutiveDeferrals: number;
       /** When the worst offender was first deferred, if the ledger recorded it. */
       firstDeferredAt: string | null;
+      /** For `path_overlap`: the open PR the worst offender is waiting on. */
+      blockedByPr?: number | null;
       taskIds: string[];
     };
 
@@ -362,6 +364,8 @@ export interface MissionStateInput {
     reason: string;
     consecutiveDeferrals: number;
     firstDeferredAt?: string | null;
+    /** For `path_overlap`: the open PR the claim loop deferred this task behind. */
+    blockedByPr?: number | null;
   }>;
   /**
    * The mission's own integration PR, when one is open. `canCompleteMission`
@@ -961,21 +965,28 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
  * the case the observed bug produced: a spinner reading "1 agent active" over
  * a task the claim loop had turned away a dozen times running.
  */
+/** The gate reason, plus the PR it waits on when the ledger named one. */
+function deferralReasonText(d: { reason: string; blockedByPr?: number | null }): string {
+  return typeof d.blockedByPr === 'number' ? `${d.reason} — blocked by PR #${d.blockedByPr}` : d.reason;
+}
+
 function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
   const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals, d.firstDeferredAt));
   if (stuck.length === 0) return null;
   // Worst offender leads: it is the one with the longest unbroken refusal.
   const worst = stuck.reduce((a, b) => (b.consecutiveDeferrals > a.consecutiveDeferrals ? b : a));
+  const reason = deferralReasonText(worst);
   return {
     kind: 'claim_deferral',
     tone: 'warning',
     label: stuck.length === 1
-      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${worst.reason}`
-      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${worst.reason})`,
+      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${reason}`
+      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${reason})`,
     count: stuck.length,
     reason: worst.reason,
     consecutiveDeferrals: worst.consecutiveDeferrals,
     firstDeferredAt: worst.firstDeferredAt ?? null,
+    blockedByPr: worst.blockedByPr ?? null,
     taskIds: stuck.map(d => d.taskId),
   };
 }
@@ -1089,8 +1100,8 @@ function situationPhrase(d: WaitingOnDescriptor): string {
         : `waiting on ${d.reason} — resumes on its own`;
     case 'claim_deferral':
       return d.count === 1
-        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${d.reason}`
-        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${d.reason}`;
+        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${deferralReasonText(d)}`
+        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${deferralReasonText(d)}`;
   }
 }
 
@@ -1197,7 +1208,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         ? `Nothing to do — this resumes on its own at ${waitingOn.waitUntil}.`
         : 'Nothing to do — this resumes on its own.';
     case 'claim_deferral':
-      return `The claim loop is refusing this task (${waitingOn.reason}) — clear that gate, or cancel the task if the work is no longer wanted.`;
+      return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}) — clear that gate, or cancel the task if the work is no longer wanted.`;
   }
 }
 
