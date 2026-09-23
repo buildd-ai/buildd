@@ -3,6 +3,7 @@ import {
   describeOauthPressure,
   learnOauthCapacity,
   oauthBudgetPressure,
+  oauthParallelismCap,
   readPacingConfig,
   type OauthEpisode,
 } from '../oauth-budget';
@@ -205,5 +206,55 @@ describe('readPacingConfig', () => {
     // contract that a disabled config can never produce a throttling signal.
     const config = readPacingConfig({ OAUTH_BUDGET_PACING: 'off' });
     expect(config.enabled).toBe(false);
+  });
+});
+
+// Learned pressure is a forecast of the 5h wall, and that forecast is not
+// reliable enough to hold work back on. Its only permitted output is a lower
+// per-seat concurrency: never below one session, never on low confidence, and
+// back to the full limit once the window has reset (pressure falls with it).
+describe('oauthParallelismCap', () => {
+  const learned = (n: number) =>
+    learnOauthCapacity(Array.from({ length: n }, (_, i) => episode({ exhaustedAt: AT(24 + i), turns: 200 })));
+  const pressureAt = (turns: number, samples = 5) =>
+    oauthBudgetPressure({
+      usage: { workerCount: 0, turns, tokens: 0, weightedTurns: 0, weightedTokens: 0 },
+      capacity: learned(samples),
+    });
+
+  test('no pressure signal leaves concurrency alone', () => {
+    expect(oauthParallelismCap({ pressure: null, baseMax: 5 })).toBeNull();
+  });
+
+  test('fails open at low confidence, however high the forecast', () => {
+    const p = pressureAt(10_000, 3);
+    expect(p.confidence).toBe('low');
+    expect(p.pct).toBe(1);
+    expect(oauthParallelismCap({ pressure: p, baseMax: 5 })).toBeNull();
+  });
+
+  test('leaves concurrency alone below half the learned window', () => {
+    expect(oauthParallelismCap({ pressure: pressureAt(90), baseMax: 5 })).toBeNull();
+  });
+
+  test('narrows concurrency as the window fills', () => {
+    // 75% of the learned window → halfway between the full limit and one.
+    expect(oauthParallelismCap({ pressure: pressureAt(150), baseMax: 5 })).toBe(3);
+  });
+
+  test('never goes below one session, even past the learned wall', () => {
+    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 5 })).toBe(1);
+    // A one-session limit has nothing to narrow — never reads as zero.
+    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 1 })).toBeNull();
+  });
+
+  test('never raises concurrency above the account limit', () => {
+    const cap = oauthParallelismCap({ pressure: pressureAt(110), baseMax: 2 });
+    expect(cap === null || cap <= 2).toBe(true);
+  });
+
+  test('restores the full limit once a reset empties the window', () => {
+    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 5 })).toBe(1);
+    expect(oauthParallelismCap({ pressure: pressureAt(0), baseMax: 5 })).toBeNull();
   });
 });
