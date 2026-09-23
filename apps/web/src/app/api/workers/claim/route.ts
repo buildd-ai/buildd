@@ -857,7 +857,10 @@ export async function POST(req: NextRequest) {
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
-  };
+    // Every counter must be a declared diagnostics key (and vice versa): the
+    // response casts to ClaimDiagnostics['deferrals'], so without this check a
+    // new reason ships untyped to every client.
+  } satisfies Required<NonNullable<ClaimDiagnostics['deferrals']>>;
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
   // tick — coalesced across polls by `fireDeferralEvent` so a task stuck

@@ -299,6 +299,7 @@ describe('HealthClient — LIFETIME grammar', () => {
       budgetForecast: {
         oauthSessions: [],
         codex: null,
+        claudeTenant: null,
         missions: [],
         monthly: {
           kind: 'monthly',
@@ -322,6 +323,7 @@ describe('HealthClient — PROJECTION grammar', () => {
       budgetForecast: {
         oauthSessions: [],
         codex: null,
+        claudeTenant: null,
         missions: [],
         monthly: {
           kind: 'monthly',
@@ -686,5 +688,61 @@ describe('HealthClient — hydration contract', () => {
     } finally {
       Date.now = originalDateNow;
     }
+  });
+});
+
+describe('HealthClient — budget forecast labels', () => {
+  const monthly = {
+    kind: 'monthly' as const,
+    spentUsd: 12.5,
+    budgetUsd: 100,
+    pctUsed: 13,
+    resetsAt: '2026-10-01T00:00:00.000Z',
+    burnRateUsdPerDay: 3,
+    daysToDepletion: 4.25,
+    confidence: 'high' as const,
+  };
+  const farFuture = '2099-01-01T00:00:00.000Z';
+
+  it('labels monthly and mission spend as an estimate', () => {
+    const html = render({
+      budgetForecast: {
+        oauthSessions: [],
+        codex: null,
+        claudeTenant: null,
+        missions: [{ missionId: 'm1', missionTitle: 'M', spentUsd: 2, budgetUsd: 10, pctUsed: 20, status: 'active' }],
+        monthly,
+      },
+    });
+    expect(html).toContain('$12.50 est.');
+    expect(html).toContain('$2.00 est.');
+  });
+
+  it('reports a Dispatch-tenant wall as Claude, not Codex', () => {
+    const html = render({
+      budgetForecast: {
+        oauthSessions: [],
+        monthly: null,
+        missions: [],
+        codex: null,
+        claudeTenant: { kind: 'claude_tenant', isExhausted: true, resetsAt: farFuture, exhaustedAt: null },
+      },
+    });
+    expect(html).toContain('Claude tenant budget');
+    expect(html).not.toContain('Codex budget');
+  });
+
+  it('shows the Codex line from a Codex pause', () => {
+    const html = render({
+      budgetForecast: {
+        oauthSessions: [],
+        monthly: null,
+        missions: [],
+        claudeTenant: null,
+        codex: { kind: 'codex', isExhausted: true, reason: 'budget', resetsAt: farFuture, exhaustedAt: null },
+      },
+    });
+    expect(html).toContain('Codex budget');
+    expect(html).not.toContain('Claude tenant budget');
   });
 });

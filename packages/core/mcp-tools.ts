@@ -3604,7 +3604,7 @@ export async function handleBuilddAction(
       if (f.monthly) {
         const m = f.monthly;
         const resetsIn = timeUntilFromIso(m.resetsAt);
-        let budgetLine = `Monthly budget: $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(0)} (${m.pctUsed}%) · resets in ${resetsIn}`;
+        let budgetLine = `Monthly budget: $${m.spentUsd.toFixed(2)} est. / $${m.budgetUsd.toFixed(0)} (${m.pctUsed}%) · resets in ${resetsIn}`;
         if (m.daysToDepletion !== null) {
           budgetLine += m.daysToDepletion < 1
             ? ` · depletes in ${Math.round(m.daysToDepletion * 24)}h`
@@ -3614,21 +3614,30 @@ export async function handleBuilddAction(
         lines.push(budgetLine);
       }
 
-      // Codex
+      // Provider walls. Codex is read from its own pause log; the Dispatch
+      // tenant row is a Claude pool, so it is labelled as one.
       if (f.codex?.isExhausted) {
         const resetsIn = f.codex.resetsAt ? timeUntilFromIso(f.codex.resetsAt) : 'unknown';
-        lines.push(`Codex budget: exhausted · resets in ${resetsIn}`);
+        const state = f.codex.reason === 'auth' ? 'credential rejected' : 'exhausted';
+        lines.push(`Codex budget: ${state} · resets in ${resetsIn}`);
+      }
+      if (f.claudeTenant?.isExhausted) {
+        const resetsIn = f.claudeTenant.resetsAt ? timeUntilFromIso(f.claudeTenant.resetsAt) : 'unknown';
+        lines.push(`Claude tenant budget: exhausted · resets in ${resetsIn}`);
       }
 
       // Mission budgets
       const missionRows: string[] = (f.missions ?? []).slice(0, 5).map((m: any) =>
-        `  Mission "${m.missionTitle}": $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(2)} (${m.pctUsed}%)${m.status === 'budget_exhausted' ? ' — exhausted' : ''}`
+        `  Mission "${m.missionTitle}": $${m.spentUsd.toFixed(2)} est. / $${m.budgetUsd.toFixed(2)} (${m.pctUsed}%)${m.status === 'budget_exhausted' ? ' — exhausted' : ''}`
       );
       if (missionRows.length > 0) {
         lines.push(`Mission budgets (by % used):\n${missionRows.join('\n')}`);
       }
 
       if (lines.length === 0) return text('No active budgets configured. All backends are running uncapped.');
+      if (f.monthly || missionRows.length > 0) {
+        lines.push('Dollar figures are estimates at API list price; on a subscription (OAuth) seat they are a list-price equivalent, not a charge.');
+      }
       return text(lines.join('\n'));
     }
 

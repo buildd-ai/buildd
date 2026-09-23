@@ -40,6 +40,7 @@ import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { ExperimentsSection } from './ExperimentsSection';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
+import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -1754,11 +1755,36 @@ function formatReset(iso: string, now: number): string {
   return t === 'now' ? 'resetting' : `resets in ${t}`;
 }
 
+function ProviderWallRow({ label, state, resetsAt, now }: {
+  label: string;
+  state: string;
+  resetsAt: string | null;
+  now: number;
+}) {
+  return (
+    <div className="px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
+        <span className="text-sm text-text-primary">{label}</span>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-status-error font-medium">{state}</span>
+          {resetsAt && (
+            <>
+              <span className="text-text-muted">·</span>
+              <span className="text-text-secondary">{formatReset(resetsAt, now)}</span>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; now: number }) {
   const hasAny =
     forecast.oauthSessions.length > 0 ||
     forecast.monthly !== null ||
     forecast.codex !== null ||
+    forecast.claudeTenant !== null ||
     forecast.missions.length > 0;
 
   if (!hasAny) return null;
@@ -1838,8 +1864,8 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
               <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                 {/* LIFETIME (calendar): spend accumulates from the 1st, so it is
                     labelled with that anchor rather than left to look windowed. */}
-                <span className="tabular-nums font-medium text-text-primary">
-                  ${forecast.monthly.spentUsd.toFixed(2)} / ${forecast.monthly.budgetUsd.toFixed(0)}
+                <span className="tabular-nums font-medium text-text-primary" title={ESTIMATED_COST_TITLE}>
+                  {formatEstimatedUsd(forecast.monthly.spentUsd)} / ${forecast.monthly.budgetUsd.toFixed(0)}
                 </span>
                 <span className="text-text-muted">·</span>
                 <span data-testid="monthly-anchor">{monthlyAnchor(forecast.monthly.resetsAt)}</span>
@@ -1882,22 +1908,24 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
           </div>
         )}
 
-        {/* Codex budget (only show when exhausted — for reset-time visibility) */}
+        {/* Provider walls (only shown while exhausted — for reset-time visibility).
+            Codex comes from its own pause log; the Dispatch-tenant row is a
+            Claude pool and is labelled as one. */}
         {forecast.codex?.isExhausted && (
-          <div className="px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
-              <span className="text-sm text-text-primary">Codex budget</span>
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="text-status-error font-medium">exhausted</span>
-                {forecast.codex.resetsAt && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span className="text-text-secondary">{formatReset(forecast.codex.resetsAt, now)}</span>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
+          <ProviderWallRow
+            label="Codex budget"
+            state={forecast.codex.reason === 'auth' ? 'credential rejected' : 'exhausted'}
+            resetsAt={forecast.codex.resetsAt}
+            now={now}
+          />
+        )}
+        {forecast.claudeTenant?.isExhausted && (
+          <ProviderWallRow
+            label="Claude tenant budget"
+            state="exhausted"
+            resetsAt={forecast.claudeTenant.resetsAt}
+            now={now}
+          />
         )}
 
         {/* Mission budgets — top 3 nearest to exhaustion */}
@@ -1910,8 +1938,8 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
                   m.pctUsed >= 90 ? 'text-status-error' :
                   m.pctUsed >= 70 ? 'text-status-warning' :
                   'text-text-primary'
-                }`}>
-                  ${m.spentUsd.toFixed(2)} / ${m.budgetUsd.toFixed(2)}
+                }`} title={ESTIMATED_COST_TITLE}>
+                  {formatEstimatedUsd(m.spentUsd)} / ${m.budgetUsd.toFixed(2)}
                 </span>
                 <span className="text-text-muted">·</span>
                 <span>{m.pctUsed}%</span>

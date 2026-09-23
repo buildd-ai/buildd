@@ -1141,13 +1141,23 @@ export interface ClaimDiagnostics {
     duplicate_worker?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
+    /** Resolved model needs a newer Claude Code CLI than this runner reports. */
+    runner_capability?: number;
+    /**
+     * Claude task held because learned OAuth pressure lowered this seat's
+     * session cap and the seat is at it. Never applies to explicit starts,
+     * Codex, or tenant work. See `budgetPressure` for the reading behind it.
+     */
+    oauth_parallelism?: number;
   };
   /**
-   * Learned OAuth budget pressure for this account (seat-based auth only).
-   * pct is 0..1 of the capacity learned from past exhaustion episodes; the
-   * router downshifts tiers as it rises and pauses priority-0 work at 0.95.
-   * Absent when the account is API-billed or has too few episodes to learn from.
-   * See packages/core/oauth-budget.ts.
+   * Learned OAuth budget pressure for this seat (seat-based auth only).
+   * pct is 0..1 of the capacity learned from past exhaustion episodes. Its only
+   * effect is a lower per-seat concurrent-session cap (never below one live
+   * session, restored when the window resets); it does not change the routed
+   * tier and never pauses or delays claims. Absent when the account is
+   * API-billed, pacing is off, or there are too few episodes to learn from.
+   * See packages/core/oauth-budget.ts (`oauthParallelismCap`).
    */
   budgetPressure?: {
     pct: number;

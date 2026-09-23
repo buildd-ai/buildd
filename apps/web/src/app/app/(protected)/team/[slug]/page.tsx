@@ -9,6 +9,7 @@ import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-help
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import ExternalLink from '@/components/ExternalLink';
 import { roleModelLabel } from '@/lib/model-presentation';
+import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 export const dynamic = 'force-dynamic';
 
@@ -438,7 +439,7 @@ export default async function RoleProfilePage({
               </div>
               {totalCost > 0 && (
                 <div className="mt-3 pt-3 border-t border-border-default">
-                  <div className="text-sm font-medium text-text-primary">${totalCost.toFixed(2)}</div>
+                  <div className="text-sm font-medium text-text-primary" title={ESTIMATED_COST_TITLE}>{formatEstimatedUsd(totalCost)}</div>
                   <div className="text-[11px] text-text-muted">Total cost</div>
                 </div>
               )}
