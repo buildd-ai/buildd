@@ -259,7 +259,7 @@ export function preflightEscalationCheck(
   // Semantic risk-class check (policyConfig supersedes escalateToPaths)
   if (policyConfig) {
     const fileNames = prFiles.map((f) => f.filename);
-    const match = resolveEffectivePolicyForPR(policyConfig, fileNames);
+    const match = resolveEffectivePolicyForPR(policyConfig, fileNames, migrationSafety);
     if (match?.action === 'human') {
       return {
         shouldEscalate: true,

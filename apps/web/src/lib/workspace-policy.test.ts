@@ -168,6 +168,35 @@ describe('resolveEffectivePolicyForPR', () => {
     expect(match?.matchedClass).toBe('destructive_schema_change');
   });
 
+  it('does not escalate the schema class when the migration classifier says EXPAND', () => {
+    const match = resolveEffectivePolicyForPR(
+      BALANCED_POLICY,
+      ['packages/core/drizzle/0002_add_column.sql', 'packages/core/db/schema.ts'],
+      { safe: true, operationClass: 'EXPAND' },
+    );
+    expect(match).toBeNull();
+  });
+
+  it('escalates the schema class when the migration classifier says CONTRACT', () => {
+    const match = resolveEffectivePolicyForPR(
+      BALANCED_POLICY,
+      ['packages/core/drizzle/0002_drop.sql'],
+      { safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' },
+    );
+    expect(match?.action).toBe('human');
+    expect(match?.matchedClass).toBe('destructive_schema_change');
+    expect(match?.reason).toContain('drops column tasks.legacy');
+  });
+
+  it('an EXPAND verdict does not suppress other risk classes', () => {
+    const match = resolveEffectivePolicyForPR(
+      BALANCED_POLICY,
+      ['packages/core/drizzle/0002_add.sql', '.github/workflows/ci.yml'],
+      { safe: true, operationClass: 'EXPAND' },
+    );
+    expect(match?.matchedClass).toBe('ci_deploy_config');
+  });
+
   it('escalates CI config to agent-review', () => {
     const match = resolveEffectivePolicyForPR(BALANCED_POLICY, [
       '.github/workflows/deploy.yml',
@@ -344,6 +373,16 @@ describe('applyPolicyConfigToMergePolicy', () => {
       ['packages/core/drizzle/0002.sql'],
     );
     expect(result.tier).toBe('human');
+  });
+
+  it('keeps base tier for an EXPAND-only schema PR', () => {
+    const result = applyPolicyConfigToMergePolicy(
+      basePolicyAutoThreshold,
+      BALANCED_POLICY,
+      ['packages/core/drizzle/0002.sql', 'packages/core/db/schema.ts'],
+      { safe: true, operationClass: 'EXPAND' },
+    );
+    expect(result.tier).toBe('auto-threshold');
   });
 
   it('upgrades auto-threshold → agent-review for CI file', () => {

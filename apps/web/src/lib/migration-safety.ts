@@ -28,11 +28,52 @@ function stripComments(sql: string): string {
     .replace(/^\s*--.*$/gm, '');
 }
 
+/**
+ * Split on `;` and drizzle's `--> statement-breakpoint`, but never inside a
+ * dollar-quoted body (`$$ ... $$`, `$fn$ ... $fn$`), so a DO block or function
+ * stays one statement instead of being cut at its inner semicolons.
+ */
 function statements(sql: string): string[] {
-  return stripComments(sql)
-    .split(/-->\s*statement-breakpoint|;/)
-    .map(compact)
-    .filter(Boolean);
+  const text = stripComments(sql);
+  const out: string[] = [];
+  let current = '';
+  let i = 0;
+  while (i < text.length) {
+    const tag = /^\$[a-zA-Z_]*\$/.exec(text.slice(i))?.[0];
+    if (tag) {
+      const close = text.indexOf(tag, i + tag.length);
+      const end = close === -1 ? text.length : close + tag.length;
+      current += text.slice(i, end);
+      i = end;
+      continue;
+    }
+    const breakpoint = /^-->\s*statement-breakpoint/.exec(text.slice(i))?.[0];
+    if (breakpoint || text[i] === ';') {
+      out.push(current);
+      current = '';
+      i += breakpoint ? breakpoint.length : 1;
+      continue;
+    }
+    current += text[i];
+    i += 1;
+  }
+  out.push(current);
+  return out.map(compact).filter(Boolean);
+}
+
+/**
+ * drizzle-kit wraps FK/enum creation as
+ *   DO $$ BEGIN <stmt>; EXCEPTION WHEN duplicate_object THEN null; END $$
+ * purely to make it idempotent. Return <stmt> so it is classified on its own
+ * merits; any other DO block is procedural and stays ambiguous.
+ */
+function unwrapIdempotentDoBlock(statement: string): string | null {
+  const match =
+    /^DO\s+\$\$\s*BEGIN\s+([\s\S]+?);?\s*EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+null;?\s*END\s*\$\$$/i.exec(
+      statement,
+    );
+  if (!match || match[1].includes(';')) return null;
+  return compact(match[1]);
 }
 
 /**
@@ -48,11 +89,30 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     return { safe: false, operationClass: 'CONTRACT', reason: 'generated migration contains no SQL statements' };
   }
 
-  for (const statement of parsed) {
+  for (const raw of parsed) {
+    const statement = unwrapIdempotentDoBlock(raw) ?? raw;
     let match: RegExpExecArray | null;
 
     match = /^DROP\s+TABLE(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?)/i.exec(statement);
     if (match) return { safe: false, operationClass: 'CONTRACT', reason: `drops table ${identifier(match[1])}` };
+
+    match = /^DROP\s+INDEX(?:\s+CONCURRENTLY)?(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$.]*"?)/i.exec(statement);
+    if (match) return { safe: false, operationClass: 'CONTRACT', reason: `drops index ${identifier(match[1])}` };
+
+    match = /^DROP\s+TYPE(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?(?:\."?[a-zA-Z_][\w$]*"?)?)/i.exec(statement);
+    if (match) return { safe: false, operationClass: 'CONTRACT', reason: `drops type ${identifier(match[1])}` };
+
+    match =
+      /^ALTER\s+TABLE\s+(?:ONLY\s+)?("?[a-zA-Z_][\w$]*"?)\s+DROP\s+CONSTRAINT(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?)/i.exec(
+        statement,
+      );
+    if (match) {
+      return {
+        safe: false,
+        operationClass: 'CONTRACT',
+        reason: `drops constraint ${identifier(match[1])}.${identifier(match[2])}`,
+      };
+    }
 
     match =
       /^ALTER\s+TABLE\s+(?:ONLY\s+)?("?[a-zA-Z_][\w$]*"?)\s+DROP\s+COLUMN(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?)/i.exec(
@@ -127,9 +187,21 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
 
     if (/^CREATE\s+TABLE\b/i.test(statement)) continue;
     if (/^CREATE\s+(?:UNIQUE\s+)?INDEX\b/i.test(statement)) continue;
+    // New enum types and new enum values: additive, nothing reads them yet.
+    if (/^CREATE\s+TYPE\b[\s\S]*\bAS\s+ENUM\b/i.test(statement)) continue;
+    if (/^ALTER\s+TYPE\b[\s\S]*\bADD\s+VALUE\b/i.test(statement)) continue;
+    if (/^CREATE\s+EXTENSION\s+IF\s+NOT\s+EXISTS\b/i.test(statement)) continue;
+    // Default changes are catalog-only; DROP NOT NULL only relaxes a constraint.
+    if (
+      /^ALTER\s+TABLE\s+(?:ONLY\s+)?"?[a-zA-Z_][\w$]*"?\s+ALTER\s+COLUMN\s+"?[a-zA-Z_][\w$]*"?\s+(?:SET\s+DEFAULT\b|DROP\s+DEFAULT$|DROP\s+NOT\s+NULL$)/i.test(
+        statement,
+      )
+    ) {
+      continue;
+    }
 
     match =
-      /^ALTER\s+TABLE\s+("?[a-zA-Z_][\w$]*"?)\s+ADD\s+COLUMN\s+("?[a-zA-Z_][\w$]*"?)\s+([\s\S]+)$/i.exec(
+      /^ALTER\s+TABLE\s+("?[a-zA-Z_][\w$]*"?)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?("?[a-zA-Z_][\w$]*"?)\s+([\s\S]+)$/i.exec(
         statement,
       );
     if (match) {
