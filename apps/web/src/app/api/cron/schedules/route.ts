@@ -21,6 +21,7 @@ import { runStaleWorkerCleanup } from './maintenance/stale-workers';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -749,6 +750,16 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // — 35 clean-looking completions, zero child tasks.
         const resolvedMode = template.mode || (linkedMission ? 'planning' : 'execution');
 
+        // Required-skill pre-flight. A template naming a skill no claim here
+        // can deliver would dispatch a worker told to use a skill it does not
+        // have, every tick. Throwing lands in the per-schedule catch below:
+        // lastError carries the reason, the failure counts toward
+        // pauseAfterFailures, and one friction task is filed. It runs here,
+        // after every skip/defer branch, so a tick that would never have
+        // dispatched (active hours, breaker, heartbeat prepass) never counts
+        // a failure and never pays for the lookup.
+        await assertScheduleSkillsAvailable(taskWorkspaceId, template.context);
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -856,6 +867,18 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // so the stored lastError and any ops alert are actually diagnosable.
         const reason = describeError(error);
         console.error(`Schedule ${schedule.id} error:`, error);
+
+        if (error instanceof MissingScheduleSkillError) {
+          const frictionWorkspaceId = schedule.workspaceId ?? error.workspaceId;
+          if (frictionWorkspaceId) {
+            await fileMissingSkillFriction({
+              scheduleId: schedule.id,
+              scheduleName: schedule.name,
+              workspaceId: frictionWorkspaceId,
+              missingSlugs: error.missingSlugs,
+            }).catch(e => console.error(`[cron-schedules] missing-skill friction failed for ${schedule.id}:`, e));
+          }
+        }
 
         // Increment consecutive failures
         const newFailures = schedule.consecutiveFailures + 1;

@@ -147,6 +147,12 @@ export interface WaitingOnYouRawItem {
   docFixTaskStatus?: string | null;
   /** kind === 'discrepancy' — `workers.prLifecycleStatus` for docFixTaskId's PR, if any. */
   docFixPrLifecycleStatus?: string | null;
+  /**
+   * kind === 'discrepancy' — a doc-fix task whose PR merged and was rechecked
+   * with the gap still open (isDocFixClaimStale). Set only when no live claim
+   * owns the group. The card offers the owner's exits, never a second fix.
+   */
+  mergedDocFixTaskId?: string | null;
   /** kind === 'discrepancy' — set once `promote_discrepancy` has minted a mission. */
   promotedMissionId?: string | null;
   /** kind === 'discrepancy' — the discrepancy's owning workspace. */
@@ -330,6 +336,8 @@ export interface ActionQueueItem {
    * real blocker instead of assuming completion means merged.
    */
   docFixPrLifecycleStatus?: string | null;
+  /** See {@link WaitingOnYouRawItem.mergedDocFixTaskId} — carried through unchanged. */
+  mergedDocFixTaskId?: string | null;
   /** See {@link EscalationRawItem.missionMergeBlockedReason} — carried through unchanged. */
   missionMergeBlockedReason?: string | null;
 }
@@ -501,6 +509,14 @@ export interface DiscrepancyQueueResult {
  * `failed`/`cancelled` release the claim: nothing is coming, and the human
  * needs the CTA back.
  */
+/**
+ * How long after a doc-fix merge a ledger recheck has to land before it counts
+ * as having evaluated the fix. It bounds one Spec Discrepancy Ledger run
+ * (checkout, install, evaluate, write) with room to spare; a run that began
+ * before the merge finishes well inside it.
+ */
+export const DOC_FIX_RECHECK_GRACE_MS = 30 * 60 * 1000;
+
 const LIVE_DOC_FIX_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'assigned', 'in_progress', 'completed',
 ]);
@@ -537,6 +553,18 @@ export function isDocFixInFlight(
  * the checker has demonstrably run again since the fix landed. Never trust
  * the task's own say-so (§9) — only a timestamp comparison against the
  * ledger row's own last real evaluation.
+ *
+ * The recheck must also land at least DOC_FIX_RECHECK_GRACE_MS after the
+ * merge. The ledger writer stamps last_checked_at when it FINISHES, so a run
+ * started on an earlier dev push that completes just after the merge moves
+ * last_checked_at past mergedAt without ever reading the fixed doc.
+ *
+ * A stale claim is NOT an invitation to dispatch the same doc fix again: the
+ * dispatch route leaves such rows out of any new task, refuses outright
+ * (`doc_fix_already_merged`) when every open row on the path is held that
+ * way, and in that case the card offers Accept only. A code_ahead row that survives a merged, rechecked docs fix is held
+ * open by its assertions, not by the document text, and only the owner can
+ * change that (accept, `skip_until`, or rewrite the assertion).
  */
 export function isDocFixClaimStale(
   candidate: Pick<
@@ -547,7 +575,10 @@ export function isDocFixClaimStale(
   if (candidate.docFixTaskStatus !== 'completed') return false;
   if (candidate.docFixPrLifecycleStatus !== 'merged' || !candidate.docFixMergedAt) return false;
   if (!candidate.lastCheckedAt) return false;
-  return new Date(candidate.lastCheckedAt).getTime() >= new Date(candidate.docFixMergedAt).getTime();
+  return (
+    new Date(candidate.lastCheckedAt).getTime() >=
+    new Date(candidate.docFixMergedAt).getTime() + DOC_FIX_RECHECK_GRACE_MS
+  );
 }
 
 /** §12 ranking: an owner call outranks real unbuilt work outranks a pure doc fix. */
@@ -575,6 +606,8 @@ interface DiscrepancyGroup {
   docFixPrLifecycleStatus: string | null;
   docFixMergedAt: Date | string | null;
   inFlight: boolean;
+  /** A merged, rechecked fix that did not close the gap — see isDocFixClaimStale. */
+  mergedDocFixTaskId: string | null;
 }
 
 /**
@@ -632,6 +665,7 @@ export function buildDiscrepancyItems(
         docFixPrLifecycleStatus: null,
         docFixMergedAt: null,
         inFlight: false,
+        mergedDocFixTaskId: null,
       });
     }
   }
@@ -644,8 +678,16 @@ export function buildDiscrepancyItems(
     // path — the doc fix reconciles the document, not one assertion at a
     // time. A claim the checker has already re-evaluated post-merge and
     // still found wanting (isDocFixClaimStale) does not count: the fix
-    // demonstrably did not close this gap, so the CTA comes back.
+    // demonstrably did not close this gap. When EVERY row on the path is held
+    // that way the card comes back to the owner as "fix merged, still open" —
+    // not as a fresh dispatch. If any row is unclaimed (or dead-claimed), a
+    // doc fix is still owed for it, so Dispatch stays available; the dispatch
+    // route leaves the merged-stale rows out of that task.
     const claimed = group.rows.find((r) => isDocFixInFlight(r) && !isDocFixClaimStale(r));
+    const mergedStale = (r: DiscrepancyCandidate) => Boolean(r.docFixTaskId) && isDocFixClaimStale(r);
+    group.mergedDocFixTaskId = !claimed && group.rows.every(mergedStale)
+      ? group.rows[0].docFixTaskId ?? null
+      : null;
     group.inFlight = Boolean(claimed);
     group.docFixTaskId = claimed?.docFixTaskId ?? null;
     group.docFixTaskStatus = claimed?.docFixTaskStatus ?? null;
@@ -686,6 +728,7 @@ export function buildDiscrepancyItems(
         docFixTaskId: g.inFlight ? g.docFixTaskId : null,
         docFixTaskStatus: g.inFlight ? g.docFixTaskStatus : null,
         docFixPrLifecycleStatus: g.inFlight ? g.docFixPrLifecycleStatus : null,
+        mergedDocFixTaskId: g.mergedDocFixTaskId,
         workspaceId: g.workspaceId,
         workspaceName: g.workspaceName ?? undefined,
       });
@@ -902,6 +945,7 @@ export function buildActionQueue(
           docFixTaskId: item.docFixTaskId ?? null,
           docFixTaskStatus: item.docFixTaskStatus ?? null,
           docFixPrLifecycleStatus: item.docFixPrLifecycleStatus ?? null,
+          mergedDocFixTaskId: item.mergedDocFixTaskId ?? null,
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
         });
