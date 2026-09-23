@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getUserFromRequest } from '@/lib/auth-helpers';
+import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -18,22 +18,28 @@ export async function GET(
 ) {
   const { id: teamId } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
+  const principal = await getRequestPrincipal(req);
+  if (!principal) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    // Verify user is a member of this team
-    const membership = await db.query.teamMembers.findFirst({
-      where: and(
-        eq(teamMembers.teamId, teamId),
-        eq(teamMembers.userId, user.id)
-      ),
-    });
+    // An API key may list only its own team; a user must be a member.
+    if (principal.kind === 'api_key') {
+      if (principal.account.teamId !== teamId) {
+        return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      }
+    } else {
+      const membership = await db.query.teamMembers.findFirst({
+        where: and(
+          eq(teamMembers.teamId, teamId),
+          eq(teamMembers.userId, principal.user.id)
+        ),
+      });
 
-    if (!membership) {
-      return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      if (!membership) {
+        return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      }
     }
 
     const members = await db.query.teamMembers.findMany({
@@ -65,10 +71,9 @@ export async function POST(
 ) {
   const { id: teamId } = await params;
 
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireSessionUser(req);
+  if (session.response) return session.response;
+  const user = session.user;
 
   try {
     // Verify current user is owner or admin

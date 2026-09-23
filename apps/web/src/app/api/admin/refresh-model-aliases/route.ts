@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authorizePlatformAdmin } from '@/lib/platform-admin';
 import { updateModelAliases, DEFAULT_ALIASES } from '@buildd/core/model-aliases';
 
 /**
@@ -12,21 +12,14 @@ import { updateModelAliases, DEFAULT_ALIASES } from '@buildd/core/model-aliases'
  * Request body (optional): `{ haiku?: string, sonnet?: string, opus?: string }`.
  * If omitted for any alias, the current DEFAULT_ALIASES value is kept.
  *
- * Auth: admin-level API key only. The write target is the single global
- * system_cache model-alias row (not tenant-scoped), and there is no admin role on
- * session users, so session auth is never sufficient.
+ * Auth: platform admin API key only (BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS, see
+ * lib/platform-admin.ts). The write target is the single global system_cache
+ * model-alias row (not tenant-scoped), so neither a team-admin key nor a
+ * session is sufficient.
  */
 export async function POST(req: NextRequest) {
-  const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
-
-  if (!apiAccount) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  if (apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
-  }
+  const gate = await authorizePlatformAdmin(req);
+  if (gate.response) return gate.response;
 
   let body: { haiku?: string; sonnet?: string; opus?: string } = {};
   try {

@@ -20,7 +20,8 @@ mock.module('@/lib/team-access', () => ({
 }));
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
-  getUserFromRequest: mock(() => null),
+  getRequestPrincipal: mock(() => null),
+  requireSessionUser: mock(() => null),
 }));
 mock.module('next/navigation', () => ({ redirect: mockRedirect }));
 mock.module('./ConnectionsClient', () => ({ default: (_props: unknown) => null }));

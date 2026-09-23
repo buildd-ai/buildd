@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authorizePlatformAdmin } from '@/lib/platform-admin';
 
 /**
  * POST /api/admin/backfill-entity-graph
@@ -15,26 +15,17 @@ import { authenticateApiKey } from '@/lib/api-auth';
  * Request body (optional):
  *   { namespace?: string, backfillTs?: boolean, dryRun?: boolean }
  *
- * Admin-level API key required.
+ * Platform admin API key required (see lib/platform-admin.ts).
  */
 
 export const maxDuration = 300; // Vercel Pro max 300s
 
 export async function POST(req: NextRequest) {
-  // Admin-level API key required. A browser session is deliberately NOT
-  // accepted: there is no platform-admin concept for sessions in this codebase,
-  // so accepting one would let any signed-in user run a bulk cross-namespace
-  // write. Same bar as admin/refresh-model-aliases.
-  const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
-
-  if (!apiAccount) {
-    return NextResponse.json({ error: 'Requires an admin-level API key' }, { status: 401 });
-  }
-  if (apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
-  }
+  // Platform operators only (BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS). This is a bulk
+  // cross-namespace write, so a team-admin key is not enough and a browser
+  // session is never accepted. Same gate as admin/refresh-model-aliases.
+  const gate = await authorizePlatformAdmin(req);
+  if (gate.response) return gate.response;
 
   let body: { namespace?: string; backfillTs?: boolean; dryRun?: boolean } = {};
   try { body = (await req.json().catch(() => ({}))) ?? {}; } catch { body = {}; }

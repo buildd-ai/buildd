@@ -2,22 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
+import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
+import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
 
 // Generalized CLI OAuth flow:
 // 1. CLI redirects here with ?callback=http://localhost:PORT/callback&client=cli&level=admin
 // 2. We check if user is logged in (session auth)
 // 3. If not, redirect to login with return URL
-// 4. If yes, get/create a dedicated named account and redirect back with ?token=xxx
+// 4. If yes, create a new named account and redirect back with ?token=xxx&level=yyy
 //
 // Query params:
 //   callback (required) - localhost URL to redirect back to
 //   client   (optional) - client identifier: 'runner', 'cli', 'mcp', 'agent' (default: 'cli')
 //   account_name (optional) - custom account name (overrides client-based name)
-//   level    (optional) - 'admin' or 'worker' (default depends on client)
+//   level    (optional) - 'admin', 'worker' or 'trigger' (default depends on client).
+//                         Capped by the user's team role: members get at most 'worker'.
 
 const CLIENT_DEFAULTS: Record<string, { name: string; level: 'admin' | 'worker' }> = {
   'runner': { name: 'Runner', level: 'worker' },
@@ -86,65 +87,52 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL(loginUrl, req.url));
   }
 
-  // Resolve account name and level
+  // Resolve account name and requested level (unknown values fall back to the client default)
   const defaults = CLIENT_DEFAULTS[client] || CLIENT_DEFAULTS['cli'];
   const resolvedName = accountName || defaults.name;
-  const resolvedLevel = levelParam || defaults.level;
+  const requestedLevel = parseKeyLevel(levelParam) || defaults.level;
 
-  // User is logged in - get or create their account
+  // User is logged in - create a dedicated account for this login.
+  // A login always mints a new account: it never rotates or returns an
+  // existing account's key, even one with the same name.
   try {
     const teamIds = await getUserTeamIds(session.user.id);
-    let account = teamIds.length > 0
-      ? await db.query.accounts.findFirst({
-          where: and(
-            inArray(accounts.teamId, teamIds),
-            eq(accounts.name, resolvedName)
-          ),
-        })
-      : null;
+    const teamId = teamIds[0] || await getUserDefaultTeamId(session.user.id);
+    if (!teamId) {
+      const errorUrl = new URL(callback);
+      errorUrl.searchParams.set('error', 'No team found');
+      return NextResponse.redirect(errorUrl.toString());
+    }
+
+    // The key's level is capped by the user's current role on that team.
+    const role = await getUserTeamRole(session.user.id, teamId);
+    if (!role) {
+      const errorUrl = new URL(callback);
+      errorUrl.searchParams.set('error', 'Not a member of the target team');
+      return NextResponse.redirect(errorUrl.toString());
+    }
+    const grantedLevel = clampKeyLevel(role, requestedLevel);
 
     // Generate a fresh plaintext key for this auth flow
     const plaintextKey = generateApiKey();
 
-    if (!account) {
-      const teamId = teamIds[0] || await getUserDefaultTeamId(session.user.id);
-      if (!teamId) {
-        const errorUrl = new URL(callback);
-        errorUrl.searchParams.set('error', 'No team found');
-        return NextResponse.redirect(errorUrl.toString());
-      }
-
-      // Create dedicated account with hashed key
-      const [newAccount] = await db
-        .insert(accounts)
-        .values({
-          name: resolvedName,
-          type: 'user',
-          level: resolvedLevel,
-          authType: 'api',
-          apiKey: hashApiKey(plaintextKey),
-          apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-          teamId,
-        })
-        .returning();
-      account = newAccount;
-    } else {
-      // Account exists - rotate key (we can't recover the old plaintext)
-      const [updated] = await db
-        .update(accounts)
-        .set({
-          apiKey: hashApiKey(plaintextKey),
-          apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-          level: resolvedLevel,
-        })
-        .where(eq(accounts.id, account.id))
-        .returning();
-      account = updated;
-    }
+    await db
+      .insert(accounts)
+      .values({
+        name: resolvedName,
+        type: 'user',
+        level: grantedLevel,
+        authType: 'api',
+        apiKey: hashApiKey(plaintextKey),
+        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+        teamId,
+      })
+      .returning();
 
     // Redirect back to CLI with the plaintext token (shown once)
     const successUrl = new URL(callback);
     successUrl.searchParams.set('token', plaintextKey);
+    successUrl.searchParams.set('level', grantedLevel);
     successUrl.searchParams.set('email', session.user.email || '');
     if (process.env.NEXT_PUBLIC_PUSHER_KEY) successUrl.searchParams.set('pusherKey', process.env.NEXT_PUBLIC_PUSHER_KEY);
     if (process.env.NEXT_PUBLIC_PUSHER_CLUSTER) successUrl.searchParams.set('pusherCluster', process.env.NEXT_PUBLIC_PUSHER_CLUSTER);

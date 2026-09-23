@@ -29,13 +29,37 @@ import { POST } from './route';
 function createRequest(body?: unknown) {
   return new NextRequest('http://localhost:3000/api/admin/refresh-model-aliases', {
     method: 'POST',
-    headers: new Headers({ 'content-type': 'application/json' }),
+    headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
 
+describe('POST /api/admin/refresh-model-aliases — platform admin allowlist', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockUpdateModelAliases.mockReset();
+  });
+
+  it('refuses an admin-level key when the allowlist is unset', async () => {
+    delete process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    const res = await POST(createRequest());
+    expect(res.status).toBe(403);
+    expect(mockUpdateModelAliases).not.toHaveBeenCalled();
+  });
+
+  it('refuses an admin-level key that is not listed', async () => {
+    process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acc-operator';
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    const res = await POST(createRequest());
+    expect(res.status).toBe(403);
+    expect(mockUpdateModelAliases).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/admin/refresh-model-aliases', () => {
   beforeEach(() => {
+    process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acc-1';
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockUpdateModelAliases.mockReset();

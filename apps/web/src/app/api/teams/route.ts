@@ -2,16 +2,39 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { getUserFromRequest } from '@/lib/auth-helpers';
+import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { seedDefaultRolesForTeam } from '@/lib/default-roles';
 
 export async function GET(req: NextRequest) {
-  const user = await getUserFromRequest(req);
-  if (!user) {
+  const principal = await getRequestPrincipal(req);
+  if (!principal) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
+    // An API key sees only its own team, with no user role attached.
+    if (principal.kind === 'api_key') {
+      const teamId = principal.account.teamId;
+      const team = await db.query.teams.findFirst({
+        where: eq(teams.id, teamId),
+        columns: {
+          id: true, name: true, slug: true, plan: true,
+          createdAt: true, updatedAt: true,
+        },
+      });
+      if (!team) return NextResponse.json({ teams: [] });
+      const [countRow] = await db
+        .select({ teamId: teamMembers.teamId, count: sql<number>`count(*)::int` })
+        .from(teamMembers)
+        .where(eq(teamMembers.teamId, teamId))
+        .groupBy(teamMembers.teamId);
+      return NextResponse.json({
+        teams: [{ ...team, role: null, memberCount: countRow?.count || 1 }],
+      });
+    }
+
+    const user = principal.user;
+
     // Get all teams the user is a member of, with their role and member count
     const memberships = await db.query.teamMembers.findMany({
       where: eq(teamMembers.userId, user.id),
@@ -58,10 +81,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireSessionUser(req);
+  if (session.response) return session.response;
+  const user = session.user;
 
   try {
     const body = await req.json();
