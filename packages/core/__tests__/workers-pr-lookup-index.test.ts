@@ -5,9 +5,9 @@ import { workers } from '../db/schema';
 /**
  * Every GitHub webhook resolves "which worker owns this PR" by
  * `workers.pr_number` (usually paired with `pr_url` via repo-scope's
- * `prMatch`), and knowledge ingest looks a worker up by `pr_url` alone. Without
- * an index those are sequential scans of the whole workers table on the
- * webhook hot path.
+ * `workerOwnsPr` / `workerOwnsPrUrl`), and knowledge ingest looks a worker up
+ * by `pr_url` alone. Without an index those are sequential scans of the whole
+ * workers table on the webhook hot path.
  *
  * Both indexes are partial on IS NOT NULL: most workers never open a PR, and
  * every lookup is an equality on a non-null value, which the planner proves
