@@ -3048,6 +3048,58 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
 
+    // The friction behind PR #2658: an agent's merge_pr under concurrent landing
+    // hits "PR is N commits behind dev" and had no recourse but a manual
+    // rebase. The route now brings the branch up to date itself — but must NOT
+    // merge in the same call: the update produces a new head whose CI has not
+    // run, which is exactly what the freshness refusal exists to prevent.
+    describe('behind base', () => {
+      function behindGithub(updateBranch: () => Promise<unknown>) {
+        const calls: string[] = [];
+        mockGithubApi.mockImplementation((_inst: number, path: string, init?: any) => {
+          calls.push(`${init?.method ?? 'GET'} ${path}`);
+          if (/\/update-branch$/.test(path)) return updateBranch();
+          if (/\/compare\//.test(path)) return Promise.resolve({ behind_by: 3 });
+          if (/\/check-runs$/.test(path)) {
+            return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+          }
+          if (/\/files/.test(path)) {
+            return Promise.resolve([{ filename: 'apps/web/src/lib/foo.ts', additions: 10, deletions: 2, status: 'modified' }]);
+          }
+          return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+        });
+        return calls;
+      }
+
+      it('updates the branch from base and asks for a retry once CI re-runs, without merging', async () => {
+        workerOk();
+        const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+        const res = await put();
+
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect(data.branchUpdated).toBe(true);
+        expect(data.error).toContain('behind');
+        expect(data.hint).toContain('merge_pr');
+        expect(calls).toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+
+      it('falls back to the 403 refusal when GitHub cannot update the branch', async () => {
+        workerOk();
+        behindGithub(() => Promise.reject(new Error('422 merge conflict between base and head')));
+
+        const res = await put();
+
+        expect(res.status).toBe(403);
+        const data = await res.json();
+        expect(data.error).toContain('behind');
+        expect(data.branchUpdated).toBeUndefined();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+    });
+
     it('rejects force from a worker-level token', async () => {
       workerOk();
       mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'worker' });
