@@ -20,6 +20,7 @@ mock.module('@buildd/core/db', () => ({
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
+      workers: { findMany: mock(() => Promise.resolve([])) },
       // createReviewerTask probes for a live reviewer task on the same PR
       // generation before creating one. No match here — these tests are about
       // the prompt, not the dedupe.
