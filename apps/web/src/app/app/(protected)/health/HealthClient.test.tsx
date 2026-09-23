@@ -745,4 +745,31 @@ describe('HealthClient — budget forecast labels', () => {
     expect(html).toContain('Codex budget');
     expect(html).not.toContain('Claude tenant budget');
   });
+
+  it('renders no budget card when the only signal is an elapsed Codex pause', () => {
+    const html = render({
+      budgetForecast: {
+        oauthSessions: [],
+        monthly: null,
+        missions: [],
+        claudeTenant: { kind: 'claude_tenant', isExhausted: false, resetsAt: null, exhaustedAt: null },
+        codex: { kind: 'codex', isExhausted: false, reason: 'budget', resetsAt: null, exhaustedAt: null },
+      },
+    });
+    expect(html).not.toContain('health-section-budget-forecast');
+  });
+
+  it('labels a rejected Codex credential as a credential, not a budget', () => {
+    const html = render({
+      budgetForecast: {
+        oauthSessions: [],
+        monthly: null,
+        missions: [],
+        claudeTenant: null,
+        codex: { kind: 'codex', isExhausted: true, reason: 'auth', resetsAt: farFuture, exhaustedAt: null },
+      },
+    });
+    expect(html).toContain('Codex credential');
+    expect(html).not.toContain('Codex budget');
+  });
 });

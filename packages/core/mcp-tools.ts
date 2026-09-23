@@ -3618,8 +3618,9 @@ export async function handleBuilddAction(
       // tenant row is a Claude pool, so it is labelled as one.
       if (f.codex?.isExhausted) {
         const resetsIn = f.codex.resetsAt ? timeUntilFromIso(f.codex.resetsAt) : 'unknown';
-        const state = f.codex.reason === 'auth' ? 'credential rejected' : 'exhausted';
-        lines.push(`Codex budget: ${state} · resets in ${resetsIn}`);
+        lines.push(f.codex.reason === 'auth'
+          ? `Codex credential: rejected · resets in ${resetsIn}`
+          : `Codex budget: exhausted · resets in ${resetsIn}`);
       }
       if (f.claudeTenant?.isExhausted) {
         const resetsIn = f.claudeTenant.resetsAt ? timeUntilFromIso(f.claudeTenant.resetsAt) : 'unknown';

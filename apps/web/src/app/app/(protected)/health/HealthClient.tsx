@@ -1783,8 +1783,10 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
   const hasAny =
     forecast.oauthSessions.length > 0 ||
     forecast.monthly !== null ||
-    forecast.codex !== null ||
-    forecast.claudeTenant !== null ||
+    // Wall rows only render while exhausted; an elapsed pause alone must not
+    // leave an empty card.
+    !!forecast.codex?.isExhausted ||
+    !!forecast.claudeTenant?.isExhausted ||
     forecast.missions.length > 0;
 
   if (!hasAny) return null;
@@ -1913,8 +1915,8 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
             Claude pool and is labelled as one. */}
         {forecast.codex?.isExhausted && (
           <ProviderWallRow
-            label="Codex budget"
-            state={forecast.codex.reason === 'auth' ? 'credential rejected' : 'exhausted'}
+            label={forecast.codex.reason === 'auth' ? 'Codex credential' : 'Codex budget'}
+            state={forecast.codex.reason === 'auth' ? 'rejected' : 'exhausted'}
             resetsAt={forecast.codex.resetsAt}
             now={now}
           />

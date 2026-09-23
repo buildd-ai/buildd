@@ -52,4 +52,12 @@ describe('get_budget_forecast', () => {
     expect(out).toContain('Codex budget: exhausted');
     expect(out).not.toContain('Claude tenant');
   });
+
+  it('labels a rejected Codex credential as a credential, not a budget', async () => {
+    const out = await forecastText({
+      codex: { kind: 'codex', isExhausted: true, reason: 'auth', resetsAt: FAR, exhaustedAt: null },
+    });
+    expect(out).toContain('Codex credential: rejected');
+    expect(out).not.toContain('Codex budget');
+  });
 });
