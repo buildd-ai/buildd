@@ -3368,7 +3368,7 @@ export const releases = pgTable('releases', {
   healthyAt: timestamp('healthy_at', { withTimezone: true }),
   runUrl: text('run_url'),
   deployUrl: text('deploy_url'),
-  triggeredBy: text('triggered_by').$type<'user' | 'agent' | 'auto'>(),
+  triggeredBy: text('triggered_by').$type<'user' | 'agent' | 'auto' | 'external'>(),
   failureReason: text('failure_reason'),
   ciStateAtDispatch: text('ci_state_at_dispatch').$type<'passing' | 'failing' | 'pending'>(),
   commitsAheadAtDispatch: integer('commits_ahead_at_dispatch'),

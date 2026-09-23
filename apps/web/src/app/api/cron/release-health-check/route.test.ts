@@ -25,6 +25,17 @@ mock.module('@/lib/release-health-watcher', () => ({
   healSupersededRelease: mockHealSupersededRelease,
 }));
 
+const mockFindMergedReleasePrContaining = mock((_p: any) => Promise.resolve(null as any));
+const mockAdvanceGatedRowForMerge = mock((_p: any) => Promise.resolve(false));
+mock.module('@/lib/release/gated-merge', () => ({
+  findMergedReleasePrContaining: mockFindMergedReleasePrContaining,
+  advanceGatedRowForMerge: mockAdvanceGatedRowForMerge,
+  versionFromReleasePrTitle: (t: string | null) => t?.match(/^(?:Release|Hotfix) (v\d+\.\d+\.\d+)\b/)?.[1] ?? null,
+  resolveShippedVersion: mock(() => Promise.resolve(null)),
+  commitContains: mock(() => Promise.resolve(null)),
+  IN_FLIGHT_GATED_STATES: ['dispatched', 'pending_external'],
+}));
+
 const mockVerifyReleaseDeployment = mock((_releaseId: string, _db: any) => Promise.resolve());
 mock.module('@/lib/release-verification', () => ({
   verifyReleaseDeployment: mockVerifyReleaseDeployment,
@@ -158,6 +169,10 @@ beforeEach(() => {
   mockHealSupersededRelease.mockResolvedValue('unresolved' as any);
   mockVerifyReleaseDeployment.mockClear();
   mockVerifyReleaseDeployment.mockResolvedValue(undefined as any);
+  mockFindMergedReleasePrContaining.mockReset();
+  mockFindMergedReleasePrContaining.mockResolvedValue(null);
+  mockAdvanceGatedRowForMerge.mockReset();
+  mockAdvanceGatedRowForMerge.mockResolvedValue(false);
 });
 
 describe('release-health-check cron — auth', () => {
@@ -509,5 +524,116 @@ describe('release-health-check cron — repo identity for the main probe loop', 
     expect(mockProbeAndDegrade).toHaveBeenCalledTimes(1);
     const call = mockProbeAndDegrade.mock.calls[0];
     expect(call[3]).toEqual({ installationId: 7, fullName: 'org/repo' });
+  });
+});
+
+// ── R2: the pending_external sweep checks before it says "never merged" ─────
+//
+// Every gated row used to reach this sweep, because the merge webhook matched
+// on an exact sha that never equals the release PR head. The sweep then wrote
+// "the release PR was never merged" for releases whose PR had in fact merged.
+describe('release-health-check cron — pending_external heal before failing', () => {
+  const stale = {
+    id: 'rel-pending-merged',
+    workspaceId: 'ws-1',
+    dispatchedAt: hoursAgo(30),
+    headSha: 'dev-sha-at-dispatch',
+  };
+  const gatedWorkspace = {
+    id: 'ws-1',
+    repo: null,
+    releaseConfig: { enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main' },
+    githubRepo: { fullName: 'org/repo', installation: { installationId: 42 } },
+    githubInstallation: null,
+  };
+
+  it('heals a row whose release PR merged and contains its sha', async () => {
+    selectResults = [[], [], [], [stale]];
+    queryWorkspaceResult = gatedWorkspace;
+    mockFindMergedReleasePrContaining.mockResolvedValue({
+      number: 77, title: 'Release v1.2.3', mergeCommitSha: 'merge-sha', headSha: 'pr-head',
+    } as any);
+    mockAdvanceGatedRowForMerge.mockResolvedValue(true);
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(mockFindMergedReleasePrContaining).toHaveBeenCalledTimes(1);
+    expect(mockFindMergedReleasePrContaining.mock.calls[0]?.[0]).toMatchObject({
+      installationId: 42,
+      repoFullName: 'org/repo',
+      prodBranch: 'main',
+      headRef: 'dev',
+      sha: 'dev-sha-at-dispatch',
+      since: stale.dispatchedAt,
+    });
+    expect(mockAdvanceGatedRowForMerge.mock.calls[0]?.[0]).toMatchObject({
+      releaseId: 'rel-pending-merged',
+      workspaceId: 'ws-1',
+      mergeCommitSha: 'merge-sha',
+      version: 'v1.2.3',
+    });
+    expect(data.pendingExternalHealed).toBe(1);
+    expect(data.pendingExternalHardFailed).toBe(0);
+    // Healed, not failed.
+    expect(updateCalls.find((c) => c.values.state === 'failed')).toBeUndefined();
+  });
+
+  it('prefers the configured releaseBranch as the release PR head', async () => {
+    selectResults = [[], [], [], [stale]];
+    queryWorkspaceResult = {
+      ...gatedWorkspace,
+      releaseConfig: { ...gatedWorkspace.releaseConfig, releaseBranch: 'release' },
+    };
+    mockFindMergedReleasePrContaining.mockResolvedValue(null);
+    updateReturning = [[{ id: stale.id }]];
+
+    await GET(makeRequest());
+    expect(mockFindMergedReleasePrContaining.mock.calls[0]?.[0]).toMatchObject({ headRef: 'release' });
+  });
+
+  it('when no merged release PR contains the sha, fails the row naming the sha — not "never merged"', async () => {
+    selectResults = [[], [], [], [stale]];
+    queryWorkspaceResult = gatedWorkspace;
+    mockFindMergedReleasePrContaining.mockResolvedValue(null);
+    updateReturning = [[{ id: stale.id }]];
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    const update = updateCalls.at(-1)!;
+    expect(update.values.state).toBe('failed');
+    expect(String(update.values.failureReason)).toContain('no merged release PR contains dev-sha-at-dispatch');
+    expect(String(update.values.failureReason)).not.toContain('was never merged');
+    expect(data.pendingExternalHardFailed).toBe(1);
+    expect(data.pendingExternalHealed).toBe(0);
+  });
+
+  it('when GitHub cannot be asked, says it could not check instead of claiming no merge', async () => {
+    selectResults = [[], [], [], [stale]];
+    queryWorkspaceResult = gatedWorkspace;
+    mockFindMergedReleasePrContaining.mockResolvedValue('unknown' as any);
+    updateReturning = [[{ id: stale.id }]];
+
+    await GET(makeRequest());
+
+    const reason = String(updateCalls.at(-1)!.values.failureReason);
+    expect(reason).toContain('could not check');
+    expect(reason).not.toContain('was never merged');
+  });
+
+  it('a heal that loses the compare-and-set falls through to nothing — the row already moved', async () => {
+    selectResults = [[], [], [], [stale]];
+    queryWorkspaceResult = gatedWorkspace;
+    mockFindMergedReleasePrContaining.mockResolvedValue({
+      number: 77, title: 'Release v1.2.3', mergeCommitSha: 'merge-sha', headSha: 'pr-head',
+    } as any);
+    mockAdvanceGatedRowForMerge.mockResolvedValue(false);
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(data.pendingExternalHealed).toBe(0);
+    expect(updateCalls.find((c) => c.values.state === 'failed')).toBeUndefined();
   });
 });

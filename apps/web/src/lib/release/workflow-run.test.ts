@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   buildWorkflowRunOutcome,
+  isConfiguredReleaseRun,
   mapWorkflowConclusionToReleaseState,
   type WorkflowRunPayload,
 } from './workflow-run';
@@ -125,5 +126,46 @@ describe('mapWorkflowConclusionToReleaseState', () => {
     // `action_required` waits on a human; a later event carries the verdict.
     expect(mapWorkflowConclusionToReleaseState(null)).toBeNull();
     expect(mapWorkflowConclusionToReleaseState('action_required')).toBeNull();
+  });
+});
+
+describe('isConfiguredReleaseRun', () => {
+  const run = (over: Record<string, any> = {}) => ({
+    event: 'workflow_dispatch',
+    path: '.github/workflows/release.yml',
+    repository: { full_name: 'org/repo' },
+    ...over,
+  });
+  const expected = { workflowFile: 'release.yml', repoFullName: 'org/repo' };
+
+  it('accepts the configured workflow_dispatch run in the workspace repo', () => {
+    expect(isConfiguredReleaseRun(run(), expected)).toBe(true);
+  });
+
+  it('accepts a configured file given with its .github/workflows prefix', () => {
+    expect(isConfiguredReleaseRun(run(), { ...expected, workflowFile: '.github/workflows/release.yml' })).toBe(true);
+  });
+
+  it('strips a reusable-workflow @ref suffix from the run path', () => {
+    expect(isConfiguredReleaseRun(run({ path: '.github/workflows/release.yml@refs/heads/dev' }), expected)).toBe(true);
+  });
+
+  it.each(['push', 'workflow_run', 'pull_request', undefined])('rejects event=%s', (event) => {
+    expect(isConfiguredReleaseRun(run({ event }), expected)).toBe(false);
+  });
+
+  it('rejects a different workflow file, including a suffix lookalike', () => {
+    expect(isConfiguredReleaseRun(run({ path: '.github/workflows/build.yml' }), expected)).toBe(false);
+    expect(isConfiguredReleaseRun(run({ path: '.github/workflows/pre-release.yml' }), expected)).toBe(false);
+  });
+
+  it('rejects a run from another repository', () => {
+    expect(isConfiguredReleaseRun(run({ repository: { full_name: 'fork/repo' } }), expected)).toBe(false);
+  });
+
+  it('rejects when the workspace has no workflow file or repo to compare against', () => {
+    expect(isConfiguredReleaseRun(run(), { workflowFile: undefined, repoFullName: 'org/repo' })).toBe(false);
+    expect(isConfiguredReleaseRun(run(), { workflowFile: 'release.yml', repoFullName: null })).toBe(false);
+    expect(isConfiguredReleaseRun(run({ path: undefined }), expected)).toBe(false);
   });
 });

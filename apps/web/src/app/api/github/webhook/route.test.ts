@@ -2750,6 +2750,7 @@ describe('POST /api/github/webhook', () => {
         action: 'closed',
         pull_request: {
           number: 92,
+          title: 'Release v1.2.3',
           merged: true,
           draft: false,
           merge_commit_sha: 'merge-sha-92',
@@ -2768,9 +2769,16 @@ describe('POST /api/github/webhook', () => {
       expect(mockAdvanceGatedReleaseOnPrMerge.mock.calls[0]?.[0]).toMatchObject({
         repoFullName: 'test-org/test-repo',
         baseRef: 'main',
-        // The pre-merge branch tip, NOT the merge commit sha — that's what
-        // the row was recorded with at dispatch time.
+        // The pre-merge branch tip: the executor checks it CONTAINS the sha
+        // the row recorded at dispatch time.
         prHeadSha: 'head-sha-92',
+        // What the executor needs to record the shipped identity, the version,
+        // and an external row for a merge no dispatched row matches.
+        installationId: 5000,
+        mergeCommitSha: 'merge-sha-92',
+        baseSha: 'base-sha-92',
+        prTitle: 'Release v1.2.3',
+        prNumber: 92,
       });
     });
 
@@ -3628,6 +3636,8 @@ describe('workflow_run → releases state advancement', () => {
         html_url: RUN_URL,
         head_branch: 'dev',
         head_sha: 'sha-dev-head',
+        event: 'workflow_dispatch',
+        path: '.github/workflows/release.yml',
         repository: { full_name: 'test-org/test-repo' },
         ...overrides.workflow_run,
       },
@@ -3745,6 +3755,11 @@ describe('workflow_run → releases state advancement', () => {
         ? []
         : [{ id: 'release-stranded', workspaceId: 'ws-release', state: 'dispatched', runUrl: null }];
     };
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-release',
+      releaseConfig: { enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml' },
+      githubRepo: { fullName: 'test-org/test-repo' },
+    });
 
     const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
     expect(res.status).toBe(200);
@@ -3755,6 +3770,142 @@ describe('workflow_run → releases state advancement', () => {
     expect(releaseUpdate).toBeDefined();
     // The url we should have had at dispatch time.
     expect((releaseUpdate!.setValues as any).runUrl).toBe(RUN_URL);
+  });
+
+  // ── R1: only the configured release workflow run may use the sha fallback ─
+  //
+  // Every workflow in the repo that runs on the release's head sha — CI
+  // Auto-Fix, Sync-dev, Build & Test — used to match the fallback. A sibling
+  // run's `skipped` recorded a shipped release as failed, and the real Release
+  // success that arrived later hit the terminal-state early return and was
+  // dropped. A sibling's `success` could equally advance a row before the
+  // release had finished.
+  describe('sha fallback is restricted to the configured release workflow', () => {
+    const RELEASE_WS = {
+      id: 'ws-release',
+      releaseConfig: { enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev' },
+      githubRepo: { fullName: 'test-org/test-repo' },
+    };
+
+    function releasesByUrlThenSha(byUrl: any[], bySha: any[]) {
+      let n = 0;
+      selectTableResults = (t) => {
+        if (t !== schemaMock.releases) return null;
+        n++;
+        return n === 1 ? byUrl : bySha;
+      };
+    }
+
+    it('(a) a sibling workflow skipped on the same sha leaves a row with a recorded run url unchanged', async () => {
+      // The row carries its real run url R; the sibling arrives as R2.
+      releasesByUrlThenSha([], [{ id: 'rel-a', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }]);
+      mockWorkspacesFindFirst.mockReturnValue(RELEASE_WS);
+
+      const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped', {
+        workflow_run: {
+          id: 10001,
+          name: 'CI Auto-Fix',
+          html_url: 'https://github.com/test-org/test-repo/actions/runs/10001',
+          event: 'workflow_run',
+          path: '.github/workflows/ci-autofix.yml',
+        },
+      })));
+      expect(res.status).toBe(200);
+      expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+    });
+
+    it('(a2) even a workflow_dispatch run cannot claim a row that already has a run url', async () => {
+      releasesByUrlThenSha([], [{ id: 'rel-a2', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }]);
+      mockWorkspacesFindFirst.mockReturnValue(RELEASE_WS);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped', {
+        workflow_run: { id: 10002, html_url: 'https://github.com/test-org/test-repo/actions/runs/10002' },
+      })));
+      expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+
+      // And the predicate itself excludes rows that carry a url.
+      const fallback = selectWhereCalls.filter((c) => c.table === schemaMock.releases).at(-1);
+      expect(JSON.stringify(fallback?.condition)).toContain('"type":"isNull"');
+      expect(JSON.stringify(fallback?.condition)).toContain('runUrl');
+    });
+
+    it('(b) a Build & Test push-event success on the same sha leaves the row unchanged', async () => {
+      releasesByUrlThenSha([], [{ id: 'rel-b', workspaceId: 'ws-release', state: 'dispatched', runUrl: null }]);
+      mockWorkspacesFindFirst.mockReturnValue(RELEASE_WS);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success', {
+        workflow_run: {
+          id: 10003,
+          name: 'Build & Test',
+          html_url: 'https://github.com/test-org/test-repo/actions/runs/10003',
+          event: 'push',
+          path: '.github/workflows/build.yml',
+        },
+      })));
+      expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+    });
+
+    it('(b2) a workflow_dispatch run of a different workflow file leaves the row unchanged', async () => {
+      releasesByUrlThenSha([], [{ id: 'rel-b2', workspaceId: 'ws-release', state: 'dispatched', runUrl: null }]);
+      mockWorkspacesFindFirst.mockReturnValue(RELEASE_WS);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success', {
+        workflow_run: { id: 10004, path: '.github/workflows/pre-release.yml' },
+      })));
+      expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+    });
+
+    it('(c) the run matched by its recorded url still advances the row', async () => {
+      releasesByUrlThenSha([{ id: 'rel-c', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }], []);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+      const upd = updateCalls.find((c) => c.table === schemaMock.releases);
+      expect((upd?.setValues as any)?.state).toBe('deploying');
+    });
+
+    it('(d) a null-url row matches the release workflow_dispatch run and backfills its url', async () => {
+      releasesByUrlThenSha([], [{ id: 'rel-d', workspaceId: 'ws-release', state: 'dispatched', runUrl: null, archetype: 'gated' }]);
+      mockWorkspacesFindFirst.mockReturnValue(RELEASE_WS);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+      const upd = updateCalls.find((c) => c.table === schemaMock.releases);
+      expect((upd?.setValues as any)?.state).toBe('pending_external');
+      expect((upd?.setValues as any)?.runUrl).toBe(RUN_URL);
+    });
+
+    it('(e) the same sha from a different repository is a no-op', async () => {
+      releasesByUrlThenSha([], [{ id: 'rel-e', workspaceId: 'ws-release', state: 'dispatched', runUrl: null }]);
+      mockWorkspacesFindFirst.mockReturnValue(RELEASE_WS);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success', {
+        workflow_run: { repository: { full_name: 'someone-else/fork' } },
+      })));
+      expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+    });
+
+    it('(e2) a workspace with no configured workflow file cannot be matched by sha', async () => {
+      releasesByUrlThenSha([], [{ id: 'rel-e2', workspaceId: 'ws-release', state: 'dispatched', runUrl: null }]);
+      mockWorkspacesFindFirst.mockReturnValue({ ...RELEASE_WS, releaseConfig: { enabled: true } });
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+      expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
+    });
+
+    it('(f) a url-matched skipped release run still fails the row', async () => {
+      releasesByUrlThenSha([{ id: 'rel-f', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }], []);
+
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+      const upd = updateCalls.find((c) => c.table === schemaMock.releases);
+      expect((upd?.setValues as any)?.state).toBe('failed');
+    });
+
+    it('does not run the sha query at all for a non-dispatch run (hot path)', async () => {
+      releasesByUrlThenSha([], []);
+      await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success', {
+        workflow_run: { event: 'pull_request', path: '.github/workflows/build.yml' },
+      })));
+      expect(selectWhereCalls.filter((c) => c.table === schemaMock.releases)).toHaveLength(1);
+    });
   });
 
   it('scopes the sha fallback to in-flight rows, by sha', async () => {
@@ -3913,6 +4064,17 @@ describe('workflow_run → releases state advancement', () => {
       ([, event, data]: any[]) => event === 'release:updated' && data?.state === 'pending_external',
     );
     expect(pusherCall).toBeDefined();
+  });
+
+  it('a late dispatch success never moves a gated row the release-PR merge already advanced back to pending_external', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-gated-2', workspaceId: 'ws-release', state: 'deploying', archetype: 'gated', runUrl: RUN_URL }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+    expect(res.status).toBe(200);
+    expect(updateCalls.find((c) => c.table === schemaMock.releases)).toBeUndefined();
   });
 
   it('still marks a non-gated (continuous) release deploying on dispatch success — unaffected', async () => {

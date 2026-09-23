@@ -27,6 +27,9 @@
 // ever revisits the row — it's outside both sweeps above, whose state filters
 // are exact — and record.ts's non-forced idempotency check keeps treating it
 // as in-flight, blocking any future non-forced re-dispatch of that commit.
+// Before failing a row it asks GitHub whether a merged release PR contains
+// the row's sha; if one does, the merge event was missed and the row is
+// healed to `deploying` instead.
 //
 // Also sweeps `degraded` releases whose failure reason is a sha mismatch:
 // main advances continuously, so a later legitimate merge can land on top of
@@ -50,6 +53,8 @@ import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity } from '@/lib/workspace-installation';
+import { findMergedReleasePrContaining, advanceGatedRowForMerge, versionFromReleasePrTitle } from '@/lib/release/gated-merge';
+import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 
 export const maxDuration = 60;
 
@@ -227,20 +232,47 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // As with stale 'dispatched', there is nothing to retry (the PR may no
   // longer exist), so the only correct move is to let it reach a terminal
   // state and say why.
+  //
+  // But "never merged" must be checked, not assumed. The merge webhook used to
+  // match on an exact sha the release PR head never has, so every gated row
+  // reached this sweep and was failed as unmerged after its PR had merged.
+  // Ask GitHub first: a merged release PR that contains the row's sha means
+  // the release shipped and the event was missed — heal the row instead.
   const stalePendingExternal = await db
-    .select({ id: releases.id, workspaceId: releases.workspaceId, dispatchedAt: releases.dispatchedAt })
+    .select({
+      id: releases.id,
+      workspaceId: releases.workspaceId,
+      dispatchedAt: releases.dispatchedAt,
+      headSha: releases.headSha,
+    })
     .from(releases)
     .where(and(eq(releases.state, 'pending_external'), lt(releases.dispatchedAt, hardFailCutoff)));
 
   let pendingExternalHardFailed = 0;
+  let pendingExternalHealed = 0;
   for (const row of stalePendingExternal) {
+    const merged = await findMergedReleasePrForRow(row);
+    if (merged && merged !== 'unknown') {
+      const advanced = await advanceGatedRowForMerge({
+        releaseId: row.id,
+        workspaceId: row.workspaceId,
+        mergeCommitSha: merged.mergeCommitSha,
+        version: versionFromReleasePrTitle(merged.title),
+      });
+      if (advanced) pendingExternalHealed++;
+      // Lost the CAS: the row already moved on; nothing to fail.
+      continue;
+    }
+
+    const why =
+      merged === 'unknown'
+        ? `could not check whether a merged release PR contains ${row.headSha ?? 'its head sha'}`
+        : `no merged release PR contains ${row.headSha}`;
     const [updated] = await db
       .update(releases)
       .set({
         state: 'failed',
-        failureReason:
-          `never advanced past 'pending_external' within ${HARD_FAIL_STALE_HOURS}h — ` +
-          `the release PR was never merged into the production branch`,
+        failureReason: `never advanced past 'pending_external' within ${HARD_FAIL_STALE_HOURS}h — ${why}`,
       })
       .where(and(eq(releases.id, row.id), eq(releases.state, 'pending_external')))
       .returning({ id: releases.id });
@@ -320,6 +352,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       pendingExternalHardFailed,
       healableDegraded: healableDegraded.length,
       healed,
+      pendingExternalHealed,
     }),
   );
 
@@ -334,7 +367,9 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       staleDispatched.length +
       stalePendingExternal.length +
       healableDegraded.length,
-    changed: degraded + staleRetried + staleHardFailed + dispatchedHardFailed + pendingExternalHardFailed + healed,
+    changed:
+      degraded + staleRetried + staleHardFailed + dispatchedHardFailed + pendingExternalHardFailed +
+      pendingExternalHealed + healed,
     result: {
       probed,
       degraded,
@@ -345,6 +380,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       dispatchedHardFailed,
       stalePendingExternal: stalePendingExternal.length,
       pendingExternalHardFailed,
+      pendingExternalHealed,
       healableDegraded: healableDegraded.length,
       healed,
     },
@@ -363,7 +399,36 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     dispatchedHardFailed,
     stalePendingExternal: stalePendingExternal.length,
     pendingExternalHardFailed,
+    pendingExternalHealed,
     healableDegraded: healableDegraded.length,
     healed,
+  });
+}
+
+// Did a release PR that contains this row's sha merge after it was dispatched?
+// null = checked, none did. 'unknown' = could not check (no repo identity, no
+// release config, no sha, or GitHub did not answer).
+async function findMergedReleasePrForRow(row: {
+  workspaceId: string;
+  headSha: string | null;
+  dispatchedAt: Date | null;
+}): ReturnType<typeof findMergedReleasePrContaining> {
+  if (!row.headSha) return 'unknown';
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, row.workspaceId),
+    columns: { id: true, repo: true, githubInstallationId: true, githubRepoId: true, releaseConfig: true },
+    with: WORKSPACE_INSTALLATION_WITH,
+  });
+  const config = (workspace?.releaseConfig ?? null) as WorkspaceReleaseConfig | null;
+  const headRef = config?.releaseBranch ?? config?.ref;
+  if (!config?.prodBranch || !headRef) return 'unknown';
+  const identity = pickWorkspaceRepoIdentity(workspace);
+  return findMergedReleasePrContaining({
+    installationId: identity.installationId,
+    repoFullName: identity.fullName,
+    prodBranch: config.prodBranch,
+    headRef,
+    sha: row.headSha,
+    since: row.dispatchedAt,
   });
 }

@@ -45,7 +45,11 @@ let workerFindArgs: any[] = [];
 
 // Real (unmocked) schema — used for select().from(<table>) identity so the
 // stub can tell the githubRepos lookup apart from the workspaces lookup.
-import { githubRepos as githubReposTable, workspaces as workspacesTable } from '@buildd/core/db/schema';
+import { githubRepos as githubReposTable, workspaces as workspacesTable, releases as releasesTable } from '@buildd/core/db/schema';
+
+// advanceGatedReleaseOnPrMerge's in-flight row lookup: select().from(releases).where().orderBy()
+const mockDbSelectReleases = mock(() => Promise.resolve([] as any[]));
+let releasesSelectWhere: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -69,8 +73,13 @@ mock.module('@buildd/core/db', () => ({
     update: mockDbUpdate,
     select: (_cols?: any) => ({
       from: (table: any) => ({
-        where: (_cond?: any) =>
-          table === githubReposTable ? mockDbSelectGithubRepos() : mockDbSelectWorkspaces(),
+        where: (cond?: any) => {
+          if (table === releasesTable) {
+            releasesSelectWhere.push(cond);
+            return { orderBy: (_o: any) => mockDbSelectReleases() };
+          }
+          return table === githubReposTable ? mockDbSelectGithubRepos() : mockDbSelectWorkspaces();
+        },
       }),
     }),
   },
@@ -132,7 +141,7 @@ import { classifyCheckRuns } from '@/lib/release/dispatch';
 mock.module('@/lib/release/dispatch', () => ({ classifyCheckRuns }));
 
 // ── Now import the module under test ─────────────────────────────────────────
-import { findReleasePr, executeRelease, recordDirectProdMerge, advanceGatedReleaseOnPrMerge, _setSleeper } from './release-executor';
+import { findReleasePr, executeRelease, recordDirectProdMerge, advanceGatedReleaseOnPrMerge, versionFromReleasePrTitle, _setSleeper } from './release-executor';
 
 // The executor sleeps 8s before polling Vercel and 10s between polls. Real
 // sleeps would blow the test timeout, so swap in a no-op (same injection
@@ -1601,6 +1610,9 @@ describe('advanceGatedReleaseOnPrMerge', () => {
   beforeEach(() => {
     mockDbSelectGithubRepos.mockReset();
     mockDbSelectWorkspaces.mockReset();
+    mockDbSelectReleases.mockReset();
+    mockDbSelectReleases.mockResolvedValue([]);
+    releasesSelectWhere = [];
     mockDbUpdate.mockReset();
     mockDbUpdateSet.mockReset();
     mockDbUpdateWhere.mockReset();
@@ -1609,6 +1621,14 @@ describe('advanceGatedReleaseOnPrMerge', () => {
     mockDbUpdateSet.mockReturnValue({ where: mockDbUpdateWhere });
     mockDbUpdateWhere.mockReturnValue({ returning: mockDbUpdateReturning });
     mockDbUpdateReturning.mockResolvedValue([{ id: 'release-gated-1' }]);
+    mockDbInsert.mockClear();
+    mockDbInsertValues.mockClear();
+    mockDbInsertOnConflict.mockClear();
+    mockDbInsertReturning.mockReset();
+    mockDbInsertReturning.mockResolvedValue([{ id: 'release-external-1' }]);
+    mockAttributeRelease.mockClear();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue(null);
     mockTriggerEvent.mockReset();
     mockTriggerEvent.mockResolvedValue(undefined as any);
     mockVerifyReleaseDeployment.mockReset();
@@ -1635,75 +1655,272 @@ describe('advanceGatedReleaseOnPrMerge', () => {
     ]);
   }
 
-  it('advances the matching release row to deploying when the release PR merges', async () => {
-    setupGatedWorkflowDispatchWorkspace();
+  // GitHub compare: `/repos/<repo>/compare/<base>...<head>` → { status }.
+  function compareReturns(byBase: Record<string, string>) {
+    mockGithubApi.mockImplementation(((_inst: number, path: string) => {
+      const m = /\/compare\/([^.]+)\.\.\.(.+)$/.exec(path);
+      if (m) {
+        const status = byBase[decodeURIComponent(m[1]!)];
+        if (!status) return Promise.reject(new Error('GitHub API error: 404'));
+        return Promise.resolve({ status });
+      }
+      return Promise.resolve(null);
+    }) as any);
+  }
 
-    await advanceGatedReleaseOnPrMerge({
-      repoFullName: 'org/repo',
-      baseRef: 'main',
-      prHeadSha: 'dev-head-sha-1',
-    });
+  const MERGE = {
+    repoFullName: 'org/repo',
+    baseRef: 'main',
+    prHeadSha: 'release-pr-head',
+    installationId: 42,
+    mergeCommitSha: 'merge-sha',
+    baseSha: 'main-before',
+    prTitle: 'Release v1.2.3',
+    prNumber: 77,
+  };
+
+  function renderWhere(pred: unknown) {
+    const q = dialect.sqlToQuery(pred as any);
+    return { sql: q.sql.replace(/\s+/g, ' ').trim(), params: q.params };
+  }
+
+  it('advances a row whose dispatch sha the release PR head contains (compare: ahead)', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    // Stored sha is the dev head BEFORE the bump commits; the PR head descends from it.
+    mockDbSelectReleases.mockResolvedValue([{ id: 'release-gated-1', headSha: 'dev-head-at-dispatch' }]);
+    compareReturns({ 'dev-head-at-dispatch': 'ahead' });
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
 
     expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
     const setValues = mockDbUpdateSet.mock.calls[0]?.[0] as any;
     expect(setValues.state).toBe('deploying');
     expect(setValues.deployedAt).toBeInstanceOf(Date);
+    // The merge commit is what production runs.
+    expect(setValues.headSha).toBe('merge-sha');
+    expect(setValues.version).toBe('v1.2.3');
+
+    // Compare-and-set: only this row, only while still in flight.
+    const where = renderWhere(mockDbUpdateWhere.mock.calls[0]?.[0]);
+    expect(where.sql).toContain('"releases"."id" = $1');
+    expect(where.sql).toContain('"releases"."state" in ($2, $3)');
+    expect(where.params).toEqual(['release-gated-1', 'dispatched', 'pending_external']);
+
+    expect(mockDbInsert).not.toHaveBeenCalled();
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes the in-flight lookup to this workspace and the in-flight gated states', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    const where = renderWhere(releasesSelectWhere[0]);
+    expect(where.sql).toContain('"releases"."workspace_id" = $1');
+    expect(where.sql).toContain('"releases"."state" in ($2, $3)');
+    expect(where.params).toEqual(['ws-1', 'dispatched', 'pending_external']);
+  });
+
+  it('does not advance a diverged row; records the merge as an external release instead', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([{ id: 'release-gated-1', headSha: 'unrelated-dev-sha' }]);
+    compareReturns({ 'unrelated-dev-sha': 'diverged' });
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1);
+    const values = mockDbInsertValues.mock.calls[0]?.[0] as any;
+    expect(values.triggeredBy).toBe('external');
+    expect(values.state).toBe('deploying');
+  });
+
+  it('with two ancestor rows advances only the newest and supersedes the older', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    // Newest dispatchedAt first — the order the query asks for.
+    mockDbSelectReleases.mockResolvedValue([
+      { id: 'release-new', headSha: 'dev-sha-new' },
+      { id: 'release-old', headSha: 'dev-sha-old' },
+    ]);
+    compareReturns({ 'dev-sha-new': 'ahead', 'dev-sha-old': 'ahead' });
+    mockDbUpdateReturning
+      .mockResolvedValueOnce([{ id: 'release-new' }])
+      .mockResolvedValueOnce([{ id: 'release-old' }]);
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    expect(mockDbUpdateSet).toHaveBeenCalledTimes(2);
+    const advance = mockDbUpdateSet.mock.calls[0]?.[0] as any;
+    expect(advance.state).toBe('deploying');
+    expect(renderWhere(mockDbUpdateWhere.mock.calls[0]?.[0]).params[0]).toBe('release-new');
+
+    const supersede = mockDbUpdateSet.mock.calls[1]?.[0] as any;
+    expect(supersede.state).toBe('failed');
+    expect(supersede.failureReason).toBe('superseded by release release-new (PR #77 merged)');
+    const supersedeWhere = renderWhere(mockDbUpdateWhere.mock.calls[1]?.[0]);
+    expect(supersedeWhere.params).toEqual(['release-old', 'dispatched', 'pending_external']);
+    expect(mockDbInsert).not.toHaveBeenCalled();
+  });
+
+  it('records a merge that matches no row (a hotfix) as one external release', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([]);
+
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, prTitle: 'Hotfix v1.2.4', prHeadSha: 'hotfix-branch-head' });
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1);
+    const values = mockDbInsertValues.mock.calls[0]?.[0] as any;
+    expect(values).toMatchObject({
+      workspaceId: 'ws-1',
+      archetype: 'gated',
+      state: 'deploying',
+      verificationStrategy: 'http',
+      triggeredBy: 'external',
+      headSha: 'merge-sha',
+      previousSha: 'main-before',
+      version: 'v1.2.4',
+    });
+    // Idempotent on (workspace_id, head_sha).
+    expect(mockDbInsertOnConflict).toHaveBeenCalledTimes(1);
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a redelivered merge webhook produces no second row', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([]);
+    // The (workspace_id, head_sha = merge commit) unique index rejects the retry.
+    mockDbInsertReturning.mockResolvedValue([]);
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    expect(mockDbInsertOnConflict).toHaveBeenCalledTimes(1);
+    expect(mockAttributeRelease).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('a delivery that loses the compare-and-set does not insert or supersede', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([
+      { id: 'release-new', headSha: 'dev-sha-new' },
+      { id: 'release-old', headSha: 'dev-sha-old' },
+    ]);
+    compareReturns({ 'dev-sha-new': 'ahead', 'dev-sha-old': 'ahead' });
+    mockDbUpdateReturning.mockResolvedValue([]);
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
+    expect(mockDbInsert).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('falls back to exact equality when no installation is available', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([
+      { id: 'release-desc', headSha: 'some-ancestor' },
+      { id: 'release-exact', headSha: 'release-pr-head' },
+    ]);
+
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, installationId: undefined });
+
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
+    expect(renderWhere(mockDbUpdateWhere.mock.calls[0]?.[0]).params[0]).toBe('release-exact');
+  });
+
+  it('a compare API failure is not a match', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbSelectReleases.mockResolvedValue([{ id: 'release-gated-1', headSha: 'dev-sha' }]);
+    compareReturns({});
+
+    await advanceGatedReleaseOnPrMerge(MERGE);
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('reads the version from package.json at the merge commit when the title has none', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockGithubApi.mockImplementation(((_i: number, path: string) =>
+      path.includes('/contents/package.json?ref=merge-sha')
+        ? Promise.resolve({ content: Buffer.from(JSON.stringify({ version: '2.0.1' })).toString('base64') })
+        : Promise.resolve(null)) as any);
+
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, prTitle: 'fix: something urgent' });
+
+    expect((mockDbInsertValues.mock.calls[0]?.[0] as any).version).toBe('v2.0.1');
+  });
+
+  it('leaves version null when neither the title nor package.json yields one', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockGithubApi.mockImplementation((() => Promise.reject(new Error('GitHub API error: 404'))) as any);
+
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, prTitle: 'chore: tidy' });
+
+    expect((mockDbInsertValues.mock.calls[0]?.[0] as any).version).toBeNull();
   });
 
   it('does nothing when no head sha is known', async () => {
     setupGatedWorkflowDispatchWorkspace();
 
-    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: undefined });
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, prHeadSha: undefined });
 
     expect(mockDbSelectGithubRepos).not.toHaveBeenCalled();
     expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
   it('skips a merge base that is not the configured prod branch (an ordinary feature merge into dev)', async () => {
     setupGatedWorkflowDispatchWorkspace();
 
-    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'dev', prHeadSha: 'dev-head-sha-1' });
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, baseRef: 'dev' });
 
     expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
-  it('skips workspaces not on the workflow_dispatch strategy — those record rows via recordDirectProdMerge instead', async () => {
+  it('skips branch_merge workspaces — recordDirectProdMerge records those', async () => {
     mockDbSelectGithubRepos.mockResolvedValue([{ id: 'repo-1' }]);
     mockDbSelectWorkspaces.mockResolvedValue([
       { id: 'ws-1', name: 'buildd', releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' }, gitConfig: {} },
     ]);
 
-    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: 'dev-head-sha-1' });
+    await advanceGatedReleaseOnPrMerge(MERGE);
 
     expect(mockDbUpdateSet).not.toHaveBeenCalled();
+    expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
   it('skips a non-gated archetype (e.g. continuous) even on workflow_dispatch — that run itself already deploys', async () => {
     setupGatedWorkflowDispatchWorkspace();
     mockDetectArchetype.mockReturnValue('continuous');
 
-    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: 'dev-head-sha-1' });
+    await advanceGatedReleaseOnPrMerge(MERGE);
 
     expect(mockDbUpdateSet).not.toHaveBeenCalled();
-  });
-
-  it('is a no-op when no dispatched/pending_external row matches this head sha (e.g. an unrelated hotfix PR)', async () => {
-    setupGatedWorkflowDispatchWorkspace();
-    mockDbUpdateReturning.mockResolvedValue([]);
-
-    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: 'unrelated-sha' });
-
-    expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
   it('does nothing when the repo is not bound to any workspace', async () => {
     mockDbSelectGithubRepos.mockResolvedValue([]);
 
-    await advanceGatedReleaseOnPrMerge({ repoFullName: 'unbound/repo', baseRef: 'main', prHeadSha: 'dev-head-sha-1' });
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, repoFullName: 'unbound/repo' });
 
     expect(mockDbSelectWorkspaces).not.toHaveBeenCalled();
     expect(mockDbUpdateSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('versionFromReleasePrTitle', () => {
+  it.each([
+    ['Release v1.2.3', 'v1.2.3'],
+    ['Hotfix v0.9.10', 'v0.9.10'],
+    ['Release v1.2.3 (dev → main)', 'v1.2.3'],
+    ['release v1.2.3', null],
+    ['feat: Release v1.2.3', null],
+    ['Release 1.2.3', null],
+    [null, null],
+  ])('%s → %s', (title, expected) => {
+    expect(versionFromReleasePrTitle(title as any)).toBe(expected as any);
   });
 });
