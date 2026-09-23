@@ -11,7 +11,7 @@
  * - learn: explicit supersedes honored, upsert semantics (save via memoryClient)
  */
 import { describe, it, expect } from 'bun:test';
-import { handleRecallAction, handleLearnAction } from '../mcp-tools';
+import { handleRecallAction, handleLearnAction, CORPORA, parseCorpora, recallToolDefinition } from '../mcp-tools';
 import type { KnowledgeStore, QueryResult } from '../knowledge-store/types';
 
 const WS_ID   = 'aaaa0000-0000-0000-0000-000000000000';
@@ -34,7 +34,7 @@ function makeStore(chunks: Partial<QueryResult & { isCurrent?: boolean; createdA
         namespace: ns,
         corpus: 'memory' as const,
         sourceType: 'memory',
-        sourcePath: null,
+        sourcePath: (c as any).sourcePath ?? null,
         sourceUrl: c.sourceUrl ?? `/app/memory/chunk-${i}`,
         content: c.content ?? `content ${i}`,
         metadata: c.metadata ?? { type: 'gotcha' },
@@ -611,6 +611,217 @@ describe('recall — multi-scope (array) fan-out + RRF fusion', () => {
     const out = res.content[0].text;
     expect(out).not.toContain('private memory');
     expect(out).toContain('task result');
+  });
+});
+
+// ── recall: scope/corpus validation ──────────────────────────────────────────
+
+describe('recall — scope validation', () => {
+  it('rejects an unknown scope with an error listing valid values', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['tasks'] }, recallCtx(store));
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('tasks');
+    for (const c of CORPORA) expect(res.content[0].text).toContain(c);
+  });
+
+  it('rejects a single unknown scope string the same way', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'notarealcorpus' }, recallCtx(store));
+    expect(res.isError).toBe(true);
+  });
+
+  it('queries scope=["initiative"] against teamId:initiative', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:initiative`]: [{ content: 'roadmap item', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['initiative'] }, recallCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(store.capturedNamespaces).toContain(`${TEAM_ID}:initiative`);
+    expect(res.content[0].text).toContain('roadmap item');
+  });
+
+  it('CORPORA matches the recall tool schema\'s scope enum exactly', () => {
+    const schema = recallToolDefinition.inputSchema.properties.scope as any;
+    const stringEnum = schema.oneOf[0].enum;
+    const arrayItemEnum = schema.oneOf[1].items.enum;
+    expect(stringEnum).toEqual([...CORPORA]);
+    expect(arrayItemEnum).toEqual([...CORPORA]);
+  });
+
+  it('parseCorpora accepts every value in CORPORA', () => {
+    for (const c of CORPORA) expect(parseCorpora(c)).toBeNull();
+    expect(parseCorpora([...CORPORA])).toBeNull();
+  });
+
+  it('parseCorpora is null when scope is absent', () => {
+    expect(parseCorpora(undefined)).toBeNull();
+  });
+});
+
+// ── recall: type/files filters ───────────────────────────────────────────────
+
+describe('recall — type filter', () => {
+  it('excludes hits whose metadata.type does not match, single scope', async () => {
+    const store = makeStore([
+      { content: 'a gotcha', metadata: { type: 'gotcha' } },
+      { content: 'an architecture note', metadata: { type: 'architecture' } },
+    ]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory', type: 'gotcha' }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('a gotcha');
+    expect(out).not.toContain('an architecture note');
+    expect(out).toContain('(filtered:');
+  });
+
+  it('excludes hits whose metadata.type does not match, multi-scope', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [
+        { content: 'a gotcha', metadata: { type: 'gotcha' } },
+        { content: 'an architecture note', metadata: { type: 'architecture' } },
+      ],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory'], type: 'gotcha' }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('a gotcha');
+    expect(out).not.toContain('an architecture note');
+  });
+
+  it('rejects a type value outside learn\'s vocabulary', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', type: 'not-a-real-type' }, recallCtx(store));
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe('recall — files filter', () => {
+  it('excludes hits whose sourcePath/metadata.files do not overlap, single scope', async () => {
+    const store = makeStore([
+      { content: 'foo entry', sourcePath: 'src/foo.ts' } as any,
+      { content: 'bar entry', sourcePath: 'src/bar.ts' } as any,
+    ]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory', files: ['src/foo.ts'] }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('foo entry');
+    expect(out).not.toContain('bar entry');
+  });
+
+  it('matches a directory prefix in either direction', async () => {
+    const store = makeStore([
+      { content: 'nested file', sourcePath: 'packages/core/mcp-tools.ts' } as any,
+    ]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory', files: ['packages/core/'] }, recallCtx(store));
+    expect(res.content[0].text).toContain('nested file');
+  });
+
+  it('matches against metadata.files on memory-corpus entries', async () => {
+    const store = makeStore([
+      { content: 'memory entry', metadata: { files: ['src/foo.ts'] } },
+      { content: 'other memory entry', metadata: { files: ['src/bar.ts'] } },
+    ]);
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory', files: ['src/foo.ts'] }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('memory entry');
+    expect(out).not.toContain('other memory entry');
+  });
+});
+
+// ── recall: per-corpus failure tracking (multi-scope) ────────────────────────
+
+function makeMultiStoreWithFailures(
+  nsMap: Record<string, Partial<QueryResult & { isCurrent?: boolean }>[] | Error>,
+): KnowledgeStore {
+  return {
+    async query(ns, _opts) {
+      const entry = nsMap[ns];
+      if (entry instanceof Error) throw entry;
+      const chunks = entry ?? [];
+      const corpus = ns.split(':').slice(1).join(':') as any;
+      return chunks.map((c, i) => ({
+        id: c.id ?? `chunk-${ns}-${i}`,
+        namespace: ns,
+        corpus,
+        sourceType: c.sourceType ?? corpus,
+        sourcePath: (c as any).sourcePath ?? null,
+        sourceUrl: c.sourceUrl ?? null,
+        content: c.content ?? `content ${ns} ${i}`,
+        metadata: c.metadata ?? {},
+        score: c.score ?? 0.9,
+        createdAt: c.createdAt ?? null,
+        isCurrent: c.isCurrent ?? true,
+      }));
+    },
+    async upsert(_ns, chunks) {
+      return { inserted: chunks.length, updated: 0, superseded: 0 };
+    },
+    async delete() {},
+    async listNamespaces() { return []; },
+  };
+}
+
+describe('recall — per-corpus failure tracking (multi-scope)', () => {
+  it('a failing corpus does not hide a hit from a working corpus, and the failure is reported', async () => {
+    const store = makeMultiStoreWithFailures({
+      [`${TEAM_ID}:memory`]: new Error('timeout'),
+      [`${WS_ID}:task`]: [{ content: 'task hit', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, recallCtx(store));
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text;
+    expect(out).toContain('task hit');
+    expect(out).toContain('corpus');
+    expect(out).toContain('failed');
+    expect(out).toContain('memory');
+    expect(out).toContain('timeout');
+  });
+
+  it('returns an error when every queried corpus fails', async () => {
+    const store = makeMultiStoreWithFailures({
+      [`${TEAM_ID}:memory`]: new Error('timeout'),
+      [`${WS_ID}:task`]: new Error('connection refused'),
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, recallCtx(store));
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('timeout');
+    expect(res.content[0].text).toContain('connection refused');
+  });
+
+  it('an unresolvable namespace (missing teamId) counts as a failure, not a silent skip', async () => {
+    const store = makeMultiStoreWithFailures({
+      [`${WS_ID}:task`]: [{ content: 'task hit', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const ctxNoTeam = { workspaceId: WS_ID, knowledgeStore: store, embedder: null as any };
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, ctxNoTeam);
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text;
+    expect(out).toContain('task hit');
+    expect(out).toContain('failed');
+    expect(out).toContain('teamId');
+  });
+
+  it('a sensitive-workspace memory skip is silent, not reported as a failure', async () => {
+    const store = makeMultiStoreWithFailures({
+      [`${TEAM_ID}:memory`]: [{ content: 'private memory', isCurrent: true }],
+      [`${WS_ID}:task`]: [{ content: 'task hit', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const ctx = { ...recallCtx(store), isSensitive: true };
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, ctx);
+    const out = res.content[0].text;
+    expect(out).toContain('task hit');
+    expect(out).not.toContain('failed');
   });
 });
 

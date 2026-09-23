@@ -90,3 +90,36 @@ describe('list_tasks — status passthrough', () => {
     expect(out).not.toContain('summary:');
   });
 });
+
+// list_tasks used to hardcode limit=5 regardless of what the caller asked
+// for, even though the underlying REST route accepts up to 200 — a caller
+// auditing more than 5 tasks had no way to widen the page through this
+// action at all.
+describe('list_tasks — limit param', () => {
+  async function limitPassedThrough(params: Record<string, unknown>): Promise<string> {
+    const api = mock(async () => ({ tasks: [], total: 0, pendingCount: 0, hasMore: false })) as unknown as ApiFn;
+    await handleBuilddAction(api, 'list_tasks', params, ctx());
+    const calledUrl = (api as any).mock.calls[0][0] as string;
+    return new URL(calledUrl, 'http://x').searchParams.get('limit')!;
+  }
+
+  it('passes an explicit in-range limit through unchanged', async () => {
+    expect(await limitPassedThrough({ limit: 20 })).toBe('20');
+  });
+
+  it('clamps an above-max limit down to 50', async () => {
+    expect(await limitPassedThrough({ limit: 500 })).toBe('50');
+  });
+
+  it('defaults to 5 when limit is omitted', async () => {
+    expect(await limitPassedThrough({})).toBe('5');
+  });
+
+  it('defaults to 5 for a non-numeric limit', async () => {
+    expect(await limitPassedThrough({ limit: 'lots' })).toBe('5');
+  });
+
+  it('clamps a below-min limit up to 1', async () => {
+    expect(await limitPassedThrough({ limit: 0 })).toBe('1');
+  });
+});
