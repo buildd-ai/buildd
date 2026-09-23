@@ -1840,17 +1840,8 @@ async function maybeDispatchReviewer(
       console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
     }
 
-    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
-    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
-      basePolicy,
-      policyConfig,
-      prFiles.map((f) => f.filename),
-    );
-
-    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
-
-    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
+    // Classify migrations first: the schema risk class keys off the verdict
+    // (EXPAND passes), not off the mere presence of a schema/migration path.
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -1858,6 +1849,19 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
     });
+
+    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
+    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
+    const policy = applyPolicyConfigToMergePolicy(
+      basePolicy,
+      policyConfig,
+      prFiles.map((f) => f.filename),
+      migrationSafety,
+    );
+
+    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
+
+    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
     const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig ?? undefined);
     const shouldEscalateToHuman = preflight.shouldEscalate || policy.tier === 'human';
     if (shouldEscalateToHuman) {

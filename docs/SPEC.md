@@ -72,6 +72,8 @@ Key config (all JSONB, migration-free to evolve):
   `ci_deploy_config`, `auth_and_secrets`, `dependency_bump`, `public_api_contract`) and a
   preset (`cautious | balanced | autonomous`) that assigns each class an action
   (`auto | agent-review | human`). Supersedes `agentReview.escalateToPaths` when present.
+  `destructive_schema_change` fires on the EXPAND/CONTRACT migration verdict
+  (`migration-safety.ts`), not on path alone: additive migrations do not trigger it.
   Also carries `reviewerPatchEvidence` (opt-in: pre-inject the PR patch into the
   reviewer task, §4a).
 - **`releaseConfig`** (`WorkspaceReleaseConfig`) — release strategy
