@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { artifactVisibilityScope, reviewArtifactScope } from './artifact-scope';
+import { artifactVisibilityScope, reviewArtifactScope, workspaceArtifactScope } from './artifact-scope';
 
 /**
  * SQL-level tests for the artifact scoping predicates.
@@ -71,6 +71,25 @@ describe('artifactVisibilityScope — tenancy', () => {
     // workspace list means the caller resolved no access at all.
     const { sql } = render(artifactVisibilityScope({ workspaceIds: [], workerIds: ['w-1'] }));
     expect(sql).toContain('false');
+  });
+});
+
+describe('workspaceArtifactScope — same tenancy, no worker id list', () => {
+  // The /app/artifacts page used to load every worker in the user's
+  // workspaces just to feed their ids into the worker arm. That list grows
+  // without bound; this variant resolves the worker arm in SQL instead.
+  it('anchors both arms to the caller-supplied workspaces via a workers subquery', () => {
+    const { sql, params } = render(workspaceArtifactScope(['ws-mine']));
+    expect(sql).toBe(
+      '("artifacts"."workspace_id" in ($1) or "artifacts"."worker_id" in (select "workers"."id" from "workers" where "workers"."workspace_id" in ($2)))',
+    );
+    expect(params).toEqual(['ws-mine', 'ws-mine']);
+  });
+
+  it('matches nothing when the user has no accessible workspaces', () => {
+    const { sql, params } = render(workspaceArtifactScope([]));
+    expect(sql).toBe('false');
+    expect(params).toEqual([]);
   });
 });
 

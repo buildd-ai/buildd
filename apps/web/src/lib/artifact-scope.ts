@@ -3,7 +3,7 @@
  * in the drizzle schema, so never import it from a client component — import
  * `./artifact-prominence` there instead.
  */
-import { artifacts } from '@buildd/core/db/schema';
+import { artifacts, workers } from '@buildd/core/db/schema';
 import { and, inArray, isNotNull, notInArray, or, eq, sql, type SQL } from 'drizzle-orm';
 import {
   BYPRODUCT_ARTIFACT_TYPES,
@@ -43,6 +43,26 @@ export function artifactVisibilityScope(
   if (workerIds.length === 0) return workspaceArm;
 
   return or(workspaceArm, inArray(artifacts.workerId, [...workerIds]))!;
+}
+
+/**
+ * `artifactVisibilityScope` with the worker arm resolved in SQL rather than
+ * from a caller-loaded id list:
+ *
+ *   workspace_id IN (accessible workspaces)
+ *   OR worker_id IN (SELECT id FROM workers WHERE workspace_id IN (same))
+ *
+ * Identical tenancy — both arms are still anchored to `workspaceIds` — but
+ * the caller no longer has to load every worker it has ever run to build the
+ * predicate, which is a list that only grows. Empty access fails closed.
+ */
+export function workspaceArtifactScope(workspaceIds: readonly string[]): SQL {
+  if (workspaceIds.length === 0) return MATCHES_NOTHING;
+  const ids = [...workspaceIds];
+  return or(
+    inArray(artifacts.workspaceId, ids),
+    sql`${artifacts.workerId} in (select ${workers.id} from ${workers} where ${inArray(workers.workspaceId, ids)})`,
+  )!;
 }
 
 /**
