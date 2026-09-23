@@ -94,10 +94,12 @@ export interface CheckRun {
 // Classify a set of GitHub check-runs into a single CI state. Pure, so the
 // branching (no runs → unknown, any incomplete → pending, else pass/fail) is
 // unit-tested without hitting the network.
-export function classifyCheckRuns(runs: CheckRun[]): {
+export function classifyCheckRuns(allRuns: CheckRun[]): {
   ciState: 'passing' | 'failing' | 'pending' | 'unknown';
   failingChecks: string[];
 } {
+  // Advisory checks never gate: see POST_MERGE_INTEGRATION_CHECK_PREFIX.
+  const runs = allRuns.filter((r) => !isPostMergeIntegrationCheck(r.name));
   if (runs.length === 0) return { ciState: 'unknown', failingChecks: [] };
   if (runs.some((r) => r.status !== 'completed')) return { ciState: 'pending', failingChecks: [] };
   const failing = runs.filter((r) => r.conclusion && !['success', 'neutral', 'skipped'].includes(r.conclusion));
@@ -105,6 +107,38 @@ export function classifyCheckRuns(runs: CheckRun[]): {
     ciState: failing.length > 0 ? 'failing' : 'passing',
     failingChecks: failing.map((r) => r.name),
   };
+}
+
+// `.github/workflows/post-merge-integration.yml` runs the API integration
+// tests against every `dev` push, after merge. It is advisory by design: a
+// release PR's head IS a dev SHA, so if its check counted here a flaky test
+// machine would block every release. Its check-run name is
+// "<caller job name> / <reusable job name>", hence a prefix match.
+export const POST_MERGE_INTEGRATION_CHECK_PREFIX = 'post-merge integration';
+
+export function isPostMergeIntegrationCheck(name: string): boolean {
+  return name.toLowerCase().startsWith(POST_MERGE_INTEGRATION_CHECK_PREFIX);
+}
+
+export interface PostMergeIntegrationSummary {
+  // not_run: no post-merge run exists for this SHA (not yet triggered, or the
+  // workflow is absent). skipped: it ran and found no API change to test.
+  state: 'passing' | 'failing' | 'pending' | 'skipped' | 'not_run';
+  checks: string[];
+}
+
+export function summarizePostMergeIntegration(runs: CheckRun[]): PostMergeIntegrationSummary {
+  const mine = runs.filter((r) => isPostMergeIntegrationCheck(r.name));
+  const checks = mine.map((r) => r.name);
+  if (mine.length === 0) return { state: 'not_run', checks };
+  if (mine.some((r) => r.status !== 'completed')) return { state: 'pending', checks };
+  // Anything other than success/neutral/skipped — including cancelled, which is
+  // how a superseded run on the shared test machine ends — is not coverage.
+  if (mine.some((r) => !r.conclusion || !['success', 'neutral', 'skipped'].includes(r.conclusion))) {
+    return { state: 'failing', checks };
+  }
+  if (mine.every((r) => r.conclusion === 'skipped')) return { state: 'skipped', checks };
+  return { state: 'passing', checks };
 }
 
 export interface ReleasePreflight {
@@ -121,6 +155,9 @@ export interface ReleasePreflight {
   failingChecks: string[];
   // An already-open release PR (ref → prodBranch), if any.
   openReleasePr?: { number: number; url: string; title: string };
+  // Advisory post-merge API integration result on the ref head. Never folded
+  // into ciState; informs the human deciding whether to merge the release.
+  postMergeIntegration?: PostMergeIntegrationSummary;
 }
 
 // Gather everything an agent needs to decide whether triggering a release is
@@ -173,6 +210,7 @@ export async function releasePreflight(
       const classified = classifyCheckRuns(runs);
       out.ciState = classified.ciState;
       out.failingChecks = classified.failingChecks;
+      out.postMergeIntegration = summarizePostMergeIntegration(runs);
     } catch {
       out.ciState = 'unknown';
     }

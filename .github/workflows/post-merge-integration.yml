@@ -1,0 +1,72 @@
+name: Post-merge Integration
+
+# Runs the API integration tests on every push to dev, after merge.
+#
+# Before this, integration ran only on PRs into main whose head was not dev
+# (hotfixes), so nothing exercised a live server on the dev→main path: a
+# release PR could carry a server regression that no test ran against.
+#
+# Advisory, by design:
+#   - Its own workflow, not a Build & Test job. A multi-minute job there would
+#     lengthen every dev-push run, and that workflow's per-ref concurrency would
+#     then supersede more pending runs, so fewer dev commits would get a build
+#     verdict at all. CI Auto-Fix also triggers on Build & Test only, so a red
+#     result here never makes Claude push to dev.
+#   - Not a required check anywhere (only `build` is required on main).
+#   - The release gate ignores it for ciState and reports it separately as
+#     `postMergeIntegration` in release_status (apps/web/src/lib/release/
+#     dispatch.ts, matched by the job name prefix "post-merge integration").
+#
+# The job body is integration.yml, shared with the hotfix-PR path, and it
+# serialises both on the one test machine.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+# Newest dev head wins: a queued run is replaced by a newer push, a running one
+# is left to finish so its SHA still gets a verdict.
+concurrency:
+  group: post-merge-integration
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect server changes that a release would ship
+        id: filter
+        run: |
+          # Against main, not the previous push: the question is whether the
+          # release PR (dev → main) carries server code, and a docs-only push on
+          # top of an untested server change must not leave the head untested.
+          git fetch --quiet origin main
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|packages/core/|packages/shared/)' && echo "true" || echo "false")
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+          echo "::notice::server changes ahead of main: $API"
+
+  integration:
+    # Must start with "post-merge integration": the release gate matches the
+    # check-run name ("<this name> / integration") by that prefix.
+    name: post-merge integration
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    uses: ./.github/workflows/integration.yml
+    secrets: inherit
+    with:
+      api: true
+      runner: false
+      e2e: false
+      neon_branch: ci/post-merge-dev
+      checkout_sha: ${{ github.sha }}
