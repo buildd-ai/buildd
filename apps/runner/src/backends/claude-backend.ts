@@ -95,11 +95,23 @@ export class ClaudeBackend implements AgentBackend {
         // flows through the same exception-catch path (isBudgetExhaustionError,
         // status: 'failed') as a thrown SDK error.
         if (msgAny.is_error === true) {
+          // subtype 'success' (SDKResultSuccess) carries the error text in
+          // `result`; every other subtype (SDKResultError — error_during_execution,
+          // error_max_turns, error_max_budget_usd, error_max_structured_output_retries)
+          // has no `result` field at all and puts the detail in `errors: string[]`
+          // instead. Falling through to the generic message without checking
+          // `errors` silently drops the one thing that makes the failure actionable.
+          const detail = typeof msgAny.result === 'string' && msgAny.result.trim()
+            ? msgAny.result
+            : Array.isArray(msgAny.errors) && msgAny.errors.length > 0
+              ? msgAny.errors.join('; ')
+              : undefined;
+          const subtype = msgAny.subtype && msgAny.subtype !== 'success' ? msgAny.subtype : undefined;
           yield {
             type: 'error',
-            error: typeof msgAny.result === 'string' && msgAny.result.trim()
-              ? msgAny.result
-              : 'Claude Agent SDK returned an error result',
+            error: subtype && detail
+              ? `${subtype}: ${detail}`
+              : detail ?? subtype ?? 'Claude Agent SDK returned an error result',
           };
           return;
         } else {
