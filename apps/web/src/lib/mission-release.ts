@@ -40,7 +40,8 @@ export type MissionReleaseFailure =
   | 'dispatch_failed'
   | 'execute_failed'
   | 'strategy_unhandled'
-  | 'skipped';
+  | 'skipped'
+  | 'pending_ci';
 
 /**
  * Phase 1 of the release claim: take ownership of the attempt.
@@ -128,20 +129,32 @@ export async function abandonMissionReleaseAttempt(
     return;
   }
 
-  console.error(`[mission-release] mission ${missionId}: release attempt failed — ${code}: ${reason}`);
-
+  // Waiting on CI is not a failure, and no timer re-evaluates the mission once
+  // CI settles: the next attempt comes only from another task completion or
+  // worker update in this mission. Say that plainly rather than promise a retry.
+  const waiting = code === 'pending_ci';
+  if (waiting) {
+    console.log(`[mission-release] mission ${missionId}: release waiting on CI — ${reason}`);
+  } else {
+    console.error(`[mission-release] mission ${missionId}: release attempt failed — ${code}: ${reason}`);
+  }
   try {
     await db.insert(missionNotes).values({
       missionId,
       authorType: 'system',
       type: 'decision',
-      title: 'Mission release attempt failed',
-      body:
-        `${reason}\n\n` +
-        `Reason code: \`${code}\`. The mission is NOT marked released and the ` +
-        `release will be retried on the next task completion. ` +
-        `Fix the release configuration (workspace → Config → Release) or fire it ` +
-        `manually with \`trigger_release\`.`,
+      title: waiting ? 'Mission release waiting on CI' : 'Mission release attempt failed',
+      body: waiting
+        ? `${reason}\n\n` +
+          `Reason code: \`${code}\`. The mission is NOT marked released. Nothing ` +
+          `re-checks it automatically when CI finishes — once CI is green, fire the ` +
+          `release with \`trigger_release\`, or it will be re-attempted if another ` +
+          `task in this mission completes.`
+        : `${reason}\n\n` +
+          `Reason code: \`${code}\`. The mission is NOT marked released and the ` +
+          `release will be retried on the next task completion. ` +
+          `Fix the release configuration (workspace → Config → Release) or fire it ` +
+          `manually with \`trigger_release\`.`,
       actorLabel: 'release trigger (on_mission_complete)',
     });
   } catch (err) {
@@ -319,8 +332,24 @@ export async function fireMissionReleaseIfComplete(
           // clear the claim without a failure note on the mission feed.
           result.skipReason === 'mission_integration_branch',
         );
-      } else {
+      } else if (result.status === 'completed' || (result.status === 'failed' && result.mergedAt)) {
+        // Only an outcome where the merge actually landed consumes the
+        // release. A `failed` WITH `mergedAt` means prod moved and only the
+        // post-merge deploy check failed — retrying would ship nothing new,
+        // and abandoning would let a later completion fire a second release.
         released = true;
+      } else if (result.status === 'pending_ci') {
+        // The release PR is still waiting on CI. Nothing persists that PR for
+        // the check_suite webhook on this path, and nothing re-evaluates the
+        // mission when CI settles: hand the claim back so a later completion or
+        // a manual trigger_release can ship it. The note says "waiting", not
+        // "failed" (see abandonMissionReleaseAttempt).
+        await abandonMissionReleaseAttempt(missionId, 'pending_ci', result.message);
+      } else if (result.status === 'not_configured') {
+        await abandonMissionReleaseAttempt(missionId, 'not_configured', result.message);
+      } else {
+        // `failed` before any merge (no mergedAt): nothing reached production.
+        await abandonMissionReleaseAttempt(missionId, 'execute_failed', result.message);
       }
     } catch (err) {
       await abandonMissionReleaseAttempt(
