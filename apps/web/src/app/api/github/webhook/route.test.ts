@@ -53,7 +53,19 @@ let selectTableResults: (table: any) => any[] | null = () => null;
 // When true, ingest-job inserts return no rows (simulated ON CONFLICT DO NOTHING).
 let jobInsertConflicts = false;
 
+// Rows the next `db.update(tasks)…returning()` yields, keyed by the status
+// being written. Unset → the legacy [{ id: 'row-1' }].
+let updateReturningByStatus: Record<string, any[]> = {};
+const mockApplyTaskCancelSideEffects = mock(() => Promise.resolve());
+const mockApplyTaskReopenSideEffects = mock(() => Promise.resolve());
+
 // ── Module mocks (must be before route import) ──────────────────────────────
+mock.module('@/lib/task-cancel', () => ({
+  applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
+  applyTaskReopenSideEffects: mockApplyTaskReopenSideEffects,
+  emitTaskUpdated: mock(() => Promise.resolve()),
+}));
+
 mock.module('@/lib/github', () => ({
   verifyWebhookSignature: mockVerifyWebhookSignature,
   allCheckSuitesPassed: mockAllCheckSuitesPassed,
@@ -140,7 +152,8 @@ mock.module('@buildd/core/db', () => ({
         }
         return {
           where: (condition: any) => ({
-            returning: () => Promise.resolve([{ id: 'row-1' }]),
+            returning: () =>
+              Promise.resolve(updateReturningByStatus[values?.status] ?? [{ id: 'row-1' }]),
             then: (resolve: any) => resolve(undefined),
           }),
         };
@@ -545,6 +558,9 @@ function resetAll() {
   mockClaimMissionReleaseAttempt.mockReturnValue(Promise.resolve(true));
   mockCommitMissionRelease.mockReset();
   failUpdateMatching = null;
+  updateReturningByStatus = {};
+  mockApplyTaskCancelSideEffects.mockClear();
+  mockApplyTaskReopenSideEffects.mockClear();
   mockAbandonMissionReleaseAttempt.mockReset();
   mockCanCompleteMission.mockReset();
   mockCanCompleteMission.mockReturnValue(Promise.resolve({ ok: true, code: 'ok', reason: 'clear' }) as any);
@@ -829,6 +845,82 @@ describe('POST /api/github/webhook', () => {
     // An externally-closed issue cancels its open task (was 'completed' before the
     // work-tracker rework); the WHERE guard skips already-terminal tasks.
     expect(updateCalls[0].setValues.status).toBe('cancelled');
+  });
+
+  it('issues closed with an open linked task runs the shared cancel side effects', async () => {
+    mockWorkspacesFindFirst.mockReturnValue(
+      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
+    );
+    // The running task's row is actually changed by the guarded UPDATE.
+    updateReturningByStatus.cancelled = [{ id: 'task-9', workspaceId: 'ws-1', missionId: 'm-1' }];
+
+    const res = await POST(createWebhookRequest('issues', {
+      action: 'closed',
+      issue: makeIssue({ state: 'closed' }),
+      repository: { id: 100, full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+
+    expect(res.status).toBe(200);
+    // abort + path-claim release + resolveCompletedTask + TASK_UPDATED all live
+    // in the helper (see lib/task-cancel.test.ts).
+    expect(mockApplyTaskCancelSideEffects).toHaveBeenCalledTimes(1);
+    expect(mockApplyTaskCancelSideEffects).toHaveBeenCalledWith(
+      { id: 'task-9', workspaceId: 'ws-1', missionId: 'm-1' },
+    );
+  });
+
+  it('issues closed when the task is already terminal (buildd post-merge close) is a no-op', async () => {
+    mockWorkspacesFindFirst.mockReturnValue(
+      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
+    );
+    updateReturningByStatus.cancelled = []; // guard skipped the terminal row
+
+    const res = await POST(createWebhookRequest('issues', {
+      action: 'closed',
+      issue: makeIssue({ state: 'closed' }),
+      repository: { id: 100, full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(mockApplyTaskCancelSideEffects).not.toHaveBeenCalled();
+  });
+
+  it('issues reopened runs the reopen side effects for each resurrected task', async () => {
+    mockWorkspacesFindFirst.mockReturnValue(
+      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
+    );
+    updateReturningByStatus.pending = [{ id: 'task-9', workspaceId: 'ws-1', missionId: 'm-1' }];
+
+    await POST(createWebhookRequest('issues', {
+      action: 'reopened',
+      issue: makeIssue({ state: 'open' }),
+      repository: { id: 100, full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+
+    expect(updateCalls[0].setValues).toMatchObject({ status: 'pending', claimedBy: null });
+    expect(mockApplyTaskReopenSideEffects).toHaveBeenCalledWith(
+      { id: 'task-9', workspaceId: 'ws-1', missionId: 'm-1' },
+      expect.any(String),
+    );
+  });
+
+  it('issues reopened with nothing to resurrect runs no side effects', async () => {
+    mockWorkspacesFindFirst.mockReturnValue(
+      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
+    );
+    updateReturningByStatus.pending = [];
+
+    await POST(createWebhookRequest('issues', {
+      action: 'reopened',
+      issue: makeIssue({ state: 'open' }),
+      repository: { id: 100, full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+
+    expect(mockApplyTaskReopenSideEffects).not.toHaveBeenCalled();
   });
 
   it('handles issues reopened - updates task to pending', async () => {
