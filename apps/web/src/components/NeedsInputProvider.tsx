@@ -2,7 +2,8 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { subscribeToChannel, unsubscribeFromChannel, getPusherClient, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { needsInputEventAction, createReconnectDetector } from '@/lib/realtime-throttle';
 
 interface WaitingTask {
   id: string;
@@ -11,12 +12,23 @@ interface WaitingTask {
   waitingFor: { type: string; prompt: string; options?: string[] } | null;
 }
 
+type AlertPermission = NotificationPermission | 'unsupported';
+
 interface NeedsInputContextValue {
   tasks: WaitingTask[];
   count: number;
+  /** Browser notification permission; 'default' means the user hasn't been asked. */
+  alertPermission: AlertPermission;
+  /** Ask for notification permission. Must run from a user gesture (the 'Enable alerts' control). */
+  enableAlerts: () => void;
 }
 
-const NeedsInputContext = createContext<NeedsInputContextValue>({ tasks: [], count: 0 });
+const NeedsInputContext = createContext<NeedsInputContextValue>({
+  tasks: [],
+  count: 0,
+  alertPermission: 'unsupported',
+  enableAlerts: () => {},
+});
 
 export function useNeedsInput() {
   return useContext(NeedsInputContext);
@@ -27,8 +39,13 @@ interface Props {
   children: React.ReactNode;
 }
 
+function readAlertPermission(): AlertPermission {
+  return typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+}
+
 export function NeedsInputProvider({ workspaceIds, children }: Props) {
   const [tasks, setTasks] = useState<WaitingTask[]>([]);
+  const [alertPermission, setAlertPermission] = useState<AlertPermission>('unsupported');
   const prevTaskIdsRef = useRef<Set<string>>(new Set());
   const initialFetchDone = useRef(false);
   const router = useRouter();
@@ -59,12 +76,38 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
     }
   }, [router]);
 
-  // Initial fetch + request notification permission
+  // Initial fetch. Notification permission is NOT requested here — browsers
+  // ignore (and some penalise) prompts without a user gesture; see enableAlerts.
   useEffect(() => {
     fetchWaitingTasks();
-    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-      Notification.requestPermission().catch(() => {});
-    }
+    setAlertPermission(readAlertPermission());
+  }, [fetchWaitingTasks]);
+
+  const enableAlerts = useCallback(() => {
+    if (typeof Notification === 'undefined') return;
+    Notification.requestPermission()
+      .then(setAlertPermission)
+      .catch(() => {});
+  }, []);
+
+  // Backstop for events missed while the tab was hidden or the socket was down.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchWaitingTasks();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    const connection = getPusherClient()?.connection;
+    const isReconnect = createReconnectDetector();
+    const onStateChange = (states: { previous: string; current: string }) => {
+      if (isReconnect(states)) fetchWaitingTasks();
+    };
+    connection?.bind('state_change', onStateChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      connection?.unbind('state_change', onStateChange);
+    };
   }, [fetchWaitingTasks]);
 
   // Subscribe to Pusher for real-time updates
@@ -73,31 +116,26 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
     if (!workspaceIdsKey) return;
 
     const channelNames = workspaceIds.map(id => `${CHANNEL_PREFIX}workspace-${id}`);
+    const events = ['worker:progress', 'worker:completed', 'worker:failed'] as const;
 
-    // Accepts thin events {taskId, status} and legacy {worker:{taskId, status}}
-    const handleWorkerUpdate = (data: { taskId?: string | null; status?: string; worker?: { taskId?: string | null; status?: string } }) => {
-      const taskId = data.taskId ?? data.worker?.taskId;
-      const workerStatus = data.status ?? data.worker?.status;
-      if (!taskId) return;
-
-      if (workerStatus === 'waiting_input') {
-        // Refetch to get full task details
+    // Accepts thin events {taskId, status} and legacy {worker:{taskId, status}}.
+    // Most of these are runner heartbeats for tasks we don't list — ignored.
+    const handlers = events.map(event => [event, (data: unknown) => {
+      const action = needsInputEventAction(event, data, prevTaskIdsRef.current);
+      if (action.kind === 'refetch') {
         fetchWaitingTasks();
-      } else {
-        // Worker is no longer waiting - remove from list
+      } else if (action.kind === 'remove') {
         setTasks(prev => {
-          const filtered = prev.filter(t => t.id !== taskId);
+          const filtered = prev.filter(t => t.id !== action.taskId);
           prevTaskIdsRef.current = new Set(filtered.map(t => t.id));
           return filtered;
         });
       }
-    };
-
-    const events = ['worker:progress', 'worker:completed', 'worker:failed'] as const;
+    }] as const);
 
     const bound = channelNames.map((channelName) => {
       const channel = subscribeToChannel(channelName);
-      for (const event of events) channel?.bind(event, handleWorkerUpdate);
+      for (const [event, handler] of handlers) channel?.bind(event, handler);
       return { channelName, channel };
     });
 
@@ -105,7 +143,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
     // be unbound explicitly — releasing the subscription no longer drops it.
     return () => {
       for (const { channelName, channel } of bound) {
-        for (const event of events) channel?.unbind(event, handleWorkerUpdate);
+        for (const [event, handler] of handlers) channel?.unbind(event, handler);
         unsubscribeFromChannel(channelName);
       }
     };
@@ -113,7 +151,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
   }, [workspaceIdsKey, fetchWaitingTasks]);
 
   return (
-    <NeedsInputContext.Provider value={{ tasks, count: tasks.length }}>
+    <NeedsInputContext.Provider value={{ tasks, count: tasks.length, alertPermission, enableAlerts }}>
       {children}
     </NeedsInputContext.Provider>
   );
