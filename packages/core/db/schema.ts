@@ -1165,6 +1165,18 @@ export const tasks = pgTable('tasks', {
   reviewerRetryEventIdx: uniqueIndex('tasks_reviewer_retry_event_unique')
     .on(t.workspaceId, t.reviewerRetryPrNumber, t.reviewerRetryHeadSha)
     .where(sql`${t.reviewerRetryPrNumber} IS NOT NULL AND ${t.reviewerRetryHeadSha} IS NOT NULL`),
+  // Partial unique index — at most one still-pending webhook CI retry per PR,
+  // regardless of which head SHA triggered it. ciRetryEventIdx above dedupes an
+  // identical event (workspace+PR+headSha) — but a rebase bot force-pushing
+  // several times in quick succession produces several DISTINCT head SHAs for the
+  // same still-unclaimed failure, and each one passed that check. Once the pending
+  // retry is claimed (status leaves 'pending'), a later genuinely-new failure is
+  // free to dispatch its own retry. Scoped to ci_retry_pr_number on purpose:
+  // reviewer passes and conflict retries are attempt children of the same parent
+  // and must neither block nor be blocked by a pending CI retry.
+  onePendingCiRetryPerPrIdx: uniqueIndex('tasks_one_pending_ci_retry_per_pr_unique')
+    .on(t.workspaceId, t.ciRetryPrNumber)
+    .where(sql`${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
