@@ -9,7 +9,7 @@
  * digest saving nothing measurable while costing a quarter of the prompt. So
  * `task_scoped` is now simply how every prompt renders: there is no arm, no
  * draw, and no enrolment fraction. The per-unit randomiser that used to make
- * the assignment was extracted to `./experiment-randomizer` before this file
+ * the assignment was extracted to `@buildd/core/experiment-randomizer` before this file
  * dropped its only caller of it, so the next experiment does not have to
  * re-derive it.
  *

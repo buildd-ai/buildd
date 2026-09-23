@@ -12,7 +12,7 @@
   - MCP server (HTTP): `apps/web/src/app/api/mcp/route.ts`
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
-  - Worker runner: `packages/core/worker-runner.ts`
+  - Worker runner: `apps/runner/src/workers.ts` (`WorkerManager`)
 - **Codebase graph**: `codebase-memory` MCP is indexed for this repo — load via `ToolSearch` for structural questions (who calls/depends on X, architecture orientation) over grep.
 
 ## Architecture
@@ -113,7 +113,7 @@ Missions are high-level goals that organize and generate tasks. Tasks are concre
 - **DB table**: `missions` (with `tasks.missionId` FK)
 - **API**: `/api/missions` (CRUD + `/[id]/run` for manual trigger)
 - **Context builder**: `apps/web/src/lib/mission-context.ts` — injects workspace roles + active workers into planning prompts
-- **Status**: Derived from task health via `deriveMissionHealth` in `packages/core/mission-helpers.ts` — NOT stored as a type
+- **Status**: Derived from task health via `deriveMissionHealth` in `apps/web/src/lib/mission-helpers.ts` — NOT stored as a type
 
 ## Roles & Teams
 
@@ -235,12 +235,11 @@ bun run build:only` (same command CI's `Build` step uses) to verify compilation 
 and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
 
 ### UI Fixtures
-View worker UI states in isolation: `http://localhost:3001/app/dev/fixtures?state=waiting-input`
+View worker UI states in isolation: `http://localhost:3000/app/dev/fixtures?state=waiting-input`
 
 ### data-testid Conventions
 Key components have `data-testid` attributes for E2E testing:
 - `task-header-status` - Task detail page status badge
-- `sidebar-task-item` - Sidebar task links (includes `data-status`)
 - `worker-needs-input-banner` - "Needs Input" banner
 
 See `docs/testing.md` for details.

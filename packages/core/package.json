@@ -54,7 +54,6 @@
     "./task-area-prediction-source": "./task-area-prediction-source.ts",
     "./task-area-readout": "./task-area-readout.ts",
     "./task-area-readout-source": "./task-area-readout-source.ts",
-    "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
     "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",

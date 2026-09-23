@@ -67,7 +67,7 @@ Subscription-shaped agent-backend auth is not a corner of that build. It is the
   placeholder with `dispatchable: false` and no `SecretPurpose` value).
 - The only multi-tenant credential path that exists decrypts a *tenant's own*
   subscription token out of task context and injects it as
-  `CLAUDE_CODE_OAUTH_TOKEN` — `packages/core/tenant-crypto.ts:9`,
+  `CLAUDE_CODE_OAUTH_TOKEN` — `apps/runner/src/tenant-crypto.ts`,
   `apps/runner/src/workers.ts:2101-2109`.
 
 So "ship a hosted multi-tenant build that cannot do subscription auth" is not a
@@ -394,7 +394,7 @@ strands the data it was meant to remove.
 | `startAfter: 'budget_reset'` | `apps/web/src/lib/deferred-start.ts:55` — the union's *only* member; resolved off `accounts.budgetResetsAt` (`tasks/route.ts:289`) | None | **Must be rejected at the write boundary** in hosted, or every deferred task waits on a reset that never arrives. Advertised in the MCP schema at `mcp-tools.ts:351`, `:383` — that string has to change too |
 | `budget_limited` exit cause | `worker-exit-taxonomy.ts:69`, `failure-classifier.ts:20`, retry-exempt at `stale-workers.ts:181` | Metered spend caps can produce their own limit error | **Keep the cause**, re-point the classifier. The retry exemption (`worker-exit-taxonomy.ts:128`) stays correct either way |
 | `budget_exhausted` mission state | `mission-helpers.ts:841` | Unchanged — this is the **mission dollar budget**, written by `mission-budget.ts:24-56` | **Keep.** Only `accounts.budgetExhaustedAt` and `tenantBudgets` are subscription-shaped |
-| **Multi-tenant BYO credential** | `packages/core/tenant-crypto.ts`, `tenantBudgets` (`schema.ts:2474`), `workers.ts:2098-2109`, `workers/[id]/route.ts:1300-1315` | Nothing today | **This is the sharpest finding.** The only multi-tenant credential story the repo has is tenants supplying their own *subscription* tokens. A metered-only hosted product needs tenant BYO-**API-key** designed and built. That is a **prerequisite for hosted existing at all**, not a consequence of this split |
+| **Multi-tenant BYO credential** | `apps/runner/src/tenant-crypto.ts`, `tenantBudgets` (`schema.ts:2474`), `workers.ts:2098-2109`, `workers/[id]/route.ts:1300-1315` | Nothing today | **This is the sharpest finding.** The only multi-tenant credential story the repo has is tenants supplying their own *subscription* tokens. A metered-only hosted product needs tenant BYO-**API-key** designed and built. That is a **prerequisite for hosted existing at all**, not a consequence of this split |
 
 ### 6. Enforcement gate
 
@@ -488,7 +488,7 @@ Revert: delete the constants. *One PR.*
 **Phase 2 — Package extraction. Still one artifact.**
 Create `@buildd/subscription-auth` and move `apps/web/src/lib/claude-credential.ts`,
 `codex-credential.ts`, `codex-device-auth.ts`, `claude-oauth-login.ts`,
-`packages/core/oauth-budget.ts`, `packages/core/tenant-crypto.ts`,
+`packages/core/oauth-budget.ts`, `apps/runner/src/tenant-crypto.ts`,
 `apps/runner/src/broker.ts`, `credential-refresh.ts`, `claude-auth.ts`, and the
 OAuth arms of `codex-auth.ts`. Delete the duplicate
 `apps/runner/src/tenant-crypto.ts` in favour of the package. Split
