@@ -142,6 +142,18 @@ describe('GET /api/releases/status', () => {
     });
   });
 
+  it('a target outside the caller scope is not found and no preflight runs', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockImplementationOnce(() => ({ ok: false, status: 404, error: 'Workspace ws-x not found' }));
+    mockReleasePreflight.mockClear();
+    mockDeploymentOnlyPreflight.mockClear();
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest('bld_adminkey', { workspaceId: 'ws-x' }));
+    expect(res.status).toBe(404);
+    expect(mockReleasePreflight).not.toHaveBeenCalled();
+    expect(mockDeploymentOnlyPreflight).not.toHaveBeenCalled();
+  });
+
   it('allows an admin API key', async () => {
     mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', teamId: 'team-1', level: 'admin' }));
     const { GET } = await import('./route');

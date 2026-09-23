@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
-import { eq, and, lt, inArray, or, isNull } from 'drizzle-orm';
+import { workers, tasks, workerHeartbeats, workspaces, accounts } from '@buildd/core/db/schema';
+import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { resolveAccountTeamIds } from '@/lib/team-access';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
@@ -85,8 +86,47 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
   return 'pending' as const;
 }
 
-// POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks
-// Admin auth only (session or admin-level API key)
+/**
+ * What one cleanup call may touch. An admin-level API key reaches only its own
+ * account's workers/heartbeats and its team's workspaces' tasks; a session
+ * reaches the accounts and workspaces of every team the user belongs to.
+ * A task is changed only when its workspace is in scope, even when the worker
+ * holding it belongs to the caller.
+ * The cross-tenant sweep lives in the cron jobs, never behind this route.
+ */
+interface CleanupScope {
+  accountIds: string[];
+  workspaceIds: string[];
+}
+
+async function resolveCleanupScope(
+  user: { id: string } | null,
+  apiAccount: { id: string; teamId: string } | null,
+): Promise<CleanupScope> {
+  const teamIds = await resolveAccountTeamIds(user, apiAccount);
+  if (teamIds.length === 0) return { accountIds: [], workspaceIds: [] };
+
+  const [teamWorkspaces, teamAccounts] = await Promise.all([
+    db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true },
+    }),
+    apiAccount
+      ? Promise.resolve([{ id: apiAccount.id }])
+      : db.query.accounts.findMany({
+          where: inArray(accounts.teamId, teamIds),
+          columns: { id: true },
+        }),
+  ]);
+  return {
+    accountIds: teamAccounts.map(a => a.id),
+    workspaceIds: teamWorkspaces.map(w => w.id),
+  };
+}
+
+// POST /api/tasks/cleanup - Clean up stale workers and orphaned tasks.
+// Auth: a session, or an admin-level API key. Every phase is bounded to the
+// caller's scope (see resolveCleanupScope).
 export async function POST(req: NextRequest) {
   // Auth check: session or admin API key
   const user = await getCurrentUser();
@@ -104,6 +144,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // An admin key acts as its account; otherwise the session user acts.
+  const scope = await resolveCleanupScope(
+    hasAdminToken ? null : user,
+    hasAdminToken ? apiAccount : null,
+  );
+  const hasAccounts = scope.accountIds.length > 0;
+  const hasWorkspaces = scope.workspaceIds.length > 0;
+
   const now = new Date();
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
@@ -112,8 +160,9 @@ export async function POST(req: NextRequest) {
   let orphanedTasks = 0;
 
   // 1. Workers stuck in running/starting with no update for > 1 hour
-  const stalledRunning = await db.query.workers.findMany({
+  const stalledRunning = !hasAccounts ? [] : await db.query.workers.findMany({
     where: and(
+      inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, oneHourAgo)
     ),
@@ -137,9 +186,15 @@ export async function POST(req: NextRequest) {
 
     // Reset associated tasks to pending so they can be re-claimed — but cap
     // retries via resetOrFailTask to break loops on persistently-failing tasks.
-    if (stalledTaskIds.length > 0) {
+    // The worker is the caller's, but its task is only touched when it sits in
+    // one of the caller's workspaces (a worker can hold a task elsewhere).
+    if (stalledTaskIds.length > 0 && hasWorkspaces) {
       const stillAssigned = await db.query.tasks.findMany({
-        where: and(inArray(tasks.id, stalledTaskIds), eq(tasks.status, 'assigned')),
+        where: and(
+          inArray(tasks.id, stalledTaskIds),
+          inArray(tasks.workspaceId, scope.workspaceIds),
+          eq(tasks.status, 'assigned'),
+        ),
         columns: { id: true },
       });
       for (const t of stillAssigned) {
@@ -151,8 +206,11 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Tasks stuck in 'assigned' with no active workers — reconcile with worker status
-  const assignedTasks = await db.query.tasks.findMany({
-    where: eq(tasks.status, 'assigned'),
+  const assignedTasks = !hasWorkspaces ? [] : await db.query.tasks.findMany({
+    where: and(
+      inArray(tasks.workspaceId, scope.workspaceIds),
+      eq(tasks.status, 'assigned'),
+    ),
   });
 
   for (const task of assignedTasks) {
@@ -213,8 +271,11 @@ export async function POST(req: NextRequest) {
   }
 
   // 3. Per-account stale worker cleanup (15-min threshold + heartbeat check)
-  const activeAccountIds = await db.query.workers.findMany({
-    where: inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+  const activeAccountIds = !hasAccounts ? [] : await db.query.workers.findMany({
+    where: and(
+      inArray(workers.accountId, scope.accountIds),
+      inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+    ),
     columns: { accountId: true },
   });
   const uniqueAccountIds = [...new Set(activeAccountIds.map(w => w.accountId).filter(Boolean))] as string[];
@@ -256,8 +317,11 @@ export async function POST(req: NextRequest) {
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
   let heartbeatOrphans = 0;
 
-  const staleHeartbeats = await db.query.workerHeartbeats.findMany({
-    where: lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
+  const staleHeartbeats = !hasAccounts ? [] : await db.query.workerHeartbeats.findMany({
+    where: and(
+      inArray(workerHeartbeats.accountId, scope.accountIds),
+      lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
+    ),
     columns: { id: true, accountId: true },
   });
 
@@ -288,9 +352,20 @@ export async function POST(req: NextRequest) {
         })
         .where(inArray(workers.id, orphanWorkerIds));
 
+      // Same rule as phase 1: only tasks in the caller's workspaces are changed.
+      const inScopeTaskIds = orphanTaskIds.length > 0 && hasWorkspaces
+        ? (await db.query.tasks.findMany({
+            where: and(
+              inArray(tasks.id, orphanTaskIds),
+              inArray(tasks.workspaceId, scope.workspaceIds),
+            ),
+            columns: { id: true },
+          })).map(t => t.id)
+        : [];
+
       // Check each task — promote to completed if worker had deliverables, else reset to pending
-      if (orphanTaskIds.length > 0) {
-        for (const taskId of orphanTaskIds) {
+      if (inScopeTaskIds.length > 0) {
+        for (const taskId of inScopeTaskIds) {
           const orphanWorker = orphanedWorkers.find(w => w.taskId === taskId);
           let hasDeliverables = false;
           if (orphanWorker) {
@@ -320,9 +395,12 @@ export async function POST(req: NextRequest) {
   }
 
   // 7. Delete stale heartbeats (no ping for > 10 minutes)
-  const deletedHeartbeats = await db
+  const deletedHeartbeats = !hasAccounts ? [] : await db
     .delete(workerHeartbeats)
-    .where(lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo))
+    .where(and(
+      inArray(workerHeartbeats.accountId, scope.accountIds),
+      lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
+    ))
     .returning({ id: workerHeartbeats.id });
 
   return NextResponse.json({
