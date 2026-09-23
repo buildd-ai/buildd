@@ -209,3 +209,37 @@ describe('trigger_release — deduped / incomplete response formatting', () => {
     expect(text).not.toContain('undefined');
   });
 });
+
+/**
+ * The advisory post-merge integration result is kept out of ciState on
+ * purpose, so the text rendering is the only place an MCP caller deciding
+ * whether to merge the release sees it. Dropping it here hid the field from
+ * every MCP caller.
+ */
+describe('release_status — post-merge integration rendering', () => {
+  it('renders the advisory result next to CI, with the failing checks named', async () => {
+    const { api } = workspaceListApi({
+      postMergeIntegration: { state: 'failing', checks: ['post-merge integration / integration'] },
+    });
+    const result = await handleBuilddAction(api, 'release_status', { workspaceId: WORKSPACE_UUID }, adminContext());
+    const text = result?.content?.[0]?.text ?? '';
+    expect(text).toContain('CI on dev: passing');
+    expect(text).toContain('Post-merge integration (advisory): failing (post-merge integration / integration)');
+  });
+
+  it('renders a non-failing state without a check list', async () => {
+    const { api } = workspaceListApi({
+      postMergeIntegration: { state: 'skipped', checks: ['post-merge integration / changes'] },
+    });
+    const result = await handleBuilddAction(api, 'release_status', { workspaceId: WORKSPACE_UUID }, adminContext());
+    const text = result?.content?.[0]?.text ?? '';
+    expect(text).toContain('Post-merge integration (advisory): skipped');
+    expect(text).not.toContain('/ changes');
+  });
+
+  it('omits the line when the API did not report the field', async () => {
+    const { api } = workspaceListApi();
+    const result = await handleBuilddAction(api, 'release_status', { workspaceId: WORKSPACE_UUID }, adminContext());
+    expect(result?.content?.[0]?.text ?? '').not.toContain('Post-merge integration');
+  });
+});

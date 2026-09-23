@@ -143,6 +143,32 @@ jobs:
 
           gh release create "$VERSION" --title "$VERSION" --notes "$NOTES"
 
+      - name: Setup Bun
+        if: steps.version.outputs.needs_tag == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Warn on a semver under-bump
+        # A release PR's version is computed at cut time; release-refresh.yml
+        # keeps it current as dev moves, but a PR merged before a refresh ran
+        # (or a hotfix, which is always a patch) can still ship a feat as a
+        # patch. The tag is already pushed and stays; this makes the miss
+        # visible instead of silent. Never fails the job.
+        if: steps.version.outputs.needs_tag == 'true'
+        continue-on-error: true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          PREV_TAG=$(git tag --sort=-v:refname --list 'v*' | grep -vxF "$VERSION" | head -1 || true)
+          if [ -z "$PREV_TAG" ]; then
+            echo "No earlier tag to compare ${VERSION} against."
+            exit 0
+          fi
+          git log "${PREV_TAG}..${VERSION}" --format=%s --no-merges \
+            | bun "${RELEASE_BUMP:-scripts/release-bump.ts}" check-tag --prev-tag "$PREV_TAG" --version "$VERSION"
+
       - name: Verify CHANGELOG promotion
         if: steps.version.outputs.needs_tag == 'true'
         run: |

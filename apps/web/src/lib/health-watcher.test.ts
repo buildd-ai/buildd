@@ -68,6 +68,25 @@ describe('filterFailingCheckRuns', () => {
     ])).toEqual([]);
   });
 
+  // A release PR's head is a dev SHA, which also carries the advisory
+  // post-merge integration workflow's check-runs. Those never gate, so a red,
+  // timed-out or superseded (cancelled) advisory run must not file an Ops task.
+  it('ignores advisory post-merge integration runs, whatever their conclusion', () => {
+    expect(filterFailingCheckRuns([
+      { name: 'post-merge integration / integration', status: 'completed', conclusion: 'failure' },
+      { name: 'post-merge integration / integration', status: 'completed', conclusion: 'cancelled' },
+      { name: 'post-merge integration / changes', status: 'completed', conclusion: 'timed_out' },
+    ])).toEqual([]);
+  });
+
+  it('still reports a real failure alongside an advisory one', () => {
+    const result = filterFailingCheckRuns([
+      { name: 'post-merge integration / integration', status: 'completed', conclusion: 'failure' },
+      { name: 'build', status: 'completed', conclusion: 'failure' },
+    ]);
+    expect(result.map((r) => r.name)).toEqual(['build']);
+  });
+
   it('falls back to "unknown" when name is missing', () => {
     const result = filterFailingCheckRuns([
       { status: 'completed', conclusion: 'failure' },
