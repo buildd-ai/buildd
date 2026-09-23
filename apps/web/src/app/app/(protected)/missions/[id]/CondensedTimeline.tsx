@@ -364,6 +364,7 @@ function TaskRow({
           cardType={swipeCardType}
           taskTitle={task.title}
           taskId={task.id}
+          taskStatus={task.status}
           prUrl={latestWorker?.prUrl ?? null}
           className="flex-1 min-w-0"
         >

@@ -7,6 +7,8 @@ import {
   nextFocusIdx,
   isInteractiveTarget,
   snoozeDurationHours,
+  cancelUndoStatus,
+  patchTaskStatus,
   SwipeableRow,
   MENU_BTN_WIDTH,
   REVEAL_WIDTH_PX,
@@ -417,5 +419,78 @@ describe('layout contract: right-edge zones', () => {
     );
     expect(html).not.toContain('data-trailing-action');
     expect(html).not.toContain(`right:${MENU_BTN_WIDTH}px`);
+  });
+});
+
+// ─── Cancel / undo ───────────────────────────────────────────────────────────
+
+describe('cancelUndoStatus', () => {
+  it('restores a queued (pending) task to pending — nothing else was touched', () => {
+    expect(cancelUndoStatus('pending')).toBe('pending');
+  });
+
+  it.each(['assigned', 'in_progress', 'running', 'waiting_input'])(
+    'offers no undo for %s — cancel aborted its worker, re-queuing would restart it from scratch',
+    (status) => {
+      expect(cancelUndoStatus(status)).toBeNull();
+    },
+  );
+
+  it('never re-queues a terminal task', () => {
+    expect(cancelUndoStatus('failed')).toBeNull();
+    expect(cancelUndoStatus('cancelled')).toBeNull();
+    expect(cancelUndoStatus('completed')).toBeNull();
+  });
+
+  it('offers no undo when the prior status is unknown', () => {
+    expect(cancelUndoStatus(undefined)).toBeNull();
+    expect(cancelUndoStatus(null)).toBeNull();
+  });
+});
+
+describe('patchTaskStatus', () => {
+  function fakeFetch(res: { ok: boolean; status: number; body?: unknown } | Error) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const impl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (res instanceof Error) throw res;
+      return {
+        ok: res.ok,
+        status: res.status,
+        json: async () => res.body ?? {},
+      } as Response;
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  it('PATCHes the status and reports ok on 2xx', async () => {
+    const { impl, calls } = fakeFetch({ ok: true, status: 200 });
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: true });
+    expect(calls[0].url).toBe('/api/tasks/t1');
+    expect(calls[0].init.method).toBe('PATCH');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ status: 'cancelled' });
+  });
+
+  it('treats a 4xx/5xx as a failure and surfaces the server error', async () => {
+    const { impl } = fakeFetch({ ok: false, status: 404, body: { error: 'Task not found' } });
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: false, error: 'Task not found' });
+  });
+
+  it('falls back to the HTTP status when the error body is not JSON', async () => {
+    const impl = (async () => ({
+      ok: false,
+      status: 500,
+      json: async () => { throw new Error('not json'); },
+    })) as unknown as typeof fetch;
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: false, error: 'HTTP 500' });
+  });
+
+  it('reports a network error as a failure', async () => {
+    const { impl } = fakeFetch(new Error('offline'));
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: false, error: 'offline' });
   });
 });

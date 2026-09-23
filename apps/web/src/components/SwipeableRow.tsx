@@ -226,14 +226,61 @@ export function snoozeDurationHours(action: SwipeAction): number | null {
   }
 }
 
+/**
+ * The status an Undo of "Cancel task" may PATCH back, or `null` for no undo.
+ *
+ * Cancelling aborts the live worker and releases its path claims, and the
+ * PATCH route can only set `pending` (not `assigned`/`in_progress`). So the
+ * only cancel that Undo can honestly reverse is one on a task that was still
+ * queued. Re-queuing anything else would restart work from scratch (a running
+ * task) or spend budget on a fresh run (a failed one). Those cancels ask for
+ * confirmation up front instead.
+ */
+export function cancelUndoStatus(priorStatus: string | null | undefined): 'pending' | null {
+  return priorStatus === 'pending' ? 'pending' : null;
+}
+
+/**
+ * PATCH a task's status and report whether the server accepted it. A 4xx/5xx
+ * counts as a failure. `fetch` only rejects on network errors, so checking
+ * `.catch()` alone reported every rejected cancel as a success.
+ */
+export async function patchTaskStatus(
+  taskId: string,
+  status: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetchImpl(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    if (res.ok) return { ok: true };
+    let error = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === 'string' && body.error) error = body.error;
+    } catch {
+      // Non-JSON error body: keep the HTTP status.
+    }
+    return { ok: false, error };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 // ─── Undo context ─────────────────────────────────────────────────────────────
 
 interface SwipeContextValue {
   registerUndo: (message: string, undo: () => void) => void;
+  /** Show a toast with no Undo button (errors, irreversible outcomes). */
+  notify: (message: string) => void;
 }
 
 const SwipeContext = createContext<SwipeContextValue>({
   registerUndo: () => {},
+  notify: () => {},
 });
 
 // ─── SwipeProvider ────────────────────────────────────────────────────────────
@@ -241,25 +288,27 @@ const SwipeContext = createContext<SwipeContextValue>({
 export function SwipeProvider({ children }: { children: ReactNode }) {
   const [undoState, setUndoState] = useState<{
     message: string;
-    undo: () => void;
+    undo?: () => void;
   } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const registerUndo = useCallback((message: string, undo: () => void) => {
+  const show = useCallback((message: string, undo?: () => void) => {
     if (timerRef.current) clearTimeout(timerRef.current);
     setUndoState({ message, undo });
     timerRef.current = setTimeout(() => setUndoState(null), 4000);
   }, []);
+  const registerUndo = useCallback((message: string, undo: () => void) => show(message, undo), [show]);
+  const notify = useCallback((message: string) => show(message), [show]);
 
   const handleUndo = useCallback(() => {
-    if (!undoState) return;
+    if (!undoState?.undo) return;
     undoState.undo();
     setUndoState(null);
     if (timerRef.current) clearTimeout(timerRef.current);
   }, [undoState]);
 
   return (
-    <SwipeContext.Provider value={{ registerUndo }}>
+    <SwipeContext.Provider value={{ registerUndo, notify }}>
       {children}
       {undoState && (
         // Fixed above tab bar (z-20), 12pt gap. Uses ink bg + copper hard shadow per §2.3.
@@ -275,13 +324,17 @@ export function SwipeProvider({ children }: { children: ReactNode }) {
           }}
         >
           <span>{undoState.message}</span>
-          <span className="text-white/40">·</span>
-          <button
-            className="underline underline-offset-2 hover:text-white/80 transition-colors"
-            onClick={handleUndo}
-          >
-            Undo
-          </button>
+          {undoState.undo && (
+            <>
+              <span className="text-white/40">·</span>
+              <button
+                className="underline underline-offset-2 hover:text-white/80 transition-colors"
+                onClick={handleUndo}
+              >
+                Undo
+              </button>
+            </>
+          )}
         </div>
       )}
     </SwipeContext.Provider>
@@ -303,6 +356,12 @@ export interface SwipeableRowProps {
   prUrl?: string | null;
   taskId?: string;
   /**
+   * The task's current status. Decides whether "Cancel task" can be undone
+   * (see `cancelUndoStatus`); without it a cancel asks for confirmation and
+   * offers no Undo.
+   */
+  taskStatus?: string | null;
+  /**
    * The action queue's own dedupe key (`ActionQueueItem.subjectKey`). When
    * present, a snooze action persists server-side via
    * `/api/action-queue/snooze` instead of only hiding the row locally — see
@@ -320,12 +379,13 @@ export function SwipeableRow({
   taskTitle,
   prUrl,
   taskId,
+  taskStatus,
   subjectKey,
   children,
   className = '',
   onMenuAction,
 }: SwipeableRowProps) {
-  const { registerUndo } = useContext(SwipeContext);
+  const { registerUndo, notify } = useContext(SwipeContext);
   const [dismissed, setDismissed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [translateX, setTranslateX] = useState(0);
@@ -427,18 +487,33 @@ export function SwipeableRow({
         }
         case 'cancel-task': {
           if (taskId) {
+            const undoStatus = cancelUndoStatus(taskStatus);
+            if (
+              !undoStatus &&
+              typeof window !== 'undefined' &&
+              !window.confirm(`Cancel "${taskTitle}"? This stops its worker and cannot be undone.`)
+            ) {
+              break;
+            }
             setDismissed(true);
-            fetch(`/api/tasks/${taskId}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ status: 'cancelled' }),
-            }).catch(() => setDismissed(false));
-            registerUndo('Task cancelled', () => {
-              setDismissed(false);
-              fetch(`/api/tasks/${taskId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ status: 'pending' }),
+            void patchTaskStatus(taskId, 'cancelled').then((result) => {
+              if (!result.ok) {
+                setDismissed(false);
+                notify(`Cancel failed: ${result.error}`);
+                return;
+              }
+              if (!undoStatus) {
+                notify('Task cancelled');
+                return;
+              }
+              registerUndo('Task cancelled', () => {
+                setDismissed(false);
+                void patchTaskStatus(taskId, undoStatus).then((undo) => {
+                  if (!undo.ok) {
+                    setDismissed(true);
+                    notify(`Undo failed: ${undo.error}`);
+                  }
+                });
               });
             });
           } else {
@@ -451,7 +526,7 @@ export function SwipeableRow({
           springBack();
       }
     },
-    [springBack, registerUndo, taskId, subjectKey, onMenuAction],
+    [springBack, registerUndo, notify, taskId, taskStatus, taskTitle, subjectKey, onMenuAction],
   );
 
   // ── Pointer event handlers ───────────────────────────────────────────────
