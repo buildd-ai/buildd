@@ -11,11 +11,14 @@ status: partially
 # consumer, the detail page's completed-mission stats row, now reads
 # `computeMissionFlightStrip`'s own `agentTimeMin`/`axisSpanMin`/
 # `parallelFactor`, §6 — pinned by the `detail-stats-row-on-flight-strip-metrics`
-# assertion). Status stays `partially`, not `implemented`, because
-# one real gap survives that AC-1 never covered: Rule L-4's swap of
+# assertion, suppressed below). Status stays `partially`, not `implemented`,
+# because one real gap survives that AC-1 never covered: Rule L-4's swap of
 # computeMissionFlightStrip's lane source from `deriveWorkLane` to a
-# `deriveWorkKind`-based Rule L-1 adapter hasn't happened. See
-# "Implementation Status" below.
+# `deriveWorkKind`-based Rule L-1 adapter hasn't happened. Nothing here
+# asserts Rule L-4 itself, so once AC-1 shipped, all five assertions would
+# pass forever and the checker would derive `implemented` regardless — hence
+# the suppression rather than promoting the status. See "Implementation
+# Status" below.
 assertions:
   - id: "compute-mission-flight-strip"
     type: "symbol"
@@ -39,6 +42,8 @@ assertions:
     symbol: "axisSpanMin"
     entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
     as: "read"
+    skip_until: "2026-12-19"
+    skip_reason: "axisSpanMin is genuinely read here (AC-1 shipped) — this isn't a false positive — but the doc must stay 'partially' until Rule L-4 (lane source swap to a deriveWorkKind-based adapter) lands, and no assertion here tracks Rule L-4 itself, so this assertion would otherwise pass forever under a non-terminal status."
 ---
 
 # Mission Flight Strip: Chart Encoding, Detail Alignment, Performance
