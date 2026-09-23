@@ -135,6 +135,8 @@ mock.module('../../src/worker-store', () => ({
   loadAllWorkers: () => [],
   loadWorker: () => null,
   deleteWorker: () => {},
+  loadTerminalWorkersCached: () => [],
+  __resetDiskWorkersCache: () => {},
 }));
 
 mock.module('../../src/skills.js', () => ({ syncSkillToLocal: async () => {} }));
