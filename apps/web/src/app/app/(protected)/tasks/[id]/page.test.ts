@@ -49,3 +49,23 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
     expect(pageSource).toContain(') : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (');
   });
 });
+
+describe('dependency blocking — tasks/[id]/page.tsx reads every dep worker', () => {
+  // The gate asks whether ANY worker of a completed dep holds an open PR. Loading
+  // only the newest worker hid an older worker's open PR, so the page said
+  // "All dependencies resolved" while the claim gate and the list said BLOCKED.
+  const depQuery = pageSource.slice(
+    pageSource.indexOf('where: inArray(tasks.id, depTaskIds)'),
+    pageSource.indexOf('// Workers for this task'),
+  );
+
+  it('the depTasks workers relation is not limited to the latest worker', () => {
+    expect(depQuery.length).toBeGreaterThan(0);
+    expect(depQuery).not.toMatch(/limit:\s*1\b/);
+  });
+
+  it('the Blocked banner picks the PR worker with the shared predicate, not workers[0]', () => {
+    expect(pageSource).toContain('findBlockingPrWorker(');
+    expect(pageSource).not.toMatch(/\(d(ep)? as any\)\.workers\?\.\[0\]/);
+  });
+});

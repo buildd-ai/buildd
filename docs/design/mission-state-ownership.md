@@ -469,10 +469,12 @@ Today (post-PR #1948): header shows AUTO, above-fold banner shows "BLOCKED." The
 
 `deriveMissionStateView` and `WaitingOnDescriptor` ship in
 `apps/web/src/lib/mission-state-view.ts`, with `MissionDisplayState` extended by
-`'blocked'` and `'stalled'` per §3. Panel adoption (§4) is **not** done — the
-mission detail page still calls `deriveMissionDisplayState`, so nothing on
-screen has changed yet. That migration is the UI follow-up; the accessor's
-signature was shaped so those panels adopt it without altering their props.
+`'blocked'` and `'stalled'` per §3. The mission detail header chip and its
+state-driven CTAs now read `displayState` / `chip` off the same `explain`
+answer as the waiting-on panel; `deriveMissionDisplayState` is only the
+fallback for when the explain read fails. Home and Team cards still use
+`deriveMissionHealth` (with the same `hasPendingDeliverableWork` input as the
+list), not the state view — that remains a follow-up.
 
 The first consumer is not a panel but the `explain` MCP read
 (`apps/web/src/lib/explain.ts`, `GET /api/explain`), which answers the same

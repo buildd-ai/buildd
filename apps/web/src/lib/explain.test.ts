@@ -198,6 +198,13 @@ describe('explainMission', () => {
     expect(answer.derivedFrom.because.length).toBeGreaterThan(0);
     expect(answer.derivedFrom.history).toContain('attachAttempts');
     expect(answer.derivedFrom.nextAction).toBeTruthy();
+
+    // The header chip rides on the same answer as the panel, so the two
+    // cannot disagree: a blocked mission never reads AUTO/RUNNING up top.
+    // (Open work with no live worker: the view names it 'stalled' → IDLE.)
+    expect(answer.displayState).toBe('stalled');
+    expect(answer.chip.label).toBe('IDLE');
+    expect(['AUTO', 'RUNNING']).not.toContain(answer.chip.label);
   });
 
   it('collapses attempts under their parent rather than listing them as siblings', async () => {

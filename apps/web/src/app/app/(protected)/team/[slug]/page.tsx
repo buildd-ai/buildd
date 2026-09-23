@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import ExternalLink from '@/components/ExternalLink';
 import { roleModelLabel } from '@/lib/model-presentation';
@@ -174,7 +175,12 @@ export default async function RoleProfilePage({
         ),
         with: {
           tasks: {
-            columns: { id: true, status: true },
+            // taskClass & co. feed isDeliverableTask (hasPendingDeliverableWork);
+            // without them every attempt and bookkeeping row reads as open work.
+            columns: { id: true, status: true, taskClass: true, kind: true, title: true, mode: true, category: true },
+            // Live agents are workers, not a task status — tasks have no 'running'.
+            // Only live rows are loaded; worker history is not needed here.
+            with: { workers: { columns: { status: true }, where: inArray(workers.status, [...LIVE_WORKER_STATUSES]) } },
           },
           schedule: {
             columns: { lastRunAt: true, nextRunAt: true, cronExpression: true } as any,
@@ -349,15 +355,19 @@ export default async function RoleProfilePage({
               ) : (
                 <div className="space-y-2">
                   {assignedMissions.map(mission => {
-                    const mActiveAgents = mission.tasks
-                      ?.filter(t => t.status === 'running').length || 0;
+                    const mActiveAgents = (mission.tasks ?? [])
+                      .flatMap(t => t.workers ?? [])
+                      .filter(w => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)).length;
                     const health = deriveMissionHealth({
                       status: mission.status,
                       activeAgents: mActiveAgents,
                       cronExpression: (mission.schedule as any)?.cronExpression || null,
                       lastRunAt: (mission.schedule as any)?.lastRunAt || null,
                       nextRunAt: (mission.schedule as any)?.nextRunAt || null,
-                      criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
+                      orchestrationMode: mission.orchestrationMode ?? null,
+                      isHeld: mission.isHeld ?? false,
+                      criteriaEscalatedAt: mission.criteriaEscalatedAt,
+                      hasPendingDeliverableWork: hasPendingDeliverableWork(mission.tasks ?? []),
                     });
                     const display = HEALTH_DISPLAY[health];
 
