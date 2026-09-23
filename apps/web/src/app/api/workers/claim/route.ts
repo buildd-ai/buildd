@@ -18,11 +18,12 @@ import {
   describeOauthPressure,
   learnOauthCapacity,
   oauthBudgetPressure,
+  oauthParallelismCap,
   readPacingConfig,
   windowEndsAt,
   type OauthBudgetPressure,
 } from '@buildd/core/oauth-budget';
-import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
+import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { readModelPin } from '@buildd/core/model-pin';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
@@ -693,18 +694,19 @@ export async function POST(req: NextRequest) {
 
   // Compute router inputs once per claim request. The router is pure; the
   // signals below feed its budget-pressure and spike-detection gates.
-  let dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
+  const dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
     ? Math.min(1, parseFloat(account.totalCost.toString()) / parseFloat(account.maxCostPerDay.toString()))
     : 0;
 
   // OAuth budget pacing. Seat auth reports no cost, so the pressure signal is
   // learned from past exhaustion episodes instead: how many workers/turns/tokens
   // this account's 5h window has historically held (p25, conservative), versus
-  // what the current window has already consumed. Feeding it through the same
-  // `dailyBudgetPct` input means the existing router behaviour applies — tiers
-  // downshift as pressure rises, priority-0 work pauses at 95% — so we throttle
-  // approaching the wall instead of discovering it by failing a build.
-  // Inert until MIN_SAMPLES episodes exist; failures here never block claiming.
+  // what the current window has already consumed. The 5h-wall forecast is not
+  // reliable enough to delay work on, so it does NOT feed `dailyBudgetPct` (the
+  // router would pause priority-0 work at 95%). Its only effect is a lower
+  // per-seat session cap — `oauthSeatSlotsLeft`, never below one live session,
+  // restored when the window resets, off entirely at low confidence.
+  // Failures here never block claiming.
   //
   // Two hard exemptions, both deliberate:
   //  • `taskId` present — this is an explicit start (dashboard Start button or a
@@ -717,6 +719,7 @@ export async function POST(req: NextRequest) {
   const pacingConfig = readPacingConfig(process.env);
   const pacingApplies = pacingConfig.enabled && !taskId;
   let oauthPressure: OauthBudgetPressure | null = null;
+  let oauthSeatSlotsLeft: number | null = null; // null = uncapped
   if (account.authType === 'oauth' && pacingApplies) {
     try {
       const accountIds = await resolveSeatIdPeers({
@@ -735,10 +738,13 @@ export async function POST(req: NextRequest) {
         });
 
         oauthPressure = oauthBudgetPressure({ usage, capacity });
-        dailyBudgetPct = Math.max(dailyBudgetPct, oauthPressure.pct);
+        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: account.maxConcurrentWorkers });
+        if (seatCap !== null) {
+          oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));
+        }
         if (oauthPressure.pct >= 0.5) {
           console.log(
-            `[claim] ${describeOauthPressure(oauthPressure)} ` +
+            `[claim] ${describeOauthPressure(oauthPressure)} seat cap ${seatCap ?? 'none'} ` +
             `window opened ${windowStartedAt.toISOString()}, ends ${windowEndsAt(windowStartedAt).toISOString()}`,
           );
         }
@@ -816,6 +822,7 @@ export async function POST(req: NextRequest) {
     duplicate_worker: 0,
     runner_capability: 0,
     codex_single_flight: 0,
+    oauth_parallelism: 0,
   };
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
@@ -1370,6 +1377,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
+    // Codex and tenant work draw on other pools, so they are never held by it.
+    const usesOauthSeat = !isCodexTask && !tenantCtx?.tenantId;
+    if (usesOauthSeat && oauthSeatSlotsLeft !== null && oauthSeatSlotsLeft <= 0) {
+      deferTask(task, 'oauth_parallelism', { pct: oauthPressure?.pct ?? null });
+      continue;
+    }
+
     // Workspace/project mismatch guard. If a task is pinned to a project name
     // (set by MCP at task creation), require that project to exist on the
     // workspace. Without this, a misrouted task — e.g. MCP connected to
@@ -1708,6 +1723,7 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
 
   if (claimedWorkers.length === 0) {
@@ -1756,9 +1772,9 @@ export async function POST(req: NextRequest) {
         pendingTasks: claimableTasks.length,
         matchedTasks: filteredTasks.length,
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
-        // Surface learned OAuth pressure so a `routing_paused` deferral is
-        // attributable ("paced at 97% of the learned window") instead of looking
-        // like an unexplained stall.
+        // Surface learned OAuth pressure so an `oauth_parallelism` deferral is
+        // attributable ("seat capped at 97% of the learned window") instead of
+        // looking like an unexplained stall.
         ...(oauthPressure && oauthPressure.confidence !== 'none'
           ? {
               budgetPressure: {

@@ -22,10 +22,12 @@ mock.module('drizzle-orm', () => ({ eq: (a: unknown, b: unknown) => ({ a, b }) }
 
 // OAuth pacing is inert in these cases unless a test opts in; the API-key half
 // needs no episodes at all, which is precisely what makes it worth testing.
+const mockLoadOauthEpisodes = mock(() => Promise.resolve([] as any[]));
+const mockMeasureOauthWindow = mock(() => Promise.resolve({ windowStartedAt: null, usage: {} } as any));
 mock.module('@/lib/oauth-budget-window', () => ({
   resolveSeatIdPeers: mock(() => Promise.resolve(['a1'])),
-  loadOauthEpisodes: mock(() => Promise.resolve([])),
-  measureOauthWindow: mock(() => Promise.resolve({ windowStartedAt: null, usage: {} })),
+  loadOauthEpisodes: mockLoadOauthEpisodes,
+  measureOauthWindow: mockMeasureOauthWindow,
 }));
 
 const { createPacingProbe } = await import('./pacing-stall');
@@ -41,6 +43,28 @@ beforeEach(() => {
 });
 
 describe('createPacingProbe', () => {
+  // Learned OAuth pressure only narrows seat parallelism now; it never pauses a
+  // task. Reporting such a stall as paced would send the operator to spend when
+  // the claim route is not holding the task for it.
+  it('declines on learned OAuth pressure, which never pauses a task', async () => {
+    process.env.OAUTH_BUDGET_PACING = 'on';
+    teamAccounts = [{ id: 'a1', teamId: 'team-1', seatId: null, authType: 'oauth', totalCost: 0, maxCostPerDay: null }];
+    mockLoadOauthEpisodes.mockResolvedValueOnce(Array.from({ length: 5 }, (_, i) => ({
+      exhaustedAt: new Date(Date.now() - (24 + i) * 3_600_000), resetsAt: null,
+      workerCount: 10, turns: 600, inputTokens: 0, outputTokens: 0, weightedTurns: 600, weightedTokens: 0,
+    })));
+    mockMeasureOauthWindow.mockResolvedValueOnce({
+      windowStartedAt: new Date(),
+      usage: { workerCount: 10, turns: 600, tokens: 0, weightedTurns: 600, weightedTokens: 0 },
+    });
+
+    const r = await createPacingProbe().check({
+      teamId: 'team-1', priority: 0, kind: null, explicitModel: null,
+    });
+
+    expect(r).toBeNull();
+  });
+
   it('reports pacing for a priority-0 task on a team past its API-key cap', async () => {
     teamAccounts = [apiAccount()];
 

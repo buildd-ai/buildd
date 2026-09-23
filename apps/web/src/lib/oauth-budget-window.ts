@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { accounts, oauthBudgetEpisodes, tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import {
   DEFAULT_MAX_SAMPLES,
   OAUTH_WINDOW_MS,
@@ -47,13 +48,21 @@ export interface OauthWindowMeasurement {
 }
 
 /**
+ * How far back an exhaustion episode still counts as evidence. Plan sizes
+ * change, so very old walls should not shape today's estimate; within this
+ * horizon the newest DEFAULT_MAX_SAMPLES episodes are used.
+ */
+export const OAUTH_EPISODE_HORIZON_DAYS = 14;
+
+/**
  * Recent exhaustion episodes across all accounts in the group, newest first.
  * Pass a single-element array for the per-account case.
  *
- * Filters out stale episodes: those where resetsAt is in the past. A stale
- * episode is from a window that has already closed and re-opened, so its
- * capacity no longer applies to the current window. Returning only fresh
- * episodes avoids learning capacity from outdated plan sizes.
+ * Episodes whose window has already reset are kept — every episode is from a
+ * window that closed, that is what makes it a sample. (Filtering on
+ * `resetsAt > now` left at most the one live episode, below MIN_SAMPLES, so
+ * learning could never switch on.) Only episodes older than the horizon drop.
+ * The newest episode's `resetsAt` is what callers anchor the live window on.
  */
 export async function loadOauthEpisodes(
   accountIds: string[],
@@ -70,12 +79,8 @@ export async function loadOauthEpisodes(
     },
   });
 
-  const nowMs = now.getTime();
-  const filtered = rows.filter(r => {
-    if (!r.resetsAt) return true; // Keep episodes with no reset time (data older than reset tracking)
-    const resetMs = new Date(r.resetsAt).getTime();
-    return resetMs > nowMs; // Keep only episodes whose window hasn't reset yet
-  });
+  const horizonMs = now.getTime() - OAUTH_EPISODE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+  const filtered = rows.filter(r => new Date(r.exhaustedAt).getTime() >= horizonMs);
 
   return filtered.map(r => ({
     exhaustedAt: new Date(r.exhaustedAt),
@@ -135,4 +140,20 @@ export async function measureOauthWindow(input: {
       outputTokens: r.outputTokens ?? 0,
     }))),
   };
+}
+
+/**
+ * Live workers across every account on the seat. Learned pressure caps the
+ * seat's concurrency (see `oauthParallelismCap`), so the count it is compared
+ * against has to be seat-wide too — two accounts sharing one plan share one wall.
+ */
+export async function countLiveSeatWorkers(accountIds: string[]): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(workers)
+    .where(and(
+      inArray(workers.accountId, accountIds),
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+    ));
+  return Number(rows[0]?.count ?? 0);
 }
