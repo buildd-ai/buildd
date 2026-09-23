@@ -24,10 +24,12 @@ const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
 // here we drive its VERDICT to assert what this route does with each answer.
 const mockGuardReviewVerdict = mock(() => Promise.resolve({ blocks: false } as any));
 const mockFireGateEvent = mock((_input: any) => {});
+const mockUpdateBehindPrBranch = mock(() => Promise.resolve({ updated: false } as any));
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserWorkspaceIds: mockGetUserWorkspaceIds }));
 mock.module('@/lib/github', () => ({ mergePullRequest: mockMergePullRequest, githubApi: mockGithubApi }));
+mock.module('@/lib/pr-branch-update', () => ({ updateBehindPrBranch: mockUpdateBehindPrBranch }));
 mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: mockCheckDependsOnResolved }));
 mock.module('@/lib/mission-dependency', () => ({ checkAndUnblockDependentMissions: mockCheckAndUnblockDependentMissions }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
@@ -776,5 +778,75 @@ describe('POST /api/prs/[prNumber]/merge — review-verdict gate', () => {
     expect(res.status).toBe(200);
     expect(mockMergePullRequest).toHaveBeenCalled();
     expect(mockFireGateEvent).not.toHaveBeenCalled();
+  });
+
+  it('auto-rebases when PR is behind base and retries merge', async () => {
+    // First merge fails with base-drift, then auto-rebase succeeds, then retry merge succeeds
+    let callCount = 0;
+    mockMergePullRequest.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          merged: false,
+          message: 'PR is 3 commits behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+        };
+      }
+      return { merged: true, message: 'ok' };
+    });
+    mockUpdateBehindPrBranch.mockResolvedValue({ updated: true });
+    mockGithubApi.mockImplementation(async (installationId: number, path: string) => {
+      if (path.includes('pulls/42') && !path.includes('update-branch')) {
+        return { head: { sha: 'newhead1234567890' } };
+      }
+      return {};
+    });
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateBehindPrBranch).toHaveBeenCalled();
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(2);
+    expect(mockWorkersUpdate).toHaveBeenCalled();
+  });
+
+  it('returns error when auto-rebase fails', async () => {
+    // First merge fails with base-drift, auto-rebase also fails
+    mockMergePullRequest.mockResolvedValue({
+      merged: false,
+      message: 'PR is 3 commits behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+    });
+    mockUpdateBehindPrBranch.mockResolvedValue({
+      updated: false,
+      reason: 'Expected head SHA did not match',
+    });
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns error when updated head SHA cannot be verified after auto-rebase', async () => {
+    // First merge fails with base-drift, auto-rebase succeeds, but we can't read the updated SHA
+    let callCount = 0;
+    mockMergePullRequest.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          merged: false,
+          message: 'PR is 1 commit behind main — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
+        };
+      }
+      return { merged: true };
+    });
+    mockUpdateBehindPrBranch.mockResolvedValue({ updated: true });
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error'));
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
   });
 });
