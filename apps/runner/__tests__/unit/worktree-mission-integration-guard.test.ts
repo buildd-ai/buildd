@@ -57,12 +57,24 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   if (cmd.includes('rev-list --count')) {
     // Stale-branch guard probe (HEAD..origin/<default>) — always fresh here.
     if (cmd.includes('HEAD..origin/')) return '0';
-    // fetchBranch probe: a candidate whose remote ref is simulated absent.
-    const candidate = cmd.match(/\.\.origin\/(.+)"\s*$/)?.[1];
+    // fetchBranch probe (origin/<candidate>) or the local-resume ahead-count
+    // probe (bare <candidate>) — a branch simulated absent via missingBranches
+    // is absent in both forms, matching a genuinely gone/pruned branch.
+    const candidate = cmd.match(/\.\.(?:origin\/)?(.+)"\s*$/)?.[1];
     if (candidate && missingBranches.has(candidate)) {
-      fail(`unknown revision or path not in the working tree: origin/${candidate}`, 128);
+      fail(`unknown revision or path not in the working tree: ${candidate}`, 128);
     }
     return '5'; // fetchBranch probe: candidate exists, not diverged
+  }
+
+  if (cmd.includes('rev-parse --verify')) {
+    // Local-resume existence probe (refs/heads/<candidate>) — a branch
+    // simulated absent via missingBranches doesn't exist locally either.
+    const candidate = cmd.match(/refs\/heads\/(.+)"\s*$/)?.[1];
+    if (candidate && missingBranches.has(candidate)) {
+      fail(`fatal: Needed a single revision`, 128);
+    }
+    return 'deadbeef';
   }
 
   const del = cmd.match(/git branch -D "([^"]+)"/);
