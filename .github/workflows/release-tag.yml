@@ -71,8 +71,43 @@ jobs:
 
           # The merge shipped code that no tag covers, and picking a version is
           # a human decision (this is the concurrent hotfix/release collision).
-          echo "::error title=Production shipped untagged::${VERSION} already tags ${TAGGED_SHA}, but main is now at ${HEAD_SHA}. That commit is deployed and covered by no tag. Bump the version (bun run release:hotfix) or tag it by hand (PACKAGE_FILES=apps/web/package.json scripts/release.sh --tag)."
+          # The merged PR did not bump apps/web/package.json. Both fixes below
+          # move to a version that is NOT tagged yet — re-running `--tag` on
+          # the current version is a no-op, because that version is taken.
+          echo "::error title=Production shipped untagged::${VERSION} already tags ${TAGGED_SHA}, but main is now at ${HEAD_SHA}. That commit is deployed and covered by no tag. Fix: (1) from a branch off origin/main run 'bun run release:hotfix' — it bumps every package.json past the latest tag and opens a PR to main; merging it re-runs this workflow and tags. Or (2) tag by hand with the next unused patch version: git tag vX.Y.Z ${HEAD_SHA} && git push origin vX.Y.Z && gh release create vX.Y.Z --title vX.Y.Z --notes '...', then bump package.json on main to match."
           exit 1
+
+      - name: File a friction task when main ships untagged
+        if: failure() && steps.version.outcome == 'failure'
+        env:
+          BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+          BUILDD_SERVER: https://buildd.dev
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # A red Tag Release run nobody watches is how untagged ships went
+          # unnoticed. The server dedupes on frictionSignature, so repeat
+          # failures append to one open task instead of filing many.
+          if [ -z "$BUILDD_API_KEY" ] || [ -z "$WORKSPACE_ID" ]; then
+            echo "::warning::BUILDD_API_KEY or WORKSPACE_ID unavailable — cannot file the friction task. See the error above."
+            exit 0
+          fi
+          BODY=$(jq -n \
+            --arg ws "$WORKSPACE_ID" \
+            --arg run "$RUN_URL" \
+            --arg pr "$PR_NUMBER" \
+            '{
+              workspaceId: $ws,
+              title: "[friction] main shipped a commit no release tag covers",
+              description: ("Tag Release failed after PR #" + $pr + " merged into main: the version in apps/web/package.json is already tagged at an older commit, so the deployed commit has no tag. Run: " + $run + "\n\nFix: from a branch off origin/main run `bun run release:hotfix` (it bumps package.json past the latest tag) and merge the PR, or tag the commit by hand with the next unused patch version."),
+              priority: 8,
+              context: { frictionSignature: "release-untagged-main", frictionExcerpt: "Production shipped untagged" }
+            }')
+          curl -sS -X POST "${BUILDD_SERVER}/api/tasks" \
+            -H "Authorization: Bearer ${BUILDD_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" -o /dev/null -w 'friction task: HTTP %{http_code}\n' || true
 
       - name: Tag and release
         if: steps.version.outputs.needs_tag == 'true'
