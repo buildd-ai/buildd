@@ -8,7 +8,7 @@ import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, type MissionA
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
-import { FlightStrip } from '@/components/FlightStrip';
+import { FlightStripContainer } from '@/components/FlightStripContainer';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { MissionSituationLine } from '@/components/missions/MissionSituationBlock';
 import type { MissionSituation } from '@/lib/mission-state-view';
@@ -548,7 +548,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
         {hasFlightStripActivity(mission.flightStrip) && (
-          <div className="mb-2.5"><FlightStrip data={mission.flightStrip!} /></div>
+          <FlightStripContainer className="mb-2.5" data={mission.flightStrip!} />
         )}
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
@@ -711,9 +711,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
         {hasFlightStripActivity(mission.flightStrip) ? (
-          <div className="mt-2">
-            <FlightStrip data={mission.flightStrip!} />
-          </div>
+          <FlightStripContainer className="mt-2" data={mission.flightStrip!} />
         ) : mission.totalTasks > 0 ? (
           <div className="mt-2"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
         ) : null}
