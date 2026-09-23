@@ -52,7 +52,7 @@ import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import { buildWorkflowRunOutcome, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
+import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -617,6 +617,7 @@ async function handlePullRequestEvent(event: {
   action: string;
   pull_request: {
     number: number;
+    title?: string;
     merged: boolean;
     draft?: boolean;
     merge_commit_sha?: string | null;
@@ -950,11 +951,17 @@ async function handlePullRequestEvent(event: {
     // A `gated` + `workflow_dispatch` workspace's release PR merging into
     // prodBranch is its only real deploy signal — recordDirectProdMerge above
     // is a no-op for it (branch_merge strategy only). Advance the release row
-    // already recorded at dispatch time instead of inserting a new one.
+    // already recorded at dispatch time, or record the merge as its own
+    // release when no dispatched row shipped in it (hotfix, direct merge).
     advanceGatedReleaseOnPrMerge({
       repoFullName: repository.full_name,
       baseRef: pr.base.ref,
       prHeadSha: pr.head.sha,
+      installationId: event.installation.id,
+      mergeCommitSha: pr.merge_commit_sha ?? null,
+      baseSha: pr.base.sha ?? null,
+      prTitle: pr.title ?? null,
+      prNumber: pr.number,
     }).catch(e =>
       console.error(`[webhook] advanceGatedReleaseOnPrMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
     );
@@ -2584,6 +2591,8 @@ async function handleWorkflowRunEvent(event: {
     html_url: string;
     head_branch: string | null;
     head_sha: string;
+    event?: string;
+    path?: string;
     repository: { full_name: string };
   };
   installation?: { id: number };
@@ -2675,10 +2684,20 @@ async function fetchLiveWorkflowRunConclusion(
 }
 
 /**
- * When a workflow_run completes, find the releases row tracking that run
- * (matched by run_url = html_url) and advance its state:
- *   conclusion=success → 'deploying'  (workflow passed; deploy underway)
- *   conclusion=failure → 'failed'
+ * When a workflow_run completes, find the releases row tracking that run and
+ * advance its state:
+ *   conclusion=success → 'deploying'  (workflow passed; deploy underway), or
+ *                        'pending_external' for a gated release
+ *   any other terminal conclusion → 'failed'
+ *
+ * The row is matched by run_url = html_url first. Only when no row carries this
+ * url does the head-sha fallback run, and it matches only when ALL hold:
+ *   - the row has no run url yet (a row that recorded its run is owned by it);
+ *   - the run is a `workflow_dispatch` of the workspace's configured
+ *     `releaseConfig.workflowFile`;
+ *   - the run's repository is the workspace's linked repo.
+ * Every other run on the same sha (CI Auto-Fix, Sync-dev, Build & Test) is a
+ * no-op here whatever its conclusion — see isConfiguredReleaseRun.
  *
  * Emits a Pusher event so the UI refreshes in realtime.
  */
@@ -2689,6 +2708,8 @@ async function advanceReleaseStateFromWorkflowRun(
     conclusion: string | null;
     html_url: string;
     head_sha: string;
+    event?: string;
+    path?: string;
     repository: { full_name: string };
   },
   installationId?: number,
@@ -2708,29 +2729,58 @@ async function advanceReleaseStateFromWorkflowRun(
   // commit. The head sha is the durable identity — for a workflow_dispatch
   // release it is exactly the ref head the row recorded — so fall back to it
   // and backfill the url we should have had.
+  //
+  // But the sha is shared by every workflow that ran on that commit. Before
+  // the fallback was restricted, a CI Auto-Fix run's `skipped` on the release
+  // sha stamped a shipped release `failed`, and the real Release success that
+  // arrived later was dropped by the terminal-state guard below. So the
+  // fallback only ever considers rows with no url, and only accepts the
+  // workspace's own configured release workflow (checked after the lookup,
+  // since the workflow file lives on the workspace).
   const byUrl = await db
     .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
     .from(releases)
     .where(eq(releases.runUrl, run.html_url))
     .limit(1);
 
-  const matchingRelease =
-    byUrl[0] ??
-    (
-      await db
-        .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
-        .from(releases)
-        .where(
-          and(
-            eq(releases.headSha, run.head_sha),
-            inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
-          ),
-        )
-        .orderBy(desc(releases.createdAt))
-        .limit(1)
-    )[0];
+  let matchingRelease = byUrl[0];
+  if (!matchingRelease) {
+    // Cheap pre-filter on the hot path: every CI run in every linked repo
+    // lands here, and none but a workflow_dispatch can be a release.
+    if (run.event !== 'workflow_dispatch') return;
 
-  if (!matchingRelease) return;
+    const [candidate] = await db
+      .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
+      .from(releases)
+      .where(
+        and(
+          eq(releases.headSha, run.head_sha),
+          isNull(releases.runUrl),
+          inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
+        ),
+      )
+      .orderBy(desc(releases.createdAt))
+      .limit(1);
+    if (!candidate || candidate.runUrl) return;
+
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, candidate.workspaceId),
+      columns: { id: true, releaseConfig: true },
+      with: { githubRepo: { columns: { fullName: true } } },
+    });
+    const isRelease = isConfiguredReleaseRun(run, {
+      workflowFile: ws?.releaseConfig?.workflowFile,
+      repoFullName: (ws as { githubRepo?: { fullName?: string } | null } | undefined)?.githubRepo?.fullName,
+    });
+    if (!isRelease) {
+      console.log(
+        `[webhook:workflow_run] run ${run.id} (${run.name}) shares release ${candidate.id}'s sha but is not its ` +
+          `configured release workflow — ignoring conclusion=${run.conclusion}`,
+      );
+      return;
+    }
+    matchingRelease = candidate;
+  }
 
   // Don't regress from a terminal state.
   if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
@@ -2753,6 +2803,21 @@ async function advanceReleaseStateFromWorkflowRun(
   // in-flight, waiting on something outside buildd's control" everywhere else
   // it's read (see initiative-metric-registry.ts), which is exactly this.
   const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
+
+  // A gated row already in `deploying` got there from its release PR merging
+  // (advanceGatedReleaseOnPrMerge) — a gated dispatch success only ever moves
+  // a row to `pending_external`. Any dispatch-run conclusion arriving after
+  // that — a late or redelivered event, success or not — describes the run
+  // that opened the PR, not the release that shipped. A success would move it
+  // back to waiting on a merge that already happened; a failure would stamp a
+  // shipped release `failed`. Verification owns the row from here.
+  if (matchingRelease.archetype === 'gated' && matchingRelease.state === 'deploying') {
+    console.log(
+      `[webhook:workflow_run] Ignoring conclusion=${run.conclusion} for gated release ${matchingRelease.id} — ` +
+        `its release PR already merged`,
+    );
+    return;
+  }
 
   // GitHub can deliver two `workflow_run.completed` events for the identical
   // run with different reported conclusions — observed for a release job that
