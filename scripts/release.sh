@@ -133,9 +133,16 @@ if [ "${1:-}" = "--hotfix" ]; then
   # Re-run after a failed push / `gh pr create`: the bump commit is already on
   # this branch, and origin/main has not moved, so the same version comes out.
   # Re-bumping would change nothing, so reuse the existing commit.
+  # Matched via a pure-bash substring test, not `git log | grep -q`: with
+  # `set -o pipefail`, grep can exit right after matching the first (newest)
+  # line while git is still mid-write on the next one, and the SIGPIPE that
+  # kills git then outranks grep's success in the pipeline's exit status —
+  # turning a real match into a false negative under exactly the process
+  # scheduling jitter a loaded CI runner introduces.
   HEAD_VERSION=$(jq -r '.version // empty' apps/web/package.json 2>/dev/null || true)
+  BUMP_LOG=$'\n'"$(git log origin/main..HEAD --format='%s' 2>/dev/null || true)"$'\n'
   if [ "$HEAD_VERSION" = "$SEMVER" ] \
-     && git log origin/main..HEAD --format='%s' | grep -qxF "chore: bump version to ${NEW_VERSION}"; then
+     && [[ "$BUMP_LOG" == *$'\n'"chore: bump version to ${NEW_VERSION}"$'\n'* ]]; then
     echo "  i  ${NEW_VERSION} bump already committed on ${BRANCH} (earlier run) — reusing it"
   else
     REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "buildd-ai/buildd")
