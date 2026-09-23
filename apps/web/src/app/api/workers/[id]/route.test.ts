@@ -4710,6 +4710,37 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(lastInsertValues).toBeNull();
     });
+
+    // sections is per-section byte accounting (task d3ab825c) — absent from
+    // the strict validation filter on purpose, same as taskMatchDerivedBy/
+    // backend: a runner predating the field must still be able to write a row.
+    it('writes the sections vector when the runner reports it', async () => {
+      const sections = [
+        { name: 'task-description', bytes: 42, rendered: true, truncated: false },
+        { name: 'git-workflow', bytes: 0, rendered: false, truncated: false },
+      ];
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', appendPromptCompositionEvents: [{ ...VALID_EVENT, sections }] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues[0].sections).toEqual(sections);
+    });
+
+    it('writes sections as null when the runner does not report it', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', appendPromptCompositionEvents: [VALID_EVENT] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues[0].sections).toBeNull();
+    });
   });
 
   describe('auto-artifact creation', () => {

@@ -1219,6 +1219,13 @@
       "when": 1790117889226,
       "tag": "0174_bumpy_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1790126202257,
+      "tag": "0175_bouncy_dreaming_celestial",
+      "breakpoints": true
     }
   ]
 }

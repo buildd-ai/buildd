@@ -116,3 +116,115 @@ describe('buildPromptWithComposition — heartbeat protocol injection', () => {
     expect(promptText).not.toContain('You are running a mission heartbeat');
   });
 });
+
+describe('buildPromptWithComposition — task description truncation', () => {
+  // Defect 2 regression: a bare `\n---` used to be treated as a terminator
+  // for ANY content after it, even though a markdown thematic break is
+  // ordinary prose. Proves the fix: real spec content containing a horizontal
+  // rule survives intact in the rendered prompt.
+  it('keeps a markdown horizontal rule in the task description intact', () => {
+    const description = [
+      '## Design',
+      'Some real content before the rule.',
+      '',
+      '---',
+      '',
+      '## More design',
+      'Content after the rule that the old `indexOf(\'\\n---\')` check discarded.',
+    ].join('\n');
+    const ctx = baseCtx({
+      task: {
+        id: 'desc-1',
+        title: 'Spec task',
+        description,
+        outputRequirement: 'none',
+        roleSlug: null,
+        context: {},
+      } as unknown as BuilddTask,
+    });
+
+    const { promptText, sections } = buildPromptWithComposition(ctx);
+    expect(promptText).toContain('## More design');
+    expect(promptText).toContain('Content after the rule that the old');
+    const descSection = sections.find(s => s.name === 'task-description')!;
+    expect(descSection.truncated).toBe(false);
+    expect(descSection.rendered).toBe(true);
+  });
+
+  // The original intent of the strip: a description polluted by an echoed
+  // prompt footer (the exact `---\nTask ID: ...` shape this function appends
+  // at the very end) must still be cleaned up.
+  it('still strips an echoed prompt-footer signature from a polluted description', () => {
+    const description = 'Real spec content.\n---\nTask ID: abc-123\nWorker ID: def-456\nWorkspace: some-ws';
+    const ctx = baseCtx({
+      task: {
+        id: 'desc-2',
+        title: 'Polluted task',
+        description,
+        outputRequirement: 'none',
+        roleSlug: null,
+        context: {},
+      } as unknown as BuilddTask,
+    });
+
+    const { promptText, sections } = buildPromptWithComposition(ctx);
+    expect(promptText).toContain('Real spec content.');
+    expect(promptText).not.toContain('Worker ID: def-456');
+    const descSection = sections.find(s => s.name === 'task-description')!;
+    expect(descSection.truncated).toBe(true);
+  });
+});
+
+describe('buildPromptWithComposition — per-section byte accounting', () => {
+  it('reports every known section, rendered or not', () => {
+    const ctx = baseCtx();
+    const { sections } = buildPromptWithComposition(ctx);
+    const names = sections.map(s => s.name);
+    expect(names).toEqual([
+      'workspace-instructions',
+      'git-workflow',
+      'workspace-memory',
+      'user-preferences',
+      'resolved-context-providers',
+      'task-description',
+      'work-kind',
+      'handoff-requirement',
+      'output-requirement',
+      'optional-plan',
+      'heartbeat-protocol',
+      'aggregation-context',
+      'retry-context',
+      'communication',
+      'task-metadata',
+    ]);
+    // baseCtx is unconfigured, has no feedback/context providers/heartbeat —
+    // those sections must report rendered:false rather than being absent.
+    for (const n of ['workspace-instructions', 'git-workflow', 'user-preferences', 'resolved-context-providers', 'heartbeat-protocol']) {
+      const s = sections.find(x => x.name === n)!;
+      expect(s.rendered).toBe(false);
+      expect(s.bytes).toBe(0);
+    }
+    // Always-on sections must report real bytes.
+    for (const n of ['task-description', 'output-requirement', 'communication', 'task-metadata']) {
+      const s = sections.find(x => x.name === n)!;
+      expect(s.rendered).toBe(true);
+      expect(s.bytes).toBeGreaterThan(0);
+    }
+  });
+
+  it('reports byte sizes that match the actual rendered content', () => {
+    const ctx = baseCtx({
+      task: {
+        id: 'bytes-1',
+        title: 'Task',
+        description: 'A description with some length to it.',
+        outputRequirement: 'pr_required',
+        roleSlug: null,
+        context: {},
+      } as unknown as BuilddTask,
+    });
+    const { sections } = buildPromptWithComposition(ctx);
+    const desc = sections.find(s => s.name === 'task-description')!;
+    expect(desc.bytes).toBe(Buffer.byteLength('## Task\nA description with some length to it.', 'utf8'));
+  });
+});

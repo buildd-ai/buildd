@@ -6,7 +6,9 @@ import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { HEARTBEAT_PROTOCOL_BLOCK } from '@buildd/shared';
 import {
   buildMemoryBlock,
+  byteLength,
   type MemoryBlockResult,
+  type PromptSectionRecord,
 } from './memory-digest-policy';
 
 // ── Config resolution ──────────────────────────────────────────────
@@ -274,6 +276,8 @@ export interface PromptBuildResult {
   promptText: string;
   /** What the workspace-memory block cost. */
   memory: MemoryBlockResult;
+  /** Byte accounting for every section this function considered emitting. */
+  sections: PromptSectionRecord[];
 }
 
 /**
@@ -289,11 +293,28 @@ export interface PromptBuildResult {
 export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResult {
   const { task, worker, gitConfig, isConfigured, compactResult, taskSearchResults, fullObservations, inputPolicy, hasApiKey, inputAsRetry } = ctx;
   const promptParts: string[] = [];
+  const sections: PromptSectionRecord[] = [];
+
+  // Records byte accounting for every section this function considers,
+  // whether or not it actually renders — see PromptSectionRecord. A section
+  // that is gated off reports rendered: false rather than leaving nothing to
+  // look at, which is the whole fix for "12 of 13 sections are invisible".
+  const addSection = (name: string, content: string | null | undefined, truncated = false) => {
+    if (content) {
+      promptParts.push(content);
+      sections.push({ name, bytes: byteLength(content), rendered: true, truncated });
+    } else {
+      sections.push({ name, bytes: 0, rendered: false, truncated: false });
+    }
+  };
 
   // Add admin-defined agent instructions (if configured)
-  if (isConfigured && gitConfig?.agentInstructions) {
-    promptParts.push(`## Workspace Instructions\n${gitConfig.agentInstructions}`);
-  }
+  addSection(
+    'workspace-instructions',
+    isConfigured && gitConfig?.agentInstructions
+      ? `## Workspace Instructions\n${gitConfig.agentInstructions}`
+      : null,
+  );
 
   // Add git workflow context (if configured and not 'none' strategy)
   // 'none' strategy means defer entirely to CLAUDE.md / project conventions
@@ -374,7 +395,9 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       gitContext.push(`- Use conventional commits (feat:, fix:, chore:, etc.)`);
     }
 
-    promptParts.push(gitContext.join('\n'));
+    addSection('git-workflow', gitContext.join('\n'));
+  } else {
+    sections.push({ name: 'git-workflow', bytes: 0, rendered: false, truncated: false });
   }
 
   // Add rich workspace memory context. The workspace-wide digest (identical
@@ -385,59 +408,81 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     taskSearchResults,
     fullObservations,
   });
-  if (memory.block) {
-    promptParts.push(memory.block);
-  }
+  addSection('workspace-memory', memory.block, memory.digestTruncated);
 
   // Add user preferences derived from feedback signals
+  let feedbackTruncated = false;
   if (ctx.feedbackMemories && ctx.feedbackMemories.length > 0) {
     const feedbackParts: string[] = ['## User Preferences (from feedback)'];
     for (const mem of ctx.feedbackMemories) {
-      feedbackParts.push(`- **${mem.title}**: ${mem.content.length > 300 ? mem.content.slice(0, 300) + '...' : mem.content}`);
+      const clipped = mem.content.length > 300;
+      if (clipped) feedbackTruncated = true;
+      feedbackParts.push(`- **${mem.title}**: ${clipped ? mem.content.slice(0, 300) + '...' : mem.content}`);
     }
-    promptParts.push(feedbackParts.join('\n'));
+    addSection('user-preferences', feedbackParts.join('\n'), feedbackTruncated);
+  } else {
+    sections.push({ name: 'user-preferences', bytes: 0, rendered: false, truncated: false });
   }
 
-  // Add resolved context from providers (fetched at claim time)
+  // Add resolved context from providers (fetched at claim time). Not one
+  // section per provider — the set is dynamic and unnamed at this layer — so
+  // this reports the combined bytes of whatever fired.
   if (ctx.resolvedContextProviders?.length) {
     for (const block of ctx.resolvedContextProviders) {
       promptParts.push(block);
     }
+    addSection('resolved-context-providers', ctx.resolvedContextProviders.join('\n\n'));
+  } else {
+    sections.push({ name: 'resolved-context-providers', bytes: 0, rendered: false, truncated: false });
   }
 
-  // Add task description
-  // Clean up description: strip anything after "---" separator which might be polluted context from previous runs
+  // Add task description.
+  //
+  // Contamination guard: a description can get polluted by an ECHOED prompt
+  // footer — the exact `---\nTask ID: ...\nWorker ID: ...\nWorkspace: ...`
+  // shape this same function appends at the very end (below). That happens,
+  // for instance, when a retry or a copy-paste carries a prior transcript's
+  // tail into the next task's description. Only THAT literal signature is a
+  // terminator: a bare markdown thematic break (`\n---\n`) is ordinary prose
+  // — humans and agents both write horizontal rules — and must survive
+  // intact. The old check (`indexOf('\n---')`) could not tell the two apart
+  // and silently guillotined a meaningful slice of tasks, losing real spec
+  // content with nothing recording that it happened.
+  const CONTAMINATION_SIGNATURE = /\n---\s*\nTask ID:\s/;
   let taskDescription = task.description || task.title;
-  const separatorIndex = taskDescription.indexOf('\n---');
-  if (separatorIndex > 0) {
-    taskDescription = taskDescription.substring(0, separatorIndex).trim();
+  let descriptionTruncated = false;
+  const contamMatch = CONTAMINATION_SIGNATURE.exec(taskDescription);
+  if (contamMatch) {
+    descriptionTruncated = true;
+    taskDescription = taskDescription.slice(0, contamMatch.index).trim();
   }
-  promptParts.push(`## Task\n${taskDescription}`);
+  addSection('task-description', `## Task\n${taskDescription}`, descriptionTruncated);
 
   // Rule K2-17: asked ONLY when the task has no recorded kind. `task.kind` is
   // already on the BuilddTask the runner holds, so the condition costs no query,
   // and a task that was filed with a kind never sees this line at all.
-  if (!task.kind) {
-    promptParts.push(
-      '## Work Kind\n'
-      + 'This task has no recorded work-kind. On your first `update_progress`, set `kind` to the shape of the '
-      + 'work you are actually doing — one of coordination, engineering, research, writing, design, analysis, '
-      + 'observation.',
-    );
-  }
+  addSection(
+    'work-kind',
+    !task.kind
+      ? '## Work Kind\n'
+        + 'This task has no recorded work-kind. On your first `update_progress`, set `kind` to the shape of the '
+        + 'work you are actually doing — one of coordination, engineering, research, writing, design, analysis, '
+        + 'observation.'
+      : null,
+  );
 
   // Handoff requirement: check if downstream tasks depend on this one
   const taskContext = task.context as Record<string, unknown> | undefined;
   const hasDependents = ((taskContext?.dependentCount as number | undefined) ?? 0) > 0;
 
-  if (hasDependents) {
-    const dependentCount = taskContext?.dependentCount as number;
-    promptParts.push(
-      '## Handoff Requirement\n' +
-      `**${dependentCount} task(s) depend on this one.** Before completing, you must include a \`handoff\` object in your structured output with at minimum a \`delivered\` field (one-line summary of what you delivered). Example: \`{ handoff: { delivered: "Implemented X feature that Y tasks will use" } }\`\n` +
-      'Your handoff fields: `delivered` (required), `interfaces` (function/type names), `decisions` (array of {decision, why}), `gotchas` (pitfalls for consumers), `leftUndone` (explicitly named incomplete work).'
-    );
-  }
+  addSection(
+    'handoff-requirement',
+    hasDependents
+      ? '## Handoff Requirement\n' +
+        `**${taskContext?.dependentCount as number} task(s) depend on this one.** Before completing, you must include a \`handoff\` object in your structured output with at minimum a \`delivered\` field (one-line summary of what you delivered). Example: \`{ handoff: { delivered: "Implemented X feature that Y tasks will use" } }\`\n` +
+        'Your handoff fields: `delivered` (required), `interfaces` (function/type names), `decisions` (array of {decision, why}), `gotchas` (pitfalls for consumers), `leftUndone` (explicitly named incomplete work).'
+      : null,
+  );
 
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
@@ -447,22 +492,22 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // no plan at all is the expected outcome, so the standard planning block's
   // "an empty plan stalls the mission" rule would be exactly backwards here.
   const planIsOptional = (task.context as { planOptional?: boolean } | undefined)?.planOptional === true;
+  let outputRequirementContent: string;
   if (task.mode === 'planning' && !planIsOptional) {
-    promptParts.push(
+    outputRequirementContent =
       '## Output Requirement\n' +
       'This is a **planning task**. Your final output is validated against a fixed JSON schema and returned as structured output — the system creates tasks directly from your `plan` array. Free-form text or a fenced ```json block is NOT read; only the structured output is.\n' +
       'Each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
       'Optional per item: dependsOn (array of refs for ordering), baseBranch (ref of predecessor task to chain branches from), roleSlug (e.g. "builder", "researcher"), priority (integer), kind, complexity.\n' +
       'Always set `summary`, and set `missionComplete: true` when the mission goal is fully achieved.\n' +
       'Every planning cycle must either return a non-empty `plan` OR set `missionComplete: true` (or triageOutcome: "conflict") — an empty plan that does neither stalls the mission.\n' +
-      'Do NOT call create_task — the system creates tasks from your plan automatically.'
-    );
+      'Do NOT call create_task — the system creates tasks from your plan automatically.';
   } else if (outputReq === 'pr_required') {
-    promptParts.push('## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.');
+    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.';
   } else if (outputReq === 'artifact_required') {
-    promptParts.push('## Output Requirement\nThis task **requires you to create an artifact** as a deliverable. Use `buildd` action: create_artifact before completing the task.');
+    outputRequirementContent = '## Output Requirement\nThis task **requires you to create an artifact** as a deliverable. Use `buildd` action: create_artifact before completing the task.';
   } else if (outputReq === 'none') {
-    promptParts.push('## Output Requirement\nThis task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
+    outputRequirementContent = '## Output Requirement\nThis task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.';
   } else {
     // 'auto' (the default). Announce the obligation up front — this used to
     // surface only as a 400 on the final complete_task call, after the work
@@ -471,22 +516,23 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     // summary (the session ending without an agent-authored complete_task
     // call) independently of commit count — so the obligation below is
     // stated the same way, not conditioned on "if you finish with commits".
-    promptParts.push(
+    outputRequirementContent =
       '## Output Requirement\n' +
       'This task has no fixed output requirement, but you must always call `complete_task` yourself before the session ends — a session that just stops, even with zero commits, is treated as an unconfirmed outcome, not a completion. ' +
       'If you finish with commits or uncommitted changes in the worktree, `complete_task` must additionally be paired with ONE of: an open PR (`create_pr`) for the branch; an artifact recording the deliverable; or `discardEdits` stating why those edits are intentionally being thrown away. ' +
-      'A coordination task whose deliverable is action taken against OTHER PRs (merging one via `merge_pr`, or dispatching a release) satisfies this automatically — it does not need a PR of its own.'
-    );
+      'A coordination task whose deliverable is action taken against OTHER PRs (merging one via `merge_pr`, or dispatching a release) satisfies this automatically — it does not need a PR of its own.';
   }
+  addSection('output-requirement', outputRequirementContent);
 
-  if (planIsOptional) {
-    promptParts.push(
-      '## Optional Plan\n' +
-      'Your structured output may ALSO carry a `plan` array. It is optional here: the deliverable above is what this task is for, and returning no plan is a valid, expected outcome that creates no follow-up and no noise.\n' +
-      'Use it only when the task description asks you to propose follow-up work. When you do, each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
-      'Nothing in the plan is dispatched automatically — a human approves or rejects it. Do NOT call create_task to file the work yourself.'
-    );
-  }
+  addSection(
+    'optional-plan',
+    planIsOptional
+      ? '## Optional Plan\n' +
+        'Your structured output may ALSO carry a `plan` array. It is optional here: the deliverable above is what this task is for, and returning no plan is a valid, expected outcome that creates no follow-up and no noise.\n' +
+        'Use it only when the task description asks you to propose follow-up work. When you do, each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
+        'Nothing in the plan is dispatched automatically — a human approves or rejects it. Do NOT call create_task to file the work yourself.'
+      : null,
+  );
 
   // Heartbeat protocol — static text, unconditional on roleSlug (mission-run's
   // dominant-role derivation can swap a heartbeat task's role away from
@@ -495,13 +541,12 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // role, if any, got attached at claim time. See heartbeat-protocol.ts for why
   // this is not rendered into task.description any more.
   const isHeartbeatTask = (task.context as { heartbeat?: boolean } | undefined)?.heartbeat === true;
-  if (isHeartbeatTask) {
-    promptParts.push(HEARTBEAT_PROTOCOL_BLOCK);
-  }
+  addSection('heartbeat-protocol', isHeartbeatTask ? HEARTBEAT_PROTOCOL_BLOCK : null);
 
   // Inject aggregation context: embed child task results directly so the agent
   // doesn't need to fetch them via MCP (aggregator tasks run in bare temp dirs)
   const taskCtx = task.context as { aggregation?: boolean; childTasks?: Array<{ title: string; status: string; taskId: string; result: any }> } | undefined;
+  let aggregationContent: string | null = null;
   if (taskCtx?.aggregation && taskCtx.childTasks && taskCtx.childTasks.length > 0) {
     const aggParts: string[] = ['## Aggregation Context', 'The following sub-task results are available for synthesis:'];
     for (const child of taskCtx.childTasks) {
@@ -513,8 +558,9 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
         aggParts.push('*(no result)*');
       }
     }
-    promptParts.push(aggParts.join('\n'));
+    aggregationContent = aggParts.join('\n');
   }
+  addSection('aggregation-context', aggregationContent);
 
   // Render retry context so workers know they're continuing previous work
   const retryIteration = (taskCtx as any)?.iteration as number | undefined;
@@ -532,6 +578,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   const retryBaseBranch = (taskCtx as any)?.baseBranch as string | undefined;
   const maxIter = (taskCtx as any)?.maxIterations as number | undefined;
 
+  let retryContent: string | null = null;
   if (retryIteration || failureCtx) {
     const retryParts: string[] = ['## Retry Context'];
     if (retryIteration) {
@@ -544,29 +591,30 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       retryParts.push(`Previous failure: ${failureCtx}`);
     }
     retryParts.push('Review the existing work and continue from where the previous attempt left off. Do not redo completed work.');
-    promptParts.push(retryParts.join('\n'));
+    retryContent = retryParts.join('\n');
   }
+  addSection('retry-context', retryContent);
 
   // Communication instruction: configurable input policy
   // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
+  let communicationContent: string;
   if (inputPolicy === 'allow') {
-    promptParts.push(`## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`);
+    communicationContent = `## Communication\nWhen presenting options, recommendations, or asking the user how to proceed, use the AskUserQuestion tool instead of ending with a text question. This keeps context alive for follow-up work.`;
   } else if (inputPolicy === 'important-only') {
-    promptParts.push(`## Communication\nOnly use the AskUserQuestion tool for critical decisions that could cause irreversible damage or significant cost (e.g., deleting production data, large purchases). For everything else, make reasonable decisions autonomously and document your reasoning. Do NOT ask clarifying questions — pick the most sensible default.`);
+    communicationContent = `## Communication\nOnly use the AskUserQuestion tool for critical decisions that could cause irreversible damage or significant cost (e.g., deleting production data, large purchases). For everything else, make reasonable decisions autonomously and document your reasoning. Do NOT ask clarifying questions — pick the most sensible default.`;
+  } else if (inputAsRetry !== false) {
+    // inputAsRetry (default): allow AskUserQuestion for genuine blockers — session aborts and user responds async
+    communicationContent = `## Communication\nIf you hit a genuine blocker you cannot resolve autonomously — no correct path forward, not just a hard task — use AskUserQuestion. The session will end, the task is parked waiting for your answer (this is NOT recorded as a failure and is never auto-retried into the same dead end), the owner is notified, and answering resumes your work from where you left off.\nThis is not for uncertainty, permission-seeking, or a design choice you are capable of making — decide, do the work, and explain your reasoning instead. If you want to flag a choice for the record without waiting on it, use \`buildd\` action=post_note with type=question and defaultChoice set to what you chose; that is non-blocking and work continues immediately.`;
   } else {
-    if (inputAsRetry !== false) {
-      // inputAsRetry (default): allow AskUserQuestion for genuine blockers — session aborts and user responds async
-      promptParts.push(`## Communication\nIf you hit a genuine blocker you cannot resolve autonomously — no correct path forward, not just a hard task — use AskUserQuestion. The session will end, the task is parked waiting for your answer (this is NOT recorded as a failure and is never auto-retried into the same dead end), the owner is notified, and answering resumes your work from where you left off.\nThis is not for uncertainty, permission-seeking, or a design choice you are capable of making — decide, do the work, and explain your reasoning instead. If you want to flag a choice for the record without waiting on it, use \`buildd\` action=post_note with type=question and defaultChoice set to what you chose; that is non-blocking and work continues immediately.`);
-    } else {
-      // inputAsRetry explicitly disabled — hard block
-      promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);
-    }
+    // inputAsRetry explicitly disabled — hard block
+    communicationContent = `## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`;
   }
+  addSection('communication', communicationContent);
 
   // Add task metadata
-  promptParts.push(`---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
+  addSection('task-metadata', `---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
-  return { promptText: promptParts.join('\n\n'), memory };
+  return { promptText: promptParts.join('\n\n'), memory, sections };
 }
 
 // ── Post-session helpers ───────────────────────────────────────────

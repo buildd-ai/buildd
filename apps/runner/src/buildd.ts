@@ -452,12 +452,25 @@ export class BuilddClient {
     return data.memories || [];
   }
 
-  async getCompactObservations(workspaceId: string): Promise<{ markdown: string; count: number }> {
+  async getCompactObservations(workspaceId: string): Promise<{ markdown: string; count: number; rawContentBytes: number }> {
     try {
       // Use the memory proxy list with a small limit for compact representation
       const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=50`);
       const memories = data.memories || [];
-      if (memories.length === 0) return { markdown: '', count: 0 };
+      if (memories.length === 0) return { markdown: '', count: 0, rawContentBytes: 0 };
+
+      // Sum of every fetched memory's FULL content, before the 150-char
+      // per-item slice below throws most of it away. This is what
+      // memory-digest-policy.ts needs to report "bytes discarded" honestly —
+      // measured after that slice, the discard is unrecoverable by
+      // construction. Still bounded by the `limit=50` page above, not by the
+      // workspace's true total, so it undercounts a workspace with more than
+      // 50 memories — but it is real bytes this call actually fetched and then
+      // threw away, not a guess.
+      const rawContentBytes = memories.reduce(
+        (sum: number, m: any) => sum + Buffer.byteLength(String(m.content ?? ''), 'utf8'),
+        0,
+      );
 
       // Format as markdown grouped by type (matching old /compact behavior)
       const byType: Record<string, typeof memories> = {};
@@ -482,9 +495,9 @@ export class BuilddClient {
       // `## Workspace Memory` header (apps/runner/src/memory-digest-policy.ts),
       // and carrying a second one produced a duplicated heading in every
       // prompt. The block header owns the count now.
-      return { markdown: sections.join('\n\n'), count: data.total || memories.length };
+      return { markdown: sections.join('\n\n'), count: data.total || memories.length, rawContentBytes };
     } catch {
-      return { markdown: '', count: 0 };
+      return { markdown: '', count: 0, rawContentBytes: 0 };
     }
   }
 
