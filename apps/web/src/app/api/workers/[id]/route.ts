@@ -963,6 +963,10 @@ export async function PATCH(
         memoryBlockBytes: e.memoryBlockBytes,
         promptBytes: e.promptBytes,
         memoryShare: String(e.memoryShare),
+        // Same absent-from-the-strict-filter treatment as taskMatchDerivedBy/
+        // backend above: a runner predating this field cannot report it, and
+        // NULL is the honest record of "unknown" rather than "empty".
+        sections: Array.isArray(e.sections) ? e.sections.slice(0, 32) : null,
       }));
     if (rows.length > 0) {
       try {

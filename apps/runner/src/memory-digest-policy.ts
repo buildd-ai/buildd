@@ -35,8 +35,22 @@ const RECALL_POINTER =
   '\nUse `recall scope=["memory","task"]` for full context (prior lessons + recent outcomes in one call). Use `learn` to record gotchas/patterns/decisions — NOT summaries.';
 
 export interface MemoryBlockInput {
-  /** The workspace-wide digest, as returned by getCompactObservations. Not rendered — see module docs. */
-  compactResult: { count: number; markdown?: string };
+  /**
+   * The workspace-wide digest, as returned by getCompactObservations. Not
+   * rendered — see module docs.
+   */
+  compactResult: {
+    count: number;
+    markdown?: string;
+    /**
+     * Bytes of the fetched memories' FULL content, before
+     * getCompactObservations' own 150-char-per-item slice throws most of it
+     * away. Optional so a caller (or an older fixture) that only has the
+     * already-sliced markdown still works — digestBytesAvailable then falls
+     * back to measuring that, same as before this field existed.
+     */
+    rawContentBytes?: number;
+  };
   /** Ids of the task-title matches — the outer render gate reads its length. */
   taskSearchResults: ReadonlyArray<{ id: string }>;
   /** Hydrated content for those matches. */
@@ -49,15 +63,23 @@ export interface MemoryBlockResult {
   /** Bytes of workspace-wide digest actually rendered. Always 0 — kept for the composition record's historical shape. */
   digestBytes: number;
   /**
-   * Bytes the digest WOULD have occupied had it been rendered. Kept for the
-   * composition record: it is what the concluded experiment's saving was
-   * measured against, and it still answers "how much would restoring the
-   * digest cost today".
+   * Bytes the digest WOULD have occupied had it been rendered, measured
+   * PRE-CAP — i.e. `compactResult.rawContentBytes` when the caller reports it,
+   * before getCompactObservations' 150-char-per-item slice discarded most of
+   * it. Falls back to the (already-sliced) markdown's byte length when the
+   * caller does not report the raw figure. Kept for the composition record:
+   * it is what the concluded experiment's saving was measured against, and it
+   * still answers "how much would restoring the digest cost today".
    */
   digestBytesAvailable: number;
   taskMatchBytes: number;
   taskMatchCount: number;
-  /** Always false — nothing is sliced any more. Kept for the composition record's historical shape. */
+  /**
+   * True when the raw content available was larger than what actually made it
+   * into the (unrendered) digest markdown — i.e. something was discarded
+   * upstream. False when the two agree, including when the caller reports no
+   * `rawContentBytes` at all (nothing to compare against).
+   */
   digestTruncated: boolean;
 }
 
@@ -70,7 +92,9 @@ export interface MemoryBlockResult {
 export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
   const { compactResult, taskSearchResults, fullObservations } = input;
 
-  const digestBytesAvailable = byteLength(compactResult.markdown ?? '');
+  const renderedDigestBytes = byteLength(compactResult.markdown ?? '');
+  const digestBytesAvailable = compactResult.rawContentBytes ?? renderedDigestBytes;
+  const digestTruncated = digestBytesAvailable > renderedDigestBytes;
 
   // Nothing to render when the workspace has no memory at all and the task
   // matched nothing.
@@ -81,7 +105,7 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
       digestBytesAvailable,
       taskMatchBytes: 0,
       taskMatchCount: 0,
-      digestTruncated: false,
+      digestTruncated,
     };
   }
 
@@ -115,8 +139,22 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
     digestBytesAvailable,
     taskMatchBytes,
     taskMatchCount: fullObservations.length,
-    digestTruncated: false,
+    digestTruncated,
   };
+}
+
+/**
+ * One entry per named block `buildPromptWithComposition` (prompt-builder.ts)
+ * considers emitting — present whether or not it actually rendered, so a
+ * section that is silently gated off is as visible as one that fired.
+ */
+export interface PromptSectionRecord {
+  name: string;
+  /** UTF-8 bytes of the rendered content. 0 when `rendered` is false. */
+  bytes: number;
+  rendered: boolean;
+  /** True when this section's content was cut down from more than it shows. */
+  truncated: boolean;
 }
 
 /** One record per prompt build. */
@@ -154,6 +192,15 @@ export interface PromptCompositionRecord {
   promptBytes: number;
   /** Memory block as a share of the whole prompt, 0–1, rounded to 3dp. */
   memoryShare: number;
+  /**
+   * Per-section byte accounting for every block `buildPromptWithComposition`
+   * considers — see `PromptSectionRecord`. Previously only the memory block
+   * (the fields above) was instrumented; the other ~12 sections were each
+   * individually invisible. `sections` closes that for good: a section that
+   * silently stops rendering shows up here as `rendered: false` instead of as
+   * nothing at all.
+   */
+  sections: PromptSectionRecord[];
 }
 
 export function buildPromptCompositionRecord(args: {
@@ -163,6 +210,8 @@ export function buildPromptCompositionRecord(args: {
   backend?: string | null;
   /** Which retrieval step produced the task matches; 'unknown' when unreported. */
   taskMatchDerivedBy?: string | null;
+  /** Per-section vector from buildPromptWithComposition. Defaults to []. */
+  sections?: PromptSectionRecord[];
 }): PromptCompositionRecord {
   const { memory, promptText } = args;
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
@@ -181,13 +230,14 @@ export function buildPromptCompositionRecord(args: {
     taskMatchDerivedBy: args.taskMatchDerivedBy || 'unknown',
     memoryBlockBytes,
     promptBytes,
+    sections: args.sections ?? [],
     memoryShare: promptBytes > 0
       ? Math.round((memoryBlockBytes / promptBytes) * 1000) / 1000
       : 0,
   };
 }
 
-function byteLength(s: string): number {
+export function byteLength(s: string): number {
   return Buffer.byteLength(s, 'utf8');
 }
 

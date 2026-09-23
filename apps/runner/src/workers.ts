@@ -3600,6 +3600,7 @@ export class WorkerManager {
         promptText,
         backend: task.backend,
         taskMatchDerivedBy: taskMemory.derivedBy,
+        sections: built.sections,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
       // Also on stdout, as a live "is this firing at all" signal. Whether
