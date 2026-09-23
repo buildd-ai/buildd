@@ -14,6 +14,7 @@ import { workers, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull } from 'drizzle-orm';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { normalizeErrorSignature, EMPTY_SIGNATURE } from './error-signature';
+import { isBookkeepingExit } from './worker-exit-taxonomy';
 import type {
   FailureAnalytics,
   FailureExitCauseBucket,
@@ -147,18 +148,26 @@ function isFailure(status: string): boolean {
  * A reported failure that should count against the failure rate, the
  * exit-cause breakdown, and signature ranking.
  *
- * `needs_input` is deliberately excluded even though its status is `failed`:
- * the only way a terminal worker carries this exit cause is the
- * waiting_input timeout (cleanupStuckWaitingInput) — an agent that correctly
- * stopped to ask a human, unanswered. That is not a code defect, so counting
- * it would misrepresent the workspace's actual failure rate the same way the
- * original bug did. It stays queryable via `getFailureSignatureFamily`
- * (errorPrefix "needs_input:"), which intentionally scans every failed/error
- * row regardless of this exclusion — that is the one place "how big is this
- * family" is supposed to be answerable from.
+ * Bookkeeping exits (isBookkeepingExit: needs_input, never_started,
+ * condition_unmet) are deliberately excluded even though their status is
+ * `failed`: a parked question that timed out, a claim no runner started, a
+ * deferral — none is the work failing, so counting them misrepresents the
+ * workspace's actual failure rate. They stay queryable via
+ * `getFailureSignatureFamily` (prefix) and `getFailureSignatureMatch` (exact
+ * `error=` lookup), which intentionally scan every failed/error row regardless
+ * of this exclusion — so friction dedupe still finds them.
  */
 function isChargeableFailure(row: FailureWorkerRow): boolean {
-  return isFailure(row.status) && row.exitCause !== 'needs_input';
+  return isFailure(row.status) && !isBookkeepingExit(row.exitCause);
+}
+
+/**
+ * Belongs in the failure-rate denominator: terminal, and not a bookkeeping
+ * exit. A bookkeeping row is out of the numerator, so leaving it in the
+ * denominator would read as a success and deflate the rate instead.
+ */
+function countsAsTerminal(row: FailureWorkerRow): boolean {
+  return isTerminalWorkerStatus(row.status) && !(isFailure(row.status) && isBookkeepingExit(row.exitCause));
 }
 
 /** Has this worker had the chance to fail yet? See IN_FLIGHT_WORKER_STATUSES. */
@@ -239,6 +248,17 @@ function buildSignatures(rows: FailureWorkerRow[], limit: number): FailureSignat
     }));
 }
 
+/**
+ * The cluster for one exact normalized signature, over EVERY failed/error row
+ * — bookkeeping exits included. The ranked `signatures` in computeFailureAnalytics
+ * leave those out, so an `error=` lookup for e.g. a `Deferred:` string would
+ * otherwise come back unknown and friction dedupe would file a duplicate.
+ */
+export function findFailureSignature(rows: FailureWorkerRow[], signature: string): FailureSignatureRow | null {
+  const matching = rows.filter(r => isFailure(r.status) && normalizeErrorSignature(r.error) === signature);
+  return buildSignatures(matching, 1)[0] ?? null;
+}
+
 const FAMILY_TOP_SIGNATURES = 5;
 
 /**
@@ -312,7 +332,7 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
 
   const failures = rows.filter(isChargeableFailure);
   const diedEarlyRows = failures.filter(isDiedEarly);
-  const terminal = rows.filter(r => isTerminalWorkerStatus(r.status)).length;
+  const terminal = rows.filter(countsAsTerminal).length;
 
   const totals: FailureTotals = {
     started: rows.length,
@@ -342,7 +362,7 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
   const roleTallies = new Map<string, { started: number; terminal: number; failed: number }>();
   const wsTallies = new Map<string, { started: number; terminal: number; failed: number }>();
   for (const r of rows) {
-    const isTerminal = isTerminalWorkerStatus(r.status);
+    const isTerminal = countsAsTerminal(r);
     const roleKey = r.roleSlug ?? NO_ROLE;
     const role = roleTallies.get(roleKey) ?? { started: 0, terminal: 0, failed: 0 };
     role.started += 1;
@@ -585,6 +605,27 @@ export async function findSupersededErrorMatch(
     };
   } catch (err) {
     console.error('[failure-analytics] superseded-error lookup failed:', err);
+    return null;
+  }
+}
+
+/**
+ * Exact-signature lookup over every failed row in scope (bookkeeping exits
+ * included). See `findFailureSignature`.
+ * Read-only. Never throws — returns null if the query fails.
+ */
+export async function getFailureSignatureMatch(
+  scopedWsIds: string[],
+  window: FailureWindow,
+  signature: string,
+  now: Date = new Date(),
+): Promise<FailureSignatureRow | null> {
+  if (scopedWsIds.length === 0) return null;
+  try {
+    const { workerRows } = await fetchFailureWorkerRows(scopedWsIds, window, now);
+    return findFailureSignature(workerRows, signature);
+  } catch (err) {
+    console.error('[failure-analytics] signature match query failed:', err);
     return null;
   }
 }
