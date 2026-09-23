@@ -43,4 +43,7 @@ if [ -z "${NO_PROD_DATA_IDENTIFIERS:-}" ]; then
   echo "  private-repo scan will be skipped. CI still enforces it with the real secret." >&2
 fi
 
-NO_PROD_DATA_LOCAL=1 python3 scripts/check_no_prod_data.py "$BASE_REF" "${ARGS[@]}"
+# ${ARGS[@]+...}: macOS ships bash 3.2, where expanding an EMPTY array under
+# `set -u` is an "unbound variable" error — every no-flag run (the pre-commit
+# hook's) died here before checking anything.
+NO_PROD_DATA_LOCAL=1 python3 scripts/check_no_prod_data.py "$BASE_REF" ${ARGS[@]+"${ARGS[@]}"}

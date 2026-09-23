@@ -79,16 +79,34 @@ export interface OauthEpisode {
 }
 
 /**
- * Model cost weights, in sonnet-equivalents, from published per-token pricing
- * ratios (opus ≈ 5× sonnet, haiku ≈ 0.27× sonnet). A plan window is consumed by
- * *cost*, not by raw turn or token count: 100 opus turns eat roughly 5× the
- * window that 100 haiku turns do. Weighting normalises for that so a capacity
- * learned during an opus-heavy week still applies during a haiku-heavy one.
+ * Model cost weights, in sonnet-equivalents. A plan window is consumed by
+ * *cost*, not by raw turn or token count, so weighting normalises for model mix:
+ * a capacity learned during a premium-heavy week still applies during a
+ * budget-heavy one.
+ *
+ * Basis: published per-token list-price ratios between the models the tier
+ * registry serves by default (TIER_DEFAULTS in ./model-tier-defaults.ts) —
+ * premium ≈ 2.5× standard, budget ≈ 0.5× standard. List price is a proxy:
+ * subscription windows are not billed per token, but price is the best public
+ * signal of relative consumption. Re-derive these when TIER_DEFAULTS moves to a
+ * new model generation — the previous values (opus 5×, haiku 0.27×) described
+ * a generation where premium cost five times standard, and outlived it.
+ *
+ * Why an over-weight matters, not just an imprecise one: pressure feeds the
+ * router's budget downshift. With opus over-weighted, every premium task reads
+ * as far more window than it uses, pressure rises early, and OTHER tasks get
+ * downshifted. Under a model-routing experiment that makes the arms interfere —
+ * the treatment arm's premium work pushes control-arm tasks off their baseline
+ * (docs/design/model-routing-experiment.md).
+ *
+ * Unit caveat: oauth_budget_episodes store weighted totals as computed when the
+ * episode was recorded, so capacity learned from episodes before this change is
+ * in the old units until those episodes age out of the learning window.
  *
  * Unknown models weigh 1 (sonnet) — never 0 (would read as free) and never the
  * maximum (would throttle everything on a naming change).
  */
-export const MODEL_WEIGHTS = { opus: 5, sonnet: 1, haiku: 0.27 } as const;
+export const MODEL_WEIGHTS = { opus: 2.5, sonnet: 1, haiku: 0.5 } as const;
 
 export function modelWeight(model: string | null | undefined): number {
   if (!model) return MODEL_WEIGHTS.sonnet;

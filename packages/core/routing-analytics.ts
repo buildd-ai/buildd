@@ -24,6 +24,10 @@ export interface TaskOutcomeInput {
   totalTurns?: number | null;
   durationMs?: number | null;
   wasRetried?: boolean;
+  /** The worker's classified exit cause (workers.exit_cause) at the terminal write. */
+  exitCause?: string | null;
+  /** The worker whose terminal report produced this row. */
+  workerId?: string | null;
 }
 
 /**
@@ -72,6 +76,8 @@ export async function recordTaskOutcome(input: TaskOutcomeInput): Promise<boolea
       totalTurns: input.totalTurns ?? null,
       durationMs: input.durationMs ?? null,
       wasRetried: input.wasRetried ?? false,
+      exitCause: input.exitCause ?? null,
+      workerId: input.workerId ?? null,
     });
     return true;
   } catch (err) {

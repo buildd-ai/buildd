@@ -6163,6 +6163,20 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-opus-4-8');
     });
 
+    // Experiment readouts separate model-attributable failures from infra ones
+    // by exit_cause; without the worker's cause on the outcome row that split
+    // needs a second join per row that the readout cannot rely on.
+    it('passes the worker exitCause and id to recordTaskOutcome', async () => {
+      setupTerminal({ exitCause: 'infra_failure' });
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+      const arg = mockRecordTaskOutcome.mock.calls[0][0];
+      expect(arg.workerId).toBe('worker-1');
+      expect(arg.exitCause).toBe('infra_failure');
+    });
+
     it('stays null when an older runner reports no model at all', async () => {
       setupTerminal();
       const res = await PATCH(createMockRequest({

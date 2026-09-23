@@ -226,6 +226,18 @@ mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
 
+// Model-routing experiment glue. The real module is exercised against rendered
+// SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
+// only the call-site wiring is under test. Default: no running experiment.
+const mockDrawModelRoutingArm = mock((_args: any): Promise<any> => Promise.resolve(null));
+const mockApplyModelRoutingTreatment = mock((_draw: any, _args: any): Promise<any> => Promise.resolve(null));
+const mockRecordModelRoutingAssignment = mock((_draw: any, _args: any) => Promise.resolve());
+mock.module('@buildd/core/model-routing-experiment-source', () => ({
+  drawModelRoutingArm: mockDrawModelRoutingArm,
+  applyModelRoutingTreatment: mockApplyModelRoutingTreatment,
+  recordModelRoutingAssignment: mockRecordModelRoutingAssignment,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(options: {
@@ -1073,6 +1085,94 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
+  });
+
+  // --- Model-routing experiment wiring ---
+
+  describe('model-routing experiment', () => {
+    const experimentTask = () => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', kind: 'engineering', complexity: 'normal',
+      priority: 0, dependsOn: [], requiredCapabilities: [], context: {},
+      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+    });
+    const claimReq = () => createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', environment: { tools: [], envKeys: [], mcp: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'h' }, scannedAt: '2026-01-01T00:00:00.000Z', claudeCliVersion: '2.1.300' } },
+    });
+    function setup() {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([experimentTask()]);
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) }; }),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+      return sets;
+    }
+
+    beforeEach(() => {
+      mockDrawModelRoutingArm.mockReset();
+      mockDrawModelRoutingArm.mockResolvedValue(null);
+      mockApplyModelRoutingTreatment.mockReset();
+      mockApplyModelRoutingTreatment.mockResolvedValue(null);
+      mockRecordModelRoutingAssignment.mockReset();
+      mockRecordModelRoutingAssignment.mockResolvedValue(undefined);
+    });
+
+    // mockTasksUpdate is module-level and not reset by the outer beforeEach;
+    // later tests rely on its default "lock won" shape.
+    afterEach(() => {
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+      });
+    });
+
+    it('with no running experiment, routes exactly as before and records nothing', async () => {
+      const sets = setup();
+      const res = await POST(claimReq());
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers.length).toBe(1);
+      expect(mockDrawModelRoutingArm).toHaveBeenCalledTimes(1);
+      expect(mockDrawModelRoutingArm.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', routerReason: 'baseline', explicitModel: null });
+      expect(mockApplyModelRoutingTreatment).not.toHaveBeenCalled();
+      expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+      const claimSet = sets.find(v => v.status === 'assigned');
+      expect(claimSet.predictedModel).toBe('claude-sonnet-5');
+    });
+
+    it('a treatment draw overrides the tier, and the assignment is recorded after the lock with the served model', async () => {
+      const sets = setup();
+      const draw = { arm: 'treatment' };
+      mockDrawModelRoutingArm.mockResolvedValue(draw);
+      mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: 'claude-opus-5', provider: 'anthropic', source: 'default' });
+
+      const res = await POST(claimReq());
+      expect((await res.json()).workers.length).toBe(1);
+
+      const applyArgs = mockApplyModelRoutingTreatment.mock.calls[0][1];
+      expect(applyArgs.controlModel).toBe('claude-sonnet-5');
+      // The capability check handed to the experiment is the real one, fed this runner's CLI version.
+      expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
+
+      const claimSet = sets.find(v => v.status === 'assigned');
+      expect(claimSet.predictedModel).toBe('claude-opus-5');
+      expect(claimSet.context.model).toBe('claude-opus-5');
+      expect(claimSet.context.resolvedTier.tier).toBe('premium');
+      expect(mockRecordModelRoutingAssignment).toHaveBeenCalledTimes(1);
+      expect(mockRecordModelRoutingAssignment.mock.calls[0][0]).toBe(draw);
+      expect(mockRecordModelRoutingAssignment.mock.calls[0][1]).toMatchObject({ taskId: 'task-1', runnerCliVersion: '2.1.300', resolvedModel: 'claude-opus-5' });
+    });
+
+    it('does not record an assignment when the optimistic lock is lost', async () => {
+      setup();
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
+      mockDrawModelRoutingArm.mockResolvedValue({ arm: 'control' });
+      await POST(claimReq());
+      expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+    });
   });
 
   // --- Runner capability gate (Claude Code client version) ---
