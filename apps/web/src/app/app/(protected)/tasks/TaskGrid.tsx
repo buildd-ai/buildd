@@ -7,7 +7,7 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import { GroupSection } from '@/components/GroupSection';
-import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
+import { SwipeableRow, SwipeProvider, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveDayBands } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
@@ -93,17 +93,9 @@ export function gridTaskPrProps(task: GridTask): {
   };
 }
 
-/**
- * Card type for a row's ⋯ menu. Terminal rows (completed, failed, cancelled)
- * map to 'completed-task', whose menu has no "Cancel task": cancelling a
- * finished task is a no-op at best and, with the old Undo, re-queued it.
- */
+/** Card type for a row's ⋯ menu — the rule shared with the mission timeline. */
 export function deriveSwipeCardType(task: GridTask): SwipeCardType {
-  if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
-    return 'completed-task';
-  }
-  if (task.chain?.blockedBy && task.chain.blockedBy.length > 0) return 'blocked-task';
-  return 'running-task';
+  return taskSwipeCardType(task.status, task.chain?.blockedBy?.length ?? 0);
 }
 
 function renderTaskCard(
