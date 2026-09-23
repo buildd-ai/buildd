@@ -107,11 +107,40 @@ export class ClaudeBackend implements AgentBackend {
               ? msgAny.errors.join('; ')
               : undefined;
           const subtype = msgAny.subtype && msgAny.subtype !== 'success' ? msgAny.subtype : undefined;
+
+          // Both SDK result shapes also carry stop_reason/terminal_reason/
+          // permission_denials/api_error_status regardless of whether `result`
+          // or `errors` text was populated — an is_error result with subtype
+          // 'success' and empty result/errors (the case that used to produce
+          // the fully generic fallback below) still has these. Surfacing them
+          // turns a diagnostically-empty failure into an actionable one instead
+          // of the SDK genuinely having given zero information.
+          const diagnosticParts: string[] = [];
+          if (typeof msgAny.api_error_status === 'number') {
+            diagnosticParts.push(`api_error_status=${msgAny.api_error_status}`);
+          }
+          if (typeof msgAny.stop_reason === 'string' && msgAny.stop_reason) {
+            diagnosticParts.push(`stop_reason=${msgAny.stop_reason}`);
+          }
+          if (typeof msgAny.terminal_reason === 'string' && msgAny.terminal_reason) {
+            diagnosticParts.push(`terminal_reason=${msgAny.terminal_reason}`);
+          }
+          if (Array.isArray(msgAny.permission_denials) && msgAny.permission_denials.length > 0) {
+            const tools = msgAny.permission_denials
+              .map((d: any) => d?.tool_name || d?.tool || 'unknown')
+              .join(', ');
+            diagnosticParts.push(`permission_denials=[${tools}]`);
+          }
+          const diagnostic = diagnosticParts.length > 0 ? diagnosticParts.join(' ') : undefined;
+
           yield {
             type: 'error',
             error: subtype && detail
               ? `${subtype}: ${detail}`
-              : detail ?? subtype ?? 'Claude Agent SDK returned an error result',
+              : detail ?? subtype ??
+                (diagnostic
+                  ? `Claude Agent SDK returned an error result (${diagnostic})`
+                  : 'Claude Agent SDK returned an error result'),
           };
           return;
         } else {
