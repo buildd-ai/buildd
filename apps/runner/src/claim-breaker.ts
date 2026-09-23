@@ -228,9 +228,9 @@ function classifyExhaustion(err: string, now: Date): ClaimErrorClassification | 
     return { label: 'Auth failure', pauseMs: 30 * 60 * 1000, scope: 'context' };
   }
 
-  if (err.includes('max budget') || err.includes('maxbudgetusd') || err.includes('budget exceeded')) {
-    return { label: 'Budget limit reached', pauseMs: 60 * 60 * 1000, scope: 'context' };
-  }
+  // No branch for the per-session dollar cap (maxBudgetUsd): it stops one
+  // task, not the credential. Pausing the context for it walled every other
+  // task on the same seat for an hour. See claim-budget-signals.ts.
 
   return null;
 }

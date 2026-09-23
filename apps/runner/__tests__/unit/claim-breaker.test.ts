@@ -97,9 +97,11 @@ describe('classifyClaimError', () => {
     expect(res!.scope).toBe('context');
   });
 
-  test('SDK max budget is context-scoped', () => {
-    const res = classifyClaimError('max budget exceeded');
-    expect(res!.scope).toBe('context');
+  // The SDK's per-session dollar cap stops one task, not the credential — it
+  // must not pause the context (audit A.2).
+  test('SDK per-session max budget does not trip the breaker', () => {
+    expect(classifyClaimError('max budget exceeded')).toBeNull();
+    expect(classifyClaimError('budget limit exceeded (maxbudgetusd)')).toBeNull();
   });
 
   // Regression: 2026-06-25 session-limit storm (3 workers in 10s for one task).

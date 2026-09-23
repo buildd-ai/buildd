@@ -21,6 +21,7 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -2461,7 +2462,7 @@ const server = DEBUG_MODE ? Bun.serve({
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
-      const report = runDiagnostics();
+      const report = withClaimHealthCheck(runDiagnostics());
       return Response.json(report, { headers: corsHeaders });
     }
 
@@ -2470,7 +2471,7 @@ const server = DEBUG_MODE ? Bun.serve({
       const report = runDiagnostics();
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = runDiagnostics();
+      const afterReport = withClaimHealthCheck(runDiagnostics());
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 
@@ -2922,11 +2923,8 @@ setInterval(async () => {
 // every claim — which is exactly what hid the 2026-06-22 outage. When contact is
 // stale we emit a DEGRADED line instead, so a host monitor keyed on "runner alive"
 // freshness (and humans reading the log) see the truth.
-const SERVER_CONTACT_STALE_MS = 5 * 60_000;
+// The stale threshold and the claim-5xx-streak rule live in heartbeatState.
 setInterval(() => {
-  const lastOk = getLastServerContactAt();
-  const ageMs = lastOk ? Date.now() - lastOk : Infinity;
-  const degraded = ageMs >= SERVER_CONTACT_STALE_MS;
-  const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
-  emitHeartbeatTick(degraded, `no successful server contact (last: ${since}); claims are failing`);
+  const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now());
+  emitHeartbeatTick(degraded, reason);
 }, 60_000);

@@ -84,6 +84,14 @@ import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBr
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
+import {
+  resumeAtForReset,
+  claimHealth,
+  DEGRADED_CLAIM_POLL_MS,
+  SESSION_BUDGET_CAP_ERROR,
+  isSessionBudgetCapError,
+  sdkMaxBudgetUsd,
+} from './claim-budget-signals';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
@@ -637,6 +645,8 @@ export class WorkerManager {
   private budgetResumeTimer?: Timer;
   /** Target instant of `budgetResumeTimer`, so a later wake cannot displace an earlier one. */
   private budgetResumeAtMs?: number;
+  /** Consecutive claim replies whose budgetResetsAt was already past (N2 backoff). */
+  private pastResetStreak = 0;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -1254,8 +1264,10 @@ export class WorkerManager {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
         this.emit({ type: 'claim_rejected', status, reason });
+        this.onClaimServerErrorStreak(status);
         throw err;
       }
+      this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
 
       // Credential discovery. This is the ONLY path by which an idle runner
@@ -1274,8 +1286,9 @@ export class WorkerManager {
       // Emit an informational event for the UI — no circuit breaker needed since
       // the server filters non-tenant tasks correctly.
       if (budgetResetsAt) {
+        const now = Date.now();
         const resetMs = new Date(budgetResetsAt).getTime();
-        const delayMs = Math.max(0, resetMs - Date.now());
+        const delayMs = Math.max(0, resetMs - now);
         console.warn(`[WorkerManager] Account OAuth budget exhausted — resets at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
         // Wake up to poll the instant the budget resets. Without this the runner
@@ -1283,7 +1296,15 @@ export class WorkerManager {
         // — the budget-reset re-queue deliberately emits `task:updated`, which the
         // Pusher subscriber ignores, so there is no realtime nudge. That left work
         // stalled for up to an hour after the budget was back (2026-07-11 incident).
-        this.scheduleResumeAt(new Date(budgetResetsAt).getTime(), 'account budget reset');
+        //
+        // A reset that is already past must not be scheduled as "now": the
+        // wake re-polls instantly, gets the same past reset back and the
+        // runner hot-loops the claim route. Back off 30s, doubling.
+        const wake = resumeAtForReset(resetMs, now, this.pastResetStreak);
+        this.pastResetStreak = wake.pastStreak;
+        this.scheduleResumeAt(wake.atMs, wake.pastStreak > 0 ? 'past budget reset (backoff)' : 'account budget reset');
+      } else {
+        this.pastResetStreak = 0;
       }
 
       if (claimed.length === 0) {
@@ -1443,6 +1464,35 @@ export class WorkerManager {
     }, delayMs);
     // Don't let this timer alone keep the process alive.
     (this.budgetResumeTimer as any)?.unref?.();
+  }
+
+  /** True once the current claim-5xx streak has been alerted (one alert per streak). */
+  private claimDegradedAlerted = false;
+
+  /** Emit the recovery event once the alerted streak has ended (by a 2xx or a 4xx). */
+  private clearClaimDegradedAlertIfRecovered(): void {
+    if (this.claimDegradedAlerted && !claimHealth.isDegraded()) {
+      this.claimDegradedAlerted = false;
+      this.emit({ type: 'claim_health', degraded: false });
+    }
+  }
+
+  /**
+   * N3: while the claim endpoint is returning a run of 5xx, alert once and
+   * poll every 5 minutes instead of waiting for the hourly fallback tick.
+   * The streak itself is counted in BuilddClient.claimTask.
+   */
+  private onClaimServerErrorStreak(status: number): void {
+    // A 4xx ends the streak (BuilddClient.claimTask records it as a success)
+    // but lands here on the catch path, so release the latch here too.
+    this.clearClaimDegradedAlertIfRecovered();
+    if (status < 500 || !claimHealth.isDegraded()) return;
+    if (!this.claimDegradedAlerted) {
+      this.claimDegradedAlerted = true;
+      console.error(`[WorkerManager] ALERT claim endpoint degraded — ${claimHealth.describe()}; polling every ${DEGRADED_CLAIM_POLL_MS / 60_000} min`);
+      this.emit({ type: 'claim_health', degraded: true, streak: claimHealth.streak, status });
+    }
+    this.scheduleResumeAt(Date.now() + DEGRADED_CLAIM_POLL_MS, 'claim 5xx streak (degraded poll)');
   }
 
   /**
@@ -2170,7 +2220,11 @@ export class WorkerManager {
     // over (Codex <-> Claude) / holds it until reset instead of hard-
     // failing. Shared with the web route's isBudgetExhaustionError and the
     // claim breaker's classifyClaimError so all three can't drift apart.
-    const isBudgetError = isBudgetExhaustionError(errMsg);
+    // A per-session dollar cap (a backend's own maxBudgetUsd stop) is a task
+    // failure, not a usage wall — carve it out before the wall check, whose
+    // patterns also match the legacy "budget limit exceeded" wording.
+    const isSessionBudgetCap = isSessionBudgetCapError(errMsg);
+    const isBudgetError = !isSessionBudgetCap && isBudgetExhaustionError(errMsg);
     // Steering-delivery crash: the CLI rejected a malformed spawn invocation
     // (e.g. --session-id + --resume without --fork-session). This is an infra
     // failure — must not consume a task retry attempt.
@@ -2195,6 +2249,7 @@ export class WorkerManager {
     const resolvedOutcome = closingTurnOutcome === 'declined'
       ? closingTurnOutcome
       : isBudgetError ? ('skipped:rate_limit' as const)
+      : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
       : isSteeringDeliveryCrash ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
     const errorPayload = {
@@ -2202,6 +2257,7 @@ export class WorkerManager {
       error: worker.error,
       ...this.terminalAttributionPayload(worker),
       ...(isBudgetError && { budgetExhausted: true }),
+      ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
       ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
       resultMeta: {
@@ -3285,8 +3341,14 @@ export class WorkerManager {
         cleanEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '0';
       }
 
-      // Resolve max budget for SDK-level cost control
-      const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);
+      // Resolve max budget for SDK-level cost control. A dollar cap only
+      // means something on a metered (API-key) credential: on a seat (OAuth)
+      // the reported cost is an estimate, so a cap would stop real work on a
+      // virtual number. Matches the Codex backend, which skips it for OAuth.
+      const maxBudgetUsd = sdkMaxBudgetUsd(
+        resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd),
+        { backend: task.backend || 'claude', env: cleanEnv },
+      );
 
       // Resolve the session model: the model the claim route resolved for THIS
       // task (task.context.model — smart-routing tier decision or an explicit
@@ -4210,21 +4272,25 @@ export class WorkerManager {
         // Burn-loop guard (cache invalidation + exponential backoff) is applied
         // by the circuit-breaker block below, which classifies worker.error.
       } else if (resultSubtype === 'error_max_budget_usd' && !closingTurnFailure) {
-        // Budget exceeded - report as error with specific message
-        sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
+        // The session hit its OWN per-session dollar cap (maxBudgetUsd). That
+        // is a task-level stop, not a provider usage wall: report it as
+        // sessionBudgetCapped, never budgetExhausted, with text that matches
+        // no budget-exhaustion pattern — otherwise the server pauses the whole
+        // backend and the claim breaker walls the seat for an hour.
+        sessionLog(worker.id, 'error', 'session_budget_capped', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
         worker.status = 'error';
-        worker.error = 'Budget limit exceeded';
-        worker.currentAction = 'Budget exceeded';
+        worker.error = SESSION_BUDGET_CAP_ERROR;
+        worker.currentAction = 'Session cost cap';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
-          error: 'Budget limit exceeded (maxBudgetUsd)',
-          budgetExhausted: true,
+          error: SESSION_BUDGET_CAP_ERROR,
+          sessionBudgetCapped: true,
           milestones: worker.milestones,
-          resultMeta: { closingTurnOutcome: 'skipped:budget_exhausted' },
+          resultMeta: { closingTurnOutcome: 'skipped:session_budget_capped' },
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
@@ -5631,7 +5697,7 @@ export class WorkerManager {
       }
       const result = msg as any;
       if (result.subtype === 'error_max_budget_usd') {
-        this.addMilestone(worker, { type: 'status', label: `Budget limit exceeded ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
+        this.addMilestone(worker, { type: 'status', label: `${SESSION_BUDGET_CAP_ERROR} ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
         sessionLog(worker.id, 'error', 'result_budget_exceeded', `cost=$${result.total_cost_usd?.toFixed(2) || '?'}`, worker.taskId);
       } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
