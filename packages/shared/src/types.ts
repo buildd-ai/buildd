@@ -1960,3 +1960,59 @@ export interface GateReasonFamily {
   frictionSignature: string;
   topReasons: { reason: string; count: number }[];
 }
+
+// ── Experiments (/api/experiments, MCP manage_experiments) ──────────────────
+
+export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
+export type ExperimentVisibility = 'admins' | 'team';
+export type ExperimentKind = 'model_routing';
+
+/** An `experiments` row as the API returns it. Dates are ISO strings. */
+export interface Experiment {
+  id: string;
+  key: string;
+  title: string;
+  hypothesis: string | null;
+  status: ExperimentStatus;
+  kind: ExperimentKind;
+  treatmentFraction: number;
+  /**
+   * Salt of the arm draw. Bumped whenever the fraction or config changes after
+   * the experiment first started, so rows drawn under different settings are
+   * read out separately rather than pooled.
+   */
+  policyVersion: number;
+  config: Record<string, unknown>;
+  visibility: ExperimentVisibility;
+  decision: string | null;
+  startedAt: string | null;
+  concludedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/experiments. Status always starts at `draft`. */
+export interface CreateExperimentInput {
+  key: string;
+  title: string;
+  hypothesis?: string | null;
+  kind?: ExperimentKind;
+  treatmentFraction?: number;
+  config?: Record<string, unknown>;
+  visibility?: ExperimentVisibility;
+}
+
+/**
+ * PATCH /api/experiments/[id]. Legal status moves: draft→running,
+ * running⇄paused, draft|running|paused→concluded (needs `decision`).
+ * `concluded` is terminal.
+ */
+export interface UpdateExperimentInput {
+  title?: string;
+  hypothesis?: string | null;
+  treatmentFraction?: number;
+  config?: Record<string, unknown>;
+  visibility?: ExperimentVisibility;
+  status?: ExperimentStatus;
+  decision?: string;
+}

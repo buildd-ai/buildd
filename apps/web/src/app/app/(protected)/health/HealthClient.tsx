@@ -38,6 +38,8 @@ import {
 } from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
+import { ExperimentsSection } from './ExperimentsSection';
+import type { HealthExperiments } from '@/lib/health-experiments-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -198,6 +200,8 @@ interface Props {
   cbm: CbmHealthSummary | null;
   subagentDelegation: SubagentDelegationPanel | null;
   errorPatterns: ErrorPatternPanel | null;
+  /** Team experiments visible to the viewer; null hides the section. */
+  experiments?: HealthExperiments | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -245,6 +249,7 @@ export function HealthClient({
   cbm,
   subagentDelegation,
   errorPatterns,
+  experiments = null,
   now,
 }: Props) {
   const router = useRouter();
@@ -1056,6 +1061,8 @@ export function HealthClient({
         {usageStats && usageStats.total > 0 && (
           <TaskOutcomesSection stats={usageStats} window={activeWindow} />
         )}
+
+        <ExperimentsSection data={experiments} />
 
         {consumption && consumption.totals.tasks > 0 && (
           <ConsumptionSection stats={consumption} workspaceId={wsFilter} now={now} />
