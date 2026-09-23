@@ -13,7 +13,12 @@ let missionUpdateSetData: any = null;
 let scheduleUpdateSetData: any = null;
 let insertedNotes: any[] = [];
 
-const mockTasksFindMany = mock(() => Promise.resolve(recentTaskRows));
+const mockTasksFindMany = mock((_args?: any) => Promise.resolve(recentTaskRows));
+
+// ── mission notes (planning-backoff note dedupe) ──
+let openBackoffNote: { id: string; body: string } | undefined;
+let noteUpdateCalls: Array<{ set: any; where: any }> = [];
+const mockNotesFindFirst = mock((_args?: any) => Promise.resolve(openBackoffNote));
 
 const mockMissionsUpdate = mock(() => ({
   set: mock((data: any) => {
@@ -36,9 +41,17 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findMany: mockTasksFindMany },
+      missionNotes: { findFirst: mockNotesFindFirst },
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
+      if (table === 'missionNotes') {
+        return {
+          set: (data: any) => ({
+            where: (w: any) => { noteUpdateCalls.push({ set: data, where: w }); return Promise.resolve(); },
+          }),
+        };
+      }
       return mockMissionsUpdate();
     },
     insert: (table: any) => {
@@ -73,7 +86,10 @@ import {
   HEARTBEAT_BREAKER_THRESHOLD,
   computeHeartbeatPlanningBackoff,
   evaluateHeartbeatPlanningBackoff,
+  applyHeartbeatPlanningBackoff,
+  resolveHeartbeatPlanningBackoffNote,
   HEARTBEAT_PLANNING_BACKOFF_THRESHOLD,
+  HEARTBEAT_PLANNING_BACKOFF_BASE_MS,
   HEARTBEAT_PLANNING_BACKOFF_MAX_MS,
 } from './heartbeat-circuit-breaker';
 
@@ -218,8 +234,8 @@ function failedCycle(id: string, failedMinutesAgo: number) {
   return {
     id,
     status: 'failed',
-    updatedAt: minutesAgo(failedMinutesAgo),
-    workers: [{ status: 'failed', turns: 15, costUsd: '0', error: 'Task has no confirmed outcome' }],
+    createdAt: minutesAgo(failedMinutesAgo + 20),
+    failedAt: minutesAgo(failedMinutesAgo),
   } as any;
 }
 
@@ -245,7 +261,7 @@ describe('computeHeartbeatPlanningBackoff', () => {
   it('a success resets the streak', () => {
     const r = computeHeartbeatPlanningBackoff(
       [
-        { id: 't-4', status: 'completed', updatedAt: minutesAgo(10), workers: [] } as any,
+        { id: 't-4', status: 'completed', createdAt: minutesAgo(10), failedAt: null } as any,
         failedCycle('t-3', 30), failedCycle('t-2', 60), failedCycle('t-1', 90),
       ],
       new Date(NOW_MS),
@@ -272,6 +288,29 @@ describe('computeHeartbeatPlanningBackoff', () => {
     expect(capped.resumeAt!.getTime() - NOW_MS).toBe(HEARTBEAT_PLANNING_BACKOFF_MAX_MS);
   });
 
+  it('anchors on when the cycle failed, not on a later write to the task row', () => {
+    // A reconcile/cleanup sweep that bumps tasks.updatedAt must not extend the
+    // hold: the row carries no updatedAt the pure function would read.
+    const r = computeHeartbeatPlanningBackoff(
+      [
+        { ...failedCycle('t-3', 90), updatedAt: new Date(NOW_MS) },
+        failedCycle('t-2', 120),
+        failedCycle('t-1', 150),
+      ],
+      new Date(NOW_MS),
+    );
+    expect(r.resumeAt!.getTime()).toBe(minutesAgo(90).getTime() + HEARTBEAT_PLANNING_BACKOFF_BASE_MS);
+    expect(r.active).toBe(false);
+  });
+
+  it('falls back to createdAt when the failure time is unknown', () => {
+    const r = computeHeartbeatPlanningBackoff(
+      [{ id: 't-3', status: 'failed', createdAt: minutesAgo(30), failedAt: null } as any, failedCycle('t-2', 60), failedCycle('t-1', 90)],
+      new Date(NOW_MS),
+    );
+    expect(r.resumeAt!.getTime()).toBe(minutesAgo(30).getTime() + HEARTBEAT_PLANNING_BACKOFF_BASE_MS);
+  });
+
   it('lets a cycle through once the backoff window has elapsed', () => {
     const r = computeHeartbeatPlanningBackoff(
       [failedCycle('t-3', 24 * 60), failedCycle('t-2', 25 * 60), failedCycle('t-1', 26 * 60)],
@@ -285,21 +324,85 @@ describe('computeHeartbeatPlanningBackoff', () => {
 describe('evaluateHeartbeatPlanningBackoff', () => {
   beforeEach(() => {
     recentTaskRows = [];
+    mockTasksFindMany.mockClear();
   });
 
-  it("reads this schedule's recent cycles and applies the backoff", async () => {
+  function workerFailedCycle(id: string, completedMsAgo: number, now: number) {
+    return {
+      id,
+      status: 'failed',
+      createdAt: new Date(now - completedMsAgo - 20 * 60_000),
+      // Row bumped long after the failure; must not be the anchor.
+      updatedAt: new Date(now),
+      workers: [{ completedAt: new Date(now - completedMsAgo) }],
+    } as any;
+  }
+
+  it("reads this schedule's recent cycles and anchors on the latest worker's completedAt", async () => {
     const now = Date.now();
     recentTaskRows = [
-      { ...failedCycle('t-3', 0), updatedAt: new Date(now - 60_000) },
-      { ...failedCycle('t-2', 0), updatedAt: new Date(now - 31 * 60_000) },
-      { ...failedCycle('t-1', 0), updatedAt: new Date(now - 61 * 60_000) },
+      workerFailedCycle('t-3', 60_000, now),
+      workerFailedCycle('t-2', 31 * 60_000, now),
+      workerFailedCycle('t-1', 61 * 60_000, now),
     ];
     const r = await evaluateHeartbeatPlanningBackoff({
       missionId: 'm-1',
       scheduleId: 's-1',
       heartbeatBreakerTrippedAt: null,
-    });
+    }, new Date(now));
     expect(r.active).toBe(true);
     expect(r.streak).toBe(HEARTBEAT_PLANNING_BACKOFF_THRESHOLD);
+    expect(r.resumeAt!.getTime()).toBe(now - 60_000 + HEARTBEAT_PLANNING_BACKOFF_BASE_MS);
+  });
+
+  it('floors the window at heartbeatBreakerTrippedAt, so a re-armed mission starts fresh', async () => {
+    const trippedAt = new Date(NOW_MS - 5 * 60_000);
+    await evaluateHeartbeatPlanningBackoff({ missionId: 'm-1', scheduleId: 's-1', heartbeatBreakerTrippedAt: trippedAt });
+    const where = (mockTasksFindMany.mock.calls[0][0] as any).where;
+    expect(where.args).toContainEqual({ field: undefined, value: trippedAt, type: 'gt' });
+    expect(where.args.filter((a: any) => a.type === 'gt')).toHaveLength(1);
+  });
+
+  it('applies no window floor when the breaker never tripped', async () => {
+    await evaluateHeartbeatPlanningBackoff({ missionId: 'm-1', scheduleId: 's-1', heartbeatBreakerTrippedAt: null });
+    const where = (mockTasksFindMany.mock.calls[0][0] as any).where;
+    expect(where.args.filter((a: any) => a.type === 'gt')).toHaveLength(0);
+  });
+});
+
+describe('applyHeartbeatPlanningBackoff', () => {
+  const backoff = { active: true, streak: 4, resumeAt: new Date(NOW_MS + 2 * 60 * 60_000) };
+
+  beforeEach(() => {
+    insertedNotes = [];
+    noteUpdateCalls = [];
+    scheduleUpdateSetData = null;
+    openBackoffNote = undefined;
+  });
+
+  it('holds the schedule until resumeAt and posts a note when none is open', async () => {
+    await applyHeartbeatPlanningBackoff({ missionId: 'm-1', scheduleId: 's-1', backoff });
+    expect(scheduleUpdateSetData.nextRunAt).toEqual(backoff.resumeAt);
+    expect(scheduleUpdateSetData.lastDeferralReason).toBe('heartbeat_planning_backoff');
+    expect(insertedNotes).toHaveLength(1);
+    expect(insertedNotes[0].status).toBe('open');
+  });
+
+  it('updates the open note in place on each later backoff step instead of posting another', async () => {
+    openBackoffNote = { id: 'note-1', body: 'older step' };
+    await applyHeartbeatPlanningBackoff({ missionId: 'm-1', scheduleId: 's-1', backoff });
+    expect(insertedNotes).toHaveLength(0);
+    expect(noteUpdateCalls).toHaveLength(1);
+    expect(noteUpdateCalls[0].set.body).toContain(backoff.resumeAt.toISOString());
+  });
+});
+
+describe('resolveHeartbeatPlanningBackoffNote', () => {
+  beforeEach(() => { noteUpdateCalls = []; });
+
+  it('supersedes the open backoff note', async () => {
+    await resolveHeartbeatPlanningBackoffNote('m-1');
+    expect(noteUpdateCalls).toHaveLength(1);
+    expect(noteUpdateCalls[0].set.status).toBe('superseded');
   });
 });

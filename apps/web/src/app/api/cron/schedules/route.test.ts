@@ -177,11 +177,13 @@ const mockTripBreaker = mock(() => Promise.resolve({ tripped: true } as any));
 // Planning-failure backoff: same condition, defaults to "not backing off".
 const mockEvaluatePlanningBackoff = mock(() => Promise.resolve({ active: false, streak: 0, resumeAt: null } as any));
 const mockApplyPlanningBackoff = mock(() => Promise.resolve());
+const mockResolvePlanningBackoffNote = mock(() => Promise.resolve());
 mock.module('@/lib/heartbeat-circuit-breaker', () => ({
   evaluateHeartbeatCircuitBreaker: mockEvaluateBreaker,
   tripHeartbeatCircuitBreaker: mockTripBreaker,
   evaluateHeartbeatPlanningBackoff: mockEvaluatePlanningBackoff,
   applyHeartbeatPlanningBackoff: mockApplyPlanningBackoff,
+  resolveHeartbeatPlanningBackoffNote: mockResolvePlanningBackoffNote,
 }));
 
 const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
@@ -281,6 +283,8 @@ describe('GET /api/cron/schedules', () => {
     mockEvaluatePlanningBackoff.mockResolvedValue({ active: false, streak: 0, resumeAt: null } as any);
     mockApplyPlanningBackoff.mockReset();
     mockApplyPlanningBackoff.mockResolvedValue(undefined);
+    mockResolvePlanningBackoffNote.mockReset();
+    mockResolvePlanningBackoffNote.mockResolvedValue(undefined);
     mockCompleteMission.mockReset();
     mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
     mockApplyCriteriaRearm.mockReset();
@@ -667,43 +671,75 @@ describe('GET /api/cron/schedules', () => {
       });
     }
 
-    it('holds the cycle instead of dispatching while backing off', async () => {
-      const resumeAt = new Date(Date.now() + 60 * 60 * 1000);
+    const activeBackoff = () => ({ active: true, streak: 3, resumeAt: new Date(Date.now() + 60 * 60 * 1000) } as any);
+    const mission = { id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' };
+
+    it('holds the LLM cycle while backing off, without persisting the state hash', async () => {
+      const backoff = activeBackoff();
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
-      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' });
-      mockEvaluatePlanningBackoff.mockResolvedValue({ active: true, streak: 3, resumeAt } as any);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockEvaluatePlanningBackoff.mockResolvedValue(backoff);
 
       const res = await GET(makeRequest());
       const body = await res.json();
 
       expect(tasksInsertValues).toBeNull();
-      expect(mockPrepass).not.toHaveBeenCalled();
       expect(mockApplyPlanningBackoff).toHaveBeenCalledWith(expect.objectContaining({
         missionId: 'mission-1',
-        alreadyBackingOff: false,
-        backoff: expect.objectContaining({ resumeAt }),
+        backoff: expect.objectContaining({ resumeAt: backoff.resumeAt }),
       }));
+      // Persisting the hash on a held cycle would make the retry after the
+      // backoff read "no change" and never dispatch.
+      expect(taskSchedulesUpdateCalls.find(c => 'lastHeartbeatStateHash' in (c.set ?? {}))).toBeUndefined();
       expect(body.skipped).toBeGreaterThan(0);
     });
 
-    it('tells the apply step a backoff is already running so the note posts once', async () => {
-      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule({ lastDeferralReason: 'heartbeat_planning_backoff' })]);
-      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' });
-      mockEvaluatePlanningBackoff.mockResolvedValue({ active: true, streak: 4, resumeAt: new Date(Date.now() + 1000) } as any);
+    it('still runs the no-LLM prepass while backing off, so a finished mission can close', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockEvaluatePlanningBackoff.mockResolvedValue(activeBackoff());
+      mockPrepass.mockResolvedValue({ action: 'skip_complete' } as any);
 
       await GET(makeRequest());
 
-      expect(mockApplyPlanningBackoff).toHaveBeenCalledWith(expect.objectContaining({ alreadyBackingOff: true }));
+      expect(mockPrepass).toHaveBeenCalled();
+      expect(mockCompleteMission).toHaveBeenCalled();
+      expect(mockApplyPlanningBackoff).not.toHaveBeenCalled();
+      expect(tasksInsertValues).toBeNull();
     });
 
-    it('dispatches normally when not backing off', async () => {
+    it('holds when the prepass throws and would otherwise fall through to the LLM', async () => {
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
-      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Backoff', workspaceId: 'ws-1', status: 'active' });
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockEvaluatePlanningBackoff.mockResolvedValue(activeBackoff());
+      mockPrepass.mockRejectedValue(new Error('prepass boom'));
+
+      await GET(makeRequest());
+
+      expect(mockApplyPlanningBackoff).toHaveBeenCalled();
+      expect(tasksInsertValues).toBeNull();
+    });
+
+    it('dispatches normally when not backing off, and resolves the note once the streak ends', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
 
       await GET(makeRequest());
 
       expect(mockApplyPlanningBackoff).not.toHaveBeenCalled();
       expect(mockPrepass).toHaveBeenCalled();
+      expect(mockResolvePlanningBackoffNote).toHaveBeenCalledWith('mission-1');
+    });
+
+    it('keeps the note open on the retry that follows an elapsed backoff (streak not ended)', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockEvaluatePlanningBackoff.mockResolvedValue({ active: false, streak: 3, resumeAt: new Date(Date.now() - 1000) } as any);
+
+      await GET(makeRequest());
+
+      expect(mockApplyPlanningBackoff).not.toHaveBeenCalled();
+      expect(mockResolvePlanningBackoffNote).not.toHaveBeenCalled();
     });
   });
 

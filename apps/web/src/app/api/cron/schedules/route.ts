@@ -19,6 +19,8 @@ import {
   tripHeartbeatCircuitBreaker,
   evaluateHeartbeatPlanningBackoff,
   applyHeartbeatPlanningBackoff,
+  resolveHeartbeatPlanningBackoffNote,
+  type HeartbeatPlanningBackoff,
 } from '@/lib/heartbeat-circuit-breaker';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
@@ -530,6 +532,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // Set when a blocked criteria verdict re-arms the organizer: carries the
         // verdict into buildMissionContext instead of skipping the cycle.
         let criteriaRearmContext: Record<string, unknown> | null = null;
+        let planningBackoff: HeartbeatPlanningBackoff | null = null;
+        let holdForPlanningBackoff = false;
 
         // Read heartbeat/activeHours config from the schedule's taskTemplate.context
         const templateCtx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -590,22 +594,15 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           // died on arrival. An organizer that works a dozen turns and still
           // fails the cycle (no plan, no confirmed outcome) would otherwise be
           // re-dispatched every tick. After K consecutive failed cycles, hold
-          // the next one on an exponential wait (heartbeat-circuit-breaker.ts).
-          const backoff = await evaluateHeartbeatPlanningBackoff({
+          // the next LLM cycle on an exponential wait (heartbeat-circuit-breaker.ts).
+          // Only read here: the prepass below still runs its no-LLM decisions
+          // (skip_complete can close a finished mission for free), and the hold
+          // is applied only where the tick would otherwise dispatch the organizer.
+          planningBackoff = await evaluateHeartbeatPlanningBackoff({
             missionId: linkedMission.id,
             scheduleId: schedule.id,
             heartbeatBreakerTrippedAt: linkedMission.heartbeatBreakerTrippedAt ?? null,
           });
-          if (backoff.active) {
-            await applyHeartbeatPlanningBackoff({
-              missionId: linkedMission.id,
-              scheduleId: schedule.id,
-              backoff,
-              alreadyBackingOff: schedule.lastDeferralReason === 'heartbeat_planning_backoff',
-            });
-            skipped++;
-            continue;
-          }
         }
 
         // Heartbeat prepass: deterministic decisions before LLM invocation
@@ -716,7 +713,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               continue;
             }
 
-            if (prepass.action === 'invoke_llm') {
+            if (prepass.action === 'invoke_llm' && planningBackoff?.active) {
+              // Held: do NOT persist the state hash. The retry after the hold
+              // must see the state as changed, or it reads "no change" and the
+              // organizer is never re-dispatched.
+              holdForPlanningBackoff = true;
+            } else if (prepass.action === 'invoke_llm') {
               // Persist current state hash so the next heartbeat can detect no-change.
               await db.update(taskSchedules).set({ lastHeartbeatStateHash: prepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
               // Real planning is resuming — close out any wait note left over
@@ -733,7 +735,29 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             // suppress the cycle the re-arm just authorised.
           } catch (prepassErr) {
             console.warn(`[heartbeat-prepass] Error for mission ${linkedMission.id}:`, prepassErr instanceof Error ? prepassErr.message : prepassErr);
-            llmHeartbeatInvocations++;
+            if (planningBackoff?.active) holdForPlanningBackoff = true;
+            else llmHeartbeatInvocations++;
+          }
+
+          // A criteria re-arm falling through from skip_complete is not held:
+          // it is already deduped to one wake per verdict shape.
+          if (holdForPlanningBackoff && planningBackoff) {
+            await applyHeartbeatPlanningBackoff({
+              missionId: linkedMission.id,
+              scheduleId: schedule.id,
+              backoff: planningBackoff,
+            });
+            skipped++;
+            continue;
+          }
+
+          // The newest cycle did not fail: the streak is over, so close any
+          // backoff note left open from it. (An elapsed hold with the streak
+          // still running keeps its note; the next step updates it in place.)
+          if (planningBackoff && planningBackoff.streak === 0) {
+            await resolveHeartbeatPlanningBackoffNote(linkedMission.id).catch(e =>
+              console.error(`[heartbeat-planning-backoff] failed to resolve note for mission ${linkedMission.id}:`, e),
+            );
           }
         }
 

@@ -193,13 +193,21 @@ export interface HeartbeatPlanningBackoff {
   resumeAt: Date | null;
 }
 
+/** One durable note per backoff episode, updated in place on each later step. */
+const PLANNING_BACKOFF_NOTE_TITLE = 'Heartbeat backing off: repeated planning failures';
+
 /**
  * Pure: given this schedule's recent cycles (newest first), decide whether to
  * hold the next dispatch. Only `status === 'failed'` extends the streak; the
  * first row that is anything else ends it.
+ *
+ * The wait is anchored on when the newest cycle failed (`failedAt`, the latest
+ * worker's `completedAt`), falling back to the task's `createdAt`. Never on
+ * `tasks.updatedAt`: any later write to the row (a reconcile or cleanup sweep)
+ * would silently push the hold out.
  */
 export function computeHeartbeatPlanningBackoff(
-  recent: Array<{ status: string; updatedAt?: Date | string | null; createdAt?: Date | string | null }>,
+  recent: Array<{ status: string; failedAt?: Date | string | null; createdAt?: Date | string | null }>,
   now: Date,
 ): HeartbeatPlanningBackoff {
   let streak = 0;
@@ -209,7 +217,7 @@ export function computeHeartbeatPlanningBackoff(
   }
   if (streak < HEARTBEAT_PLANNING_BACKOFF_THRESHOLD) return { active: false, streak, resumeAt: null };
 
-  const anchorRaw = recent[0].updatedAt ?? recent[0].createdAt ?? null;
+  const anchorRaw = recent[0].failedAt ?? recent[0].createdAt ?? null;
   const anchor = anchorRaw ? new Date(anchorRaw).getTime() : now.getTime();
   // 2^(streak-K) passes the cap within a few steps; clamp the exponent anyway.
   const exponent = Math.min(streak - HEARTBEAT_PLANNING_BACKOFF_THRESHOLD, 16);
@@ -232,22 +240,43 @@ export async function evaluateHeartbeatPlanningBackoff(
       eq(tasks.scheduleId, input.scheduleId),
       ...(input.heartbeatBreakerTrippedAt ? [gt(tasks.createdAt, input.heartbeatBreakerTrippedAt)] : []),
     ),
-    columns: { id: true, status: true, createdAt: true, updatedAt: true },
+    columns: { id: true, status: true, createdAt: true },
     orderBy: [desc(tasks.createdAt)],
     limit: PLANNING_BACKOFF_LOOKBACK,
+    with: {
+      workers: {
+        columns: { completedAt: true },
+        orderBy: (w, { desc: d }) => [d(w.startedAt)],
+        limit: 1,
+      },
+    },
   });
-  return computeHeartbeatPlanningBackoff(recent, now);
+  return computeHeartbeatPlanningBackoff(
+    recent.map(t => ({ status: t.status, createdAt: t.createdAt, failedAt: t.workers?.[0]?.completedAt ?? null })),
+    now,
+  );
+}
+
+function planningBackoffNoteBody(backoff: HeartbeatPlanningBackoff): string {
+  return (
+    `${backoff.streak} consecutive heartbeat cycles failed. The next cycle is held until ` +
+    `${backoff.resumeAt?.toISOString()}, and the wait doubles with each further failure. ` +
+    `Check the latest cycle's error: a goal criterion the organizer cannot move, or a plan it ` +
+    `cannot return, repeats on every cycle until the cause changes.`
+  );
 }
 
 /**
- * Hold the schedule until `resumeAt`. Posts one mission-feed warning when the
- * backoff begins (`alreadyBackingOff` false), not on every held tick.
+ * Hold the schedule until `resumeAt`, and keep one open mission-feed warning
+ * for the whole episode: posted on the first held step, updated in place on
+ * each later step (the dedupe is the open note, not schedule state, which the
+ * dispatch between steps overwrites). `resolveHeartbeatPlanningBackoffNote`
+ * closes it once a cycle stops failing.
  */
 export async function applyHeartbeatPlanningBackoff(input: {
   missionId: string;
   scheduleId: string;
   backoff: HeartbeatPlanningBackoff;
-  alreadyBackingOff: boolean;
 }): Promise<void> {
   const now = new Date();
   await db.update(taskSchedules)
@@ -259,18 +288,43 @@ export async function applyHeartbeatPlanningBackoff(input: {
     })
     .where(eq(taskSchedules.id, input.scheduleId));
 
-  if (input.alreadyBackingOff) return;
+  const body = planningBackoffNoteBody(input.backoff);
+  try {
+    const existing = await db.query.missionNotes.findFirst({
+      where: and(
+        eq(missionNotes.missionId, input.missionId),
+        eq(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLE),
+        eq(missionNotes.status, 'open'),
+      ),
+      columns: { id: true, body: true },
+    });
+    if (existing) {
+      if (existing.body !== body) {
+        await db.update(missionNotes).set({ body }).where(eq(missionNotes.id, existing.id));
+      }
+      return;
+    }
+    await db.insert(missionNotes).values({
+      missionId: input.missionId,
+      authorType: 'system',
+      type: 'warning',
+      title: PLANNING_BACKOFF_NOTE_TITLE,
+      body,
+      status: 'open',
+    });
+  } catch (e) {
+    console.error(`[heartbeat-planning-backoff] note failed for ${input.missionId}:`, e);
+  }
+}
 
-  await db.insert(missionNotes).values({
-    missionId: input.missionId,
-    authorType: 'system',
-    type: 'warning',
-    title: 'Heartbeat backing off: repeated planning failures',
-    body:
-      `${input.backoff.streak} consecutive heartbeat cycles failed. The next cycle is held until ` +
-      `${input.backoff.resumeAt?.toISOString()}, and the wait doubles with each further failure. ` +
-      `Check the latest cycle's error: a goal criterion the organizer cannot move, or a plan it ` +
-      `cannot return, repeats on every cycle until the cause changes.`,
-    status: 'open',
-  }).catch(e => console.error(`[heartbeat-planning-backoff] note failed for ${input.missionId}:`, e));
+/** Close the open backoff note once the streak has ended (a cycle did not fail). */
+export async function resolveHeartbeatPlanningBackoffNote(missionId: string): Promise<void> {
+  await db
+    .update(missionNotes)
+    .set({ status: 'superseded' })
+    .where(and(
+      eq(missionNotes.missionId, missionId),
+      eq(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLE),
+      eq(missionNotes.status, 'open'),
+    ));
 }
