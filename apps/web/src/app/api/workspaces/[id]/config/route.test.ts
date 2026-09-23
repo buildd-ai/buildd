@@ -447,6 +447,156 @@ describe('POST /api/workspaces/[id]/config', () => {
     expect(data.releaseConfig.trigger).toBe('on_mission_complete');
   });
 
+  describe('merges into the existing gitConfig instead of rebuilding it', () => {
+    // Captures the object handed to db.update().set() so assertions check what is
+    // actually written, not just what the response echoes.
+    let setArgs: any[];
+    beforeEach(() => {
+      setArgs = [];
+      mockWorkspacesUpdate.mockReturnValue({
+        set: mock((arg: any) => {
+          setArgs.push(arg);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    });
+
+    const post = (body: Record<string, unknown>) =>
+      POST(
+        new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+          method: 'POST',
+          headers: new Headers({ 'content-type': 'application/json' }),
+          body: JSON.stringify(body),
+        }),
+        { params: mockParams },
+      );
+
+    // Shape of the body GitConfigForm sends on a plain save (sandbox enabled).
+    const formBody = {
+      defaultBranch: 'dev',
+      branchingStrategy: 'feature',
+      useBuildBranch: false,
+      commitStyle: 'conventional',
+      requiresPR: true,
+      autoCreatePR: true,
+      autoMergeOnGreenCI: true,
+      useClaudeMd: true,
+      bypassPermissions: false,
+      sandbox: {
+        enabled: true,
+        autoAllowBashIfSandboxed: true,
+        network: { allowedDomains: ['example.com'], allowLocalBinding: false },
+        excludedCommands: ['docker'],
+      },
+      debug: false,
+    };
+
+    it('leaves every field the form does not manage untouched', async () => {
+      const seeded = {
+        defaultBranch: 'main',
+        branchingStrategy: 'feature',
+        policyConfig: { rules: ['keep-me'] },
+        autoMergePR: false,
+        autoMergeDenyPaths: ['packages/core/drizzle/'],
+        autoMergeMaxLines: 400,
+        conflictSurfaces: ['docs/specs/INDEX.md'],
+        sequenceNamespaces: [{ dir: 'packages/core/drizzle' }],
+        maxCiRetries: 2,
+        useWorktreeIsolation: true,
+        autoResolveMergeConflicts: false,
+        maxBudgetUsd: 5,
+        blockConfigChanges: true,
+        sandbox: {
+          enabled: false,
+          credentials: { files: [{ path: '~/.aws/credentials', mode: 'deny' }] },
+        },
+      };
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: seeded });
+
+      const res = await post(formBody);
+      expect(res.status).toBe(200);
+
+      const written = setArgs[0].gitConfig;
+      for (const key of [
+        'policyConfig', 'autoMergePR', 'autoMergeDenyPaths', 'autoMergeMaxLines',
+        'conflictSurfaces', 'sequenceNamespaces', 'maxCiRetries', 'useWorktreeIsolation',
+        'autoResolveMergeConflicts', 'maxBudgetUsd', 'blockConfigChanges',
+      ] as const) {
+        expect(written[key]).toEqual((seeded as any)[key]);
+      }
+      expect(written.sandbox.credentials).toEqual(seeded.sandbox.credentials);
+      // Form-managed fields are still applied
+      expect(written.defaultBranch).toBe('dev');
+      expect(written.sandbox.enabled).toBe(true);
+      expect(written.sandbox.excludedCommands).toEqual(['docker']);
+    });
+
+    it('keeps sandbox credentials when the form disables the sandbox', async () => {
+      const credentials = { environment: [{ name: 'GITHUB_TOKEN', mode: 'mask' }] };
+      mockWorkspacesFindFirst.mockResolvedValue({
+        gitConfig: { sandbox: { enabled: true, credentials } },
+      });
+
+      const { sandbox: _omit, ...withoutSandbox } = formBody;
+      const res = await post(withoutSandbox);
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.sandbox.enabled).toBe(false);
+      expect(setArgs[0].gitConfig.sandbox.credentials).toEqual(credentials);
+    });
+
+    it('persists defaultBackend and autoMergeOnGreenCI', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { autoMergeOnGreenCI: true } });
+
+      const res = await post({ ...formBody, defaultBackend: 'codex', autoMergeOnGreenCI: false });
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.defaultBackend).toBe('codex');
+      expect(setArgs[0].gitConfig.autoMergeOnGreenCI).toBe(false);
+    });
+
+    it('clears defaultBackend when the form sends Default (field omitted)', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBackend: 'codex' } });
+
+      const res = await post(formBody);
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.defaultBackend).toBeUndefined();
+    });
+
+    it("treats defaultBackend 'default' and null as clearing", async () => {
+      for (const value of ['default', null]) {
+        setArgs.length = 0;
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBackend: 'claude' } });
+        const res = await post({ ...formBody, defaultBackend: value });
+        expect(res.status).toBe(200);
+        expect(setArgs[0].gitConfig.defaultBackend).toBeUndefined();
+      }
+    });
+
+    it('rejects an unknown defaultBackend with 400 and writes nothing', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+
+      const res = await post({ ...formBody, defaultBackend: 'gpt' });
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toMatch(/Invalid defaultBackend/);
+      expect(setArgs).toHaveLength(0);
+    });
+
+    it('clears a form-managed optional field when the form omits it', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({
+        gitConfig: { fallbackModel: 'claude-sonnet-5', effort: 'high', debug: true, agentInstructions: 'old' },
+      });
+
+      const res = await post(formBody);
+      expect(res.status).toBe(200);
+      const written = setArgs[0].gitConfig;
+      expect(written.fallbackModel).toBeUndefined();
+      expect(written.effort).toBeUndefined();
+      expect(written.debug).toBeUndefined();
+      expect(written.agentInstructions).toBeUndefined();
+    });
+  });
+
 });
 
 describe('PATCH /api/workspaces/[id]/config', () => {
