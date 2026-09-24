@@ -1,5 +1,93 @@
-import { describe, it, expect } from 'bun:test';
+/**
+ * TaskPanelWrapper: the mission page's sheet owner. The sheet is `?task=`
+ * written with native history only (AC-7 — never the router), it renders
+ * synchronously from a deep link, and malformed ids never open it.
+ */
+import { describe, it, expect, mock } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { isValidTaskId } from '@/lib/task-id';
+
+const routerCalls: string[] = [];
+let search = '';
+mock.module('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(search),
+  usePathname: () => '/app/missions/m1',
+  useRouter: () => ({
+    push: () => routerCalls.push('push'),
+    replace: () => routerCalls.push('replace'),
+    refresh: () => routerCalls.push('refresh'),
+    back: () => routerCalls.push('back'),
+    prefetch: () => {},
+  }),
+}));
+
+const { default: TaskPanelWrapper } = await import('./TaskPanelWrapper');
+
+const TASK = '0a1b2c3d-1111-4222-8333-444455556666';
+const wrapper = (props: Record<string, unknown> = {}) =>
+  renderToStaticMarkup(
+    createElement(
+      TaskPanelWrapper,
+      {
+        missionId: 'm1',
+        missionTitle: 'Example mission',
+        chip: { label: 'RUNNING', cls: 'border-status-info text-status-info' },
+        feedTasks: [{ id: TASK, title: 'Example task', status: 'pending', taskClass: 'work', createdAt: '2026-01-01T00:00:00Z' }],
+        ...props,
+      },
+      createElement('a', { href: `/app/missions/m1?task=${TASK}`, 'data-task-id': TASK }, 'row'),
+    ),
+  );
+
+describe('TaskPanelWrapper — the sheet is ?task= state', () => {
+  it('a deep link with ?task= renders the sheet on first paint, skeleton first', () => {
+    search = `from=home&task=${TASK}`;
+    const html = wrapper();
+    expect(html).toContain('data-testid="mission-task-sheet"');
+    expect(html).toContain('data-testid="task-sheet-skeleton"');
+    expect(html).toContain('1 / 1');
+  });
+
+  it('no ?task= → no sheet; the list renders alone', () => {
+    search = 'from=home';
+    const html = wrapper();
+    expect(html).toContain('row');
+    expect(html).not.toContain('data-testid="mission-task-sheet"');
+  });
+
+  it('a malformed ?task= never opens a sheet', () => {
+    search = 'task=not-a-uuid';
+    expect(wrapper()).not.toContain('data-testid="mission-task-sheet"');
+  });
+
+  it('rendering never touches the router', () => {
+    search = `task=${TASK}`;
+    routerCalls.length = 0;
+    wrapper();
+    expect(routerCalls).toEqual([]);
+  });
+});
+
+describe('AC-7: the sheet path never calls router.push / replace / refresh', () => {
+  const files = ['TaskPanelWrapper.tsx', 'TaskSheet.tsx', 'TaskPanel.tsx', 'task-sheet-history.ts'];
+  for (const f of files) {
+    it(`${f} has no router navigation`, () => {
+      const src = readFileSync(join(__dirname, f), 'utf8');
+      expect(src).not.toMatch(/\brouter\.(push|replace|refresh)\s*\(/);
+      expect(src).not.toMatch(/\buseRouter\s*\(/);
+    });
+  }
+
+  it('the delegated handler no longer reads data-task-actionable (AC-10)', () => {
+    for (const f of ['TaskPanelWrapper.tsx', 'task-sheet-history.ts']) {
+      const src = readFileSync(join(__dirname, f), 'utf8');
+      expect(src).not.toMatch(/getAttribute\(\s*['"]data-task-actionable/);
+    }
+  });
+});
 
 describe('isValidTaskId — shared task-link guard', () => {
   it('accepts a proper v4 UUID', () => {
