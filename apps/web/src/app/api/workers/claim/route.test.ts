@@ -245,9 +245,10 @@ mock.module('@buildd/core/path-claim', () => ({
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
 const mockFireDeferralEvent = mock((_input: any) => {});
+const mockFireGateEvent = mock(() => 'sig');
 mock.module('@/lib/gate-ledger', () => ({
   fireDeferralEvent: mockFireDeferralEvent,
-  fireGateEvent: mock(() => 'sig'),
+  fireGateEvent: mockFireGateEvent,
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
@@ -306,6 +307,9 @@ describe('POST /api/workers/claim', () => {
     mockHasCodexCredential.mockResolvedValue(false);
     mockTeamsFindFirst.mockReset();
     mockTeamsFindFirst.mockResolvedValue(null); // default: enabledBackends null => all enabled
+    mockFireGateEvent.mockReset();
+    mockFireGateEvent.mockReturnValue('sig');
+    mockFireDeferralEvent.mockReset();
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
@@ -352,6 +356,27 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(401);
     const data = await res.json();
     expect(data.error).toBe('Invalid API key');
+    // Confirm gate event was recorded for non-probe request
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    expect(mockFireGateEvent).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'invalid_api_key',
+    }));
+  });
+
+  it('returns 401 when no API key but does NOT record gate event for probe requests', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const req = createMockRequest({
+      headers: { 'x-probe': 'true' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error).toBe('Invalid API key');
+    // Confirm gate event was NOT recorded for probe request
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
   });
 
   it('returns 400 when runner is missing', async () => {
@@ -370,6 +395,34 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe('runner is required');
+    // Confirm gate event was recorded for non-probe request
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    expect(mockFireGateEvent).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'runner_field_missing',
+    }));
+  });
+
+  it('returns 400 when runner is missing but does NOT record gate event for probe requests', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+    });
+
+    const req = createMockRequest({
+      headers: {
+        Authorization: 'Bearer bld_test',
+        'x-probe': 'true',
+      },
+      body: { workspaceId: 'ws-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('runner is required');
+    // Confirm gate event was NOT recorded for probe request
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
   });
 
   it('returns 429 when max concurrent workers limit reached', async () => {
