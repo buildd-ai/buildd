@@ -14,13 +14,14 @@ Themes are toggled via `[data-theme="dark"]` and `[data-theme="light"]` on `:roo
 
 | Token | Dark Value | Light Value | Usage |
 |-------|-----------|-------------|-------|
-| `--primary` | `#c8956a` | `#c8956a` | CTAs, active states, primary buttons |
-| `--primary-hover` | `#b8854f` | `#b07d4f` | Hover states for primary elements |
-| `--primary-subtle` | `rgba(200,149,106,0.08)` | — | Selected states, subtle highlights |
-| `--primary-ring` | `rgba(200,149,106,0.25)` | — | Focus rings (input focus box-shadow) |
-| `--accent` | `#c8956a` | `#c8956a` | Same as primary |
-| `--accent-soft` | `rgba(200,149,106,0.12)` | `rgba(200,149,106,0.10)` | Soft accent backgrounds |
-| `--accent-text` | `#d4a574` | `#b07d4f` | Accent-colored text (darkened in light for contrast) |
+| `--primary` | `#f4811f` | `#f4811f` | CTAs, active states, primary buttons |
+| `--primary-hover` | `#d96e12` | `#d96e12` | Hover states for primary elements |
+| `--primary-subtle` | `rgba(244,129,31,0.10)` | `rgba(244,129,31,0.10)` | Selected states, subtle highlights |
+| `--primary-ring` | `rgba(244,129,31,0.30)` | `rgba(244,129,31,0.28)` | Focus rings (input focus box-shadow) |
+| `--accent` | `#f4811f` | `#f4811f` | Same as primary — fills only, never small text on light |
+| `--accent-soft` | `rgba(244,129,31,0.14)` | `rgba(244,129,31,0.12)` | Soft accent backgrounds |
+| `--accent-text` | `#f59b4e` | `#aa410b` | Accent-colored text (darkened in light to clear 4.5:1 on paper and card) |
+| `--accent-deep` | `#f7a261` | `#b5450c` | Deeper accent variant |
 
 ### Surfaces
 
@@ -40,7 +41,7 @@ Warm-toned elevation stack. Never blue-gray, never pure black.
 
 | Token | Value | Role |
 |-------|-------|------|
-| `--surface-1` | `#f7f4f0` | Page background |
+| `--surface-1` | `#e7e3db` | Page background (paper) |
 | `--surface-2` | `#eee9e3` | Elevated panels |
 | `--surface-3` | `#e5dfd8` | Hover states |
 | `--surface-4` | `#dbd4cc` | Highest elevation |
@@ -61,10 +62,23 @@ Warm-toned elevation stack. Never blue-gray, never pure black.
 
 | Token | Dark Value | Light Value | Usage |
 |-------|-----------|-------------|-------|
-| `--text-primary` | `#ede8e2` | `#2a2520` | Headings, labels, primary content |
-| `--text-secondary` | `#a89f96` | `#6b6258` | Descriptions, body text |
-| `--text-muted` | `#5e5850` | `#b0a89e` | Timestamps, tertiary info |
-| `--text-desc` | `#8a827a` | `#8a827a` | Descriptions, shared both themes |
+| `--text-primary` | `#ede8e2` | `#1f1b17` | Headings, labels, primary content |
+| `--text-secondary` | `#a89f96` | `#423c35` | Descriptions, body text |
+| `--text-desc` | `#9f978e` | `#5f5850` | Descriptions — between secondary and muted |
+| `--text-muted` | `#968e86` | `#6a625a` | Timestamps, tertiary info, small labels, placeholders |
+
+#### Contrast floor
+
+Every text token above — and `--accent-text` — must reach WCAG AA **4.5:1** against
+`--surface-1`, `--surface-2` and `--card` in **both** themes. Hierarchy
+(secondary > desc > muted) is expressed inside that floor, not below it.
+
+Documented exemption: on `--surface-4` (tooltips, highest elevation) the floor is
+**3:1** for all text tokens.
+
+Enforced by `apps/web/src/app/globals-contrast.test.ts`, which parses
+`globals.css`. When picking a new value, run that test — "looks a bit lighter"
+is how light-theme muted drifted to ~2.4:1.
 
 ### Borders
 

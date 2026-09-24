@@ -790,6 +790,14 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   the UI layer), but the completion predicate treats every unmerged-PR shape
   the same way: blocked, no exceptions — UNLESS a supersession edge (below)
   resolves it.
+- What a blocked task is WAITING ON is a separate question, and there a queued
+  retry does change the answer. At mission scope an open `attempt` row already
+  refuses as `pending_deliverables` before `awaiting_merge` is reached. At task
+  and PR scope, `explain` passes the newest open attempt to
+  `deriveMissionStateView` as `openAttempt`, and that fact (rule 6½) outranks
+  the merge fact: the headline reads "waiting on fix N of M (queued — no worker
+  yet)" or "(in progress)", never "waiting on you to merge", while a fix is in
+  flight.
 - **PR supersession** (task fcaf83d5) is the one sanctioned exception to
   "unmerged PR blocks, no exceptions", and it exists because a closed PR is
   not always abandoned work: a mission integration branch can be deleted out

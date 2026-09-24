@@ -49,12 +49,17 @@ const WAITING_INPUT_MISSION_STALE_MS = 4 * 60 * 60 * 1000;
  * 3. If retry cap reached (3+ failed workers) → fail permanently
  * 4. Otherwise → reset to pending for another attempt
  *
+ * For reviewer tasks: infra-class failures (never_started, infra_failure) are
+ * retried with backoff like regular tasks. Only genuine timeout/stale conditions
+ * (worker that ran but didn't report updates) cause immediate failure.
+ *
  * Always resolves dependencies afterward.
  */
 async function resolveStaleTask(
   taskId: string,
   workspaceId: string,
   staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null } | undefined,
+  exitCause?: WorkerExitCause,
 ) {
   // Read current task status and context upfront. A cancelled task must never
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
@@ -95,18 +100,17 @@ async function resolveStaleTask(
     }
   }
 
-  // Reviewer timeout: when a reviewer worker goes stale, escalate the same
-  // way a reviewer task that completes with a dropped verdict does — one
-  // shared function (escalateReviewContractFailure) rather than two paths
-  // that both land a review task in `review_failed` but only one of which
-  // used to notify anyone. This path previously wrote its own mission note,
-  // gated on missionId same as the other one was before it was fixed to
-  // always fire — now both go through the single escalation, which also
-  // posts to the PR's own activity comment and the gate ledger.
+  // Reviewer handling: distinguish pre-startup failures from genuine timeouts.
+  // Pre-startup failures (never_started, silent_start) get retried with backoff
+  // because the review lease hasn't hidden the PR from the human queue yet.
+  // Genuine timeouts (a worker that ran but went stale) escalate immediately —
+  // the same way a reviewer task that completes with a dropped verdict does,
+  // via the shared escalateReviewContractFailure (mission note + Pushover +
+  // PR activity comment + gate event) rather than a bespoke mission note.
   if (currentTask?.category === 'review') {
     const ctx = (currentTask.context ?? {}) as Record<string, unknown>;
     const prNumber = ctx.prNumber as number | undefined;
-    await escalateReviewContractFailure({
+    const escalate = () => escalateReviewContractFailure({
       taskId,
       repoFullName: String(ctx.repoFullName ?? ''),
       prNumber: Number(prNumber ?? 0),
@@ -114,17 +118,73 @@ async function resolveStaleTask(
       installationId: Number(ctx.installationId ?? 0),
     }).catch((err) => console.error('[stale-workers] escalateReviewContractFailure failed:', err));
 
-    // Expiry terminates the review lease. Reviewer tasks are one-shot checks:
-    // retrying an infra failure would immediately reacquire the lease and hide
-    // the promoted PR from the human queue again.
-    await db
-      .update(tasks)
-      .set({
-        status: 'failed',
-        result: { error: 'agent review timed out' } as any,
-        updatedAt: new Date(),
-      })
-      .where(eq(tasks.id, taskId));
+    // Only retry for pre-startup failures. These don't yet hold the review lease.
+    // never_started: worker claimed but never started
+    // silent_start: worker started but produced nothing
+    const retryableReviewFailures = ['never_started', 'silent_start'] as const;
+    const shouldRetry = exitCause && retryableReviewFailures.includes(exitCause as any);
+
+    if (shouldRetry) {
+      // Pre-startup failure: retry with backoff like regular tasks. Don't escalate yet.
+      const infraRetryCount = (ctx.infraRetryCount as number) || 0;
+
+      if (infraRetryCount >= MAX_INFRA_RETRIES) {
+        // Retries exhausted — now escalate
+        await escalate();
+
+        // Mark as failed after retries exhausted
+        await db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            result: {
+              error: `Agent review stalled: infra errors prevented startup on ${infraRetryCount} consecutive attempts`,
+              errorType: 'infra_stalled',
+              infraRetryCount,
+            } as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, taskId));
+      } else {
+        // Infra retries remaining — reset to pending with backoff
+        const backoffMins = INFRA_BACKOFF_MINUTES[infraRetryCount] ?? 30;
+        const startAt = new Date(Date.now() + backoffMins * 60_000);
+        await db
+          .update(tasks)
+          .set({
+            status: 'pending',
+            claimedBy: null,
+            claimedAt: null,
+            startAt,
+            context: {
+              ...ctx,
+              ...(staleWorker?.branch
+                ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
+                : {}),
+              failureContext: staleWorker?.error || `Agent review failed (${exitCause})`,
+              infraRetryCount: infraRetryCount + 1,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, taskId));
+      }
+    } else {
+      // Genuine timeout/stale: worker ran but then went offline without completing.
+      // Escalate immediately — the review lease should terminate. Retrying after
+      // a genuine timeout would immediately reacquire the lease and hide the
+      // promoted PR from the human queue again.
+      await escalate();
+
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          result: { error: 'agent review timed out' } as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    }
+
     await resolveCompletedTask(taskId, workspaceId);
     return;
   }
@@ -628,7 +688,14 @@ export async function cleanupStaleWorkers(accountId: string) {
 
         if (otherActiveWorkers.length === 0) {
           const staleWorker = staleWorkers.find(w => w.taskId === t.id);
-          await resolveStaleTask(t.id, t.workspaceId, staleWorker);
+          // Determine exit cause for this worker so reviewer tasks can distinguish
+          // infra failures (retry) from genuine timeouts (escalate)
+          let exitCauseForReview: WorkerExitCause | undefined;
+          if (staleWorker) {
+            const classification = classifyStaleExit(staleWorker as any);
+            exitCauseForReview = classification.exitCause;
+          }
+          await resolveStaleTask(t.id, t.workspaceId, staleWorker, exitCauseForReview);
         } else {
           await resolveCompletedTask(t.id, t.workspaceId);
         }

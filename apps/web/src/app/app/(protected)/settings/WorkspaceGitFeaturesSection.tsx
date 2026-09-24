@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import SettingsSection from './SettingsSection';
+import Switch from '@/components/ui/Switch';
 
 interface Workspace {
   id: string;
@@ -102,21 +103,12 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
               already have a loop config will automatically loop until PR checks pass (max 3 retries).
             </div>
           </div>
-          <button
-            onClick={() => !loading && toggle(!state.enforceGreenCI)}
+          <Switch
+            checked={state.enforceGreenCI ?? false}
+            onChange={(next) => !loading && toggle(next)}
             disabled={loading || saving}
-            className={`shrink-0 relative inline-flex h-6 w-11 items-center border-2 transition-colors focus:outline-none disabled:opacity-50 ${
-              state.enforceGreenCI ? 'bg-accent border-accent' : 'bg-surface-3 border-border-default'
-            }`}
-            role="switch"
-            aria-checked={state.enforceGreenCI ?? false}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 transform transition-transform ${
-                state.enforceGreenCI ? 'translate-x-5 bg-white' : 'translate-x-1 bg-text-muted'
-              }`}
-            />
-          </button>
+            label="Require green CI before task completion"
+          />
         </div>
 
         {msg && (

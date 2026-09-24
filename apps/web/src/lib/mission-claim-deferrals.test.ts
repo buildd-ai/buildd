@@ -32,6 +32,15 @@ describe('summarizeDeferralRows', () => {
     expect(isRepeatedlyDeferred(out[0].consecutiveDeferrals, out[0].firstDeferredAt)).toBe(false);
   });
 
+  it('carries the blocking PR number from a path_overlap row', () => {
+    const out = summarizeDeferralRows([
+      { taskId: 't1', reason: 'path_overlap', detail: { consecutiveDeferrals: 5, prNumber: 1126, prUrl: 'https://github.com/org/repo/pull/1126' } },
+      { taskId: 't2', reason: 'workspace_cap', detail: { consecutiveDeferrals: 2 } },
+    ]);
+    expect(out.find(d => d.taskId === 't1')?.blockedByPr).toBe(1126);
+    expect(out.find(d => d.taskId === 't2')?.blockedByPr ?? null).toBeNull();
+  });
+
   it('drops rows with no task to attribute them to', () => {
     expect(summarizeDeferralRows([{ taskId: null, reason: 'workspace_cap', detail: { consecutiveDeferrals: 99 } }])).toEqual([]);
   });

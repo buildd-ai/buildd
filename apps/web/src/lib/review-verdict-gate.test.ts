@@ -6,7 +6,7 @@ mock.module('@/lib/gate-ledger', () => ({
   GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict' },
 }));
 
-import { evaluateReviewVerdictGate, guardReviewVerdict } from './review-verdict-gate';
+import { evaluateReviewVerdictGate, guardReviewVerdict, classifyMergeAgainstReview } from './review-verdict-gate';
 import type { PrReviewStatus, PrReviewState } from './pr-review-status';
 
 const SHA_A = 'a'.repeat(40);
@@ -327,5 +327,73 @@ describe('guardReviewVerdict', () => {
     expect(result.blocks).toBe(true);
     expect(result.reason).toContain('connection reset');
     expect(result.clearedBy).toBeTruthy();
+  });
+});
+
+// Reviewer precision needs the merges that went past the reviewer, not only the
+// ones buildd refused. A GitHub-side merge never passes a buildd door, so the
+// webhook classifies the merged commit against the review state it landed on.
+describe('classifyMergeAgainstReview', () => {
+  it('a merge while a request-changes verdict is outstanding is merged_over_verdict', () => {
+    const out = classifyMergeAgainstReview(
+      status({ state: 'changes_requested', verdict: 'request-changes', reviewHeadSha: SHA_A, reviewTaskId: 'r1', merged: true }),
+      SHA_A,
+    );
+    expect(out).toMatchObject({ event: 'merged_over_verdict', state: 'changes_requested', reviewTaskId: 'r1' });
+  });
+
+  it('a merge over an escalation is merged_over_verdict', () => {
+    const out = classifyMergeAgainstReview(
+      status({ state: 'escalated', verdict: 'escalate', reviewHeadSha: SHA_A }),
+      SHA_A,
+    );
+    expect(out?.event).toBe('merged_over_verdict');
+  });
+
+  it('a merge after a fix push, before its re-review, is still over the verdict', () => {
+    const out = classifyMergeAgainstReview(
+      status({ state: 'changes_requested', verdict: 'request-changes', reviewHeadSha: SHA_A }),
+      SHA_B,
+    );
+    expect(out?.event).toBe('merged_over_verdict');
+  });
+
+  it('a merge while the review is queued or running is merged_unreviewed', () => {
+    for (const state of ['queued', 'reviewing'] as const) {
+      const out = classifyMergeAgainstReview(status({ state, reviewHeadSha: SHA_A }), SHA_A);
+      expect(out?.event).toBe('merged_unreviewed');
+    }
+  });
+
+  it('a merge after the review failed to produce a verdict is merged_unreviewed', () => {
+    const out = classifyMergeAgainstReview(status({ state: 'review_failed', reviewHeadSha: SHA_A }), SHA_A);
+    expect(out?.event).toBe('merged_unreviewed');
+  });
+
+  it('a merge of a commit the approval did not cover is merged_unreviewed', () => {
+    const out = classifyMergeAgainstReview(
+      status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A }),
+      SHA_B,
+    );
+    expect(out?.event).toBe('merged_unreviewed');
+  });
+
+  it('a merge of the approved commit is not an event', () => {
+    expect(classifyMergeAgainstReview(
+      status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A, merged: true }),
+      SHA_A,
+    )).toBeNull();
+  });
+
+  it('a merge of a content-equivalent head of the approved commit is not an event', () => {
+    expect(classifyMergeAgainstReview(
+      status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A, reviewEquivalentHeadShas: [SHA_B] }),
+      SHA_B,
+    )).toBeNull();
+  });
+
+  it('a PR no review was ever requested for is not an event', () => {
+    // Policy tiers that never review are not reviewer misses.
+    expect(classifyMergeAgainstReview(status({ state: 'not_requested' }), SHA_A)).toBeNull();
   });
 });

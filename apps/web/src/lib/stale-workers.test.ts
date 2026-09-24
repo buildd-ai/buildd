@@ -578,8 +578,25 @@ describe('cleanupStaleWorkers — reviewer lease expiry', () => {
   });
 
   it('fails a stale reviewer task after promoting its PR to the human queue', async () => {
+    // A genuine timeout: worker was started and ran (startedAt is set), but then went stale
+    // after at least one turn with some spend. This should be immediately escalated, not retried.
+    const now = new Date();
+    const recentTime = new Date(now.getTime() - 10 * 60 * 1000); // 10 min ago
     mockWorkersFindMany
-      .mockResolvedValueOnce([{ id: 'review-worker', taskId: 'review-task', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: 'expired' }])
+      .mockResolvedValueOnce([{
+        id: 'review-worker',
+        taskId: 'review-task',
+        prUrl: null,
+        prNumber: null,
+        commitCount: 0,
+        branch: null,
+        error: 'expired',
+        startedAt: recentTime,
+        turns: 10,
+        costUsd: '1.50',
+        inputTokens: 5000,
+        outputTokens: 2000,
+      }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     mockTasksFindMany.mockResolvedValue([{ id: 'review-task', workspaceId: 'ws-1' }]);
@@ -620,6 +637,53 @@ describe('cleanupStaleWorkers — reviewer lease expiry', () => {
     expect(taskUpdates[1].result.error).toContain('agent review timed out');
     expect(capturedInsertValues.type).toBe('reviewer_escalated');
     expect(capturedInsertValues.title).toContain('review never produced a verdict');
+  });
+
+  it('retries a reviewer task with never_started error after backoff', async () => {
+    // A never_started failure: worker was claimed but never started a session.
+    // This is an infra failure that should be retried with backoff, not escalated.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{
+        id: 'review-worker',
+        taskId: 'review-task',
+        prUrl: null,
+        prNumber: null,
+        commitCount: 0,
+        branch: null,
+        error: 'Worker was never started by a runner (claimed but no session began)',
+        startedAt: null, // Key: never started
+        turns: 0,
+        costUsd: '0',
+        inputTokens: 0,
+        outputTokens: 0,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'review-task', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'assigned',
+        category: 'review',
+        context: { reviewerFor: 'original-task', prNumber: 42 },
+      })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => {
+        taskUpdates.push(values);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdates).toHaveLength(1);
+    expect(taskUpdates[0].status).toBe('pending');
+    expect(taskUpdates[0].context.infraRetryCount).toBe(1);
+    expect(taskUpdates[0].startAt).toBeDefined();
+    // Should not have escalated to mission notes (no missionId call)
+    expect(capturedInsertValues).toBeNull();
   });
 });
 

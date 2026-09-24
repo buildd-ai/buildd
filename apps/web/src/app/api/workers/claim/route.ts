@@ -40,6 +40,7 @@ import {
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
+import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld } from './held-gate';
@@ -68,6 +69,7 @@ import {
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
+import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -856,7 +858,10 @@ export async function POST(req: NextRequest) {
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
-  };
+    // Every counter must be a declared diagnostics key (and vice versa): the
+    // response casts to ClaimDiagnostics['deferrals'], so without this check a
+    // new reason ships untyped to every client.
+  } satisfies Required<NonNullable<ClaimDiagnostics['deferrals']>>;
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
   // tick — coalesced across polls by `fireDeferralEvent` so a task stuck
@@ -887,6 +892,10 @@ export async function POST(req: NextRequest) {
   // If lockAttempts === 0 at the end of the loop, every candidate was deferred — no
   // lock contention occurred and `race_lost` would be a misnomer.
   let lockAttempts = 0;
+  // First PR that deferred a candidate on path overlap — surfaced as
+  // `diagnostics.blockedByPr` (no runner reads it yet; it is there for callers
+  // that want to name the PR an idle runner is waiting on).
+  let firstBlockingPr: { prNumber: number | null; prUrl: string | null } | null = null;
 
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
   // filtered candidates against *existing* active workers, but a single batch could
@@ -963,12 +972,17 @@ export async function POST(req: NextRequest) {
         isNull(workers.mergedAt),
         inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
       ),
-      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, prLifecycleStatus: true },
+      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, prLifecycleStatus: true, status: true, updatedAt: true },
     });
     // Exclude closed/abandoned PRs — a closed PR should not block sibling tasks
     // from claiming (it was abandoned, not merged; treating it as open would
     // block dependent tasks forever if the PR branch is never re-opened).
-    const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed');
+    // Also exclude holders parked on a question past the TTL (path-claim-ttl.ts).
+    // Per worker on purpose, unlike layer 2 / check_path_claim (per task via
+    // expiredParkedTaskIds): this layer is keyed on the PR, and the PR belongs
+    // to the one worker that opened it. A fresh sibling worker on the same task
+    // with no PR still blocks through its path_claims at layer 2.
+    const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed' && !isExpiredParkedHolder(w));
     if (activeOpenPrWorkers.length > 0) {
       const prTaskIds = activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
       const prTasks = prTaskIds.length > 0
@@ -1148,13 +1162,27 @@ export async function POST(req: NextRequest) {
     // manifest, defer this claim. Prevents two tasks editing the same file in
     // parallel when the orchestrator forgot to serialize them with dependsOn edges.
     // (Regression guard for the PRs #1126/#1129 incident.)
+    //
+    // Exception: conflict-retry tasks are exempt from blocking on their own PR.
+    // A conflict-retry task works on the same PR as its original (to rebase &
+    // resolve conflicts), so the original's open PR should not block the retry.
+    // Exclude the conflict-retry PR number from the overlap check.
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
-      const blocking = findBlockingPr(taskManifest, openPrTasks);
+      const conflictRetryPrNumber = (task as any).conflictRetryPrNumber as number | null | undefined;
+      // Filter out the conflict-retry PR if this task is retrying a conflict.
+      // The original PR is on the same task/branch being worked on, so overlap
+      // is not a conflict risk — it's the expected case.
+      const filterOpenPrTasks = conflictRetryPrNumber
+        ? openPrTasks.filter(pr => pr.prNumber !== conflictRetryPrNumber)
+        : openPrTasks;
+      const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
-        deferTask(task, 'path_overlap', { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null });
+        const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
+        firstBlockingPr ??= blockedByPr;
+        deferTask(task, 'path_overlap', blockedByPr);
         continue;
       }
 
@@ -1179,7 +1207,9 @@ export async function POST(req: NextRequest) {
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {
               console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
-              deferTask(task, 'path_overlap', { blockingTaskId: claimingTaskId });
+              // prNumber/prUrl: null so a coalesced row does not keep naming a
+              // PR from an earlier layer-1 deferral as the current blocker.
+              deferTask(task, 'path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
               blockedByActiveClaim = true;
               break;
             }
@@ -1819,6 +1849,7 @@ export async function POST(req: NextRequest) {
         pendingTasks: claimableTasks.length,
         matchedTasks: filteredTasks.length,
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
+        ...(firstBlockingPr ? { blockedByPr: firstBlockingPr } : {}),
         // Surface learned OAuth pressure so an `oauth_parallelism` deferral is
         // attributable ("seat capped at 97% of the learned window") instead of
         // looking like an unexplained stall.
@@ -1867,6 +1898,9 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
+      // A fix attempt just got a worker: the PR's activity comment may now say
+      // "Fixing" instead of "fix queued". No-op for any other task.
+      await announceFixClaimed(claimedTask);
     }
   }
 

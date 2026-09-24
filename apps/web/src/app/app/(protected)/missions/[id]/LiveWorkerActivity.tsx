@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, type ComponentProps } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
 import WorkerActivityTimeline, { collapseWorkspacePath } from '../../tasks/[id]/WorkerActivityTimeline';
+import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 type Milestones = ComponentProps<typeof WorkerActivityTimeline>['milestones'];
 
@@ -139,7 +140,7 @@ export default function LiveWorkerActivity({
           ? ((inputTokens || 0) + (outputTokens || 0)) > 0 && (
               <span>{((inputTokens || 0) + (outputTokens || 0)).toLocaleString()} tokens</span>
             )
-          : costUsd != null && <span>${Number(costUsd).toFixed(3)}</span>
+          : costUsd != null && <span title={ESTIMATED_COST_TITLE}>{formatEstimatedUsd(costUsd, 3)}</span>
         }
       </div>
 

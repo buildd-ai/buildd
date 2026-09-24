@@ -6,6 +6,7 @@ const mockTaskFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkerFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkspaceFindFirst = mock(() => Promise.resolve(null) as any);
 const mockTaskFindMany = mock(() => Promise.resolve([]) as any);
+const mockLiveConflictRetryProbe = mock((_args?: any) => Promise.resolve(null) as any);
 let capturedInsertValues: any = null;
 const mockInsertReturning = mock(() => Promise.resolve([{ id: 'new-task-id' }]) as any);
 const mockInsertOnConflict = mock(() => ({ returning: mockInsertReturning }));
@@ -21,7 +22,12 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: {
-        findFirst: (...args: any[]) => mockTaskFindFirst(...args),
+        // The per-PR in-flight probe is told apart by its column shape, so the
+        // many tests that stub the original-task lookup do not answer it.
+        findFirst: (...args: any[]) =>
+          args[0]?.columns?.conflictRetryHeadSha
+            ? mockLiveConflictRetryProbe(...args)
+            : mockTaskFindFirst(...args),
         findMany: (...args: any[]) => mockTaskFindMany(...args),
       },
       workers: { findFirst: (...args: any[]) => mockWorkerFindFirst(...args) },
@@ -373,6 +379,45 @@ describe('dispatchConflictRetry', () => {
     mockInsertOnConflict.mockReturnValue({ returning: mockInsertReturning });
     mockInsertReturning.mockResolvedValue([{ id: 'new-task-id', ...capturedInsertValues }]);
     mockDispatchNewTask.mockResolvedValue(undefined);
+    mockLiveConflictRetryProbe.mockReset();
+    mockLiveConflictRetryProbe.mockResolvedValue(null);
+  });
+
+  // N10: a conflict retry that pushes a merge commit moves the PR head, and a
+  // new head is a new (PR, SHA) key — so the unique index let a second and a
+  // third retry in while the first was still working the same branch.
+  it('does not dispatch a second conflict retry while one is live on the same PR at another head', async () => {
+    mockLiveConflictRetryProbe.mockResolvedValue({ id: 'live-retry', conflictRetryHeadSha: 'sha-older' });
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(false);
+    expect(result.inFlightTaskId).toBe('live-retry');
+    expect(result.exhausted).toBeUndefined();
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('scopes the in-flight probe to this workspace, this PR and live statuses', async () => {
+    await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(mockLiveConflictRetryProbe).toHaveBeenCalledTimes(1);
+    const flat = JSON.stringify(mockLiveConflictRetryProbe.mock.calls[0][0].where);
+    expect(flat).toContain('ws-1');
+    expect(flat).toContain('99');
+    expect(flat).toContain('in_progress');
+    expect(flat).not.toContain('completed');
+  });
+
+  it('does not touch the branch of a PR a conflict retry is already working', async () => {
+    mockUpdateBehindPrBranch.mockClear();
+    mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    mockLiveConflictRetryProbe.mockResolvedValue({ id: 'live-retry', conflictRetryHeadSha: 'sha-older' });
+
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, behindOnly: true });
+
+    expect(result.dispatched).toBe(false);
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
   });
 
   it('brings a merely-behind PR up to date via GitHub instead of dispatching an agent', async () => {
@@ -445,6 +490,31 @@ describe('dispatchConflictRetry', () => {
 
     expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toBeUndefined();
+  });
+
+  // Regression: only the phase was copied, so a Codex task's conflict fix ran
+  // on Claude and a role-routed task lost its role and routing kind.
+  it('keeps the original task\'s backend, role, kind and phase on the attempt', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      backend: 'codex',
+      roleSlug: 'builder',
+      kind: 'engineering',
+      complexity: 'normal',
+      missionPhaseIndex: 1,
+      missionPhaseLabel: 'Build',
+    });
+
+    await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(capturedInsertValues).toMatchObject({
+      backend: 'codex',
+      roleSlug: 'builder',
+      kind: 'engineering',
+      complexity: 'normal',
+      missionPhaseIndex: 1,
+      missionPhaseLabel: 'Build',
+    });
   });
 
   it('sets pathManifest on the inserted task', async () => {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Switch from '@/components/ui/Switch';
 
 interface WebhookConfig {
     url: string;
@@ -85,22 +86,10 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
             <div className="border border-border-default rounded-lg p-4">
                 <div className="flex items-center justify-between mb-4">
                     <h3 className="font-medium">Webhook Endpoint</h3>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <span className="text-sm text-text-muted">{enabled ? 'Active' : 'Disabled'}</span>
-                        <button
-                            type="button"
-                            role="switch"
-                            aria-checked={enabled}
-                            onClick={() => setEnabled(!enabled)}
-                            className={`relative w-10 h-6 rounded-full transition-colors ${
-                                enabled ? 'bg-status-success' : 'bg-surface-4'
-                            }`}
-                        >
-                            <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                                enabled ? 'translate-x-4' : ''
-                            }`} />
-                        </button>
-                    </label>
+                    <div className="flex items-center gap-2">
+                        <span className="text-sm text-text-muted" aria-hidden="true">{enabled ? 'Active' : 'Disabled'}</span>
+                        <Switch checked={enabled} onChange={setEnabled} label="Webhook endpoint enabled" />
+                    </div>
                 </div>
 
                 <div className="space-y-4">

@@ -90,6 +90,12 @@ and URL.
   only when that PR passes CI and merges.
 - `force: true` folds into `inputs.force = 'true'`; it bypasses the empty-commit
   check, NOT CI.
+- The source ref's CI state (`ciState`) MUST ignore advisory post-merge
+  integration check-runs (name prefix `post-merge integration`, from
+  `.github/workflows/post-merge-integration.yml`). They sit on every dev SHA,
+  i.e. on the release PR head, and never gate a release; `release_status`
+  reports them separately as `postMergeIntegration`, and the health watcher
+  does not file CI-failing tasks for them.
 
 **Acceptance criteria**:
 - AC-5: GIVEN a properly configured `workflow_dispatch` workspace WHEN

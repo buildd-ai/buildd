@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { timeAgo } from '@/lib/mission-helpers';
+import Switch from '@/components/ui/Switch';
 
 interface MissionMonitoringToggleProps {
   missionId: string;
@@ -50,24 +51,7 @@ export default function MissionMonitoringToggle({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-3">
-        <button
-          onClick={handleToggle}
-          disabled={loading}
-          className="group relative flex items-center"
-          aria-label={status === 'active' ? 'Pause monitoring' : 'Resume monitoring'}
-        >
-          <span
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ${
-              status === 'active' ? 'bg-status-success/60' : 'bg-surface-3'
-            } ${loading ? 'opacity-50' : ''}`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                status === 'active' ? 'translate-x-4' : 'translate-x-0'
-              }`}
-            />
-          </span>
-        </button>
+        <Switch checked={status === 'active'} onChange={() => handleToggle()} disabled={loading} label="Monitoring" />
         <div className="min-w-0">
           <span className="text-[12px] text-text-secondary">
             {status === 'active' ? 'Monitoring active' : 'Monitoring paused'}

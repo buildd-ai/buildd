@@ -632,3 +632,22 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(html).toContain('Human review needed');
   });
 });
+
+describe('CondensedTimeline — row menu card type', () => {
+  // A failed row renders InlineTaskRetry, which needs a mounted app router, so
+  // the failed mapping is covered by taskSwipeCardType's unit tests instead.
+  it.each(['cancelled'])('gives a %s row the terminal card type (no Cancel in its menu)', (status) => {
+    const task = makeTask('term1', { status });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, running: [toChain(task)] }}
+        segments={[makeSeg('term1', 'notch')]}
+        allTasksCount={1}
+        totalTasks={1}
+      />,
+    );
+    expect(html).toContain('data-card-type="completed-task"');
+    expect(html).not.toContain('data-card-type="running-task"');
+  });
+});

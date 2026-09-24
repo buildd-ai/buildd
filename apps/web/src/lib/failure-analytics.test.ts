@@ -450,6 +450,21 @@ describe('findFailureSignature', () => {
     expect(hit!.count).toBe(2);
     expect(hit!.exitCauses).toEqual(['code_failure', 'condition_unmet']);
   });
+
+  it('folds legacy `API error: <n> - {json}` rows into the prose family, whichever spelling is looked up', () => {
+    const prose = 'Task has no confirmed outcome — call complete_task';
+    const legacy = `API error: 400 - ${JSON.stringify({ error: prose })}`;
+    const rows = [
+      worker({ status: 'failed', error: legacy }),
+      worker({ status: 'failed', error: prose }),
+    ];
+    const byLegacy = findFailureSignature(rows, normalizeErrorSignature(legacy));
+    const byProse = findFailureSignature(rows, normalizeErrorSignature(prose));
+    expect(byLegacy!.count).toBe(2);
+    expect(byProse!.count).toBe(2);
+    expect(toFrictionSignature(normalizeErrorSignature(legacy)))
+      .toBe(toFrictionSignature(normalizeErrorSignature(prose)));
+  });
 });
 
 describe('computeFailureAnalytics — died-early cohort', () => {

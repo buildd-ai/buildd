@@ -8,7 +8,7 @@
 - `packages/core/db/schema.ts` → `knowledgeIngestJobs.changedFiles` — per-ingest diff paths, keyed by prNumber and sha
 - `docs/design/experiment-lifecycle.md` — the registry that would own stage 2's declaration, stopping rule and recorded decision
 - `docs/design/task-area-prediction.md` — the rail that now persists the touched-path label (Current state, gap 4)
-- `apps/runner/src/experiment-randomizer.ts` — the assignment primitive stage 2 randomizes through, already extracted
+- `packages/core/experiment-randomizer.ts` — the assignment primitive stage 2 randomizes through, already extracted
 
 ---
 
@@ -227,7 +227,7 @@ protections: an eligibility predicate narrow enough to reason about, an arm that
 is exactly today's behaviour, and a kill switch that returns every claim to the
 fan-out.
 
-Nothing here needs a new randomizer. `apps/runner/src/experiment-randomizer.ts`
+Nothing here needs a new randomizer. `packages/core/experiment-randomizer.ts`
 already provides per-unit assignment salted on `${experimentId}:${policyVersion}
 :${unitId}` — per-unit so a retry cannot switch arms, version-salted so a bump
 re-randomizes — plus a fraction resolver that rejects out-of-range values rather

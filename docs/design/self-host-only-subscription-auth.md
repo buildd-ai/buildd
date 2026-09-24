@@ -67,7 +67,7 @@ Subscription-shaped agent-backend auth is not a corner of that build. It is the
   placeholder with `dispatchable: false` and no `SecretPurpose` value).
 - The only multi-tenant credential path that exists decrypts a *tenant's own*
   subscription token out of task context and injects it as
-  `CLAUDE_CODE_OAUTH_TOKEN` — `packages/core/tenant-crypto.ts:9`,
+  `CLAUDE_CODE_OAUTH_TOKEN` — `apps/runner/src/tenant-crypto.ts`,
   `apps/runner/src/workers.ts:2101-2109`.
 
 So "ship a hosted multi-tenant build that cannot do subscription auth" is not a
@@ -96,7 +96,7 @@ asserted. **It is large**, and §7 phases accordingly.
 | `credentialLeases` | `packages/core/db/schema.ts:2399-2412` | Runner-held lease over one `secrets` row. Exists only to serialize subscription-token rotation. |
 | `oauthBudgetEpisodes` | `packages/core/db/schema.ts:2528-2553` | Learned 5h-window capacity. Meaningless without a plan window. |
 | `tenantBudgets` | `packages/core/db/schema.ts:2474-2484` | Per-tenant subscription exhaustion (the multi-tenant path). |
-| `tasks.context.tenantContext.encryptedOauthToken` | `packages/core/tenant-crypto.ts:21-27`; duplicated at `apps/runner/src/tenant-crypto.ts:3` | A subscription credential that **never touches `secrets`**. A purpose-based guard misses it entirely. |
+| `tasks.context.tenantContext.encryptedOauthToken` | `apps/runner/src/tenant-crypto.ts` (the former `packages/core` duplicate had no importer and was deleted) | A subscription credential that **never touches `secrets`**. A purpose-based guard misses it entirely. |
 
 ### Write and read boundaries for credentials
 
@@ -205,10 +205,10 @@ two heaviest are `apps/web/src/app/api/workers/claim/route.test.ts` (70
 ### Honest total
 
 Roughly **60–70 non-test production files**, **6 route trees**, **4 DB tables /
-8 columns**, **2 duplicated modules** (`tenant-crypto.ts` exists twice —
-`packages/core/tenant-crypto.ts` and `apps/runner/src/tenant-crypto.ts:3`, and
-the core copy has **no importer**, so deleting one does not delete the
-capability), and **~60 test files**. This is a multi-release programme, not a
+8 columns** (`tenant-crypto.ts` once existed twice; the importer-less
+`packages/core` copy has since been deleted, and the live
+`apps/runner/src/tenant-crypto.ts` is what carries the capability), and
+**~60 test files**. This is a multi-release programme, not a
 PR. §7 splits it so that every phase is independently shippable and every phase
 before the last is a no-op for existing deployments.
 
@@ -272,7 +272,7 @@ residual risk is accepted."
 | Option | What it is | What it does NOT protect against | Who can flip it |
 |---|---|---|---|
 | **A. Runtime feature flag** | `BUILDD_SUBSCRIPTION_AUTH`, checked at each site. Precedent: `BUILDD_ALLOW_CONTROL_PLANE_REFRESH` (`apps/web/src/app/api/workspaces/[id]/claude-credential/refresh/route.ts:33` — fail-closed, default off) and `OAUTH_BUDGET_PACING` (`packages/core/oauth-budget.ts:57` — fail-open, default on) | The code is still in the artifact. A **mis-default** — and note the current defaults are already the subscription ones, hardcoded in two places (`apps/web/src/auth.ts:170`, `apps/web/src/app/api/accounts/route.ts:84`), so the flag must *invert* an existing default. A **forgotten check** on a new path — there are ~15 non-test `authType` decision sites plus a `tenantContext` path that never reads `secrets` at all. A reviewer approving `?? true` | Anyone with Vercel project env access, with no deploy; anyone who lands a PR touching the default; anyone who adds a code path |
-| **B. Separate package** | `@buildd/subscription-auth`, absent from `apps/web`'s `dependencies` in the hosted build | Someone re-adding the dependency (needs a manifest gate); DB rows already at rest; the **duplicated** `apps/runner/src/tenant-crypto.ts` copy, which is not in any package | Anyone who edits `apps/web/package.json` — but that is a reviewable diff in the artifact's own manifest, not an env var |
+| **B. Separate package** | `@buildd/subscription-auth`, absent from `apps/web`'s `dependencies` in the hosted build | Someone re-adding the dependency (needs a manifest gate); DB rows already at rest; the runner's `apps/runner/src/tenant-crypto.ts`, which is not in any package | Anyone who edits `apps/web/package.json` — but that is a reviewable diff in the artifact's own manifest, not an env var |
 | **C. Build-time exclusion in one package** | Conditional import / define-replacement in `apps/web/next.config.mjs` | Route files: see the crux. You cannot exclude `app/api/**/route.ts` from a Next build; the file's presence *is* the endpoint. Degenerates into B (move the files) or a prebuild prune step | Whoever controls the build env — same weakness as A, plus non-obviousness |
 | **D. Separate deployment artifact** | Two Next apps, shared `packages/*` | Nothing, at the cost of duplicating the dashboard and doubling the CI/deploy surface. Also does not by itself stop the hosted DB holding subscription rows | Only a deploy |
 
@@ -394,7 +394,7 @@ strands the data it was meant to remove.
 | `startAfter: 'budget_reset'` | `apps/web/src/lib/deferred-start.ts:55` — the union's *only* member; resolved off `accounts.budgetResetsAt` (`tasks/route.ts:289`) | None | **Must be rejected at the write boundary** in hosted, or every deferred task waits on a reset that never arrives. Advertised in the MCP schema at `mcp-tools.ts:351`, `:383` — that string has to change too |
 | `budget_limited` exit cause | `worker-exit-taxonomy.ts:69`, `failure-classifier.ts:20`, retry-exempt at `stale-workers.ts:181` | Metered spend caps can produce their own limit error | **Keep the cause**, re-point the classifier. The retry exemption (`worker-exit-taxonomy.ts:128`) stays correct either way |
 | `budget_exhausted` mission state | `mission-helpers.ts:841` | Unchanged — this is the **mission dollar budget**, written by `mission-budget.ts:24-56` | **Keep.** Only `accounts.budgetExhaustedAt` and `tenantBudgets` are subscription-shaped |
-| **Multi-tenant BYO credential** | `packages/core/tenant-crypto.ts`, `tenantBudgets` (`schema.ts:2474`), `workers.ts:2098-2109`, `workers/[id]/route.ts:1300-1315` | Nothing today | **This is the sharpest finding.** The only multi-tenant credential story the repo has is tenants supplying their own *subscription* tokens. A metered-only hosted product needs tenant BYO-**API-key** designed and built. That is a **prerequisite for hosted existing at all**, not a consequence of this split |
+| **Multi-tenant BYO credential** | `apps/runner/src/tenant-crypto.ts`, `tenantBudgets` (`schema.ts:2474`), `workers.ts:2098-2109`, `workers/[id]/route.ts:1300-1315` | Nothing today | **This is the sharpest finding.** The only multi-tenant credential story the repo has is tenants supplying their own *subscription* tokens. A metered-only hosted product needs tenant BYO-**API-key** designed and built. That is a **prerequisite for hosted existing at all**, not a consequence of this split |
 
 ### 6. Enforcement gate
 
@@ -488,10 +488,9 @@ Revert: delete the constants. *One PR.*
 **Phase 2 — Package extraction. Still one artifact.**
 Create `@buildd/subscription-auth` and move `apps/web/src/lib/claude-credential.ts`,
 `codex-credential.ts`, `codex-device-auth.ts`, `claude-oauth-login.ts`,
-`packages/core/oauth-budget.ts`, `packages/core/tenant-crypto.ts`,
+`packages/core/oauth-budget.ts`, `apps/runner/src/tenant-crypto.ts`,
 `apps/runner/src/broker.ts`, `credential-refresh.ts`, `claude-auth.ts`, and the
-OAuth arms of `codex-auth.ts`. Delete the duplicate
-`apps/runner/src/tenant-crypto.ts` in favour of the package. Split
+OAuth arms of `codex-auth.ts`. Split
 `budget-forecast.ts` along its existing seam (seat forecasting vs dollar
 forecasting) — that split is worth doing on its own merits. Routes stay in place
 and import from the package. Revert: it is a move; `git revert` restores it.

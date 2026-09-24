@@ -27,7 +27,7 @@ import { notify } from '@/lib/pushover';
 import { githubApi } from '@/lib/github';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
-import { inheritPhaseFromParent } from '@/lib/mission-phase';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -296,6 +296,8 @@ export interface DispatchConflictRetryResult {
   disabled?: boolean;
   /** True when the supersession precheck determined the change is already upstream. */
   superseded?: boolean;
+  /** A conflict retry is already live on this PR; nothing new was filed. */
+  inFlightTaskId?: string;
   /** The PR that appears to have already landed the change, if identifiable. */
   successorPrNumber?: number | null;
   /** True when the base branch was force-pushed after the PR was opened. */
@@ -331,6 +333,27 @@ export async function dispatchConflictRetry(
 
   if (!isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
     return { dispatched: false, disabled: true };
+  }
+
+  // One live conflict retry per PR, whatever the head. The unique index keys on
+  // (PR, head SHA), but the retry itself pushes to the PR — a new head, so a
+  // new key — and a merge attempt against that head used to file a second
+  // retry onto the branch the first was still working. Checked before the
+  // behind-only update too: moving the branch under a working agent races its
+  // push.
+  const liveRetry = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.conflictRetryPrNumber, prNumber),
+      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+    ),
+    columns: { id: true, conflictRetryHeadSha: true },
+  });
+  if (liveRetry) {
+    console.log(
+      `[conflict-retry] PR #${prNumber} already has live conflict retry ${liveRetry.id} — not filing another`,
+    );
+    return { dispatched: false, inFlightTaskId: liveRetry.id };
   }
 
   // Behind but not conflicting: GitHub can merge the base in server-side —
@@ -503,8 +526,9 @@ export async function dispatchConflictRetry(
     }
   }
 
-  // Rule P1-7: an attempt inherits the phase of the task it re-attempts.
-  const phase = await inheritPhaseFromParent(retryTask.parentTaskId);
+  // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+  // of the task it re-attempts.
+  const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
   const [newTask] = await db
     .insert(tasks)
@@ -514,7 +538,7 @@ export async function dispatchConflictRetry(
       description: retryTask.description,
       parentTaskId: retryTask.parentTaskId,
       missionId: retryTask.missionId,
-      ...phase,
+      ...identity,
       context: retryTask.context,
       creationSource: retryTask.creationSource,
       taskClass: 'attempt',

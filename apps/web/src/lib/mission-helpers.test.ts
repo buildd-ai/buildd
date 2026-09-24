@@ -21,6 +21,7 @@ import {
   type Health,
   type MissionDisplayState,
 } from './mission-helpers';
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
 
 describe('healthToGroup — status taxonomy', () => {
   it('paused maps to paused group, never completed', () => {
@@ -586,6 +587,71 @@ describe('deriveTaskHealthSignal', () => {
     const health = deriveTaskHealthSignal(noDepMission, [makeTask('completed')]);
     expect(drive).toBe<DriveState>('MANUAL');
     expect(health).toBe<Health>('NOMINAL');
+  });
+
+  // ── taskClass: health counts the same deliverable set progress does ──
+
+  it('a failed retry attempt (taskClass attempt) does not make the mission FAILING', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'completed', taskClass: 'work', title: 'Build it' },
+      { status: 'failed', taskClass: 'attempt', title: 'Build it (CI retry)' },
+    ])).toBe<Health>('NOMINAL');
+  });
+
+  it('a failed review task (legacy row, category review) does not make the mission FAILING', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'completed', title: 'Build it' },
+      { status: 'failed', taskClass: null, category: 'review', title: 'Review PR' },
+    ])).toBe<Health>('NOMINAL');
+  });
+
+  it('a pending bookkeeping task with no worker is not STALLED', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'pending', taskClass: 'bookkeeping', title: 'Close out', workers: [] },
+    ])).toBe<Health>('NOMINAL');
+  });
+
+  it('a failed work-class task is still FAILING', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'failed', taskClass: 'work', title: 'Mission: legacy-looking title' },
+    ])).toBe<Health>('FAILING');
+  });
+
+  it('a live attempt worker keeps its pending deliverable parent out of STALLED', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'pending', taskClass: 'work', title: 'Build it', workers: [] },
+      { status: 'assigned', taskClass: 'attempt', title: 'Build it (retry)', workers: [{ status: 'running' }] },
+    ])).toBe<Health>('NOMINAL');
+  });
+
+  it('a stale live worker on a completed task does not keep a workerless pending deliverable out of STALLED', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { status: 'completed', taskClass: 'work', title: 'Done it', workers: [{ status: 'running' }] },
+      { status: 'pending', taskClass: 'work', title: 'Build it', workers: [] },
+    ])).toBe<Health>('STALLED');
+  });
+
+  it("family scope still counts attempts: a task's failed attempt reads FAILING", () => {
+    expect(deriveTaskHealthSignal({}, [
+      { status: 'pending', taskClass: 'bookkeeping', title: 'Review PR', workers: [] },
+      { status: 'failed', taskClass: 'attempt', title: 'Review PR (retry)' },
+    ], { scope: 'family' })).toBe<Health>('FAILING');
+  });
+
+  it('parity: the mission-scope countable set equals isDeliverableTask minus cancelled', () => {
+    const shapes = [
+      { taskClass: 'work' }, { taskClass: 'attempt' }, { taskClass: 'bookkeeping' },
+      { taskClass: null, category: 'review' }, { taskClass: null, kind: 'coordination' },
+      { taskClass: null, mode: 'planning' }, { taskClass: null, title: 'Mission: x' },
+      { taskClass: null, title: 'Plain work' },
+    ];
+    for (const shape of shapes) {
+      for (const status of ['failed', 'cancelled']) {
+        const t = { title: 'Plain work', ...shape, status };
+        const expectFailing = status === 'failed' && isDeliverableTask(t);
+        expect(deriveTaskHealthSignal(noDepMission, [t]) === 'FAILING').toBe(expectFailing);
+      }
+    }
   });
 
   it('auto+failing mission — AUTO drive, FAILING health (distinguishable)', () => {

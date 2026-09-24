@@ -22,7 +22,8 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
-import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
+import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
+import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -116,6 +117,7 @@ async function requestIntegrationBranchReview(params: {
       prUrl: params.prUrl,
       headSha: params.headSha,
       reviewerRole: picked.role,
+      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
       installationId: params.installationId,
       repoFullName: params.repoFullName,
       // The caller already has the PR base; saves the reviewer context a PR read.
@@ -138,7 +140,7 @@ async function requestIntegrationBranchReview(params: {
         installationId: params.installationId,
         repoFullName: params.repoFullName,
         prNumber: params.prNumber,
-        entry: { kind: 'reviewing', detail: `reviewer role \`${picked.role}\`` },
+        entry: { kind: 'reviewing' },
         workspaceId: params.workspace.id,
       }).catch(() => {});
     }
@@ -1275,6 +1277,27 @@ export async function PUT(req: NextRequest) {
         },
       );
       if (!safety.ok) {
+        // Behind base but not conflicting: bring the branch up to date here
+        // rather than leave the caller a manual rebase. Never merge in the
+        // same call — the update is a new head whose CI has not run, which is
+        // the very thing the freshness refusal guards against.
+        if (isBehindBaseRefusal(safety.reason)) {
+          const update = await updateBehindPrBranch({
+            installationId: repo.installation.installationId,
+            repoFullName: repo.fullName,
+            prNumber,
+            headSha,
+          });
+          if (update.updated) {
+            recordMergeGate('deferred', `branch updated from base: ${safety.reason}`, { tier: policy.tier });
+            return NextResponse.json({
+              error: `${safety.reason} — the branch has been updated from base; CI must re-run on the new head`,
+              tier: policy.tier,
+              branchUpdated: true,
+              hint: 'Wait for CI to go green on the updated head (get_pr), then call merge_pr again.',
+            }, { status: 409 });
+          }
+        }
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });
         return NextResponse.json({
           error: `merge policy refused this merge: ${safety.reason}`,

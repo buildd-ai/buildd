@@ -1,0 +1,147 @@
+name: Release Refresh
+
+# Keeps the open release PR (dev → main) honest as dev moves.
+#
+# A release PR's head IS dev, so every merge after the cut lands in it. Its
+# title, package.json versions and CHANGELOG section were computed once, at cut
+# time, from the commits that existed then. A `feat` merged after a patch cut
+# therefore ships as a patch, and Tag Release tags it as one, because it reads
+# apps/web/package.json. The PR body's change list goes stale the same way.
+#
+# On every push to dev this recomputes the bump class from the commits since the
+# latest tag (scripts/release-bump.ts, the same rules as scripts/release.sh) and:
+#   - raises the version when the commits now demand more. It never lowers one,
+#     so a deliberately higher version survives. The raise is committed to dev
+#     as `chore: bump version to vX.Y.Z` (package.json files + CHANGELOG section);
+#   - rewrites the PR title and change list to match.
+# Re-running is a no-op, and a run that dies between push and title update is
+# healed by the next one (the target is computed from package.json as well as
+# the title).
+#
+# The bump push uses the release App token when configured, so Build & Test
+# runs on the new head and the release PR's required `build` check reports on
+# it. With only GITHUB_TOKEN the push does not trigger workflows; the run warns
+# instead of silently leaving the PR without a check.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+# Only the newest dev head matters; a superseded run has nothing left to do.
+concurrency:
+  group: release-refresh
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # Skip the push this workflow itself made. Idempotency would make the
+    # re-run a no-op anyway; this just saves the runner.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore: bump version to ')
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        if: ${{ vars.RELEASE_APP_ID != '' }}
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Refresh the open release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PUSH_TRIGGERS_CI: ${{ steps.app-token.outputs.token != '' }}
+          PACKAGE_FILES: 'apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json'
+        run: |
+          set -euo pipefail
+          HELPER="${RELEASE_BUMP:-scripts/release-bump.ts}"
+
+          PRS=$(gh pr list --repo "$REPO" --base main --head dev --state open --limit 5 --json number,title,body)
+          if [ "$(jq length <<<"$PRS")" -eq 0 ]; then
+            echo "No open release PR (dev → main); nothing to refresh."
+            exit 0
+          fi
+          NUMBER=$(jq -r '.[0].number' <<<"$PRS")
+          TITLE=$(jq -r '.[0].title' <<<"$PRS")
+          OLD_BODY=$(jq -r '.[0].body // ""' <<<"$PRS")
+
+          if [[ ! "$TITLE" =~ ^Release\ v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::notice::Release PR #${NUMBER} title '${TITLE}' is not the generated 'Release vX.Y.Z' shape; leaving it alone."
+            exit 0
+          fi
+          TITLE_VERSION="${BASH_REMATCH[1]}"
+
+          LATEST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::notice::No release tag yet; nothing to compare against."
+            exit 0
+          fi
+
+          PKG_VERSION=$(jq -r '.version' apps/web/package.json)
+          # The PR carries the higher of its title and package.json: a previous
+          # run may have pushed the bump and died before retitling.
+          CURRENT=$(printf '%s\n%s\n' "$TITLE_VERSION" "$PKG_VERSION" | sort -V | tail -1)
+
+          PLAN=$(git log "${LATEST_TAG}..HEAD" --format=%s --no-merges \
+            | bun "$HELPER" plan --latest-tag "$LATEST_TAG" --current "$CURRENT")
+          TARGET=$(jq -r .target <<<"$PLAN")
+          BUMP=$(jq -r .bump <<<"$PLAN")
+          echo "Release PR #${NUMBER}: title v${TITLE_VERSION}, package.json v${PKG_VERSION}; commits since ${LATEST_TAG} need a ${BUMP} bump → v${TARGET}"
+
+          if [ "$TARGET" != "$PKG_VERSION" ]; then
+            # The PR may have merged while this ran; bumping dev then would
+            # announce a version that never shipped.
+            STATE=$(gh pr view "$NUMBER" --repo "$REPO" --json state --jq .state)
+            if [ "$STATE" != "OPEN" ]; then
+              echo "::notice::Release PR #${NUMBER} is ${STATE} now; not bumping dev."
+              exit 0
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            bun "$HELPER" apply --from "$PKG_VERSION" --to "$TARGET" --package-files "$PACKAGE_FILES"
+            # shellcheck disable=SC2086
+            git add -- $PACKAGE_FILES
+            [ -f CHANGELOG.md ] && git add -- CHANGELOG.md
+            git commit -m "chore: bump version to v${TARGET}"
+            if ! git push origin HEAD:dev; then
+              # dev moved under us. That push re-runs this workflow against the
+              # new head, which recomputes from scratch.
+              echo "::notice::dev moved during the refresh; the run for the newer push will redo it."
+              exit 0
+            fi
+            if [ "$PUSH_TRIGGERS_CI" != "true" ]; then
+              echo "::warning::Bumped dev with GITHUB_TOKEN, which does not trigger workflows: Build & Test will not run on the bump commit until the next push to dev. Configure the release App (vars.RELEASE_APP_ID + secrets.RELEASE_APP_PRIVATE_KEY) to avoid this."
+            fi
+          fi
+
+          NEW_TITLE="Release v${TARGET}"
+          CHANGES=$(git log "${LATEST_TAG}..HEAD" --format='- %s' --no-merges | grep -v '^- chore: bump version' | head -30 || true)
+          # shellcheck disable=SC2016 # the backticks are literal markdown
+          NEW_BODY=$(printf '## v%s\n\n### Changes\n%s\n\n---\n*Auto-generated by `bun run release`; kept current by release-refresh.yml as dev moves (bump class from commits since %s: %s)*' \
+            "$TARGET" "$CHANGES" "$LATEST_TAG" "$BUMP")
+
+          if [ "$NEW_TITLE" = "$TITLE" ] && [ "$NEW_BODY" = "$OLD_BODY" ]; then
+            echo "Release PR #${NUMBER} is already current."
+            exit 0
+          fi
+          # `gh pr edit` is unreliable for title/body; the REST PATCH is not.
+          gh api --method PATCH "repos/${REPO}/pulls/${NUMBER}" -f title="$NEW_TITLE" -f body="$NEW_BODY" --silent
+          echo "Updated release PR #${NUMBER}: ${TITLE} → ${NEW_TITLE}"

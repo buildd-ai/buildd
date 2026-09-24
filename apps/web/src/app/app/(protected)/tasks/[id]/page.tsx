@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
-import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied } from '@/lib/task-presentation';
+import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
@@ -151,8 +151,10 @@ export default async function TaskDetailPage({
           with: {
             workers: {
               columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+              // Every worker, newest first — NOT limit 1. The gate asks whether
+              // ANY worker holds an open PR, the same read the list and the
+              // claim route make; the newest alone hid an older open PR.
               orderBy: desc(workers.createdAt),
-              limit: 1,
             },
           },
         })
@@ -744,9 +746,12 @@ export default async function TaskDetailPage({
 
         {/* Blocked Banner — shown when task has unresolved dependencies */}
         {isBlocked && (() => {
-          const prBlockers = unresolvedDeps.filter(d => {
-            const w = (d as any).workers?.[0];
-            return d.status === 'completed' && w?.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed';
+          // Same predicate as the gate: the worker holding the PR open, which
+          // need not be the newest one.
+          const prBlockers = unresolvedDeps.flatMap(dep => {
+            const w = dep.status === 'completed' ? findBlockingPrWorker(dep.workers ?? []) : undefined;
+            // prUrl alone blocks (the gate's rule); prNumber only shapes the label.
+            return w?.prUrl ? [{ dep, w }] : [];
           });
           const inProgressBlockers = unresolvedDeps.filter(d => d.status !== 'completed');
           return (
@@ -758,17 +763,16 @@ export default async function TaskDetailPage({
                 Blocked — waiting on {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
               </div>
               <div className="space-y-1.5 ml-6">
-                {prBlockers.map((dep) => {
-                  const w = (dep as any).workers?.[0];
+                {prBlockers.map(({ dep, w }) => {
                   return (
                     <div key={dep.id} className="flex items-center gap-2 flex-wrap">
                       <a
-                        href={w.prUrl}
+                        href={w.prUrl!}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sm font-medium text-accent-text hover:underline"
                       >
-                        Merge PR #{w.prNumber} ↗
+                        {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
                       <span className="text-[12px] text-text-muted">
                         {dep.title}
@@ -1147,6 +1151,7 @@ export default async function TaskDetailPage({
               Active Worker
             </div>
             <RealTimeWorkerView
+              taskId={task.id}
               initialWorker={{
                 id: activeWorker.id,
                 name: activeWorker.name,

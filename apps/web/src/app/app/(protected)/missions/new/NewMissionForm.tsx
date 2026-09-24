@@ -617,7 +617,7 @@ export default function NewMissionForm({
                 />
               </div>
               <p className="text-xs text-text-muted mt-1">
-                Mission pauses when spend reaches this limit. Empty = uncapped.
+                Mission pauses when estimated spend (API list price) reaches this limit. Empty = uncapped.
               </p>
             </div>
 

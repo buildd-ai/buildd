@@ -11,11 +11,16 @@ import {
 } from './budget-errors';
 
 describe('isBudgetExhaustionError', () => {
-  it('detects API-key dollar-budget exhaustion', () => {
-    expect(isBudgetExhaustionError('Budget limit exceeded (maxBudgetUsd)')).toBe(true);
-    expect(isBudgetExhaustionError('error_max_budget_usd')).toBe(true);
+  it('detects the provider extra-usage wall', () => {
     expect(isBudgetExhaustionError('You are out of extra usage')).toBe(true);
-    expect(isBudgetExhaustionError('hit max budget')).toBe(true);
+  });
+
+  // A per-session dollar cap is the task's own ceiling, not a provider wall.
+  // See isSessionBudgetCapError in @buildd/core/budget-error-classifier.
+  it('does not treat a per-session dollar cap as exhaustion', () => {
+    expect(isBudgetExhaustionError('Budget limit exceeded (maxBudgetUsd)')).toBe(false);
+    expect(isBudgetExhaustionError('error_max_budget_usd')).toBe(false);
+    expect(isBudgetExhaustionError('hit max budget')).toBe(false);
   });
 
   // Regression: the OAuth seat session cap that stalled a mission mid-run.

@@ -119,4 +119,33 @@ describe('computeMissionFlightStrip', () => {
     expect(strip.bars.some(b => b.workerId === 'newest')).toBe(true);
     expect(strip.bars.some(b => b.workerId === 'old-0')).toBe(false);
   });
+
+  // §6: agentTimeMin/axisSpanMin/parallelFactor — the direct replacement for
+  // the retired computeMissionSkyline's agentTimeMin/activeSpanMin/parallelFactor.
+  it('agentTimeMin sums raw span durations, axisSpanMin is their idle-elided union', () => {
+    const strip = compute([task], [worker('a', 0, 30 * 60_000), worker('b', 0, 30 * 60_000)]);
+    expect(strip.agentTimeMin).toBeCloseTo(60, 1);
+    expect(strip.axisSpanMin).toBeCloseTo(30, 1);
+    expect(strip.parallelFactor).toBeCloseTo(2.0, 1);
+  });
+
+  it('Rule L-3: a schedule/orchestrator planning tick does not count toward agentTimeMin or axisSpanMin', () => {
+    const tick = { id: 'tick', status: 'completed', creationSource: 'schedule', mode: 'planning' };
+    const strip = compute(
+      [task, tick],
+      [worker('a', 0, 30 * 60_000), { ...worker('tick-worker', 0, 500 * 60_000), taskId: 'tick' }],
+    );
+    expect(strip.agentTimeMin).toBeCloseTo(30, 1);
+    expect(strip.axisSpanMin).toBeCloseTo(30, 1);
+    expect(strip.parallelFactor).toBeCloseTo(1.0, 1);
+  });
+
+  it('Rule L-3 does not catch a human-filed coordination task sharing mode=planning', () => {
+    const humanCoord = { id: 'human', status: 'completed', creationSource: 'dashboard', mode: 'planning' };
+    const strip = compute(
+      [task, humanCoord],
+      [worker('a', 0, 30 * 60_000), { ...worker('h', 0, 30 * 60_000), taskId: 'human' }],
+    );
+    expect(strip.agentTimeMin).toBeCloseTo(60, 1);
+  });
 });

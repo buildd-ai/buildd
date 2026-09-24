@@ -21,6 +21,7 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
 let mockQueryError: Error | null = null; // Set to throw during query iteration
+let lastQueryOptions: any = null; // options passed to the most recent SDK query()
 
 // Mock pusher-js — real Pusher tries to open a network connection on
 // construction, which fails under CI sandbox (no outbound). The test
@@ -38,6 +39,7 @@ mock.module('pusher-js', () => {
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
+    lastQueryOptions = _opts?.options ?? null;
     const msgs = [...mockMessages];
     const throwErr = mockQueryError;
     let idx = 0;
@@ -160,6 +162,8 @@ mock.module('../../src/env-scan', () => ({
 
 // Import WorkerManager after all mocks
 const { WorkerManager } = await import('../../src/workers');
+const { SESSION_BUDGET_CAP_ERROR } = await import('../../src/claim-budget-signals');
+const { isBudgetExhaustionError } = await import('@buildd/core/budget-error-classifier');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -455,14 +459,72 @@ describe('Error Handling', () => {
 
       const worker = manager.getWorker('w-budget');
       expect(worker?.status).toBe('error');
-      expect(worker?.error).toBe('Budget limit exceeded');
-      expect(worker?.currentAction).toBe('Budget exceeded');
+      expect(worker?.error).toBe(SESSION_BUDGET_CAP_ERROR);
+      expect(worker?.currentAction).toBe('Session cost cap');
 
-      // Should report failure to server
+      // Reported as a task-level cap, never as a provider budget wall (A.2):
+      // the server must not pause the backend / flip seats exhausted for it.
       const failedCalls = mockUpdateWorker.mock.calls.filter(
-        (call: any[]) => call[1]?.status === 'failed' && call[1]?.error?.includes('Budget')
+        (call: any[]) => call[1]?.status === 'failed' && call[1]?.sessionBudgetCapped === true
       );
-      expect(failedCalls.length).toBeGreaterThanOrEqual(1);
+      expect(failedCalls.length).toBe(1);
+      const payload = failedCalls[0][1];
+      expect(payload.budgetExhausted).toBeUndefined();
+      expect(isBudgetExhaustionError(payload.error)).toBe(false);
+    });
+
+    test('per-session cap does not pause the claim context (A.2)', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-cap-ctx' },
+        { type: 'result', subtype: 'error_max_budget_usd', session_id: 'sess-cap-ctx', total_cost_usd: 3 },
+      ];
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-cap-ctx', branch: 'buildd/cap-ctx', task: makeTask(),
+      }] }));
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      expect(manager.getWorker('w-cap-ctx')?.status).toBe('error');
+      expect(Object.keys((manager as any).contextBreaker.snapshot())).toEqual([]);
+      expect((manager as any).claimsPaused).toBe(false);
+    });
+
+    describe('maxBudgetUsd only on metered credentials (A.3)', () => {
+      const saved = { key: process.env.ANTHROPIC_API_KEY, tok: process.env.ANTHROPIC_AUTH_TOKEN, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+      afterEach(() => {
+        for (const [k, v] of [['ANTHROPIC_API_KEY', saved.key], ['ANTHROPIC_AUTH_TOKEN', saved.tok], ['CLAUDE_CODE_OAUTH_TOKEN', saved.oauth]] as const) {
+          if (v === undefined) delete process.env[k]; else process.env[k] = v;
+        }
+      });
+
+      async function runWithBudget(id: string) {
+        mockMessages = [
+          { type: 'system', subtype: 'init', session_id: `sess-${id}` },
+          { type: 'result', subtype: 'success', session_id: `sess-${id}`, result: 'ok' },
+        ];
+        mockClaimTask.mockImplementation(async () => ({ workers: [{ id, branch: `buildd/${id}`, task: makeTask() }] }));
+        lastQueryOptions = null;
+        manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
+        await manager.claimAndStart(makeTask());
+        await new Promise(r => setTimeout(r, 200));
+        expect(lastQueryOptions).not.toBeNull();
+        return lastQueryOptions;
+      }
+
+      test('OAuth session: maxBudgetUsd is not passed to the SDK', async () => {
+        delete process.env.ANTHROPIC_API_KEY;
+        delete process.env.ANTHROPIC_AUTH_TOKEN;
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-test';
+        const opts = await runWithBudget('w-oauth-budget');
+        expect(opts.maxBudgetUsd).toBeUndefined();
+      });
+
+      test('API-key session: maxBudgetUsd is passed to the SDK', async () => {
+        process.env.ANTHROPIC_API_KEY = 'sk-test';
+        const opts = await runWithBudget('w-apikey-budget');
+        expect(opts.maxBudgetUsd).toBe(5);
+      });
     });
   });
 
@@ -1216,7 +1278,7 @@ describe('Error Handling', () => {
 
       const worker = manager.getWorker('w-budget-ms');
       const budgetMilestones = worker?.milestones.filter(m =>
-        m.label.includes('Budget limit exceeded')
+        m.label.includes(SESSION_BUDGET_CAP_ERROR)
       );
       expect(budgetMilestones!.length).toBeGreaterThanOrEqual(1);
       expect(budgetMilestones![0].label).toContain('$10.25');

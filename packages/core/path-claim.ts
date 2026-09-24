@@ -15,7 +15,7 @@
  */
 
 import { db } from './db/client';
-import { pathClaims, pathClaimWaiters, missionNotes } from './db/schema';
+import { pathClaims, pathClaimWaiters, missionNotes, workers } from './db/schema';
 import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
 import {
   pathsOverlap,
@@ -23,6 +23,7 @@ import {
   findRegenerable,
   REPO_WIDE_SENTINEL,
 } from './path-overlap';
+import { expiredParkedTaskIds } from './path-claim-ttl';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,33 @@ export function isNonEmptyPath(path: string): boolean {
   return path.trim().length > 0;
 }
 
+// ── Parked-holder TTL ────────────────────────────────────────────────────────
+
+const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'];
+
+/**
+ * Drop, in place, the holders in `byTask` whose every live worker has been
+ * parked on a question past PARKED_HOLDER_TTL_MS (see path-claim-ttl.ts).
+ * A task with no live worker keeps its claims — that is a finished worker
+ * whose PR has not merged yet, and its edits are real. A failed lookup keeps
+ * every claim: the safe error is to go on blocking.
+ */
+async function dropExpiredParkedHolders(byTask: Map<string, string[]>): Promise<void> {
+  if (byTask.size === 0) return;
+  try {
+    const live = await db.query.workers.findMany({
+      where: and(
+        inArray(workers.taskId, [...byTask.keys()]),
+        inArray(workers.status, LIVE_WORKER_STATUSES),
+      ),
+      columns: { taskId: true, status: true, updatedAt: true },
+    });
+    for (const taskId of expiredParkedTaskIds(live ?? [])) byTask.delete(taskId);
+  } catch (err) {
+    console.warn('[path-claim] parked-holder lookup failed; keeping all claims:', err);
+  }
+}
+
 // ── Conflict detection ───────────────────────────────────────────────────────
 
 /**
@@ -101,6 +129,7 @@ export async function checkPathClaimConflict(
     existing.push(row.path);
     claimsByTask.set(row.taskId, existing);
   }
+  await dropExpiredParkedHolders(claimsByTask);
 
   for (const [taskId, claimedPaths] of claimsByTask) {
     if (pathsOverlap(paths, claimedPaths)) {
@@ -120,7 +149,8 @@ export async function checkPathClaimConflict(
 /**
  * Returns all active path_claims for a workspace, grouped by taskId.
  * Used by the claim route backstop to defer tasks whose pathManifest
- * overlaps an active held lock.
+ * overlaps an active held lock. Holders parked on a question past the TTL
+ * are omitted (see path-claim-ttl.ts).
  */
 export async function getActiveClaimsByWorkspace(
   workspaceId: string,
@@ -139,6 +169,7 @@ export async function getActiveClaimsByWorkspace(
     existing.push(row.path);
     byTask.set(row.taskId, existing);
   }
+  await dropExpiredParkedHolders(byTask);
   return byTask;
 }
 

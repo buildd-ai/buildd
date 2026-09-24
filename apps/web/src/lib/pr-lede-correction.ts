@@ -79,10 +79,8 @@ export async function applyReviewerLedeCorrection(
       installationId,
       repoFullName,
       prNumber,
-      entry: {
-        kind: 'lede_corrected',
-        detail: `was “${next.original}”`,
-      },
+      // One line on the PR; the original text sits behind a disclosure.
+      entry: { kind: 'lede_corrected', note: next.original },
       onlyIfPresent: true,
       workspaceId,
     }).catch(() => {});

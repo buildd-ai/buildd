@@ -9,7 +9,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeMissionFlightStrip, computeMissionAuthorshipHealth, deriveCriteriaGatePresentation, isDeliverableTask, type MissionFlightStripData } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeMissionFlightStrip, computeMissionAuthorshipHealth, deriveCriteriaGatePresentation, isDeliverableTask, hasPendingDeliverableWork, type MissionFlightStripData } from '@buildd/core/mission-helpers';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
@@ -286,6 +286,9 @@ export default async function MissionsPage({
     // A deliberately-scheduled pending task is not a seat-deferral.
     if (pendingUserScheduledAt) lastDeferralReason = null;
 
+    // One value for both the health badge/sort group and the card subtitle, so
+    // 'escalated' is reachable here and the two cannot disagree.
+    const pendingDeliverableWork = hasPendingDeliverableWork(obj.tasks || []);
     const health = deriveMissionHealth({
       status: obj.status,
       activeAgents,
@@ -296,6 +299,7 @@ export default async function MissionsPage({
       isHeld: obj.isHeld ?? false,
       pendingUserScheduledAt,
       criteriaEscalatedAt: (obj as any)?.criteriaEscalatedAt,
+      hasPendingDeliverableWork: pendingDeliverableWork,
     });
 
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
@@ -367,7 +371,7 @@ export default async function MissionsPage({
       health: healthState,
       dependsOnMissionId: obj.dependsOnMissionId ?? null,
       criteriaEscalatedAt: (obj as any).criteriaEscalatedAt ?? null,
-      hasPendingDeliverableWork: deliverables.some((t: any) => !['completed', 'cancelled', 'failed'].includes(t.status)),
+      hasPendingDeliverableWork: pendingDeliverableWork,
       criteriaGate: criteriaGateForCard,
       criteriaItems: (criteriaStateForCard?.criteria ?? []) as any,
       openTasks: deliverables

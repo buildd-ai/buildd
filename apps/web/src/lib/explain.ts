@@ -408,6 +408,8 @@ function answerFrom(
   return {
     subject,
     state: view.kind,
+    displayState: view.displayState,
+    chip: view.chip,
     waitingOn: view.waitingOn,
     outstanding: view.outstanding,
     situation: view.situation,
@@ -491,7 +493,9 @@ async function viewForTask(taskId: string): Promise<{
   })) as any as LoadedTask[];
 
   const family = [task as LoadedTask, ...attempts];
-  const health = deriveTaskHealthSignal({}, family);
+  // Family scope: the attempts ARE this task's work, so they count here even
+  // though mission-scope health (deliverables only) ignores them.
+  const health = deriveTaskHealthSignal({}, family, { scope: 'family' });
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
@@ -508,18 +512,42 @@ async function viewForTask(taskId: string): Promise<{
       }]
     : [];
 
+  // The newest open fix attempt (builder-after-review, CI retry). While one is
+  // open the PR is about to change, so it — not the merge — is what this task
+  // is waiting on. Without this the task read "waiting on you to merge" while a
+  // request-changes fix sat queued for a worker.
+  const openAttemptRow = attempts
+    .filter(a => a.taskClass === 'attempt' && OPEN_TASK_STATUSES.has(a.status))
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
+  const attemptCtx = (openAttemptRow?.context ?? {}) as { iteration?: unknown; maxIterations?: unknown };
+  const openAttempt = openAttemptRow
+    ? {
+        taskId: openAttemptRow.id,
+        title: openAttemptRow.title,
+        status: openAttemptRow.status,
+        iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
+        maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
+        claimed:
+          openAttemptRow.status !== 'pending' ||
+          (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
+      }
+    : null;
+
   const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
   const openTasks = OPEN_TASK_STATUSES.has(task.status)
     ? [{ id: task.id, status: task.status, title: task.title }]
-    : [];
+    : openAttempt
+      ? [{ id: openAttempt.taskId, status: openAttempt.status, title: openAttempt.title }]
+      : [];
   const failedTasks = family.filter(t => t.status === 'failed');
 
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
-    status: task.status === 'cancelled' || (task.status === 'completed' && unmergedPr.length === 0)
+    status: task.status === 'cancelled' || (task.status === 'completed' && unmergedPr.length === 0 && !openAttempt)
       ? 'completed'
       : 'active',
+    openAttempt,
     isHeld: false,
     activeAgents,
     health,
@@ -531,7 +559,7 @@ async function viewForTask(taskId: string): Promise<{
       infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
-    completion: unmergedPr.length > 0
+    completion: unmergedPr.length > 0 && !openAttempt
       ? {
           ok: false,
           code: 'awaiting_merge',

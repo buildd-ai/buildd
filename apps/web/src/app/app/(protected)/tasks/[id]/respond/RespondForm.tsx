@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import NeedsInputAnswerBox from '../NeedsInputAnswerBox';
 
 type Option = string | { label: string; description?: string; recommended?: boolean };
 
@@ -13,8 +14,6 @@ interface Props {
 export default function RespondForm({ workerId, options }: Props) {
   const router = useRouter();
   const [sending, setSending] = useState<string | null>(null);
-  const [showFreeText, setShowFreeText] = useState(false);
-  const [freeText, setFreeText] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   async function submit(message: string) {
@@ -70,33 +69,7 @@ export default function RespondForm({ workerId, options }: Props) {
         );
       })}
 
-      {!showFreeText ? (
-        <button
-          onClick={() => setShowFreeText(true)}
-          disabled={sending !== null}
-          className="text-left px-4 py-3 text-sm bg-surface-2 text-text-muted rounded-md border border-border-default border-dashed hover:bg-surface-3 hover:text-text-primary hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
-        >
-          Type your own response ↓
-        </button>
-      ) : (
-        <div className="flex flex-col gap-2">
-          <textarea
-            autoFocus
-            value={freeText}
-            onChange={(e) => setFreeText(e.target.value)}
-            placeholder="Your response…"
-            rows={3}
-            className="px-3 py-2 text-sm bg-surface-2 text-text-primary rounded-md border border-border-default focus:border-text-muted focus:outline-none resize-y"
-          />
-          <button
-            onClick={() => submit(freeText)}
-            disabled={sending !== null || !freeText.trim()}
-            className="px-4 py-2 text-sm bg-text-primary text-surface-1 rounded-md font-medium hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer"
-          >
-            {sending ? 'Sending…' : 'Send response'}
-          </button>
-        </div>
-      )}
+      <NeedsInputAnswerBox onSubmit={submit} sending={sending !== null} />
 
       {error && (
         <p className="mt-1 text-xs text-status-error">{error}</p>

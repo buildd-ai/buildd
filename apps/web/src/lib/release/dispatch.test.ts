@@ -4,7 +4,13 @@ import type { CheckRun } from './dispatch';
 const mockGithubApi = mock(async (_installationId: number, _path: string, _options?: RequestInit) => ({}) as any);
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
-const { classifyCheckRuns, dispatchWorkflowRelease, deploymentOnlyPreflight } = await import('./dispatch');
+const {
+  classifyCheckRuns,
+  dispatchWorkflowRelease,
+  deploymentOnlyPreflight,
+  releasePreflight,
+  summarizePostMergeIntegration,
+} = await import('./dispatch');
 
 const run = (over: Partial<CheckRun> = {}): CheckRun => ({
   name: 'build',
@@ -36,6 +42,70 @@ describe('classifyCheckRuns', () => {
     const r = classifyCheckRuns([run(), run({ name: 'test', conclusion: 'failure' }), run({ name: 'e2e', conclusion: 'timed_out' })]);
     expect(r.ciState).toBe('failing');
     expect(r.failingChecks).toEqual(['test', 'e2e']);
+  });
+
+  // The post-merge integration run on `dev` is advisory: it must never turn a
+  // release PR (whose head is that same dev SHA) red for the release executor
+  // or release_status, or a flaky test machine would block every release.
+  it('ignores the advisory post-merge integration check entirely', () => {
+    const advisory = run({ name: 'post-merge integration / integration', conclusion: 'failure' });
+    expect(classifyCheckRuns([run(), advisory])).toEqual({ ciState: 'passing', failingChecks: [] });
+    const pendingAdvisory = run({ name: 'post-merge integration / integration', status: 'in_progress', conclusion: null });
+    expect(classifyCheckRuns([run(), pendingAdvisory]).ciState).toBe('passing');
+  });
+
+  it('still counts the PR-path integration check', () => {
+    const r = classifyCheckRuns([run(), run({ name: 'integration / integration', conclusion: 'failure' })]);
+    expect(r.ciState).toBe('failing');
+  });
+});
+
+describe('summarizePostMergeIntegration', () => {
+  const pm = (over: Partial<CheckRun> = {}) => run({ name: 'post-merge integration / integration', ...over });
+
+  it('is not_run when the ref head has no post-merge run', () => {
+    expect(summarizePostMergeIntegration([run()])).toEqual({ state: 'not_run', checks: [] });
+  });
+  it('reports failing, pending, passing and skipped', () => {
+    expect(summarizePostMergeIntegration([run(), pm({ conclusion: 'failure' })]).state).toBe('failing');
+    expect(summarizePostMergeIntegration([pm({ status: 'queued', conclusion: null })]).state).toBe('pending');
+    expect(summarizePostMergeIntegration([pm()]).state).toBe('passing');
+    expect(summarizePostMergeIntegration([pm({ conclusion: 'skipped' })]).state).toBe('skipped');
+  });
+  // Cancelled is how a run superseded on the shared concurrency groups ends:
+  // nothing ran, so it is neither coverage nor a failure. It gets its own state
+  // so release_status never tells a human "integration failed" for it.
+  it('reports a cancelled run as cancelled, not failing and not coverage', () => {
+    expect(summarizePostMergeIntegration([pm({ conclusion: 'cancelled' })]).state).toBe('cancelled');
+  });
+  it('a real failure outranks a cancelled sibling', () => {
+    expect(summarizePostMergeIntegration([
+      pm({ conclusion: 'cancelled' }),
+      pm({ name: 'post-merge integration / changes', conclusion: 'failure' }),
+    ]).state).toBe('failing');
+  });
+
+  // The workflow's `changes` gate job also carries the prefix (so it never
+  // gates the release PR). Its success is not test coverage.
+  const gate = (over: Partial<CheckRun> = {}) => pm({ name: 'post-merge integration / changes', ...over });
+  it('is skipped, not passing, when only the gate job passed and the tests were skipped', () => {
+    expect(summarizePostMergeIntegration([gate(), pm({ name: 'post-merge integration', conclusion: 'skipped' })]).state)
+      .toBe('skipped');
+    expect(summarizePostMergeIntegration([gate()]).state).toBe('skipped');
+  });
+  it('is pending while the gate job is still running', () => {
+    expect(summarizePostMergeIntegration([gate({ status: 'in_progress', conclusion: null })]).state).toBe('pending');
+  });
+  it('is failing when the gate job itself failed', () => {
+    expect(summarizePostMergeIntegration([gate({ conclusion: 'failure' })]).state).toBe('failing');
+  });
+  it('is passing when the gate passed and the tests passed', () => {
+    expect(summarizePostMergeIntegration([gate(), pm()]).state).toBe('passing');
+  });
+  it('names the checks it summarised', () => {
+    expect(summarizePostMergeIntegration([pm({ conclusion: 'failure' })]).checks).toEqual([
+      'post-merge integration / integration',
+    ]);
   });
 });
 
@@ -100,6 +170,36 @@ describe('dispatchWorkflowRelease', () => {
     expect(result.runId).toBeUndefined();
     expect(result.runUrl).toBeUndefined();
     expect(result.runsUrl).toContain('release.yml');
+  });
+});
+
+describe('releasePreflight', () => {
+  it('surfaces the post-merge integration result separately from ciState', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async (_id: number, path: string) => {
+      if (path.includes('/compare/')) {
+        return { ahead_by: 1, commits: [{ sha: 'abc1234def', commit: { message: 'feat: x' } }], base_commit: { sha: 'base' } };
+      }
+      if (path.includes('/commits/abc1234def/check-runs')) {
+        return {
+          check_runs: [
+            { name: 'build', status: 'completed', conclusion: 'success' },
+            { name: 'post-merge integration / integration', status: 'completed', conclusion: 'failure' },
+          ],
+        };
+      }
+      if (path.includes('/pulls?')) return [];
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const result = await releasePreflight(1, 'o', 'r', { ref: 'dev', prodBranch: 'main' });
+
+    expect(result.ciState).toBe('passing');
+    expect(result.failingChecks).toEqual([]);
+    expect(result.postMergeIntegration).toEqual({
+      state: 'failing',
+      checks: ['post-merge integration / integration'],
+    });
   });
 });
 

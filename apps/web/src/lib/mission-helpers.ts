@@ -1,3 +1,5 @@
+import { isDeliverableTask } from '@buildd/core/mission-helpers';
+
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
  * delivery one.
@@ -98,8 +100,15 @@ export function deriveDriveState(mission: {
 export type Health = 'NOMINAL' | 'BLOCKED' | 'FAILING' | 'STALLED';
 
 const LIVE_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
+const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
 
-function isCountableHealthTask(t: { status: string; kind?: string | null; title?: string | null; mode?: string | null }): boolean {
+/**
+ * The legacy, family-scoped predicate: everything except coordination/planning
+ * rows and cancelled tasks. Kept ONLY for `scope: 'family'` (a task plus its
+ * own retry/review attempts, `explain.ts` viewForTask), where the attempts ARE
+ * the work being asked about and must count.
+ */
+function isFamilyHealthTask(t: { status: string; kind?: string | null; title?: string | null; mode?: string | null }): boolean {
   if (t.kind === 'coordination') return false;
   if (t.mode === 'planning') return false;
   if (t.title?.startsWith('Aggregate results:')) return false;
@@ -108,6 +117,16 @@ function isCountableHealthTask(t: { status: string; kind?: string | null; title?
   if (t.title?.startsWith('Close mission')) return false;
   if (t.status === 'cancelled') return false;
   return true;
+}
+
+/**
+ * Mission scope counts exactly what progress counts — core's
+ * `isDeliverableTask` minus cancelled — so a failed CI/review retry
+ * (`taskClass: 'attempt'`) or a bookkeeping row cannot make a mission read
+ * FAILING/STALLED while its progress bar reads healthy.
+ */
+function isMissionHealthTask(t: Parameters<typeof isDeliverableTask>[0] & { status: string }): boolean {
+  return t.status !== 'cancelled' && isDeliverableTask(t);
 }
 
 /**
@@ -138,6 +157,9 @@ export function deriveTaskHealthSignal(
     title?: string | null;
     mode?: string | null;
     creationSource?: string | null;
+    /** Select it: without it, pre-migration title heuristics decide what counts. */
+    taskClass?: string | null;
+    category?: string | null;
     workers?: Array<{ status: string }>;
     /**
      * True when this failed task's deliverable shipped anyway — its target PR
@@ -148,20 +170,31 @@ export function deriveTaskHealthSignal(
      */
     superseded?: boolean;
   }>,
+  opts: {
+    /**
+     * 'mission' (default): count deliverables only, like progress does.
+     * 'family': one task plus its own attempts — the attempts count.
+     */
+    scope?: 'mission' | 'family';
+  } = {},
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
   if (mission.heartbeatWaitingUntil && new Date(mission.heartbeatWaitingUntil).getTime() > Date.now()) return 'BLOCKED';
 
-  const countable = tasks.filter(isCountableHealthTask);
+  const countable = tasks.filter(opts.scope === 'family' ? isFamilyHealthTask : isMissionHealthTask);
 
   if (countable.some(t => t.status === 'failed' && !t.superseded)) return 'FAILING';
 
   const activeTasks = countable.filter(t =>
     ['pending', 'assigned', 'in_progress'].includes(t.status),
   );
+  // Liveness reads every still-open task, not just deliverables: a retry or
+  // reviewer attempt running against a pending deliverable is the mission
+  // moving, not stalling. Terminal tasks are excluded — an orphaned
+  // non-terminal worker row on a completed/failed task is not live work.
   if (
     activeTasks.length > 0 &&
-    !activeTasks.some(t => t.workers?.some(w => LIVE_STATUSES.has(w.status)))
+    !tasks.some(t => OPEN_TASK_STATUSES.has(t.status) && t.workers?.some(w => LIVE_STATUSES.has(w.status)))
   ) {
     return 'STALLED';
   }
