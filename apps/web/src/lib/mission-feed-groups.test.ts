@@ -127,6 +127,24 @@ describe('phase fold defaults', () => {
     expect(check).toMatchObject({ status: 'future', collapsed: false, visibleLimit: FUTURE_PHASE_VISIBLE_CAP, hiddenCount: 2 });
   });
 
+  it('a completed mission folds every phase, cancelled re-creations and all, and pins nothing', () => {
+    const tasks = [
+      ...fifteen().map(x => ({ ...x, status: 'completed', worker: null })),
+      t('x1', { ...BUILD, title: 'Task b6', status: 'cancelled' }),
+      t('b6-retry', { taskClass: 'attempt', parentTaskId: 'b6', status: 'failed' }),
+    ];
+    const { groups } = buildMissionFeedGroups(tasks);
+    expect(groups.some(g => g.kind !== 'phase')).toBe(false);
+    for (const g of phaseGroups(groups)) expect(g).toMatchObject({ status: 'finished', collapsed: true });
+  });
+
+  it('an unphased mission is one group, finished and folded once every row is done', () => {
+    const [open] = phaseGroups(buildMissionFeedGroups([t('u1', { status: 'completed' }), t('u2')]).groups);
+    expect(open).toMatchObject({ label: null, status: 'current', collapsed: false });
+    const [done] = phaseGroups(buildMissionFeedGroups([t('u1', { status: 'completed' }), t('u2', { status: 'cancelled' })]).groups);
+    expect(done).toMatchObject({ label: null, status: 'finished', collapsed: true, done: 2, total: 2 });
+  });
+
   it('within a phase: failed, queued-ready, queued-blocked ("after #x"), done — a pinned task leaves its slot at its own place (rule 4)', () => {
     const model = buildMissionFeedGroups([
       t('done', { ...BUILD, status: 'completed' }),

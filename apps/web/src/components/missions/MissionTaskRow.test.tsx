@@ -82,36 +82,57 @@ describe('PR colour follows the real PR state', () => {
 });
 
 describe('attempts disclosure (D1 / U8)', () => {
-  it('folds retries under the row as "↻ N attempts", outside the link', () => {
-    const tasks = [
-      t('p', { status: 'completed' }),
-      t('r1', { taskClass: 'attempt', parentTaskId: 'p', status: 'failed' }),
-      t('r2', { taskClass: 'attempt', parentTaskId: 'p', status: 'completed' }),
-    ];
-    const html = renderToStaticMarkup(<MissionTaskRow row={rowFor(tasks, 'p')} missionId="m1" now={NOW} />);
-    expect(html).toContain('data-testid="mission-task-attempts"');
-    expect(html).toContain('↻ 2 attempts');
-    // The disclosure is a sibling of the row link, never nested inside it.
+  const withAttempts = () => [
+    t('p', { ...BUILD, status: 'completed' }),
+    t('r1', { taskClass: 'attempt', parentTaskId: 'p', status: 'failed' }),
+    t('r2', { taskClass: 'attempt', parentTaskId: 'p', status: 'failed' }),
+    t('r3', { taskClass: 'attempt', parentTaskId: 'p', status: 'completed' }),
+  ];
+  const render = () => renderToStaticMarkup(
+    <MissionTaskRow row={rowFor(withAttempts(), 'p')} missionId="m1" now={NOW} recordsCount={1} />,
+  );
+  const toggle = (html: string) => html.match(/<button[^>]*data-testid="mission-task-attempts"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? '';
+
+  it('folds the count into the meta line as "↻ N" — no row of its own', () => {
+    const html = render();
+    // The meta line reads `phase · outcome · records · ↻ N`.
+    const text = html.replace(/<[^>]+>/g, '');
+    expect(text).toContain('BUILD · done · 1 rec · ↻ 3');
+    // No separate full-height summary line under the row.
+    expect(html).not.toContain('<summary');
+    expect(html).not.toContain('<details');
+    expect(html).not.toContain('3 attempts</');
+  });
+
+  it('keeps the toggle outside the row link, and attempts never become rows', () => {
+    const html = render();
     const linkClose = html.indexOf('</a>');
-    expect(html.indexOf('mission-task-attempts')).toBeGreaterThan(linkClose);
-    // Attempts are never rows of their own.
+    expect(html.indexOf('data-testid="mission-task-attempts"')).toBeGreaterThan(linkClose);
     expect(html.match(/data-testid="mission-task-row"/g)).toHaveLength(1);
   });
 
-  it('gives the attempts summary and each attempt link a 44px tap target', () => {
-    const tasks = [
-      t('p', BUILD),
-      t('r1', { taskClass: 'attempt', parentTaskId: 'p', status: 'failed' }),
-    ];
+  it('is a collapsed disclosure button with an accessible name and a 44px hit area', () => {
+    const b = toggle(render());
+    expect(b).toContain('aria-expanded="false"');
+    expect(b).toContain('aria-label="3 attempts"');
+    expect(b).toMatch(/aria-controls="[^"]+"/);
+    expect(b).toContain('data-testid="mission-task-attempts-hit"');
+    expect(b).toContain('min-h-11');
+    expect(b).toContain('min-w-11');
+    // Closed: the attempt list is not rendered yet.
+    expect(render()).not.toContain('href="/app/tasks/r1');
+  });
+
+  it('singular attempt reads "1 attempt"', () => {
+    const tasks = [t('p', BUILD), t('r1', { taskClass: 'attempt', parentTaskId: 'p', status: 'failed' })];
     const html = renderToStaticMarkup(<MissionTaskRow row={rowFor(tasks, 'p')} missionId="m1" now={NOW} />);
-    expect(html).toMatch(/<summary[^>]*min-h-11/);
-    expect(html).toMatch(/<a[^>]*href="\/app\/tasks\/r1[^"]*"[^>]*min-h-11|<a[^>]*min-h-11[^>]*href="\/app\/tasks\/r1/);
-    expect(html).not.toContain('min-h-[32px]');
+    expect(toggle(html)).toContain('aria-label="1 attempt"');
   });
 
   it('renders no disclosure without attempts', () => {
     const html = renderToStaticMarkup(<MissionTaskRow row={rowFor([t('p')], 'p')} missionId="m1" now={NOW} />);
     expect(html).not.toContain('mission-task-attempts');
+    expect(html).not.toContain('↻');
   });
 });
 
