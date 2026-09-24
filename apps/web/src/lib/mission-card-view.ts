@@ -79,7 +79,6 @@ export interface MissionCardTaskRow {
   scheduleId?: string | null;
   startAt?: DateLike;
   loopIteration?: number | null;
-  result?: unknown;
   workers?: MissionCardWorkerRow[] | null;
 }
 
@@ -209,12 +208,19 @@ export function missionCardGroup(input: {
   return healthToGroup(input.health, input.progress);
 }
 
-export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: number } = {}): MissionCardSummary {
+/** Most cards one surface builds in a request (Home, the list). */
+export const MISSION_CARD_VIEW_CAP = 30;
+
+/**
+ * `liveWorkers`: an exact count from a batched query. The nested worker
+ * relation is capped per task, so counting it can miss a live re-claim.
+ */
+export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: number; liveWorkers?: number } = {}): MissionCardSummary {
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
   const schedule = row.schedule ?? null;
   const { totalTasks, completedTasks, progress } = computeMissionProgress(tasks as any);
-  const liveWorkers = countLiveWorkers(tasks);
+  const liveWorkers = opts.liveWorkers ?? countLiveWorkers(tasks);
 
   const nextRunAt = schedule?.nextRunAt ?? null;
   const rawDeferral = schedule?.lastDeferralReason ?? null;
@@ -315,6 +321,8 @@ export interface MissionCardView {
   completedAt: string | null;
   /** The time-axis strip, for `FlightDetailSheet` only (D4). Null when nothing to draw. */
   flightStrip: MissionFlightStripData | null;
+  /** Titles of the tasks the strip draws, for the bars' accessible names. */
+  flightStripTaskTitles: Record<string, string>;
 }
 
 export interface BuildMissionCardViewOptions {
@@ -424,7 +432,7 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
   const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
   const unmergedPrs = tasks.flatMap(t => {
     if (t.status !== 'completed') return [];
-    const w = t.workers?.[0];
+    const w = latestWorker(t.workers);
     if (!w?.prUrl || w.mergedAt || w.prLifecycleStatus === 'closed') return [];
     return [{ taskId: t.id, title: t.title, prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null }];
   });
@@ -445,7 +453,8 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
       .map(t => ({ id: t.id, status: t.status, title: t.title })),
     failedTasks: deliverables
       .filter(t => t.status === 'failed')
-      .map(t => ({ id: t.id, title: t.title, infra: (t.result as any)?.errorType === 'infra_stalled' })),
+      // No `infra`: it only matters with a completion decision, which a card never has.
+      .map(t => ({ id: t.id, title: t.title })),
     missionPr: integrationPr && integrationPr.state === 'open'
       ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
       : null,
@@ -483,6 +492,16 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
     }
   }
 
+  const flightStrip = !compact && hasFlightStripActivity(opts.flightStrip) ? opts.flightStrip! : null;
+  const flightStripTaskTitles: Record<string, string> = {};
+  if (flightStrip) {
+    const titleById = new Map(tasks.map(t => [t.id, t.title]));
+    for (const bar of flightStrip.bars) {
+      const t = titleById.get(bar.taskId);
+      if (t) flightStripTaskTitles[bar.taskId] = t;
+    }
+  }
+
   return {
     id: row.id,
     title: row.title,
@@ -499,7 +518,8 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
     primary,
     compact,
     completedAt: iso(row.completedAt ?? null),
-    flightStrip: !compact && hasFlightStripActivity(opts.flightStrip) ? opts.flightStrip! : null,
+    flightStrip,
+    flightStripTaskTitles,
   };
 }
 

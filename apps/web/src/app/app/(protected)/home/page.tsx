@@ -20,7 +20,7 @@ import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, summariseAct
 import { WaitingOnYouDiscrepancyCard } from '@/components/WaitingOnYouDiscrepancyCard';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
-import { actionCardTaskHref, resolveActionCardContext } from '@/lib/action-card-context';
+import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
@@ -75,7 +75,7 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKER_COLUMNS } from '@/lib/mission-card-views';
+import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import { HomeMissions, selectHomeMissions, type HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveReviewerGate, deriveStoredVerdictFallback } from '@/lib/reviewer-gate';
@@ -655,8 +655,8 @@ export default async function HomePage({
             columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true },
             with: {
               tasks: {
-                columns: { ...MISSION_CARD_TASK_COLUMNS, result: true },
-                with: { workers: { columns: MISSION_CARD_WORKER_COLUMNS, limit: 5 } },
+                columns: MISSION_CARD_TASK_COLUMNS,
+                with: { workers: MISSION_CARD_WORKERS_WITH },
               },
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
               workspace: { columns: { id: true, name: true } },
@@ -673,9 +673,29 @@ export default async function HomePage({
           // counts are right; only the visible ones pay for a full card view.
           // Group is healthToGroup and live workers are LIVE_WORKER_STATUSES —
           // the same builder the missions list uses (AC-14, D8).
+          // The nested workers are capped per task, so live workers are an
+          // exact batched count, not a count of the loaded rows.
+          const liveWorkerCounts = new Map<string, number>();
+          if (allMissions.length > 0) {
+            const liveRows = await db
+              .select({ missionId: tasks.missionId, n: sql<number>`count(distinct ${workers.id})::int` })
+              .from(workers)
+              .innerJoin(tasks, eq(workers.taskId, tasks.id))
+              .where(and(
+                inArray(tasks.missionId, allMissions.map(m => m.id)),
+                inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+              ))
+              .groupBy(tasks.missionId);
+            for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
+          }
+
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
-          for (const m of allMissions) summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, { now: nowMs }));
+          for (const m of allMissions) {
+            summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
+              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0,
+            }));
+          }
           missions = allMissions.map(m => ({
             id: m.id,
             group: summaries.get(m.id)!.group,
@@ -1931,7 +1951,7 @@ export default async function HomePage({
                       return (
                         <Link
                           key={item.subjectKey}
-                          href={actionCardTaskHref(item)!}
+                          href={actionCardTaskLink(item)}
                           className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
@@ -1983,7 +2003,7 @@ export default async function HomePage({
                       return (
                         <Link
                           key={item.subjectKey}
-                          href={actionCardTaskHref(item, { page: true })!}
+                          href={actionCardTaskLink(item, { page: true })}
                           className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
@@ -2018,11 +2038,11 @@ export default async function HomePage({
                               {item.taskTitle && (
                                 <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
                                   {item.conflictRetryTaskId ? (
-                                    <Link href={actionCardTaskHref(item, { taskId: item.conflictRetryTaskId, page: true })!} className="hover:underline">
+                                    <Link href={actionCardTaskLink(item, { taskId: item.conflictRetryTaskId, page: true })} className="hover:underline">
                                       {item.taskTitle}
                                     </Link>
                                   ) : item.taskId ? (
-                                    <Link href={actionCardTaskHref(item)!} className="hover:underline">
+                                    <Link href={actionCardTaskLink(item)} className="hover:underline">
                                       {item.taskTitle}
                                     </Link>
                                   ) : item.taskTitle}
@@ -2065,7 +2085,7 @@ export default async function HomePage({
                               {item.taskTitle && (
                                 <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
                                   {item.taskId ? (
-                                    <Link href={actionCardTaskHref(item)!} className="hover:underline">
+                                    <Link href={actionCardTaskLink(item)} className="hover:underline">
                                       {item.taskTitle}
                                     </Link>
                                   ) : item.taskTitle}
@@ -2095,7 +2115,7 @@ export default async function HomePage({
                             </div>
                             {item.deadZoneLastRetryTaskId && (
                               <Link
-                                href={actionCardTaskHref(item, { taskId: item.deadZoneLastRetryTaskId, page: true })!}
+                                href={actionCardTaskLink(item, { taskId: item.deadZoneLastRetryTaskId, page: true })}
                                 className="shrink-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
                               >
                                 Last attempt
@@ -2141,7 +2161,7 @@ export default async function HomePage({
                           {item.taskTitle && (
                             <div className="text-[13px] font-medium text-text-secondary truncate mt-0.5">
                               {item.taskId ? (
-                                <Link href={actionCardTaskHref(item)!} className="hover:underline">
+                                <Link href={actionCardTaskLink(item)} className="hover:underline">
                                   {item.taskTitle}
                                 </Link>
                               ) : item.taskTitle}
@@ -2299,7 +2319,7 @@ export default async function HomePage({
                             )}
                           </div>
                           <Link
-                            href={actionCardTaskHref(item)!}
+                            href={actionCardTaskLink(item)}
                             className="text-[13px] font-medium text-text-primary truncate hover:underline block"
                           >
                             {item.taskTitle}
@@ -2338,7 +2358,7 @@ export default async function HomePage({
                           )}
                         </div>
                         <Link
-                          href={actionCardTaskHref(item)!}
+                          href={actionCardTaskLink(item)}
                           className="text-[13px] font-medium text-text-primary truncate hover:underline block"
                         >
                           {item.taskTitle}

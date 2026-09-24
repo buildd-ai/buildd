@@ -40,6 +40,8 @@ const MISSION_WITH_SHARED = {
 };
 
 const taskOrderBy = (t: any, { desc }: any) => [desc(t.updatedAt)];
+/** Newest attempt first, so a live re-claim is always inside the per-task limit. */
+const workerOrderBy = (w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)];
 
 /**
  * Rule P-3 governs cost here (bounded by workspace maxConcurrentTasks), so
@@ -64,6 +66,7 @@ export function buildActiveMissionsQueryArgs(missionsWhere: SQL | undefined) {
           workers: {
             columns: { ...MISSION_WORKER_BASE_COLUMNS, exitCause: true },
             limit: 5,
+            orderBy: workerOrderBy,
           },
         },
       },
@@ -122,6 +125,7 @@ export function buildCompletedMissionsQueryArgs(missionsWhere: SQL | undefined, 
           workers: {
             columns: MISSION_WORKER_BASE_COLUMNS,
             limit: 5,
+            orderBy: workerOrderBy,
           },
         },
       },

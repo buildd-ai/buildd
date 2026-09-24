@@ -29,6 +29,16 @@ describe('AC-12: completed-missions query shape skips flight-strip fan-out', () 
     expect(args.with.tasks.with.workers.columns.exitCause).toBe(true);
   });
 
+  it('both queries read workers latest-first, so the live attempt is inside the limit', () => {
+    const cols = { startedAt: 'startedAt', updatedAt: 'updatedAt' };
+    const ops = { desc: (c: string) => `${c} desc` };
+    for (const args of [buildActiveMissionsQueryArgs(undefined), buildCompletedMissionsQueryArgs(undefined, null)]) {
+      const w = args.with.tasks.with.workers as any;
+      expect(w.limit).toBe(5);
+      expect(w.orderBy(cols, ops)).toEqual(['startedAt desc', 'updatedAt desc']);
+    }
+  });
+
   it('active query excludes completed missions; completed query excludes everything else', () => {
     // Both `where` clauses are opaque SQL objects (can't run them without a DB),
     // but their presence/absence of a status filter is what AC-12 actually

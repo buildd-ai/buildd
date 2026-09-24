@@ -242,3 +242,40 @@ describe('buildMissionCardView', () => {
     expect(buildMissionCardView(row, { from: 'missions' }).chip.label).toBe('COMPLETE');
   });
 });
+
+describe('review fixes: live count, latest worker, payload', () => {
+  it('summarizeMissionForCard takes an exact live-worker count over the capped nested rows', () => {
+    // Re-claims on one task; the nested relation returned only finished
+    // attempts. The batched count still sees the live one.
+    const workers = Array.from({ length: 5 }, (_, i) => ({ status: 'failed', startedAt: new Date(clock - (10 - i) * 60_000) }));
+    const row = mission({ tasks: [task('a', { status: 'in_progress', workers }), task('b')] });
+    expect(summarizeMissionForCard(row, { now: NOW }).liveWorkers).toBe(0);
+    const s = summarizeMissionForCard(row, { now: NOW, liveWorkers: 1 });
+    expect(s.liveWorkers).toBe(1);
+    expect(s.group).toBe('running');
+  });
+
+  it('a task with more than five workers counts its live one wherever it sits', () => {
+    const workers = [
+      ...Array.from({ length: 5 }, () => ({ status: 'failed' })),
+      { status: 'running' },
+    ];
+    expect(countLiveWorkers([task('a', { status: 'in_progress', workers })])).toBe(1);
+  });
+
+  it('unmerged PRs read the latest worker, not array order', () => {
+    const older = { status: 'completed', startedAt: new Date(Date.UTC(2026, 0, 1)), prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: null };
+    const newer = { status: 'completed', startedAt: new Date(Date.UTC(2026, 0, 2)), prUrl: 'https://example.test/pr/2', prNumber: 2, mergedAt: new Date(Date.UTC(2026, 0, 3)) };
+    const row = mission({ tasks: [task('a', { status: 'completed', workers: [older, newer] })] });
+    const view = buildMissionCardView(row, { from: 'home', now: NOW });
+    // The newer attempt merged: nothing is waiting on a merge.
+    expect(JSON.stringify(view.situation)).not.toContain('unmerged');
+    expect(JSON.stringify(view)).not.toContain('example.test/pr/1');
+  });
+
+  it('builds a card without reading task.result (Home does not load it)', () => {
+    const failed = task('a', { status: 'failed' });
+    Object.defineProperty(failed, 'result', { get() { throw new Error('card read task.result'); } });
+    expect(() => buildMissionCardView(mission({ tasks: [failed] }), { from: 'home', now: NOW })).not.toThrow();
+  });
+});

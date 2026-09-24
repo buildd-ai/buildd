@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { actionCardTaskHref, resolveActionCardContext } from './action-card-context';
+import { actionCardTaskHref, actionCardTaskLink, resolveActionCardContext } from './action-card-context';
 import type { ActionQueueItem } from './action-queue';
 
 function item(partial: Partial<ActionQueueItem> = {}): ActionQueueItem {
@@ -86,5 +86,19 @@ describe('actionCardTaskHref', () => {
 
   it('returns null when the card names no task', () => {
     expect(actionCardTaskHref(item({ missionId: 'mis-1' }))).toBeNull();
+  });
+});
+
+describe('actionCardTaskLink', () => {
+  it('matches actionCardTaskHref when the card names a task', () => {
+    expect(actionCardTaskLink(item({ missionId: 'mis-1', taskId: 't-9' }))).toBe('/app/missions/mis-1?from=home&task=t-9');
+  });
+
+  it('never returns null: a task-less mission card opens its mission', () => {
+    expect(actionCardTaskLink(item({ missionId: 'mis-1' }))).toBe('/app/missions/mis-1?from=home');
+  });
+
+  it('never returns null: a card with neither opens the task list', () => {
+    expect(actionCardTaskLink(item())).toBe('/app/tasks');
   });
 });

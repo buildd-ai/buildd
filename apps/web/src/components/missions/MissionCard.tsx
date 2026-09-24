@@ -58,6 +58,7 @@ function FlightDetailTrigger({ view }: { view: MissionCardView }) {
         missionId={view.id}
         missionTitle={view.title}
         from={originOf(view.href)}
+        taskTitles={view.flightStripTaskTitles}
       />
     </>
   );

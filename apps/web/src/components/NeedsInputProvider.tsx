@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, getPusherClient, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { needsInputEventAction, createReconnectDetector } from '@/lib/realtime-throttle';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 interface WaitingTask {
   id: string;
@@ -178,6 +179,6 @@ function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
       icon: '/favicon.ico',
       tag: `waiting-input-${task.id}`,
     });
-    n.onclick = () => { window.focus(); router.push(`/app/tasks/${task.id}`); };
+    n.onclick = () => { window.focus(); router.push(missionTaskHref({ missionId: task.missionId ?? null, taskId: task.id, mode: 'sheet' })); };
   }
 }

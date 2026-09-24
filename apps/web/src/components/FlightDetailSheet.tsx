@@ -31,6 +31,9 @@ const LABEL_H = 12;
 const ROW_GAP = 16;
 const PHASE_LABEL_H = 14;
 const MIN_BAR_W = 2;
+/** A bar's hit target: its whole row band plus most of the gap, and never thinner than this. */
+const HIT_MIN_W = 12;
+const HIT_PAD_Y = 6;
 
 type LaneKey = WorkLane | 'unclassified' | 'unlabelled';
 
@@ -73,11 +76,13 @@ function ExpandedFlightStrip({
   agentTimeMs,
   selectedTaskId = null,
   onSelect,
+  taskTitles,
 }: {
   data: MissionFlightStripData;
   agentTimeMs: number;
   selectedTaskId?: string | null;
   onSelect?: (taskId: string) => void;
+  taskTitles?: Readonly<Record<string, string>>;
 }) {
   const rows = laneRows(data);
   const showRail = data.rail.visible;
@@ -161,14 +166,20 @@ function ExpandedFlightStrip({
               const selected = selectedTaskId !== null && bar.taskId === selectedTaskId;
               // Every drawn bar is a target: selecting it carries the task into
               // "Open mission →" (AC-20). Selection never navigates on its own,
-              // so a mis-tap on a thin bar costs nothing.
+              // so a mis-tap on a thin bar costs nothing. The target is a
+              // transparent band (pointer-events all) wider and taller than the
+              // drawn bar, so a hollow queued bar or a 2px sliver is still hit.
+              const hitW = Math.max(HIT_MIN_W, width);
+              const hitX = Math.min(Math.max(0, x1 - (hitW - width) / 2), workW - hitW);
+              const title = taskTitles?.[bar.taskId];
+              const lane = row.label.split(' · ')[0];
               const tap = {
                 'data-testid': 'flight-detail-bar',
                 'data-task-id': bar.taskId,
                 role: 'button' as const,
                 tabIndex: 0,
                 'aria-pressed': selected,
-                'aria-label': `Select task ${i + 1} in ${row.label.split(' · ')[0]}`,
+                'aria-label': title ? `Select ${title} (${lane})` : `Select task ${i + 1} in ${lane}`,
                 style: { cursor: 'pointer' },
                 onClick: () => onSelect?.(bar.taskId),
                 onKeyDown: (e: React.KeyboardEvent) => {
@@ -181,6 +192,17 @@ function ExpandedFlightStrip({
               const ring = selected ? (
                 <rect x={x1 - 1.5} y={y - 1.5} width={width + 3} height={ROW_H + 3} fill="none" stroke={FLIGHT_STRIP_NOW_COLOR} strokeWidth={2} pointerEvents="none" />
               ) : null;
+              const hit = (
+                <rect
+                  x={hitX}
+                  y={y - HIT_PAD_Y}
+                  width={hitW}
+                  height={ROW_H + HIT_PAD_Y * 2}
+                  fill="transparent"
+                  pointerEvents="all"
+                  {...tap}
+                />
+              );
               if (bar.dashed) {
                 return (
                   <g key={`${row.key}-${i}`}>
@@ -193,16 +215,18 @@ function ExpandedFlightStrip({
                       stroke={FLIGHT_STRIP_QUEUED_STROKE}
                       strokeWidth={1}
                       strokeDasharray="3 2"
-                      {...tap}
+                      pointerEvents="none"
                     />
                     {ring}
+                    {hit}
                   </g>
                 );
               }
               return (
                 <g key={`${row.key}-${i}`}>
-                  <rect x={x1} y={y} width={width} height={ROW_H} fill={fillFor(bar) ?? 'none'} {...tap} />
+                  <rect x={x1} y={y} width={width} height={ROW_H} fill={fillFor(bar) ?? 'none'} pointerEvents="none" />
                   {ring}
+                  {hit}
                 </g>
               );
             })}
@@ -277,6 +301,8 @@ export interface FlightDetailSheetProps {
   from?: MissionOrigin | null;
   /** A bar already selected when the sheet opens. */
   initialTaskId?: string | null;
+  /** Task titles by id, for the bars' accessible names. */
+  taskTitles?: Readonly<Record<string, string>>;
 }
 
 /** Bottom sheet reached from a mission card's ⤢ control (Home and the missions
@@ -284,8 +310,15 @@ export interface FlightDetailSheetProps {
  * plain-language steering summary, and "Open mission →". Selecting a bar
  * carries that task into the mission as its sheet
  * (docs/design/mission-feed-mobile-continuity.md, W1, AC-20). */
-export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle, from = null, initialTaskId = null }: FlightDetailSheetProps) {
+export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle, from = null, initialTaskId = null, taskTitles }: FlightDetailSheetProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTaskId);
+  // The sheet stays mounted while closed; each opening starts from
+  // `initialTaskId`, not from the last opening's selection.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setSelectedTaskId(initialTaskId);
+  }
   const headingId = useId();
   const closeRef = useRef<HTMLAnchorElement>(null);
   const restoreFocusRef = useRef<Element | null>(null);
@@ -347,6 +380,7 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
           data={data}
           agentTimeMs={stats.agentTimeMs}
           selectedTaskId={selectedTaskId}
+          taskTitles={taskTitles}
           onSelect={id => setSelectedTaskId(prev => (prev === id ? null : id))}
         />
 

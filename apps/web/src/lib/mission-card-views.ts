@@ -13,6 +13,7 @@ import { loadHumanSteeringMarksByMission } from './mission-steering-notes';
 import { adaptFlightStripInputs } from './missions-query';
 import {
   buildMissionCardView,
+  MISSION_CARD_VIEW_CAP,
   type BlockingTask,
   type MissionCardRow,
   type MissionCardSummary,
@@ -35,8 +36,18 @@ export const MISSION_CARD_WORKER_COLUMNS = {
   exitCause: true,
 } as const;
 
+/**
+ * The nested worker relation a card query uses: newest attempt first, so a
+ * live re-claim is always inside the per-task limit.
+ */
+export const MISSION_CARD_WORKERS_WITH = {
+  columns: MISSION_CARD_WORKER_COLUMNS,
+  limit: 5,
+  orderBy: (w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)],
+} as const;
+
 /** Most cards one surface builds in a request. Home shows active + ≤ 3 scheduled. */
-export const MISSION_CARD_VIEW_CAP = 30;
+export { MISSION_CARD_VIEW_CAP };
 
 export async function loadMissionCardViews(
   rows: readonly MissionCardRow[],

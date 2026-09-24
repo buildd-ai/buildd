@@ -11,6 +11,7 @@ import {
   type MissionCardTaskRow,
 } from '@/lib/mission-card-view';
 import { HomeMissions, selectHomeMissions, type HomeMissionSummary } from './HomeMissions';
+import { MISSION_CARD_VIEW_CAP } from '@/lib/mission-card-view';
 
 let clock = Date.UTC(2026, 0, 1);
 function task(id: string, over: Partial<MissionCardTaskRow> = {}): MissionCardTaskRow {
@@ -59,6 +60,29 @@ describe('selectHomeMissions', () => {
     expect(sel.hiddenCount).toBe(3);
     expect(sel.scheduledCount).toBe(4);
     expect(sel.completedCount).toBe(1);
+  });
+  it('caps the cards it builds and counts the capped active missions as hidden', () => {
+    const many: HomeMissionSummary[] = Array.from({ length: MISSION_CARD_VIEW_CAP + 4 }, (_, i) => ({
+      id: `r${i}`, group: 'running' as const, nextScanMins: null,
+    }));
+    many.push({ id: 's', group: 'scheduled', nextScanMins: 5 });
+    const sel = selectHomeMissions(many);
+    expect(sel.visibleIds).toHaveLength(MISSION_CARD_VIEW_CAP);
+    expect(sel.hiddenCount).toBe(5);
+    expect(sel.activeCount).toBe(MISSION_CARD_VIEW_CAP + 4);
+    expect(sel.cappedActiveCount).toBe(4);
+  });
+
+  it('the "+N more" line names capped active missions so it agrees with the header', () => {
+    const many: HomeMissionSummary[] = Array.from({ length: MISSION_CARD_VIEW_CAP + 2 }, (_, i) => ({
+      id: `r${i}`, group: 'running' as const, nextScanMins: null,
+    }));
+    const views = selectHomeMissions(many).visibleIds.map(id => buildMissionCardView({
+      id, title: `Mission ${id}`, status: 'active',
+      tasks: [task(`${id}-t`, { status: 'in_progress', workers: [{ status: 'running' }] })],
+    }, { from: 'home' }));
+    const out = renderToStaticMarkup(<HomeMissions missions={many} views={views} />);
+    expect(out).toContain('+2 more (2 active, 0 completed, 0 scheduled)');
   });
 });
 

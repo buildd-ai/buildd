@@ -70,3 +70,16 @@ export function actionCardTaskHref(
   if (opts.page) return taskPageHref({ taskId, missionId: item.missionId ?? null });
   return missionTaskHref({ missionId: item.missionId ?? null, taskId, from: 'home', mode: 'sheet' });
 }
+
+/**
+ * `actionCardTaskHref` for a `<Link>` that must have an href. A card that
+ * arrives without a task id still renders: it opens its mission, or the task
+ * list when it has no mission either, rather than crashing the Home render.
+ */
+export function actionCardTaskLink(
+  item: Pick<ActionQueueItem, 'taskId' | 'missionId'>,
+  opts: { taskId?: string | null; page?: boolean } = {},
+): string {
+  return actionCardTaskHref(item, opts)
+    ?? (item.missionId ? `/app/missions/${encodeURIComponent(item.missionId)}?from=home` : '/app/tasks');
+}

@@ -13,7 +13,7 @@
 import Link from 'next/link';
 import MissionCard from '@/components/missions/MissionCard';
 import type { MissionCardView } from '@/lib/mission-card-view';
-import { countActiveMissions } from '@/lib/mission-card-view';
+import { countActiveMissions, MISSION_CARD_VIEW_CAP } from '@/lib/mission-card-view';
 import { SECTION_DISPLAY, type MissionGroup } from '@/lib/mission-helpers';
 
 export interface HomeMissionSummary {
@@ -40,18 +40,23 @@ export function selectHomeMissions(missions: readonly HomeMissionSummary[]): {
   completedCount: number;
   scheduledCount: number;
   hiddenCount: number;
+  /** Active missions past MISSION_CARD_VIEW_CAP: counted in the header, not drawn. */
+  cappedActiveCount: number;
 } {
   const active = missions.filter(m => ACTIVE.has(m.group));
   const scheduled = missions
     .filter(m => m.group === 'scheduled')
     .sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
-  const visible = [...active, ...scheduled.slice(0, HOME_SCHEDULED_CAP)];
+  // Capped here, not by the view loader, so hiddenCount and the "+N more"
+  // line account for every mission that does not get a card.
+  const visible = [...active, ...scheduled.slice(0, HOME_SCHEDULED_CAP)].slice(0, MISSION_CARD_VIEW_CAP);
   return {
     visibleIds: visible.map(m => m.id),
     activeCount: countActiveMissions(missions.map(m => m.group)),
     completedCount: missions.filter(m => m.group === 'completed').length,
     scheduledCount: scheduled.length,
     hiddenCount: missions.length - visible.length,
+    cappedActiveCount: Math.max(0, active.length - MISSION_CARD_VIEW_CAP),
   };
 }
 
@@ -64,7 +69,7 @@ export function HomeMissions({
   /** Card views for the visible missions, in `selectHomeMissions` order. */
   views: readonly MissionCardView[];
 }) {
-  const { activeCount, completedCount, scheduledCount, hiddenCount } = selectHomeMissions(missions);
+  const { activeCount, completedCount, scheduledCount, hiddenCount, cappedActiveCount } = selectHomeMissions(missions);
 
   return (
     <div className="mb-8 md:mb-0" data-testid="home-missions">
@@ -111,7 +116,7 @@ export function HomeMissions({
           <div className="flex items-center justify-between pt-1">
             <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary min-w-0 truncate">
               {hiddenCount > 0
-                ? `+${hiddenCount} more (${completedCount} completed, ${scheduledCount} scheduled) →`
+                ? `+${hiddenCount} more (${cappedActiveCount > 0 ? `${cappedActiveCount} active, ` : ''}${completedCount} completed, ${scheduledCount} scheduled) →`
                 : 'View all missions'}
             </Link>
             <Link href="/app/missions/new" className="text-xs text-text-muted hover:text-primary shrink-0 pl-2">

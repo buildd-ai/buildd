@@ -50,3 +50,20 @@ describe('loadMissionCardViews', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('card query shape', () => {
+  it('the nested workers are latest-first, so the live attempt is inside the limit', () => {
+    const { MISSION_CARD_WORKERS_WITH } = require('./mission-card-views');
+    expect(MISSION_CARD_WORKERS_WITH.limit).toBe(5);
+    const order = MISSION_CARD_WORKERS_WITH.orderBy(
+      { startedAt: 'startedAt', updatedAt: 'updatedAt' },
+      { desc: (c: string) => `${c} desc` },
+    );
+    expect(order).toEqual(['startedAt desc', 'updatedAt desc']);
+  });
+
+  it('the card task columns carry no task.result jsonb', () => {
+    const { MISSION_CARD_TASK_COLUMNS } = require('./mission-card-views');
+    expect('result' in MISSION_CARD_TASK_COLUMNS).toBe(false);
+  });
+});
