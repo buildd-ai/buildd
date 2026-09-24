@@ -94,13 +94,18 @@ export async function POST(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   const account = await authenticateApiKey(apiKey);
+  // Incident-responder health probes hit this route once a minute with an empty
+  // body and mark themselves with `X-Probe: true`. They still get the normal
+  // 4xx below, but must not land in the gate ledger — every probe otherwise
+  // records a rejection and skews bypass/false-positive analytics.
+  const isProbe = req.headers.get('x-probe') === 'true';
   if (!account) {
     // Mirrors the runner's local `claim_rejected` log (apps/runner/src/workers.ts)
     // server-side — see #1511. This is the one gate in this route the runner
     // itself already detects (a thrown non-2xx `API error:` in buildd.ts); every
     // other row this route fires below is a per-task deferral the runner never
     // sees at all.
-    fireGateEvent({
+    if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
@@ -112,7 +117,7 @@ export async function POST(req: NextRequest) {
 
   // Trigger-level tokens cannot claim tasks
   if (account.level === 'trigger') {
-    fireGateEvent({
+    if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
@@ -126,7 +131,7 @@ export async function POST(req: NextRequest) {
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
   if (!runner) {
-    fireGateEvent({
+    if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
