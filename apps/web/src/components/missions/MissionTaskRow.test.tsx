@@ -98,6 +98,17 @@ describe('attempts disclosure (D1 / U8)', () => {
     expect(html.match(/data-testid="mission-task-row"/g)).toHaveLength(1);
   });
 
+  it('gives the attempts summary and each attempt link a 44px tap target', () => {
+    const tasks = [
+      t('p', BUILD),
+      t('r1', { taskClass: 'attempt', parentTaskId: 'p', status: 'failed' }),
+    ];
+    const html = renderToStaticMarkup(<MissionTaskRow row={rowFor(tasks, 'p')} missionId="m1" now={NOW} />);
+    expect(html).toMatch(/<summary[^>]*min-h-11/);
+    expect(html).toMatch(/<a[^>]*href="\/app\/tasks\/r1[^"]*"[^>]*min-h-11|<a[^>]*min-h-11[^>]*href="\/app\/tasks\/r1/);
+    expect(html).not.toContain('min-h-[32px]');
+  });
+
   it('renders no disclosure without attempts', () => {
     const html = renderToStaticMarkup(<MissionTaskRow row={rowFor([t('p')], 'p')} missionId="m1" now={NOW} />);
     expect(html).not.toContain('mission-task-attempts');

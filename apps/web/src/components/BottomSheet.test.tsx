@@ -55,6 +55,13 @@ describe('BottomSheet render', () => {
     expect(renderToStaticMarkup(<BottomSheet open={false} onClose={() => {}} title="x">y</BottomSheet>)).toBe('');
   });
 
+  it('close control is a 44px tap target', () => {
+    const html = renderToStaticMarkup(<BottomSheet open onClose={() => {}} title="Task">body</BottomSheet>);
+    const close = html.match(/<button[^>]*aria-label="Close"[^>]*>/)?.[0] ?? '';
+    expect(close).toContain('w-11');
+    expect(close).toContain('h-11');
+  });
+
   it('default height caps at 85vh (unchanged)', () => {
     const html = renderToStaticMarkup(<BottomSheet open onClose={() => {}} title="Records">body</BottomSheet>);
     expect(html).toContain('max-h-[85vh]');

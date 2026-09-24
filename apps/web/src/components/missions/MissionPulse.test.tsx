@@ -146,6 +146,35 @@ describe('MissionPulse render', () => {
     expect(html).toContain('width:25%');
   });
 
+  it('folded phase segments label, select, ring and underline by any member task, not just the first', () => {
+    const many: MissionFeedTaskInput[] = [];
+    for (let i = 0; i < 30; i++) many.push(t(`q0-${i}`, { ...phase(0, 'THINK'), status: 'completed' }));
+    for (let i = 0; i < 12; i++) many.push(t(`q1-${i}`, { ...phase(1, 'BUILD') }));
+    const segs = buildPulseSegments(many);
+    const labels = Object.fromEntries(many.map(x => [x.id, `Title ${x.id}`]));
+    const header = renderToStaticMarkup(
+      <MissionPulse
+        segments={segs}
+        variant="header"
+        selectedTaskId="q1-5"
+        inViewTaskIds={new Set(['q1-5'])}
+        segmentLabels={labels}
+        onSegmentSelect={() => {}}
+      />,
+    );
+    expect(attrOf(header, 'q1-0', 'aria-label')).toBe('BUILD · queued');
+    expect(header).not.toContain('Title q1-0');
+    expect(attrOf(header, 'q1-0', 'aria-current')).toBe('true');
+    expect(attrOf(header, 'q0-0', 'aria-current')).toBeNull();
+    expect(attrOf(header, 'q1-0', 'data-in-view')).toBe('true');
+    expect(attrOf(header, 'q0-0', 'data-in-view')).toBe('false');
+    expect(attrOf(header, 'q1-0', 'tabindex')).toBe('0');
+
+    const ctx = renderToStaticMarkup(<MissionPulse segments={segs} variant="context" selectedTaskId="q1-5" />);
+    expect(attrOf(ctx, 'q1-0', 'data-ringed')).toBe('true');
+    expect(attrOf(ctx, 'q0-0', 'data-ringed')).toBe('false');
+  });
+
   it('renders nothing for an empty pulse', () => {
     expect(renderToStaticMarkup(<MissionPulse segments={[]} variant="card" />)).toBe('');
   });

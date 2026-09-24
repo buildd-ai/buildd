@@ -99,7 +99,7 @@ export default function BottomSheet({
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors"
+            className="-mr-2 w-11 h-11 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors"
             aria-label="Close"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

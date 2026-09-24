@@ -262,7 +262,7 @@ describe('MissionFocusProvider (connected render)', () => {
     const html = renderToStaticMarkup(
       <MissionFocusProvider missionId="m1" store={store}>
         <MissionPulse segments={buildPulseSegments(tasks)} variant="header" connected />
-        {['a', 'b'].map(id => <MissionTaskRow key={id} row={model.rowsById.get(id)!} missionId="m1" />)}
+        {['a', 'b'].map(id => <MissionTaskRow key={id} row={model.rowsById.get(id)!} missionId="m1" now={0} />)}
       </MissionFocusProvider>,
     );
     expect(html).toMatch(/data-task-id="b"[^>]*aria-current="true"|aria-current="true"[^>]*data-task-id="b"/);

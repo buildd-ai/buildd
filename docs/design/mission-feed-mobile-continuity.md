@@ -135,6 +135,7 @@ One visual object carries from the Home card to the detail header to the task sh
 
 - **Above 40 work tasks** the pulse draws one segment per phase, with fill equal to the phase's done fraction. Scrub then targets phase headers.
 - With 15 tasks across 358px, each segment is about 22px wide inside a 40px band. That is thumb-usable.
+- The 40px band is a deliberate exception to the 44px tap-target rule. The band spans the full content width, segments sit edge to edge, and the scrub resolves the nearest segment under the finger, so the effective target is the whole strip rather than one segment. Every other control in the feed (rows, attempt links, masthead links, sheet close) is at least 44px.
 - It is built on `components/SegmentStrip.tsx` (`SegmentStrip` already takes `segments: {taskId, state}[]`), adding `selectedTaskId`, `inViewTaskIds` and `onSegmentSelect`.
 
 **`MissionMasthead`** wraps the title, one state chip, the situation sentence, the pulse and a counts caption, at three sizes:

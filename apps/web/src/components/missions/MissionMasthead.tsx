@@ -138,9 +138,16 @@ function StepLink({ dir, href, onStep }: { dir: 'prev' | 'next'; href: string | 
   const box = 'flex h-11 w-11 shrink-0 items-center justify-center font-mono text-[16px]';
   if (!href) {
     return (
-      <span data-testid={`mission-masthead-${dir}`} aria-disabled="true" aria-label={label} className={`${box} text-text-muted opacity-40`}>
+      <button
+        type="button"
+        disabled
+        data-testid={`mission-masthead-${dir}`}
+        aria-disabled="true"
+        aria-label={label}
+        className={`${box} cursor-default text-text-muted opacity-40`}
+      >
         {glyph}
-      </span>
+      </button>
     );
   }
   return (
@@ -248,10 +255,10 @@ export default function MissionMasthead(props: MissionMastheadProps) {
   // micro
   return (
     <div data-testid="mission-masthead" data-size="micro" className={`bg-surface-1 ${className}`}>
-      <div className="flex min-h-[32px] items-center gap-2">
+      <div className="flex min-h-11 items-center gap-2">
         {href ? (
-          <Link href={href} className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold text-text-primary hover:underline">
-            {`‹ ${title}`}
+          <Link href={href} className="flex min-h-11 min-w-0 flex-1 items-center font-mono text-[13px] font-semibold text-text-primary hover:underline">
+            <span className="min-w-0 truncate">{`‹ ${title}`}</span>
           </Link>
         ) : (
           <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold text-text-primary">{title}</span>

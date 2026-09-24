@@ -13,6 +13,8 @@
  * Variants:
  * - `card`: 8px, inert (Home and list cards).
  * - `header`: 12px inside a 40px touch band, scrubbable (sticky detail header).
+ *   40px, not 44: a recorded exception in the design doc — the band spans the
+ *   full width and segments sit edge to edge, so the target is the strip.
  * - `context`: 8px with the current task ringed (sheet header, task page).
  */
 import { useMemo, useRef, useState } from 'react';
@@ -191,6 +193,18 @@ const PULSE_TOKEN_TRACK: Record<Token, string> = {
   error: 'bg-status-error/30',
 };
 
+/** Does `seg` stand for `taskId`? A folded phase stands for every task in it. */
+export function segmentCovers(seg: PulseSegment, taskId: string | null | undefined): boolean {
+  if (!taskId) return false;
+  return seg.kind === 'phase' ? seg.taskIds.includes(taskId) : seg.taskId === taskId;
+}
+
+/** Visible / announced name: a folded phase is its phase header, a task is its title. */
+export function segmentName(seg: PulseSegment, labels?: Readonly<Record<string, string>>): string {
+  if (seg.kind === 'phase') return seg.phaseLabel ?? 'Tasks';
+  return labels?.[seg.taskId] ?? seg.phaseLabel ?? 'Task';
+}
+
 function segmentClasses(seg: PulseSegment): string {
   const token = PULSE_STATE_TOKEN[seg.state];
   // A folded phase: its aggregate state tints the track; the done fraction fills it (inner span).
@@ -219,6 +233,8 @@ export default function MissionPulse({
   const onSelect = onSelectProp ?? (live ? focusStore.selectSegment : undefined);
 
   const [previewId, setPreviewId] = useState<string | null>(null);
+  // Roving tabindex follows arrow-key focus, so Tab away and back returns to it.
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
@@ -236,7 +252,10 @@ export default function MissionPulse({
   const layout = previewId ? pulseLayout(segments, 100) : null;
   const previewIdx = previewId ? segments.findIndex(s => s.taskId === previewId) : -1;
   const preview = previewIdx >= 0 ? segments[previewIdx] : null;
-  const tabStop = segments.some(s => s.taskId === selectedTaskId) ? selectedTaskId : segments[0].taskId;
+  const tabStop =
+    (focusedId && segments.some(s => s.taskId === focusedId) ? focusedId : null) ??
+    segments.find(s => segmentCovers(s, selectedTaskId))?.taskId ??
+    segments[0].taskId;
 
   const localX = (e: React.PointerEvent) => {
     const rect = (barRef.current ?? (e.currentTarget as HTMLElement)).getBoundingClientRect();
@@ -246,10 +265,12 @@ export default function MissionPulse({
   const bar = (
     <div ref={barRef} className={`relative flex w-full min-w-0 ${spec.bar}`}>
       {segments.map(seg => {
-        const selected = seg.taskId === selectedTaskId;
+        const selected = segmentCovers(seg, selectedTaskId);
         const ringed = variant === 'context' && selected;
-        const inView = inViewTaskIds?.has(seg.taskId) ?? false;
-        const label = `${segmentLabels?.[seg.taskId] ?? seg.phaseLabel ?? 'Task'} · ${PULSE_STATE_LABEL[seg.state]}`;
+        const inView = inViewTaskIds
+          ? seg.kind === 'phase' ? seg.taskIds.some(id => inViewTaskIds.has(id)) : inViewTaskIds.has(seg.taskId)
+          : false;
+        const label = `${segmentName(seg, segmentLabels)} · ${PULSE_STATE_LABEL[seg.state]}`;
         const common = {
           'data-testid': 'mission-pulse-segment',
           'data-task-id': seg.taskId,
@@ -294,6 +315,7 @@ export default function MissionPulse({
             aria-label={label}
             tabIndex={seg.taskId === tabStop ? 0 : -1}
             onClick={() => scrub.click(seg.taskId)}
+            onFocus={() => setFocusedId(seg.taskId)}
           >
             {inner}
           </button>
@@ -338,7 +360,7 @@ export default function MissionPulse({
           className="pointer-events-none absolute bottom-full z-20 mb-1 max-w-[70%] -translate-x-1/2 truncate border border-border-strong bg-card px-1.5 py-0.5 font-mono text-[11px] text-text-primary shadow-sm"
           style={{ left: `${Math.min(85, Math.max(15, (layout[previewIdx].start + layout[previewIdx].end) / 2))}%` }}
         >
-          {segmentLabels?.[preview.taskId] ?? preview.phaseLabel ?? 'Task'} · {PULSE_STATE_LABEL[preview.state]}
+          {segmentName(preview, segmentLabels)} · {PULSE_STATE_LABEL[preview.state]}
         </div>
       )}
     </div>

@@ -155,6 +155,24 @@ describe('size="micro" (W4/W6)', () => {
     expect(html).toContain('href="/app/missions/m1#t-b"');
   });
 
+  it('gives the title up-link a 44px tap target', () => {
+    const up = html.match(/<a[^>]*href="\/app\/missions\/m1#t-b"[^>]*>/)?.[0] ?? '';
+    expect(up).toContain('min-h-11');
+    expect(up).toContain('items-center');
+    expect(html).not.toContain('min-h-[32px]');
+  });
+
+  it('renders a disabled step as a disabled button, so its label is announced', () => {
+    const first = renderToStaticMarkup(
+      <MissionMasthead size="micro" title="M" chip={chip} segments={segments}
+        position={{ n: 1, total: 3, phaseLabel: null, prevHref: null, nextHref: '/x' }} />,
+    );
+    const prev = first.match(/<[^>]*data-testid="mission-masthead-prev"[^>]*>/)?.[0] ?? '';
+    expect(prev.startsWith('<button')).toBe(true);
+    expect(prev).toContain('disabled=""');
+    expect(prev).toContain('aria-label="Previous task"');
+  });
+
   it('disables ‹ at the first task and › at the last', () => {
     const first = renderToStaticMarkup(
       <MissionMasthead size="micro" title="M" chip={chip} segments={segments}

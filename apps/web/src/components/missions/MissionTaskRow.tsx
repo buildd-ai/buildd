@@ -99,8 +99,12 @@ export interface MissionTaskRowProps<T extends MissionFeedTaskInput = MissionFee
   missionId: string;
   from?: MissionOrigin | null;
   initiativeId?: string | null;
-  /** Clock for elapsed/age text; pass the server render time for a stable first paint. */
-  now?: number;
+  /**
+   * Clock for elapsed/age text. Required: a `Date.now()` default would differ
+   * between the server render and hydration at minute boundaries. Pass the
+   * server render time (and tick it on the client if the row should age).
+   */
+  now: number;
   liveLine?: string | null;
   recordsCount?: number;
   blockedByTitle?: string | null;
@@ -114,7 +118,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
   missionId,
   from,
   initiativeId,
-  now = Date.now(),
+  now,
   liveLine,
   recordsCount,
   blockedByTitle,
@@ -188,7 +192,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
       </a>
       {attempts.length > 0 && (
         <details data-testid="mission-task-attempts" className="border-b border-border-default pl-[2.75rem] pr-3">
-          <summary className="flex min-h-[32px] cursor-pointer items-center font-mono text-[11px] text-text-muted hover:text-text-primary">
+          <summary className="flex min-h-11 cursor-pointer items-center font-mono text-[11px] text-text-muted hover:text-text-primary">
             {`↻ ${attempts.length} attempt${attempts.length === 1 ? '' : 's'}`}
           </summary>
           <ul className="pb-2">
@@ -196,7 +200,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
               <li key={a.id}>
                 <a
                   href={taskPageHref({ taskId: a.id, missionId })}
-                  className="flex min-h-[32px] items-center gap-2 font-mono text-[11px] text-text-secondary hover:text-text-primary"
+                  className="flex min-h-11 items-center gap-2 font-mono text-[11px] text-text-secondary hover:text-text-primary"
                 >
                   <span className="shrink-0 text-text-muted">{a.status}</span>
                   <span className="min-w-0 truncate">{a.title}</span>
