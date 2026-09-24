@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { InitiativeKPI, InitiativeKPIState, CriterionVerdict } from '@buildd/shared';
+import Switch from '@/components/ui/Switch';
 
 interface Props {
   initiativeId: string;
@@ -209,15 +210,12 @@ export default function InitiativeKPIPanel({ initiativeId, kpis, kpiState: initi
           <span className="text-[12px] text-text-secondary">Auto-evaluate on mission completion</span>
           <p className="text-[11px] text-text-muted mt-0.5">Re-check KPIs automatically when all child missions complete.</p>
         </div>
-        <button
-          role="switch"
-          aria-checked={autoVerify}
-          onClick={() => !savingAutoVerify && handleAutoVerifyToggle(!autoVerify)}
+        <Switch
+          checked={autoVerify}
+          onChange={(next) => !savingAutoVerify && handleAutoVerifyToggle(next)}
           disabled={savingAutoVerify}
-          className={`shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${autoVerify ? 'bg-primary' : 'bg-border-strong'}`}
-        >
-          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform duration-200 ${autoVerify ? 'translate-x-4' : 'translate-x-0.5'}`} />
-        </button>
+          label="Auto-evaluate on mission completion"
+        />
       </div>
     </div>
   );

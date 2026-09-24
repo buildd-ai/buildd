@@ -378,14 +378,27 @@ export function isGateSatisfied(
   dep: { status: string },
   depWorkers: Array<{
     prUrl: string | null;
-    mergedAt: string | null;
+    mergedAt: string | Date | null;
     prLifecycleStatus?: string | null;
   }>,
 ): boolean {
   if (!(DEP_SATISFYING_STATUSES as readonly string[]).includes(dep.status)) return false;
   // The open-PR guard applies to delivered work only.
   if (dep.status !== 'completed') return true;
-  return !depWorkers.some(
+  return findBlockingPrWorker(depWorkers) === undefined;
+}
+
+/**
+ * The dep worker whose open PR holds the gate shut, if any — prUrl set,
+ * mergedAt null, lifecycle not `DEP_UNBLOCKING_PR_LIFECYCLE`. Pass EVERY
+ * worker of the dep, not just the newest: an older worker's open PR still
+ * blocks when a later retry produced none, and a surface that read only
+ * `workers[0]` said "resolved" while the claim gate said blocked.
+ */
+export function findBlockingPrWorker<
+  W extends { prUrl: string | null; mergedAt: string | Date | null; prLifecycleStatus?: string | null },
+>(depWorkers: readonly W[]): W | undefined {
+  return depWorkers.find(
     (w) =>
       w.prUrl !== null &&
       w.mergedAt === null &&
@@ -485,7 +498,7 @@ export function deriveChainPosition({
   const blockedBy: BlockRef[] = deps
     .filter((dep) => !isGateSatisfied(dep, dep.workers))
     .map((dep) => {
-      const openWorker = dep.workers.find((w) => w.prUrl !== null && w.mergedAt === null);
+      const openWorker = findBlockingPrWorker(dep.workers);
       return {
         id: dep.id,
         title: dep.title,

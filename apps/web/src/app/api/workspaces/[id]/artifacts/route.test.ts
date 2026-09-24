@@ -69,8 +69,21 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: TemplateStringsArray) => ({ strings, type: 'sql' }),
 }));
 
+// Every column `@/lib/artifact-scope` references must exist here, including
+// `workers` (its worker-arm subquery): a missing named export fails the whole
+// file at link time, before a single test runs.
 mock.module('@buildd/core/db/schema', () => ({
-  artifacts: { workspaceId: 'workspaceId', key: 'key', missionId: 'missionId', type: 'type', id: 'id' },
+  artifacts: {
+    id: 'id',
+    workspaceId: 'workspaceId',
+    workerId: 'workerId',
+    key: 'key',
+    type: 'type',
+    visibility: 'visibility',
+    missionId: 'missionId',
+    initiativeId: 'initiativeId',
+  },
+  workers: { id: 'id', workspaceId: 'workspaceId' },
 }));
 
 const { POST } = await import('./route');

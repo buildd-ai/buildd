@@ -11,7 +11,7 @@
  * caller that wants prose writes it; `explain` never does, and never calls a
  * model to get it.
  */
-import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource, MissionSituation } from './mission-state-view';
+import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource, MissionSituation, MissionStateView } from './mission-state-view';
 import { OUTSTANDING_RANK } from './mission-state-view';
 
 export type ExplainScope = 'task' | 'mission' | 'workspace' | 'pr';
@@ -143,6 +143,13 @@ export interface ExplainAnswer {
   subject: ExplainSubject;
   /** Straight off the accessor. */
   state: MissionStateKind;
+  /**
+   * Straight off the accessor: the header chip's state and label. Carried on
+   * the same answer as `situation` so the mission header chip and the
+   * waiting-on panel under it read one derivation and cannot disagree.
+   */
+  displayState: MissionStateView['displayState'];
+  chip: MissionStateView['chip'];
   /** Straight off the accessor. Null only on `complete` / `idle` / `running`. */
   waitingOn: WaitingOnDescriptor | null;
   /**

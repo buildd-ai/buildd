@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, deriveHumanTaskShareMetric, deriveMissionFollowupMetric, computeMissionAuthorshipHealth, deriveWorkLane, hasNoWorkLaneData, type MissionSegmentState } from '../mission-helpers';
+import { isDeliverableTask, hasPendingDeliverableWork, computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, deriveHumanTaskShareMetric, deriveMissionFollowupMetric, computeMissionAuthorshipHealth, deriveWorkLane, hasNoWorkLaneData, type MissionSegmentState } from '../mission-helpers';
 
 // ── deriveTaskType ─────────────────────────────────────────────────────────────
 
@@ -1032,5 +1032,37 @@ describe('hasNoWorkLaneData', () => {
 
   it('returns false for an empty task list (nothing to be untrustworthy about)', () => {
     expect(hasNoWorkLaneData([])).toBe(false);
+  });
+});
+
+describe('hasPendingDeliverableWork', () => {
+  it('false when every deliverable is terminal', () => {
+    expect(hasPendingDeliverableWork([
+      { status: 'completed', taskClass: 'work' },
+      { status: 'failed', taskClass: 'work' },
+      { status: 'cancelled', taskClass: 'work' },
+    ])).toBe(false);
+  });
+
+  it('true when a deliverable is still open', () => {
+    for (const status of ['pending', 'assigned', 'in_progress']) {
+      expect(hasPendingDeliverableWork([
+        { status: 'completed', taskClass: 'work' },
+        { status, taskClass: 'work' },
+      ])).toBe(true);
+    }
+  });
+
+  it('ignores open non-deliverables (attempts, bookkeeping, review)', () => {
+    expect(hasPendingDeliverableWork([
+      { status: 'completed', taskClass: 'work' },
+      { status: 'pending', taskClass: 'attempt' },
+      { status: 'pending', taskClass: 'bookkeeping' },
+      { status: 'assigned', taskClass: null, category: 'review' },
+    ])).toBe(false);
+  });
+
+  it('false for a mission with no tasks', () => {
+    expect(hasPendingDeliverableWork([])).toBe(false);
   });
 });

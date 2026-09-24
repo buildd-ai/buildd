@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { isValidTaskId } from '@/lib/task-id';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
+import { useConfirm } from '@/components/useConfirm';
+import Switch from '@/components/ui/Switch';
 
 interface PendingSuggestion {
   cronExpression?: string;
@@ -63,6 +65,7 @@ function formatRelative(dateStr: string | null): string {
 }
 
 export function ScheduleList({ workspaceId, initialSchedules }: Props) {
+  const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [schedules, setSchedules] = useState(initialSchedules);
   const [toggling, setToggling] = useState<string | null>(null);
@@ -112,7 +115,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
   }
 
   async function deleteSchedule(id: string) {
-    if (!confirm('Delete this schedule? Existing tasks will not be affected.')) return;
+    if (!(await confirm({ title: 'Delete schedule?', message: 'Existing tasks will not be affected.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setDeleting(id);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/schedules/${id}`, {
@@ -248,28 +251,21 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
 
             <div className="flex items-center gap-2 ml-4">
               {/* Enable/Disable toggle */}
-              <button
-                type="button"
-                role="switch"
-                aria-checked={schedule.enabled}
-                onClick={() => toggleEnabled(schedule)}
+              <Switch
+                checked={schedule.enabled}
+                onChange={() => toggleEnabled(schedule)}
                 disabled={toggling === schedule.id}
-                className={`relative w-10 h-6 rounded-full transition-colors ${
-                  schedule.enabled ? 'bg-status-success' : 'bg-surface-4'
-                } ${toggling === schedule.id ? 'opacity-50' : ''}`}
-              >
-                <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                  schedule.enabled ? 'translate-x-4' : ''
-                }`} />
-              </button>
+                label={`Enable ${schedule.name}`}
+              />
 
               {/* Edit */}
               <button
                 onClick={() => router.push(`/app/workspaces/${workspaceId}/schedules?edit=${schedule.id}`)}
                 className="p-1.5 text-text-muted hover:text-text-secondary"
                 title="Edit"
+                aria-label={`Edit ${schedule.name}`}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
                 </svg>
               </button>
@@ -280,8 +276,9 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                 disabled={deleting === schedule.id}
                 className="p-1.5 text-text-muted hover:text-status-error"
                 title="Delete"
+                aria-label={`Delete ${schedule.name}`}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                 </svg>
               </button>
@@ -289,6 +286,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
           </div>
         </div>
       ))}
+      {confirmDialog}
     </div>
   );
 }

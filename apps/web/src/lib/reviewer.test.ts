@@ -1087,6 +1087,50 @@ describe('buildReviewerContext — security escalation discriminator', () => {
   });
 });
 
+// ── The confidence threshold the server enforces is the one the prompt shows ──
+
+describe('reviewer prompts render the resolved confidence threshold', () => {
+  const BASE = {
+    originalTaskId: 'original-threshold',
+    originalTask: { title: 'Small fix', description: 'd', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    prNumber: 77,
+    prUrl: 'https://github.com/org/repo/pull/77',
+    headSha: 'sha77',
+    installationId: 1,
+    repoFullName: 'org/repo',
+    prFiles: [{ filename: 'apps/web/src/lib/foo.ts', status: 'modified', additions: 1, deletions: 0 }],
+  };
+  const DELTA = {
+    originalTask: BASE.originalTask,
+    prNumber: BASE.prNumber,
+    prUrl: BASE.prUrl,
+    headSha: 'sha77-new',
+    installationId: 1,
+    repoFullName: BASE.repoFullName,
+    priorVerdict: { headSha: 'sha77-old', verdict: 'approve' as const, confidence: 0.9, summary: 'ok' },
+    deltaFiles: [],
+  };
+
+  it('renders a configured threshold in the full review, with and without a policyConfig', async () => {
+    for (const policyConfig of [undefined, { preset: 'balanced' as const, riskClasses: [] }]) {
+      const prompt = await buildReviewerContext({ ...BASE, policyConfig, confidenceThreshold: 0.8 });
+      expect(prompt).toContain('below the workspace threshold (0.8)');
+      expect(prompt).not.toContain('default 0.6');
+    }
+  });
+
+  it('renders a configured threshold in the delta re-review', async () => {
+    const prompt = await buildDeltaReviewerContext({ ...DELTA, confidenceThreshold: 0.8 });
+    expect(prompt).toContain('below the workspace threshold (0.8)');
+    expect(prompt).not.toContain('default 0.6');
+  });
+
+  it('renders the platform default when the workspace sets none', async () => {
+    const prompt = await buildReviewerContext(BASE);
+    expect(prompt).toContain('below the workspace threshold (0.6)');
+  });
+});
+
 // ── Server-side escalation enforcement (T5) ──────────────────────────────────
 
 describe('enforceServerSideEscalation', () => {

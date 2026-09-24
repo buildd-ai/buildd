@@ -2047,3 +2047,29 @@ export interface UpdateExperimentInput {
   status?: ExperimentStatus;
   decision?: string;
 }
+
+// ── Error traces ─────────────────────────────────────────────────────────────
+
+/** One recurring trace pattern in a workspace, from GET /api/workspaces/[id]/error-traces. */
+export interface WorkspaceErrorTracePattern {
+  /** Pattern slug, e.g. 'git_fatal', 'cd_no_such_file'. */
+  pattern: string;
+  /** Trace rows matching this pattern in the window. */
+  count: number;
+  /** Distinct tasks that hit it. */
+  taskCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  /** Excerpt and source of the most recent occurrence. */
+  exampleExcerpt: string;
+  exampleSource: string | null;
+  /** Up to three task ids that hit this pattern. */
+  exampleTaskIds: string[];
+}
+
+export interface WorkspaceErrorTracesResponse {
+  workspaceId: string;
+  since: string;
+  limit: number;
+  patterns: WorkspaceErrorTracePattern[];
+}

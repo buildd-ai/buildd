@@ -408,6 +408,8 @@ function answerFrom(
   return {
     subject,
     state: view.kind,
+    displayState: view.displayState,
+    chip: view.chip,
     waitingOn: view.waitingOn,
     outstanding: view.outstanding,
     situation: view.situation,
@@ -491,7 +493,9 @@ async function viewForTask(taskId: string): Promise<{
   })) as any as LoadedTask[];
 
   const family = [task as LoadedTask, ...attempts];
-  const health = deriveTaskHealthSignal({}, family);
+  // Family scope: the attempts ARE this task's work, so they count here even
+  // though mission-scope health (deliverables only) ignores them.
+  const health = deriveTaskHealthSignal({}, family, { scope: 'family' });
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];

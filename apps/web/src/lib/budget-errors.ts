@@ -1,8 +1,7 @@
 // Detection + parsing for agent usage/budget exhaustion.
 //
-// Three distinct exhaustion modes surface here as worker error strings:
-//   1. API-key pay-per-token budgets ("budget limit exceeded", "max budget",
-//      "error_max_budget_usd", "out of extra usage").
+// Three distinct provider walls surface here as worker error strings:
+//   1. Claude's extra-usage wall ("out of extra usage").
 //   2. OAuth seat session caps — the Claude Agent SDK throws
 //      "Claude Code returned an error result: You've hit your session limit ·
 //      resets 3am (UTC)". Once the seat session is capped the token is also
@@ -20,6 +19,10 @@
 // @buildd/core/budget-error-classifier so the web route, the runner's claim
 // breaker, and the runner's worker-error reporting share one list instead of
 // three hand-maintained copies.
+//
+// A per-session dollar cap (maxBudgetUsd) is not a provider wall and is not
+// matched here: it is one task's own ceiling. isSessionBudgetCapError
+// recognises it so the worker route can fail that task alone.
 
 // The reset-time parser lives in @buildd/core/reset-time: the runner's claim
 // circuit breaker needs the same instant this module needs, and while it kept
@@ -36,13 +39,13 @@ export {
 export type { ParseResetTimeOptions } from '@buildd/core/reset-time';
 
 /**
- * True when a worker error indicates the agent ran out of usage (dollar
- * budget, OAuth session cap, or a Codex-style quota wall) rather than failing
- * on the task itself. Re-exported for call sites that already import it from
- * here — the canonical pattern list lives in
+ * True when a worker error indicates a provider usage wall (OAuth session or
+ * weekly cap, extra-usage wall, or a Codex-style quota wall) rather than
+ * failing on the task itself. Re-exported for call sites that already import
+ * it from here — the canonical pattern list lives in
  * @buildd/core/budget-error-classifier so the runner shares it too.
  */
-export { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
+export { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 
 /** A timestamp as it can arrive from the driver, the API, or code. */
 type TimestampLike = Date | string | number | null | undefined;

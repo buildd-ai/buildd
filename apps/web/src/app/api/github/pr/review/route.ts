@@ -316,6 +316,7 @@ export async function POST(req: NextRequest) {
     prUrl: pr.html_url,
     headSha: pr.head?.sha ?? '',
     reviewerRole: picked.role,
+    confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
     installationId: repo.installationId,
     repoFullName: repo.fullName,
     policyConfig: (workspace.gitConfig as any)?.policyConfig,

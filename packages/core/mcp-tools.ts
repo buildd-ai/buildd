@@ -455,7 +455,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
-    get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
+    get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
@@ -3528,11 +3528,16 @@ export async function handleBuilddAction(
     }
 
     case 'get_error_traces': {
-      // Three resolution modes, in priority:
+      // Resolution modes, in priority:
       //   1. explicit workerId in params
       //   2. explicit taskId in params (returns cumulative traces across all
       //      workers that ran on this task — useful when retrying)
-      //   3. infer from ctx.workerId (default: this agent's session)
+      //   3. explicit workspaceId → per-pattern rollup across the workspace
+      //   4. infer from ctx.workerId (default: this agent's task)
+      //   5. the session workspace rollup
+      // An explicit worker/task scope always beats workspaceId: agents pass
+      // workspaceId out of habit, and silently widening a narrow question to a
+      // workspace rollup would hide that the narrow scope was ignored.
       const limitNum = typeof params.limit === 'number'
         ? Math.min(Math.max(params.limit, 1), 500)
         : 50;
@@ -3540,6 +3545,36 @@ export async function handleBuilddAction(
       const sinceQs = params.since && typeof params.since === 'string'
         ? `&since=${encodeURIComponent(params.since)}`
         : '';
+
+      const hasWorkspaceParam = typeof params.workspaceId === 'string' && params.workspaceId.length > 0;
+      const hasNarrowScope = (typeof params.workerId === 'string' && params.workerId.length > 0)
+        || (typeof params.taskId === 'string' && params.taskId.length > 0);
+      if (!hasNarrowScope && (hasWorkspaceParam || !ctx.workerId)) {
+        const wsId = await resolveWorkspaceId(api, hasWorkspaceParam ? params.workspaceId : undefined, ctx);
+        if (!wsId) {
+          return errorResult(hasWorkspaceParam
+            ? `Workspace "${params.workspaceId}" not found or not accessible.`
+            : 'get_error_traces needs a scope: pass taskId, workerId, or workspaceId (worker sessions default to their own task).');
+        }
+        const qs = [
+          typeof params.limit === 'number' ? `limit=${Math.min(Math.max(params.limit, 1), 100)}` : '',
+          sinceQs.slice(1),
+        ].filter(Boolean).join('&');
+        const data = await api(`/api/workspaces/${encodeURIComponent(wsId)}/error-traces${qs ? `?${qs}` : ''}`);
+        const patterns = (data.patterns || []) as Array<{
+          pattern: string; count: number; taskCount: number; firstSeen: string; lastSeen: string;
+          exampleExcerpt: string; exampleSource: string | null; exampleTaskIds: string[];
+        }>;
+        const window = data.since ? ` since ${data.since}` : '';
+        if (patterns.length === 0) return text(`No error traces in workspace ${wsId}${window}.`);
+        const lines = patterns.map((p) => {
+          const src = p.exampleSource ? ` [${p.exampleSource}]` : '';
+          const tasksHit = `${p.taskCount} task${p.taskCount === 1 ? '' : 's'}`;
+          const examples = p.exampleTaskIds?.length ? ` — e.g. ${p.exampleTaskIds.join(', ')}` : '';
+          return `- **${p.pattern}** ${p.count}× across ${tasksHit} (first ${p.firstSeen}, last ${p.lastSeen})${examples}\n  latest${src}: ${p.exampleExcerpt}`;
+        }).join('\n');
+        return text(`${patterns.length} error-trace pattern(s) in workspace ${wsId}${window}:\n\n${lines}`);
+      }
 
       let endpoint: string;
       let scope: string;
@@ -3559,7 +3594,7 @@ export async function handleBuilddAction(
         endpoint = `/api/tasks/${encodeURIComponent(taskId)}/error-traces?${limitQs}${sinceQs}`;
         scope = `task ${taskId} (current)`;
       } else {
-        return errorResult('No workerId, taskId, or worker context provided.');
+        return errorResult('get_error_traces needs a scope: pass taskId, workerId, or workspaceId (worker sessions default to their own task).');
       }
 
       const data = await api(endpoint);

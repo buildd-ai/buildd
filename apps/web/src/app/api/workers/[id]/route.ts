@@ -19,7 +19,7 @@ import { recordTaskAreaOutcome } from '@buildd/core/task-area-prediction-source'
 import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
-import { applyBudgetUsage } from '@buildd/core/budget-alerts';
+import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
@@ -27,7 +27,7 @@ import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
-import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
+import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
@@ -37,6 +37,8 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
+import { parseReviewerOutput, applyConfidenceGate } from '@/lib/reviewer-output';
+import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
@@ -55,7 +57,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
@@ -1126,7 +1128,9 @@ export async function PATCH(
         // `isMissionPrTask` needs it to tell the mission PR's own owner task
         // (head = integration branch, base = trunk, legal) apart from a task
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass })
+        // `backend` decides whether this session's spend draws on the Agent
+        // SDK credit pool (countsTowardAgentSdkCreditPool).
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1725,8 +1729,20 @@ export async function PATCH(
     terminalTransitionReserved = true;
   }
 
-  // Budget exhaustion detection: check if this is a budget-related failure
-  const isBudgetError = status === 'failed' && (
+  // Per-session dollar cap (the SDK's maxBudgetUsd): a ceiling THIS task hit.
+  // Nothing about the provider pool is implied, so it is an ordinary task
+  // failure: no backend pause, no seat exhaustion flag, no pacing episode, no
+  // failover. The runner will send `sessionBudgetCapped` (that half is not
+  // shipped yet); a runner without the flag sends only the text, alongside the
+  // old `budgetExhausted: true`, which is why the text is checked too and why
+  // this beats that flag. A report that also carries a real provider-wall text
+  // is a wall, whichever signal marked it as a cap.
+  const isSessionBudgetCap = (status === 'failed' || status === 'error') &&
+    (body.sessionBudgetCapped === true || isSessionBudgetCapError(error)) &&
+    !isBudgetExhaustionError(error);
+
+  // Budget exhaustion detection: a provider wall (session/weekly/quota cap)
+  const isBudgetError = status === 'failed' && !isSessionBudgetCap && (
     body.budgetExhausted === true ||
     isBudgetExhaustionError(error)
   );
@@ -1784,9 +1800,15 @@ export async function PATCH(
   // it is infra, and it rides the infra retry budget below rather than the
   // task's retry count — which is 0 for a non-mission task.
   const isCrashReconciled = status === 'failed' && crashReconciled === true;
+  // The CLI's model version gate: this runner cannot serve the model the task
+  // was routed to. A deterministic 400 before the first turn, so it is infra
+  // and rides the infra retry budget below; the claim route's capability gate
+  // routes the next claim around it.
+  const isUnrecognizedModel = (status === 'failed' || status === 'error') && isUnrecognizedModelError(error);
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       crashReconciled: isCrashReconciled,
+      unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
@@ -2273,7 +2295,17 @@ export async function PATCH(
           updates.costUsd = effectiveCost.toString();
         }
 
-        if (effectiveCost > 0) {
+        // Codex and tenant-credential spend are billed elsewhere, so they do
+        // not draw on the pool. The worker row above still carries the cost
+        // either way.
+        const poolTaskRow = terminalTaskRow[0];
+        const countsTowardPool = countsTowardAgentSdkCreditPool({
+          backend: poolTaskRow?.backend ?? null,
+          authType: account.authType,
+          tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
+        });
+
+        if (effectiveCost > 0 && countsTowardPool) {
           // Aggregate budget is tracked at the team level so all token-accounts
           // under the same owner share one monthly cap (the Claude Agent SDK
           // credit pool is a single pool per subscription).
@@ -2451,6 +2483,9 @@ export async function PATCH(
         // abort, but the exemption stays as the guard against any path that
         // still reports it as a reported `failed` outcome.
         if (isNeedsInput) shouldAutoRetry = false;
+        // A session dollar cap is terminal: the retry runs under the same cap
+        // and would spend another cap's worth to hit it again.
+        if (isSessionBudgetCap) shouldAutoRetry = false;
         // Precedence rule: budget_exhausted mission wins over auto-retry requeue.
         // Same guard as the sandbox_mount_gap block above — a pending task in an
         // exhausted mission is skipped by the claim loop and would be silently stuck.
@@ -2492,8 +2527,9 @@ export async function PATCH(
         // output-gate refusal is excluded: that one IS charged, so it belongs
         // to the ordinary retry budget. A crash-reconciled restart rides it for
         // the same reason: without it, one runner self-update permanently
-        // failed every in-flight non-mission task.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // failed every in-flight non-mission task. A model version-gate 400
+        // rides it too: bounded, backed off, and uncharged.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isUnrecognizedModel) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -2676,15 +2712,29 @@ export async function PATCH(
       // recorded as a clean completion, so nothing ever revisits the PR. An
       // unparsed verdict is not a verdict, so fail the task and let the reviewer
       // loop redo it rather than leaving an approved PR open forever.
+      //
+      // "Unparsed" includes malformed: the verdict is validated against the
+      // output contract (enum verdict, confidence a number in [0, 1], string
+      // summary), because complete_task passes structuredOutput through
+      // unchanged. An out-of-enum verdict used to fall through the outcome
+      // switch doing nothing, which reads as review_failed and lets the merge
+      // gate pass.
       const reviewTaskRow = terminalTaskRow[0];
       const reviewTaskCtx = (reviewTaskRow?.context ?? {}) as Record<string, unknown>;
-      const reviewContractViolation = (
+      const isReviewerCompletion = (
         status === 'completed' &&
         !shouldAutoRetry &&
         reviewTaskRow?.category === 'review' &&
-        Boolean(reviewTaskCtx.reviewerFor) &&
-        !(body.structuredOutput as { verdict?: unknown } | undefined)?.verdict
+        Boolean(reviewTaskCtx.reviewerFor)
       );
+      const hasVerdictKey = Boolean((body.structuredOutput as { verdict?: unknown } | undefined)?.verdict);
+      const parsedReview = isReviewerCompletion ? parseReviewerOutput(body.structuredOutput) : null;
+      const reviewContractViolation = isReviewerCompletion && parsedReview?.ok === false;
+      // Prose (no verdict at all) and a malformed verdict fail the same
+      // contract; only the message differs.
+      const malformedVerdictReason = reviewContractViolation && hasVerdictKey && parsedReview?.ok === false
+        ? parsedReview.reason
+        : null;
       // A reviewer task is dispatched only on pull_request action='opened', so
       // nothing re-reviews a PR whose review ended without a verdict. Requeue the
       // same task once — it re-reads the PR from scratch, so a second attempt is
@@ -2708,14 +2758,17 @@ export async function PATCH(
         console.error(
           `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
           `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
-          `returned no structuredOutput.verdict. The verdict was dropped, so ` +
+          (malformedVerdictReason ? `returned a malformed structuredOutput verdict (${malformedVerdictReason}). ` : `returned no structuredOutput.verdict. `) +
+          `The verdict was dropped, so ` +
           `PR #${reviewTaskCtx.prNumber ?? '?'} would sit unmerged.`
         );
         // This worker's review is discarded either way.
         updates.status = 'failed';
         updates.error = reviewSilentStart
           ? SILENT_START_ERROR
-          : 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+          : malformedVerdictReason
+            ? `Review task completed with a malformed structuredOutput verdict: ${malformedVerdictReason}`
+            : 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
         // Same override-after-classification shape as the planning guard: state
         // the cause rather than leaving exitCause NULL. Writing the verdict as
         // prose is the agent's own contract violation, so it stays chargeable —
@@ -2738,7 +2791,9 @@ export async function PATCH(
             ...reviewTaskCtx,
             reviewContractRetryCount: reviewContractRetryCount + 1,
             failureContext:
-              'Your previous attempt wrote the verdict as prose, so it was discarded. ' +
+              (malformedVerdictReason
+                ? `Your previous attempt returned a verdict that does not match the output contract (${malformedVerdictReason}), so it was discarded. `
+                : 'Your previous attempt wrote the verdict as prose, so it was discarded. ') +
               'The verdict only counts when it is returned as structuredOutput matching ' +
               'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
               'and return the verdict as structuredOutput.',
@@ -2792,7 +2847,9 @@ export async function PATCH(
           },
         } : reviewContractViolation ? {
           result: {
-            error: 'Review task completed without structuredOutput.verdict — the verdict was returned as prose and dropped. Review will be redone.',
+            error: malformedVerdictReason
+              ? `Review task completed with a malformed structuredOutput verdict (${malformedVerdictReason}). Review will be redone.`
+              : 'Review task completed without structuredOutput.verdict — the verdict was returned as prose and dropped. Review will be redone.',
             errorType: 'review_contract_violation',
             // Standing ask from the outputRequirement-rejection bug: a
             // rejected completion must not discard what the agent actually
@@ -2811,6 +2868,11 @@ export async function PATCH(
               error: `Task stalled: infra errors prevented startup on ${MAX_INFRA_RETRIES_PATCH} consecutive attempts`,
               errorType: 'infra_stalled',
               infraRetryCount: MAX_INFRA_RETRIES_PATCH,
+            },
+          } : isSessionBudgetCap ? {
+            result: {
+              error: isSensitive ? 'session_budget_capped' : (error ?? 'Session budget cap reached'),
+              errorType: 'session_budget_capped',
             },
           } : {}),
         } : {}),
@@ -4033,11 +4095,15 @@ async function handleReviewerOutcomeIfNeeded(
   // Only process tasks that are reviewer tasks (category='review' + reviewerFor in context)
   if (reviewerTask.category !== 'review' || !ctx.reviewerFor) return;
 
-  const output = structuredOutput as ReviewerTaskOutput | null | undefined;
-  if (!output?.verdict) {
-    console.warn(`[reviewer] Task ${reviewerTaskId} completed without a verdict in structuredOutput`);
+  // Backstop for the contract guard in PATCH, which already failed/requeued a
+  // malformed verdict: nothing below may act on one, and nothing below has to
+  // re-check the shape (e.g. `confidence.toFixed`).
+  const parsed = parseReviewerOutput(structuredOutput);
+  if (!parsed.ok) {
+    console.warn(`[reviewer] Task ${reviewerTaskId} completed without a valid verdict in structuredOutput: ${parsed.reason}`);
     return;
   }
+  const output: ReviewerTaskOutput = parsed.output;
 
   const originalTaskId = ctx.reviewerFor as string;
   const prNumber = ctx.prNumber as number;
@@ -4108,6 +4174,7 @@ async function handleReviewerOutcomeIfNeeded(
   // escalationReason, which is downstream of an untrusted diff.
   let effectiveVerdict = output.verdict;
   let serverOverrideReason: string | null = null;
+  let serverOverrideSource: 'files' | 'confidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
     let currentFiles: Array<{ filename: string }> = [];
     let migrationSafety: MigrationSafety | undefined;
@@ -4141,26 +4208,46 @@ async function handleReviewerOutcomeIfNeeded(
     });
     effectiveVerdict = enforced.verdict;
     serverOverrideReason = enforced.overrideReason;
-    if (serverOverrideReason) {
-      console.warn(
-        `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
-      );
-      // Persist the verdict that ACTUALLY applies, alongside (never over) the
-      // agent's own output. Without this the stored review still reads
-      // `approve`, so `derivePrReviewStatus` reports `approved` — and both the
-      // self-merge check and the review-verdict gate would clear a PR the
-      // server just escalated to a human.
-      await db
-        .update(tasks)
-        .set({
-          result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${serverOverrideReason}::text)`,
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, reviewerTaskId))
-        .catch((err: unknown) =>
-          console.error(`[reviewer] could not persist server escalation for PR #${prNumber}:`, err),
-        );
+    if (serverOverrideReason) serverOverrideSource = 'files';
+  }
+
+  // The confidence bar applies to the VERDICT, not only to the unbounded
+  // self-merge: every approve posts a GitHub APPROVE and may run the bounded
+  // merge into a mission integration branch below. An approval under the
+  // workspace threshold is an escalation. Checked after the file gates so a
+  // file-list reason, the more specific one, wins when both apply.
+  if (effectiveVerdict === 'approve') {
+    const gated = applyConfidenceGate({
+      verdict: effectiveVerdict,
+      confidence: output.confidence,
+      threshold: reviewPolicy?.agentReview?.maxConfidenceThreshold,
+    });
+    if (gated.overrideReason) {
+      effectiveVerdict = gated.verdict;
+      serverOverrideReason = gated.overrideReason;
+      serverOverrideSource = 'confidence';
     }
+  }
+
+  if (serverOverrideReason) {
+    console.warn(
+      `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
+    );
+    // Persist the verdict that ACTUALLY applies, alongside (never over) the
+    // agent's own output. Without this the stored review still reads
+    // `approve`, so `derivePrReviewStatus` reports `approved` — and both the
+    // self-merge check and the review-verdict gate would clear a PR the
+    // server just escalated to a human.
+    await db
+      .update(tasks)
+      .set({
+        result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${serverOverrideReason}::text)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, reviewerTaskId))
+      .catch((err: unknown) =>
+        console.error(`[reviewer] could not persist server escalation for PR #${prNumber}:`, err),
+      );
   }
 
   // ── Corrected lede ───────────────────────────────────────────────────────
@@ -4213,7 +4300,7 @@ async function handleReviewerOutcomeIfNeeded(
       // A server override says so explicitly: the reviewer's own summary would
       // otherwise read as an approval on a card that escalated.
       body: (serverOverrideReason
-        ? `The reviewer approved this PR, but the file list requires a human: ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+        ? `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
         : (output.feedback ?? output.escalationReason ?? output.summary))
         + ledeNote
         + (effectiveVerdict === 'escalate' && output.recommendation
@@ -4411,7 +4498,13 @@ async function handleReviewerOutcomeIfNeeded(
       // Fetch original task data for the retry
       const originalTask = await db.query.tasks.findFirst({
         where: eq(tasks.id, originalTaskId),
-        columns: { id: true, title: true, description: true, missionId: true, pathManifest: true },
+        columns: {
+          id: true, title: true, description: true, missionId: true, pathManifest: true,
+          // The attempt's identity (see attemptIdentityFrom): read in the same
+          // query rather than a second one.
+          backend: true, roleSlug: true, kind: true, complexity: true,
+          missionPhaseIndex: true, missionPhaseLabel: true,
+        },
       });
       if (!originalTask) {
         console.warn(`[reviewer] Cannot create retry: original task ${originalTaskId} not found`);
@@ -4443,6 +4536,8 @@ async function handleReviewerOutcomeIfNeeded(
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,
           taskClass: 'attempt',
+          // Same backend, role, routing kind and phase as the task it fixes.
+          ...attemptIdentityFrom(originalTask),
           reviewerRetryPrNumber: prNumber,
           reviewerRetryHeadSha: headSha,
           context: {
@@ -4514,7 +4609,7 @@ async function handleReviewerOutcomeIfNeeded(
       notify({
         app: 'alerts',
         title: `PR #${prNumber} escalated by reviewer`,
-        message: output.escalationReason ?? output.summary,
+        message: serverOverrideReason ?? output.escalationReason ?? output.summary,
         url: prUrl,
         urlTitle: 'View PR',
       });
@@ -4522,10 +4617,10 @@ async function handleReviewerOutcomeIfNeeded(
         installationId,
         repoFullName,
         prNumber,
-        entry: { kind: 'review_escalated', note: output.escalationReason ?? output.summary },
+        entry: { kind: 'review_escalated', note: serverOverrideReason ?? output.escalationReason ?? output.summary },
         workspaceId,
       });
-      console.log(`[reviewer] Escalated PR #${prNumber}: ${output.escalationReason ?? output.summary}`);
+      console.log(`[reviewer] Escalated PR #${prNumber}: ${serverOverrideReason ?? output.escalationReason ?? output.summary}`);
       break;
     }
   }

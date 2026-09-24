@@ -87,6 +87,13 @@ against that provider only.
   backend MUST NOT write them.
 - `getActiveBackendPauses` folds the legacy Claude signals into the same map, so
   callers never re-derive "is Claude walled" themselves.
+- A per-session dollar cap (the SDK's `maxBudgetUsd`) is NOT a wall. It is the
+  one task's own ceiling, reported with `sessionBudgetCapped: true` or the
+  legacy `error_max_budget_usd` / "Budget limit exceeded" text, and it MUST
+  fail that task only: no `backend_pauses` row, no `budget_exhausted_at`, no
+  `oauth_budget_episodes` insert, no failover. The provider-wall detector
+  (`isBudgetExhaustionError`, `packages/core/budget-error-classifier.ts`) does
+  not match dollar-cap texts; `isSessionBudgetCapError` does.
 
 **Acceptance criteria**:
 - AC-4: GIVEN a task with `backend='codex'` WHEN its worker reports a
