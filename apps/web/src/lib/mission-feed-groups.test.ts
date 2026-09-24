@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { buildMissionFeedGroups, NEEDS_YOU_VISIBLE_CAP, FUTURE_PHASE_VISIBLE_CAP, type FeedGroup } from './mission-feed-groups';
-import { buildPulseSegments, type MissionFeedTaskInput } from './mission-pulse';
+import { buildPulseSegments, pulseDoneCounts, type MissionFeedTaskInput } from './mission-pulse';
 
 // Illustrative fixtures only — no real mission or task data.
 let clock = Date.UTC(2026, 0, 1);
@@ -142,7 +142,20 @@ describe('phase fold defaults', () => {
     const [open] = phaseGroups(buildMissionFeedGroups([t('u1', { status: 'completed' }), t('u2')]).groups);
     expect(open).toMatchObject({ label: null, status: 'current', collapsed: false });
     const [done] = phaseGroups(buildMissionFeedGroups([t('u1', { status: 'completed' }), t('u2', { status: 'cancelled' })]).groups);
-    expect(done).toMatchObject({ label: null, status: 'finished', collapsed: true, done: 2, total: 2 });
+    // F3: a cancelled row is finished but not counted — done/total read 1/1, like the pulse.
+    expect(done).toMatchObject({ label: null, status: 'finished', collapsed: true, done: 1, total: 1 });
+  });
+
+  it('F3: a phase header counts like the pulse — cancelled rows are listed, never in done/total', () => {
+    const tasks = [
+      t('a', { ...BUILD, status: 'completed' }),
+      t('b', { ...BUILD, status: 'cancelled' }),
+      t('c', { ...BUILD }),
+    ];
+    const [build] = phaseGroups(buildMissionFeedGroups(tasks).groups);
+    expect(build).toMatchObject({ done: 1, total: 2 });
+    expect(build.items).toHaveLength(3);
+    expect(pulseDoneCounts(buildPulseSegments(tasks))).toEqual({ done: build.done, total: build.total });
   });
 
   it('within a phase: failed, queued-ready, queued-blocked ("after #x"), done — a pinned task leaves its slot at its own place (rule 4)', () => {

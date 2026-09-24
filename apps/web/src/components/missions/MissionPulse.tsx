@@ -199,7 +199,8 @@ function segmentClasses(seg: PulseSegment): string {
   if (seg.kind === 'phase') return PULSE_TOKEN_TRACK[token];
   // The ghost: a faint body with a pulsing trailing edge (inner span).
   if (seg.state === 'moving') return PULSE_TOKEN_TRACK[token];
-  if (seg.state === 'skipped') return `${PULSE_TOKEN_BG[token]} opacity-50`;
+  // Cancelled: hollow, so it never reads as queued grey, and it is not in n/N (F3).
+  if (seg.state === 'skipped') return 'bg-transparent ring-1 ring-inset ring-border-default';
   return PULSE_TOKEN_BG[token];
 }
 

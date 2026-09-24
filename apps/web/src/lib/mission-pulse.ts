@@ -160,7 +160,8 @@ export const PULSE_STATE_GLYPH: Record<PulseState, string> = {
   queued: '░',
   done: '▮',
   failed: '✕',
-  skipped: '░',
+  // Cancelled is not waiting to run: its own glyph, never queued's (F3).
+  skipped: '⊘',
 };
 
 /** Why a row is in NEEDS YOU. */
@@ -298,13 +299,20 @@ interface PulseSegmentBase {
   phaseLabel: string | null;
   /** Draw the 2px phase-boundary gap before this segment. */
   gapBefore: boolean;
-  /** 0..1 filled fraction — 1 for a task segment, the done fraction for a phase segment. */
+  /** 0..1 filled fraction — 1 for a task segment, `done / countable` for a phase segment. */
   fill: number;
 }
 
 export type PulseSegment =
   | (PulseSegmentBase & { kind: 'task' })
-  | (PulseSegmentBase & { kind: 'phase'; taskIds: string[] });
+  | (PulseSegmentBase & {
+      kind: 'phase';
+      taskIds: string[];
+      /** Rows in `done` state. */
+      done: number;
+      /** Rows that count toward N: every row but the cancelled ones. */
+      countable: number;
+    });
 
 const phaseKey = (t: MissionFeedTaskInput) =>
   t.missionPhaseIndex != null && t.missionPhaseLabel != null ? `p${t.missionPhaseIndex}` : 'none';
@@ -317,27 +325,60 @@ function aggregateState(states: PulseState[]): PulseState {
   return 'queued';
 }
 
-/** Done / total over rows (a folded phase segment counts its rows). */
+/**
+ * THE mission count (F3, "One count definition" in the design doc). Every
+ * surface that prints `n/N` — the detail header, the pulse, the card caption,
+ * the phase headers and Delivery's Integrated step — reads this, over the same
+ * rows:
+ *
+ * - rows are `foldMissionDeliverables` rows (D1): work tasks only, attempts and
+ *   cancelled/failed re-creations folded under their survivor, bookkeeping out;
+ * - N is every row except a cancelled one (`skipped`) — cancelled work was
+ *   never going to be delivered, so it neither pads N nor counts as done;
+ * - n is the rows in `done`: completed with no PR, a merged PR, or a closed one.
+ *   A completed task whose PR is still open is not done — it is yours to merge.
+ */
 export function pulseDoneCounts(segments: readonly PulseSegment[]): { done: number; total: number } {
   let done = 0;
   let total = 0;
   for (const s of segments) {
     if (s.kind === 'phase') {
-      total += s.taskIds.length;
-      done += Math.round(s.fill * s.taskIds.length);
-    } else {
+      total += s.countable;
+      done += s.done;
+    } else if (s.state !== 'skipped') {
       total += 1;
-      if (s.state === 'done' || s.state === 'skipped') done += 1;
+      if (s.state === 'done') done += 1;
     }
   }
   return { done, total };
 }
 
-/** The pulse's counts caption: `done/total`, plus `· N live` when agents are working. */
+/** `pulseDoneCounts`, from tasks, plus how many rows were left out as cancelled. */
+export function missionDeliverableCounts(tasks: readonly MissionFeedTaskInput[]): { done: number; total: number; cancelled: number } {
+  let done = 0;
+  let total = 0;
+  let cancelled = 0;
+  for (const row of foldMissionDeliverables(tasks).rows) {
+    const { state } = deriveFeedTaskState(row);
+    if (state === 'skipped') cancelled += 1;
+    else {
+      total += 1;
+      if (state === 'done') done += 1;
+    }
+  }
+  return { done, total, cancelled };
+}
+
+/**
+ * The pulse's counts caption: `done/total`, plus `· N live` when agents are
+ * working. Empty when nothing counts yet (F7a) — "0/0" says nothing.
+ */
 export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liveWorkers?: number } = {}): string {
   const { done, total } = pulseDoneCounts(segments);
   const live = opts.liveWorkers ?? 0;
-  return live > 0 ? `${done}/${total} · ${live} live` : `${done}/${total}`;
+  const liveText = live > 0 ? `${live} live` : '';
+  if (total === 0) return liveText;
+  return liveText ? `${done}/${total} · ${liveText}` : `${done}/${total}`;
 }
 
 /**
@@ -374,12 +415,13 @@ export function buildPulseSegments(tasks: readonly MissionFeedTaskInput[], ctx: 
   return phases.map((p, i) => {
     const first = p.items[0].row.task;
     const states = p.items.map(x => x.state);
-    const done = states.filter(s => s === 'done' || s === 'skipped').length;
+    const done = states.filter(s => s === 'done').length;
+    const countable = states.filter(s => s !== 'skipped').length;
     return {
       kind: 'phase' as const, taskId: first.id, taskIds: p.items.map(x => x.row.task.id),
       state: aggregateState(states),
       phaseIndex: first.missionPhaseIndex ?? null, phaseLabel: first.missionPhaseLabel ?? null,
-      gapBefore: i > 0, fill: done / p.items.length,
+      gapBefore: i > 0, fill: countable > 0 ? done / countable : 0, done, countable,
     };
   });
 }
