@@ -1672,7 +1672,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; skillBundles?: SkillBundle[] },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1837,6 +1837,10 @@ export class WorkerManager {
     if (claimedWorker.roleInstructions?.content) {
       worker.roleInstructions = claimedWorker.roleInstructions;
       console.log(`[Worker ${claimedWorker.id}] Received role persona: ${claimedWorker.roleInstructions.slug} (${claimedWorker.roleInstructions.content.length} chars)`);
+    }
+    if (claimedWorker.skillBundles && claimedWorker.skillBundles.length > 0) {
+      worker.skillBundles = claimedWorker.skillBundles;
+      console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.skillBundles.length} skill bundle(s): ${claimedWorker.skillBundles.map(b => b.slug).join(', ')}`);
     }
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
@@ -2650,8 +2654,11 @@ export class WorkerManager {
           )
         : [];
 
-      // Sync skills to disk for native SDK discovery (no prompt injection)
-      const skillBundles = (task.context as any)?.skillBundles as SkillBundle[] | undefined;
+      // Sync skills to disk for native SDK discovery (no prompt injection).
+      // Bundles arrive on the claim response (worker.skillBundles), resolved
+      // from task.context.skillSlugs by attachSkillBundles server-side —
+      // never on task.context itself, which only ever carries the slugs.
+      const skillBundles = worker.skillBundles;
       const skillSlugs: string[] = (task.context as any)?.skillSlugs || [];
 
       if (skillBundles && skillBundles.length > 0) {

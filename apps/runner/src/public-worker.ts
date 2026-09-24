@@ -112,6 +112,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   commandLifecycle: true,
   modelCapabilities: true,
   roleInstructions: true,
+  skillBundles: true,
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
