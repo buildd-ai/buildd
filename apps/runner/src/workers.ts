@@ -259,18 +259,21 @@ function buildUserMessage(
 }
 
 // The one instruction given on a resumed "closing turn" — see startSession's
-// isClosingTurn handling. Deliberately does not restate the task, output
-// requirement, or handoff obligations: those already render into the prompt
-// from the (unmodified) task fields buildPromptWithComposition reads, so
-// repeating them here would just be a second copy to drift out of sync.
+// isClosingTurn handling. It is the ENTIRE prompt of that resumed turn: the
+// original task prompt (output requirement, handoff obligations, workflow
+// sections) is already in the resumed session's history, so the closing turn
+// must not rebuild and re-send it. Deliberately does not restate those
+// obligations either — it points back at them instead of keeping a second
+// copy that could drift out of sync.
 const CLOSING_TURN_INSTRUCTION =
   'Your last session ended without calling `complete_task`. You have one ' +
   'short closing turn to fix that: call `complete_task` now with a factual summary of ' +
   'what you actually delivered (including the PR or artifact link, if any), ' +
-  'plus every structured field described above this task requires — the ' +
-  '`plan` array if this is a planning task, your `handoff` object if one is ' +
-  'requested, and any other field named by the Output Requirement section. ' +
-  'Do no other work — no new investigation, no additional edits.';
+  'plus every structured field the original task prompt earlier in this ' +
+  'conversation requires — the `plan` array if this is a planning task, your ' +
+  '`handoff` object if one is requested, and any other field named by its ' +
+  'Output Requirement section. Do no other work — no new investigation, no ' +
+  'additional edits.';
 
 /**
  * SDK maxTurns for a closing turn. The SDK counts model round trips, and
@@ -2459,9 +2462,12 @@ export class WorkerManager {
    * closing turn (see CLOSING_TURN_INSTRUCTION), not a fresh dispatch or an
    * ordinary follow-up resume. Gates two things: the closing-turn decision
    * itself never fires twice (no recursion past depth 1), and maxTurns is
-   * forced to exactly 1 regardless of the task/workspace configured cap.
+   * forced to CLOSING_TURN_MAX_TURNS regardless of the task/workspace cap.
+   * @param carriedStructuredOutput Closing turn only: the structured output
+   * the main session already produced, so the closing turn's completion
+   * payload still carries it even if the resumed turn emits none.
    */
-  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false) {
+  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
@@ -2522,6 +2528,9 @@ export class WorkerManager {
     // a thrown backend error (see guardClosingTurnStream): the reason it
     // didn't land, recorded as `declined:<reason>`.
     let closingTurnFailure: 'max_turns' | 'error' | undefined;
+    // Hoisted above the try for the same reason as resultSubtype: the catch
+    // block's turn-budget closing turn must carry it forward.
+    let structuredOutput: Record<string, unknown> | undefined = carriedStructuredOutput;
 
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
@@ -4010,6 +4019,12 @@ export class WorkerManager {
         }
       }
 
+      // A closing turn resumes a session whose history already holds the full
+      // task prompt. Send ONLY the closing instruction — rebuilding the prompt
+      // re-sent every section (workflow, output requirement, memory) as if it
+      // were a fresh task, inviting the model to start over.
+      if (isClosingTurn) promptText = CLOSING_TURN_INSTRUCTION;
+
       // One composition record per prompt build — what the workspace-memory
       // block cost, on the durable rail the concluded memory-digest
       // experiment left behind (see memory-digest-policy.ts).
@@ -4045,7 +4060,7 @@ export class WorkerManager {
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
-      const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
+      const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0 && !isClosingTurn
         ? (async function* () {
             yield buildUserMessage([
               { type: 'text', text: promptText },
@@ -4087,7 +4102,6 @@ export class WorkerManager {
       // Stream responses, nudging the agent while the session is still alive
       // when an explicit output requirement (PR/artifact) isn't met yet.
       // (resultSubtype itself is declared above the try — see comment there.)
-      let structuredOutput: Record<string, unknown> | undefined;
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
 
@@ -4370,6 +4384,16 @@ export class WorkerManager {
           closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker))
             ? 'authored'
             : closingTurnFailure ? `declined:${closingTurnFailure}` : 'declined';
+        } else if (structuredOutput) {
+          // The session authored its outcome through the SDK's structured
+          // output (a task with an outputSchema, e.g. a reviewer verdict) —
+          // that IS the result, delivered in the completion payload below.
+          // Such sessions never call complete_task, so "not terminal on the
+          // server" is expected here, not a missing outcome. A closing turn
+          // would prompt the agent to call complete_task, and that call
+          // carries no structuredOutput — terminalising the worker without
+          // the verdict and refusing this payload, which has it.
+          closingTurnOutcome = 'skipped:structured_output';
         } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
           if (!resumeId) {
@@ -4379,7 +4403,7 @@ export class WorkerManager {
             this.addMilestone(worker, { type: 'status', label: 'Session ended without complete_task — giving one closing turn', ts: Date.now() });
             const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
             delegatedToClosingTurn = true;
-            await this.startSession(worker, cwd, closingTask, resumeId, true);
+            await this.startSession(worker, cwd, closingTask, resumeId, true, structuredOutput);
             // The nested call above owns this worker's entire completion
             // lifecycle from here (its own post-loop logic runs this exact
             // branch again with isClosingTurn=true, decides authored vs
@@ -4764,7 +4788,7 @@ export class WorkerManager {
           this.addMilestone(worker, { type: 'status', label: 'Max turns reached — giving one closing turn', ts: Date.now() });
           const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
           delegatedToClosingTurn = true;
-          await this.startSession(worker, cwd, closingTask, resumeId, true);
+          await this.startSession(worker, cwd, closingTask, resumeId, true, structuredOutput);
           return; // nested call owns the rest of this worker's lifecycle
         }
         // No resume id — fall through to the generic error handling below,

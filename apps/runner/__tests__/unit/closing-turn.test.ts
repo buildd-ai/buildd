@@ -483,4 +483,63 @@ describe('closing turn', () => {
     expect(call!.payload.summarySource).toBe('fallback');
     expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:max_turns');
   });
+  // ── Structured-output tasks (outputSchema, e.g. reviewer verdicts) ───────
+  // Such a task authors its outcome through the SDK's structured output and
+  // never calls complete_task. Resuming it for a closing turn prompted the
+  // agent to call complete_task, which carries no structuredOutput — the
+  // worker went terminal without the verdict, the runner's payload (which
+  // had it) was refused, and the task failed its verdict check.
+
+  const reviewSchema = { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] };
+
+  test('a session that produced structured output completes with it and never gets a closing turn', async () => {
+    const verdict = { verdict: 'approve', summary: 'LGTM' };
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Review done.'), { ...successResult('sess-1'), structured_output: verdict }],
+      // Consumed only if a closing turn were (wrongly) attempted.
+      [completeTaskToolUse(), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-structured', { outputSchema: reviewSchema });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.structuredOutput).toEqual(verdict);
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('skipped:structured_output');
+  });
+
+  test('a closing turn that does run still completes with the main session structured output', async () => {
+    const verdict = { verdict: 'request_changes' };
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Review done.'), { ...maxTurnsResult('sess-1'), structured_output: verdict }],
+      [assistantText('Not calling complete_task.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-structured-carried', { outputSchema: reviewSchema });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.structuredOutput).toEqual(verdict);
+  });
+
+  test('the closing turn sends only the closing instruction, not a rebuilt task prompt', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-prompt', { description: 'UNIQUE-ORIGINAL-DESCRIPTION' });
+
+    expect(runStreamedCalls.length).toBe(2);
+    expect(String(runStreamedCalls[0].prompt)).toContain('UNIQUE-ORIGINAL-DESCRIPTION');
+    const closingPrompt = runStreamedCalls[1].prompt;
+    expect(typeof closingPrompt).toBe('string');
+    expect(closingPrompt.startsWith('Your last session ended without calling `complete_task`.')).toBe(true);
+    expect(closingPrompt).not.toContain('UNIQUE-ORIGINAL-DESCRIPTION');
+    expect(closingPrompt).not.toContain('## ');
+  });
 });
