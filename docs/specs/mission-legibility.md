@@ -2,15 +2,20 @@
 title: Mission Legibility
 status: active
 owner: builder
-last_verified: 2026-09-16
+last_verified: 2026-09-23
 summary: A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 domain: surfaces
-surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx]
-related: [timeline-mobile-rail, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
+surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/mission-feed-groups.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx"]
+related: [mission-feed, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
 keywords: [phase, work kind, role slug, glyph, reviewer role, unassigned, swimlane, phase header, approve_plan, usage stats]
-verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"]
+verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/components/missions/MissionTaskRow.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
+# 2026-09-23: §4's mobile surface moved from the retired rail to the mission
+# feed (mission-feed.md). Phase header rows now render in MissionFeedList
+# (`mission-phase-header`) and the kind glyph in MissionTaskRow, both through
+# the same stored phase fields and deriveWorkKind. The render-test assertion
+# follows them; §1–§3 are unchanged.
 assertions:
   - id: "work-kind-derivation"
     type: "symbol"
@@ -28,9 +33,13 @@ assertions:
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
     entry: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx"
-  - id: "rail-phase-render-tests"
+  - id: "feed-phase-render-tests"
     type: "test_file"
-    path: "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx"
+  - id: "feed-row-glyph-reads-work-kind"
+    type: "symbol_reachable"
+    symbol: "deriveWorkKind"
+    entry: "apps/web/src/components/missions/MissionTaskRow.tsx"
   - id: "structure-glyph-render-tests"
     type: "test_file"
     path: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"
@@ -647,6 +656,15 @@ legibility instead.
 ---
 
 ## 4. Rendering rules for the mobile rail
+
+> **The rail is retired (2026-09-23).** Below md the mission page renders
+> `MissionFeedList` (`mission-feed.md`). What this section requires survives
+> there: one header row per stored phase, in phase order, labelled
+> `ordinal · LABEL` with its done/total rollup, no header for a mission with no
+> phased task, and the kind glyph from `deriveWorkKind` on every row
+> (`MissionTaskRow`). The rail-specific geometry below (gutter, square node,
+> ticks under phases, the 18px column reservation) no longer renders and is
+> kept as history.
 
 Everything in this section is scoped, like `timeline-mobile-rail.md`, to the
 render path below the `md` breakpoint (768px). Desktop Timeline is unchanged

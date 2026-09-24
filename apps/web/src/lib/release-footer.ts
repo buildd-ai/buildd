@@ -65,6 +65,7 @@ export async function loadReleaseFooterData(workspace: ReleaseFooterWorkspace): 
           ? derivedValue(queueRow.oldestMergedAt)
           : derivedUnavailable<string>('no_scope'),
       baselineSource: baseline.source,
+      baselineAsOf: baseline.asOf,
       releaseId: latestRelRow?.id ?? null,
     };
   }

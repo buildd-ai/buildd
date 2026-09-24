@@ -317,6 +317,29 @@ function aggregateState(states: PulseState[]): PulseState {
   return 'queued';
 }
 
+/** Done / total over rows (a folded phase segment counts its rows). */
+export function pulseDoneCounts(segments: readonly PulseSegment[]): { done: number; total: number } {
+  let done = 0;
+  let total = 0;
+  for (const s of segments) {
+    if (s.kind === 'phase') {
+      total += s.taskIds.length;
+      done += Math.round(s.fill * s.taskIds.length);
+    } else {
+      total += 1;
+      if (s.state === 'done' || s.state === 'skipped') done += 1;
+    }
+  }
+  return { done, total };
+}
+
+/** The pulse's counts caption: `done/total`, plus `· N live` when agents are working. */
+export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liveWorkers?: number } = {}): string {
+  const { done, total } = pulseDoneCounts(segments);
+  const live = opts.liveWorkers ?? 0;
+  return live > 0 ? `${done}/${total} · ${live} live` : `${done}/${total}`;
+}
+
 /**
  * Build the pulse from a mission's tasks (any mix — non-deliverables are
  * dropped by `foldMissionDeliverables`). The same output feeds every size

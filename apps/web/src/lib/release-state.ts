@@ -57,6 +57,8 @@ export type ReleaseState =
       queueDepth: number;
       oldestMergedAt: string | null;
       releaseId: string | null;
+      /** The baseline instant the queue is measured from (merges at or before it have shipped). */
+      baselineAsOf?: string | null;
     }
   | {
       state: 'unseeded';
@@ -114,6 +116,7 @@ export function classifyReleaseState(input: {
       queueDepth: data.queueDepth.value,
       oldestMergedAt: data.oldestMergedAt.kind === 'value' ? data.oldestMergedAt.value : null,
       releaseId: data.releaseId,
+      ...(data.baselineAsOf ? { baselineAsOf: data.baselineAsOf } : {}),
     };
   }
 

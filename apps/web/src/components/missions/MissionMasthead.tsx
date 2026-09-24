@@ -25,7 +25,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { PulseSegment } from '@/lib/mission-pulse';
 import type { MissionSituation } from '@/lib/mission-state-view';
-import MissionPulse, { pulseDoneCounts } from './MissionPulse';
+import MissionPulse from './MissionPulse';
 import { MissionSituationLine } from './MissionSituationBlock';
 
 /**
@@ -43,12 +43,9 @@ export function nextMastheadFolded(prev: boolean, scrollTop: number): boolean {
   return scrollTop > FOLD_AT_PX;
 }
 
-/** `done/total`, plus `· N live` when agents are working. */
-export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liveWorkers?: number } = {}): string {
-  const { done, total } = pulseDoneCounts(segments);
-  const live = opts.liveWorkers ?? 0;
-  return live > 0 ? `${done}/${total} · ${live} live` : `${done}/${total}`;
-}
+// Pure, so it lives in the plain model module where a server component can
+// call it; re-exported here for the masthead's existing importers.
+export { buildPulseCaption } from '@/lib/mission-pulse';
 
 export interface MastheadChip {
   label: string;
@@ -91,6 +88,11 @@ export interface MissionMastheadProps {
   onStep?: (dir: 'prev' | 'next') => void;
   /** taskId → label for the pulse's scrub label. */
   segmentLabels?: Readonly<Record<string, string>>;
+  /**
+   * sticky: classes for the header pulse alone (the caption stays). Mission
+   * detail passes `md:hidden`, because at md+ the time-axis strip replaces it.
+   */
+  pulseClassName?: string;
   className?: string;
 }
 
@@ -166,7 +168,7 @@ function StepLink({ dir, href, onStep }: { dir: 'prev' | 'next'; href: string | 
 export default function MissionMasthead(props: MissionMastheadProps) {
   const {
     size, title, chip, segments, situation, caption, href, primary, back, verified, actions, expand,
-    selectedTaskId, position, onStep, segmentLabels, className = '',
+    selectedTaskId, position, onStep, segmentLabels, pulseClassName = '', className = '',
   } = props;
   const { ref, folded } = useFoldOnScroll(size === 'sticky');
 
@@ -251,8 +253,8 @@ export default function MissionMasthead(props: MissionMastheadProps) {
           </div>
         )}
         <div className="flex items-center gap-2">
-          <MissionPulse variant="header" segments={segments} connected segmentLabels={segmentLabels} className="flex-1" />
-          {caption && <span className="shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
+          <MissionPulse variant="header" segments={segments} connected segmentLabels={segmentLabels} className={`flex-1 ${pulseClassName}`} />
+          {caption && <span className="ml-auto shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
           {expand}
         </div>
       </header>

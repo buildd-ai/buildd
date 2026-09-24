@@ -1,8 +1,9 @@
 ---
 title: Mobile Timeline Rail
-status: active
+status: superseded
+superseded_by: mission-feed
 owner: builder
-last_verified: 2026-09-21
+last_verified: 2026-09-23
 summary: Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx, apps/web/src/lib/attempt-strip.ts]
@@ -10,6 +11,12 @@ related: [timeline-dependency-geometry, mission-structure-view, mission-task-lif
 keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge, criteria evaluator, verification task, bookkeeping footer]
 verified_by: [apps/web/src/lib/condensed-timeline.test.ts, apps/web/src/lib/condensed-timeline-rail.test.ts, apps/web/src/lib/attempt-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx]
 supersedes: []
+# Superseded 2026-09-23 by mission-feed.md (slice S3 of
+# docs/design/mission-feed-mobile-continuity.md): below md the mission page now
+# renders MissionFeedList, and CondensedTimeline no longer renders the rail. The
+# rail's pure model (buildRail in lib/condensed-timeline.ts) and its model tests
+# remain until a follow-up removes them; the build-rail-reachable assertion
+# below no longer holds and is kept only as history.
 # Promoted from draft to active 2026-09-21. The prior Tier-3 weekly cron pass
 # (docs/design/spec-conformance.md §Tier 3) checked only the v1-baseline Code
 # surface (the three symbol assertions below) and deliberately left promotion
@@ -45,6 +52,9 @@ assertions:
 ---
 
 # Mobile Timeline Rail
+
+> **Superseded** by [`mission-feed.md`](mission-feed.md). The rail is no longer
+> rendered on the mission page; this document is kept as history.
 
 **Capability statement**: On a viewport narrower than the `md` breakpoint
 (768px — the same threshold `mission-structure-view.md` Rule MOB-1 uses to hide
