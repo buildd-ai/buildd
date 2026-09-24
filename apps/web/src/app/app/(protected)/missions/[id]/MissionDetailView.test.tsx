@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { ReactNode } from 'react';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionDelivery from './MissionDelivery';
 import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
@@ -26,7 +27,7 @@ const situation = {
   derivedFrom: 'mission.status' as const,
 };
 
-function renderMission(tasks: MissionFeedTaskInput[]) {
+function renderMission(tasks: MissionFeedTaskInput[], description?: ReactNode) {
   const segments = buildPulseSegments(tasks);
   return renderToStaticMarkup(
     <MissionDetailView
@@ -36,6 +37,7 @@ function renderMission(tasks: MissionFeedTaskInput[]) {
       segments={segments}
       caption="6/15"
       back={{ label: 'Home', href: '/app/home' }}
+      description={description}
       situation={<MissionSituationBlock missionId="mission-1" situation={situation as any} because={[]} />}
       delivery={
         <MissionDelivery
@@ -67,6 +69,17 @@ describe('MissionDetailView — the answer before the evidence (AC-1)', () => {
       expect(delivery).toBeLessThan(firstRow);
     });
   }
+});
+
+describe('MissionDetailView — the description has one place (F5)', () => {
+  it('renders the description once, between the masthead and the situation', () => {
+    const html = renderMission(fixtureMission(3), <div data-testid="mission-description" />);
+    expect(count(html, 'data-testid="mission-description"')).toBe(1);
+    const masthead = html.indexOf('data-testid="mission-masthead"');
+    const description = html.indexOf('data-testid="mission-description"');
+    expect(masthead).toBeLessThan(description);
+    expect(description).toBeLessThan(html.indexOf('data-testid="mission-situation"'));
+  });
 });
 
 describe('MissionDetailView — one list (AC-2) and slot markers (AC-3)', () => {

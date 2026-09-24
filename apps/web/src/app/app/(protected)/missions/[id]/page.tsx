@@ -23,6 +23,7 @@ import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
+import MissionDescription from './MissionDescription';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import CondensedTimeline from './CondensedTimeline';
@@ -1166,13 +1167,9 @@ export default async function MissionDetailPage({
         readonly={isTerminal}
       />
 
-      {/* Title and description — edited here; the masthead shows the title. */}
-      <MissionInlineEdit
-        missionId={id}
-        initialTitle={mission.title}
-        initialDescription={mission.description}
-        healthPill={null}
-      />
+      {/* Rename only: the masthead shows the title, the description has its
+          own place under the masthead (MissionDescription). */}
+      <MissionInlineEdit missionId={id} initialTitle={mission.title} />
 
       {/* Monitoring toggle — schedules only */}
       {scheduleCron && !['completed', 'archived'].includes(mission.status) && (
@@ -1325,6 +1322,7 @@ export default async function MissionDetailPage({
         )}
         expand={<MissionStripExpand data={flightStripData} missionId={id} missionTitle={mission.title} />}
         desktopStrip={<MissionFlightStripInline data={flightStripData} />}
+        description={<MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} />}
         situation={situation}
         delivery={delivery}
         feed={{
