@@ -8645,6 +8645,65 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedSet.currentAction).toBe('Reading main.ts');
     });
 
+    // Mission live store (docs/design/mission-feed-mobile-continuity.md, S7):
+    // the MOVING rows' live line is patched from the thin progress event, so
+    // the (already redacted / masked) currentAction travels on it.
+    it('the thin workspace progress event carries currentAction', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Reading main.ts' },
+      });
+      await PATCH(req, { params: mockParams });
+
+      const progress = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
+      expect(progress?.[2]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', currentAction: 'Reading main.ts' });
+    });
+
+    it('the progress event carries the masked action for a sensitive workspace, and nothing when none was sent', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Opening the customer ledger' },
+      }), { params: mockParams });
+      const masked = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
+      expect(masked?.[2]?.currentAction).toBe('working');
+      expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain('customer ledger');
+
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      }), { params: mockParams });
+      const bare = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
+      expect(bare?.[2]).toBeDefined();
+      expect('currentAction' in bare![2]).toBe(false);
+    });
+
     it('redacts a registered secret before DB persistence and Pusher emission', async () => {
       const exposed = 'cue-dispatch-secret-value-123456';
       let capturedSet: any = null;
