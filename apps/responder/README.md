@@ -1,7 +1,7 @@
 # `@buildd/responder` — autonomous incident responder, observe-only
 
 A small daemon whose defining property is that **it does not depend on the
-system it watches.** It detects two conditions, records evidence, and pages.
+system it watches.** It detects three conditions, records evidence, and pages.
 It takes no action of any kind.
 
 Design: `docs/design/autonomous-incident-responder.md` (items 3 and 4 of the
@@ -35,9 +35,38 @@ second phase — it does not repair anything.
 |---|---|---|
 | `dispatch-stall` | `cron_runs` rows for `queue-stall:fleet-idle` (read-only) | 2 consecutive hourly runs each report a non-zero alarm count |
 | `claim-error-rate` | Its own non-claiming probe of `POST /api/workers/claim` | 3 or more 5xx/unreachable responses within 60 minutes |
+| `role-regression` | `cron_runs` rows for `role-outcomes` (read-only) | One role: >= 4 recent outcomes, <= 20% succeeded in the last hour, one error signature >= 60% of those failures, against >= 70% success over the prior 24h (n >= 10) |
 
-Both thresholds are derived from observed cadence, not chosen — the derivations
-are in the header comment of each detector module and are asserted by tests.
+The first two thresholds are derived from observed cadence, not chosen; the
+role-regression defaults are argued in its module header and are overridable.
+All are asserted by tests.
+
+### Role regression after a change
+
+Built after a runner release took one role from all-succeeding to
+all-failing on one identical error, under the generic exit cause, and nobody
+was paged for most of a working day. A trickle of one role's failures is
+invisible in any fleet-wide failure view; against that role's own yesterday it
+is a cliff.
+
+The platform aggregates, the responder judges. `GET /api/cron/role-outcomes`
+(hourly, all 24 hours) records per-role counts for the last hour and the prior
+24h into `cron_runs`, excluding failures that say nothing about the role's work
+(budget/usage, auth, never-started, server refusals, bookkeeping exits), plus
+the runner builds on live heartbeats and the web deploy sha. Contract:
+`packages/core/role-outcomes-feed.ts`. So the feed role still needs `SELECT`
+on `cron_runs` and nothing else.
+
+The page names the role, recent vs baseline success, the dominant signature
+(the same normalization `get_failure_analytics` uses, so it can be pasted
+straight into `error=`), when it began, and the key line — *"Started 20–80 min
+after runner build X (changed from Y between T0 and T1)"*, bracketed by the two
+hourly feed rows around the change, because that is the resolution the data
+honestly has. A change that postdates the onset is reported as not the cause.
+
+`warming` (silent) when the shape is there but the role has fewer than the
+baseline minimum outcomes in the prior day: there is no "before" to regress
+from.
 
 Every verdict is one of four states. `clear` and `firing` are the obvious two.
 `blind` means *the input this detector needs is missing or stale when it should
@@ -81,7 +110,7 @@ No default points at production. Every address is explicit.
 | `BUILDD_RESPONDER_APP_URL` | yes | Base URL of the platform to probe |
 | `BUILDD_RESPONDER_API_KEY` | yes | Key for the claim probe. Authenticates; cannot claim |
 | `PUSHOVER_USER` + `PUSHOVER_TOKEN` (or `PUSHOVER_TOKEN_ALERT`) | yes | Notification path. Startup fails without it |
-| `BUILDD_RESPONDER_CRON_RUNS_URL` | for `dispatch-stall` | **Read-only** Postgres URL. Without it that detector reports `blind` |
+| `BUILDD_RESPONDER_CRON_RUNS_URL` | for `dispatch-stall`, `role-regression` | **Read-only** Postgres URL. Without it those detectors report `blind` |
 | `BUILDD_RESPONDER_STATE_DIR` | no | Local state. Default `$BUILDD_HOME/responder`, else `~/.buildd/responder` |
 | `BUILDD_RESPONDER_RUNNER_URL` | no | Runner's local HTTP base, e.g. `http://127.0.0.1:8766` |
 | `BUILDD_RESPONDER_RUNNER_TOKEN` | no | Only if that port is viewer-protected |
@@ -91,6 +120,11 @@ No default points at production. Every address is explicit.
 | `BUILDD_RESPONDER_SAMPLE_RETENTION_HOURS` | no | Default 6 |
 | `BUILDD_RESPONDER_NARRATIVE_MODEL` | no | Default: the premium tier model (`TIER_DEFAULTS.premium` in `packages/core/model-tier-defaults.ts`) |
 | `BUILDD_RESPONDER_NARRATIVE_TIMEOUT_MS` | no | Default 20000 |
+| `BUILDD_RESPONDER_ROLE_MIN_RECENT` | no | Default 4 — recent chargeable outcomes before a role is judged |
+| `BUILDD_RESPONDER_ROLE_RECENT_FLOOR_PCT` | no | Default 20 — recent success at or below this is failing |
+| `BUILDD_RESPONDER_ROLE_BASELINE_BAR_PCT` | no | Default 70 — baseline success must be at least this to call it a regression |
+| `BUILDD_RESPONDER_ROLE_BASELINE_MIN` | no | Default 10 — baseline outcomes below this is `warming` |
+| `BUILDD_RESPONDER_ROLE_DOMINANT_SHARE_PCT` | no | Default 60 — one signature's share of recent failures |
 
 `DATABASE_URL` is **not** read. The feed has its own variable so the
 responder's connection string can be a read-only role, and so inheriting a
@@ -159,8 +193,12 @@ thing to maintain — and an unmaintained watcher is the worse outcome.
 Whatever runs it, two things are worth doing on day one:
 
 - **Verify it can page.** Run one cycle with no `BUILDD_RESPONDER_CRON_RUNS_URL`
-  configured: `dispatch-stall` reports `blind`, which pages. A responder whose
+  configured: `dispatch-stall` and `role-regression` report `blind`, which pages. A responder whose
   notification path has never fired is indistinguishable from one that cannot.
+- **Verify the feeds exist.** `role-regression` reads a cron job that only
+  runs once the external scheduler has it (`bun run cron:sync` after the web
+  deploy that adds `/api/cron/role-outcomes`). Until then it reports `blind`
+  with reason `no_runs_in_feed` — correct, and a page, not a silence.
 - **Verify the evidence log is being written** where you expect, and prune it.
   Files rotate by UTC day (`evidence-YYYY-MM-DD.jsonl`); nothing in this app
   deletes them.
@@ -176,7 +214,7 @@ which is the same separation property as everything above.
   would enable one. Actions are a later phase, each behind its own flag and its
   own bound. Speculative action code is how an observe-only mode becomes an
   acting one by accident.
-- **A third detector.** Only the two conditions this incident justifies. A
+- **A speculative detector.** Only conditions a real incident justifies. A
   detector with no real failure behind it is a false positive waiting to
   happen, and one false positive is how a whole suite gets muted.
 - **Any deployment wiring.** See above.

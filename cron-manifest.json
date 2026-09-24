@@ -66,6 +66,13 @@
       "method": "POST"
     },
     {
+      "$comment": "Role-outcomes feed. Records each role's terminal outcomes over the last hour against the prior 24h, plus runner builds on live heartbeats and the web deploy sha, into cron_runs. Judges nothing and notifies nobody: its only consumer is the out-of-band responder's role-regression detector (apps/responder), whose sole production access is SELECT on cron_runs \u2014 so the platform supplies counts and the watcher supplies the thresholds and the page. Exists because after a runner release one role went from all-succeeding to all-failing on one identical error and nobody was paged for most of a working day. ALL 24 HOURS on the hour: the recent window is exactly 60 minutes so runs tile with no gap, that incident ran overnight, and :00 lands inside the wake window the schedules tick and fleet-idle already open. Pure aggregates, no network. `changed` = role buckets recorded (work polarity, declared in CRON_JOB_REGISTRY).",
+      "title": "Buildd: Role Outcomes Feed",
+      "path": "/api/cron/role-outcomes",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Mission-state invariant sweep. Eleven named invariants over mission/task/worker/release state; ten report-only, one (orphaned_integration_base) files a deduped friction task. Hourly, because every threshold in the route is hours-to-days and the target is 'caught the same working day' — finer would cost Neon wake time for no detection gain. Daytime only (EST) like the other DB-touching jobs; the tightest threshold is 15m, so an overnight breach is reported at 07:00. A healthy fleet costs one set of queries and spawns nothing.",
       "title": "Buildd: Mission Invariant Sweep",
       "path": "/api/cron/mission-invariants",

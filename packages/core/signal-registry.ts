@@ -199,6 +199,27 @@ export const SIGNAL_REGISTRY: SignalRegistryEntry[] = [
       trackedBy: 'buildd-ai/infrastructure repo: scripts/disk-cleanup.sh (docker_root_dir) + scripts/disk-cleanup.test.sh (fire-test, wired into that repo\'s CI)',
     },
   },
+  {
+    slug: 'responder-role-regression',
+    name: 'Responder role-regression detector',
+    watches:
+      "Per role (tasks.role_slug, NULL as its own bucket): the last hour's terminal outcomes against the " +
+      'prior 24h, from the role-outcomes cron feed, excluding budget/usage, auth, never-started, ' +
+      'server-refused and bookkeeping exits',
+    threshold:
+      'All of: >= 4 recent chargeable outcomes, recent success <= 20%, baseline success >= 70% over >= 10 ' +
+      'baseline outcomes, and one normalized error signature >= 60% of recent failures (all overridable ' +
+      'via BUILDD_RESPONDER_ROLE_* env). Built after one role went from all-succeeding to all-failing on ' +
+      'one identical signature right after a runner release, under the generic exit cause, and nobody ' +
+      'was paged for most of a working day. The success-rate cliff against the role\'s OWN baseline is ' +
+      'what separates that from a role that is always noisy; the dominant signature is what separates ' +
+      'it from a bad batch of unrelated tasks.',
+    location: 'apps/responder/src/detectors/role-regression.ts#createRoleRegression',
+    fireTest: {
+      file: 'apps/responder/src/detectors/role-regression.test.ts',
+      title: 'fires on the incident shape: one role, one signature, a cliff against its own baseline',
+    },
+  },
 ];
 
 /**
@@ -296,6 +317,16 @@ export const CRON_JOB_REGISTRY: CronJobRegistryEntry[] = [
       file: 'apps/web/src/app/api/cron/queue-stall/route.test.ts',
       title: 'alarms when a heartbeating fleet has claimable work and has started nothing',
     },
+  },
+  {
+    // Declared rather than defaulted: this job feeds a detector, so it is the
+    // one most likely to be mis-declared `findings` by analogy — which would
+    // invert its health check and page on every busy hour.
+    slug: 'role-outcomes-feed',
+    job: 'role-outcomes',
+    name: 'Role-outcomes feed for the responder',
+    changedPolarity: 'work',
+    changedMeaning: 'role buckets recorded this run (roles with a terminal outcome in the last hour), not problems found',
   },
 ];
 

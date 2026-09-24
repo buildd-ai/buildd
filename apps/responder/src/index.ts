@@ -26,7 +26,7 @@
 
 import { loadConfig } from './config';
 import { runCycle } from './cycle';
-import { DETECTORS } from './detectors';
+import { buildDetectors } from './detectors';
 import { loadState, saveState } from './evidence';
 import { modelNarrator, noNarrator } from './narrative';
 import { pushoverNotifier } from './notify';
@@ -45,6 +45,7 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  const detectors = buildDetectors({ roleRegression: config.roleRegression });
   const notify = pushoverNotifier(config.notify);
   const narrate = config.narrative
     ? modelNarrator(config.narrative, {
@@ -54,7 +55,7 @@ async function main(): Promise<number> {
     : noNarrator;
 
   console.log(
-    `[responder] observe-only. detectors=${DETECTORS.map(d => d.id).join(',')} ` +
+    `[responder] observe-only. detectors=${detectors.map(d => d.id).join(',')} ` +
       `state=${config.stateDir} narrative=${config.narrative?.kind ?? 'none'} ` +
       `cronFeed=${config.cronRunsUrl ? 'configured' : 'absent'} ` +
       `mode=${once ? 'once' : `loop/${config.intervalSeconds}s`}`,
@@ -75,7 +76,7 @@ async function main(): Promise<number> {
       state = observed.state;
       const result = await runCycle({
         stateDir: config.stateDir,
-        detectors: DETECTORS,
+        detectors,
         snapshot: observed.snapshot,
         state,
         now,

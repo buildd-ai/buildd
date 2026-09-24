@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig, MISSING_NOTIFY_MESSAGE } from './config';
 import { TIER_DEFAULTS } from '../../../packages/core/model-tier-defaults';
+import { DEFAULT_ROLE_REGRESSION } from './detectors/role-regression';
 
 const MINIMAL = {
   BUILDD_RESPONDER_STATE_DIR: '/tmp/responder-test',
@@ -84,6 +85,28 @@ describe('loadConfig', () => {
     );
     expect(() => loadConfig({ ...MINIMAL, BUILDD_RESPONDER_INTERVAL_SECONDS: '0' })).toThrow(
       /BUILDD_RESPONDER_INTERVAL_SECONDS/,
+    );
+  });
+
+  test('role-regression thresholds default to the detector\'s own and can be overridden', () => {
+    expect(loadConfig(MINIMAL).roleRegression).toEqual({ ...DEFAULT_ROLE_REGRESSION });
+    const cfg = loadConfig({
+      ...MINIMAL,
+      BUILDD_RESPONDER_ROLE_MIN_RECENT: '6',
+      BUILDD_RESPONDER_ROLE_RECENT_FLOOR_PCT: '0',
+      BUILDD_RESPONDER_ROLE_BASELINE_BAR_PCT: '80',
+      BUILDD_RESPONDER_ROLE_BASELINE_MIN: '20',
+      BUILDD_RESPONDER_ROLE_DOMINANT_SHARE_PCT: '75',
+    }).roleRegression;
+    expect(cfg).toEqual({ minRecent: 6, recentFloorPct: 0, baselineBarPct: 80, baselineMin: 20, dominantSharePct: 75 });
+  });
+
+  test('a role-regression percentage outside 0-100 is rejected, not clamped', () => {
+    expect(() => loadConfig({ ...MINIMAL, BUILDD_RESPONDER_ROLE_BASELINE_BAR_PCT: '170' })).toThrow(
+      /BUILDD_RESPONDER_ROLE_BASELINE_BAR_PCT/,
+    );
+    expect(() => loadConfig({ ...MINIMAL, BUILDD_RESPONDER_ROLE_MIN_RECENT: '0' })).toThrow(
+      /BUILDD_RESPONDER_ROLE_MIN_RECENT/,
     );
   });
 });
