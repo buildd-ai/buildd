@@ -1242,6 +1242,9 @@ export async function PUT(req: NextRequest) {
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
         callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        carryForward: policyPr?.base?.ref
+          ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
+          : null,
       });
       if (reviewGate.blocks) {
         recordMergeGate(
