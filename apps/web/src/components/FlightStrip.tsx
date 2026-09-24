@@ -102,6 +102,78 @@ function fillFor(bar: FlightStripBar): string | null {
   return null;
 }
 
+// ─── Label geometry (addendum D4: labels never overlap, lane labels never truncate) ───
+
+/** IBM Plex Mono advance width is 600/1000 em for every glyph. */
+const MONO_CHAR_EM = 0.6;
+const AXIS_FONT = 8.5;
+const LANE_FONT = 8.5;
+const UNCLASSIFIED_FONT = 6;
+/** Minimum clear space between two axis labels, in viewBox px. An unlabelled gap is fine. */
+export const FLIGHT_STRIP_AXIS_LABEL_MIN_GAP = 4;
+const LANE_LABEL_PAD = 4;
+
+/** Rendered width of a mono label (SVG text is not measured in a server render). */
+export function axisLabelWidth(text: string, fontSize: number): number {
+  return text.length * fontSize * MONO_CHAR_EM;
+}
+
+/**
+ * The lane-label column: the historical 42px, widened only when a label
+ * (UNCLASSIFIED, at its 6px size) would not fit — a lane label is never cut off.
+ */
+export function laneLabelColumnWidth(labels: Array<{ text: string; fontSize: number }>): number {
+  const widest = Math.max(0, ...labels.map(l => axisLabelWidth(l.text, l.fontSize)));
+  return Math.max(LABEL_W, Math.ceil(widest + LANE_LABEL_PAD));
+}
+
+export interface AxisLabel {
+  id: string;
+  x: number;
+  text: string;
+  /** Higher wins a collision. Ties go to the label listed first (leftmost). */
+  priority: number;
+  anchor: 'start' | 'middle' | 'end';
+  /** Shift into the strip rather than drop when it would overflow an edge. */
+  clamp?: boolean;
+}
+
+function labelBox(l: AxisLabel, fontSize: number): { start: number; end: number } {
+  const w = axisLabelWidth(l.text, fontSize);
+  const start = l.anchor === 'middle' ? l.x - w / 2 : l.anchor === 'end' ? l.x - w : l.x;
+  return { start, end: start + w };
+}
+
+/**
+ * Collision-cull axis labels: accept by priority, drop any label that would sit
+ * closer than the minimum gap to an accepted one or run past the strip edge.
+ * Returned in input order.
+ */
+export function cullAxisLabels<T extends AxisLabel>(
+  labels: readonly T[],
+  { minX, maxX, fontSize = AXIS_FONT, minGap = FLIGHT_STRIP_AXIS_LABEL_MIN_GAP }: { minX: number; maxX: number; fontSize?: number; minGap?: number },
+): T[] {
+  const ranked = labels.map((raw, i) => {
+    let l = raw;
+    let box = labelBox(l, fontSize);
+    // A clamped label (the now marker) slides inside the strip instead of being dropped.
+    if (l.clamp && (box.start < minX || box.end > maxX)) {
+      const w = box.end - box.start;
+      const start = Math.min(Math.max(box.start, minX), maxX - w);
+      l = { ...l, x: start, anchor: 'start' };
+      box = { start, end: start + w };
+    }
+    return { l, i, box };
+  }).sort((a, b) => b.l.priority - a.l.priority || a.i - b.i);
+  const accepted: typeof ranked = [];
+  for (const cand of ranked) {
+    if (cand.box.start < minX - 0.01 || cand.box.end > maxX + 0.01) continue;
+    const clash = accepted.some(a => cand.box.start < a.box.end + minGap && a.box.start < cand.box.end + minGap);
+    if (!clash) accepted.push(cand);
+  }
+  return accepted.sort((a, b) => a.i - b.i).map(a => a.l);
+}
+
 function diamondPath(cx: number, cy: number, r: number): string {
   return `M${cx} ${cy - r} L${cx + r} ${cy} L${cx} ${cy + r} L${cx - r} ${cy} Z`;
 }
@@ -129,9 +201,36 @@ export function FlightStrip({ data, width = 322, className, selectedTaskId = nul
   const baseline = tracksTop + rows.length * ROW_PITCH - ROW_GAP + BASELINE_GAP;
   const height = baseline + PHASE_LABEL_H;
 
-  const workX = LABEL_W;
-  const workW = Math.max(1, width - LABEL_W - RIGHT_PAD);
+  const labelW = laneLabelColumnWidth([
+    ...rows.flatMap(row => (row.label ? [{ text: row.label, fontSize: row.key === 'unclassified' ? UNCLASSIFIED_FONT : LANE_FONT }] : [])),
+    ...(showRail ? [{ text: 'STEER', fontSize: LANE_FONT }] : []),
+  ]);
+  const workX = labelW;
+  const workW = Math.max(1, width - labelW - RIGHT_PAD);
   const position = (p: number) => workX + p * workW;
+
+  // Axis labels under the baseline: "now" outranks the first phase and "+N
+  // more", which outrank the other phase labels. Whatever would collide is
+  // dropped rather than drawn on top of its neighbour.
+  const axisLabels = cullAxisLabels(
+    [
+      ...data.phases.map((phase, i) => ({
+        id: `phase-${i}`,
+        x: i === 0 ? workX : position(phase.position),
+        text: phase.idleMs > 0 ? `${formatDuration(phase.idleMs / 60_000)} idle · ${phase.label}` : phase.label,
+        priority: i === 0 ? 2 : 1,
+        anchor: 'start' as const,
+        fill: FLIGHT_STRIP_LABEL_COLOR,
+      })),
+      ...(data.now !== null
+        ? [{ id: 'now', x: position(data.now), text: 'now', priority: 3, anchor: 'middle' as const, clamp: true, fill: FLIGHT_STRIP_NOW_COLOR }]
+        : []),
+      ...(data.foldedBars > 0
+        ? [{ id: 'more', x: workX + workW, text: `+${data.foldedBars} more`, priority: 2, anchor: 'end' as const, fill: FLIGHT_STRIP_LABEL_COLOR }]
+        : []),
+    ],
+    { minX: 0, maxX: width },
+  );
 
   const rowY = new Map<LaneKey, number>();
   rows.forEach((row, i) => rowY.set(row.key, tracksTop + i * ROW_PITCH));
@@ -359,22 +458,22 @@ export function FlightStrip({ data, width = 322, className, selectedTaskId = nul
                 <line x1={x + 1} y1={tracksTop - 2} x2={x + 3} y2={tracksTop + 2} />
               </g>
             )}
-            <text x={isFirst ? workX : x} y={baseline + PHASE_LABEL_H - 2} fontSize={8.5} fill={FLIGHT_STRIP_LABEL_COLOR}>
-              {phase.idleMs > 0 ? `${formatDuration(phase.idleMs / 60_000)} idle · ${phase.label}` : phase.label}
-            </text>
           </g>
         );
       })}
-      {data.now !== null && (
-        <text x={position(data.now)} y={baseline + PHASE_LABEL_H - 2} fontSize={8.5} fill={FLIGHT_STRIP_NOW_COLOR} textAnchor="middle">
-          now
+      {axisLabels.map(label => (
+        <text
+          key={label.id}
+          data-axis-label="true"
+          x={label.x}
+          textAnchor={label.anchor === 'start' ? undefined : label.anchor}
+          y={baseline + PHASE_LABEL_H - 2}
+          fontSize={AXIS_FONT}
+          fill={label.fill}
+        >
+          {label.text}
         </text>
-      )}
-      {data.foldedBars > 0 && (
-        <text x={workX + workW} y={baseline + PHASE_LABEL_H - 2} fontSize={8.5} fill={FLIGHT_STRIP_LABEL_COLOR} textAnchor="end">
-          +{data.foldedBars} more
-        </text>
-      )}
+      ))}
     </svg>
   );
 }

@@ -35,6 +35,8 @@ export interface MissionFeedTaskInput {
   parentTaskId?: string | null;
   mode?: string | null;
   kind?: string | null;
+  /** `tasks.roleSlug` — the work-kind glyph's fallback tier (`deriveWorkKind`). */
+  roleSlug?: string | null;
   category?: string | null;
   creationSource?: string | null;
   dependsOn?: readonly string[] | null;
