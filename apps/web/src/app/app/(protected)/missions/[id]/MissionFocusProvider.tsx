@@ -15,6 +15,9 @@
  *   on the list, list order is held (`createFreezeGate`).
  *
  * Opening a task is `pushState(?task=)` by default — never `router.push` — and
+ * every native write passes `nativeHistoryData(history.state)`, never the raw
+ * state: Next skips its useSearchParams sync for data carrying its own `__NA`.
+ *
  * the sheet owner (slice S4) may take it over with `setOpenTask`, and reports
  * open/closed with `setSheetOpen`.
  */
@@ -22,6 +25,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { MissionFocusContext, type MissionFocusSnapshot, type MissionFocusStore } from '@/components/missions/mission-focus-context';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
 import { missionTaskAnchorId, parseMissionTaskHash } from '@/lib/mission-task-href';
+import { nativeHistoryData } from '@/lib/native-history';
 
 export type { MissionFocusSnapshot, MissionFocusStore };
 
@@ -106,7 +110,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
       if (writeHash) {
         const loc = deps.location();
         deps.history.replaceState(
-          deps.history.state,
+          nativeHistoryData(deps.history.state),
           '',
           `${loc.pathname}${loc.search}#${missionTaskAnchorId(encodeURIComponent(taskId))}`,
         );
@@ -131,7 +135,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
       const loc = deps.location();
       const params = new URLSearchParams(loc.search);
       params.set('task', taskId);
-      deps.history.pushState(deps.history.state, '', `${loc.pathname}?${params.toString()}`);
+      deps.history.pushState(nativeHistoryData(deps.history.state), '', `${loc.pathname}?${params.toString()}`);
     },
 
     setOpenTask(fn) {

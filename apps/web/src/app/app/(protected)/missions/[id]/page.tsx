@@ -33,6 +33,7 @@ import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
 import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
+import { toMissionFeedTaskInput } from './task-sheet-nav';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -1006,7 +1007,16 @@ export default async function MissionDetailPage({
 
   return (
     <SwipeProvider>
-    <TaskPanelWrapper>
+    {/* Task sheet owner (S4): ?task= via native history, never the router. */}
+    <TaskPanelWrapper
+      missionId={id}
+      workspaceId={mission.workspaceId}
+      missionTitle={mission.title}
+      chip={stateChip}
+      feedTasks={allTasks.map(toMissionFeedTaskInput)}
+      from={from === 'home' || from === 'missions' || from === 'initiative' ? from : null}
+      initiativeId={initiativeId ?? null}
+    >
     <div className="px-4 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
       {/* Real-time updates via Pusher */}
       {mission.workspaceId && (

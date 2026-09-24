@@ -305,7 +305,7 @@ At first paint the title, state, answer, action, delivery, everything that needs
 │ └────────────────────────────────────┘ │
 │ Live · editing lease.ts · 4m           │  LiveWorkerActivity
 │ PR #412 · CI ↻            [View diff]  │  PrCard
-│ Records: plan.md · schema.diff         │  real links (?artifact=)
+│ Records: plan.md · schema.diff         │  real links (/app/artifacts/Z)
 │ Origin: planned by orchestrator        │  deriveTaskOrigin (U6)
 │ Next needing you: Lease shadow mode  › │
 │ Open full page                       › │  /app/tasks/Y?from=mission&missionId=X
@@ -363,8 +363,8 @@ This replaces the bare "Next" chain CTA (`tasks/[id]/page.tsx:1191`). `/tasks/Y/
 
 | Action | Call | Back does |
 |---|---|---|
-| Open a task (row, second segment tap, situation action, "Next needing you") | `pushState(?task=Y)` | Closes the sheet. |
-| ‹ › inside the sheet | `replaceState(?task=Z)` | Closes the sheet. It does not walk back through siblings. |
+| Open a task while no sheet is open (row, second segment tap, situation action) | `pushState(?task=Y)` | Closes the sheet. |
+| ‹ ›, "Next needing you", or a row tap while the sheet is already open (docked md+) | `replaceState(?task=Z)` | Closes the sheet. It does not walk back through the tasks visited. |
 | Segment focus / scrub-release | `replaceState(#t-Y)` | No new entry. |
 | Card body → mission | `<Link>` push `?from=home` | Home. |
 | Card primary line | `<Link>` push `?from=home&task=Y` | Home. |
@@ -587,6 +587,13 @@ Each slice is one PR with tests written first. Ownership is disjoint so that sli
 - Then AC-7, 8 and 10 with router spies, the popstate close, and `task-header-status` present in the sheet.
 
 **Deps:** S2.
+
+**As built (PR #2718):**
+- The sheet body carries W4's Records and Origin lines. `/api/tasks/:id/summary` returns `records` (titles only, across every worker, `impl_plan` excluded) and `origin` (`deriveTaskOrigin`, the same derivation as the task page). Records link to `/app/artifacts/Z` rather than `?artifact=Z`: the mission page reads `?artifact=` only on its first render, so a soft link from an open sheet would not open the viewer.
+- Opening moves focus into the sheet (mobile: modal, Tab trapped; md+: the docked panel). Closing returns focus to the task's row.
+- The drag handle sits above `BottomSheet`'s header (a `handle` slot), so it stays at the top while the body scrolls.
+- Whether the sheet entry was pushed is held in memory, so it does not survive a remount (Open full page → Back): ✕ then closes by replacing, leaving one extra mission entry behind. Accepted and pinned by a test (`task-sheet-history.ts`).
+- Cross-slice edits: `page.tsx` (S3) passes the new `TaskPanelWrapper` props; `MissionFocusProvider.tsx` (S2) writes through `nativeHistoryData`; `CondensedTimeline.tsx` drops `data-task-actionable`.
 
 ### S5: Cards and inbound links (parallel with S3 and S4)
 

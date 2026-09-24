@@ -279,3 +279,38 @@ describe('MissionFocusProvider (connected render)', () => {
     expect(html).toContain('child');
   });
 });
+
+describe('history writes reach useSearchParams (S4 crux)', () => {
+  // The App Router skips its useSearchParams sync for any write whose data
+  // carries Next's own `__NA` marker (TaskSheet.next-history.test.ts). Passing
+  // `history.state` straight through therefore opened nothing: the address bar
+  // gained ?task= but the sheet owner never saw it.
+  function nextState() {
+    const datas: unknown[] = [];
+    const deps: MissionFocusDeps = {
+      history: {
+        state: { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: [] }, keep: true },
+        replaceState: d => { datas.push(d); },
+        pushState: d => { datas.push(d); },
+      },
+      location: () => ({ pathname: '/app/missions/m1', search: '', hash: '' }),
+      scrollIntoView: () => {},
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+    };
+    return { store: createMissionFocusStore(deps), datas };
+  }
+
+  it('openTask pushes without Next’s internal markers, keeping the caller’s own keys', () => {
+    const { store, datas } = nextState();
+    store.openTask('b');
+    expect(datas).toEqual([{ keep: true }]);
+  });
+
+  it('focus writes the hash without Next’s internal markers', () => {
+    const { store, datas } = nextState();
+    store.focus('b');
+    expect(datas).toEqual([{ keep: true }]);
+  });
+});
