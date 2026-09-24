@@ -251,6 +251,14 @@ Ordered, load-bearing first.
    A `2xx` from that probe is a **defect**, not a success: it means the guard that
    makes the probe unclaimable is gone, and something may have claimed work on
    behalf of a runner that will never attach.
+   A third detector followed from a separate incident: **role regression after a
+   change** — one role going from all-succeeding to all-failing on one error
+   signature right after a runner release, unpaged for most of a working day
+   because every failure landed under the generic exit cause. It reads the
+   `role-outcomes` cron feed (per-role counts recorded by the platform into
+   `cron_runs`; thresholds and the page stay in the responder), so the
+   read-only `cron_runs` grant is still the responder's only production access.
+   See `apps/responder/src/detectors/role-regression.ts`.
 5. Actions, one at a time, each behind its own flag and its own bound: runner
    restart, then orphan terminalization, then release rollback last — it is the
    most powerful and the easiest to get wrong.

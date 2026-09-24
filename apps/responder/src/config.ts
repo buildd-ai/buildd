@@ -31,6 +31,10 @@ import { join } from 'path';
 // probes/cron-runs-feed.ts). Reading the tier default instead of a literal
 // model ID keeps the narrative on the fleet's current premium generation.
 import { TIER_DEFAULTS } from '../../../packages/core/model-tier-defaults';
+import {
+  DEFAULT_ROLE_REGRESSION,
+  type RoleRegressionThresholds,
+} from './detectors/role-regression';
 
 export const MISSING_NOTIFY_MESSAGE =
   'No notification path configured: set PUSHOVER_USER and PUSHOVER_TOKEN ' +
@@ -77,6 +81,8 @@ export interface ResponderConfig {
   narrativeTimeoutMs: number;
   /** Model used for the narrative, when there is a credential for one. */
   narrativeModel: string;
+  /** Thresholds for the role-regression detector. Defaults in detectors/role-regression.ts. */
+  roleRegression: RoleRegressionThresholds;
 }
 
 export type Env = Record<string, string | undefined>;
@@ -101,6 +107,16 @@ function positiveInt(env: Env, key: string, fallback: number): number {
   // knows. A config error has to be loud.
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${key} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
+}
+
+function percent(env: Env, key: string, fallback: number): number {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error(`${key} must be an integer percentage 0-100, got ${JSON.stringify(raw)}`);
   }
   return parsed;
 }
@@ -142,5 +158,12 @@ export function loadConfig(env: Env = process.env): ResponderConfig {
     sampleRetentionHours: positiveInt(env, 'BUILDD_RESPONDER_SAMPLE_RETENTION_HOURS', 6),
     narrativeTimeoutMs: positiveInt(env, 'BUILDD_RESPONDER_NARRATIVE_TIMEOUT_MS', 20_000),
     narrativeModel: optional(env, 'BUILDD_RESPONDER_NARRATIVE_MODEL') ?? TIER_DEFAULTS.premium.model,
+    roleRegression: {
+      minRecent: positiveInt(env, 'BUILDD_RESPONDER_ROLE_MIN_RECENT', DEFAULT_ROLE_REGRESSION.minRecent),
+      recentFloorPct: percent(env, 'BUILDD_RESPONDER_ROLE_RECENT_FLOOR_PCT', DEFAULT_ROLE_REGRESSION.recentFloorPct),
+      baselineBarPct: percent(env, 'BUILDD_RESPONDER_ROLE_BASELINE_BAR_PCT', DEFAULT_ROLE_REGRESSION.baselineBarPct),
+      baselineMin: positiveInt(env, 'BUILDD_RESPONDER_ROLE_BASELINE_MIN', DEFAULT_ROLE_REGRESSION.baselineMin),
+      dominantSharePct: percent(env, 'BUILDD_RESPONDER_ROLE_DOMINANT_SHARE_PCT', DEFAULT_ROLE_REGRESSION.dominantSharePct),
+    },
   };
 }

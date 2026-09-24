@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { DETECTORS } from './index';
+import { DETECTORS, buildDetectors } from './index';
+import { DEFAULT_ROLE_REGRESSION } from './role-regression';
 import type { ClaimSample, CronRunRow, Snapshot } from '../types';
+import { ROLE_OUTCOMES_JOB, ROLE_OUTCOMES_SCHEMA_VERSION } from '../../../../packages/core/role-outcomes-feed';
 
 /**
  * ── The credential-free rule, proven rather than asserted ───────────────────
@@ -54,6 +56,35 @@ function cronRun(startedAt: string, changed: number): CronRunRow {
   };
 }
 
+/** A role-outcomes feed row; `regressed` makes one role fall off a cliff on one signature. */
+function roleOutcomesRun(startedAt: string, regressed: boolean): CronRunRow {
+  const recent = regressed
+    ? { succeeded: 0, failed: 5, excluded: 0, excludedBy: {}, signatures: [{ signature: 'boom', count: 5, firstSeen: startedAt, lastSeen: startedAt }] }
+    : { succeeded: 5, failed: 0, excluded: 0, excludedBy: {}, signatures: [] };
+  return {
+    job: ROLE_OUTCOMES_JOB,
+    started_at: startedAt,
+    finished_at: startedAt,
+    ok: true,
+    processed: 50,
+    changed: 1,
+    errors: 0,
+    result: {
+      scope: 'role-outcomes',
+      schemaVersion: ROLE_OUTCOMES_SCHEMA_VERSION,
+      windowEnd: startedAt,
+      recentMinutes: 60,
+      baselineHours: 24,
+      rowsScanned: 50,
+      truncated: false,
+      roles: [{ role: 'builder', recent, baseline: { succeeded: 30, failed: 1, excluded: 0 } }],
+      runnerVersions: [{ version: '1.0.0', commit: null, runners: 1 }],
+      appCommit: null,
+    },
+    alerted_at: null,
+  };
+}
+
 function claimSample(minsAgo: number, status: number): ClaimSample {
   return {
     at: new Date(T0 - minsAgo * 60_000).toISOString(),
@@ -63,7 +94,7 @@ function claimSample(minsAgo: number, status: number): ClaimSample {
   };
 }
 
-/** A snapshot in which BOTH detectors should be firing. */
+/** A snapshot in which EVERY detector should be firing. */
 function firingSnapshot(): Snapshot {
   const samples = [
     ...Array.from({ length: 30 }, (_, i) => claimSample(40 - i, 400)),
@@ -78,6 +109,7 @@ function firingSnapshot(): Snapshot {
       cronRun(new Date(T0 - 3 * 3_600_000).toISOString(), 1),
       cronRun(new Date(T0 - 2 * 3_600_000).toISOString(), 1),
       cronRun(new Date(T0 - 3_600_000).toISOString(), 1),
+      roleOutcomesRun(new Date(T0 - 3_600_000).toISOString(), true),
     ],
     appVersion: null,
     runnerVersion: null,
@@ -85,7 +117,7 @@ function firingSnapshot(): Snapshot {
   };
 }
 
-/** A snapshot in which BOTH detectors should be clear. */
+/** A snapshot in which EVERY detector should be clear. */
 function clearSnapshot(): Snapshot {
   const samples = Array.from({ length: 30 }, (_, i) => claimSample(40 - i, 400));
   return {
@@ -94,6 +126,7 @@ function clearSnapshot(): Snapshot {
     cronRuns: [
       cronRun(new Date(T0 - 2 * 3_600_000).toISOString(), 0),
       cronRun(new Date(T0 - 3_600_000).toISOString(), 0),
+      roleOutcomesRun(new Date(T0 - 3_600_000).toISOString(), false),
     ],
     appVersion: null,
     runnerVersion: null,
@@ -102,8 +135,16 @@ function clearSnapshot(): Snapshot {
 }
 
 describe('the detector registry', () => {
-  test('registers both detectors the incident justifies, and no speculative ones', () => {
-    expect(DETECTORS.map(d => d.id).sort()).toEqual(['claim-error-rate', 'dispatch-stall']);
+  test('registers exactly the detectors a real incident justifies, and no speculative ones', () => {
+    expect(DETECTORS.map(d => d.id).sort()).toEqual(['claim-error-rate', 'dispatch-stall', 'role-regression']);
+  });
+
+  test('buildDetectors carries configured thresholds and keeps the same ids', () => {
+    const built = buildDetectors({ roleRegression: { ...DEFAULT_ROLE_REGRESSION, minRecent: 50 } });
+    expect(built.map(d => d.id)).toEqual(DETECTORS.map(d => d.id));
+    const rr = built.find(d => d.id === 'role-regression')!;
+    // The firing snapshot has 5 recent outcomes; a floor of 50 must silence it.
+    expect(rr.evaluate(firingSnapshot(), T0).state).toBe('clear');
   });
 
   test('ids are unique and condition keys do not collide', () => {
