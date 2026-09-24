@@ -13,11 +13,10 @@
  * **It lives in `@buildd/core` rather than in the runner** because the second
  * experiment to use it — task-area prediction, see `./task-area-prediction.ts`
  * — draws its arm server-side, at claim time, where the knowledge store is
- * reachable and the runner's module graph is not. `apps/runner/src/
- * experiment-randomizer.ts` re-exports this file rather than holding a second
- * implementation: two copies of a version-salted draw that are supposed to
- * agree, but are free to drift, would make an arm assignment depend on which
- * process asked.
+ * reachable and the runner's module graph is not. There is exactly one copy:
+ * any runner-side caller imports `@buildd/core/experiment-randomizer` directly.
+ * Two copies of a version-salted draw that are supposed to agree, but are free
+ * to drift, would make an arm assignment depend on which process asked.
  *
  * What makes an assignment correct, preserved from the original:
  *

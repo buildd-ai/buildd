@@ -7,6 +7,11 @@ import {
   nextFocusIdx,
   isInteractiveTarget,
   snoozeDurationHours,
+  cancelUndoStatus,
+  patchTaskStatus,
+  runCancelTask,
+  createSingleFlight,
+  taskSwipeCardType,
   SwipeableRow,
   MENU_BTN_WIDTH,
   REVEAL_WIDTH_PX,
@@ -417,5 +422,236 @@ describe('layout contract: right-edge zones', () => {
     );
     expect(html).not.toContain('data-trailing-action');
     expect(html).not.toContain(`right:${MENU_BTN_WIDTH}px`);
+  });
+});
+
+// ─── Cancel / undo ───────────────────────────────────────────────────────────
+
+describe('cancelUndoStatus', () => {
+  it('restores a queued (pending) task to pending — nothing else was touched', () => {
+    expect(cancelUndoStatus('pending')).toBe('pending');
+  });
+
+  it.each(['assigned', 'in_progress', 'running', 'waiting_input'])(
+    'offers no undo for %s — cancel aborted its worker, re-queuing would restart it from scratch',
+    (status) => {
+      expect(cancelUndoStatus(status)).toBeNull();
+    },
+  );
+
+  it('never re-queues a terminal task', () => {
+    expect(cancelUndoStatus('failed')).toBeNull();
+    expect(cancelUndoStatus('cancelled')).toBeNull();
+    expect(cancelUndoStatus('completed')).toBeNull();
+  });
+
+  it('offers no undo when the prior status is unknown', () => {
+    expect(cancelUndoStatus(undefined)).toBeNull();
+    expect(cancelUndoStatus(null)).toBeNull();
+  });
+});
+
+describe('patchTaskStatus', () => {
+  function fakeFetch(res: { ok: boolean; status: number; body?: unknown } | Error) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const impl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (res instanceof Error) throw res;
+      return {
+        ok: res.ok,
+        status: res.status,
+        json: async () => res.body ?? {},
+      } as Response;
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  it('PATCHes the status and reports ok on 2xx', async () => {
+    const { impl, calls } = fakeFetch({ ok: true, status: 200 });
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result.ok).toBe(true);
+    expect(calls[0].url).toBe('/api/tasks/t1');
+    expect(calls[0].init.method).toBe('PATCH');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ status: 'cancelled' });
+  });
+
+  it('treats a 4xx/5xx as a failure and surfaces the server error', async () => {
+    const { impl } = fakeFetch({ ok: false, status: 404, body: { error: 'Task not found' } });
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: false, error: 'Task not found' });
+  });
+
+  it('falls back to the HTTP status when the error body is not JSON', async () => {
+    const impl = (async () => ({
+      ok: false,
+      status: 500,
+      json: async () => { throw new Error('not json'); },
+    })) as unknown as typeof fetch;
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: false, error: 'HTTP 500' });
+  });
+
+  it('reports a network error as a failure', async () => {
+    const { impl } = fakeFetch(new Error('offline'));
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: false, error: 'offline' });
+  });
+
+  it('returns the updated task body on success', async () => {
+    const { impl } = fakeFetch({ ok: true, status: 200, body: { id: 't1', claimedBy: 'runner-x' } });
+    const result = await patchTaskStatus('t1', 'cancelled', impl);
+    expect(result).toEqual({ ok: true, task: { id: 't1', claimedBy: 'runner-x' } });
+  });
+});
+
+describe('taskSwipeCardType', () => {
+  it.each(['completed', 'failed', 'cancelled'])('maps a %s task to completed-task (no Cancel)', (status) => {
+    expect(taskSwipeCardType(status, 0)).toBe('completed-task');
+    expect(taskSwipeCardType(status, 2)).toBe('completed-task');
+    expect(getMenuActions(taskSwipeCardType(status, 0), {}).some(a => a.action === 'cancel-task')).toBe(false);
+  });
+
+  it('maps a live task with blockers to blocked-task', () => {
+    expect(taskSwipeCardType('pending', 1)).toBe('blocked-task');
+  });
+
+  it.each(['pending', 'assigned', 'in_progress', 'waiting_input'])('maps a live %s task to running-task', (status) => {
+    expect(taskSwipeCardType(status, 0)).toBe('running-task');
+  });
+});
+
+describe('runCancelTask', () => {
+  type Patch = Awaited<ReturnType<typeof patchTaskStatus>>;
+  function harness(opts: {
+    taskStatus?: string | null;
+    confirm?: boolean | Promise<boolean>;
+    responses?: Patch[];
+  }) {
+    const log: string[] = [];
+    const patches: Array<{ taskId: string; status: string }> = [];
+    const responses: Patch[] = [...(opts.responses ?? [{ ok: true, task: { claimedBy: null } }])];
+    let undo: (() => unknown) | null = null;
+    const deps = {
+      taskId: 't1',
+      taskTitle: 'Do thing',
+      taskStatus: opts.taskStatus,
+      patch: async (taskId: string, status: string): Promise<Patch> => {
+        patches.push({ taskId, status });
+        return responses.shift() ?? { ok: true, task: null };
+      },
+      confirm: async (msg: string) => { log.push(`confirm:${msg}`); return opts.confirm ?? true; },
+      setDismissed: (v: boolean) => { log.push(`dismissed:${v}`); },
+      notify: (msg: string) => { log.push(`notify:${msg}`); },
+      registerUndo: (msg: string, fn: () => unknown) => { log.push(`undo:${msg}`); undo = fn; },
+    };
+    return { deps, log, patches, runUndo: async () => { await undo?.(); } };
+  }
+
+  it('asks for confirmation on a non-undoable cancel and stops if declined', async () => {
+    const h = harness({ taskStatus: 'in_progress', confirm: false });
+    expect(await runCancelTask(h.deps)).toBe('declined');
+    expect(h.patches).toEqual([]);
+    expect(h.log.some(l => l.startsWith('dismissed'))).toBe(false);
+  });
+
+  it('does nothing until the confirm dialog is answered', async () => {
+    let answer!: (ok: boolean) => void;
+    const h = harness({ taskStatus: 'in_progress', confirm: new Promise<boolean>(r => { answer = r; }) });
+    const outcome = runCancelTask(h.deps);
+    await Promise.resolve();
+    await Promise.resolve();
+    // Dialog is open: the row is still shown and nothing was PATCHed.
+    expect(h.log).toEqual(['confirm:Cancel "Do thing"? This stops its worker and cannot be undone.']);
+    expect(h.patches).toEqual([]);
+    answer(true);
+    expect(await outcome).toBe('cancelled');
+    expect(h.patches).toEqual([{ taskId: 't1', status: 'cancelled' }]);
+  });
+
+  it('does not ask for confirmation on a queued (undoable) cancel', async () => {
+    const h = harness({ taskStatus: 'pending' });
+    await runCancelTask(h.deps);
+    expect(h.log.some(l => l.startsWith('confirm'))).toBe(false);
+  });
+
+  it('un-hides the row and notifies when the cancel PATCH fails', async () => {
+    const h = harness({ taskStatus: 'pending', responses: [{ ok: false, error: 'Task not found' }] });
+    expect(await runCancelTask(h.deps)).toBe('failed');
+    expect(h.log).toEqual(['dismissed:true', 'dismissed:false', 'notify:Cancel failed: Task not found']);
+  });
+
+  it('a confirmed non-undoable cancel notifies with no Undo', async () => {
+    const h = harness({ taskStatus: 'waiting_input', confirm: true });
+    expect(await runCancelTask(h.deps)).toBe('cancelled');
+    expect(h.patches).toEqual([{ taskId: 't1', status: 'cancelled' }]);
+    expect(h.log.some(l => l.startsWith('undo:'))).toBe(false);
+    expect(h.log).toContain('notify:Task cancelled');
+  });
+
+  it('a queued cancel registers an Undo that re-queues to pending', async () => {
+    const h = harness({ taskStatus: 'pending' });
+    expect(await runCancelTask(h.deps)).toBe('cancelled-undoable');
+    expect(h.log).toContain('undo:Task cancelled');
+    await h.runUndo();
+    expect(h.patches).toEqual([
+      { taskId: 't1', status: 'cancelled' },
+      { taskId: 't1', status: 'pending' },
+    ]);
+    expect(h.log.at(-1)).toBe('dismissed:false');
+  });
+
+  it('re-hides the row and notifies when the Undo PATCH fails', async () => {
+    const h = harness({
+      taskStatus: 'pending',
+      responses: [{ ok: true, task: { claimedBy: null } }, { ok: false, error: 'HTTP 500' }],
+    });
+    await runCancelTask(h.deps);
+    await h.runUndo();
+    expect(h.log.slice(-3)).toEqual(['dismissed:false', 'dismissed:true', 'notify:Undo failed: HTTP 500']);
+  });
+
+  it('offers no Undo when a runner claimed the task between render and click', async () => {
+    // Rendered as pending, but the cancel response carries a claim: the cancel
+    // aborted a fresh worker, so re-queuing would restart it from scratch.
+    const h = harness({ taskStatus: 'pending', responses: [{ ok: true, task: { claimedBy: 'runner-x' } }] });
+    expect(await runCancelTask(h.deps)).toBe('cancelled');
+    expect(h.log.some(l => l.startsWith('undo:'))).toBe(false);
+    expect(h.log).toContain('notify:Task cancelled');
+  });
+
+  it('offers no Undo when the cancel response body is unreadable', async () => {
+    const h = harness({ taskStatus: 'pending', responses: [{ ok: true, task: null }] });
+    expect(await runCancelTask(h.deps)).toBe('cancelled');
+  });
+
+  it('a second cancel while the first awaits its confirm does not PATCH twice', async () => {
+    let answer!: (ok: boolean) => void;
+    const h = harness({ taskStatus: 'in_progress', confirm: new Promise<boolean>(r => { answer = r; }) });
+    const cancelOnce = createSingleFlight();
+    const first = cancelOnce(() => runCancelTask(h.deps));
+    const second = cancelOnce(() => runCancelTask(h.deps));
+    expect(await second).toBeUndefined();
+    answer(true);
+    expect(await first).toBe('cancelled');
+    expect(h.patches).toEqual([{ taskId: 't1', status: 'cancelled' }]);
+    expect(h.log.filter(l => l.startsWith('confirm:'))).toHaveLength(1);
+  });
+});
+
+describe('createSingleFlight', () => {
+  it('drops a call made while one is pending, then accepts the next', async () => {
+    const run = createSingleFlight();
+    let release!: () => void;
+    const first = run(() => new Promise<string>(r => { release = () => r('a'); }));
+    expect(await run(async () => 'b')).toBeUndefined();
+    release();
+    expect(await first).toBe('a');
+    expect(await run(async () => 'c')).toBe('c');
+  });
+
+  it('frees the slot when a job throws', async () => {
+    const run = createSingleFlight();
+    await expect(run(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(await run(async () => 'ok')).toBe('ok');
   });
 });

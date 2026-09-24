@@ -84,14 +84,16 @@ DB utilities, MCP tools, secrets, worker-runner logic.
 
 ### Run Commands:
 ```bash
-# All unit tests (routes + runner + core)
-bun test
+# All unit tests (routes + runner + core), one process per file.
+# Never bare `bun test` -- it runs every file in one process, where
+# mock.module leaks across files (see docs/testing.md).
+bun run test
 
 # Specific route test
-bun test apps/web/src/app/api/workers/claim/route.test.ts
+bun run scripts/run-unit-tests.ts apps/web/src/app/api/workers/claim/route.test.ts
 
-# Runner unit tests only
-bun test apps/runner/__tests__/unit/
+# Runner unit tests only (takes files, not directories)
+bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/*.test.ts
 
 # Integration tests (requires live server + API key)
 bun run test:integration

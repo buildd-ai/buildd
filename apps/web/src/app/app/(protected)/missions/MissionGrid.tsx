@@ -25,6 +25,7 @@ import {
   formatNextRun,
   timeAgo,
 } from '@/lib/mission-helpers';
+import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 const DEFERRAL_LABELS: Record<string, string> = {
   concurrent_cap: 'Deferred: seats full',
@@ -583,8 +584,8 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           {mission.costBudgetUsd && mission.status !== 'budget_exhausted' && (
             <>
               <span className="mx-0.5">&middot;</span>
-              <span className="tabular-nums">
-                {mission.spendUsd ? `$${Number(mission.spendUsd).toFixed(2)} / $${Number(mission.costBudgetUsd).toFixed(2)}` : `Budget: $${Number(mission.costBudgetUsd).toFixed(2)}`}
+              <span className="tabular-nums" title={mission.spendUsd ? ESTIMATED_COST_TITLE : undefined}>
+                {mission.spendUsd ? `${formatEstimatedUsd(mission.spendUsd)} / $${Number(mission.costBudgetUsd).toFixed(2)}` : `Budget: $${Number(mission.costBudgetUsd).toFixed(2)}`}
               </span>
             </>
           )}

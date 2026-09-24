@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { isValidTaskId } from '@/lib/task-id';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
+import Switch from '@/components/ui/Switch';
 
 export type PendingSuggestion = {
   cronExpression?: string;
@@ -102,27 +103,16 @@ function ToggleSwitch({
   loading: boolean;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={item.isEnabled}
+    <Switch
+      checked={item.isEnabled}
       disabled={loading}
-      onClick={(e) => {
+      label={`Enable ${item.name}`}
+      onChange={(_next, e) => {
         e.preventDefault();
         e.stopPropagation();
         onToggle(item);
       }}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-        item.isEnabled ? 'bg-primary' : 'bg-surface-4'
-      }`}
-      title={item.isEnabled ? 'Pause' : 'Resume'}
-    >
-      <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-          item.isEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
-        }`}
-      />
-    </button>
+    />
   );
 }
 
@@ -279,6 +269,7 @@ function ScheduleRow({
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(item); }}
             className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
             title="Delete schedule"
+            aria-label={`Delete ${item.name}`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />

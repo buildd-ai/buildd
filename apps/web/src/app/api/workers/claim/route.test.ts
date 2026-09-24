@@ -242,6 +242,15 @@ const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string
 mock.module('@buildd/core/path-claim', () => ({
   getActiveClaimsByWorkspace: mockGetActiveClaimsByWorkspace,
 }));
+// Gate ledger: capture deferral events so a test can read the `detail` bag a
+// coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
+const mockFireDeferralEvent = mock((_input: any) => {});
+mock.module('@/lib/gate-ledger', () => ({
+  fireDeferralEvent: mockFireDeferralEvent,
+  fireGateEvent: mock(() => 'sig'),
+  gateCallerOrigin: () => 'api',
+  GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+}));
 // Terminal-write dependency cascade (item 4: workspace_mismatch must run it).
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dependencies', () => ({
@@ -4244,6 +4253,63 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
   });
+
+  // ── Parked-holder TTL (N7) ────────────────────────────────────────────────
+  // A holder parked on a question keeps its open PR's manifest in force only
+  // for PARKED_HOLDER_TTL_MS; past that it stops deferring overlapping tasks.
+  const TWO_AND_A_HALF_HOURS = 2.5 * 60 * 60 * 1000;
+
+  function claimAgainstParkedHolder(parkedForMs: number) {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: holder parked on a question
+        {
+          workspaceId: 'ws-1', taskId: 'parked-task', prNumber: 1126,
+          prUrl: 'https://github.com/org/repo/pull/1126',
+          status: 'waiting_input', updatedAt: new Date(Date.now() - parkedForMs),
+        },
+      ]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'parked-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+    return POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+  }
+
+  it('claims past a holder parked on a question for longer than the TTL', async () => {
+    const res = await claimAgainstParkedHolder(TWO_AND_A_HALF_HOURS);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('still defers behind a holder parked inside the TTL', async () => {
+    const res = await claimAgainstParkedHolder(10 * 60 * 1000);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
+  it('the open-PR pre-fetch reads the holder clock it needs to judge the TTL', async () => {
+    await claimAgainstParkedHolder(TWO_AND_A_HALF_HOURS);
+    const prefetch = mockWorkersFindMany.mock.calls.find(
+      (c: any[]) => c[0]?.columns?.prLifecycleStatus,
+    ) as any[] | undefined;
+    expect(prefetch?.[0].columns).toMatchObject({ status: true, updatedAt: true });
+  });
+
+  it('names the blocking PR in the claim diagnostics when path overlap defers', async () => {
+    const res = await claimAgainstParkedHolder(10 * 60 * 1000);
+    const data = await res.json();
+    expect(data.diagnostics?.blockedByPr).toEqual({
+      prNumber: 1126,
+      prUrl: 'https://github.com/org/repo/pull/1126',
+    });
+  });
 });
 
 describe('entity catalog injection at claim time', () => {
@@ -5447,6 +5513,25 @@ describe('claim gate overrides', () => {
       // only reported on an empty claim, so assert the claim shape instead).
       expect(data.workers).toHaveLength(1);
       expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it('layer 2: a path_claim deferral clears prNumber/prUrl so a coalesced gate row cannot name a stale PR', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', null, ['apps/web/src/a.ts'])])
+        .mockResolvedValue([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValue(
+        new Map([['task-9', ['apps/web/src/a.ts']]]),
+      );
+      mockFireDeferralEvent.mockClear();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+      const ev = mockFireDeferralEvent.mock.calls
+        .map((c: any[]) => c[0])
+        .find((e: any) => e.reason === 'path_overlap');
+      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null });
     });
 
     it('layer 2: a manifest of ["**","a.ts"] still respects a held path_claim on a.ts', async () => {

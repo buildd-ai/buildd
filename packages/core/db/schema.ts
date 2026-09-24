@@ -685,14 +685,16 @@ export interface ResultMeta {
    * `summarySource: 'fallback'`. 'authored' = the closing turn called
    * complete_task itself (the ordinary fallback text/tagging never applied).
    * 'declined' = the closing turn ran but still didn't call it, so the
-   * fallback summary was used anyway. `skipped:<reason>` = no closing turn was
+   * fallback summary was used anyway; `declined:<reason>` = same, but the
+   * closing turn ended on its own error (`max_turns`, or `error` for any other
+   * error result / thrown error) — never a task failure. `skipped:<reason>` = no closing turn was
    * attempted at all (session not resumable, or the original session ended by
    * error/abort/rate-limit/credential-failure/cancellation rather than
    * naturally) — reason names why. Absent entirely when the agent's own
    * complete_task call already won the race before this decision was made,
    * which keeps that path byte-identical to before this field existed.
    */
-  closingTurnOutcome?: 'authored' | 'declined' | `skipped:${string}`;
+  closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -1177,6 +1179,18 @@ export const tasks = pgTable('tasks', {
   onePendingCiRetryPerPrIdx: uniqueIndex('tasks_one_pending_ci_retry_per_pr_unique')
     .on(t.workspaceId, t.ciRetryPrNumber)
     .where(sql`${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL`),
+  // Partial unique index — the review idempotency key: at most one pending
+  // review per (workspace, PR, head SHA). Several producers file reviews for the
+  // same PR head (create_pr's auto-review and the PR `opened` webhook fire
+  // within milliseconds), and createReviewerTask's live probe cannot stop two
+  // that both probe before either inserts. Pending-only because every review is
+  // pending at insert time; claimed rows are covered by the probe. Conflict and
+  // CI retries carry the same subject anchor, so `category` scopes it to reviews;
+  // `creation_source = 'webhook'` + a parent scopes it to createReviewerTask rows,
+  // so a human/API filing auto-classified as 'review' never collides with it.
+  onePendingReviewPerHeadIdx: uniqueIndex('tasks_one_pending_review_per_head_unique')
+    .on(t.workspaceId, t.subjectPrNumber, t.subjectHeadSha)
+    .where(sql`${t.category} = 'review' AND ${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.parentTaskId} IS NOT NULL AND ${t.subjectPrNumber} IS NOT NULL AND ${t.subjectHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
@@ -1584,6 +1598,10 @@ export const workers = pgTable('workers', {
   accountIdx: index('workers_account_idx').on(t.accountId),
   statusIdx: index('workers_status_idx').on(t.status),
   accountStatusIdx: index('workers_account_status_idx').on(t.accountId, t.status),
+  // Webhook "which worker owns this PR" lookups (workerOwnsPr / workerOwnsPrUrl in lib/repo-scope.ts)
+  // and knowledge ingest's by-URL lookup. Partial: most workers never open a PR.
+  prNumberIdx: index('workers_pr_number_idx').on(t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
+  prUrlIdx: index('workers_pr_url_idx').on(t.prUrl).where(sql`${t.prUrl} IS NOT NULL`),
 }));
 
 /**
@@ -1996,7 +2014,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted' | 'heartbeat_circuit_breaker'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted' | 'heartbeat_circuit_breaker' | 'heartbeat_planning_backoff'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -3350,7 +3368,7 @@ export const releases = pgTable('releases', {
   healthyAt: timestamp('healthy_at', { withTimezone: true }),
   runUrl: text('run_url'),
   deployUrl: text('deploy_url'),
-  triggeredBy: text('triggered_by').$type<'user' | 'agent' | 'auto'>(),
+  triggeredBy: text('triggered_by').$type<'user' | 'agent' | 'auto' | 'external'>(),
   failureReason: text('failure_reason'),
   ciStateAtDispatch: text('ci_state_at_dispatch').$type<'passing' | 'failing' | 'pending'>(),
   commitsAheadAtDispatch: integer('commits_ahead_at_dispatch'),

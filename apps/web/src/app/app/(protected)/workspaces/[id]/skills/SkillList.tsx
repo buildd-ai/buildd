@@ -4,6 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { roleModelLabel } from '@/lib/model-presentation';
 import { SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
+import { useConfirm } from '@/components/useConfirm';
+import Switch from '@/components/ui/Switch';
 
 interface Skill {
   id: string;
@@ -27,6 +29,7 @@ interface Props {
 }
 
 export function SkillList({ workspaceId, initialSkills }: Props) {
+  const { confirm, confirmDialog } = useConfirm();
   const [skills, setSkills] = useState(initialSkills);
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -63,7 +66,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
   }
 
   async function deleteSkill(id: string) {
-    if (!confirm('Delete this skill? This cannot be undone.')) return;
+    if (!(await confirm({ title: 'Delete skill?', message: 'This cannot be undone.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setDeleting(id);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/skills/${id}`, {
@@ -159,20 +162,12 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
               )}
 
               {/* Enable/Disable toggle */}
-              <button
-                type="button"
-                role="switch"
-                aria-checked={skill.enabled}
-                onClick={() => toggleEnabled(skill)}
+              <Switch
+                checked={skill.enabled}
+                onChange={() => toggleEnabled(skill)}
                 disabled={toggling === skill.id}
-                className={`relative w-10 h-6 rounded-full transition-colors flex-shrink-0 ${
-                  skill.enabled ? 'bg-status-success' : 'bg-surface-4'
-                } ${toggling === skill.id ? 'opacity-50' : ''}`}
-              >
-                <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                  skill.enabled ? 'translate-x-4' : ''
-                }`} />
-              </button>
+                label={`Enable ${skill.name}`}
+              />
 
               {/* Delete */}
               <button
@@ -180,8 +175,9 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
                 disabled={deleting === skill.id}
                 className="p-1.5 text-text-muted hover:text-status-error flex-shrink-0"
                 title="Delete"
+                aria-label={`Delete ${skill.name}`}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                 </svg>
               </button>
@@ -193,6 +189,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
       {searchQuery && filteredSkills.length === 0 && (
         <p className="text-center py-6 text-text-muted text-sm">No roles match &quot;{searchQuery}&quot;</p>
       )}
+      {confirmDialog}
     </div>
   );
 }

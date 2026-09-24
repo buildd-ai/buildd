@@ -148,7 +148,14 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     // an approval — the upstream handler already refuses to infer one.
     state = verdict ? VERDICT_STATE[verdict] : 'review_failed';
   } else if (reviewTask.status === 'failed' || reviewTask.status === 'cancelled') {
-    state = 'review_failed';
+    // A blocking verdict that landed before the task failed or was cancelled
+    // still stands: review_failed does not block any merge door, so reading
+    // such a task as review_failed would quietly drop a request-changes. An
+    // approve does NOT carry over — a reviewer that never completed cannot be
+    // the approval a self-merge door acts on.
+    state = verdict === 'request-changes' || verdict === 'escalate'
+      ? VERDICT_STATE[verdict]
+      : 'review_failed';
   } else {
     state = 'reviewing';
   }

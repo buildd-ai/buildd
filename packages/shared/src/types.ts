@@ -1118,7 +1118,11 @@ export interface ClaimDiagnostics {
   activeWorkers?: number;
   maxConcurrent?: number;
   availableSlots?: number;
-  /** Populated when reason=path_overlap_blocked: the PR that conflicts with this task's pathManifest */
+  /**
+   * Set when any candidate in this poll was deferred on layer-1 path overlap
+   * (its pathManifest overlaps an open PR): the first such PR. Appears on
+   * all_candidates_deferred and race_lost responses.
+   */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
   /**
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
@@ -1141,13 +1145,23 @@ export interface ClaimDiagnostics {
     duplicate_worker?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
+    /** Resolved model needs a newer Claude Code CLI than this runner reports. */
+    runner_capability?: number;
+    /**
+     * Claude task held because learned OAuth pressure lowered this seat's
+     * session cap and the seat is at it. Never applies to explicit starts,
+     * Codex, or tenant work. See `budgetPressure` for the reading behind it.
+     */
+    oauth_parallelism?: number;
   };
   /**
-   * Learned OAuth budget pressure for this account (seat-based auth only).
-   * pct is 0..1 of the capacity learned from past exhaustion episodes; the
-   * router downshifts tiers as it rises and pauses priority-0 work at 0.95.
-   * Absent when the account is API-billed or has too few episodes to learn from.
-   * See packages/core/oauth-budget.ts.
+   * Learned OAuth budget pressure for this seat (seat-based auth only).
+   * pct is 0..1 of the capacity learned from past exhaustion episodes. Its only
+   * effect is a lower per-seat concurrent-session cap (never below one live
+   * session, restored when the window resets); it does not change the routed
+   * tier and never pauses or delays claims. Absent when the account is
+   * API-billed, pacing is off, or there are too few episodes to learn from.
+   * See packages/core/oauth-budget.ts (`oauthParallelismCap`).
    */
   budgetPressure?: {
     pct: number;
@@ -2032,4 +2046,30 @@ export interface UpdateExperimentInput {
   visibility?: ExperimentVisibility;
   status?: ExperimentStatus;
   decision?: string;
+}
+
+// ── Error traces ─────────────────────────────────────────────────────────────
+
+/** One recurring trace pattern in a workspace, from GET /api/workspaces/[id]/error-traces. */
+export interface WorkspaceErrorTracePattern {
+  /** Pattern slug, e.g. 'git_fatal', 'cd_no_such_file'. */
+  pattern: string;
+  /** Trace rows matching this pattern in the window. */
+  count: number;
+  /** Distinct tasks that hit it. */
+  taskCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  /** Excerpt and source of the most recent occurrence. */
+  exampleExcerpt: string;
+  exampleSource: string | null;
+  /** Up to three task ids that hit this pattern. */
+  exampleTaskIds: string[];
+}
+
+export interface WorkspaceErrorTracesResponse {
+  workspaceId: string;
+  since: string;
+  limit: number;
+  patterns: WorkspaceErrorTracePattern[];
 }

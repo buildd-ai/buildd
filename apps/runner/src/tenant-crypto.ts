@@ -1,7 +1,13 @@
 /**
  * Decrypt tenant-encrypted secrets from Dispatch.
- * Local copy of packages/core/tenant-crypto.ts — avoids cross-package dependency
- * that causes Bun test runner to hang (neon-serverless side effects).
+ *
+ * Dispatch encrypts tenant OAuth tokens with AES-256-GCM using TENANT_MASTER_KEY.
+ * The runner shares the same master key so it can decrypt at runtime without
+ * a round-trip to the Dispatch server. The encrypted token is injected as
+ * CLAUDE_CODE_OAUTH_TOKEN.
+ *
+ * This is the only copy in the repo: the former `packages/core/tenant-crypto.ts`
+ * duplicate had no importers and was removed.
  */
 import { createDecipheriv } from 'crypto';
 

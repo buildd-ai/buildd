@@ -7,7 +7,7 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import { GroupSection } from '@/components/GroupSection';
-import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
+import { SwipeableRow, SwipeProvider, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveDayBands } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
@@ -93,10 +93,9 @@ export function gridTaskPrProps(task: GridTask): {
   };
 }
 
-function deriveSwipeCardType(task: GridTask): SwipeCardType {
-  if (task.status === 'completed') return 'completed-task';
-  if (task.chain?.blockedBy && task.chain.blockedBy.length > 0) return 'blocked-task';
-  return 'running-task';
+/** Card type for a row's ⋯ menu — the rule shared with the mission timeline. */
+export function deriveSwipeCardType(task: GridTask): SwipeCardType {
+  return taskSwipeCardType(task.status, task.chain?.blockedBy?.length ?? 0);
 }
 
 function renderTaskCard(
@@ -116,6 +115,7 @@ function renderTaskCard(
       taskTitle={task.title}
       prUrl={swipePrUrl}
       taskId={task.id}
+      taskStatus={task.status}
     >
       <TaskCard
         id={task.id}
@@ -228,7 +228,13 @@ interface MissionGroup {
 
 // ─── Stage derivation from GridTask (no new column needed) ───────────────────
 
-export function deriveGridTaskStage(task: GridTask): keyof StageCounts {
+/**
+ * Histogram bucket for a row, or `null` for a row that belongs in no bucket.
+ * Cancelled work is deliberately stopped: counting it as QUEUED (the old
+ * fall-through) made stalled missions look busy.
+ */
+export function deriveGridTaskStage(task: GridTask): keyof StageCounts | null {
+  if (task.status === 'cancelled') return null;
   if (task.status === 'failed') return 'FAILED';
   if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
       task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
@@ -250,15 +256,28 @@ export function deriveGridTaskStage(task: GridTask): keyof StageCounts {
   return 'QUEUED';
 }
 
-function computeStageCounts(tasks: GridTask[]): { counts: StageCounts; failedCount: number } {
+export function computeStageCounts(tasks: GridTask[]): { counts: StageCounts; failedCount: number } {
   const counts: StageCounts = { BLOCKED: 0, QUEUED: 0, RUNNING: 0, REVIEW: 0, DONE: 0, FAILED: 0 };
   for (const t of tasks) {
-    counts[deriveGridTaskStage(t)]++;
+    const stage = deriveGridTaskStage(t);
+    if (stage) counts[stage]++;
   }
   const failedCount = counts.FAILED;
   // FAILED doesn't go in the bar segments
   counts.FAILED = 0;
   return { counts, failedCount };
+}
+
+/**
+ * The mobile "Running now" strip: the five most recently updated tasks that
+ * actually have a live worker. Uses the same RUNNING rule as the stage bar so
+ * queued, blocked and budget-stalled tasks never show as running.
+ */
+export function selectMobileRunningTasks(tasks: GridTask[]): GridTask[] {
+  return tasks
+    .filter(t => deriveGridTaskStage(t) === 'RUNNING')
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, 5);
 }
 
 interface StatusGroup {
@@ -422,13 +441,10 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return deriveDayBands(withTs, new Date());
   }, [nonWaitingTasks, effectiveGroupBy]);
 
-  // Mobile recent strip: top 5 non-completed root tasks by recency, always visible regardless of filter
+  // Mobile "Running now" strip: top 5 root tasks with a live worker, always visible regardless of filter
   const mobileRecentTasks = useMemo(() => {
     if (missionFilter) return [];
-    return [...rootTasks]
-      .filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status))
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-      .slice(0, 5);
+    return selectMobileRunningTasks(rootTasks);
   }, [rootTasks, missionFilter]);
 
   const missionGroups = useMemo((): MissionGroup[] => {

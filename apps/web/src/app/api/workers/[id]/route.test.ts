@@ -5205,7 +5205,7 @@ describe('PATCH /api/workers/[id]', () => {
         headers: { Authorization: 'Bearer bld_test' },
         body: {
           status: 'failed',
-          error: 'Budget limit exceeded (maxBudgetUsd)',
+          error: "You've hit your session limit · resets 4pm (UTC)",
           budgetExhausted: true,
         },
       });
@@ -5223,6 +5223,121 @@ describe('PATCH /api/workers/[id]', () => {
 
       // Account should have budgetExhaustedAt set
       expect(mockAccountsUpdate).toHaveBeenCalled();
+    });
+
+    // A per-session dollar cap (the SDK's maxBudgetUsd) is THIS task's own
+    // ceiling. It used to be read as a provider wall: the team's Claude backend
+    // was paused, every seat flagged exhausted for a session window, a fake
+    // pacing episode written and the task failed over to another provider.
+    describe('per-session dollar cap is a task-level failure', () => {
+      function setupSessionCap() {
+        mockAccountsUpdate.mockClear();
+        mockBackendPausesInsert.mockClear();
+        mockMeasureOauthWindow.mockClear();
+        mockTenantBudgetsInsert.mockClear();
+        accountsUpdateSets = [];
+        lastBackendPauseValues = null;
+        lastInsertValues = null;
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+          accountId: 'account-1', status: 'running', milestones: [],
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', context: {}, workspaceId: 'ws-1', missionId: null, status: 'in_progress',
+          outputRequirement: 'none', workspace: { teamId: 'team-1' },
+        });
+        const taskSets: any[] = [];
+        mockTasksUpdate.mockImplementation(() => ({
+          set: mock((vals: any) => { taskSets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+        }));
+        const workerSets: any[] = [];
+        mockWorkersUpdate.mockImplementation(() => ({
+          set: mock((vals: any) => {
+            workerSets.push(vals);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1', status: 'failed' }]) })) };
+          }),
+        }));
+        return { taskSets, workerSets };
+      }
+
+      function expectNoProviderWallSideEffects(taskSets: any[], workerSets: any[]) {
+        expect(mockBackendPausesInsert).not.toHaveBeenCalled();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
+        expect(mockTenantBudgetsInsert).not.toHaveBeenCalled();
+        expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
+        expect(lastInsertValues?.exhaustedAt).toBeUndefined();
+        // Not held for a reset, not failed over: the task simply fails.
+        expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(false);
+        expect(taskSets.some((s: any) => s?.backend)).toBe(false);
+        expect(taskSets.some((s: any) => s?.status === 'failed')).toBe(true);
+        expect(workerSets.find((u: any) => u.exitCause)?.exitCause).toBe('code_failure');
+      }
+
+      it('honours the explicit sessionBudgetCapped flag, even alongside the legacy budgetExhausted flag', async () => {
+        const { taskSets, workerSets } = setupSessionCap();
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: 'Session budget cap reached', sessionBudgetCapped: true, budgetExhausted: true },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expectNoProviderWallSideEffects(taskSets, workerSets);
+      });
+
+      it('recognises the legacy error text a runner without the flag still sends', async () => {
+        const { taskSets, workerSets } = setupSessionCap();
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expectNoProviderWallSideEffects(taskSets, workerSets);
+      });
+
+      it('treats a flagged report that also carries real provider-wall text as a wall', async () => {
+        const { taskSets } = setupSessionCap();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", sessionBudgetCapped: true, budgetExhausted: true },
+        }), { params: mockParams });
+        expect(mockBackendPausesInsert).toHaveBeenCalled();
+        expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(true);
+      });
+
+      // A retry runs under the same cap and would spend another cap's worth
+      // to hit it again, so a capped mission task fails terminally instead of
+      // riding the mission retry.
+      it('does not auto-retry a mission task that hit its session cap', async () => {
+        const { taskSets } = setupSessionCap();
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', context: {}, workspaceId: 'ws-1', missionId: 'mission-1', status: 'in_progress',
+          outputRequirement: 'none', workspace: { teamId: 'team-1' },
+        });
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', sessionBudgetCapped: true },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(taskSets.some((s: any) => s?.status === 'pending')).toBe(false);
+        const failed = taskSets.find((s: any) => s?.status === 'failed');
+        expect(failed?.result?.errorType).toBe('session_budget_capped');
+        expect(failed?.context?.retryCount).toBeUndefined();
+      });
+
+      it('still treats a real provider wall as one', async () => {
+        const { taskSets } = setupSessionCap();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
+        }), { params: mockParams });
+        expect(mockBackendPausesInsert).toHaveBeenCalled();
+        expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(true);
+      });
     });
 
     // OAuth pacing can only learn if every exhaustion is recorded with the work
@@ -5243,7 +5358,7 @@ describe('PATCH /api/workers/[id]', () => {
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+        body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
       });
       const res = await PATCH(req, { params: mockParams });
       expect(res.status).toBe(200);
@@ -5279,7 +5394,7 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+        body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
       }), { params: mockParams });
 
       expect(res.status).toBe(200);
@@ -5436,7 +5551,7 @@ describe('PATCH /api/workers/[id]', () => {
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+        body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
       });
       const res = await PATCH(req, { params: mockParams });
       expect(res.status).toBe(200);
@@ -5561,7 +5676,7 @@ describe('PATCH /api/workers/[id]', () => {
         headers: { Authorization: 'Bearer bld_test' },
         body: {
           status: 'failed',
-          error: 'Budget limit exceeded',
+          error: "You've hit your session limit · resets 4pm (UTC)",
           budgetExhausted: true,
         },
       });
@@ -5733,6 +5848,7 @@ describe('PATCH /api/workers/[id]', () => {
       account: Record<string, unknown>,
       team: Record<string, unknown> = {},
       worker: Record<string, unknown> = {},
+      task: Record<string, unknown> = {},
     ) {
       mockNotify.mockClear();
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
@@ -5743,13 +5859,14 @@ describe('PATCH /api/workers/[id]', () => {
       mockTeamsUpdate.mockReturnValue({
         set: mock((v: any) => { capturedTeamSet = v; return { where: mock(() => ({ returning: mock(() => [{ id: 'team-1' }]) })) }; }),
       });
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', ...account });
+      // Default: a seat (OAuth) account running Claude — the case the pool tracks.
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', authType: 'oauth', ...account });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
         taskId: 'task-1', branch: 'feature/test', commitCount: 0, prUrl: null, prNumber: null,
         pendingInstructions: null, ...worker,
       });
-      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', ...task });
       mockArtifactsFindMany.mockResolvedValue([]);
       // Return team with budget fields
       mockTeamsFindFirst.mockResolvedValue({
@@ -5784,6 +5901,58 @@ describe('PATCH /api/workers/[id]', () => {
       const alerts = budgetNotifies();
       expect(alerts).toHaveLength(1);
       expect(alerts[0]).toMatchObject({ app: 'alerts', title: 'Buildd budget 50% used' });
+    });
+
+    // The monthly pool is Claude usage on a seat. Codex and tenant spend were
+    // added to it, overstating it and firing its alerts early.
+    describe('Codex and tenant usage do not count toward the Agent SDK credit pool', () => {
+      const POOL = { monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [] };
+      const completion = () => createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', costUsd: 10 },
+      });
+
+      it('does not count a Codex session', async () => {
+        const getSet = setupCompletion({}, POOL, {}, { backend: 'codex' });
+        const res = await PATCH(completion(), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(getSet()).toBeNull();
+        expect(budgetNotifies()).toHaveLength(0);
+      });
+
+      // accounts.authType records a CLI-login account as 'api' even on a
+      // seat, so it cannot be used to exclude metered spend yet: doing so
+      // silently stopped the pool counter for those runners.
+      it('still counts a session on an account recorded as api', async () => {
+        const getSet = setupCompletion({ authType: 'api' }, POOL);
+        await PATCH(completion(), { params: mockParams });
+        expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
+      });
+
+      it('does not count a session on a tenant credential', async () => {
+        const getSet = setupCompletion({}, POOL, {}, { context: { tenantContext: { tenantId: 'tenant-a' } } });
+        await PATCH(completion(), { params: mockParams });
+        expect(getSet()).toBeNull();
+      });
+
+      it('still writes the cost onto the worker row for an excluded session', async () => {
+        setupCompletion({}, POOL, {}, { backend: 'codex' });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSetCalls.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: {
+            status: 'completed', costUsd: 0,
+            resultMeta: { modelUsage: { 'claude-sonnet-4-6': { inputTokens: 0, outputTokens: 1_000_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 } } },
+          },
+        }), { params: mockParams });
+        expect(workerSetCalls.some((u: any) => typeof u.costUsd === 'string' && parseFloat(u.costUsd) > 0)).toBe(true);
+      });
     });
 
     it('does not re-fire a threshold already alerted this month', async () => {
@@ -6583,7 +6752,7 @@ describe('PATCH /api/workers/[id]', () => {
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(2);
       });
 
-      it('below the confidence threshold: does not attempt the unbounded fallback', async () => {
+      it('below the confidence threshold: escalates, so neither the bounded merge nor the unbounded fallback runs', async () => {
         setupReviewerTaskCompletion('approve');
         agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.95 });
         mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
@@ -6591,7 +6760,8 @@ describe('PATCH /api/workers/[id]', () => {
         // makeReviewerPatchRequest defaults confidence to 0.9, below 0.95.
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
-        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(missionNoteInserts.some((n) => n.type === 'reviewer_escalated')).toBe(true);
       });
 
       it('tier=human: does not attempt the unbounded fallback', async () => {
@@ -7424,6 +7594,88 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(true);
     });
 
+    // The guard used to check only that `verdict` was truthy. An out-of-enum
+    // verdict then fell through the outcome switch doing nothing (read as
+    // review_failed, which the merge gate lets through) and a string
+    // confidence threw at `.toFixed`.
+    describe('malformed verdicts are contract violations', () => {
+      function captureTaskSets() {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        return taskSetCalls;
+      }
+
+      const cases: Array<[string, Record<string, unknown>, string]> = [
+        ['an out-of-enum verdict', { verdict: 'approved', confidence: 0.9, summary: 's' }, 'verdict'],
+        ['a string confidence', { verdict: 'approve', confidence: '0.9', summary: 's' }, 'confidence'],
+        ['a confidence outside [0, 1]', { verdict: 'approve', confidence: 85, summary: 's' }, 'confidence'],
+      ];
+
+      for (const [label, structuredOutput, reasonWord] of cases) {
+        it(`${label}: requeues the review with the reason, and never reviews or merges`, async () => {
+          setupReviewerTaskCompletion('approve');
+          const taskSetCalls = captureTaskSets();
+
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: { status: 'completed', structuredOutput },
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+          expect(mockPostPrReview).not.toHaveBeenCalled();
+          expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+          const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.reviewContractRetryCount).toBe(1);
+          expect(String(requeue.context.failureContext)).toContain(reasonWord);
+        });
+      }
+    });
+
+    // An approve at any confidence used to post a GitHub APPROVE and run the
+    // bounded merge; the workspace threshold only guarded the unbounded
+    // self-merge.
+    describe('low-confidence approvals escalate', () => {
+      it('approve below the threshold: no APPROVE, no merge, escalation note, effective verdict persisted', async () => {
+        setupReviewerTaskCompletion('approve');
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => ({ catch: () => Promise.resolve() })) };
+          }),
+        });
+
+        const res = await PATCH(makeReviewerPatchRequest('approve', { confidence: 0.3 }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(mockPostPrReview.mock.calls.some((c: any) => c[0]?.event === 'APPROVE')).toBe(false);
+        const note = missionNoteInserts.find((n) => n.type === 'reviewer_escalated');
+        expect(note).toBeDefined();
+        expect(note.title).toContain('below workspace threshold');
+        // The body says what happened without claiming the file list did it.
+        expect(note.body).not.toContain('the file list requires a human');
+        expect(note.body).toContain('below workspace threshold');
+        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql');
+        expect(persisted).toBeDefined();
+        expect(persisted.result.values).toContain('escalate');
+      });
+
+      it('approve at a confident score still runs the bounded merge', async () => {
+        setupReviewerTaskCompletion('approve');
+        await PATCH(makeReviewerPatchRequest('approve', { confidence: 0.9 }), { params: mockParams });
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('non-review task with no structuredOutput is unaffected', async () => {
       setupReviewerTaskCompletion('approve');
       // Same shape, but not a review task — ordinary completions must still pass.
@@ -7608,6 +7860,47 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(lastInsertValues).toBeDefined();
       expect(lastInsertValues.title).toBe('[builder · after review #1] fix(timeline): duplicate day header');
+    });
+
+    // Regression: the fix attempt was inserted without the original's backend,
+    // role, routing kind or phase, so a Codex task's fix ran on Claude, a
+    // role-routed task lost its runner filter, and the rail could not place
+    // the attempt under its parent.
+    it('request-changes: the fix attempt keeps the original task\'s backend, role, kind and phase', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // Keyed on the id being read rather than call order: the original task
+      // is one of several task reads in the handler.
+      const reviewerTaskImpl = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        opts?.where?.value === 'original-task-1'
+          ? Promise.resolve({
+              id: 'original-task-1',
+              title: 'Build feature X',
+              description: 'Description',
+              missionId: 'mission-1',
+              pathManifest: ['apps/web/src/lib/feature-x.ts'],
+              backend: 'codex',
+              roleSlug: 'builder',
+              kind: 'engineering',
+              complexity: 'complex',
+              missionPhaseIndex: 2,
+              missionPhaseLabel: 'Implementation',
+            })
+          : reviewerTaskImpl(opts),
+      );
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toMatchObject({
+        taskClass: 'attempt',
+        backend: 'codex',
+        roleSlug: 'builder',
+        kind: 'engineering',
+        complexity: 'complex',
+        missionPhaseIndex: 2,
+        missionPhaseLabel: 'Implementation',
+      });
     });
 
     it('escalate: sends Pushover and does not create retry task', async () => {
@@ -9233,6 +9526,67 @@ describe('PATCH /api/workers/[id]', () => {
         expect(failedWorker.exitCause).toBe('budget_limited');
       });
     });
+
+    // A catalog model the runner's CLI is too old for dies on a deterministic
+    // version-gate 400 before the agent takes a turn. It said nothing about
+    // the task, yet it fell through to code_failure and spent a retry.
+    describe('unrecognized model (CLI version gate)', () => {
+      const VERSION_GATE_ERROR =
+        'Claude Code returned an error result: API Error: 400 Claude Code 2.1.0 does not support this model; version 2.2.0 or newer is required.';
+
+      function setupVersionGate(context: Record<string, unknown>) {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            workerSetCalls.push(updates);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+          taskId: 'task-1', pendingInstructions: null,
+        });
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      it('books infra_failure and requeues on the infra budget, not the task retry budget', async () => {
+        const { taskSetCalls, workerSetCalls } = setupVersionGate({});
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: VERSION_GATE_ERROR },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.exitCause)?.exitCause).toBe('infra_failure');
+        const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+        expect(requeue).toBeDefined();
+        expect(requeue.context.infraRetryCount).toBe(1);
+        expect(requeue.context.retryCount).toBeUndefined();
+        expect(requeue.startAt).toBeInstanceOf(Date);
+      });
+
+      it('fails as infra_stalled once the infra budget is spent', async () => {
+        const { taskSetCalls } = setupVersionGate({ infraRetryCount: 3 });
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: VERSION_GATE_ERROR },
+        }), { params: mockParams });
+
+        expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+        expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result?.errorType).toBe('infra_stalled');
+      });
+    });
   });
 
   // ── Cancelled-task protection ────────────────────────────────────────────────
@@ -9338,7 +9692,7 @@ describe('PATCH /api/workers/[id]', () => {
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+        body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
       });
       const res = await PATCH(req, { params: mockParams });
 

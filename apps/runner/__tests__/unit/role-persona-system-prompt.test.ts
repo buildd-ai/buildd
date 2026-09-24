@@ -18,6 +18,7 @@ import { join } from 'path';
 import type { LocalUIConfig } from '../../src/types';
 
 import * as realRoles from '../../src/roles';
+import * as realGitOps from '../../src/git-operations';
 import { buildRoleSystemPromptSection } from '../../src/roles';
 
 // ─── Pure: the rendered section ─────────────────────────────────────────────
@@ -142,6 +143,14 @@ mock.module('../../src/roles', () => ({
   overlayRoleFiles: async () => {},
   resolveRoleCwd: async (_rc: any, _t: any, workspacePath: string) => ({ cwd: workspacePath }),
   resolveRoleEnv: async () => ({ resolved: {}, missing: [] }),
+}));
+
+// A repo task whose worktree setup fails no longer runs in the shared clone,
+// so the harness has to hand back a worktree. The path is the workspace so the
+// cwd-CLAUDE.md cases below read the same directory either way.
+mock.module('../../src/git-operations', () => ({
+  ...realGitOps,
+  setupWorktree: async (_repo: string, branch: string) => ({ path: '/tmp/test-workspace', branch, base: 'origin/main' }),
 }));
 
 mock.module('../../src/worker-store', () => ({
@@ -279,6 +288,18 @@ describe('assembled system prompt: role persona', () => {
     const append = await runTask(manager, { roleInstructions: ROLE_INSTRUCTIONS }, 'w-role-5');
 
     expect(append).not.toContain('## Role: Builder');
+  });
+
+  // 'user' stays in settingSources for ~/.claude/skills; the host operator's
+  // own memory file must not ride along (see host-memory-excludes.ts).
+  test('excludes the host user CLAUDE.md from the session', async () => {
+    await runTask(manager, { roleInstructions: ROLE_INSTRUCTIONS }, 'w-role-7');
+
+    expect(lastQueryOpts?.options?.settingSources).toContain('user');
+    // Shape only: the exact path is the host home, which this file must not
+    // read (scripts/test-home-isolation.test.ts).
+    const excludes: string[] = lastQueryOpts?.options?.settings?.claudeMdExcludes ?? [];
+    expect(excludes.some(p => p.endsWith('/.claude/CLAUDE.md'))).toBe(true);
   });
 
   test('still appends when the cwd CLAUDE.md is the project, not the role', async () => {

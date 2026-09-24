@@ -9,7 +9,7 @@ import InlineTaskRetry from './InlineTaskRetry';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { GroupSection } from '@/components/GroupSection';
-import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
+import { SwipeableRow, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveBandKey, buildRail, railOutcome, rollupRailOutcome } from '@/lib/condensed-timeline';
 import type { ChainUnit, RailGoal, RailNode, RailOutcome, RailPhase } from '@/lib/condensed-timeline';
 import { DependencyRail, type RailEdgeKind } from '@/components/DependencyRail';
@@ -329,16 +329,11 @@ function TaskRow({
 }) {
   const { latestWorker } = task;
   const isFailed = task.status === 'failed';
-  const isDone = task.status === 'completed';
   const waitingFor =
     latestWorker?.status === 'waiting_input' && latestWorker.waitingFor
       ? latestWorker.waitingFor
       : null;
-  const swipeCardType: SwipeCardType = isDone
-    ? 'completed-task'
-    : (task.chain?.blockedBy?.length ?? 0) > 0
-      ? 'blocked-task'
-      : 'running-task';
+  const swipeCardType: SwipeCardType = taskSwipeCardType(task.status, task.chain?.blockedBy?.length ?? 0);
 
   const showPrLine = !!latestWorker?.prUrl &&
     !!latestWorker.prNumber &&
@@ -364,6 +359,7 @@ function TaskRow({
           cardType={swipeCardType}
           taskTitle={task.title}
           taskId={task.id}
+          taskStatus={task.status}
           prUrl={latestWorker?.prUrl ?? null}
           className="flex-1 min-w-0"
         >

@@ -11,6 +11,35 @@ export interface WorkflowRunPayload {
   conclusion: string | null;
   html_url: string;
   head_branch: string | null;
+  /** What triggered the run: 'workflow_dispatch', 'push', 'workflow_run', … */
+  event?: string;
+  /** Repo-relative path of the workflow file, e.g. '.github/workflows/release.yml'. */
+  path?: string;
+}
+
+/**
+ * Is this run the workspace's configured release workflow?
+ *
+ * Used to gate the head-sha fallback in the webhook's release-row lookup. The
+ * head sha alone is shared by every workflow that runs on that commit — CI
+ * Auto-Fix, Sync-dev, Build & Test — so without this a sibling run's `skipped`
+ * recorded a shipped release as failed, and its `success` could advance a row
+ * before the release had finished. A release is always a `workflow_dispatch`
+ * run of `workflowFile` in the workspace's own repo; anything else is not.
+ *
+ * `path` may carry a `@ref` suffix for reusable workflows; it is stripped.
+ */
+export function isConfiguredReleaseRun(
+  run: { event?: string; path?: string; repository?: { full_name?: string } },
+  expected: { workflowFile: string | null | undefined; repoFullName: string | null | undefined },
+): boolean {
+  if (run.event !== 'workflow_dispatch') return false;
+  const file = expected.workflowFile?.replace(/^(\.\/)?(\.github\/workflows\/)?/, '');
+  if (!file || !run.path) return false;
+  const path = run.path.split('@')[0];
+  if (path !== `.github/workflows/${file}` && !path.endsWith(`/${file}`)) return false;
+  if (!expected.repoFullName || !run.repository?.full_name) return false;
+  return run.repository.full_name.toLowerCase() === expected.repoFullName.toLowerCase();
 }
 
 /** Terminal-ish state a completed workflow_run implies for its `releases` row. */

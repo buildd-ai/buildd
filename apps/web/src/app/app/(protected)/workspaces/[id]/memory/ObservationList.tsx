@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { Select } from '@/components/ui/Select';
 import CreateObservationForm from './CreateObservationForm';
+import { useConfirm } from '@/components/useConfirm';
 
 interface Observation {
   id: string;
@@ -55,6 +56,7 @@ export default function ObservationList({
   workspaceId: string;
   initialObservations: Observation[];
 }) {
+  const { confirm, confirmDialog } = useConfirm();
   const [observations, setObservations] = useState<Observation[]>(initialObservations);
   const [typeFilter, setTypeFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -63,6 +65,7 @@ export default function ObservationList({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditFormState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Group observations by file for file-centric view
@@ -133,7 +136,7 @@ export default function ObservationList({
   }
 
   async function handleDelete(obsId: string) {
-    if (!confirm('Delete this memory?')) return;
+    if (!(await confirm({ title: 'Delete memory?', message: 'This memory will be removed from the workspace.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     const res = await fetch(`/api/workspaces/${workspaceId}/memory/${obsId}`, {
       method: 'DELETE',
     });
@@ -143,6 +146,7 @@ export default function ObservationList({
   }
 
   function startEditing(obs: Observation) {
+    setSaveError(null);
     setEditingId(obs.id);
     setEditForm({
       type: obs.type,
@@ -154,6 +158,7 @@ export default function ObservationList({
   }
 
   function cancelEditing() {
+    setSaveError(null);
     setEditingId(null);
     setEditForm(null);
   }
@@ -161,6 +166,7 @@ export default function ObservationList({
   async function saveEdit(obsId: string) {
     if (!editForm) return;
     setSaving(true);
+    setSaveError(null);
 
     try {
       const files = editForm.filesInput
@@ -190,7 +196,7 @@ export default function ObservationList({
       await fetchFiltered(typeFilter, search);
       cancelEditing();
     } catch {
-      alert('Failed to save changes');
+      setSaveError('Failed to save changes');
     } finally {
       setSaving(false);
     }
@@ -263,7 +269,10 @@ export default function ObservationList({
             />
 
             {/* Actions */}
-            <div className="flex justify-end gap-2">
+            <div className="flex justify-end items-center gap-2">
+              {saveError && (
+                <span role="alert" className="mr-auto text-sm text-status-error">{saveError}</span>
+              )}
               <button
                 onClick={cancelEditing}
                 className="px-3 py-1 text-sm text-text-secondary hover:text-text-primary"
@@ -417,6 +426,7 @@ export default function ObservationList({
           ))}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriterionType } from '@buildd/shared';
 import { validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { criterionLabel } from '@/lib/goal-criterion-label';
+import Switch from '@/components/ui/Switch';
 
 interface Props {
   missionId: string;
@@ -508,8 +509,9 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                       disabled={savingCriteria}
                       className="text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
                       title="Remove criterion"
+                      aria-label="Remove criterion"
                     >
-                      ✕
+                      <span aria-hidden="true">✕</span>
                     </button>
                   )}
                   <svg
@@ -552,15 +554,12 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
             <span className="text-[12px] text-text-secondary">Auto-verify on completion</span>
             <p className="text-[11px] text-text-muted mt-0.5">Automatically check criteria when the mission completes.</p>
           </div>
-          <button
-            role="switch"
-            aria-checked={autoVerify}
-            onClick={() => !savingAutoVerify && handleAutoVerifyToggle(!autoVerify)}
+          <Switch
+            checked={autoVerify}
+            onChange={(next) => !savingAutoVerify && handleAutoVerifyToggle(next)}
             disabled={savingAutoVerify}
-            className={`shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${autoVerify ? 'bg-primary' : 'bg-border-strong'}`}
-          >
-            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform duration-200 ${autoVerify ? 'translate-x-4' : 'translate-x-0.5'}`} />
-          </button>
+            label="Auto-verify on completion"
+          />
         </div>
       )}
     </div>

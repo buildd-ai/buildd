@@ -117,6 +117,7 @@ async function requestIntegrationBranchReview(params: {
       prUrl: params.prUrl,
       headSha: params.headSha,
       reviewerRole: picked.role,
+      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
       installationId: params.installationId,
       repoFullName: params.repoFullName,
       // The caller already has the PR base; saves the reviewer context a PR read.

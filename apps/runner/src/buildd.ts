@@ -6,6 +6,7 @@ import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH } from './updater';
+import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -163,10 +164,30 @@ export class BuilddClient {
     if (claimAcrossAccessible && !workspaceId) {
       body.claimAcrossAccessible = true;
     }
-    const data = await this.fetch('/api/workers/claim', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    let data: any;
+    try {
+      data = await this.fetch('/api/workers/claim', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // A 5xx still counts as "server contact", so without this a streak of
+      // failing claims was invisible to the heartbeat (audit N3).
+      if (isServerRefusal(err) && err.status >= 500) {
+        const { streak } = claimHealth.recordServerError(err.status);
+        console.error(`[claim] HTTP ${err.status} (${streak} in a row): ${describeClaimErrorBody(err.raw)}`);
+      } else if (isServerRefusal(err)) {
+        // A 4xx is the server answering on purpose (budget, auth, gate) —
+        // the endpoint is healthy, so it ends a 5xx streak.
+        if (claimHealth.recordSuccess()) {
+          console.log(`[claim] claim endpoint recovered (HTTP ${err.status}) — health no longer degraded`);
+        }
+      }
+      throw err;
+    }
+    if (claimHealth.recordSuccess()) {
+      console.log('[claim] claim endpoint recovered — health no longer degraded');
+    }
     return { workers: data.workers || [], diagnostics: data.diagnostics, budgetResetsAt: data.budgetResetsAt };
   }
 
@@ -227,8 +248,12 @@ export class BuilddClient {
     resultMeta?: Record<string, unknown>;
     // Completion summary (from SDK Stop hook last_assistant_message)
     summary?: string;
-    // Budget exhaustion signal
+    // Budget exhaustion signal (a provider usage wall)
     budgetExhausted?: boolean;
+    // The session hit its own per-session dollar cap (maxBudgetUsd): a
+    // task-level failure, NOT a provider wall — must not pause the backend.
+    // The server fails the task alone, without retry.
+    sessionBudgetCapped?: boolean;
     // Steering-delivery crash: classify as infra_failure (must not consume retry)
     steeringDelivery?: boolean;
     // Set by restoreWorkersFromDisk when this 'failed' write reconciles a
