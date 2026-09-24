@@ -199,11 +199,26 @@ export function missionCardGroup(input: {
   isHeld?: boolean | null;
   startAt?: DateLike;
   now?: number;
+  /** Live workers (`LIVE_WORKER_STATUSES`, so `waiting_input` counts). */
+  liveWorkers?: number;
+  criteriaEscalatedAt?: DateLike;
+  hasPendingDeliverableWork?: boolean;
 }): MissionGroup {
   if (TERMINAL_MISSION.has(input.status)) return 'completed';
   const now = input.now ?? Date.now();
   if (!input.isHeld && input.startAt && new Date(input.startAt).getTime() > now && input.health !== 'active') {
     return 'scheduled';
+  }
+  // D8: a paused or budget-stopped mission whose next step is the user's is
+  // active, not PAUSED / HELD. `deriveMissionHealth` returns `paused` before it
+  // looks at workers or criteria, but the card's chip (deriveMissionStateView)
+  // does not, so without this a READY FOR REVIEW or AWAITING DECISION card sat
+  // under PAUSED / HELD and the header's "N active" skipped it. Held missions
+  // stay PAUSED / HELD (§1.1): arming is a start, not an answer.
+  if (!input.isHeld && (input.health === 'paused' || input.health === 'budget-exhausted')) {
+    if ((input.liveWorkers ?? 0) > 0) return 'running';
+    if (input.criteriaEscalatedAt && input.hasPendingDeliverableWork === false) return 'attention';
+    if (input.progress >= 100) return 'review';
   }
   return healthToGroup(input.health, input.progress);
 }
@@ -267,7 +282,10 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
       { dependsOnMissionId: row.dependsOnMissionId, dependencyMetAt: row.dependencyMetAt, heartbeatWaitingUntil },
       tasks as any,
     ),
-    group: missionCardGroup({ status: row.status, health, progress, isHeld: row.isHeld, startAt: row.startAt, now }),
+    group: missionCardGroup({
+      status: row.status, health, progress, isHeld: row.isHeld, startAt: row.startAt, now,
+      liveWorkers, criteriaEscalatedAt: row.criteriaEscalatedAt, hasPendingDeliverableWork: pending,
+    }),
     liveWorkers,
     progress,
     totalTasks,

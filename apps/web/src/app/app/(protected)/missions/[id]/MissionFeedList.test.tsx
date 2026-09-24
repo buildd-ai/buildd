@@ -155,11 +155,46 @@ describe('MissionFeedList — phase folding defaults', () => {
     expect(html).not.toContain('data-testid="mission-phase-header"');
   });
 
-  it('never folds the rows of an unphased mission, even when every task is done', () => {
-    const tasks = fixtureMission(3).map(t => ({ ...t, status: 'completed', worker: null }));
-    const html = render(tasks);
+  it('never folds the rows of an unphased mission while work is open', () => {
+    const html = render(fixtureMission(3));
     expect(html).not.toMatch(/<div hidden="">/);
     expect(count(html, 'data-testid="mission-task-row"')).toBe(3);
+  });
+
+  it('folds a finished unphased mission to one header row, with records, that expands on tap', () => {
+    const tasks = fixtureMission(3).map(t => ({ ...t, status: 'completed', worker: null }));
+    const html = render(tasks, { recordsCountByTask: { u1: 2, u2: 1 } });
+    const header = html.match(/<button[^>]*data-testid="mission-phase-header"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? '';
+    expect(header).toContain('data-phase-status="finished"');
+    expect(header).toContain('aria-expanded="false"');
+    const text = header.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    expect(text).toContain('Tasks');
+    expect(text).toContain('✓ 3/3');
+    expect(text).toContain('3 records');
+    expect(text).toContain('▸');
+    // Every row is still in the DOM, folded, so a #t- arrival can reveal it.
+    expect(count(html, 'data-testid="mission-task-row"')).toBe(3);
+    expect(html).toMatch(/<div hidden="">/);
+  });
+
+  it('a fully completed phased mission renders folded headers only: no row is visible by default', () => {
+    const tasks = fixtureMission(15).map(t => ({ ...t, status: 'completed', worker: null }));
+    const html = render(tasks);
+    expect(html).not.toContain('data-group="needs_you"');
+    expect(html).not.toContain('data-group="moving"');
+    const headers = [...html.matchAll(/data-testid="mission-phase-header" data-phase-status="([a-z]+)" aria-expanded="([a-z]+)"/g)];
+    expect(headers.length).toBeGreaterThan(1);
+    for (const [, status, expanded] of headers) {
+      expect(status).toBe('finished');
+      expect(expanded).toBe('false');
+    }
+    // Each group's rows sit under its folded (hidden) body, so none is on the first screen.
+    for (const group of html.split('data-testid="mission-feed-group"').slice(1)) {
+      const firstRow = group.indexOf('data-testid="mission-task-row"');
+      expect(firstRow).toBeGreaterThan(-1);
+      expect(group.indexOf('<div hidden="">')).toBeGreaterThan(-1);
+      expect(group.indexOf('<div hidden="">')).toBeLessThan(firstRow);
+    }
   });
 
   it('labels an unphased stretch of a phased mission as Unphased', () => {

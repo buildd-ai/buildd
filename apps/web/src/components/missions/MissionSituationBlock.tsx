@@ -169,6 +169,9 @@ export default function MissionSituationBlock({ missionId, situation, because, c
   return (
     <div
       data-testid="mission-situation"
+      // Provenance is for diagnostics, not for the reader: it names the
+      // derivation (`mission-state-view.ts`), which is noise on the page.
+      data-derived-from={situation.derivedFrom}
       className={`mb-3 border px-3 py-2.5 ${TONE_BLOCK_CLASS[situation.tone]}`}
     >
       <p
@@ -219,8 +222,6 @@ export default function MissionSituationBlock({ missionId, situation, because, c
           ))}
         </ul>
       )}
-
-      <p className="mt-2 text-[10px] font-mono text-text-muted">from {situation.derivedFrom}</p>
     </div>
   );
 }

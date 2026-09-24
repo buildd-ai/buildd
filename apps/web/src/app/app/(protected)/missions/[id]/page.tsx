@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { formatCompletionRecord } from '@/lib/mission-completion-record';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
@@ -1092,7 +1093,11 @@ export default async function MissionDetailPage({
               </span>
             )}
           </div>
-          <p className="text-[13px] text-text-secondary leading-relaxed whitespace-pre-line">{completionPick.text}</p>
+          <p className="text-[13px] text-text-secondary leading-relaxed whitespace-pre-line">
+            {/* The record's body is machine-shaped (a status histogram, a raw ISO
+                time); read it the way the rest of the page reads. */}
+            {completionPick.source === 'completion_record' ? formatCompletionRecord(completionPick.text) : completionPick.text}
+          </p>
         </div>
       )}
     </>
