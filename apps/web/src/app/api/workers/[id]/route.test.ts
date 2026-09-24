@@ -9949,6 +9949,83 @@ describe('PATCH /api/workers/[id]', () => {
       expect(workerFinalSet.exitCause).toBe('condition_unmet');
     });
 
+    // The agent's own complete_task (packages/core/mcp-tools.ts) never carries
+    // evidence. The runner records it on the row first, from a PreToolUse hook
+    // on that call — the completion must be decided against the stored copy,
+    // not as "No verification evidence provided by runner".
+    it('agent-authored completion (no evidence in body) is decided on the evidence stored on the worker', async () => {
+      const workerSetCalls: any[] = [];
+      const taskSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({
+        verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+      }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Made the check pass.', summarySource: 'agent' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSetCalls[workerSetCalls.length - 1].exitCause).not.toBe('condition_unmet');
+      const taskStatusSet = taskSetCalls.find((u: any) => u.status !== undefined);
+      expect(taskStatusSet?.status).toBe('completed');
+      expect(taskStatusSet?.loopState).toBe('satisfied');
+      expect(taskStatusSet?.result?.loopHistory?.[0]?.evidence?.outcome).toBe('ok');
+    });
+
+    it('evidence in the body wins over the stored copy', async () => {
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({
+        verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+      }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSetCalls[workerSetCalls.length - 1].exitCause).toBe('condition_unmet');
+    });
+
+    it('persists evidence from a non-terminal PATCH (the runner\'s pre-complete_task write)', async () => {
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+      const evidence = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { verificationEvidence: evidence },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify(evidence))).toBe(true);
+    });
+
     it('does not set loop fields when task has no loopConfig', async () => {
       const taskSetCalls: any[] = [];
       mockTasksUpdate.mockReturnValue({
