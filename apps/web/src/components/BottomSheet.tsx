@@ -21,6 +21,33 @@ interface BottomSheetProps {
   height?: 'auto' | 'tall';
   /** `data-testid` on the dialog panel. */
   testId?: string;
+  /**
+   * Rendered at the very top of the panel, above the title bar and outside the
+   * scrolling body — a drag handle stays put while the content scrolls.
+   */
+  handle?: React.ReactNode;
+  /**
+   * Modal focus: move focus into the panel when it opens and keep Tab inside it
+   * until it closes. Off by default so existing consumers see no change.
+   */
+  trapFocus?: boolean;
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** The element Tab should move to from `active`, or null to let the browser move. */
+export function nextTrappedFocus(
+  focusables: readonly HTMLElement[],
+  active: Element | null,
+  backwards: boolean,
+): HTMLElement | null {
+  if (focusables.length === 0) return null;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const inside = active !== null && focusables.includes(active as HTMLElement);
+  if (backwards) return !inside || active === first ? last : null;
+  return !inside || active === last ? first : null;
 }
 
 /** The element to lock: `lockTarget()` when it resolves, else `body`. */
@@ -54,16 +81,35 @@ export default function BottomSheet({
   lockTarget,
   height = 'auto',
   testId,
+  handle,
+  trapFocus = false,
 }: BottomSheetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   // Read through a ref so an inline `() => main` does not re-run the lock effect every render.
   const lockTargetRef = useRef(lockTarget);
   lockTargetRef.current = lockTarget;
 
+  const trapRef = useRef(trapFocus);
+  trapRef.current = trapFocus;
+
   useEffect(() => {
     if (!open) return;
+    const panel = panelRef.current;
+    if (trapRef.current && panel && !panel.contains(document.activeElement)) {
+      panel.focus({ preventScroll: true });
+    }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
+      if (e.key !== 'Tab' || !trapRef.current || !panel) return;
+      const target = nextTrappedFocus(
+        Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)),
+        document.activeElement,
+        e.shiftKey,
+      );
+      if (target) {
+        e.preventDefault();
+        target.focus();
+      }
     }
     document.addEventListener('keydown', handleKey);
     const unlock = lockScroll(resolveLockTarget(lockTargetRef.current, document.body));
@@ -90,10 +136,12 @@ export default function BottomSheet({
         aria-modal="true"
         aria-label={title}
         data-testid={testId}
-        className={`relative w-full max-w-lg bg-surface-1 border-t border-border-default rounded-t-lg shadow-lg pb-[env(safe-area-inset-bottom)] ${
+        tabIndex={trapFocus ? -1 : undefined}
+        className={`relative w-full max-w-lg bg-surface-1 border-t border-border-default rounded-t-lg shadow-lg pb-[env(safe-area-inset-bottom)] focus:outline-none ${
           tall ? 'flex flex-col h-[88dvh] overflow-hidden' : 'max-h-[85vh] overflow-y-auto'
         }`}
       >
+        {handle}
         <div className="sticky top-0 flex items-center justify-between px-4 py-3 border-b border-border-default bg-surface-1">
           <h2 className="text-[13px] font-semibold text-text-primary">{title}</h2>
           <button

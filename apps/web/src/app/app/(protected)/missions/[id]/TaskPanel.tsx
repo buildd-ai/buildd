@@ -7,6 +7,7 @@
  * page can share it.
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import LiveWorkerActivity from './LiveWorkerActivity';
 import StatusBadge from '@/components/StatusBadge';
 import PrCard from '@/components/task/PrCard';
@@ -58,6 +59,53 @@ export interface TaskPanelData {
   } | null;
   lastError: { excerpt: string; pattern: string | null; ts: string } | null;
   blockedByCount: number;
+  /** What the task produced (W4 "Records"); absent from older responses. */
+  records?: Array<{ id: string; type: string; title: string | null; href: string }>;
+  /** Provenance from `deriveTaskOrigin` (U6); null when nothing is stored. */
+  origin?: {
+    actor: string | null;
+    parts: string[];
+    links: Array<{ key: string; label: string; href: string }>;
+  } | null;
+}
+
+/** Records and Origin: what the task produced and where it came from (W4, U6). */
+function TaskProvenance({ records, origin }: Pick<TaskPanelData, 'records' | 'origin'>) {
+  // The sheet already sits over the mission, so its own link would go nowhere.
+  const originLinks = (origin?.links ?? []).filter(l => l.key !== 'mission');
+  const originText = origin ? [origin.actor, ...origin.parts].filter(Boolean).join(' · ') : '';
+  if (!records?.length && !originText) return null;
+  return (
+    <dl className="space-y-1.5 font-mono text-[12px]">
+      {!!records?.length && (
+        <div data-testid="task-sheet-records" className="flex gap-2">
+          <dt className="shrink-0 text-text-muted">Records:</dt>
+          <dd className="min-w-0 flex-1">
+            {records.map((r, i) => (
+              <span key={r.id}>
+                {i > 0 && <span className="text-text-muted"> · </span>}
+                <Link href={r.href} className="text-accent-text hover:underline">{r.title || r.type}</Link>
+              </span>
+            ))}
+          </dd>
+        </div>
+      )}
+      {originText && (
+        <div data-testid="task-sheet-origin" className="flex gap-2">
+          <dt className="shrink-0 text-text-muted">Origin:</dt>
+          <dd className="min-w-0 flex-1 text-text-secondary">
+            {originText}
+            {originLinks.map(l => (
+              <span key={l.key}>
+                <span className="text-text-muted"> · </span>
+                <Link href={l.href} className="text-accent-text hover:underline">{l.label}</Link>
+              </span>
+            ))}
+          </dd>
+        </div>
+      )}
+    </dl>
+  );
 }
 
 function timeAgo(date: string): string {
@@ -300,6 +348,8 @@ export default function TaskPanelBody({ data, onChanged }: TaskPanelBodyProps) {
       {data.result?.summary && (
         <TaskSummary summary={data.result.summary} entityId={`task-${data.id}-summary`} label="Summary" />
       )}
+
+      <TaskProvenance records={data.records} origin={data.origin} />
 
       {data.result?.nextSuggestion && (
         <div className="flex items-start gap-2">

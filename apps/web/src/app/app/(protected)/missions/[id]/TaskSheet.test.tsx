@@ -99,6 +99,45 @@ describe('TaskSheet — body', () => {
     expect(html).not.toContain('data-testid="task-sheet-skeleton"');
   });
 
+  it('a completed task with no PR also shows its records and origin (W4)', () => {
+    const html = render({
+      summary: {
+        data: summaryData({
+          records: [
+            { id: 'art-1', type: 'report', title: 'plan.md', href: '/app/artifacts/art-1' },
+            { id: 'art-2', type: 'summary', title: null, href: '/app/artifacts/art-2' },
+          ],
+          origin: {
+            actor: 'Organizer agent',
+            parts: ['mission heartbeat cycle 3'],
+            links: [
+              { key: 'worker', label: 'Agent run', href: '/app/tasks/t9' },
+              { key: 'mission', label: 'Example mission', href: '/app/missions/m1' },
+            ],
+          },
+        }),
+        loading: false,
+        error: null,
+      },
+    });
+    expect(html).toContain('data-testid="task-sheet-records"');
+    expect(html).toContain('href="/app/artifacts/art-1"');
+    expect(html).toContain('>plan.md<');
+    // An untitled record falls back to its type.
+    expect(html).toMatch(/href="\/app\/artifacts\/art-2"[^>]*>summary</);
+    expect(html).toContain('data-testid="task-sheet-origin"');
+    expect(html).toContain('Organizer agent · mission heartbeat cycle 3');
+    expect(html).toContain('href="/app/tasks/t9"');
+    // The sheet is already over the mission: no link back to it.
+    expect(html).not.toContain('>Example mission</a>');
+  });
+
+  it('no records and no origin → neither line renders', () => {
+    const html = render({ summary: { data: summaryData({ records: [], origin: null }), loading: false, error: null } });
+    expect(html).not.toContain('data-testid="task-sheet-records"');
+    expect(html).not.toContain('data-testid="task-sheet-origin"');
+  });
+
   it('the phase action comes first: a queued task offers Run now', () => {
     const html = render({ summary: { data: summaryData({ status: 'pending', result: null }), loading: false, error: null } });
     expect(html).toContain('data-testid="task-action-zone"');

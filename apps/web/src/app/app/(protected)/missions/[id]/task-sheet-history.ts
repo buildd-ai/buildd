@@ -5,7 +5,8 @@
  *
  * | Action                  | Call                           | Back does        |
  * |-------------------------|--------------------------------|------------------|
- * | open a task             | pushState(?task=Y)             | closes the sheet |
+ * | open a task (closed)    | pushState(?task=Y)             | closes the sheet |
+ * | open a task (open)      | replaceState(?task=Z)          | closes the sheet |
  * | ‹ › / Next needing you  | replaceState(?task=Z)          | closes the sheet |
  * | close, sheet was pushed | history.back()                 | —                |
  * | close, entered with it  | replaceState(no task, #t-Y)    | leaves mission   |
@@ -15,9 +16,21 @@
  * written data does not carry Next's own markers (see `lib/native-history.ts`
  * and `TaskSheet.next-history.test.ts`).
  *
+ * "Next needing you" and a row tap while a sheet is already open (docked md+)
+ * also replace: the sheet is one entry however many tasks it visits, so one
+ * Back always closes it.
+ *
  * Whether the current entry was pushed by us is tracked in memory, not in
  * `history.state`: a router refresh rewrites the entry's state without the
  * caller's keys, so a marker there would silently vanish mid-session.
+ *
+ * Known limit, accepted: the memory dies with the component. Open a sheet
+ * (push), tap "Open full page", press Back — the mission remounts on the sheet
+ * entry, cannot tell it was pushed, and ✕ closes by replacing. That leaves the
+ * closed entry from before the push behind it, so the next Back lands on the
+ * same mission (without the focus hash) instead of leaving it. Nothing is lost
+ * or broken, it costs one extra Back; a marker that survives remount but not a
+ * router refresh would be worse than none. Pinned in task-sheet-history.test.ts.
  */
 import { isValidTaskId } from '@/lib/task-id';
 import { missionTaskAnchorId } from '@/lib/mission-task-href';

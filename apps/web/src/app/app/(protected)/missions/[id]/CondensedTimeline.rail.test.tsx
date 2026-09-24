@@ -809,8 +809,8 @@ describe('CondensedTimeline — the chain row is a disclosure, never a link (§1
       // The nearest `data-task-id` a tap on `2 BUILD` resolves to is BUILD.
       expect(enclosingTaskIds(html, href).at(-1)).toBe(id);
     }
-    // The desktop peek predicate, reused rather than re-derived (Rule D13-16).
-    expect(html).toContain('data-task-actionable');
+    // Every task row opens the sheet the same way (AC-10): no opt-out attribute.
+    expect(html).not.toContain('data-task-actionable');
   });
 
   it('keeps data-task-id off the unit wrapper and on the smallest single-task row (AC-38, Rule D13-13)', () => {

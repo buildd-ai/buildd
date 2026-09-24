@@ -145,7 +145,7 @@ export default function TaskActionZone({
             type="button"
             onClick={() => runAction(`/api/tasks/${taskId}/start`)}
             disabled={acting}
-            className="inline-flex min-h-11 shrink-0 items-center gap-1.5 bg-primary px-3 font-mono text-[12px] font-semibold text-white hover:bg-primary-hover disabled:opacity-50"
+            className="btn btn-primary min-h-11 shrink-0"
           >
             {acting ? 'Starting…' : 'Run now'}
           </button>

@@ -55,6 +55,26 @@ function browserHistory(): TaskSheetHistory {
   });
 }
 
+const FOCUSABLE = 'a[href], button, [tabindex]';
+
+/**
+ * Return keyboard focus to `taskId`'s row after the sheet closes, so keyboard
+ * and screen-reader users land where they left. Prefers the list row over a
+ * pulse segment or slot marker carrying the same id; the store already scrolled
+ * it into view, so the focus itself never scrolls.
+ */
+export function focusRow(scope: HTMLElement | null, taskId: string): void {
+  // A valid id is a bare UUID, so it is safe inside the attribute selector.
+  if (!scope || !isValidTaskId(taskId)) return;
+  const sel = `[data-task-id="${taskId}"]`;
+  const row =
+    scope.querySelector<HTMLElement>(`[data-testid="mission-task-row"]${sel}`) ??
+    Array.from(scope.querySelectorAll<HTMLElement>(sel)).find(el => !el.closest('[data-testid="mission-pulse"]'));
+  if (!row) return;
+  const target = row.matches(FOCUSABLE) ? row : row.querySelector<HTMLElement>(FOCUSABLE);
+  target?.focus({ preventScroll: true });
+}
+
 function TaskPanelInner({
   children, missionId, workspaceId, missionTitle, chip, feedTasks, from, initiativeId,
 }: TaskPanelWrapperProps) {
@@ -108,13 +128,18 @@ function TaskPanelInner({
     return () => store.setOpenTask(null);
   }, [store, openTask]);
 
-  // Freeze list order while the sheet is open; on close, land focus on the row.
+  // Freeze list order while the sheet is open; on close, land focus on the row
+  // (outline + scroll through the store, keyboard focus on the row itself).
+  const listRef = useRef<HTMLDivElement>(null);
   const lastOpenRef = useRef<string | null>(taskId);
   useEffect(() => {
     store?.setSheetOpen(taskId !== null);
     const prev = lastOpenRef.current;
     lastOpenRef.current = taskId;
-    if (prev && !taskId) store?.focus(prev, { writeHash: false, block: 'nearest' });
+    if (prev && !taskId) {
+      store?.focus(prev, { writeHash: false, block: 'nearest' });
+      focusRow(listRef.current, prev);
+    }
   }, [store, taskId]);
   useEffect(() => () => store?.setSheetOpen(false), [store]);
 
@@ -147,7 +172,7 @@ function TaskPanelInner({
 
   return (
     <>
-      <div onClickCapture={handleClickCapture}>{children}</div>
+      <div ref={listRef} onClickCapture={handleClickCapture}>{children}</div>
       {taskId && (
         <TaskSheet
           taskId={taskId}

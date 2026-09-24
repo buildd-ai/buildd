@@ -346,9 +346,6 @@ function TaskRow({
     <div className="animate-timeline-enter">
       <div
         data-task-id={task.id}
-        data-task-actionable={
-          task.status !== 'completed' || !!latestWorker?.prUrl ? 'true' : 'false'
-        }
         className="flex items-center gap-0"
       >
         <span className="flex items-center gap-1.5 shrink-0 w-5 pointer-events-none" aria-hidden="true">
@@ -1262,18 +1259,14 @@ function RailAttemptPanel({ id, strips }: { id: string; strips: (AttemptStripDat
 const railHasAttempts = (task: CondensedTimelineTask) => (task.attempts?.total ?? 0) > 0;
 
 /**
- * The attributes `TaskPanelWrapper`'s delegated handler reads, on the smallest
+ * The attribute `TaskPanelWrapper`'s delegated handler reads, on the smallest
  * element that stands for exactly one task (Rule D13-13/D13-16).
  *
- * The actionable predicate is `TaskRow`'s, reused rather than re-derived: a rail
- * row and a desktop row are answering the identical question,
- * and a completed task with no PR must fall through to its `<Link>` and open the
- * full page instead of an empty drawer.
+ * Every task opens the sheet, a completed task with no PR included — the sheet
+ * shows its summary, records and origin (AC-10), so there is no opt-out.
  */
 const railTaskAttrs = (task: CondensedTimelineTask) => ({
   'data-task-id': task.id,
-  'data-task-actionable':
-    task.status !== 'completed' || !!task.latestWorker?.prUrl ? 'true' : 'false',
 });
 
 /**

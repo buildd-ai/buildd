@@ -125,6 +125,21 @@ describe('step ‹ › → replaceState, Back closes (AC-8)', () => {
     expect(h.calls.map(c => c.op)).toEqual(['push', 'back', 'push', 'back']);
   });
 
+  it('known limit: after a remount on a pushed sheet entry (Open full page → Back), close replaces', () => {
+    // Session 1: list → open (push) → the user leaves for the task page.
+    const h = fakeHistory('/app/missions/m1');
+    createTaskSheetHistory(h.deps).open(A);
+    expect(h.entries()).toEqual(['/app/missions/m1', `/app/missions/m1?task=${A}`]);
+
+    // Back from the task page remounts the mission on the sheet entry: a fresh
+    // model cannot know the entry was pushed, so ✕ replaces instead of back().
+    const remounted = createTaskSheetHistory(h.deps);
+    remounted.close(A);
+    expect(h.calls.at(-1)).toEqual({ op: 'replace', url: `/app/missions/m1#t-${A}`, data: { mine: 1 } });
+    // The pre-push entry is still behind it: one extra Back, nothing broken.
+    expect(h.entries()).toEqual(['/app/missions/m1', `/app/missions/m1#t-${A}`]);
+  });
+
   it('Forward back into a sheet entry pushed from the list still closes with back()', () => {
     const h = fakeHistory('/app/missions/m1');
     const sheet = createTaskSheetHistory(h.deps);
