@@ -6,6 +6,8 @@ import type { MissionNote } from '@buildd/shared';
 
 interface Props {
   taskId: string;
+  /** A mission task's feed lists mission-scoped questions, announced on the mission channel. */
+  missionId?: string | null;
   activeWorkerId: string | null;
   activeWorkerStatus: string | null;
 }
@@ -23,7 +25,14 @@ function timeAgo(date: string | Date): string {
 
 const LIVE_STATUSES = new Set(['running', 'starting']);
 
-export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerStatus }: Props) {
+/** Channels the feed refetches on: the task's, plus its mission's for a mission task. */
+export function questionFeedChannels(taskId: string, missionId: string | null | undefined, prefix: string): string[] {
+  const names = [`${prefix}task-${taskId}`];
+  if (missionId) names.push(`${prefix}mission-${missionId}`);
+  return names;
+}
+
+export default function TaskQuestionFeed({ taskId, missionId = null, activeWorkerId, activeWorkerStatus }: Props) {
   const [notes, setNotes] = useState<MissionNote[]>([]);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
@@ -48,16 +57,20 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
   }, [fetchNotes]);
 
   useEffect(() => {
-    const channelName = `${CHANNEL_PREFIX}task-${taskId}`;
-    const channel = subscribeToChannel(channelName);
-    if (!channel) return;
     const handler = () => fetchNotes();
-    channel.bind('mission:note_posted', handler);
+    const bound = questionFeedChannels(taskId, missionId, CHANNEL_PREFIX).flatMap(name => {
+      const channel = subscribeToChannel(name);
+      if (!channel) return [];
+      channel.bind('mission:note_posted', handler);
+      return [{ name, channel }];
+    });
     return () => {
-      channel.unbind('mission:note_posted', handler);
-      unsubscribeFromChannel(channelName);
+      for (const { name, channel } of bound) {
+        channel.unbind('mission:note_posted', handler);
+        unsubscribeFromChannel(name);
+      }
     };
-  }, [taskId, fetchNotes]);
+  }, [taskId, missionId, fetchNotes]);
 
   useEffect(() => {
     if (replyingTo) inputRef.current?.focus();

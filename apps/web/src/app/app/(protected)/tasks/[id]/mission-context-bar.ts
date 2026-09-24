@@ -55,3 +55,11 @@ export function buildMissionContextBar(row: MissionCardRow, taskId: string): Mis
     upHref: missionTaskHref({ missionId: row.id, taskId: rowId ?? taskId, mode: 'focus' }),
   };
 }
+
+/** The page's gate (AC-13): no mission row, no bar — the breadcrumb renders instead. */
+export function missionContextBarFor(
+  row: MissionCardRow | null | undefined,
+  taskId: string,
+): MissionContextBarData | null {
+  return row ? buildMissionContextBar(row, taskId) : null;
+}

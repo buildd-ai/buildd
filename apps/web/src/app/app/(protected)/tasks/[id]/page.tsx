@@ -48,7 +48,8 @@ import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import TaskOverflowMenu from './TaskOverflowMenu';
-import { buildMissionContextBar, type MissionContextBarData } from './mission-context-bar';
+import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
+import { truncateExcerpt } from './error-excerpt';
 import { descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
@@ -196,9 +197,11 @@ export default async function TaskDetailPage({
       : Promise.resolve(null),
   ]);
   const openQuestionCount = Number(openQuestionRows[0]?.c ?? 0);
-  const missionContextBar: MissionContextBarData | null = missionContextRow
-    ? buildMissionContextBar(missionContextRow as unknown as MissionCardRow, task.id)
-    : null;
+  const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
+  const missionContextBar: MissionContextBarData | null = missionContextBarFor(
+    missionContextRow as unknown as MissionCardRow | null,
+    task.id,
+  );
 
   // Read-through refresh: if the latest worker is completed with an open PR,
   // check GitHub in case the merged webhook was missed.
@@ -673,7 +676,7 @@ export default async function TaskDetailPage({
             {errorTraces.length > 0 && (
               <a
                 href="#agent-error-traces"
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
                 title="Pattern-matched errors caught from agent tool output. Click to see details."
                 data-testid="task-error-count"
               >
@@ -724,7 +727,7 @@ export default async function TaskDetailPage({
                     href={task.externalUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="px-4 py-2 text-sm text-center border border-border-default hover:bg-surface-3"
+                    className="flex min-h-11 items-center justify-center px-4 py-2 text-sm border border-border-default hover:bg-surface-3"
                   >
                     View Source ↗
                   </a>
@@ -776,13 +779,23 @@ export default async function TaskDetailPage({
                 isBlocked={false}
                 blockedByCount={0}
                 backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-                lastError={taskWorkers[0]?.error ? { excerpt: taskWorkers[0].error } : null}
+                lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
                 worker={null}
               />
             )}
             {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
           </div>
         )}
+
+        {/* Agent Questions — every question note scoped to this task, a mission
+            task's included (S6: no mission gate). An open question is the
+            decision, so it sits with the action, above anything to read. */}
+        <TaskQuestionFeed
+          taskId={task.id}
+          missionId={task.missionId ?? null}
+          activeWorkerId={activeWorker?.id ?? null}
+          activeWorkerStatus={activeWorker?.status ?? null}
+        />
 
         <div className="flex flex-col">
         {/* Triage metadata — only foregrounded in the pending family, where runner / backend
@@ -1199,14 +1212,6 @@ export default async function TaskDetailPage({
           mode={task.mode}
           status={task.status}
           result={task.result as Record<string, unknown> | null}
-        />
-
-        {/* Agent Questions — every question note scoped to this task, a mission
-            task's included (S6: no mission gate). */}
-        <TaskQuestionFeed
-          taskId={task.id}
-          activeWorkerId={activeWorker?.id ?? null}
-          activeWorkerStatus={activeWorker?.status ?? null}
         />
 
         {/* Active Worker */}

@@ -10,6 +10,14 @@
 import { useState, type ReactNode } from 'react';
 import BottomSheet from '@/components/BottomSheet';
 
+/**
+ * The sheet is the only route to these actions on mobile, so every button and
+ * link inside it — the nested Reassign/Delete confirm rows included — gets the
+ * 44px tap target (min-h-11). Exported for the test.
+ */
+export const TASK_SHEET_ACTIONS_CLASS =
+  'flex flex-col items-stretch gap-2 [&>*]:w-full [&_button]:min-h-11 [&_a]:min-h-11';
+
 export default function TaskOverflowMenu({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -29,7 +37,7 @@ export default function TaskOverflowMenu({ children }: { children: ReactNode }) 
         </svg>
       </button>
       <BottomSheet open={open} onClose={() => setOpen(false)} title="Task actions" trapFocus>
-        <div className="flex flex-col items-stretch gap-2 [&>*]:w-full">{children}</div>
+        <div className={TASK_SHEET_ACTIONS_CLASS}>{children}</div>
       </BottomSheet>
     </>
   );

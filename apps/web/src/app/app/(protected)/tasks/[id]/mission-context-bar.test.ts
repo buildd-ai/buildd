@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { MissionCardRow, MissionCardTaskRow } from '@/lib/mission-card-view';
 import { buildPulseSegments } from '@/lib/mission-pulse';
-import { buildMissionContextBar } from './mission-context-bar';
+import { buildMissionContextBar, missionContextBarFor } from './mission-context-bar';
 
 let clock = Date.UTC(2026, 0, 1);
 function t(id: string, over: Partial<MissionCardTaskRow> = {}): MissionCardTaskRow {
@@ -81,5 +81,16 @@ describe('buildMissionContextBar', () => {
     expect(bar.title).toBe('Claim loop hardening');
     expect(bar.chip.label).toBe('RUNNING');
     expect(bar.missionId).toBe('m1');
+  });
+});
+
+describe('missionContextBarFor — the page gate (AC-13: absent for non-mission tasks)', () => {
+  it('returns no bar for a task with no mission row', () => {
+    expect(missionContextBarFor(null, 'b2')).toBeNull();
+    expect(missionContextBarFor(undefined, 'b2')).toBeNull();
+  });
+
+  it('returns the same bar the builder does for a mission task', () => {
+    expect(missionContextBarFor(mission(tasks), 'b2')).toEqual(buildMissionContextBar(mission(tasks), 'b2'));
   });
 });
