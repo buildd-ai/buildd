@@ -40,6 +40,10 @@ mock.module('../../src/backends/index.js', () => ({
       async *runStreamed(opts: any) {
         runStreamedCalls.push(opts);
         for (const msg of script) {
+          // A `{ __throw: '<message>' }` entry makes the backend itself throw
+          // mid-stream (a crashed CLI / transport error), as opposed to the
+          // SDK reporting an error result.
+          if (msg.__throw) throw new Error(msg.__throw);
           await opts.onProgress?.(msg);
           if (msg.type === 'assistant') {
             const text = msg.message?.content?.find((b: any) => b.type === 'text')?.text;
@@ -333,11 +337,9 @@ describe('closing turn', () => {
 
     expect(createBackendCalls.length).toBe(2);
     expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
-    // Bounded to exactly one turn past the cap, regardless of the original's
-    // configured maxTurns.
-    // Enough budget to load a deferred tool (ToolSearch) AND call
-    // complete_task — a 1-turn cap was spent entirely on ToolSearch.
-    expect(runStreamedCalls[1]?.maxTurns).toBeGreaterThanOrEqual(3);
+    // Bounded to one small fixed budget past the cap, regardless of the
+    // original's configured maxTurns — see CLOSING_TURN_MAX_TURNS.
+    expect(runStreamedCalls[1]?.maxTurns).toBe(3);
 
     const call = completionCall();
     expect(call).toBeDefined();
@@ -384,61 +386,144 @@ describe('closing turn', () => {
     expect(runStreamedCalls[1]?.resumeThreadId).toBe('thread-1');
   });
 
-  // ── Incident regression: reviewer tasks deliver via structured output ────
-  // A task with an outputSchema authors its outcome through the SDK's
-  // StructuredOutput tool, never complete_task. Giving it a closing turn
-  // spent the (1-turn) budget on ToolSearch, hit max turns, and failed the
-  // worker — discarding the verdict the session had already produced.
+  // ─── A closing turn's own failure is never the task's failure ────────────
+  //
+  // The main session already ended fine; the closing turn is a bonus attempt
+  // at an authored summary. Whatever goes wrong inside it, the worker must
+  // land exactly where it would have without the feature: a completed PATCH
+  // carrying the fallback summary.
 
-  test('a session that ended with structured output never gets a closing turn and completes with it', async () => {
+  function maxTurnsResult(sessionId = 'sess-1') {
+    return { type: 'result', subtype: 'error_max_turns', is_error: true, stop_reason: 'tool_use', session_id: sessionId, num_turns: 2 };
+  }
+
+  function completeTaskToolUse() {
+    return {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'tu-1', name: 'mcp__buildd__buildd', input: { action: 'complete_task', params: { summary: 'Done.' } } }] },
+    };
+  }
+
+  test('closing turn that runs out of turns falls back instead of failing the task', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Reviewed the PR; looks good.'), successResult('sess-1')],
+      [assistantText('Let me check one thing first.'), maxTurnsResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-max-turns');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    expect(call!.payload.summary).toContain('Reviewed the PR; looks good.');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:max_turns');
+    expect(manager.getWorker('w-closing-max-turns')?.status).toBe('done');
+  });
+
+  test('closing turn that calls complete_task and then hits max turns counts as authored', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Reviewed the PR; looks good.'), successResult('sess-1')],
+      [completeTaskToolUse(), maxTurnsResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    // First terminal check (the closing-turn decision) sees "not terminal";
+    // every later one sees the closing turn's complete_task having landed.
+    let terminalChecks = 0;
+    mockGetWorkerRemote.mockImplementation(async () => {
+      terminalChecks++;
+      return terminalChecks > 1 ? { status: 'completed' } : null;
+    });
+    mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+      updateCalls.push({ id, payload });
+      if (payload?.status === 'completed' && terminalChecks > 1) {
+        return { abort: true, actualStatus: 'completed' };
+      }
+      return {};
+    });
+
+    await runSession(manager, 'w-closing-authored-max-turns');
+
+    expect(failedCall()).toBeUndefined();
+    const metricsOnlyCall = updateCalls.find(c => c.payload?.metricsOnly === true);
+    expect(metricsOnlyCall).toBeDefined();
+    expect(metricsOnlyCall!.payload.resultMeta?.closingTurnOutcome).toBe('authored');
+  });
+
+  test('closing turn that throws falls back instead of failing the task', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Reviewed the PR; looks good.'), successResult('sess-1')],
+      [{ __throw: 'Claude Code process exited with code 1' }],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-closing-throws');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:error');
+    expect(manager.getWorker('w-closing-throws')?.status).toBe('done');
+  });
+
+  test('turn-cap closing turn that itself runs out of turns falls back too', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Most of the work is done.'), { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+      [assistantText('Checking one more file.'), maxTurnsResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-cap-then-closing-cap');
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.summarySource).toBe('fallback');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined:max_turns');
+  });
+  // ── Structured-output tasks (outputSchema, e.g. reviewer verdicts) ───────
+  // Such a task authors its outcome through the SDK's structured output and
+  // never calls complete_task. Resuming it for a closing turn prompted the
+  // agent to call complete_task, which carries no structuredOutput — the
+  // worker went terminal without the verdict, the runner's payload (which
+  // had it) was refused, and the task failed its verdict check.
+
+  const reviewSchema = { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] };
+
+  test('a session that produced structured output completes with it and never gets a closing turn', async () => {
     const verdict = { verdict: 'approve', summary: 'LGTM' };
     scriptQueue = [
       [initMsg('sess-1'), assistantText('Review done.'), { ...successResult('sess-1'), structured_output: verdict }],
-      // Would be consumed only if a closing turn were (wrongly) attempted.
-      [{ type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+      // Consumed only if a closing turn were (wrongly) attempted.
+      [completeTaskToolUse(), successResult('sess-1')],
     ];
     manager = new WorkerManager(makeConfig());
-    await runSession(manager, 'w-structured', {
-      outputSchema: { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] },
-    });
+    await runSession(manager, 'w-structured', { outputSchema: reviewSchema });
 
     expect(createBackendCalls.length).toBe(1);
     expect(failedCall()).toBeUndefined();
     const call = completionCall();
     expect(call).toBeDefined();
     expect(call!.payload.structuredOutput).toEqual(verdict);
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('skipped:structured_output');
   });
 
-  test('a closing turn that itself errors never turns a successful session into a failure', async () => {
+  test('a closing turn that does run still completes with the main session structured output', async () => {
+    const verdict = { verdict: 'request_changes' };
     scriptQueue = [
-      [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
-      [{ type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
+      [initMsg('sess-1'), assistantText('Review done.'), { ...maxTurnsResult('sess-1'), structured_output: verdict }],
+      [assistantText('Not calling complete_task.'), successResult('sess-1')],
     ];
     manager = new WorkerManager(makeConfig());
-    await runSession(manager, 'w-closing-error');
+    await runSession(manager, 'w-structured-carried', { outputSchema: reviewSchema });
 
     expect(createBackendCalls.length).toBe(2);
     expect(failedCall()).toBeUndefined();
-    const completions = updateCalls.filter(c => c.payload?.status === 'completed');
-    expect(completions.length).toBe(1);
-    expect(completions[0].payload.summarySource).toBe('fallback');
-    expect(completions[0].payload.summary).toContain('Opened the PR.');
-    expect(completions[0].payload.resultMeta?.closingTurnOutcome).toBe('skipped:closing_turn_error');
-  });
-
-  test('a turn-cap session whose closing turn errors fails exactly once, as before closing turns existed', async () => {
-    scriptQueue = [
-      [initMsg('sess-1'), { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns' }],
-      [{ type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 'sess-1', result: 'Reached max turns again' }],
-    ];
-    manager = new WorkerManager(makeConfig());
-    await runSession(manager, 'w-max-turns-closing-error');
-
-    expect(createBackendCalls.length).toBe(2);
-    const failures = updateCalls.filter(c => c.payload?.status === 'failed');
-    expect(failures.length).toBe(1);
-    expect(failures[0].payload.error).toBe('Reached max turns');
-    expect(failures[0].payload.resultMeta?.closingTurnOutcome).toBe('skipped:closing_turn_error');
+    const call = completionCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.structuredOutput).toEqual(verdict);
   });
 
   test('the closing turn sends only the closing instruction, not a rebuilt task prompt', async () => {

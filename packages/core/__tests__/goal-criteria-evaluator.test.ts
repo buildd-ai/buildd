@@ -50,6 +50,31 @@ describe('evaluateGoalCriteria — no_open_tasks', () => {
     expect(state.criteria[0].verdict).toBe('fail');
   });
 
+  // A mission's auto-appended `[surface audit]` task is a check, not a
+  // deliverable, and the task-level completion gate (pending_deliverables)
+  // already holds the mission open while it runs. Counting it here too pinned
+  // the criterion at FAIL for as long as the audit sat pending, and the
+  // organizer — which can neither plan it away nor declare completion — was
+  // re-dispatched on every heartbeat.
+  it('does not count a pending [surface audit] task as open', () => {
+    const tasks = [
+      { id: 't1', title: 'Build the thing', status: 'completed', taskClass: 'work' },
+      { id: 't2', title: '[surface audit] My mission', status: 'pending', taskClass: 'work' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
+    expect(state.criteria[0].verdict).toBe('pass');
+  });
+
+  it('still fails on a real open deliverable alongside a surface audit', () => {
+    const tasks = [
+      { id: 't1', title: 'Build the thing', status: 'in_progress', taskClass: 'work' },
+      { id: 't2', title: '[surface audit] My mission', status: 'pending', taskClass: 'work' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
+    expect(state.criteria[0].verdict).toBe('fail');
+    expect(state.criteria[0].evidence).toContain('1 task(s) still open');
+  });
+
   it('passes when the only tasks are coordination (non-deliverable) tasks', () => {
     const tasks = [
       { id: 't1', kind: 'coordination', title: 'Coordinate', status: 'in_progress' },

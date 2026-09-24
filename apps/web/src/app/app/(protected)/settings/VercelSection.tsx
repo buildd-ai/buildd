@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import SettingsSection from './SettingsSection';
+import { useConfirm } from '@/components/useConfirm';
 
 interface Team {
   id: string;
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function VercelSection({ teams }: Props) {
+  const { confirm, confirmDialog } = useConfirm();
   const [selectedTeamId, setSelectedTeamId] = useState<string>(teams[0]?.id || '');
   const [tokens, setTokens] = useState<VercelToken[]>([]);
   const [loading, setLoading] = useState(false);
@@ -88,7 +90,7 @@ export default function VercelSection({ teams }: Props) {
   }
 
   async function deleteToken(id: string) {
-    if (!confirm('Delete this Vercel token? Any watched project relying on it will need a replacement.')) return;
+    if (!(await confirm({ title: 'Delete Vercel token?', message: 'Any watched project relying on it will need a replacement.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -220,6 +222,7 @@ export default function VercelSection({ teams }: Props) {
             {message.text}
           </div>
         )}
+      {confirmDialog}
     </SettingsSection>
   );
 }

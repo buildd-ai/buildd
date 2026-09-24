@@ -537,20 +537,75 @@ export async function setupWorktree(
         return 'missing';
       }
     };
+    // Does `refs/heads/<candidate>` exist in THIS clone (as opposed to
+    // `origin/<candidate>`, which `fetchBranch` above already checks)?
+    const localBranchExists = (candidate: string): boolean => {
+      try {
+        execSync(`git rev-parse --verify --quiet "refs/heads/${candidate}"`, {
+          ...execOpts, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    // How many commits does local ref `candidate` carry that origin/<default>
+    // does not? Zero (not an error) when the range can't be computed at all —
+    // e.g. origin/<default> itself isn't a valid remote-tracking ref yet.
+    const countCommitsAheadOfDefault = (candidate: string): number => {
+      try {
+        const out = execSync(
+          `git rev-list --count "origin/${defaultBranch}..${candidate}"`,
+          { ...execOpts, timeout: 10000 },
+        ).trim();
+        const n = parseInt(out, 10);
+        return isNaN(n) ? 0 : n;
+      } catch {
+        return 0;
+      }
+    };
+
     let fallback: SetupWorktreeResult['fallback'];
-    const base = await resolveWorktreeBase({
-      defaultBranch,
-      context: taskContext,
-      fetchBranch,
-      log: (msg) => console.log(`[Worker ${workerId}] ${msg}`),
-      // The resume branch is gone/diverged and we fell back to the default base —
-      // strip the stale resume fields so the session starts fresh instead of
-      // building "prior attempt" instructions that reference a missing branch.
-      onFallback: (info) => {
-        fallback = info;
-        clearResumeContext(taskContext);
-      },
-    });
+    let base: string;
+    // A prior attempt on this task branch committed but was killed before
+    // pushing (task branches are stable across retries — the requested branch
+    // IS the prior attempt's branch). `origin/<resumeCandidate>` being absent
+    // then does not mean the work is gone: `refs/heads/<resumeCandidate>` in
+    // THIS clone is still the only ref holding those commits. Resolving the
+    // ladder via resolveWorktreeBase()/fetchBranch (origin-only) would read
+    // that as 'missing', clear the resume context, and fall back to a fresh
+    // branch off the default — at which point the "delete stale local
+    // branches" loop below deletes the only ref holding the unpushed commits.
+    // Checked BEFORE resolveWorktreeBase so the normal fallback machinery
+    // (and its clearResumeContext side effect) never runs for this branch.
+    const resumeFromLocalBranch =
+      !!resumeCandidate &&
+      (await fetchBranch(resumeCandidate)) === 'missing' &&
+      localBranchExists(resumeCandidate) &&
+      countCommitsAheadOfDefault(resumeCandidate) > 0;
+
+    if (resumeFromLocalBranch) {
+      base = resumeCandidate as string;
+      console.log(
+        `[Worker ${workerId}] resumeBranch "${resumeCandidate}" is missing on origin but exists locally ` +
+        `with unpushed commits — resuming from the local branch instead of starting fresh.`,
+      );
+    } else {
+      base = await resolveWorktreeBase({
+        defaultBranch,
+        context: taskContext,
+        fetchBranch,
+        log: (msg) => console.log(`[Worker ${workerId}] ${msg}`),
+        // The resume branch is gone/diverged and we fell back to the default base —
+        // strip the stale resume fields so the session starts fresh instead of
+        // building "prior attempt" instructions that reference a missing branch.
+        onFallback: (info) => {
+          fallback = info;
+          clearResumeContext(taskContext);
+        },
+      });
+    }
 
     // Stale-base guard: warn when the ref this task will build on has fallen
     // significantly behind the default branch. Agents starting on a stale base
@@ -589,7 +644,7 @@ export async function setupWorktree(
     // directly so the worker pushes to the existing PR's branch rather than
     // opening a new branch/PR.  On fallback, use the task's own branch (fresh).
     const requestedBranch =
-      resumeCandidate && !fallback && base === `origin/${resumeCandidate}`
+      resumeCandidate && !fallback && (resumeFromLocalBranch || base === `origin/${resumeCandidate}`)
         ? resumeCandidate
         : branch;
 
@@ -611,6 +666,18 @@ export async function setupWorktree(
     // check below for the resume/requestedBranch shape of the same bug.
     const baseWithoutPrefix = base.replace(/^origin\//, '');
     const branchEqualsBase = branch === baseWithoutPrefix;
+
+    // A resume that lands directly on `resumeCandidate` (no branch is cut FROM
+    // base — base IS the branch being checked out, see `checkoutExistingBranch`
+    // below) is not the mission-integration bug this guard exists for: there is
+    // no "should have been cut from base" step to have skipped. Excluded so a
+    // task whose branch is stable across retries (branch === resumeCandidate,
+    // the normal shape once a task keeps the same branch on every attempt) can
+    // resume onto its own branch instead of being diverted to a fresh
+    // per-worker one on every single retry.
+    const isDirectResumeTarget =
+      !!resumeCandidate && !fallback &&
+      (resumeFromLocalBranch || base === `origin/${resumeCandidate}`);
 
     // Shared-branch guard.  A worktree cannot be checked out onto the repo
     // default branch (the main clone holds it) nor onto a branch another
@@ -643,7 +710,8 @@ export async function setupWorktree(
         ? 'default_branch'
         : branchOwners.has(candidate)
           ? 'checked_out'
-          : (branchEqualsBase && candidate === baseWithoutPrefix) || looksLikeMissionIntegrationBranch(candidate)
+          : (branchEqualsBase && candidate === baseWithoutPrefix && !(isDirectResumeTarget && candidate === resumeCandidate)) ||
+              looksLikeMissionIntegrationBranch(candidate)
             ? 'mission_branch'
             : null;
 
@@ -712,20 +780,70 @@ export async function setupWorktree(
 
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
 
-    // Delete stale local branches from a previous run. Skip any branch a live
-    // worktree holds — `git branch -D` on those always fails, and the resulting
-    // "cannot delete branch 'X' used by worktree" noise used to be the first
-    // symptom of this whole class of bug.
-    // stdio piped for the same reason as the sparse-checkout probe above: this
-    // throws on every candidate that isn't already a local branch, which in
-    // practice is nearly always — the default inherited stderr leaked that
-    // "error: branch not found" line on every worker start.
+    // This worktree checks out `base` itself rather than cutting a new branch
+    // from it — only true for a direct local-branch resume landing (see
+    // `resumeFromLocalBranch` above). Every other shape creates `actualBranch`
+    // fresh via `-b`.
+    const checkoutExistingBranch = resumeFromLocalBranch && actualBranch === resumeCandidate;
+
+    // Is local branch `ref` fully contained in (an ancestor of) `target`? Used
+    // below to tell a genuinely stale branch (safe to delete — its commits are
+    // already on `target`) from one carrying commits `target` doesn't have.
+    // False — never an ancestor — for a nonexistent `ref` or `target`, which is
+    // the conservative direction: an inconclusive answer must not be read as
+    // "safe to delete".
+    const isAncestorOf = (ref: string, target: string): boolean => {
+      try {
+        execSync(`git merge-base --is-ancestor "${ref}" "${target}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Delete stale local branches from a previous run — but only when deleting
+    // them cannot lose commits. `git branch -D` doesn't check merge status, so
+    // the old unconditional version here deleted the ONLY ref holding a prior
+    // attempt's unpushed commits right before recreating the same name fresh
+    // from `base` (empty, if that attempt was killed before ever reaching
+    // origin) — the exact bug `resumeFromLocalBranch` above exists to resume
+    // from instead. Skip any candidate a live worktree holds (as before — `-D`
+    // on those always fails) and, new: skip `resumeCandidate` itself whenever
+    // we resumed from its local branch, since it IS `base` here — the worktree
+    // add below reads it, whether by direct checkout or by cutting a fresh
+    // branch from its tip, and either way it must still exist afterwards.
     for (const candidate of candidates) {
       if (branchOwners.has(candidate)) continue;
+      if (resumeFromLocalBranch && candidate === resumeCandidate) continue;
+      // `--is-ancestor` throws on every candidate that isn't already a local
+      // branch, which in practice is nearly always.
+      if (!localBranchExists(candidate)) continue;
+
+      const safeToDelete =
+        isAncestorOf(candidate, `origin/${defaultBranch}`) || isAncestorOf(candidate, `origin/${candidate}`);
+      if (safeToDelete) {
+        try {
+          execSync(`git branch -D "${candidate}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch {
+          // Branch doesn't exist locally — that's fine
+        }
+        continue;
+      }
+
+      // Not an ancestor of the default branch or of its own remote tip: this
+      // local branch carries commits that exist nowhere else. Preserve them
+      // under an orphan name instead of destroying the only ref that holds
+      // them, and free up `candidate`'s name for `-b` to recreate below.
+      const orphanName = `${candidate}-orphan-${workerId.slice(0, 8)}`;
       try {
-        execSync(`git branch -D "${candidate}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        execSync(`git branch -m "${candidate}" "${orphanName}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        const detail = `Renamed local branch "${candidate}" to "${orphanName}": it is not an ancestor of ` +
+          `origin/${defaultBranch} or origin/${candidate}, so it carries commits pushed nowhere else.`;
+        console.warn(`[Worker ${workerId}] ${detail}`);
+        sessionLog(workerId, 'warn', 'stale_branch_preserved_unpushed', detail);
       } catch {
-        // Branch doesn't exist locally — that's fine
+        // Rename failed (e.g. the branch vanished between the checks above and
+        // here) — nothing left to preserve.
       }
     }
 
@@ -735,7 +853,11 @@ export async function setupWorktree(
     // failure branch below still gets full stderr text via err.message —
     // piping only stops it from also going to the real log stream.
     try {
-      execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+      if (checkoutExistingBranch) {
+        execSync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+      } else {
+        execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+      }
     } catch (err) {
       // Make the failure legible: name the branch and, when the branch namespace
       // is the cause, the worktree that holds it. Re-probe rather than trusting

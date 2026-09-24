@@ -6,6 +6,7 @@ import {
   isMissionPrTask,
   missionIntegrationBase,
 } from './mission-integration';
+import { isSurfaceAuditTask } from './surface-audit';
 export type { DerivedMetric } from './derived-metric';
 
 // ─── Task type detection ───────────────────────────────────────────────────────
@@ -414,7 +415,16 @@ export function evaluateGoalCriteria(
       }
 
       case 'no_open_tasks': {
-        const deliverable = context.tasks.filter(isDeliverableTask);
+        // The auto-appended `[surface audit]` task is a check on the mission's
+        // deliverables, not one of them. The task-level completion gate
+        // (`pending_deliverables` in mission-completion) still holds the
+        // mission open while it is unfinished, so excluding it here drops no
+        // protection — it only stops a pending audit from pinning this
+        // criterion at FAIL, which left the organizer unable to either plan
+        // or report completion and re-dispatched it on every heartbeat.
+        const deliverable = context.tasks.filter(
+          t => isDeliverableTask(t) && !isSurfaceAuditTask(t.title ?? ''),
+        );
         const open = deliverable.filter(t =>
           !['completed', 'cancelled', 'failed'].includes(t.status)
         );
@@ -800,6 +810,24 @@ export function isDeliverableTask(task: {
   return true;
 }
 
+const TERMINAL_DELIVERABLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
+
+/**
+ * True when a deliverable task (`isDeliverableTask`) is still open. This is the
+ * `hasPendingDeliverableWork` input `deriveMissionHealth` requires before it
+ * will report `escalated` — every surface computes it here so the mission
+ * list, Home, Team and the detail page cannot disagree about it. Same
+ * definition the `no_open_tasks` criterion uses.
+ *
+ * Callers must select `taskClass` (and `category`/`kind`/`mode`/`title` for
+ * pre-migration rows), or attempts and bookkeeping rows count as deliverables.
+ */
+export function hasPendingDeliverableWork(
+  tasks: ReadonlyArray<Parameters<typeof isDeliverableTask>[0] & { status: string }>,
+): boolean {
+  return tasks.some(t => isDeliverableTask(t) && !TERMINAL_DELIVERABLE_STATUSES.has(t.status));
+}
+
 function deriveMissionSegmentState(task: {
   id?: string;
   status: string;
@@ -1177,198 +1205,6 @@ export function crossedMilestone(prev: number, curr: number): number | null {
   return hit;
 }
 
-// ─── Mission skyline chart ────────────────────────────────────────────────────
-
-const SKYLINE_SLOT_MS = 15 * 60 * 1000; // 15-minute quantization
-const SKYLINE_MAX_LANES = 4;
-
-export type SkylineBlockState = 'merged' | 'awaiting' | 'failed';
-
-export interface SkylineBlock {
-  lane: number;
-  startSlot: number;
-  endSlot: number; // exclusive
-  state: SkylineBlockState;
-}
-
-export interface MissionSkylineData {
-  totalSlots: number;
-  blocks: SkylineBlock[];
-  peakLanes: number;
-  foldedLanes: number;
-  activeSpanMin: number;
-  agentTimeMin: number;
-  parallelFactor: number;
-  peakConcurrency: number;
-  reviewTailMin: number | null;
-}
-
-type WorkerSpan = {
-  startedAt: Date | string | null;
-  completedAt?: Date | string | null;
-  updatedAt?: Date | string | null;
-  status: string;
-  prUrl: string | null;
-  mergedAt: Date | string | null;
-};
-
-function workerEndMs(w: WorkerSpan, now: number): number {
-  if (w.completedAt) return new Date(w.completedAt as string).getTime();
-  if (w.updatedAt) return new Date(w.updatedAt as string).getTime();
-  return now;
-}
-
-function workerBlockState(w: WorkerSpan): SkylineBlockState {
-  if (w.status === 'failed') return 'failed';
-  if (w.mergedAt) return 'merged';
-  if (w.prUrl) return 'awaiting';
-  return 'merged';
-}
-
-/**
- * Build a quantized time-vs-concurrency skyline from a mission's worker spans.
- * Returns null when no workers have a valid startedAt.
- *
- * One slot = 15 minutes of wall-clock time.
- * Multi-slot tasks render as one joined bar; concurrent tasks stack into lanes.
- * Greedy packing: each worker goes to the lowest lane whose previous occupant ended.
- */
-export function computeMissionSkyline(
-  tasks: Array<{ workers?: WorkerSpan[] }>,
-  opts?: { missionCompletedAt?: Date | string | null; now?: number },
-): MissionSkylineData | null {
-  const now = opts?.now ?? Date.now();
-
-  // Collect valid worker time spans
-  const spans: Array<{ startMs: number; endMs: number; state: SkylineBlockState }> = [];
-  for (const task of tasks) {
-    for (const w of task.workers ?? []) {
-      if (!w.startedAt) continue;
-      const startMs = new Date(w.startedAt as string).getTime();
-      const endMs = workerEndMs(w, now);
-      if (endMs <= startMs) continue;
-      spans.push({ startMs, endMs, state: workerBlockState(w) });
-    }
-  }
-  if (spans.length === 0) return null;
-
-  const missionStartMs = Math.min(...spans.map((s) => s.startMs));
-  const lastEndMs = Math.max(...spans.map((s) => s.endMs));
-  const activeSpanMin = (lastEndMs - missionStartMs) / 60_000;
-  const agentTimeMin = spans.reduce((acc, s) => acc + (s.endMs - s.startMs) / 60_000, 0);
-  const totalSlots = Math.max(1, Math.ceil((lastEndMs - missionStartMs) / SKYLINE_SLOT_MS));
-
-  // ── Lane assignment from raw ms spans ─────────────────────────────────────
-  // Using raw milliseconds (not quantized slots) avoids the sub-slot artifact
-  // where multiple sequential workers all collapse to [0,1) and appear concurrent.
-  // Sort by startMs then endMs for stable greedy packing.
-  const sortedByMs = spans
-    .map((s, i) => ({ ...s, originalIdx: i }))
-    .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
-
-  const laneEndMs: number[] = [];
-  const spanLanes = new Array<number>(spans.length);
-  for (const span of sortedByMs) {
-    // A lane is free when its last occupant ended at or before this span's start.
-    // end <= start means abutting sequential workers go to the same lane (not concurrent).
-    let lane = laneEndMs.findIndex((end) => end <= span.startMs);
-    if (lane === -1) {
-      lane = laneEndMs.length;
-      laneEndMs.push(0);
-    }
-    laneEndMs[lane] = span.endMs;
-    spanLanes[span.originalIdx] = lane;
-  }
-
-  const peakLanes = laneEndMs.length;
-  const foldedLanes = Math.max(0, peakLanes - SKYLINE_MAX_LANES);
-
-  // ── Peak concurrency via sweep-line over raw ms events ────────────────────
-  // Encode end=ms*2, start=ms*2+1 so end events sort before start events at
-  // equal timestamps — abutting sequential workers (A ends at T, B starts at T)
-  // are NOT counted as concurrent.
-  const msEvents: Array<[number, number]> = [];
-  for (const s of spans) {
-    msEvents.push([s.endMs * 2, -1]);
-    msEvents.push([s.startMs * 2 + 1, +1]);
-  }
-  msEvents.sort((a, b) => a[0] - b[0]);
-  let concurrent = 0;
-  let peakConcurrency = 0;
-  for (const [, delta] of msEvents) {
-    concurrent += delta;
-    if (concurrent > peakConcurrency) peakConcurrency = concurrent;
-  }
-
-  const parallelFactor = activeSpanMin > 0 ? agentTimeMin / activeSpanMin : 1;
-
-  // Invariant: real concurrency implies parallel factor above 1.0.
-  // A violation means the ms-based and duration-based math have diverged.
-  if (process.env.NODE_ENV !== 'production' && peakConcurrency > 1 && parallelFactor <= 1) {
-    console.error(
-      '[mission-invariant] peakConcurrency=%d but parallelFactor=%f — concurrency and duration math have diverged',
-      peakConcurrency,
-      parallelFactor,
-    );
-  }
-
-  // ── Slot quantization (rendering only) ───────────────────────────────────
-  // Slots drive block geometry; the 1-slot minimum keeps short blocks visible.
-  // Lane comes from the ms-derived assignment above.
-  const slottedSpans = spans.map((s, i) => {
-    const startSlot = Math.floor((s.startMs - missionStartMs) / SKYLINE_SLOT_MS);
-    const rawEnd = Math.ceil((s.endMs - missionStartMs) / SKYLINE_SLOT_MS);
-    const endSlot = Math.max(startSlot + 1, rawEnd);
-    return { startSlot, endSlot, state: s.state, lane: spanLanes[i] };
-  });
-
-  // ── Build blocks, merging overlapping rects within each lane ─────────────
-  // Sequential sub-slot workers share a lane and quantize to the same slot
-  // interval (e.g. all map to [0,1)). Merge strictly-overlapping slot ranges
-  // within each lane so they don't produce stacked render rects.
-  const spansByLane = new Map<number, typeof slottedSpans>();
-  for (const s of slottedSpans) {
-    if (!spansByLane.has(s.lane)) spansByLane.set(s.lane, []);
-    spansByLane.get(s.lane)!.push(s);
-  }
-
-  const blocks: SkylineBlock[] = [];
-  for (const [lane, laneSpans] of spansByLane) {
-    laneSpans.sort((a, b) => a.startSlot - b.startSlot || a.endSlot - b.endSlot);
-    let cur = { lane, startSlot: laneSpans[0].startSlot, endSlot: laneSpans[0].endSlot, state: laneSpans[0].state };
-    for (let i = 1; i < laneSpans.length; i++) {
-      const next = laneSpans[i];
-      if (next.startSlot < cur.endSlot) {
-        // Overlapping slots — merge, taking the last block's state as the most recent outcome
-        cur = { lane, startSlot: cur.startSlot, endSlot: Math.max(cur.endSlot, next.endSlot), state: next.state };
-      } else {
-        blocks.push(cur);
-        cur = { lane, startSlot: next.startSlot, endSlot: next.endSlot, state: next.state };
-      }
-    }
-    blocks.push(cur);
-  }
-
-  // Review tail: time from last worker end to mission close (or now)
-  const missionEndMs = opts?.missionCompletedAt
-    ? new Date(opts.missionCompletedAt as string).getTime()
-    : null;
-  const tailMs = missionEndMs !== null ? missionEndMs - lastEndMs : null;
-  const reviewTailMin = tailMs !== null && tailMs > 5 * 60_000 ? tailMs / 60_000 : null;
-
-  return {
-    totalSlots,
-    blocks,
-    peakLanes,
-    foldedLanes,
-    activeSpanMin,
-    agentTimeMin,
-    parallelFactor,
-    peakConcurrency,
-    reviewTailMin,
-  };
-}
-
 // ─── Mission flight strip ─────────────────────────────────────────────────────
 
 export const FLIGHT_STRIP_IDLE_THRESHOLD_MS = 15 * 60_000;
@@ -1382,6 +1218,11 @@ export interface FlightStripTask {
   roleSlug?: string | null;
   kind?: string | null;
   title?: string | null;
+  /** Together with `mode`, identifies a schedule/orchestrator planning tick
+   * (Rule L-3) so its span is excluded from the §6 derived metrics below —
+   * it is steering, not mission work, even when a caller passes it in. */
+  creationSource?: string | null;
+  mode?: string | null;
 }
 
 export interface FlightStripWorker {
@@ -1432,6 +1273,38 @@ export interface MissionFlightStripData {
   now: number | null;
   phases: Array<{ label: string; position: number; idleMs: number }>;
   rail: { visible: boolean; marks: Array<{ id: string; kind: 'human' | 'orchestrator'; position: number; count: number }> };
+  /** §6: sum of raw span durations, excluding Rule L-3 orchestrator/heartbeat
+   * ticks. Answers "how much mission work happened," not "how much compute ran." */
+  agentTimeMin: number;
+  /** §6: idle-elided union length of the same excluded-orchestrator span set —
+   * the direct replacement for the retired skyline's `activeSpanMin`. */
+  axisSpanMin: number;
+  /** §6: agentTimeMin / axisSpanMin. ~1.0 with no concurrency. */
+  parallelFactor: number;
+}
+
+/** Same idle-elision rule computeMissionFlightStrip applies to the render axis
+ * (Rule X-2), applied here to an independent span set for the §6 metrics —
+ * total length of the union of `sortedSpans` (ascending by start) with gaps
+ * ≥ FLIGHT_STRIP_IDLE_THRESHOLD_MS contributing zero. */
+function elidedUnionMs(sortedSpans: ReadonlyArray<{ start: number; end: number }>): number {
+  if (sortedSpans.length === 0) return 0;
+  const origin = sortedSpans[0].start;
+  let lastEnd = origin;
+  let removed = 0;
+  for (const span of sortedSpans) {
+    if (span.start - lastEnd >= FLIGHT_STRIP_IDLE_THRESHOLD_MS) removed += span.start - lastEnd;
+    lastEnd = Math.max(lastEnd, span.end);
+  }
+  return lastEnd - origin - removed;
+}
+
+/** Rule L-3: a schedule/orchestrator planning tick is steering, not mission
+ * work — excluded from the §6 derived metrics regardless of whether a caller
+ * still passes it in (production callers already pre-filter to taskClass
+ * 'work', so this only bites a caller that doesn't). */
+function isOrchestratorTick(task: FlightStripTask): boolean {
+  return (task.creationSource === 'schedule' || task.creationSource === 'orchestrator') && task.mode === 'planning';
 }
 
 /** Pure, normalized geometry. The axis is the union of worker time plus short
@@ -1468,6 +1341,12 @@ export function computeMissionFlightStrip(
     lastEnd = Math.max(lastEnd, span.end);
   }
   const durationMs = lastEnd - origin - removed;
+
+  const metricSpans = spans.filter(s => !isOrchestratorTick(s.task));
+  const agentTimeMs = metricSpans.reduce((acc, s) => acc + (s.end - s.start), 0);
+  const axisSpanMs = elidedUnionMs(metricSpans);
+  const parallelFactor = axisSpanMs > 0 ? agentTimeMs / axisSpanMs : 1;
+
   const position = (time: number): number => {
     if (durationMs <= 0) return 0;
     // Binary search the last gap beginning before this timestamp. Events inside
@@ -1543,5 +1422,6 @@ export function computeMissionFlightStrip(
     now: opts.missionCompletedAt ? null : position(now),
     phases: spans.length ? [{ label: 'P1', position: 0, idleMs: 0 }, ...gaps.map((gap, i) => ({ label: `P${i + 2}`, position: position(gap.end), idleMs: gap.end - gap.start }))] : [],
     rail: { visible: marks.length > 0, marks },
+    agentTimeMin: agentTimeMs / 60_000, axisSpanMin: axisSpanMs / 60_000, parallelFactor,
   };
 }

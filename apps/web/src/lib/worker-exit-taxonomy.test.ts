@@ -6,6 +6,7 @@ import {
   isBookkeepingExit,
   isConcurrencyConflictError,
   isSilentStartShape,
+  isUnrecognizedModelError,
   NEVER_STARTED_ERROR,
   SILENT_START_ERROR,
   STALE_EXPIRED_ERROR,
@@ -264,6 +265,33 @@ describe('crash-reconciled restarts', () => {
   it('still lets budget and sandbox diagnoses win over a crash reconcile', () => {
     expect(classifyReportedFailure({ budgetLimited: true, sandboxMountGap: false, crashReconciled: true })).toBe('budget_limited');
     expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: true, crashReconciled: true })).toBe('sandbox_mount_gap');
+  });
+});
+
+// A catalog model the runner's CLI is too old to serve fails with a
+// deterministic 400 before the agent takes a turn. That says nothing about the
+// task, so it is infra and must not spend the task's retry budget.
+describe('unrecognized model (CLI version gate)', () => {
+  const VERSION_GATE_400 =
+    'API Error: 400 Claude Code 2.1.0 does not support this model; version 2.2.0 or newer is required.';
+
+  it('recognises the CLI version-gate 400 text', () => {
+    expect(isUnrecognizedModelError(VERSION_GATE_400)).toBe(true);
+    expect(isUnrecognizedModelError('does not support this model; version 9.9.9 or newer is required')).toBe(true);
+  });
+
+  it('does not match unrelated model or version prose', () => {
+    expect(isUnrecognizedModelError('This model does not support images')).toBe(false);
+    expect(isUnrecognizedModelError('node version 20 or newer is required')).toBe(false);
+    expect(isUnrecognizedModelError('')).toBe(false);
+    expect(isUnrecognizedModelError(null)).toBe(false);
+    expect(isUnrecognizedModelError(undefined)).toBe(false);
+  });
+
+  it('books it as infra_failure, which does not consume a retry', () => {
+    const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, unrecognizedModel: true });
+    expect(cause).toBe('infra_failure');
+    expect(consumesRetryAttempt(cause)).toBe(false);
   });
 });
 

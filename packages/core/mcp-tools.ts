@@ -252,6 +252,33 @@ export const allActions = [...workerActions, ...adminActions] as const;
 // delete and consolidate_knowledge moved to adminActions / buildd tool (compliance + single-consumer ops)
 export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'query_knowledge'] as const;
 
+/** Valid `learn` types — also the vocabulary `recall`'s `type` filter is checked against. */
+export const MEMORY_TYPES = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'] as const;
+
+/**
+ * Corpora reachable through `recall` / `query_knowledge`. `session` is a real
+ * Corpus value (knowledge-store/types.ts) but write-only/internal — never
+ * advertised to callers here.
+ */
+export const CORPORA = ['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec', 'initiative'] as const;
+
+/**
+ * Validate a `recall`/`query_knowledge` scope-or-corpus param (string or
+ * string[]) against CORPORA. Returns an error message listing valid values on
+ * any unknown entry (a typo like 'tasks' otherwise fans out to an empty,
+ * silently-wrong namespace instead of failing loudly); null when input is
+ * absent or every entry is valid.
+ */
+export function parseCorpora(input: unknown): { error: string } | null {
+  if (input === undefined || input === null) return null;
+  const values = Array.isArray(input) ? input : [input];
+  const invalid = values.filter(v => typeof v !== 'string' || !(CORPORA as readonly string[]).includes(v));
+  if (invalid.length > 0) {
+    return { error: `Unknown scope(s): ${invalid.join(', ')}. Valid values: ${CORPORA.join(', ')}` };
+  }
+  return null;
+}
+
 /**
  * JSON-Schema tool definitions for the `recall` / `learn` knowledge tools.
  *
@@ -282,24 +309,24 @@ export const recallToolDefinition = {
         description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
       },
       scope: {
-        description: "Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+        description: `Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: ${CORPORA.join(' | ')}`,
         oneOf: [
           {
             type: "string" as const,
-            enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+            enum: [...CORPORA],
           },
           {
             type: "array" as const,
             items: {
               type: "string" as const,
-              enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+              enum: [...CORPORA],
             },
           },
         ],
       },
       type: {
         type: "string" as const,
-        description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
+        description: `Filter results to entries whose memory type matches. One of: ${MEMORY_TYPES.join(' | ')}. Only affects the memory corpus — other corpora have no type field.`,
       },
       files: {
         type: "array" as const,
@@ -331,8 +358,8 @@ export const learnToolDefinition = {
     properties: {
       type: {
         type: "string" as const,
-        description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
-        enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
+        description: `Memory type. One of: ${MEMORY_TYPES.join(' | ')}`,
+        enum: [...MEMORY_TYPES],
       },
       title: {
         type: "string" as const,
@@ -372,12 +399,12 @@ export type MemoryAction = (typeof memoryActions)[number];
 // ── Description Builders ─────────────────────────────────────────────────────
 
 export function buildToolDescription(actions: readonly string[]): string {
-  return `Task coordination tool. Available actions: ${actions.join(', ')}. Use action parameter to select operation, params for action-specific arguments.\n\nA 401 on [admin]-marked actions means your token lacks admin level, not that auth expired — verify with list_schedules (available at all token levels) before re-authenticating.`;
+  return `Task coordination tool. Available actions: ${actions.join(', ')}. Use action parameter to select operation, params for action-specific arguments.\n\nA call above your token level returns {"error":"forbidden",...}; a 401 means auth expired/invalid.`;
 }
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    list_tasks: '{ offset?, status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
+    list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
@@ -402,7 +429,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
-    delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. 401 means token lacks admin level. [admin]',
+    delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. [admin]',
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
@@ -428,7 +455,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
-    get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
+    get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
@@ -438,12 +465,11 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
-    detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
-    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
-    correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. 401 means token lacks admin level. [admin]',
-    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
+    correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
 
@@ -937,11 +963,36 @@ const workerOnlyActions = new Set(
   (workerActions as readonly string[]).filter(a => !(triggerActions as readonly string[]).includes(a))
 );
 
+/**
+ * Structured 403-style refusal for a call above the caller's token level.
+ * Shared by every privilege gate so a caller can always distinguish "wrong
+ * level" (this — a 403-shaped JSON body) from "expired/invalid auth" (a real
+ * 401), rather than guessing from prose that varied per call site.
+ */
+function forbiddenResult(reason: string, tokenLevel: string, requiredLevel: 'worker' | 'admin'): ToolResult {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        error: 'forbidden',
+        reason,
+        tokenLevel,
+        requiredLevel,
+      }),
+    }],
+    isError: true,
+  };
+}
+
 async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<ToolResult | null> {
   if (!workerOnlyActions.has(action)) return null;
   const level = await ctx.getLevel();
   if (level === 'trigger') {
-    return errorResult(`Action '${action}' requires a worker or admin token. Trigger tokens can only use: ${triggerActions.join(', ')}`);
+    return forbiddenResult(
+      `action '${action}' requires a worker or admin token. Trigger tokens can only use: ${triggerActions.join(', ')}`,
+      level,
+      'worker',
+    );
   }
   return null;
 }
@@ -961,18 +1012,7 @@ async function requireAdminLevel(ctx: ActionContext, action: string): Promise<To
   if (!adminActionsSet.has(action)) return null;
   const level = await ctx.getLevel();
   if (level === 'admin') return null;
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify({
-        error: 'forbidden',
-        reason: `action '${action}' requires admin token level`,
-        tokenLevel: level,
-        requiredLevel: 'admin',
-      }),
-    }],
-    isError: true,
-  };
+  return forbiddenResult(`action '${action}' requires admin token level`, level, 'admin');
 }
 
 /**
@@ -1239,7 +1279,10 @@ export async function handleBuilddAction(
   switch (action) {
     case 'list_tasks': {
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
-      const limit = 5;
+      const rawLimit = params.limit;
+      const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
+        ? Math.min(Math.max(Math.trunc(rawLimit), 1), 50)
+        : 5;
       const offset = Math.max((params.offset as number) || 0, 0);
       // status was hardcoded to 'active' — a caller auditing completed work had no
       // way to reach it through this action at all, and had to detour through
@@ -1361,7 +1404,8 @@ export async function handleBuilddAction(
       }
 
       const result = task.result;
-      if (result && (result.summary || result.prUrl || result.prNumber || result.sha)) {
+      const hasResult = !!(result && (result.summary || result.prUrl || result.prNumber || result.sha));
+      if (hasResult) {
         lines.push('', '## Result');
         if (result.summary) {
           const fallbackNote = result.summarySource === 'fallback'
@@ -1394,6 +1438,7 @@ export async function handleBuilddAction(
           const wlines: string[] = [];
           wlines.push(`- **${w.id}** — ${w.status}${w.branch ? ` on \`${w.branch}\`` : ''}`);
           wlines.push(`  Worker URL: ${taskUrl}`);
+          if (w.currentAction) wlines.push(`  Current action: ${w.currentAction}`);
           if (w.prUrl || w.prNumber) wlines.push(`  PR: ${w.prUrl || `#${w.prNumber}`}`);
           if (w.supersededByPrNumber) {
             wlines.push(`  Superseded by: PR #${w.supersededByPrNumber}${w.supersededByPrUrl ? ` (${w.supersededByPrUrl})` : ''} — ${w.supersededReason ?? 'no reason recorded'}`);
@@ -1427,6 +1472,15 @@ export async function handleBuilddAction(
           const share = a.shareUrl ? `\n  Share: ${a.shareUrl}` : '';
           lines.push(`- **${a.title}** (${a.type}${meta})\n  ID: ${a.id}${share}`);
         }
+      }
+
+      if (workers.length === 0 && !hasResult) {
+        const hint = task.status === 'pending'
+          ? '\nTask is pending — not yet claimed by a worker.'
+          : task.status === 'completed'
+          ? '\nTask completed but no result snapshot available.'
+          : '';
+        if (hint) lines.push(hint);
       }
 
       return text(lines.join('\n'));
@@ -3474,11 +3528,16 @@ export async function handleBuilddAction(
     }
 
     case 'get_error_traces': {
-      // Three resolution modes, in priority:
+      // Resolution modes, in priority:
       //   1. explicit workerId in params
       //   2. explicit taskId in params (returns cumulative traces across all
       //      workers that ran on this task — useful when retrying)
-      //   3. infer from ctx.workerId (default: this agent's session)
+      //   3. explicit workspaceId → per-pattern rollup across the workspace
+      //   4. infer from ctx.workerId (default: this agent's task)
+      //   5. the session workspace rollup
+      // An explicit worker/task scope always beats workspaceId: agents pass
+      // workspaceId out of habit, and silently widening a narrow question to a
+      // workspace rollup would hide that the narrow scope was ignored.
       const limitNum = typeof params.limit === 'number'
         ? Math.min(Math.max(params.limit, 1), 500)
         : 50;
@@ -3486,6 +3545,36 @@ export async function handleBuilddAction(
       const sinceQs = params.since && typeof params.since === 'string'
         ? `&since=${encodeURIComponent(params.since)}`
         : '';
+
+      const hasWorkspaceParam = typeof params.workspaceId === 'string' && params.workspaceId.length > 0;
+      const hasNarrowScope = (typeof params.workerId === 'string' && params.workerId.length > 0)
+        || (typeof params.taskId === 'string' && params.taskId.length > 0);
+      if (!hasNarrowScope && (hasWorkspaceParam || !ctx.workerId)) {
+        const wsId = await resolveWorkspaceId(api, hasWorkspaceParam ? params.workspaceId : undefined, ctx);
+        if (!wsId) {
+          return errorResult(hasWorkspaceParam
+            ? `Workspace "${params.workspaceId}" not found or not accessible.`
+            : 'get_error_traces needs a scope: pass taskId, workerId, or workspaceId (worker sessions default to their own task).');
+        }
+        const qs = [
+          typeof params.limit === 'number' ? `limit=${Math.min(Math.max(params.limit, 1), 100)}` : '',
+          sinceQs.slice(1),
+        ].filter(Boolean).join('&');
+        const data = await api(`/api/workspaces/${encodeURIComponent(wsId)}/error-traces${qs ? `?${qs}` : ''}`);
+        const patterns = (data.patterns || []) as Array<{
+          pattern: string; count: number; taskCount: number; firstSeen: string; lastSeen: string;
+          exampleExcerpt: string; exampleSource: string | null; exampleTaskIds: string[];
+        }>;
+        const window = data.since ? ` since ${data.since}` : '';
+        if (patterns.length === 0) return text(`No error traces in workspace ${wsId}${window}.`);
+        const lines = patterns.map((p) => {
+          const src = p.exampleSource ? ` [${p.exampleSource}]` : '';
+          const tasksHit = `${p.taskCount} task${p.taskCount === 1 ? '' : 's'}`;
+          const examples = p.exampleTaskIds?.length ? ` — e.g. ${p.exampleTaskIds.join(', ')}` : '';
+          return `- **${p.pattern}** ${p.count}× across ${tasksHit} (first ${p.firstSeen}, last ${p.lastSeen})${examples}\n  latest${src}: ${p.exampleExcerpt}`;
+        }).join('\n');
+        return text(`${patterns.length} error-trace pattern(s) in workspace ${wsId}${window}:\n\n${lines}`);
+      }
 
       let endpoint: string;
       let scope: string;
@@ -3505,7 +3594,7 @@ export async function handleBuilddAction(
         endpoint = `/api/tasks/${encodeURIComponent(taskId)}/error-traces?${limitQs}${sinceQs}`;
         scope = `task ${taskId} (current)`;
       } else {
-        return errorResult('No workerId, taskId, or worker context provided.');
+        return errorResult('get_error_traces needs a scope: pass taskId, workerId, or workspaceId (worker sessions default to their own task).');
       }
 
       const data = await api(endpoint);
@@ -3550,7 +3639,7 @@ export async function handleBuilddAction(
       if (f.monthly) {
         const m = f.monthly;
         const resetsIn = timeUntilFromIso(m.resetsAt);
-        let budgetLine = `Monthly budget: $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(0)} (${m.pctUsed}%) · resets in ${resetsIn}`;
+        let budgetLine = `Monthly budget: $${m.spentUsd.toFixed(2)} est. / $${m.budgetUsd.toFixed(0)} (${m.pctUsed}%) · resets in ${resetsIn}`;
         if (m.daysToDepletion !== null) {
           budgetLine += m.daysToDepletion < 1
             ? ` · depletes in ${Math.round(m.daysToDepletion * 24)}h`
@@ -3560,21 +3649,31 @@ export async function handleBuilddAction(
         lines.push(budgetLine);
       }
 
-      // Codex
+      // Provider walls. Codex is read from its own pause log; the Dispatch
+      // tenant row is a Claude pool, so it is labelled as one.
       if (f.codex?.isExhausted) {
         const resetsIn = f.codex.resetsAt ? timeUntilFromIso(f.codex.resetsAt) : 'unknown';
-        lines.push(`Codex budget: exhausted · resets in ${resetsIn}`);
+        lines.push(f.codex.reason === 'auth'
+          ? `Codex credential: rejected · resets in ${resetsIn}`
+          : `Codex budget: exhausted · resets in ${resetsIn}`);
+      }
+      if (f.claudeTenant?.isExhausted) {
+        const resetsIn = f.claudeTenant.resetsAt ? timeUntilFromIso(f.claudeTenant.resetsAt) : 'unknown';
+        lines.push(`Claude tenant budget: exhausted · resets in ${resetsIn}`);
       }
 
       // Mission budgets
       const missionRows: string[] = (f.missions ?? []).slice(0, 5).map((m: any) =>
-        `  Mission "${m.missionTitle}": $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(2)} (${m.pctUsed}%)${m.status === 'budget_exhausted' ? ' — exhausted' : ''}`
+        `  Mission "${m.missionTitle}": $${m.spentUsd.toFixed(2)} est. / $${m.budgetUsd.toFixed(2)} (${m.pctUsed}%)${m.status === 'budget_exhausted' ? ' — exhausted' : ''}`
       );
       if (missionRows.length > 0) {
         lines.push(`Mission budgets (by % used):\n${missionRows.join('\n')}`);
       }
 
       if (lines.length === 0) return text('No active budgets configured. All backends are running uncapped.');
+      if (f.monthly || missionRows.length > 0) {
+        lines.push('Dollar figures are estimates at API list price; on a subscription (OAuth) seat they are a list-price equivalent, not a charge.');
+      }
       return text(lines.join('\n'));
     }
 
@@ -4729,6 +4828,13 @@ export async function handleBuilddAction(
         data.ciState === 'failing'
           ? `failing (${(data.failingChecks ?? []).join(', ') || 'unknown checks'})`
           : data.ciState;
+      // Advisory and never folded into ciState (apps/web/src/lib/release/
+      // dispatch.ts), so this line is the only place a caller sees it.
+      const pmi = data.postMergeIntegration as { state?: string; checks?: string[] } | undefined;
+      const pmiLine = pmi?.state
+        ? `\nPost-merge integration (advisory): ${pmi.state}` +
+          (pmi.state === 'failing' && (pmi.checks ?? []).length ? ` (${(pmi.checks ?? []).join(', ')})` : '')
+        : '';
       const prLine = data.openReleasePr
         ? `\nOpen release PR: #${data.openReleasePr.number} — ${data.openReleasePr.url}`
         : '\nNo open release PR.';
@@ -4738,7 +4844,7 @@ export async function handleBuilddAction(
         .join('\n');
       return text(
         `Release preflight for ${data.repo} (${data.ref} → ${data.prodBranch}):\n` +
-          `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${prLine}` +
+          `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${pmiLine}${prLine}` +
           (commits ? `\nWould ship:\n${commits}` : '\nNothing to ship.'),
       );
     }
@@ -4765,63 +4871,6 @@ export async function handleBuilddAction(
     }
 
     // ── Agent-Facing Interactive Actions ─────────────────────────────────────
-
-    case 'get_task': {
-      if (!params.taskId) throw new Error('taskId is required');
-
-      const task = await api(`/api/tasks/${params.taskId}`);
-
-      const parts: string[] = [
-        `**Task:** ${task.title}`,
-        `**ID:** ${task.id}`,
-        `**Status:** ${task.status}`,
-      ];
-
-      if (task.priority !== undefined) parts.push(`**Priority:** ${task.priority}`);
-      if (task.category) parts.push(`**Category:** ${task.category}`);
-      if (task.missionId) parts.push(`**Mission:** ${task.missionId}`);
-      if (task.startAt) parts.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
-
-      // Active worker info (populated by enhanced task GET endpoint)
-      const worker = task.activeWorker;
-      if (worker) {
-        parts.push(`\n**Active Worker:** ${worker.id}`);
-        parts.push(`**Worker Status:** ${worker.status}`);
-        if (worker.currentAction) parts.push(`**Current Action:** ${worker.currentAction}`);
-        if (worker.prUrl) parts.push(`**PR URL:** ${worker.prUrl}`);
-        if (worker.prNumber) parts.push(`**PR #:** ${worker.prNumber}`);
-        if (worker.branch) parts.push(`**Branch:** ${worker.branch}`);
-      }
-
-      // Completion result (set when worker completes)
-      const result = task.result;
-      if (result) {
-        parts.push('');
-        if (result.summary) parts.push(`**Summary:** ${result.summary}`);
-        if (result.prUrl && !worker?.prUrl) parts.push(`**PR URL:** ${result.prUrl}`);
-        if (result.prNumber && !worker?.prNumber) parts.push(`**PR #:** ${result.prNumber}`);
-        if (result.branch && !worker?.branch) parts.push(`**Branch:** ${result.branch}`);
-        if (result.commits) parts.push(`**Commits:** ${result.commits}`);
-        if (result.nextSuggestion) parts.push(`**Next Suggestion:** ${result.nextSuggestion}`);
-      }
-
-      // Artifact IDs (populated by enhanced task GET endpoint)
-      if (Array.isArray(task.artifactIds) && task.artifactIds.length > 0) {
-        parts.push(`\n**Artifacts (${task.artifactIds.length}):** ${task.artifactIds.join(', ')}`);
-        parts.push('Use get_artifact with any artifact ID to read its content.');
-      }
-
-      if (!worker && !result) {
-        const hint = task.status === 'pending'
-          ? '\nTask is pending — not yet claimed by a worker.'
-          : task.status === 'completed'
-          ? '\nTask completed but no result snapshot available.'
-          : '';
-        if (hint) parts.push(hint);
-      }
-
-      return text(parts.join('\n'));
-    }
 
     case 'get_task_messages': {
       requireFullUuid(params.taskId, 'taskId');
@@ -5040,18 +5089,7 @@ export async function handleBuilddAction(
       if ((EXPERIMENT_WRITE_OPS as readonly string[]).includes(op)) {
         const level = await ctx.getLevel();
         if (level !== 'admin') {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: 'forbidden',
-                reason: `manage_experiments action '${op}' requires admin token level`,
-                tokenLevel: level,
-                requiredLevel: 'admin',
-              }),
-            }],
-            isError: true,
-          };
+          return forbiddenResult(`manage_experiments action '${op}' requires admin token level`, level, 'admin');
         }
       }
 
@@ -5441,6 +5479,96 @@ function chooseModeForQuery(query: string): 'lexical' | 'hybrid' {
   return 'hybrid';
 }
 
+/**
+ * `recall`/`query_knowledge` `type` and `files` filters. The tool schemas have
+ * advertised these since the knowledge-tool-surface spec shipped, but nothing
+ * ever read them — a caller passing type/files got an unfiltered result set
+ * with no indication the filter was silently ignored.
+ *
+ * `type` matches `metadata.type` (set by `learn`/save on memory-corpus chunks;
+ * absent elsewhere, so the filter naturally excludes non-memory corpora).
+ * `files` matches against `sourcePath` or `metadata.files` (set on memory
+ * chunks), either side treated as a path or a directory prefix of the other —
+ * a caller narrowing to `packages/core/` should hit a chunk filed under
+ * `packages/core/mcp-tools.ts`, and vice versa.
+ */
+/**
+ * True when `prefix` equals `path` or names a directory containing it, on a
+ * path-segment boundary — `packages/core` covers `packages/core/x.ts` but not
+ * `packages/core-utils/x.ts`.
+ */
+function isPathOrDirPrefix(prefix: string, path: string): boolean {
+  if (!prefix) return false;
+  if (path === prefix) return true;
+  const dir = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  return path.startsWith(dir);
+}
+
+function matchesRecallFilters(
+  r: QueryResult,
+  params: { type?: string; files?: string[] },
+): boolean {
+  if (params.type && r.metadata?.type !== params.type) return false;
+  if (params.files && params.files.length > 0) {
+    const candidates: string[] = [];
+    if (r.sourcePath) candidates.push(r.sourcePath);
+    if (Array.isArray(r.metadata?.files)) {
+      candidates.push(...(r.metadata.files as unknown[]).filter((f): f is string => typeof f === 'string'));
+    }
+    const hit = params.files.some(f => candidates.some(p => isPathOrDirPrefix(f, p) || isPathOrDirPrefix(p, f)));
+    if (!hit) return false;
+  }
+  return true;
+}
+
+interface CorpusFailure {
+  corpus: Corpus;
+  reason: string;
+}
+
+/** Render a "N corpora failed: ..." suffix, or '' when nothing failed. */
+function formatCorpusFailures(failures: CorpusFailure[]): string {
+  if (failures.length === 0) return '';
+  const list = failures.map(f => `${f.corpus} (${f.reason})`).join(', ');
+  return `\n\n(${failures.length} ${failures.length === 1 ? 'corpus' : 'corpora'} failed: ${list})`;
+}
+
+/**
+ * Fan a query out across corpora concurrently, tracking which corpora failed
+ * and why instead of the previous `.catch(() => [])` that made a retrieval
+ * outage or an unresolvable namespace indistinguishable from "no hits".
+ *
+ * A sensitive-workspace skip of memory/initiative is NOT a failure — that
+ * suppression is deliberate and must stay silent (memory 0ff1a5c7's
+ * bidirectional isolation decision).
+ */
+async function fanOutCorpora(
+  ks: KnowledgeStore,
+  ctx: { isSensitive?: boolean; workspaceId?: string; teamId?: string },
+  corpora: Corpus[],
+  opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
+): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
+  const failures: CorpusFailure[] = [];
+  const perCorpus = await Promise.all(
+    corpora.map(async (c): Promise<QueryResult[]> => {
+      if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [];
+      const ns = knowledgeNamespace(ctx, c);
+      if (!ns) {
+        failures.push({ corpus: c, reason: (c === 'memory' || c === 'initiative') ? 'teamId required' : 'workspaceId required' });
+        return [];
+      }
+      try {
+        const raw = await ks.query(ns, opts);
+        return raw.filter(r => r.isCurrent !== false);
+      } catch (e) {
+        failures.push({ corpus: c, reason: e instanceof Error ? e.message : 'unknown error' });
+        return [];
+      }
+    }),
+  );
+  return { perCorpus, failures };
+}
+
 // ── recall — read ─────────────────────────────────────────────────────────────
 
 /**
@@ -5472,8 +5600,28 @@ export async function handleRecallAction(
     return errorResult('query is required (or pass id for a direct fetch)');
   }
 
+  const corporaErr = parseCorpora(params.scope);
+  if (corporaErr) return errorResult(corporaErr.error);
+
+  const typeFilter = params.type as string | undefined;
+  if (typeFilter && !(MEMORY_TYPES as readonly string[]).includes(typeFilter)) {
+    return errorResult(`Invalid type filter. Must be one of: ${MEMORY_TYPES.join(', ')}`);
+  }
+  const filesFilter = Array.isArray(params.files)
+    ? (params.files as unknown[]).filter((f): f is string => typeof f === 'string')
+    : undefined;
+  const filterParams = { type: typeFilter, files: filesFilter };
+  const isFiltered = !!typeFilter || !!(filesFilter && filesFilter.length > 0);
+  const filterNote = isFiltered
+    ? ` (filtered: ${[typeFilter && `type=${typeFilter}`, filesFilter?.length && `files=${filesFilter.join(',')}`].filter(Boolean).join(', ')})`
+    : '';
+
   const limit = Math.min((params.limit as number) || 10, 50);
   const query = params.query as string;
+  // Filtering happens after retrieval, so over-fetch when a filter is active —
+  // otherwise a topK=limit fetch can come back entirely filtered out even when
+  // enough matching chunks exist further down the ranking.
+  const fetchTopK = isFiltered ? Math.min(limit * 5, 100) : limit;
 
   // Multi-scope: fan out concurrently, fuse results with Reciprocal Rank Fusion.
   // Uses k=60 — the same constant as reciprocalRankFusion() in pg-vector-store.ts.
@@ -5483,16 +5631,12 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const perCorpus = await Promise.all(
-      scopes.map(async (s) => {
-        // Sensitive workspaces: silently skip team-scoped corpora.
-        if (ctx.isSensitive && (s === 'memory' || s === 'initiative')) return [] as QueryResult[];
-        const ns = knowledgeNamespace(ctx, s);
-        if (!ns) return [] as QueryResult[];
-        const raw = await ks.query(ns, { text: query, mode, topK: limit }).catch(() => [] as QueryResult[]);
-        return raw.filter(r => r.isCurrent !== false);
-      }),
-    );
+    const { perCorpus, failures } = await fanOutCorpora(ks, ctx, scopes, { text: query, mode, topK: fetchTopK });
+
+    if (scopes.length > 0 && failures.length === scopes.length) {
+      return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
+    }
+    const failureNote = formatCorpusFailures(failures);
 
     const k = 60;
     const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
@@ -5504,14 +5648,15 @@ export async function handleRecallAction(
       });
     });
 
-    const fused = Array.from(fusionScores.values())
+    let fused = Array.from(fusionScores.values())
       .sort((a, b) => b.rrf - a.rrf)
-      .slice(0, limit)
       .map(v => v.result);
+    if (isFiltered) fused = fused.filter(r => matchesRecallFilters(r, filterParams));
+    fused = fused.slice(0, limit);
 
-    if (fused.length === 0) return text(`No knowledge found for: "${query}"`);
+    if (fused.length === 0) return text(`No knowledge found for: "${query}"${filterNote}${failureNote}`);
     const formatted = fused.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
-    return text(`Found ${fused.length} result(s):\n\n${formatted}`);
+    return text(`Found ${fused.length} result(s)${filterNote}:\n\n${formatted}${failureNote}`);
   }
 
   // Single scope — original path (unchanged).
@@ -5538,21 +5683,23 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  const raw = await ks.query(ns, { text: query, mode, topK: limit });
+  const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
 
-  // Exclude superseded entries by default, then apply caller limit.
-  const results = raw.filter(r => r.isCurrent !== false).slice(0, limit);
+  // Exclude superseded entries by default, apply type/files filters, then the caller limit.
+  let results = raw.filter(r => r.isCurrent !== false);
+  if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
+  results = results.slice(0, limit);
 
   if (results.length === 0) {
     if (scope === 'code' || scope === 'docs') {
       return text(`No ${scope} index found. Run ingestion first: WORKSPACE_ID=<id> bun packages/core/scripts/ingest-knowledge.ts <repo-dir>`);
     }
-    return text(`No knowledge found for: "${query}"`);
+    return text(`No knowledge found for: "${query}"${filterNote}`);
   }
 
   const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
-  return text(`Found ${results.length} result(s):\n\n${formatted}`);
+  return text(`Found ${results.length} result(s)${filterNote}:\n\n${formatted}`);
 }
 
 // ── learn — write ─────────────────────────────────────────────────────────────
@@ -5909,6 +6056,9 @@ export async function handleMemoryAction(
     case 'query_knowledge': {
       if (!params.query) throw new Error('query is required');
 
+      const corporaErr = parseCorpora(params.corpus);
+      if (corporaErr) throw new Error(corporaErr.error);
+
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
@@ -5917,14 +6067,12 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const perCorpus = await Promise.all(
-          corpora.map(async (c) => {
-            if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [] as QueryResult[];
-            const ns = knowledgeNamespace(ctx, c);
-            if (!ns) return [] as QueryResult[];
-            return ks.query(ns, { text: params.query as string, mode, topK }).catch(() => [] as QueryResult[]);
-          }),
-        );
+        const { perCorpus, failures } = await fanOutCorpora(ks, ctx, corpora, { text: params.query as string, mode, topK });
+
+        if (corpora.length > 0 && failures.length === corpora.length) {
+          throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
+        }
+        const failureNote = formatCorpusFailures(failures);
 
         const k = 60;
         const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
@@ -5959,10 +6107,10 @@ export async function handleMemoryAction(
         }
 
         if (fused.length === 0) {
-          return text(`No knowledge chunks found for query: "${params.query}" (corpora: ${corpora.join(', ')}, mode: ${mode})`);
+          return text(`No knowledge chunks found for query: "${params.query}" (corpora: ${corpora.join(', ')}, mode: ${mode})${failureNote}`);
         }
         const formatted = fused.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
-        return text(`Found ${fused.length} chunk(s) (mode: ${mode}, corpora: ${corpora.join(', ')}):\n\n${formatted}`);
+        return text(`Found ${fused.length} chunk(s) (mode: ${mode}, corpora: ${corpora.join(', ')}):\n\n${formatted}${failureNote}`);
       }
 
       // Single corpus — original path (unchanged).

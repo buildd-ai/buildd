@@ -2,6 +2,7 @@ import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 
 // Whether the `fs` module is backed by the real filesystem at RUN time.
 //
@@ -448,7 +449,9 @@ describe('CodexBackend BackendEvent mapping', () => {
 
     expect(events.some(e => e.type === 'turn_complete')).toBe(true);
     expect((events.at(-1) as any).type).toBe('error');
-    expect((events.at(-1) as any).error).toContain('Budget limit exceeded');
+    expect((events.at(-1) as any).error).toContain('Session cost cap reached');
+    // A per-session cap is not a provider wall (audit A.2).
+    expect(isBudgetExhaustionError((events.at(-1) as any).error)).toBe(false);
     expect(progressEvents.find(e => e.subtype === 'error_max_budget_usd')).toBeDefined();
   });
 

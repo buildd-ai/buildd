@@ -115,7 +115,8 @@ export type MissionStateSource =
   | 'classifyMissionWait'
   | 'evaluateMissionWorkState'
   | 'gateEvents.claimLoopDeferral'
-  | 'workers.prUrl + workers.mergedAt';
+  | 'workers.prUrl + workers.mergedAt'
+  | 'tasks.parentTaskId + tasks.taskClass';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -157,6 +158,12 @@ export type WaitingOnDescriptor =
       taskIds: string[];
       /** Status histogram of the open rows, e.g. `{ pending: 2 }`. */
       byStatus: Record<string, number>;
+      /**
+       * Set when the open row is a fix attempt on work that already produced a
+       * PR (builder-after-review, CI retry). `claimed` separates "queued" from
+       * "a worker has it" — the two read very differently to someone waiting.
+       */
+      attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean };
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -209,6 +216,8 @@ export type WaitingOnDescriptor =
       consecutiveDeferrals: number;
       /** When the worst offender was first deferred, if the ledger recorded it. */
       firstDeferredAt: string | null;
+      /** For `path_overlap`: the open PR the worst offender is waiting on. */
+      blockedByPr?: number | null;
       taskIds: string[];
     };
 
@@ -355,6 +364,8 @@ export interface MissionStateInput {
     reason: string;
     consecutiveDeferrals: number;
     firstDeferredAt?: string | null;
+    /** For `path_overlap`: the open PR the claim loop deferred this task behind. */
+    blockedByPr?: number | null;
   }>;
   /**
    * The mission's own integration PR, when one is open. `canCompleteMission`
@@ -369,6 +380,20 @@ export interface MissionStateInput {
    * silently drops the one thing its owner had to do.
    */
   unmergedPrs?: Array<{ taskId: string; title?: string | null; prNumber: number | null; prUrl: string | null }>;
+  /**
+   * An open fix attempt (taskClass `attempt`) on this subject — the builder a
+   * request-changes review or a red CI run queued. While one exists the PR is
+   * not ready to merge: the platform owes the next push, not the owner.
+   */
+  openAttempt?: {
+    taskId: string;
+    title?: string | null;
+    status: string;
+    iteration: number | null;
+    maxIterations: number | null;
+    /** A worker has picked it up (task left `pending`, or a live worker is on it). */
+    claimed: boolean;
+  } | null;
 }
 
 /** The subset of `MissionCompletionDecision` this accessor reads. */
@@ -581,6 +606,15 @@ function resolve(input: MissionStateInput): Resolution {
   const failed = failedFact(input);
   if (failed) return failed;
 
+  // 6½. A fix attempt is queued on work that already has a PR. This outranks
+  //     the merge rule below: an unmerged PR with a pending builder-after-review
+  //     is waiting on the platform's next push, and "waiting on you to merge"
+  //     over the top of it sends the owner to merge a PR the reviewer just
+  //     rejected. Reached only with no live worker — a claimed fix is `running`
+  //     by rule 5, and still named through `outstanding`.
+  const attempt = attemptFact(input);
+  if (attempt) return attempt;
+
   // 7. The work is done and has not reached trunk. `canCompleteMission` owns
   //    this refusal (`awaiting_merge` for a task PR, `awaiting_mission_pr` for
   //    the mission's own integration PR); `evaluateMissionWorkState` is the
@@ -701,8 +735,36 @@ function failedFact(input: MissionStateInput): Resolution | null {
   return null;
 }
 
+/** Rule 6½ — a fix attempt is open on work that already has a PR. */
+function attemptFact(input: MissionStateInput): Resolution | null {
+  const a = input.openAttempt;
+  if (!a) return null;
+  return {
+    kind: 'waiting',
+    waitingOn: {
+      kind: 'task',
+      tone: 'neutral',
+      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued — no worker yet'}`,
+      count: 1,
+      taskIds: [a.taskId],
+      byStatus: { [a.status]: 1 },
+      attempt: { iteration: a.iteration, maxIterations: a.maxIterations, claimed: a.claimed },
+    },
+    displayState: 'active',
+    source: 'tasks.parentTaskId + tasks.taskClass',
+  };
+}
+
+function fixLabel(a: { iteration: number | null; maxIterations: number | null }): string {
+  if (a.iteration == null) return 'Fix';
+  return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
+}
+
 /** Rule 7 — the work is done and has not reached trunk. */
 function mergeFact(input: MissionStateInput): Resolution | null {
+  // An open fix attempt means the PR is about to change; asking the owner to
+  // merge it now is the false headline rule 6½ exists to prevent.
+  if (input.openAttempt) return null;
   const { completion } = input;
   if (completion && isMergeBlockCode(completion.code)) {
     const details = completion.awaitingMergeDetails ?? [];
@@ -903,21 +965,28 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
  * the case the observed bug produced: a spinner reading "1 agent active" over
  * a task the claim loop had turned away a dozen times running.
  */
+/** The gate reason, plus the PR it waits on when the ledger named one. */
+function deferralReasonText(d: { reason: string; blockedByPr?: number | null }): string {
+  return typeof d.blockedByPr === 'number' ? `${d.reason} — blocked by PR #${d.blockedByPr}` : d.reason;
+}
+
 function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
   const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals, d.firstDeferredAt));
   if (stuck.length === 0) return null;
   // Worst offender leads: it is the one with the longest unbroken refusal.
   const worst = stuck.reduce((a, b) => (b.consecutiveDeferrals > a.consecutiveDeferrals ? b : a));
+  const reason = deferralReasonText(worst);
   return {
     kind: 'claim_deferral',
     tone: 'warning',
     label: stuck.length === 1
-      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${worst.reason}`
-      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${worst.reason})`,
+      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${reason}`
+      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${reason})`,
     count: stuck.length,
     reason: worst.reason,
     consecutiveDeferrals: worst.consecutiveDeferrals,
     firstDeferredAt: worst.firstDeferredAt ?? null,
+    blockedByPr: worst.blockedByPr ?? null,
     taskIds: stuck.map(d => d.taskId),
   };
 }
@@ -952,6 +1021,7 @@ function collectOutstanding(input: MissionStateInput, resolved: Resolution): Out
     resolved.waitingOn ? { fact: resolved.waitingOn, source: resolved.source } : null,
     entry(deferralFact(input), 'gateEvents.claimLoopDeferral'),
     fromResolution(failedFact(input)),
+    fromResolution(attemptFact(input)),
     fromResolution(mergeFact(input)),
     fromResolution(criteriaFact(input)),
     fromResolution(openTaskFact(input, live)),
@@ -991,6 +1061,10 @@ function situationPhrase(d: WaitingOnDescriptor): string {
     case 'dependency':
       return 'waiting on an upstream mission to meet its gate condition';
     case 'task':
+      if (d.attempt) {
+        const fix = fixLabel(d.attempt).toLowerCase();
+        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued — no worker yet)`;
+      }
       return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
     case 'task_failed':
       return d.infra
@@ -1026,8 +1100,8 @@ function situationPhrase(d: WaitingOnDescriptor): string {
         : `waiting on ${d.reason} — resumes on its own`;
     case 'claim_deferral':
       return d.count === 1
-        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${d.reason}`
-        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${d.reason}`;
+        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${deferralReasonText(d)}`
+        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${deferralReasonText(d)}`;
   }
 }
 
@@ -1109,6 +1183,11 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'dependency':
       return 'Complete the upstream mission, or clear the dependency gate on this one.';
     case 'task':
+      if (waitingOn.attempt) {
+        return waitingOn.attempt.claimed
+          ? 'Nothing to do yet — the fix is in progress; review runs again after it pushes.'
+          : 'Nothing to do yet — the fix is queued for the next free worker. Cancel it if the work is no longer wanted.';
+      }
       return 'Dispatch a worker for the open task(s), or cancel them if the work is no longer wanted.';
     case 'task_failed':
       return waitingOn.infra
@@ -1129,7 +1208,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         ? `Nothing to do — this resumes on its own at ${waitingOn.waitUntil}.`
         : 'Nothing to do — this resumes on its own.';
     case 'claim_deferral':
-      return `The claim loop is refusing this task (${waitingOn.reason}) — clear that gate, or cancel the task if the work is no longer wanted.`;
+      return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}) — clear that gate, or cancel the task if the work is no longer wanted.`;
   }
 }
 

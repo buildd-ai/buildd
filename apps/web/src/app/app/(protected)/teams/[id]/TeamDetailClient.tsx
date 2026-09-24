@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
+import { useConfirm } from '@/components/useConfirm';
 
 interface TeamMember {
   userId: string;
@@ -41,6 +42,7 @@ export default function TeamDetailClient({
   isPersonal,
   canManage,
 }: TeamDetailClientProps) {
+  const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(team.name);
@@ -108,7 +110,7 @@ export default function TeamDetailClient({
   }
 
   async function handleDelete() {
-    if (!confirm('Are you sure you want to delete this team? This will also delete all associated workspaces and accounts.')) {
+    if (!(await confirm({ title: 'Delete team?', message: 'This will also delete all associated workspaces and accounts. This cannot be undone.', confirmLabel: 'Delete team', variant: 'danger' }))) {
       return;
     }
 
@@ -151,7 +153,7 @@ export default function TeamDetailClient({
   }
 
   async function handleRemoveMember(userId: string, memberName: string | null) {
-    if (!confirm(`Remove ${memberName || 'this member'} from the team?`)) {
+    if (!(await confirm({ title: 'Remove member?', message: `Remove ${memberName || 'this member'} from the team?`, confirmLabel: 'Remove', variant: 'danger' }))) {
       return;
     }
 
@@ -377,6 +379,7 @@ export default function TeamDetailClient({
           </div>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
 }

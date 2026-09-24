@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
@@ -10,6 +10,14 @@ import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
+import {
+  IN_FLIGHT_GATED_STATES,
+  advanceGatedRowForMerge,
+  commitContains,
+  resolveShippedVersion,
+} from '@/lib/release/gated-merge';
+
+export { versionFromReleasePrTitle } from '@/lib/release/gated-merge';
 
 // Injectable for tests — do not use in production code. Mirrors the same
 // affordance in release-verification.ts; without it the 8s pre-poll wait and the
@@ -378,27 +386,41 @@ export async function recordDirectProdMerge(params: {
 
 // A `gated` + `workflow_dispatch` workspace's release PR merging into
 // prodBranch is its only real deploy signal. `recordDirectProdMerge` above
-// does not cover it — it only fires for `branch_merge` workspaces — so
-// nothing previously advanced this workspace's release row on the merge that
-// actually ships. The row for this commit was already inserted at dispatch
-// time (state 'dispatched', then 'pending_external' once the dispatch
-// workflow succeeded — see advanceReleaseStateFromWorkflowRun in the github
-// webhook route) with headSha set to the release ref's head at dispatch,
-// which is exactly the release PR's pre-merge branch tip. That is what this
-// matches on, not the merge commit sha `recordDirectProdMerge` uses — the
-// merge commit does not exist on the row until this call.
+// does not cover it — it only fires for `branch_merge` workspaces.
+//
+// The row for a buildd-dispatched release was inserted at dispatch time
+// (state 'dispatched', then 'pending_external' once the dispatch workflow
+// succeeded — see advanceReleaseStateFromWorkflowRun in the github webhook
+// route) with headSha set to the release ref's head AT DISPATCH. That is NOT
+// the release PR's head: the release workflow then pushes a CHANGELOG
+// promotion and a version-bump commit, so the PR head is always a descendant
+// of the stored sha. Matching on equality — what this used to do — never hit,
+// and every gated row sat in `pending_external` until the 24h sweep failed it.
+//
+// So a row matches when the merged PR's head CONTAINS the row's sha (GitHub
+// compare: `ahead` or `identical`). Of several matching rows only the newest
+// advances; the older ones shipped inside it and are failed as superseded.
+// With no installation the compare cannot run and only exact equality
+// matches.
+//
+// A merge into prodBranch that matches no row — a hotfix, a direct merge, a
+// release cut outside buildd (local `bun run release`, cron) — is still a
+// production release, so it gets a row of its own (`triggeredBy: 'external'`),
+// idempotent on (workspace_id, head_sha = merge commit).
 //
 // Called from the GitHub webhook for every merged PR, independent of whether
-// a worker owns it, the same as `recordDirectProdMerge`. A merge into
-// prodBranch that is not this workspace's release (e.g. a hotfix PR merged
-// directly) simply matches no `dispatched`/`pending_external` row and is a
-// no-op.
+// a worker owns it, the same as `recordDirectProdMerge`.
 export async function advanceGatedReleaseOnPrMerge(params: {
   repoFullName: string;
   baseRef: string;
   prHeadSha: string | undefined;
+  installationId?: number;
+  mergeCommitSha?: string | null;
+  baseSha?: string | null;
+  prTitle?: string | null;
+  prNumber?: number;
 }): Promise<void> {
-  const { repoFullName, baseRef, prHeadSha } = params;
+  const { repoFullName, baseRef, prHeadSha, installationId, mergeCommitSha, baseSha, prTitle, prNumber } = params;
   if (!prHeadSha) return;
 
   const repoRows = await db
@@ -417,6 +439,14 @@ export async function advanceGatedReleaseOnPrMerge(params: {
     .from(workspaces)
     .where(inArray(workspaces.githubRepoId, repoRows.map((r) => r.id)));
 
+  let version: string | null | undefined;
+  const shippedVersion = async (): Promise<string | null> => {
+    if (version === undefined) {
+      version = await resolveShippedVersion({ prTitle, installationId, repoFullName, mergeCommitSha });
+    }
+    return version;
+  };
+
   for (const workspace of boundWorkspaces) {
     const resolution = resolveReleaseStrategy(workspace.releaseConfig);
     if (!resolution.ok || resolution.strategy.kind !== 'workflow_dispatch') continue;
@@ -429,26 +459,107 @@ export async function advanceGatedReleaseOnPrMerge(params: {
     });
     if (archetype !== 'gated') continue;
 
-    const [updated] = await db
-      .update(releases)
-      .set({ state: 'deploying', deployedAt: new Date() })
-      .where(
-        and(
-          eq(releases.workspaceId, workspace.id),
-          eq(releases.headSha, prHeadSha),
-          inArray(releases.state, ['dispatched', 'pending_external']),
-        ),
-      )
-      .returning({ id: releases.id });
+    const inFlight = await db
+      .select({ id: releases.id, headSha: releases.headSha })
+      .from(releases)
+      .where(and(eq(releases.workspaceId, workspace.id), inArray(releases.state, [...IN_FLIGHT_GATED_STATES])))
+      .orderBy(desc(releases.dispatchedAt));
 
-    if (!updated) continue;
+    const matched: string[] = [];
+    // A compare that errored (5xx, rate limit) leaves that row possibly
+    // shipped by this merge. Without an installation there is no compare and
+    // no cron heal either, so null there means "not equal", not "unknown".
+    let compareUnknown = false;
+    for (const row of inFlight) {
+      if (!row.headSha) continue;
+      const contains = await commitContains(installationId, repoFullName, row.headSha, prHeadSha);
+      if (contains === true) matched.push(row.id);
+      else if (contains === null && installationId) compareUnknown = true;
+    }
+
+    if (matched.length > 0) {
+      const [newest, ...older] = matched as [string, ...string[]];
+      const advanced = await advanceGatedRowForMerge({
+        releaseId: newest,
+        workspaceId: workspace.id,
+        mergeCommitSha,
+        version: await shippedVersion(),
+      });
+      // Lost the CAS: a concurrent delivery already handled this merge.
+      if (!advanced) continue;
+
+      if (older.length > 0) {
+        const superseded = await db
+          .update(releases)
+          .set({
+            state: 'failed',
+            failureReason: `superseded by release ${newest}${prNumber ? ` (PR #${prNumber} merged)` : ''}`,
+          })
+          .where(and(inArray(releases.id, older), inArray(releases.state, [...IN_FLIGHT_GATED_STATES])))
+          .returning({ id: releases.id });
+        for (const row of superseded) {
+          await triggerEvent(channels.workspace(workspace.id), events.RELEASE_UPDATED, {
+            releaseId: row.id,
+            state: 'failed',
+          }).catch(() => {});
+        }
+      }
+      continue;
+    }
+
+    // No dispatched row shipped with this merge: record it as its own release.
+    // Unless a compare could not answer — then an in-flight row may be this
+    // release, and an external row would give the cron heal a second
+    // `deploying` row for one merge. Leave it to the cron sweep, which asks
+    // GitHub again and either heals that row or fails it.
+    if (!mergeCommitSha) continue;
+    if (compareUnknown) {
+      console.warn(
+        `[release] merge ${mergeCommitSha} into ${baseRef}: a compare against an in-flight release failed — ` +
+          `not recording it as an external release; the release-health-check cron will reconcile`,
+      );
+      continue;
+    }
+    const [inserted] = await db
+      .insert(releases)
+      .values({
+        workspaceId: workspace.id,
+        archetype: 'gated',
+        state: 'deploying',
+        // Same reasoning as maybeCreateReleaseRow: gated rows stay inside the
+        // stale-`deploying` sweep so they always reach a terminal state.
+        verificationStrategy: 'http',
+        triggeredBy: 'external',
+        deployedAt: new Date(),
+        headSha: mergeCommitSha,
+        previousSha: baseSha ?? undefined,
+        version: await shippedVersion(),
+      })
+      .onConflictDoNothing()
+      .returning({ id: releases.id });
+    // Conflict: a redelivery of a merge already recorded, or the row this
+    // merge already advanced (its head sha is now the merge commit).
+    if (!inserted) continue;
+
+    if (baseSha && installationId) {
+      attributeRelease({
+        releaseId: inserted.id,
+        workspaceId: workspace.id,
+        previousSha: baseSha,
+        headSha: mergeCommitSha,
+        archetype: 'gated',
+        repoFullName,
+        githubInstallationId: installationId,
+        db,
+      }).catch(() => {});
+    }
 
     await triggerEvent(channels.workspace(workspace.id), events.RELEASE_UPDATED, {
-      releaseId: updated.id,
+      releaseId: inserted.id,
       state: 'deploying',
     }).catch(() => {});
 
-    setTimeout(() => verifyReleaseDeployment(updated.id, db).catch(console.error), 0);
+    setTimeout(() => verifyReleaseDeployment(inserted.id, db).catch(console.error), 0);
   }
 }
 

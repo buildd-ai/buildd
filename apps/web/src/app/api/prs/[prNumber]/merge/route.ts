@@ -325,7 +325,7 @@ export async function POST(
         installationId,
         repoFullName,
         prNumber,
-        entry: { kind: 'human_override_merge', detail: `${user.email} overrode: ${overriddenReason}` },
+        entry: { kind: 'human_override_merge', note: overriddenReason },
         workspaceId: worker.workspaceId,
       }).catch((e: unknown) =>
         console.error(`[pr-merge] failed to append override activity for PR #${prNumber}:`, e)

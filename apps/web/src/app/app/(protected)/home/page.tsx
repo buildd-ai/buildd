@@ -39,7 +39,7 @@ import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
-import { computeMissionProgress, crossedMilestone } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, crossedMilestone, hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { InterruptReviewButton } from './InterruptReviewButton';
@@ -786,8 +786,10 @@ export default async function HomePage({
               lastRunAt,
               nextRunAt,
               orchestrationMode,
+              isHeld: mission.isHeld ?? false,
               pendingUserScheduledAt,
               criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
+              hasPendingDeliverableWork: hasPendingDeliverableWork(mission.tasks),
             });
 
             const effectiveNextRunAt = nextRunAt

@@ -9,6 +9,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { isPostMergeIntegrationCheck } from '@/lib/release/dispatch';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notify } from '@/lib/pushover';
 import { createHash, randomUUID } from 'crypto';
@@ -312,6 +313,9 @@ export interface RawCheckRun {
 export function filterFailingCheckRuns(runs: RawCheckRun[]): CheckRunSummary[] {
   return runs
     .filter((r) => {
+      // Advisory post-merge integration runs sit on dev SHAs, i.e. on every
+      // release PR head, and never gate (see release/dispatch.ts).
+      if (r.name && isPostMergeIntegrationCheck(r.name)) return false;
       const conclusion = r.conclusion ?? null;
       return r.status === 'completed' && conclusion && ['failure', 'timed_out', 'cancelled'].includes(conclusion);
     })

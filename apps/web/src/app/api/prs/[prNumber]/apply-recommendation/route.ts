@@ -252,7 +252,7 @@ export async function POST(
         prNumber,
         entry: {
           kind: 'human_applied_recommendation',
-          detail: corrections ? `Applied by ${user.email} with corrections` : `Applied by ${user.email}`,
+          detail: corrections ? 'with corrections' : null,
         },
         workspaceId: worker.workspaceId,
       });

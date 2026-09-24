@@ -1,0 +1,2 @@
+CREATE INDEX "workers_pr_number_idx" ON "workers" USING btree ("pr_number") WHERE "workers"."pr_number" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "workers_pr_url_idx" ON "workers" USING btree ("pr_url") WHERE "workers"."pr_url" IS NOT NULL;

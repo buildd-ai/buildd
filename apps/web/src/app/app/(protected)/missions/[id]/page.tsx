@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -69,6 +69,7 @@ import {
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
 import MissionSituationBlock, { affordanceFor } from '@/components/missions/MissionSituationBlock';
+import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 export const dynamic = 'force-dynamic';
 
@@ -422,9 +423,7 @@ export default async function MissionDetailPage({
   // "No pending deliverable work" for the escalated health state — same
   // definition the `no_open_tasks` criterion uses, so the state agrees with
   // the gate that produced the escalation in the first place.
-  const hasPendingDeliverableWork = (mission.tasks || [])
-    .filter(isDeliverableTask)
-    .some(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+  const hasPendingDeliverableWork = computeHasPendingDeliverableWork(mission.tasks || []);
   // See heartbeat-prepass.ts: recorded as `nextRunAt` while the heartbeat is
   // deliberately waiting on a known self-resolving condition — read it back so
   // the mission renders BLOCKED, not idle, while it waits.
@@ -459,20 +458,6 @@ export default async function MissionDetailPage({
       })
     : null;
 
-  // Single derived display state for the header chip and CTA
-  const displayState = deriveMissionDisplayState({
-    status: mission.status,
-    isHeld,
-    orchestrationMode,
-    activeAgents,
-    health: healthState,
-    progress,
-    criteriaUnverified,
-    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
-    hasPendingDeliverableWork,
-  });
-  const stateChip = getMissionStateChip(displayState);
-
   // ── What is this mission actually waiting on? ──
   // Read from `explain`, which runs the one shared mission-state accessor. The
   // page does NOT assemble its own accessor input and does NOT re-derive the
@@ -492,6 +477,24 @@ export default async function MissionDetailPage({
     getLinksForEntity(db, 'mission', id),
   ]);
   const missionAnswer = explained?.subjects[0] ?? null;
+
+  // Single derived display state for the header chip and CTA — read off the
+  // SAME accessor answer the waiting-on panel renders, so the chip cannot say
+  // AUTO/RUNNING while the panel below says blocked or idle. The historical
+  // chain is only the fallback for when the explain read failed.
+  const displayState = missionAnswer?.displayState ?? deriveMissionDisplayState({
+    status: mission.status,
+    isHeld,
+    orchestrationMode,
+    activeAgents,
+    health: healthState,
+    progress,
+    criteriaUnverified,
+    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
+    hasPendingDeliverableWork,
+  });
+  const stateChip = missionAnswer?.chip ?? getMissionStateChip(displayState);
+
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
   // parity with the one right action is what made this screen unreadable.
@@ -862,6 +865,7 @@ export default async function MissionDetailPage({
   // BUILD bar. Steering marks are supplied separately, on the options bag.
   const flightStripTasks = timelineTasks.map(t => ({
     id: t.id, status: t.status, taskClass: t.taskClass, roleSlug: t.roleSlug, kind: t.kind, title: t.title,
+    creationSource: t.creationSource, mode: t.mode,
   }));
   const flightStripWorkers = timelineTasks.flatMap(t =>
     ((t.workers ?? []) as any[]).map(w => ({
@@ -1238,7 +1242,7 @@ export default async function MissionDetailPage({
                 </div>
                 <p className="text-[13px] text-text-secondary">
                   {spendUsd != null
-                    ? `$${spendUsd.toFixed(4)} spent vs $${parseFloat(costBudgetUsd).toFixed(2)} budget — no new tasks will spawn.`
+                    ? `${formatEstimatedUsd(spendUsd, 4)} spent vs $${parseFloat(costBudgetUsd).toFixed(2)} budget — no new tasks will spawn.`
                     : `Budget of $${parseFloat(costBudgetUsd).toFixed(2)} reached — no new tasks will spawn.`}
                   {' '}Raise the budget to resume.
                 </p>
@@ -1255,8 +1259,8 @@ export default async function MissionDetailPage({
           <div className="card p-3 mb-4">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] text-text-muted">Cost budget</span>
-              <span className={`text-[12px] font-mono tabular-nums ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'text-status-warning' : 'text-text-secondary'}`}>
-                ${spendUsd.toFixed(2)} / ${parseFloat(costBudgetUsd).toFixed(2)}
+              <span className={`text-[12px] font-mono tabular-nums ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'text-status-warning' : 'text-text-secondary'}`} title={ESTIMATED_COST_TITLE}>
+                {formatEstimatedUsd(spendUsd)} / ${parseFloat(costBudgetUsd).toFixed(2)}
               </span>
             </div>
             <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] overflow-hidden">
@@ -1373,22 +1377,16 @@ export default async function MissionDetailPage({
             if (h >= 24) { const d = Math.floor(h / 24); return `${d}d ${h % 24}h`; }
             return `${h}h ${m}m`;
           }
-          // Reuse the skyline computation from the mission card (do not re-derive).
-          // agentTimeMin = Σ worker wall-clock spans; activeSpanMin = first-start → last-end.
-          const skyline = computeMissionSkyline(allTasks);
-          const agentLabel = skyline ? fmtMin(skyline.agentTimeMin) : null;
-          const wallLabel = skyline ? fmtMin(skyline.activeSpanMin) : (() => {
-            const ws = allTasks.flatMap((t: any) => t.workers ?? []);
-            const starts = ws.map((w: any) => w.startedAt ? new Date(w.startedAt).getTime() : null).filter(Boolean) as number[];
-            const ends = ws.map((w: any) => w.completedAt ? new Date(w.completedAt).getTime() : null).filter(Boolean) as number[];
-            if (starts.length === 0 || ends.length === 0) {
-              return fmtMin((new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime()) / 60_000);
-            }
-            return fmtMin((Math.max(...ends) - Math.min(...starts)) / 60_000);
-          })();
+          // Reuse the flight strip's own §6 metrics (already computed above for the
+          // navigator) rather than re-deriving duration from raw worker spans.
+          // agentTimeMin = Σ work-lane span durations (orchestrator ticks excluded,
+          // Rule L-3); axisSpanMin = their idle-elided union — the direct
+          // replacement for the retired skyline's activeSpanMin.
+          const agentLabel = flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : null;
+          const wallLabel = flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null;
           // Show wall-clock secondary only when it meaningfully differs from agent time (>1 min gap).
           const showWall = agentLabel && wallLabel && agentLabel !== wallLabel &&
-            skyline && Math.abs(skyline.activeSpanMin - skyline.agentTimeMin) > 1;
+            Math.abs(flightStripData.axisSpanMin - flightStripData.agentTimeMin) > 1;
           return (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
               {[

@@ -5,6 +5,7 @@ import {
   STALENESS_THRESHOLD_MS,
   PROGRESS_THRESHOLD_MS,
   isGateSatisfied,
+  findBlockingPrWorker,
   deriveChainPosition,
   deriveIntensity,
   deriveDisplayStatus,
@@ -24,6 +25,47 @@ describe('LIVE_WORKER_STATUSES', () => {
     expect([...LIVE_WORKER_STATUSES].sort()).toEqual(
       ['idle', 'running', 'starting', 'waiting_input'].sort(),
     );
+  });
+});
+
+// ─── findBlockingPrWorker ─────────────────────────────────────────────────────
+// The detail page used to read only the newest worker, so an older worker's
+// still-open PR vanished: the page said "All dependencies resolved" while the
+// claim gate and the list said BLOCKED.
+
+describe('findBlockingPrWorker', () => {
+  const newest = { prUrl: null, prNumber: null, mergedAt: null, prLifecycleStatus: null };
+  const older = { prUrl: 'https://github.com/org/repo/pull/5', prNumber: 5, mergedAt: null, prLifecycleStatus: 'open' };
+
+  it('finds an older worker\'s open PR behind a newer PR-less worker', () => {
+    expect(findBlockingPrWorker([newest, older])).toBe(older);
+    expect(isGateSatisfied({ status: 'completed' }, [newest, older])).toBe(false);
+  });
+
+  it('ignores merged and closed PRs', () => {
+    expect(findBlockingPrWorker([
+      { ...older, mergedAt: '2025-01-01T00:00:00Z' },
+      { ...older, prLifecycleStatus: 'closed' },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined with no workers', () => {
+    expect(findBlockingPrWorker([])).toBeUndefined();
+  });
+
+  it('deriveChainPosition names the blocking PR, not a closed one', () => {
+    const r = deriveChainPosition({
+      task: { id: 't', status: 'pending' },
+      deps: [{
+        id: 'd', title: 'dep', status: 'completed',
+        workers: [
+          { prUrl: 'https://github.com/org/repo/pull/3', prNumber: 3, mergedAt: null, prLifecycleStatus: 'closed' },
+          older,
+        ],
+      }],
+      dependents: 0,
+    });
+    expect(r.blockedBy[0].prNumber).toBe(5);
   });
 });
 

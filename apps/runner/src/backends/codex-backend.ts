@@ -3,6 +3,7 @@ import { join } from 'path';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 import { mapCodexEventToSdkMessages } from './codex-events.js';
 import { catalogPriceFor } from '@buildd/core/model-prices';
+import { SESSION_BUDGET_CAP_ERROR } from '../claim-budget-signals.js';
 
 /**
  * Codex prices in `{input, cachedInput, output}`; the shared catalog speaks
@@ -229,7 +230,7 @@ export class CodexBackend implements AgentBackend {
             await opts.onProgress?.(this.resultEvent('error_max_budget_usd', modelUsage, turnCount, totalCostUsd));
             yield {
               type: 'error',
-              error: `Budget limit exceeded (maxBudgetUsd): $${totalCostUsd.toFixed(4)} > $${opts.maxBudgetUsd.toFixed(4)}`,
+              error: `${SESSION_BUDGET_CAP_ERROR} (maxBudgetUsd): $${totalCostUsd.toFixed(4)} > $${opts.maxBudgetUsd.toFixed(4)}`,
             };
             return;
           }

@@ -243,6 +243,59 @@ export async function guardReviewVerdict(params: {
   return result;
 }
 
+/** How a merge relates to the review it landed on, for reviewer-precision telemetry. */
+export type MergeReviewEvent = 'merged_over_verdict' | 'merged_unreviewed';
+
+export interface MergeReviewClassification {
+  event: MergeReviewEvent;
+  state: PrReviewState;
+  kind: ReviewGateBlockKind | null;
+  reviewTaskId: string | null;
+  reviewHeadSha: string | null;
+}
+
+/**
+ * Classify a merge that already happened against the review state at the time.
+ *
+ * Every buildd merge door asks `guardReviewVerdict` first, but a merge on
+ * github.com passes none of them, so the merges that went past the reviewer
+ * are invisible unless they are classified after the fact:
+ *
+ *   - `merged_over_verdict`: a request-changes or escalate verdict was still
+ *     outstanding for the merged commit.
+ *   - `merged_unreviewed`: a review was requested, but no verdict covered the
+ *     merged commit (still queued or running, failed without a verdict, or an
+ *     approval of an earlier commit).
+ *
+ * Returns null for a merge of the approved commit and for a PR no review was
+ * requested for (policy tiers that never review are not reviewer misses).
+ * `status.merged` is ignored: the caller reads the status after the merge.
+ */
+export function classifyMergeAgainstReview(
+  status: Pick<PrReviewStatus, 'state' | 'reviewTaskId' | 'reviewHeadSha' | 'feedback' | 'summary' | 'escalationReason'> &
+    Partial<Pick<PrReviewStatus, 'reviewEquivalentHeadShas' | 'merged'>>,
+  mergedHeadSha: string | null | undefined,
+): MergeReviewClassification | null {
+  if (status.state === 'not_requested') return null;
+  const gate = evaluateReviewVerdictGate({ ...status, merged: false }, mergedHeadSha);
+  let event: MergeReviewEvent | null = null;
+  if (gate.blocks) {
+    event = gate.kind === 'changes_requested' || gate.kind === 'escalated'
+      ? 'merged_over_verdict'
+      : 'merged_unreviewed';
+  } else if (status.state === 'review_failed') {
+    event = 'merged_unreviewed';
+  }
+  if (!event) return null;
+  return {
+    event,
+    state: status.state,
+    kind: gate.kind ?? null,
+    reviewTaskId: status.reviewTaskId ?? null,
+    reviewHeadSha: status.reviewHeadSha ?? null,
+  };
+}
+
 // `approved` is handled directly in evaluateReviewVerdictGate (it starts from
 // PASS, the opposite default from everything here) — it never reaches this
 // function.

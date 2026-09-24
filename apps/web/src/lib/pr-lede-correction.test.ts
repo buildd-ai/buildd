@@ -81,7 +81,7 @@ describe('applyReviewerLedeCorrection', () => {
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     const arg = mockAppendPrActivity.mock.calls[0][0] as any;
     expect(arg.entry.kind).toBe('lede_corrected');
-    expect(arg.entry.detail).toContain(AUTHORED);
+    expect(arg.entry.note).toContain(AUTHORED);
   });
 
   it('leaves a PR with no lede block alone — nothing to replace, nothing to preserve', async () => {

@@ -184,7 +184,7 @@ export default function MissionConfig({
           )}
         </div>
         <p className="text-[11px] text-text-secondary mt-1">
-          Mission pauses when spend reaches this limit. Empty = uncapped.
+          Mission pauses when estimated spend (API list price) reaches this limit. Empty = uncapped.
         </p>
       </div>
 

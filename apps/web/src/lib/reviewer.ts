@@ -27,7 +27,9 @@ import {
 } from './workspace-policy';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { inheritPhaseFromParent } from './mission-phase';
+import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
 import { appendPrActivity } from './pr-activity-comment';
+import { triggerEvent, channels, events } from './pusher';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import {
@@ -365,6 +367,8 @@ export interface CreateReviewerTaskParams {
   repoFullName: string;
   /** When set, the reviewer context uses intent sentences instead of raw glob lists. */
   policyConfig?: WorkspacePolicyConfig;
+  /** The workspace's resolved approval threshold (agentReview.maxConfidenceThreshold). Rendered in the prompt; the server enforces the same number at verdict time. */
+  confidenceThreshold?: number;
   /**
    * The mechanical EXPAND/CONTRACT verdict for this PR's migrations, when the
    * caller already computed one (currently only the webhook's pre-flight path,
@@ -515,6 +519,7 @@ export async function createReviewerTask(
         installationId,
         repoFullName,
         policyConfig: params.policyConfig,
+        confidenceThreshold: params.confidenceThreshold,
         priorVerdict: params.priorVerdict,
         deltaFiles: params.deltaFiles,
         missionCriteria,
@@ -528,6 +533,7 @@ export async function createReviewerTask(
         installationId,
         repoFullName,
         policyConfig: params.policyConfig,
+        confidenceThreshold: params.confidenceThreshold,
         migrationSafety: params.migrationSafety,
         prFiles: params.prFiles,
         prBody: params.prBody,
@@ -596,12 +602,40 @@ export async function createReviewerTask(
       creationSource: 'webhook',
       ...subjectValues,
     })
+    // The pending-review idempotency index (one pending review per workspace,
+    // PR and head SHA). Two producers can both pass the live probe above
+    // before either row exists — create_pr's auto-review and the PR `opened`
+    // webhook fire within milliseconds — so the index decides, and the loser
+    // gets no row back.
+    .onConflictDoNothing()
     .returning({ id: tasks.id });
+
+  if (!reviewerTask && subjectAnchor?.headSha) {
+    const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, subjectAnchor.headSha);
+    if (winner) {
+      console.log(
+        `[reviewer] PR #${prNumber} at ${subjectAnchor.headSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
+      );
+      return { id: winner.id, deduplicated: true };
+    }
+  }
 
   return reviewerTask ?? null;
 }
 
 // ── Context builder (BT-6) ────────────────────────────────────────────────────
+
+/**
+ * The approval threshold as the prompt states it. The server escalates any
+ * approve below this number (see applyConfidenceGate), so the prompt names the
+ * resolved value rather than a default the workspace may have overridden.
+ */
+function renderConfidenceThreshold(threshold: number | undefined): string {
+  const value = typeof threshold === 'number' && Number.isFinite(threshold)
+    ? threshold
+    : DEFAULT_REVIEW_CONFIDENCE_THRESHOLD;
+  return String(value);
+}
 
 interface BuildContextParams {
   originalTaskId: string;
@@ -618,6 +652,8 @@ interface BuildContextParams {
   installationId: number;
   repoFullName: string;
   policyConfig?: WorkspacePolicyConfig;
+  /** The workspace's resolved approval threshold (agentReview.maxConfidenceThreshold). Rendered in the prompt; the server enforces the same number at verdict time. */
+  confidenceThreshold?: number;
   /** See `CreateReviewerTaskParams.migrationSafety`. */
   migrationSafety?: MigrationSafety;
   /**
@@ -1063,6 +1099,7 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
   // caller computed one — is appended so the reviewer is told the schema-risk
   // discriminator's answer instead of being asked to judge it itself.
   const classifierNote = renderMigrationClassifierNote(params.migrationSafety);
+  const thresholdText = renderConfidenceThreshold(params.confidenceThreshold);
   let policySection: string;
   let uncoveredSection = '';
   if (policyConfig) {
@@ -1075,7 +1112,7 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
       buildPolicyClassPaths(policyConfig),
       '',
       '## Escalation Rules (hard — these override your confidence)',
-      '- Escalate if your confidence is below the workspace threshold (default 0.6)',
+      `- Escalate if your confidence is below the workspace threshold (${thresholdText})`,
       SECURITY_ESCALATION_RULES,
     ].join('\n') + classifierNote;
 
@@ -1099,7 +1136,7 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
     // fallback never re-derives a path-based schema rule for the reviewer to
     // apply itself.
     policySection = `## Escalation Rules (hard — these override your confidence)
-- Escalate if your confidence is below the workspace threshold (default 0.6)
+- Escalate if your confidence is below the workspace threshold (${thresholdText})
 - Schema/migration risk is classified mechanically by the platform before you are dispatched — you do not need to flag schema changes yourself.
 ${SECURITY_ESCALATION_RULES}${classifierNote}`;
   }
@@ -1159,6 +1196,8 @@ interface BuildDeltaContextParams {
   installationId: number;
   repoFullName: string;
   policyConfig?: WorkspacePolicyConfig;
+  /** The workspace's resolved approval threshold (agentReview.maxConfidenceThreshold). Rendered in the prompt; the server enforces the same number at verdict time. */
+  confidenceThreshold?: number;
   priorVerdict: PriorVerdict;
   /** The delta's files, when the caller already fetched them (GitHub compare). */
   deltaFiles?: GithubPrFile[];
@@ -1176,6 +1215,7 @@ interface BuildDeltaContextParams {
  */
 export async function buildDeltaReviewerContext(params: BuildDeltaContextParams): Promise<string> {
   const { originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig, priorVerdict } = params;
+  const thresholdText = renderConfidenceThreshold(params.confidenceThreshold);
 
   let files: ReviewerPatchFile[] = [];
   let diffSummary = '';
@@ -1255,11 +1295,11 @@ export async function buildDeltaReviewerContext(params: BuildDeltaContextParams)
         buildPolicyClassPaths(policyConfig),
         '',
         '## Escalation Rules (hard — these override your confidence)',
-        '- Escalate if your confidence is below the workspace threshold (default 0.6)',
+        `- Escalate if your confidence is below the workspace threshold (${thresholdText})`,
         SECURITY_ESCALATION_RULES,
       ].join('\n')
     : `## Escalation Rules (hard — these override your confidence)
-- Escalate if your confidence is below the workspace threshold (default 0.6)
+- Escalate if your confidence is below the workspace threshold (${thresholdText})
 - Schema/migration risk is classified mechanically by the platform before you are dispatched — you do not need to flag schema changes yourself.
 ${SECURITY_ESCALATION_RULES}`;
 
@@ -1372,7 +1412,7 @@ export async function supersedeReviewerTaskOnMerge(
         .update(workers)
         .set({
           status: 'failed',
-          error: 'Superseded — PR merged by a human before review completed',
+          error: 'Superseded — PR merged before review completed',
           exitCause: 'condition_unmet',
           completedAt: new Date(),
           updatedAt: new Date(),
@@ -1391,14 +1431,32 @@ export async function supersedeReviewerTaskOnMerge(
 
     if (!cancelled) return { superseded: false, reviewerTaskId: null };
 
+    // Marking the worker failed does not stop a session that is already
+    // running — it keeps spending budget until its next API call. Push the
+    // same abort a task cancel sends, and broadcast the cancel so dashboards
+    // and runners see it without polling. Best-effort: the rows are written.
+    const push = (send: () => Promise<unknown>) =>
+      Promise.resolve().then(send).catch((err) =>
+        console.warn(`[reviewer] supersede push failed for reviewer task ${reviewerTask.id}:`, err));
+    await Promise.all([
+      push(() => triggerEvent(channels.workspace(reviewerTask.workspaceId), events.TASK_UPDATED, {
+        task: { id: reviewerTask.id, status: 'cancelled', workspaceId: reviewerTask.workspaceId, missionId: reviewerTask.missionId },
+      })),
+      liveWorker
+        ? push(() => triggerEvent(channels.worker(liveWorker.id), events.WORKER_COMMAND, {
+            action: 'abort', reason: 'pr_merged', timestamp: Date.now(),
+          }))
+        : Promise.resolve(),
+    ]);
+
     if (reviewerTask.missionId) {
       await db.insert(missionNotes).values({
         missionId: reviewerTask.missionId,
         taskId: originalTaskId,
         authorType: 'system',
         type: 'reviewer_superseded',
-        title: `PR #${prNumber}: review cancelled — merged by a human`,
-        body: 'A human merged this PR while the agent review was still pending or running. The review task was cancelled so it does not run against an already-merged PR.',
+        title: `PR #${prNumber}: review cancelled — PR merged before review completed`,
+        body: 'This PR was merged while the agent review was still pending or running. The review task was cancelled so it does not run against an already-merged PR.',
         status: 'open',
       });
     }

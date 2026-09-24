@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
 
 export default function NeedsInputBanner() {
-  const { tasks, count } = useNeedsInput();
+  const { tasks, count, alertPermission, enableAlerts } = useNeedsInput();
 
   if (count === 0) return null;
 
@@ -60,6 +60,16 @@ export default function NeedsInputBanner() {
             </>
           )}
         </span>
+        {alertPermission === 'default' && (
+          <button
+            type="button"
+            onClick={enableAlerts}
+            data-testid="needs-input-enable-alerts"
+            className="text-xs text-status-warning/80 underline underline-offset-2 hover:text-status-warning"
+          >
+            Enable alerts
+          </button>
+        )}
       </div>
     </div>
   );

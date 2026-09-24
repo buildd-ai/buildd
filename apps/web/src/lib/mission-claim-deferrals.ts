@@ -74,6 +74,8 @@ export function summarizeDeferralRows(
     const detail = (row.detail ?? null) as Record<string, unknown> | null;
     const consecutiveDeferrals = typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : 1;
     const firstDeferredAt = typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null;
+    // path_overlap layer 1 records the open PR it deferred behind.
+    const blockedByPr = typeof detail?.prNumber === 'number' ? detail.prNumber : null;
     const prior = byTask.get(row.taskId);
     if (prior && prior.consecutiveDeferrals >= consecutiveDeferrals) continue;
     byTask.set(row.taskId, {
@@ -81,6 +83,7 @@ export function summarizeDeferralRows(
       reason: row.reason,
       consecutiveDeferrals,
       firstDeferredAt,
+      blockedByPr,
     });
   }
   return [...byTask.values()].sort((a, b) => b.consecutiveDeferrals - a.consecutiveDeferrals);

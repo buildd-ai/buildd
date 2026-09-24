@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.221.0",
+  "version": "0.222.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -54,7 +54,6 @@
     "./task-area-prediction-source": "./task-area-prediction-source.ts",
     "./task-area-readout": "./task-area-readout.ts",
     "./task-area-readout-source": "./task-area-readout-source.ts",
-    "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
     "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
@@ -86,6 +85,7 @@
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
     "./path-claim": "./path-claim.ts",
+    "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",
@@ -121,7 +121,7 @@
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.155.0",
+    "@openai/codex-sdk": "^0.156.0",
     "dotenv": "^18.0.0",
     "drizzle-orm": "^0.45.2",
     "server-only": "^0.0.1",

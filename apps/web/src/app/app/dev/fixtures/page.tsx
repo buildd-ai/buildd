@@ -48,6 +48,7 @@ export default function DevFixturesPage() {
                         Active Worker: <span className="text-primary">{state}</span>
                     </h2>
                     <RealTimeWorkerView
+                        taskId="fixture-task"
                         initialWorker={worker as any}
                         statusColors={{
                             pending: 'bg-status-warning/10 text-status-warning',

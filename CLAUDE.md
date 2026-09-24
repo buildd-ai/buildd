@@ -12,7 +12,7 @@
   - MCP server (HTTP): `apps/web/src/app/api/mcp/route.ts`
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
-  - Worker runner: `packages/core/worker-runner.ts`
+  - Worker runner: `apps/runner/src/workers.ts` (`WorkerManager`)
 - **Codebase graph**: `codebase-memory` MCP is indexed for this repo — load via `ToolSearch` for structural questions (who calls/depends on X, architecture orientation) over grep.
 
 ## Architecture
@@ -95,8 +95,9 @@ never has — and says so rather than reporting a false green.
 - **Flow**: Push to `dev` → CI runs. `dev` does **not** auto-merge to `main` — ship via a release PR.
 - **PRs**: Target `dev` for features, `main` for hotfixes only. Use conventional PR titles (e.g., `feat:`, `fix:`, `ci:`, `refactor:`, `docs:`)
 - **Release**: `bun run release` (or `release.yml` / `trigger_release` MCP) opens a `Release vX.Y.Z` PR (dev→main); merge tags + deploys. `release:hotfix` = branch→main, patch bump.
-- **CI**: `.github/workflows/build.yml` is the only workflow that runs tests (push to `dev`; PRs to `main`/`dev`). Jobs: `build` (lints + type check + unit tests + build), `sandbox-isolation`, `schema-drift`, and `changes` → `integration`.
-- **Integration/E2E only run on PRs targeting `main`**, and are skipped when the head branch is `dev` — so they never gate a `dev` PR or a release PR. There is no `preview-tests.yml`.
+- **CI**: `.github/workflows/build.yml` is the gating test workflow (push to `dev`; PRs to `main`/`dev`). Jobs: `build` (lints + type check + unit tests + build), `sandbox-isolation`, `schema-drift`, and `changes` → `integration`. The integration job body lives in the reusable `integration.yml`.
+- **Integration/E2E gate only hotfix PRs** (PRs into `main` whose head is not `dev`) — never a `dev` PR or a release PR. There is no `preview-tests.yml`.
+- **Post-merge integration** (`post-merge-integration.yml`) runs the API integration tests on every push to `dev`, **advisory only**: its check-runs (prefix `post-merge integration`) are ignored by the release gate and the health watcher, and reported separately as `postMergeIntegration` in `release_status`.
 - **Vercel**: Only deploys from `main` (dev deploys disabled)
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.
@@ -113,7 +114,7 @@ Missions are high-level goals that organize and generate tasks. Tasks are concre
 - **DB table**: `missions` (with `tasks.missionId` FK)
 - **API**: `/api/missions` (CRUD + `/[id]/run` for manual trigger)
 - **Context builder**: `apps/web/src/lib/mission-context.ts` — injects workspace roles + active workers into planning prompts
-- **Status**: Derived from task health via `deriveMissionHealth` in `packages/core/mission-helpers.ts` — NOT stored as a type
+- **Status**: Derived from task health via `deriveMissionHealth` in `apps/web/src/lib/mission-helpers.ts` — NOT stored as a type
 
 ## Roles & Teams
 
@@ -235,12 +236,11 @@ bun run build:only` (same command CI's `Build` step uses) to verify compilation 
 and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
 
 ### UI Fixtures
-View worker UI states in isolation: `http://localhost:3001/app/dev/fixtures?state=waiting-input`
+View worker UI states in isolation: `http://localhost:3000/app/dev/fixtures?state=waiting-input`
 
 ### data-testid Conventions
 Key components have `data-testid` attributes for E2E testing:
 - `task-header-status` - Task detail page status badge
-- `sidebar-task-item` - Sidebar task links (includes `data-status`)
 - `worker-needs-input-banner` - "Needs Input" banner
 
 See `docs/testing.md` for details.

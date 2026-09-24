@@ -53,9 +53,11 @@ export default function WorkspaceList({
 }) {
     const router = useRouter();
     const [movingWorkspaceId, setMovingWorkspaceId] = useState<string | null>(null);
+    const [moveError, setMoveError] = useState<{ workspaceId: string; message: string } | null>(null);
 
     const handleMoveWorkspace = async (workspaceId: string, newTeamId: string) => {
         setMovingWorkspaceId(workspaceId);
+        setMoveError(null);
         try {
             const res = await fetch(`/api/workspaces/${workspaceId}`, {
                 method: 'PATCH',
@@ -68,7 +70,7 @@ export default function WorkspaceList({
             router.refresh();
         } catch (e) {
             console.error(e);
-            alert('Failed to move workspace. You might not have the correct permissions.');
+            setMoveError({ workspaceId, message: 'Failed to move workspace. You might not have the correct permissions.' });
         } finally {
             setMovingWorkspaceId(null);
         }
@@ -179,6 +181,11 @@ export default function WorkspaceList({
                                                     className="w-full md:w-auto"
                                                 />
                                             </div>
+                                        )}
+                                        {moveError?.workspaceId === workspace.id && (
+                                            <p role="alert" className="text-xs text-status-error md:text-right">
+                                                {moveError.message}
+                                            </p>
                                         )}
                                     </div>
                                 </div>

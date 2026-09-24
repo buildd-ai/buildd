@@ -166,7 +166,42 @@ function injectWorker(manager: any, worker: LocalWorker) {
   manager.workers.set(worker.id, worker);
 }
 
+function injectSession(manager: any, workerId: string) {
+  const session: { inputStream: { end: ReturnType<typeof mock> }; abortController: AbortController; reapedAt?: number } = {
+    inputStream: { end: mock(() => {}) },
+    abortController: new AbortController(),
+  };
+  manager.sessions.set(workerId, session);
+  return session;
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
+
+describe('purgeCompleted', () => {
+  // purgeCompleted drops the worker record; a session still in the map is the
+  // last handle on its `claude` subprocess. Deleting the map entry alone (the
+  // old behaviour) orphaned that process. The session is REAPED, not torn
+  // down: startSession's finally only cleans up (credential/config/CBM dirs)
+  // while the entry is still there, and deletes it itself.
+  test('reaps the session of every purged worker, leaving the entry for its finally', () => {
+    const manager = new WorkerManager(testConfig);
+    injectWorker(manager, makeWorker({ id: 'w-purge-done', status: 'done' }));
+    injectWorker(manager, makeWorker({ id: 'w-purge-live', status: 'working' }));
+    const done = injectSession(manager, 'w-purge-done');
+    const live = injectSession(manager, 'w-purge-live');
+
+    const count = manager.purgeCompleted();
+
+    expect(count).toBe(1);
+    expect(done.abortController.signal.aborted).toBe(true);
+    expect(done.inputStream.end).toHaveBeenCalled();
+    expect(done.reapedAt).toBeDefined();
+    expect((manager as any).sessions.has('w-purge-done')).toBe(true);
+    // A non-terminal worker's session is untouched.
+    expect(live.abortController.signal.aborted).toBe(false);
+    expect((manager as any).sessions.has('w-purge-live')).toBe(true);
+  });
+});
 
 describe('reconcileLocalWorkers', () => {
   beforeEach(() => {
@@ -189,6 +224,57 @@ describe('reconcileLocalWorkers', () => {
     const updated = manager.getWorker('w-stale-404');
     expect(updated?.status).toBe('error');
     expect(updated?.error).toContain('remote');
+  });
+
+  // getWorkerRemote resolves null only on a confirmed 404 (T2). The worker is
+  // gone server-side, so its SDK session must stop too — marking the record
+  // `error` while leaving the CLI subprocess running kept a zombie session
+  // spending budget for a worker nobody could see or steer.
+  test('aborts the live SDK session when the remote worker is a confirmed 404', async () => {
+    const manager = new WorkerManager(testConfig);
+    const worker = makeWorker({ id: 'w-404-live', status: 'working' });
+    injectWorker(manager, worker);
+    const session = injectSession(manager, worker.id);
+
+    mockGetWorkerRemote.mockResolvedValue(null);
+
+    await manager.reconcileLocalWorkers();
+
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(session.inputStream.end).toHaveBeenCalled();
+    // Reaped, not deleted: the session's finally owns cleanup + the delete.
+    expect(session.reapedAt).toBeDefined();
+    expect((manager as any).sessions.has(worker.id)).toBe(true);
+  });
+
+  test('reaps the live SDK session when the remote worker is terminal', async () => {
+    const manager = new WorkerManager(testConfig);
+    const worker = makeWorker({ id: 'w-remote-term-live', status: 'working' });
+    injectWorker(manager, worker);
+    const session = injectSession(manager, worker.id);
+
+    mockGetWorkerRemote.mockResolvedValue({ status: 'failed', task: { status: 'failed' } });
+
+    await manager.reconcileLocalWorkers();
+
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(session.reapedAt).toBeDefined();
+    expect((manager as any).sessions.has(worker.id)).toBe(true);
+  });
+
+  test('a transport failure never aborts the session', async () => {
+    const manager = new WorkerManager(testConfig);
+    const worker = makeWorker({ id: 'w-transient', status: 'working' });
+    injectWorker(manager, worker);
+    const session = injectSession(manager, worker.id);
+
+    mockGetWorkerRemote.mockRejectedValue(new Error('fetch failed'));
+
+    await manager.reconcileLocalWorkers();
+
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.reapedAt).toBeUndefined();
+    expect((manager as any).sessions.has(worker.id)).toBe(true);
   });
 
   test('cleans up local worker when remote task is completed', async () => {

@@ -32,6 +32,46 @@ const RE_QUOTED_SLUG = /'([\w.]+(?:[-_/][\w.]+)+)'/g;
 const RE_HEX_ID = /\b[0-9a-f]{7,}\b/gi;
 const RE_NUMBER = /\d+(?:\.\d+)?/g;
 
+// `[\s\S]*` rather than `.*`: a pretty-printed body spans lines, and `.` stops
+// at a line terminator.
+const RE_API_ERROR_ENVELOPE = /^API error: (\d+) - ([\s\S]*)$/;
+
+export interface ApiErrorEnvelope {
+  status: number;
+  rawBody: string;
+  /** The body's `error` string, or null when the body is not JSON carrying one. */
+  message: string | null;
+}
+
+/**
+ * Parse the `API error: <status> - <body>` text that the MCP/runner `api()`
+ * helpers throw on a non-2xx response. Returns null for any other text.
+ *
+ * Older runners persisted that text verbatim as `workers.error`. Current ones
+ * persist the server's prose `error` field (apps/runner/src/server-refusal.ts),
+ * so without this unwrap one refusal family normalizes to two signatures
+ * depending on which runner version wrote the row.
+ *
+ * Case-sensitive on purpose: the Claude CLI's own `API Error: …` (capital E)
+ * is a different family and is left alone.
+ */
+export function unwrapApiErrorEnvelope(text: string | null | undefined): ApiErrorEnvelope | null {
+  if (!text) return null;
+  const m = text.match(RE_API_ERROR_ENVELOPE);
+  if (!m) return null;
+  const rawBody = m[2];
+  let message: string | null = null;
+  try {
+    const parsed = JSON.parse(rawBody);
+    if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string' && parsed.error.trim()) {
+      message = parsed.error;
+    }
+  } catch {
+    // not JSON — caller keeps the original text
+  }
+  return { status: Number(m[1]), rawBody, message };
+}
+
 /**
  * Collapse a raw worker error into a stable cluster key.
  *
@@ -78,6 +118,11 @@ const RE_NUMBER = /\d+(?:\.\d+)?/g;
  */
 export function normalizeErrorSignature(error: string | null | undefined): string {
   if (!error) return EMPTY_SIGNATURE;
+
+  // Legacy `API error: <n> - {"error":"…"}` rows cluster with the server's
+  // prose, which is what current runners persist (see unwrapApiErrorEnvelope).
+  const unwrapped = unwrapApiErrorEnvelope(error)?.message;
+  if (unwrapped) error = unwrapped;
 
   // Multi-line errors: the first non-empty line is the failure; the rest is trace.
   const firstLine = error.split('\n').map(l => l.trim()).find(l => l.length > 0);

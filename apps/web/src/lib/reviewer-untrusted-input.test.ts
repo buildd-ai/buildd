@@ -15,7 +15,9 @@ mock.module('@buildd/core/db', () => ({
     insert: mock(() => ({
       values: mock((values: Record<string, unknown>) => {
         insertedTask = values;
-        return { returning: mock(() => Promise.resolve([{ id: 'reviewer-task-1' }])) };
+        const returning = mock(() => Promise.resolve([{ id: 'reviewer-task-1' }]));
+        // The reviewer insert is conflict-tolerant (pending-review idempotency index).
+        return { returning, onConflictDoNothing: () => ({ returning }) };
       }),
     })),
     query: {

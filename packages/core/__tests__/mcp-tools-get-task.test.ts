@@ -354,4 +354,71 @@ describe('get_task', () => {
     const text = result.content[0].text;
     expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}`);
   });
+
+  it('surfaces a running worker\'s currentAction', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Running task',
+      status: 'assigned',
+      priority: 5,
+      workspace: { name: 'buildd' },
+      workers: [
+        { id: 'w-running', status: 'running', branch: 'feat/x', currentAction: 'Running tests' },
+      ],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+
+    expect(result.content[0].text).toContain('Current action: Running tests');
+  });
+
+  it('hints that a pending task has not been claimed when there are no workers or result', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Pending task',
+      status: 'pending',
+      priority: 3,
+      workspace: { name: 'buildd' },
+      workers: [],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+
+    expect(result.content[0].text).toContain('Task is pending — not yet claimed by a worker.');
+  });
+
+  it('hints that a completed task has no result snapshot when there are no workers or result', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Old completed task',
+      status: 'completed',
+      priority: 3,
+      workspace: { name: 'buildd' },
+      workers: [],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+
+    expect(result.content[0].text).toContain('Task completed but no result snapshot available.');
+  });
+
+  it('omits the hint once a worker or result exists', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'In progress',
+      status: 'assigned',
+      priority: 3,
+      workspace: { name: 'buildd' },
+      workers: [{ id: 'w-1', status: 'running', branch: 'feat/x' }],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+
+    expect(result.content[0].text).not.toContain('not yet claimed by a worker');
+    expect(result.content[0].text).not.toContain('no result snapshot available');
+  });
 });

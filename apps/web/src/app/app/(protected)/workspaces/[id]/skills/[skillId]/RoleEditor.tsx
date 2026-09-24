@@ -8,6 +8,7 @@ import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect'
 import { ScopeSelector } from '@/components/ScopeSelector';
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
+import { useConfirm } from '@/components/useConfirm';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -306,6 +307,7 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
 }
 
 export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions, workspaces: userWorkspaces }: Props) {
+  const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -515,7 +517,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   }
 
   async function handleDelete() {
-    if (!confirm(`Delete role "${skill.name}"? This cannot be undone.`)) return;
+    if (!(await confirm({ title: `Delete role "${skill.name}"?`, message: 'This cannot be undone.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/skills/${skill.id}`, {
@@ -953,6 +955,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           </div>
         </div>
       </div>
+      {confirmDialog}
     </main>
   );
 }

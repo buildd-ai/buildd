@@ -45,14 +45,14 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
-import { inheritPhaseFromParent } from '@/lib/mission-phase';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import { buildWorkflowRunOutcome, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
+import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -68,12 +68,13 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
-import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
-import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -616,6 +617,7 @@ async function handlePullRequestEvent(event: {
   action: string;
   pull_request: {
     number: number;
+    title?: string;
     merged: boolean;
     draft?: boolean;
     merge_commit_sha?: string | null;
@@ -817,7 +819,8 @@ async function handlePullRequestEvent(event: {
           prNumber: pr.number,
           entry: {
             kind: 'changes_pushed',
-            detail: `\`${pr.head.sha.slice(0, 7)}\` on \`${pr.head.ref}\``,
+            sha: pr.head.sha.slice(0, 7),
+            url: `${pr.html_url}/commits/${pr.head.sha}`,
           },
           onlyIfPresent: true,
           workspaceId: openWorker.workspaceId,
@@ -948,11 +951,17 @@ async function handlePullRequestEvent(event: {
     // A `gated` + `workflow_dispatch` workspace's release PR merging into
     // prodBranch is its only real deploy signal — recordDirectProdMerge above
     // is a no-op for it (branch_merge strategy only). Advance the release row
-    // already recorded at dispatch time instead of inserting a new one.
+    // already recorded at dispatch time, or record the merge as its own
+    // release when no dispatched row shipped in it (hotfix, direct merge).
     advanceGatedReleaseOnPrMerge({
       repoFullName: repository.full_name,
       baseRef: pr.base.ref,
       prHeadSha: pr.head.sha,
+      installationId: event.installation.id,
+      mergeCommitSha: pr.merge_commit_sha ?? null,
+      baseSha: pr.base.sha ?? null,
+      prTitle: pr.title ?? null,
+      prNumber: pr.number,
     }).catch(e =>
       console.error(`[webhook] advanceGatedReleaseOnPrMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
     );
@@ -1007,6 +1016,16 @@ async function handlePullRequestEvent(event: {
         .update(workers)
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
+      await reconcileReviewWithMerge({
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        prNumber: pr.number,
+        mergedHeadSha: pr.head.sha,
+        mergeIsNew,
+        installationId: event.installation?.id ?? null,
+        repoFullName: repository.full_name,
+      });
     } else {
       // PR closed without merge (abandoned/superseded)
       await db
@@ -1629,7 +1648,12 @@ async function handleCheckSuiteFailure(
             installationId,
             repoFullName: repository.full_name,
             prNumber: pr.number,
-            entry: { kind: 'ci_fixing', detail: 'schema drift detected — dispatched diagnose-only task, no auto-fix', url: ciLogs.runUrl },
+            entry: {
+              kind: 'ci_fixing',
+              detail: 'schema drift · diagnose only',
+              url: ciLogs.runUrl,
+              taskUrl: taskActivityUrl(newDiagnoseTask.id),
+            },
             workspaceId: diagnoseTask.workspaceId,
           });
         } else {
@@ -1722,7 +1746,7 @@ async function handleCheckSuiteFailure(
           installationId,
           repoFullName: repository.full_name,
           prNumber: pr.number,
-          entry: { kind: 'ci_exhausted', detail: exhaustionDetail, url: ciLogs.runUrl },
+          entry: { kind: 'ci_exhausted', note: exhaustionDetail, url: ciLogs.runUrl },
           workspaceId: task.workspaceId,
         });
         continue;
@@ -1748,8 +1772,9 @@ async function handleCheckSuiteFailure(
         origin: 'webhook',
       });
 
-      // Rule P1-7: an attempt inherits the phase of the task it re-attempts.
-      const retryPhase = await inheritPhaseFromParent(retryTask.parentTaskId);
+      // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+      // of the task it re-attempts.
+      const retryIdentity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
       const [newTask] = await db
         .insert(tasks)
@@ -1758,7 +1783,7 @@ async function handleCheckSuiteFailure(
           title: retryTask.title,
           description: retryTask.description,
           parentTaskId: retryTask.parentTaskId,
-          ...retryPhase,
+          ...retryIdentity,
           ciRetryPrNumber: pr.number,
           ciRetryHeadSha: checkSuite.head_sha,
           missionId: retryTask.missionId,
@@ -1788,10 +1813,13 @@ async function handleCheckSuiteFailure(
           installationId,
           repoFullName: repository.full_name,
           prNumber: pr.number,
+          // Queued: the claim route writes `fix_started` once a worker has it.
           entry: {
             kind: 'ci_fixing',
-            detail: `attempt ${retryTask.context.iteration} of ${retryTask.context.maxIterations}`,
+            iteration: typeof retryTask.context.iteration === 'number' ? retryTask.context.iteration : null,
+            maxIterations: typeof retryTask.context.maxIterations === 'number' ? retryTask.context.maxIterations : null,
             url: ciLogs.runUrl,
+            taskUrl: taskActivityUrl(newTask.id),
           },
           workspaceId: retryTask.workspaceId,
         });
@@ -1811,6 +1839,104 @@ async function handleCheckSuiteFailure(
  * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
  * and the caller should skip the normal no-CI auto-merge path.
  */
+/**
+ * A PR merged — on github.com, with `gh pr merge`, or through a buildd door —
+ * measured against, and then closing, its agent review.
+ *
+ *  1. Telemetry (first delivery only): a merge while a request-changes or
+ *     escalate verdict was outstanding is `merged_over_verdict`; a merge no
+ *     verdict covered is `merged_unreviewed`. Read BEFORE step 2, because
+ *     superseding the reviewer changes the state being measured.
+ *  2. Supersede a still-live reviewer. A GitHub-side merge passes no buildd
+ *     door, so without this the reviewer runs on (or is claimed later) against
+ *     a PR that has already landed. Idempotent: the dashboard merge door
+ *     already calls the same helper, and a redelivery finds nothing live.
+ *
+ * Best-effort throughout: nothing here may fail the merge bookkeeping.
+ */
+async function reconcileReviewWithMerge(params: {
+  workspaceId: string;
+  taskId: string | null;
+  workerId: string;
+  prNumber: number;
+  mergedHeadSha: string;
+  mergeIsNew: boolean;
+  installationId: number | null;
+  repoFullName: string;
+}): Promise<void> {
+  if (params.mergeIsNew) {
+    try {
+      const status = await readPrReviewStatus({ workspaceId: params.workspaceId, prNumber: params.prNumber });
+      const merge = classifyMergeAgainstReview(status, params.mergedHeadSha);
+      if (merge) {
+        fireGateEvent({
+          gate: GATE_SLUGS.REVIEW_VERDICT,
+          surface: 'webhook pull_request.closed (merged)',
+          outcome: merge.event === 'merged_over_verdict' ? 'bypassed' : 'warned',
+          reason: merge.event === 'merged_over_verdict'
+            ? 'PR merged while a reviewer verdict against it was outstanding'
+            : 'PR merged with no reviewer verdict covering the merged commit',
+          workspaceId: params.workspaceId,
+          taskId: params.taskId,
+          workerId: params.workerId,
+          callerOrigin: 'system',
+          detail: {
+            event: merge.event,
+            prNumber: params.prNumber,
+            mergedHeadSha: params.mergedHeadSha,
+            reviewState: merge.state,
+            reviewKind: merge.kind,
+            reviewTaskId: merge.reviewTaskId,
+            reviewHeadSha: merge.reviewHeadSha,
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`[webhook] merge review telemetry failed for PR #${params.prNumber}:`, err);
+    }
+  }
+
+  if (params.taskId && params.installationId) {
+    const superseded = await supersedeReviewerTaskOnMerge({
+      originalTaskId: params.taskId,
+      installationId: params.installationId,
+      repoFullName: params.repoFullName,
+      prNumber: params.prNumber,
+    });
+    if (superseded.superseded) {
+      console.log(
+        `[webhook] PR #${params.prNumber} merged — superseded live reviewer task ${superseded.reviewerTaskId}`,
+      );
+    }
+  }
+}
+
+/**
+ * The role a webhook-dispatched review runs as, checked against the roles the
+ * workspace actually has — the same `pickReviewerRole` rule the create_pr,
+ * manual-review and re-review routes apply. The policy's role slug is only a
+ * preference: a reviewer task routed to a role no runner advertises is never
+ * claimed. Null when the workspace has no role at all.
+ */
+async function resolveReviewerRoleForDispatch(
+  workspace: { id: string; teamId: string },
+  policyRole: string | null,
+  prNumber: number,
+): Promise<string | null> {
+  const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
+  const picked = pickReviewerRole({ requested: null, policyRole, available: roles });
+  if (!picked.role) {
+    console.warn(`[reviewer] Not dispatching a reviewer for PR #${prNumber}: ${picked.error}`);
+    return null;
+  }
+  if (policyRole && picked.role !== policyRole) {
+    console.warn(
+      `[reviewer] PR #${prNumber}: policy reviewer role '${policyRole}' does not exist in this workspace — using '${picked.role}'`,
+    );
+  }
+  return picked.role;
+}
+
 async function maybeDispatchReviewer(
   installationId: number,
   repoFullName: string,
@@ -1923,13 +2049,27 @@ async function maybeDispatchReviewer(
         installationId,
         repoFullName,
         prNumber: pr.number,
-        entry: { kind: 'human_review_required', detail: reason },
+        entry: { kind: 'human_review_required', note: reason },
         workspaceId: openWorker.workspaceId,
       });
       return true; // handled — skip auto-merge
     }
 
     if (policy.tier !== 'agent-review') return false;
+
+    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
+    if (!reviewerRole) {
+      // No role can run the review. Hold the PR for a human rather than fall
+      // through to auto-merge: the policy asked for a review.
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber: pr.number,
+        entry: { kind: 'human_review_required', note: 'the workspace has no role that can run the agent review' },
+        workspaceId: openWorker.workspaceId,
+      });
+      return true;
+    }
 
     // iteration/maxIterations are stored in task.context JSONB (not columns)
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
@@ -1952,7 +2092,8 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       prUrl: pr.html_url,
       headSha: pr.head.sha,
-      reviewerRole: policy.agentReview!.reviewerRole,
+      reviewerRole,
+      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
       installationId,
       repoFullName,
       policyConfig: policyConfig ?? undefined,
@@ -1964,9 +2105,13 @@ async function maybeDispatchReviewer(
       // its lede only. Passing it saves a GET the context builder would
       // otherwise make per reviewed PR.
       prBody: pr.body ?? null,
+      // Same for the base branch the reviewer diffs against.
+      baseRef: pr.base?.ref ?? null,
     });
 
-    if (reviewerTask) {
+    // A deduplicated result is another producer's reviewer: it was dispatched
+    // and announced by whoever created it.
+    if (reviewerTask && !reviewerTask.deduplicated) {
       // dispatchNewTask needs more than just the id — pass the reviewer task details
       // we know from the params rather than re-querying the DB.
       const reviewerTaskFull = {
@@ -1983,10 +2128,7 @@ async function maybeDispatchReviewer(
         installationId,
         repoFullName,
         prNumber: pr.number,
-        entry: {
-          kind: 'reviewing',
-          detail: `reviewer role \`${policy.agentReview!.reviewerRole}\``,
-        },
+        entry: { kind: 'reviewing' },
         workspaceId: openWorker.workspaceId,
       });
     }
@@ -2109,6 +2251,9 @@ async function maybeReDispatchReviewer(
     // workspace no longer wants an agent re-reviewing it.
     if (policy.tier !== 'agent-review') return;
 
+    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
+    if (!reviewerRole) return;
+
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
     const originalTask = {
       title: task.title,
@@ -2128,7 +2273,8 @@ async function maybeReDispatchReviewer(
       prNumber: pr.number,
       prUrl: pr.html_url,
       headSha: pr.head.sha,
-      reviewerRole: policy.agentReview!.reviewerRole,
+      reviewerRole,
+      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
       installationId,
       repoFullName,
       policyConfig: workspace.gitConfig?.policyConfig ?? undefined,
@@ -2157,10 +2303,8 @@ async function maybeReDispatchReviewer(
       installationId,
       repoFullName,
       prNumber: pr.number,
-      entry: {
-        kind: 'reviewing',
-        detail: `reviewer role \`${policy.agentReview!.reviewerRole}\` — re-review dispatched after a push superseded the ${status.state === 'escalated' ? 'escalated' : 'request-changes'} verdict`,
-      },
+      // The renderer words this "Re-reviewing · after fix N" from the log.
+      entry: { kind: 'reviewing' },
       workspaceId: openWorker.workspaceId,
     });
   } catch (err) {
@@ -2450,6 +2594,8 @@ async function handleWorkflowRunEvent(event: {
     html_url: string;
     head_branch: string | null;
     head_sha: string;
+    event?: string;
+    path?: string;
     repository: { full_name: string };
   };
   installation?: { id: number };
@@ -2541,10 +2687,20 @@ async function fetchLiveWorkflowRunConclusion(
 }
 
 /**
- * When a workflow_run completes, find the releases row tracking that run
- * (matched by run_url = html_url) and advance its state:
- *   conclusion=success → 'deploying'  (workflow passed; deploy underway)
- *   conclusion=failure → 'failed'
+ * When a workflow_run completes, find the releases row tracking that run and
+ * advance its state:
+ *   conclusion=success → 'deploying'  (workflow passed; deploy underway), or
+ *                        'pending_external' for a gated release
+ *   any other terminal conclusion → 'failed'
+ *
+ * The row is matched by run_url = html_url first. Only when no row carries this
+ * url does the head-sha fallback run, and it matches only when ALL hold:
+ *   - the row has no run url yet (a row that recorded its run is owned by it);
+ *   - the run is a `workflow_dispatch` of the workspace's configured
+ *     `releaseConfig.workflowFile`;
+ *   - the run's repository is the workspace's linked repo.
+ * Every other run on the same sha (CI Auto-Fix, Sync-dev, Build & Test) is a
+ * no-op here whatever its conclusion — see isConfiguredReleaseRun.
  *
  * Emits a Pusher event so the UI refreshes in realtime.
  */
@@ -2555,6 +2711,8 @@ async function advanceReleaseStateFromWorkflowRun(
     conclusion: string | null;
     html_url: string;
     head_sha: string;
+    event?: string;
+    path?: string;
     repository: { full_name: string };
   },
   installationId?: number,
@@ -2574,29 +2732,58 @@ async function advanceReleaseStateFromWorkflowRun(
   // commit. The head sha is the durable identity — for a workflow_dispatch
   // release it is exactly the ref head the row recorded — so fall back to it
   // and backfill the url we should have had.
+  //
+  // But the sha is shared by every workflow that ran on that commit. Before
+  // the fallback was restricted, a CI Auto-Fix run's `skipped` on the release
+  // sha stamped a shipped release `failed`, and the real Release success that
+  // arrived later was dropped by the terminal-state guard below. So the
+  // fallback only ever considers rows with no url, and only accepts the
+  // workspace's own configured release workflow (checked after the lookup,
+  // since the workflow file lives on the workspace).
   const byUrl = await db
     .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
     .from(releases)
     .where(eq(releases.runUrl, run.html_url))
     .limit(1);
 
-  const matchingRelease =
-    byUrl[0] ??
-    (
-      await db
-        .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
-        .from(releases)
-        .where(
-          and(
-            eq(releases.headSha, run.head_sha),
-            inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
-          ),
-        )
-        .orderBy(desc(releases.createdAt))
-        .limit(1)
-    )[0];
+  let matchingRelease = byUrl[0];
+  if (!matchingRelease) {
+    // Cheap pre-filter on the hot path: every CI run in every linked repo
+    // lands here, and none but a workflow_dispatch can be a release.
+    if (run.event !== 'workflow_dispatch') return;
 
-  if (!matchingRelease) return;
+    const [candidate] = await db
+      .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
+      .from(releases)
+      .where(
+        and(
+          eq(releases.headSha, run.head_sha),
+          isNull(releases.runUrl),
+          inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
+        ),
+      )
+      .orderBy(desc(releases.createdAt))
+      .limit(1);
+    if (!candidate || candidate.runUrl) return;
+
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, candidate.workspaceId),
+      columns: { id: true, releaseConfig: true },
+      with: { githubRepo: { columns: { fullName: true } } },
+    });
+    const isRelease = isConfiguredReleaseRun(run, {
+      workflowFile: ws?.releaseConfig?.workflowFile,
+      repoFullName: (ws as { githubRepo?: { fullName?: string } | null } | undefined)?.githubRepo?.fullName,
+    });
+    if (!isRelease) {
+      console.log(
+        `[webhook:workflow_run] run ${run.id} (${run.name}) shares release ${candidate.id}'s sha but is not its ` +
+          `configured release workflow — ignoring conclusion=${run.conclusion}`,
+      );
+      return;
+    }
+    matchingRelease = candidate;
+  }
 
   // Don't regress from a terminal state.
   if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
@@ -2619,6 +2806,21 @@ async function advanceReleaseStateFromWorkflowRun(
   // in-flight, waiting on something outside buildd's control" everywhere else
   // it's read (see initiative-metric-registry.ts), which is exactly this.
   const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
+
+  // A gated row already in `deploying` got there from its release PR merging
+  // (advanceGatedReleaseOnPrMerge) — a gated dispatch success only ever moves
+  // a row to `pending_external`. Any dispatch-run conclusion arriving after
+  // that — a late or redelivered event, success or not — describes the run
+  // that opened the PR, not the release that shipped. A success would move it
+  // back to waiting on a merge that already happened; a failure would stamp a
+  // shipped release `failed`. Verification owns the row from here.
+  if (matchingRelease.archetype === 'gated' && matchingRelease.state === 'deploying') {
+    console.log(
+      `[webhook:workflow_run] Ignoring conclusion=${run.conclusion} for gated release ${matchingRelease.id} — ` +
+        `its release PR already merged`,
+    );
+    return;
+  }
 
   // GitHub can deliver two `workflow_run.completed` events for the identical
   // run with different reported conclusions — observed for a release job that

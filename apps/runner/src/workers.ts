@@ -24,6 +24,10 @@ import {
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
+import { reapSession } from './session-teardown';
+import { hostUserMemoryExcludes } from './host-memory-excludes';
+import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
+import { resolveBuilddHome } from './buildd-home';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -80,7 +84,15 @@ import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBr
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
-import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+import {
+  resumeAtForReset,
+  claimHealth,
+  DEGRADED_CLAIM_POLL_MS,
+  SESSION_BUDGET_CAP_ERROR,
+  isSessionBudgetCapError,
+  sdkMaxBudgetUsd,
+} from './claim-budget-signals';
+import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
@@ -253,17 +265,60 @@ function buildUserMessage(
 // obligations either — it points back at them instead of keeping a second
 // copy that could drift out of sync.
 const CLOSING_TURN_INSTRUCTION =
-  'Your last session ended without calling `complete_task`. Fix that now: ' +
-  'call `complete_task` with a factual summary of what you actually ' +
-  'delivered (including the PR or artifact link, if any), plus every ' +
-  'structured field the original task prompt earlier in this conversation ' +
-  'requires — the `plan` array if this is a planning task, your `handoff` ' +
-  'object if one is requested, and any other field named by its Output ' +
-  'Requirement section. Do no other work — no new investigation, no ' +
+  'Your last session ended without calling `complete_task`. You have one ' +
+  'short closing turn to fix that: call `complete_task` now with a factual summary of ' +
+  'what you actually delivered (including the PR or artifact link, if any), ' +
+  'plus every structured field the original task prompt earlier in this ' +
+  'conversation requires — the `plan` array if this is a planning task, your ' +
+  '`handoff` object if one is requested, and any other field named by its ' +
+  'Output Requirement section. Do no other work — no new investigation, no ' +
   'additional edits.';
 
-// Turn cap for a closing turn. See the maxTurns resolution in startSession.
-const CLOSING_TURN_MAX_TURNS = 4;
+/**
+ * SDK maxTurns for a closing turn. The SDK counts model round trips, and
+ * calling `complete_task` is itself a tool_use: the call is one turn and the
+ * model's reply after the tool result is a second. A cap of 1 therefore ends
+ * with error_max_turns (stopReason tool_use) on the very path the closing turn
+ * exists to allow. 2 fits exactly that call plus its reply; the third is slack
+ * for a single preliminary round trip — loading a deferred MCP tool schema
+ * before the tool is callable — so a well-behaved agent is never cut off
+ * mid-completion. It stays a small FIXED cost regardless of the task's own
+ * configured cap, which is what keeps a closing turn bounded.
+ */
+const CLOSING_TURN_MAX_TURNS = 3;
+
+/**
+ * Wraps a closing turn's backend event stream so that its failure can never
+ * become the task's failure. The main session already ended; the closing turn
+ * is a bonus attempt at an authored summary, and when it doesn't land the
+ * runner must fall back exactly as it would have without one. So an `error`
+ * event (the SDK reporting error_max_turns or any other error result) or a
+ * thrown backend error just ENDS the stream here, reported via `onFailure`,
+ * instead of throwing into startSession's catch-all failure path.
+ *
+ * Aborts and server refusals still propagate: those are decisions made about
+ * this worker (user cancel, loop detection, first-writer refusal), not the
+ * closing turn failing, and they have their own handling in that catch.
+ */
+async function* guardClosingTurnStream<T extends { type: string; error?: string }>(
+  stream: AsyncIterable<T>,
+  signal: AbortSignal,
+  onFailure: (error: string) => void,
+): AsyncGenerator<T> {
+  try {
+    for await (const event of stream) {
+      if (event.type === 'error') {
+        onFailure(event.error ?? 'error result');
+        return;
+      }
+      yield event;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (signal.aborted || isServerRefusal(err) || /aborted/i.test(msg)) throw err;
+    onFailure(msg);
+  }
+}
 
 /**
  * Bounded tail of the session's own assistant text, newest last — the
@@ -307,6 +362,7 @@ interface WorkerSession {
   generation: number;  // Session generation counter — used to detect stale post-loop cleanup
   backend?: ClaudeBackend;  // Stored for queryInstance access after runStreamed() starts
   sessionId: string;  // Per-invocation CLI session ID (decoupled from worker.id so bwrap retries get a fresh ID)
+  reapedAt?: number;  // Set by the post-completion watchdog (reapSession) — the abort is cleanup, not an outcome
 }
 
 // Constants for repetition detection
@@ -577,6 +633,12 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
+  private terminalWorktreeSweepTimer?: Timer;
+  /** Repo paths with a setupWorktree in flight (the new tree is not yet owned by any worker record). */
+  private worktreeSetupsInFlight = new Map<string, number>();
+  /** Terminal records whose worktree the sweep kept (archive failed); not retried until restart. */
+  private terminalWorktreesKept = new Set<string>();
+  private terminalWorktreeSweepRunning = false;
   private heartbeatInterval?: Timer;
   private livenessInterval?: Timer;
   private evictionInterval?: Timer;
@@ -586,6 +648,8 @@ export class WorkerManager {
   private budgetResumeTimer?: Timer;
   /** Target instant of `budgetResumeTimer`, so a later wake cannot displace an earlier one. */
   private budgetResumeAtMs?: number;
+  /** Consecutive claim replies whose budgetResetsAt was already past (N2 backoff). */
+  private pastResetStreak = 0;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -708,6 +772,11 @@ export class WorkerManager {
 
     // Restore workers from disk on startup
     this.workerSync.restoreWorkersFromDisk();
+
+    // Already-terminal records stay on disk, unloaded, so eviction never
+    // reclaims their worktrees. Deferred so boot doesn't wait on git.
+    this.terminalWorktreeSweepTimer = setTimeout(() => { void this.sweepTerminalWorktreesOnDisk(); }, 5_000);
+    this.terminalWorktreeSweepTimer.unref?.();
 
     // Scan environment on startup (sync — runs once, fast enough for init)
     try {
@@ -948,6 +1017,62 @@ export class WorkerManager {
     } catch (err) {
       console.warn('[Cleanup] Worktree sweep failed:', err instanceof Error ? err.message : err);
     }
+
+    void this.sweepTerminalWorktreesOnDisk();
+  }
+
+  /**
+   * Reclaim worktrees of terminal workers that live only on disk (see
+   * terminal-worktree-sweep.ts). In-memory workers are skipped, and any path an
+   * in-memory worker points at (any status) is left alone: eviction owns
+   * those. Repos with a worktree setup in flight are skipped too. A reclaimed
+   * record has its worktreePath cleared so it is not revisited; a kept one is
+   * not retried until restart.
+   */
+  async sweepTerminalWorktreesOnDisk(): Promise<void> {
+    if (this.terminalWorktreeSweepRunning) return;
+    this.terminalWorktreeSweepRunning = true;
+    try {
+      const records = loadAllWorkers().filter(w => !this.workers.has(w.id));
+      const results = await sweepTerminalWorktrees({
+        records,
+        inMemoryWorkers: this.workers,
+        busyRepos: this.worktreeSetupsInFlight,
+        skipIds: this.terminalWorktreesKept,
+        now: Date.now(),
+        retentionMs: TERMINAL_WORKER_RETENTION_MS,
+        archiveDir: join(resolveBuilddHome(), 'worktree-archive'),
+      });
+      for (const { id, outcome } of results) {
+        if (outcome === 'kept') {
+          this.terminalWorktreesKept.add(id);
+          continue;
+        }
+        const rec = storeLoadWorker(id);
+        if (rec?.worktreePath) {
+          rec.worktreePath = undefined;
+          storeSaveWorker(rec);
+        }
+      }
+      if (results.length > 0) __resetDiskWorkersCache();
+    } catch (err) {
+      console.warn('[Cleanup] Terminal worktree sweep failed:', err instanceof Error ? err.message : err);
+    } finally {
+      this.terminalWorktreeSweepRunning = false;
+    }
+  }
+
+  /**
+   * Stop a live session whose worker has already been settled (terminal) by
+   * the caller. Uses reapSession, not teardownSession: `reapedAt` makes the
+   * session's catch treat the abort as cleanup (no `failed` PATCH), and its
+   * finally — which is conditioned on the map entry — removes the per-worker
+   * credential/config/CBM dirs and then deletes the entry.
+   */
+  private reapLiveSession(workerId: string): void {
+    const session = this.sessions.get(workerId);
+    if (!session || session.reapedAt !== undefined) return;
+    reapSession(session, Date.now(), workerId);
   }
 
   /** Remove completed/errored workers from memory and disk. Returns count purged. */
@@ -957,7 +1082,11 @@ export class WorkerManager {
     for (const [id, worker] of this.workers.entries()) {
       if (worker.status === 'done' || worker.status === 'error') {
         this.workers.delete(id);
-        this.sessions.delete(id);
+        // Stop the `claude` subprocess, but reap rather than tear down: the
+        // session's finally only cleans up (token-bearing config dir, broker
+        // registration, CBM dirs) while its map entry exists, and deletes the
+        // entry itself. A session that ignores the abort keeps its entry.
+        this.reapLiveSession(id);
         this.workerAuthContexts.delete(id);
         this.workerTeamKeys.delete(id);
         clearWorkerThrottle(id);
@@ -1015,6 +1144,10 @@ export class WorkerManager {
           worker.completedAt = worker.completedAt || Date.now();
           this.dirtyForDisk.add(worker.id);
           this.emit({ type: 'worker_update', worker });
+          // null is a confirmed 404 only (transport failures throw into the
+          // catch below), so the session has no server-side worker left to
+          // report to — stop it rather than leave a zombie CLI running.
+          this.reapLiveSession(worker.id);
           cleaned++;
           continue;
         }
@@ -1036,13 +1169,9 @@ export class WorkerManager {
           this.dirtyForDisk.add(worker.id);
           this.emit({ type: 'worker_update', worker });
 
-          // Abort any active SDK session for this worker
-          const session = this.sessions.get(worker.id);
-          if (session) {
-            session.abortController.abort();
-            session.inputStream.end();
-            this.sessions.delete(worker.id);
-          }
+          // Abort any active SDK session for this worker. Reaped, so the
+          // abort reads as cleanup and the session's finally still runs.
+          this.reapLiveSession(worker.id);
 
           cleaned++;
         }
@@ -1138,8 +1267,10 @@ export class WorkerManager {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
         this.emit({ type: 'claim_rejected', status, reason });
+        this.onClaimServerErrorStreak(status);
         throw err;
       }
+      this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
 
       // Credential discovery. This is the ONLY path by which an idle runner
@@ -1158,8 +1289,9 @@ export class WorkerManager {
       // Emit an informational event for the UI — no circuit breaker needed since
       // the server filters non-tenant tasks correctly.
       if (budgetResetsAt) {
+        const now = Date.now();
         const resetMs = new Date(budgetResetsAt).getTime();
-        const delayMs = Math.max(0, resetMs - Date.now());
+        const delayMs = Math.max(0, resetMs - now);
         console.warn(`[WorkerManager] Account OAuth budget exhausted — resets at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
         // Wake up to poll the instant the budget resets. Without this the runner
@@ -1167,7 +1299,15 @@ export class WorkerManager {
         // — the budget-reset re-queue deliberately emits `task:updated`, which the
         // Pusher subscriber ignores, so there is no realtime nudge. That left work
         // stalled for up to an hour after the budget was back (2026-07-11 incident).
-        this.scheduleResumeAt(new Date(budgetResetsAt).getTime(), 'account budget reset');
+        //
+        // A reset that is already past must not be scheduled as "now": the
+        // wake re-polls instantly, gets the same past reset back and the
+        // runner hot-loops the claim route. Back off 30s, doubling.
+        const wake = resumeAtForReset(resetMs, now, this.pastResetStreak);
+        this.pastResetStreak = wake.pastStreak;
+        this.scheduleResumeAt(wake.atMs, wake.pastStreak > 0 ? 'past budget reset (backoff)' : 'account budget reset');
+      } else {
+        this.pastResetStreak = 0;
       }
 
       if (claimed.length === 0) {
@@ -1327,6 +1467,35 @@ export class WorkerManager {
     }, delayMs);
     // Don't let this timer alone keep the process alive.
     (this.budgetResumeTimer as any)?.unref?.();
+  }
+
+  /** True once the current claim-5xx streak has been alerted (one alert per streak). */
+  private claimDegradedAlerted = false;
+
+  /** Emit the recovery event once the alerted streak has ended (by a 2xx or a 4xx). */
+  private clearClaimDegradedAlertIfRecovered(): void {
+    if (this.claimDegradedAlerted && !claimHealth.isDegraded()) {
+      this.claimDegradedAlerted = false;
+      this.emit({ type: 'claim_health', degraded: false });
+    }
+  }
+
+  /**
+   * N3: while the claim endpoint is returning a run of 5xx, alert once and
+   * poll every 5 minutes instead of waiting for the hourly fallback tick.
+   * The streak itself is counted in BuilddClient.claimTask.
+   */
+  private onClaimServerErrorStreak(status: number): void {
+    // A 4xx ends the streak (BuilddClient.claimTask records it as a success)
+    // but lands here on the catch path, so release the latch here too.
+    this.clearClaimDegradedAlertIfRecovered();
+    if (status < 500 || !claimHealth.isDegraded()) return;
+    if (!this.claimDegradedAlerted) {
+      this.claimDegradedAlerted = true;
+      console.error(`[WorkerManager] ALERT claim endpoint degraded — ${claimHealth.describe()}; polling every ${DEGRADED_CLAIM_POLL_MS / 60_000} min`);
+      this.emit({ type: 'claim_health', degraded: true, streak: claimHealth.streak, status });
+    }
+    this.scheduleResumeAt(Date.now() + DEGRADED_CLAIM_POLL_MS, 'claim 5xx streak (degraded poll)');
   }
 
   /**
@@ -1691,6 +1860,8 @@ export class WorkerManager {
     let sessionCwd = workspacePath;
     /** True once `git worktree add` has produced the session cwd. */
     let worktreeCreated = false;
+    /** True when a worktree was required and `setupWorktree` returned null. */
+    let worktreeSetupFailed = false;
     /** Set when a structural install fault must kill the session pre-budget. */
     let installBlock: string | undefined;
     /** Set when the resolved session cwd cannot host the task at all. */
@@ -1699,16 +1870,29 @@ export class WorkerManager {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
 
-      const setupResult = await setupWorktree(
-        workspacePath,
-        claimedWorker.branch,
-        defaultBranch,
-        worker.id,
-        fullTask.context,
-        // Live-worker view: a path another running session owns must never be
-        // reclaimed, not even when its tree reads clean (committed-but-unpushed).
-        this.workers,
-      );
+      // Until setupWorktree returns, the new tree (created before the
+      // dependency install) is not on any worker record — mark the repo busy
+      // so the terminal-worktree sweep cannot remove it mid-install.
+      // `??=`: some harnesses build the manager with Object.create (no field initializers).
+      const setupsInFlight = (this.worktreeSetupsInFlight ??= new Map());
+      setupsInFlight.set(workspacePath, (setupsInFlight.get(workspacePath) ?? 0) + 1);
+      let setupResult: Awaited<ReturnType<typeof setupWorktree>>;
+      try {
+        setupResult = await setupWorktree(
+          workspacePath,
+          claimedWorker.branch,
+          defaultBranch,
+          worker.id,
+          fullTask.context,
+          // Live-worker view: a path another running session owns must never be
+          // reclaimed, not even when its tree reads clean (committed-but-unpushed).
+          this.workers,
+        );
+      } finally {
+        const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
+        if (n > 0) setupsInFlight.set(workspacePath, n);
+        else setupsInFlight.delete(workspacePath);
+      }
 
       if (setupResult) {
         worker.worktreePath = setupResult.path;
@@ -1781,10 +1965,14 @@ export class WorkerManager {
         }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
-        // Worktree setup failed — fall back to the base checkout. Still a real
-        // git repo, so the session can work; it just shares the clone.
-        console.warn(`[Worker ${worker.id}] Worktree setup failed, falling back to the base checkout at ${workspacePath}`);
-        this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — using the base checkout', ts: Date.now() });
+        // Worktree setup failed. This used to fall back to the base checkout,
+        // which is the clone every other worker on this repo shares: no
+        // filesystem isolation, commits landing on whatever the clone has
+        // checked out, and no CBM (worktreePath unset). Fail the worker instead
+        // — the claim is retryable, a silently shared clone is not recoverable.
+        worktreeSetupFailed = true;
+        console.warn(`[Worker ${worker.id}] Worktree setup failed for ${claimedWorker.branch} — failing the worker rather than running in the shared clone at ${workspacePath}`);
+        this.addMilestone(worker, { type: 'status', label: 'Worktree setup failed — not running in the shared clone', ts: Date.now() });
       }
     }
 
@@ -1802,6 +1990,8 @@ export class WorkerManager {
      */
     if (hasRepo && !worktreeCreated && !existsSync(join(sessionCwd, '.git'))) {
       startBlock = `Session cwd is not a git checkout: ${sessionCwd} (workspace ${fullTask.workspace?.repo})`;
+    } else if (worktreeSetupFailed) {
+      startBlock = `Worktree setup failed for branch ${claimedWorker.branch} in ${workspacePath}; refusing to run in the shared clone`;
     }
 
     // Role overlay — AFTER worktree setup, against the session cwd.
@@ -2033,7 +2223,11 @@ export class WorkerManager {
     // over (Codex <-> Claude) / holds it until reset instead of hard-
     // failing. Shared with the web route's isBudgetExhaustionError and the
     // claim breaker's classifyClaimError so all three can't drift apart.
-    const isBudgetError = isBudgetExhaustionError(errMsg);
+    // A per-session dollar cap (a backend's own maxBudgetUsd stop) is a task
+    // failure, not a usage wall — carve it out before the wall check, whose
+    // patterns also match the legacy "budget limit exceeded" wording.
+    const isSessionBudgetCap = isSessionBudgetCapError(errMsg);
+    const isBudgetError = !isSessionBudgetCap && isBudgetExhaustionError(errMsg);
     // Steering-delivery crash: the CLI rejected a malformed spawn invocation
     // (e.g. --session-id + --resume without --fork-session). This is an infra
     // failure — must not consume a task retry attempt.
@@ -2058,6 +2252,7 @@ export class WorkerManager {
     const resolvedOutcome = closingTurnOutcome === 'declined'
       ? closingTurnOutcome
       : isBudgetError ? ('skipped:rate_limit' as const)
+      : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
       : isSteeringDeliveryCrash ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
     const errorPayload = {
@@ -2065,6 +2260,7 @@ export class WorkerManager {
       error: worker.error,
       ...this.terminalAttributionPayload(worker),
       ...(isBudgetError && { budgetExhausted: true }),
+      ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
       ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
       resultMeta: {
@@ -2240,276 +2436,17 @@ export class WorkerManager {
   }
 
   /**
-   * The success tail of a session: git stats, Codex token write-back, the
-   * completion PATCH (status completed + measurement fields), then local
-   * status 'done'. Shared by startSession's natural-end branch and by a
-   * closing turn that itself errored — that fallback must complete the
-   * worker exactly as the original session would have without a closing
-   * turn, never mark it failed.
-   */
-  private async completeSessionNormally(
-    worker: LocalWorker,
-    task: BuilddTask,
-    cwd: string,
-    opts: {
-      isCodexTask: boolean;
-      closingTurnOutcome: 'authored' | 'declined' | `skipped:${string}` | undefined;
-      structuredOutput: Record<string, unknown> | undefined;
-    },
-  ): Promise<void> {
-    const { isCodexTask, closingTurnOutcome, structuredOutput } = opts;
-    // A clean completion proves the credential works — reset the auth-failure
-    // backoff so claims resume at full cadence.
-    this.consecutiveAuthFailures = 0;
-    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
-
-    // B (write-back): After a successful OAuth Codex session, the CLI may have
-    // silently refreshed the tokens. Read the auth.json we left in place
-    // (seed-if-missing means it was never rewritten from the stale snapshot) and
-    // POST the current tokens back so the credential store stays fresh.
-    // Best-effort — never throws, never logs token values.
-    if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
-      try {
-        const currentAuth = readCodexAuthJson(worker.id);
-        if (currentAuth?.access_token && currentAuth?.refresh_token) {
-          await this.buildd.writeBackCodexAuth(task.workspaceId, {
-            accessToken: currentAuth.access_token,
-            refreshToken: currentAuth.refresh_token,
-            ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
-            ...(currentAuth.id_token ? { idToken: currentAuth.id_token } : {}),
-          });
-          console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
-        }
-      } catch (err) {
-        console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
-      }
-    }
-
-    this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
-    this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
-    worker.currentAction = 'Completed';
-    worker.hasNewActivity = true;
-    worker.completedAt = Date.now();
-    this.workerSync.recordCycleTime(worker);
-    this.probedWorkers.delete(worker.id);  // Clean up probe tracking
-    // Generate follow-up prompt suggestions if Stop hook didn't already
-    if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
-      worker.promptSuggestions = generatePromptSuggestions(worker);
-      if (worker.promptSuggestions.length > 0) {
-        console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
-      }
-    }
-    // Aggregate token counts: per-model breakdown → result totals → per-turn
-    // tally. The fallbacks matter on OAuth, where byModel is never populated
-    // and tokens are the only real consumption signal (cost is always 0).
-    // Read for usage aggregation only. The cbm/toolCounts blocks below can
-    // CREATE worker.resultMeta, so this snapshot must never be what the
-    // PATCH sends — see the re-read after them.
-    const sdkResultMeta = worker.resultMeta || undefined;
-    const totals = aggregateUsage(sdkResultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
-    const inputTokens = totals?.inputTokens;
-    const outputTokens = totals?.outputTokens;
-
-    // CBM observability: attach per-task metrics to resultMeta before completion.
-    if (worker.cbmOutcome !== undefined) {
-      const cbmMetrics = buildCbmMetrics(worker)!;
-      // Merge into resultMeta so all metrics travel together to the server.
-      if (worker.resultMeta) {
-        worker.resultMeta.cbm = cbmMetrics;
-      } else {
-        // Provision-failure path: resultMeta wasn't set by the SDK result handler.
-        // Create a minimal shell so cbm travels with the completion payload.
-        worker.resultMeta = {
-          stopReason: null,
-          durationMs: 0,
-          durationApiMs: 0,
-          numTurns: 0,
-          modelUsage: {},
-          cbm: cbmMetrics,
-        };
-      }
-    }
-
-    // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
-    // ships regardless of CBM activation; skipped entirely when no tool ran
-    // so a provision-failed worker doesn't get a resultMeta shell it never earned.
-    // The Bash sub-classification rides the same object: a bucket histogram
-    // is only useful next to the tool histogram it decomposes. Omitted when
-    // the session made no Bash call, so absence stays distinguishable from
-    // "made Bash calls, none of them searches".
-    const toolCounts = worker.toolCounts ?? {};
-    const bashCommandCounts = worker.bashCommandCounts;
-    const measured = {
-      ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
-      ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
-    };
-    if (Object.keys(measured).length > 0) {
-      if (worker.resultMeta) {
-        Object.assign(worker.resultMeta, measured);
-      } else {
-        worker.resultMeta = {
-          stopReason: null,
-          durationMs: 0,
-          durationApiMs: 0,
-          numTurns: 0,
-          modelUsage: {},
-          ...measured,
-        };
-      }
-    }
-
-    // Closing-turn outcome: only present when this invocation actually
-    // made (or explicitly skipped) a closing-turn decision above — never
-    // set on the already-terminal top-level race, which is what keeps
-    // that path's payload byte-identical to before this field existed.
-    if (closingTurnOutcome !== undefined) {
-      if (worker.resultMeta) {
-        worker.resultMeta.closingTurnOutcome = closingTurnOutcome;
-      } else {
-        worker.resultMeta = {
-          stopReason: null,
-          durationMs: 0,
-          durationApiMs: 0,
-          numTurns: 0,
-          modelUsage: {},
-          closingTurnOutcome,
-        };
-      }
-    }
-
-    // Re-read AFTER the three blocks above. All three can assign a
-    // brand-new object to worker.resultMeta (the SDK never emitted a
-    // result message, e.g. the provision-failure path), and the
-    // completion PATCH used to spread a const captured before them — so
-    // on exactly the path whose comment promises the metrics "travel
-    // with the completion payload", the cbm/toolCounts objects were
-    // built and then silently dropped.
-    const resultMeta = worker.resultMeta || undefined;
-
-    // Loop-until-verified: run verification command and collect evidence (spec §2).
-    // Only executes for loopConfig.exitCondition.type='command'; other types need no
-    // runner work (pr_checks_green = server reads webhooks; structured_predicate =
-    // server reads the structuredOutput field already in this payload).
-    let verificationEvidence: Record<string, unknown> | undefined;
-    const loopConfig = task.loopConfig;
-    if (loopConfig?.exitCondition?.type === 'command') {
-      const resolvedCmd = resolveCommand(
-        loopConfig.exitCondition as { type: 'command'; command?: string },
-        task.context as Record<string, unknown> | undefined,
-      );
-      if (resolvedCmd) {
-        this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
-        try {
-          const evidence = await runVerificationCommand({
-            workerId: worker.id,
-            iteration: task.loopIteration ?? 0,
-            command: resolvedCmd,
-            cwd,
-          });
-          verificationEvidence = evidence as unknown as Record<string, unknown>;
-          const label = evidence.outcome === 'ok'
-            ? `Verification passed (exit ${evidence.exitCode})`
-            : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
-          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-          console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
-        } catch (verifyErr) {
-          // Non-fatal: surface as exec_error evidence so server can still decide
-          console.warn(`[Worker ${worker.id}] Verification command threw unexpectedly:`, verifyErr);
-          verificationEvidence = {
-            workerId: worker.id,
-            iteration: task.loopIteration ?? 0,
-            conditionType: 'command',
-            command: resolvedCmd,
-            outcome: 'exec_error',
-            stderr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
-          };
-        }
-      } else {
-        console.warn(`[Worker ${worker.id}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
-      }
-    }
-
-    // Build subagent spans for terminal flush (not on hot path — only at completion).
-    const subagentSpans = buildSubagentSpans(worker.subagentTasks);
-    const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
-
-    // Fallback summary, only meaningful when this PATCH is actually the
-    // first write (closingTurnOutcome !== 'authored') — an 'authored' or
-    // already-terminal payload gets refused (abort: true) and this field
-    // is dropped with the rest of the status half; see METRICS_ONLY_FIELDS.
-    const fallbackSummary = buildFallbackSummaryTail(worker);
-
-    const completionPayload = {
-      status: 'completed',
-      milestones: worker.milestones,
-      ...gitStats,
-      // Cost + model attribution: without these the server can only guess,
-      // and workers.cost_usd stayed at its '0' default for every runner task.
-      ...this.terminalAttributionPayload(worker),
-      ...(resultMeta && { resultMeta }),
-      ...(inputTokens && { inputTokens }),
-      ...(outputTokens && { outputTokens }),
-      // Include structured output if the SDK returned validated JSON
-      ...(structuredOutput ? { structuredOutput } : {}),
-      // Bounded tail of the session's own assistant text (newest last),
-      // used as the summary when the session ended without the agent
-      // calling complete_task itself — after a closing turn if one was
-      // attempted, so this reflects whatever it said too. Tag 'fallback'
-      // so downstream consumers (KB ingestion, UI) never present it as an
-      // authored result. See docs/specs — the agent's own complete_task
-      // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
-      ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
-      // Loop verification evidence (only present for command exit condition)
-      ...(verificationEvidence ? { verificationEvidence } : {}),
-      // Subagent spans — terminal-only flush
-      ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
-      subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
-      backgroundAgentMs,
-    };
-    const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
-      { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
-
-    // The server refused the status write because the row is ALREADY
-    // terminal — the normal outcome when the agent called the buildd MCP
-    // `complete_task` itself: the server completed the worker, pushed
-    // worker:completed, and this PATCH arrives afterwards. Everything above
-    // that is measurement rather than state (resultMeta with the CBM
-    // metrics and tool histogram, tokens, cost, model, git stats, subagent
-    // spans) would be lost with it, and that cohort is the long-session
-    // one — which quietly biased every usage rollup toward short sessions.
-    // Re-send it as a metrics-only PATCH: the server accepts those on a
-    // terminal worker without reviving status, and still refuses a worker
-    // IT expired (stale cleanup / reassign / takeover).
-    if (completionResult?.abort === true) {
-      await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
-    }
-    // Set 'done' only after the server update so any poll of local status
-    // reflects the server's task state (prevents getMission race in E2E tests).
-    worker.status = 'done';
-    this.emit({ type: 'worker_update', worker });
-    storeSaveWorker(worker);
-
-    // Task outcomes are indexed into the knowledge store via complete_task → mirrorWorkProduct (task corpus).
-    // The legacy createObservation path that wrote type:'summary' to the memory corpus has been removed:
-    // summary entries duplicated task-corpus data with worse fidelity and polluted memory recall.
-  }
-
-  /**
    * @param isClosingTurn Set only by the recursive self-call from this same
    * method's post-loop logic: this invocation IS a session's one bounded
    * closing turn (see CLOSING_TURN_INSTRUCTION), not a fresh dispatch or an
-   * ordinary follow-up resume. Gates: the closing-turn decision itself never
-   * fires twice (no recursion past depth 1), maxTurns is forced to
-   * CLOSING_TURN_MAX_TURNS regardless of the task/workspace configured cap,
-   * the prompt is only CLOSING_TURN_INSTRUCTION, and a closing turn that
-   * itself errors falls back to the pre-closing-turn outcome instead of
-   * failing the worker.
-   * @param closingTurnOriginalError Only for a closing turn that followed a
-   * turn-cap error: the original session's error, reported (as before closing
-   * turns existed) if the closing turn itself errors. Undefined for a closing
-   * turn after a natural end, whose fallback is a normal completion.
+   * ordinary follow-up resume. Gates two things: the closing-turn decision
+   * itself never fires twice (no recursion past depth 1), and maxTurns is
+   * forced to CLOSING_TURN_MAX_TURNS regardless of the task/workspace cap.
+   * @param carriedStructuredOutput Closing turn only: the structured output
+   * the main session already produced, so the closing turn's completion
+   * payload still carries it even if the resumed turn emits none.
    */
-  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, closingTurnOriginalError?: unknown) {
+  private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
@@ -2566,6 +2503,13 @@ export class WorkerManager {
     // behind — try/catch/finally are separate lexical scopes, so a `let`
     // inside try is invisible to catch.
     let resultSubtype: string | undefined;
+    // Set only on a closing turn whose own stream ended in an error result or
+    // a thrown backend error (see guardClosingTurnStream): the reason it
+    // didn't land, recorded as `declined:<reason>`.
+    let closingTurnFailure: 'max_turns' | 'error' | undefined;
+    // Hoisted above the try for the same reason as resultSubtype: the catch
+    // block's turn-budget closing turn must carry it forward.
+    let structuredOutput: Record<string, unknown> | undefined = carriedStructuredOutput;
 
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
@@ -3406,8 +3350,14 @@ export class WorkerManager {
         cleanEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '0';
       }
 
-      // Resolve max budget for SDK-level cost control
-      const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);
+      // Resolve max budget for SDK-level cost control. A dollar cap only
+      // means something on a metered (API-key) credential: on a seat (OAuth)
+      // the reported cost is an estimate, so a cap would stop real work on a
+      // virtual number. Matches the Codex backend, which skips it for OAuth.
+      const maxBudgetUsd = sdkMaxBudgetUsd(
+        resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd),
+        { backend: task.backend || 'claude', env: cleanEnv },
+      );
 
       // Resolve the session model: the model the claim route resolved for THIS
       // task (task.context.model — smart-routing tier decision or an explicit
@@ -3436,12 +3386,9 @@ export class WorkerManager {
       // Resolve max turns for SDK-level turn limiting. A closing turn is a
       // single bounded attempt regardless of the task/workspace cap — it
       // exists to let the agent call complete_task, not to resume normal
-      // work, and a small fixed cap keeps it a one-time cost even when the
-      // original session burned its own cap in full. It is NOT 1: the buildd
-      // MCP tool is deferred, so the model needs one turn to load it
-      // (ToolSearch), one to call complete_task and one to end — a 1-turn cap
-      // was spent entirely on ToolSearch and ended every attempt on
-      // error_max_turns.
+      // work, and a small fixed budget is what keeps it a one-time cost even
+      // when the original session burned its own cap in full. See
+      // CLOSING_TURN_MAX_TURNS for why that budget is not 1.
       const maxTurns = isClosingTurn ? CLOSING_TURN_MAX_TURNS : resolveMaxTurns(workspaceConfig, this.config.maxTurns);
 
       // Resolve thinking/effort: task-level override > workspace-level setting
@@ -3715,6 +3662,9 @@ export class WorkerManager {
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
+        // 'user' is needed for skills in ~/.claude/skills, but must not carry
+        // the host operator's own CLAUDE.md / rules into the worker.
+        settings: { claudeMdExcludes: hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR) },
         permissionMode,
         systemPrompt,
         enableFileCheckpointing: true,
@@ -4050,8 +4000,8 @@ export class WorkerManager {
 
       // A closing turn resumes a session whose history already holds the full
       // task prompt. Send ONLY the closing instruction — rebuilding the prompt
-      // here re-sent every section (workflow, output requirement, memory)
-      // as if it were a fresh task, inviting the model to start over.
+      // re-sent every section (workflow, output requirement, memory) as if it
+      // were a fresh task, inviting the model to start over.
       if (isClosingTurn) promptText = CLOSING_TURN_INSTRUCTION;
 
       // One composition record per prompt build — what the workspace-memory
@@ -4131,7 +4081,6 @@ export class WorkerManager {
       // Stream responses, nudging the agent while the session is still alive
       // when an explicit output requirement (PR/artifact) isn't met yet.
       // (resultSubtype itself is declared above the try — see comment there.)
-      let structuredOutput: Record<string, unknown> | undefined;
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
 
@@ -4143,7 +4092,7 @@ export class WorkerManager {
         ? undefined
         : sessionModel;
 
-      for await (const event of backend.runStreamed({
+      const backendStream = backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
         sessionId: invocationSessionId,
         cwd,
@@ -4176,7 +4125,17 @@ export class WorkerManager {
           }
           await this.handleMessage(worker, sdkMsg as SDKMessage);
         },
-      })) {
+      });
+      // A closing turn's own error result / thrown error ends its stream
+      // instead of throwing: see guardClosingTurnStream. The post-loop logic
+      // below then records the outcome and runs the ordinary fallback.
+      const eventStream = isClosingTurn
+        ? guardClosingTurnStream(backendStream, abortController.signal, (err) => {
+          closingTurnFailure = resultSubtype === 'error_max_turns' ? 'max_turns' : 'error';
+          sessionLog(worker.id, 'warn', 'closing_turn_failed', `reason=${closingTurnFailure} subtype=${resultSubtype ?? 'none'} error=${err.slice(0, 200)}`, worker.taskId);
+        })
+        : backendStream;
+      for await (const event of eventStream) {
         if (event.type === 'error') {
           throw new Error(event.error);
         }
@@ -4269,6 +4228,14 @@ export class WorkerManager {
         return;
       }
 
+      // Post-completion reap (checkStale watchdog): the worker already reached
+      // done/error before its session was aborted. Nothing here describes an
+      // outcome — let finally clean up and leave the worker record alone.
+      if (currentSession?.reapedAt !== undefined) {
+        sessionLog(worker.id, 'info', 'post_completion_reap_settled', `status=${worker.status} (post-loop)`, worker.taskId);
+        return;
+      }
+
       // inputAsRetry: AskUserQuestion triggered an abort. The worker is
       // PARKED waiting_input, not failed — a hard blocker with a pending
       // question is not a crash. Reporting this as 'failed' used to feed the
@@ -4318,22 +4285,26 @@ export class WorkerManager {
         storeSaveWorker(worker);
         // Burn-loop guard (cache invalidation + exponential backoff) is applied
         // by the circuit-breaker block below, which classifies worker.error.
-      } else if (resultSubtype === 'error_max_budget_usd') {
-        // Budget exceeded - report as error with specific message
-        sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
+      } else if (resultSubtype === 'error_max_budget_usd' && !closingTurnFailure) {
+        // The session hit its OWN per-session dollar cap (maxBudgetUsd). That
+        // is a task-level stop, not a provider usage wall: report it as
+        // sessionBudgetCapped, never budgetExhausted, with text that matches
+        // no budget-exhaustion pattern — otherwise the server pauses the whole
+        // backend and the claim breaker walls the seat for an hour.
+        sessionLog(worker.id, 'error', 'session_budget_capped', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
         worker.status = 'error';
-        worker.error = 'Budget limit exceeded';
-        worker.currentAction = 'Budget exceeded';
+        worker.error = SESSION_BUDGET_CAP_ERROR;
+        worker.currentAction = 'Session cost cap';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
-          error: 'Budget limit exceeded (maxBudgetUsd)',
-          budgetExhausted: true,
+          error: SESSION_BUDGET_CAP_ERROR,
+          sessionBudgetCapped: true,
           milestones: worker.milestones,
-          resultMeta: { closingTurnOutcome: 'skipped:budget_exhausted' },
+          resultMeta: { closingTurnOutcome: 'skipped:session_budget_capped' },
           ...gitStats,
         });
         this.emit({ type: 'worker_update', worker });
@@ -4384,17 +4355,24 @@ export class WorkerManager {
         // always falls straight through to the completion payload below,
         // authored or not — recursing a second time would turn a bounded
         // one-shot into an unbounded chain.
-        let closingTurnOutcome: 'authored' | 'declined' | `skipped:${string}` | undefined;
+        let closingTurnOutcome: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}` | undefined;
         if (isClosingTurn) {
-          closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker)) ? 'authored' : 'declined';
+          // Server state is the authority on whether complete_task landed —
+          // so a closing turn that made the call and THEN ran out of turns
+          // (or errored) still counts as authored.
+          closingTurnOutcome = (await this.isAlreadyTerminalOnServer(worker))
+            ? 'authored'
+            : closingTurnFailure ? `declined:${closingTurnFailure}` : 'declined';
         } else if (structuredOutput) {
           // The session authored its outcome through the SDK's structured
           // output (a task with an outputSchema, e.g. a reviewer verdict) —
           // that IS the result, delivered in the completion payload below.
           // Such sessions never call complete_task, so "not terminal on the
-          // server" is expected here, not a missing outcome: resuming them for
-          // a closing turn only risks failing a session that already
-          // succeeded. Complete exactly as before closing turns existed.
+          // server" is expected here, not a missing outcome. A closing turn
+          // would prompt the agent to call complete_task, and that call
+          // carries no structuredOutput — terminalising the worker without
+          // the verdict and refusing this payload, which has it.
+          closingTurnOutcome = 'skipped:structured_output';
         } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
           if (!resumeId) {
@@ -4404,7 +4382,7 @@ export class WorkerManager {
             this.addMilestone(worker, { type: 'status', label: 'Session ended without complete_task — giving one closing turn', ts: Date.now() });
             const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
             delegatedToClosingTurn = true;
-            await this.startSession(worker, cwd, closingTask, resumeId, true);
+            await this.startSession(worker, cwd, closingTask, resumeId, true, structuredOutput);
             // The nested call above owns this worker's entire completion
             // lifecycle from here (its own post-loop logic runs this exact
             // branch again with isClosingTurn=true, decides authored vs
@@ -4421,11 +4399,240 @@ export class WorkerManager {
         // still built and sent, the server still refuses it (abort: true),
         // and persistTerminalMetrics still runs exactly as it always has.
 
-        await this.completeSessionNormally(worker, task, cwd, {
-          isCodexTask,
-          closingTurnOutcome,
-          structuredOutput,
-        });
+        // A clean completion proves the credential works — reset the auth-failure
+        // backoff so claims resume at full cadence.
+        this.consecutiveAuthFailures = 0;
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+
+        // B (write-back): After a successful OAuth Codex session, the CLI may have
+        // silently refreshed the tokens. Read the auth.json we left in place
+        // (seed-if-missing means it was never rewritten from the stale snapshot) and
+        // POST the current tokens back so the credential store stays fresh.
+        // Best-effort — never throws, never logs token values.
+        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
+          try {
+            const currentAuth = readCodexAuthJson(worker.id);
+            if (currentAuth?.access_token && currentAuth?.refresh_token) {
+              await this.buildd.writeBackCodexAuth(task.workspaceId, {
+                accessToken: currentAuth.access_token,
+                refreshToken: currentAuth.refresh_token,
+                ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
+                ...(currentAuth.id_token ? { idToken: currentAuth.id_token } : {}),
+              });
+              console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
+            }
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
+          }
+        }
+
+        this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
+        this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
+        worker.currentAction = 'Completed';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        this.workerSync.recordCycleTime(worker);
+        this.probedWorkers.delete(worker.id);  // Clean up probe tracking
+        // Generate follow-up prompt suggestions if Stop hook didn't already
+        if (!worker.promptSuggestions || worker.promptSuggestions.length === 0) {
+          worker.promptSuggestions = generatePromptSuggestions(worker);
+          if (worker.promptSuggestions.length > 0) {
+            console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
+          }
+        }
+        // Aggregate token counts: per-model breakdown → result totals → per-turn
+        // tally. The fallbacks matter on OAuth, where byModel is never populated
+        // and tokens are the only real consumption signal (cost is always 0).
+        // Read for usage aggregation only. The cbm/toolCounts blocks below can
+        // CREATE worker.resultMeta, so this snapshot must never be what the
+        // PATCH sends — see the re-read after them.
+        const sdkResultMeta = worker.resultMeta || undefined;
+        const totals = aggregateUsage(sdkResultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
+        const inputTokens = totals?.inputTokens;
+        const outputTokens = totals?.outputTokens;
+
+        // CBM observability: attach per-task metrics to resultMeta before completion.
+        if (worker.cbmOutcome !== undefined) {
+          const cbmMetrics = buildCbmMetrics(worker)!;
+          // Merge into resultMeta so all metrics travel together to the server.
+          if (worker.resultMeta) {
+            worker.resultMeta.cbm = cbmMetrics;
+          } else {
+            // Provision-failure path: resultMeta wasn't set by the SDK result handler.
+            // Create a minimal shell so cbm travels with the completion payload.
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              cbm: cbmMetrics,
+            };
+          }
+        }
+
+        // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
+        // ships regardless of CBM activation; skipped entirely when no tool ran
+        // so a provision-failed worker doesn't get a resultMeta shell it never earned.
+        // The Bash sub-classification rides the same object: a bucket histogram
+        // is only useful next to the tool histogram it decomposes. Omitted when
+        // the session made no Bash call, so absence stays distinguishable from
+        // "made Bash calls, none of them searches".
+        const toolCounts = worker.toolCounts ?? {};
+        const bashCommandCounts = worker.bashCommandCounts;
+        const measured = {
+          ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
+          ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
+        };
+        if (Object.keys(measured).length > 0) {
+          if (worker.resultMeta) {
+            Object.assign(worker.resultMeta, measured);
+          } else {
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              ...measured,
+            };
+          }
+        }
+
+        // Closing-turn outcome: only present when this invocation actually
+        // made (or explicitly skipped) a closing-turn decision above — never
+        // set on the already-terminal top-level race, which is what keeps
+        // that path's payload byte-identical to before this field existed.
+        if (closingTurnOutcome !== undefined) {
+          if (worker.resultMeta) {
+            worker.resultMeta.closingTurnOutcome = closingTurnOutcome;
+          } else {
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              closingTurnOutcome,
+            };
+          }
+        }
+
+        // Re-read AFTER the three blocks above. All three can assign a
+        // brand-new object to worker.resultMeta (the SDK never emitted a
+        // result message, e.g. the provision-failure path), and the
+        // completion PATCH used to spread a const captured before them — so
+        // on exactly the path whose comment promises the metrics "travel
+        // with the completion payload", the cbm/toolCounts objects were
+        // built and then silently dropped.
+        const resultMeta = worker.resultMeta || undefined;
+
+        // Loop-until-verified: run verification command and collect evidence (spec §2).
+        // Only executes for loopConfig.exitCondition.type='command'; other types need no
+        // runner work (pr_checks_green = server reads webhooks; structured_predicate =
+        // server reads the structuredOutput field already in this payload).
+        let verificationEvidence: Record<string, unknown> | undefined;
+        const loopConfig = task.loopConfig;
+        if (loopConfig?.exitCondition?.type === 'command') {
+          const resolvedCmd = resolveCommand(
+            loopConfig.exitCondition as { type: 'command'; command?: string },
+            task.context as Record<string, unknown> | undefined,
+          );
+          if (resolvedCmd) {
+            this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
+            try {
+              const evidence = await runVerificationCommand({
+                workerId: worker.id,
+                iteration: task.loopIteration ?? 0,
+                command: resolvedCmd,
+                cwd,
+              });
+              verificationEvidence = evidence as unknown as Record<string, unknown>;
+              const label = evidence.outcome === 'ok'
+                ? `Verification passed (exit ${evidence.exitCode})`
+                : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
+              this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+              console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
+            } catch (verifyErr) {
+              // Non-fatal: surface as exec_error evidence so server can still decide
+              console.warn(`[Worker ${worker.id}] Verification command threw unexpectedly:`, verifyErr);
+              verificationEvidence = {
+                workerId: worker.id,
+                iteration: task.loopIteration ?? 0,
+                conditionType: 'command',
+                command: resolvedCmd,
+                outcome: 'exec_error',
+                stderr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+              };
+            }
+          } else {
+            console.warn(`[Worker ${worker.id}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
+          }
+        }
+
+        // Build subagent spans for terminal flush (not on hot path — only at completion).
+        const subagentSpans = buildSubagentSpans(worker.subagentTasks);
+        const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
+
+        // Fallback summary, only meaningful when this PATCH is actually the
+        // first write (closingTurnOutcome !== 'authored') — an 'authored' or
+        // already-terminal payload gets refused (abort: true) and this field
+        // is dropped with the rest of the status half; see METRICS_ONLY_FIELDS.
+        const fallbackSummary = buildFallbackSummaryTail(worker);
+
+        const completionPayload = {
+          status: 'completed',
+          milestones: worker.milestones,
+          ...gitStats,
+          // Cost + model attribution: without these the server can only guess,
+          // and workers.cost_usd stayed at its '0' default for every runner task.
+          ...this.terminalAttributionPayload(worker),
+          ...(resultMeta && { resultMeta }),
+          ...(inputTokens && { inputTokens }),
+          ...(outputTokens && { outputTokens }),
+          // Include structured output if the SDK returned validated JSON
+          ...(structuredOutput ? { structuredOutput } : {}),
+          // Bounded tail of the session's own assistant text (newest last),
+          // used as the summary when the session ended without the agent
+          // calling complete_task itself — after a closing turn if one was
+          // attempted, so this reflects whatever it said too. Tag 'fallback'
+          // so downstream consumers (KB ingestion, UI) never present it as an
+          // authored result. See docs/specs — the agent's own complete_task
+          // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
+          ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
+          // Loop verification evidence (only present for command exit condition)
+          ...(verificationEvidence ? { verificationEvidence } : {}),
+          // Subagent spans — terminal-only flush
+          ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
+          subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+          backgroundAgentMs,
+        };
+        const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
+          { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
+
+        // The server refused the status write because the row is ALREADY
+        // terminal — the normal outcome when the agent called the buildd MCP
+        // `complete_task` itself: the server completed the worker, pushed
+        // worker:completed, and this PATCH arrives afterwards. Everything above
+        // that is measurement rather than state (resultMeta with the CBM
+        // metrics and tool histogram, tokens, cost, model, git stats, subagent
+        // spans) would be lost with it, and that cohort is the long-session
+        // one — which quietly biased every usage rollup toward short sessions.
+        // Re-send it as a metrics-only PATCH: the server accepts those on a
+        // terminal worker without reviving status, and still refuses a worker
+        // IT expired (stale cleanup / reassign / takeover).
+        if (completionResult?.abort === true) {
+          await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
+        }
+        // Set 'done' only after the server update so any poll of local status
+        // reflects the server's task state (prevents getMission race in E2E tests).
+        worker.status = 'done';
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+
+        // Task outcomes are indexed into the knowledge store via complete_task → mirrorWorkProduct (task corpus).
+        // The legacy createObservation path that wrote type:'summary' to the memory corpus has been removed:
+        // summary entries duplicated task-corpus data with worse fidelity and polluted memory recall.
       }
 
     } catch (error) {
@@ -4436,6 +4643,18 @@ export class WorkerManager {
       // a refusal worded "completion aborted: …" would otherwise be handled as
       // a clean session abort and reported with no refusal signal at all.
       const refusal = isServerRefusal(error) ? error : null;
+
+      // Post-completion reap (checkStale watchdog → reapSession): this abort is
+      // cleanup of a session whose worker ALREADY reached done/error. It is not
+      // an outcome, so it must not be reported as one — the abort arm below
+      // would PATCH `failed`, flip a `done` worker to `error` and overwrite
+      // completedAt whenever the server did not answer "completed" to the
+      // reconciliation probe. finally still runs the session's cleanup.
+      const reapedSession = this.sessions.get(worker.id);
+      if (reapedSession?.reapedAt !== undefined && reapedSession.generation === generation) {
+        sessionLog(worker.id, 'info', 'post_completion_reap_settled', `status=${worker.status}`, worker.taskId);
+        return;
+      }
 
       // Check if this is an expected abort (from loop detection or user)
       const isAbortError = !refusal && error instanceof Error &&
@@ -4489,40 +4708,6 @@ export class WorkerManager {
         return;
       }
 
-      // A closing turn is a best-effort extra on top of a session that has
-      // already ended. If the closing turn itself errors (turn cap, SDK error
-      // result, abort), it must never change the outcome the original session
-      // earned: report exactly what would have been reported had no closing
-      // turn been attempted — a normal completion after a natural end, the
-      // original error after a turn-cap end — tagged so analytics can tell.
-      // Returns without the resume re-throw below: the caller is this same
-      // method's own closing-turn delegation, not resumeSession, and a throw
-      // would make it report the worker a second time.
-      if (isClosingTurn) {
-        const closingErrMsg = error instanceof Error ? error.message : String(error);
-        console.warn(`[Worker ${worker.id}] Closing turn errored (${closingErrMsg}) — falling back to the original session outcome`);
-        sessionLog(worker.id, 'warn', 'closing_turn_error', closingErrMsg, worker.taskId);
-        this.addMilestone(worker, { type: 'status', label: 'Closing turn errored — using original session outcome', ts: Date.now() });
-        if (closingTurnOriginalError !== undefined) {
-          const closingSpans = buildSubagentSpans(worker.subagentTasks);
-          await this.reportUnexpectedError(worker, closingTurnOriginalError, stderrCollector, {
-            ...(closingSpans.length > 0 ? { subagentSpans: closingSpans } : {}),
-            subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
-            backgroundAgentMs: computeBackgroundAgentMs(closingSpans),
-          }, 'skipped:closing_turn_error');
-        } else {
-          worker.error = undefined;
-          await this.completeSessionNormally(worker, task, cwd, {
-            isCodexTask,
-            closingTurnOutcome: 'skipped:closing_turn_error',
-            structuredOutput: undefined,
-          });
-        }
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
-        return;
-      }
-
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 
       // Flush subagent spans on terminal failure (spans still running persist as-is).
@@ -4573,28 +4758,26 @@ export class WorkerManager {
         // Turn-budget closing turn: the loop ended specifically because it
         // hit its configured maxTurns cap, not because anything broke. That's
         // still eligible for the same one-shot closing turn as a natural end
-        // — bounded to CLOSING_TURN_MAX_TURNS past the cap (maxTurns override
+        // — bounded to exactly one turn past the cap (maxTurns override
         // above), so a session that burned its whole budget refusing to
-        // finish cannot burn a second one doing it again. The original error
-        // rides along so a closing turn that itself errors reports it, not
-        // its own.
+        // finish cannot burn a second one doing it again.
         const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
         if (resumeId) {
           sessionLog(worker.id, 'info', 'closing_turn_attempt', `resume=${resumeId} reason=max_turns`, worker.taskId);
           this.addMilestone(worker, { type: 'status', label: 'Max turns reached — giving one closing turn', ts: Date.now() });
           const closingTask: BuilddTask = { ...task, description: CLOSING_TURN_INSTRUCTION };
           delegatedToClosingTurn = true;
-          await this.startSession(worker, cwd, closingTask, resumeId, true, error);
+          await this.startSession(worker, cwd, closingTask, resumeId, true, structuredOutput);
           return; // nested call owns the rest of this worker's lifecycle
         }
         // No resume id — fall through to the generic error handling below,
         // tagged the same as any other unresumable skip.
         await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, 'skipped:not_resumable');
       } else {
-        // Unexpected error — a genuine crash/abort-adjacent failure, never
-        // eligible for a closing turn of its own. (A closing turn's own error
-        // never reaches here — see the isClosingTurn fallback above.)
-        await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, 'skipped:error');
+        // Unexpected error — a genuine crash/abort-adjacent failure (or a
+        // closing turn's own error-terminated attempt), never eligible for a
+        // closing turn of its own.
+        await this.reportUnexpectedError(worker, error, stderrCollector, spanPayload, isClosingTurn ? 'declined' : 'skipped:error');
       }
       if (!bwrapRetryAfterCleanup) {
         this.emit({ type: 'worker_update', worker });
@@ -4602,7 +4785,12 @@ export class WorkerManager {
         // When this is a resume attempt, re-throw so the caller (resumeSession)
         // can fall through to Layer 2 (reconstructed context). Without this,
         // startSession swallows the error and Layer 2 never gets a chance.
-        if (resumeSessionId) throw error;
+        //
+        // Never from a closing turn: its caller is the parent startSession,
+        // not resumeSession, and this invocation has already reported the
+        // terminal outcome — re-throwing would make the parent report it a
+        // second time.
+        if (resumeSessionId && !isClosingTurn) throw error;
       }
     } finally {
       if (isSensitive) deactivateRedaction();
@@ -5533,7 +5721,7 @@ export class WorkerManager {
       }
       const result = msg as any;
       if (result.subtype === 'error_max_budget_usd') {
-        this.addMilestone(worker, { type: 'status', label: `Budget limit exceeded ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
+        this.addMilestone(worker, { type: 'status', label: `${SESSION_BUDGET_CAP_ERROR} ($${result.total_cost_usd?.toFixed(2) || '?'})`, ts: Date.now() });
         sessionLog(worker.id, 'error', 'result_budget_exceeded', `cost=$${result.total_cost_usd?.toFixed(2) || '?'}`, worker.taskId);
       } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
@@ -5949,6 +6137,9 @@ export class WorkerManager {
     }
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
+    }
+    if (this.terminalWorktreeSweepTimer) {
+      clearTimeout(this.terminalWorktreeSweepTimer);
     }
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);

@@ -198,6 +198,13 @@ describe('explainMission', () => {
     expect(answer.derivedFrom.because.length).toBeGreaterThan(0);
     expect(answer.derivedFrom.history).toContain('attachAttempts');
     expect(answer.derivedFrom.nextAction).toBeTruthy();
+
+    // The header chip rides on the same answer as the panel, so the two
+    // cannot disagree: a blocked mission never reads AUTO/RUNNING up top.
+    // (Open work with no live worker: the view names it 'stalled' → IDLE.)
+    expect(answer.displayState).toBe('stalled');
+    expect(answer.chip.label).toBe('IDLE');
+    expect(['AUTO', 'RUNNING']).not.toContain(answer.chip.label);
   });
 
   it('collapses attempts under their parent rather than listing them as siblings', async () => {
@@ -239,6 +246,78 @@ describe('explainTask', () => {
     expect(answer.waitingOn?.kind).toBe('merge');
     expect(answer.subject.prNumber).toBe(55);
     expect(answer.because.some(l => l.refs.prNumber === 55)).toBe(true);
+  });
+
+  // A request-changes review queued a builder-after-review attempt. The PR is
+  // still open and unmerged, but the owner has nothing to merge yet — the next
+  // push is the platform's. "Waiting on you to merge" here is the false headline.
+  it('a queued fix attempt outranks awaiting_merge and names the iteration', async () => {
+    taskRows = [
+      task({
+        id: 'task-1',
+        status: 'completed',
+        workers: [worker({ prNumber: 55, prUrl: 'https://example.invalid/55' })],
+      }),
+      task({
+        id: 'fix-1',
+        title: '[builder · after review #1] Wire the route',
+        status: 'pending',
+        taskClass: 'attempt',
+        parentTaskId: 'task-1',
+        context: { iteration: 1, maxIterations: 3 },
+        workers: [],
+      }),
+    ];
+
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.state).not.toBe('awaiting_merge');
+    expect(answer.state).toBe('waiting');
+    expect(answer.waitingOn?.kind).toBe('task');
+    expect(answer.waitingOn && 'attempt' in answer.waitingOn && answer.waitingOn.attempt).toEqual({
+      iteration: 1, maxIterations: 3, claimed: false,
+    });
+    expect(answer.situation.headline).toContain('fix 1 of 3');
+    expect(answer.situation.headline).toContain('queued');
+    expect(answer.situation.headline).not.toContain('merge');
+    expect(answer.outstanding.some(o => o.kind === 'merge')).toBe(false);
+    expect(answer.because.some(l => l.refs.taskId === 'fix-1')).toBe(true);
+  });
+
+  it('a claimed fix attempt reads as running on fix N, still not awaiting merge', async () => {
+    taskRows = [
+      task({
+        id: 'task-1',
+        status: 'completed',
+        workers: [worker({ prNumber: 55, prUrl: 'https://example.invalid/55' })],
+      }),
+      task({
+        id: 'fix-1',
+        status: 'in_progress',
+        taskClass: 'attempt',
+        parentTaskId: 'task-1',
+        context: { iteration: 2, maxIterations: 3 },
+        workers: [worker({ id: 'worker-fix', status: 'running' })],
+      }),
+    ];
+
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.state).toBe('running');
+    expect(answer.situation.headline).toContain('fix 2 of 3 (in progress)');
+    expect(answer.situation.headline).not.toContain('merge');
+  });
+
+  it('a finished fix attempt hands the task back to awaiting_merge', async () => {
+    taskRows = [
+      task({
+        id: 'task-1',
+        status: 'completed',
+        workers: [worker({ prNumber: 55, prUrl: 'https://example.invalid/55' })],
+      }),
+      task({ id: 'fix-1', status: 'completed', taskClass: 'attempt', parentTaskId: 'task-1', context: { iteration: 1, maxIterations: 3 } }),
+    ];
+
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.state).toBe('awaiting_merge');
   });
 
   it('reports a completed, merged task as quiet — waitingOn null, nextAction null', async () => {

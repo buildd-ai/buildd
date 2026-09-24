@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'bun:test';
 import { deriveStage, type Stage } from '@/lib/stage';
+import { getMenuActions } from '@/components/SwipeableRow';
 import {
+  computeStageCounts,
   deriveGridTaskStage,
+  deriveSwipeCardType,
   gridTaskPrProps,
+  selectMobileRunningTasks,
   type GridTask,
 } from './TaskGrid';
 
@@ -135,5 +139,69 @@ describe('row chip and histogram agree on stage', () => {
     const task = makeTask({ status: 'failed' });
     expect(deriveGridTaskStage(task)).toBe('FAILED');
     expect(stageToHistogramBucket(cardStage(task))).toBe('FAILED');
+  });
+});
+
+describe('cancelled tasks in the stage histogram', () => {
+  it('does not bucket a cancelled task as QUEUED', () => {
+    expect(deriveGridTaskStage(makeTask({ status: 'cancelled', prUrl: null }))).toBeNull();
+  });
+
+  it('leaves cancelled tasks out of every stage count', () => {
+    const { counts, failedCount } = computeStageCounts([
+      makeTask({ id: 'a', status: 'cancelled', prUrl: null }),
+      makeTask({ id: 'b', status: 'pending', prUrl: null }),
+    ]);
+    expect(counts.QUEUED).toBe(1);
+    expect(Object.values(counts).reduce((a, b) => a + b, 0) + failedCount).toBe(1);
+  });
+});
+
+describe('row menu actions', () => {
+  const hasCancel = (task: GridTask) =>
+    getMenuActions(deriveSwipeCardType(task), { prUrl: task.prUrl, taskId: task.id })
+      .some(a => a.action === 'cancel-task');
+
+  it.each(['failed', 'cancelled', 'completed'])('offers no Cancel on a %s row', (status) => {
+    expect(hasCancel(makeTask({ status }))).toBe(false);
+  });
+
+  it.each(['pending', 'assigned', 'in_progress', 'waiting_input'])(
+    'offers Cancel on a live %s row',
+    (status) => {
+      expect(hasCancel(makeTask({ status, prUrl: null }))).toBe(true);
+    },
+  );
+});
+
+describe('selectMobileRunningTasks ("Running now" strip)', () => {
+  it('excludes queued tasks with no live worker', () => {
+    const tasks = [
+      makeTask({ id: 'q1', status: 'pending', prUrl: null }),
+      makeTask({ id: 'q2', status: 'assigned', workerStatus: null, prUrl: null }),
+      makeTask({ id: 'r1', status: 'assigned', workerStatus: 'running', prUrl: null }),
+      makeTask({ id: 'w1', status: 'waiting_input', workerStatus: 'waiting_input', prUrl: null }),
+    ];
+    expect(selectMobileRunningTasks(tasks).map(t => t.id).sort()).toEqual(['r1', 'w1']);
+  });
+
+  it('excludes terminal tasks even if a stale worker status lingers', () => {
+    const tasks = [
+      makeTask({ id: 'f', status: 'failed', workerStatus: 'running' }),
+      makeTask({ id: 'c', status: 'cancelled', workerStatus: 'running' }),
+    ];
+    expect(selectMobileRunningTasks(tasks)).toEqual([]);
+  });
+
+  it('keeps the five most recently updated', () => {
+    const tasks = Array.from({ length: 7 }, (_, i) =>
+      makeTask({
+        id: `r${i}`,
+        status: 'assigned',
+        workerStatus: 'running',
+        updatedAt: new Date(Date.UTC(2026, 0, 1, i)).toISOString(),
+      }),
+    );
+    expect(selectMobileRunningTasks(tasks).map(t => t.id)).toEqual(['r6', 'r5', 'r4', 'r3', 'r2']);
   });
 });

@@ -61,6 +61,20 @@ export function isConcurrencyConflictError(error: string | null | undefined): bo
   return CONCURRENCY_CONFLICT_PATTERNS.some(p => p.test(error));
 }
 
+/**
+ * The CLI's version gate for a model it is too old to serve: "Claude Code
+ * X.Y.Z does not support this model; version A.B.C or newer is required." It
+ * fires before the agent takes a turn and is deterministic for that runner, so
+ * it says nothing about the task. Both halves are required so prose about a
+ * model lacking some feature, or a tool's own version floor, does not match.
+ */
+const UNRECOGNIZED_MODEL_PATTERN = /does not support this model[\s\S]*?or newer is required/i;
+
+export function isUnrecognizedModelError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return UNRECOGNIZED_MODEL_PATTERN.test(error);
+}
+
 /** Error text for a worker row that the claim route minted but no runner ever started. */
 export const NEVER_STARTED_ERROR =
   'Worker was never started by a runner (claimed but no session began) — cleaned up as a bookkeeping artifact, not a task failure';
@@ -128,10 +142,18 @@ export function classifyReportedFailure(input: {
    * and a non-mission task (0 retries) was failed permanently by one restart.
    */
   crashReconciled?: boolean;
+  /**
+   * The session died on the CLI's model version gate (see
+   * isUnrecognizedModelError): the runner cannot serve the model the task was
+   * routed to. Infra — a fresh claim routes around it — so it rides the
+   * bounded infra retry budget instead of the task's own.
+   */
+  unrecognizedModel?: boolean;
 }): WorkerExitCause {
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
+  if (input.unrecognizedModel) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed
   // invocation, not a code defect. Must not consume a retry attempt.
   if (input.steeringDelivery) return 'infra_failure';
