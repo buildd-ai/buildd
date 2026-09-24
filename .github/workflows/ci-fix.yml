@@ -28,8 +28,25 @@ jobs:
           RUN_ID=${{ github.event.workflow_run.id }}
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
-          # Get failed job logs with full context (don't truncate)
-          LOGS=$(gh run view $RUN_ID --log-failed 2>&1)
+          # Get failed job logs with full context (don't truncate). `gh run
+          # view --log-failed` is occasionally flaky against the GitHub API;
+          # under `set -e`, `LOGS=$(cmd)` aborts the whole step on a failed
+          # `cmd` with nothing printed (the output only ever reached the
+          # variable) — so a transient blip looked like an opaque, silent
+          # "Classify error type" failure with zero diagnostics. Retry a
+          # few times and print what happened before giving up.
+          LOGS=""
+          for attempt in 1 2 3; do
+            if LOGS=$(gh run view $RUN_ID --log-failed 2>&1); then
+              break
+            fi
+            echo "::warning::gh run view --log-failed failed for run $RUN_ID (attempt $attempt/3): $LOGS"
+            if [ "$attempt" = 3 ]; then
+              echo "::error::gh run view --log-failed failed 3/3 times for run $RUN_ID — giving up on classification"
+              exit 1
+            fi
+            sleep $((5 * attempt))
+          done
 
           # Detect infrastructure errors that should not trigger code fixes:
           # 1. Test machine unreachable over Tailscale (network/host infra issue)
