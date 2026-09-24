@@ -5,7 +5,7 @@
  * tiles. Empty steps are hidden.
  */
 import { describe, expect, it } from 'bun:test';
-import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, type DeliveryInput } from './mission-delivery';
+import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
 
 const base: DeliveryInput = {
   missionStatus: 'active',
@@ -14,6 +14,7 @@ const base: DeliveryInput = {
   awaitingMerge: 0,
   integrationPr: null,
   criteria: { total: 0, passed: null, overall: null },
+  mergedAt: [],
   release: null,
   budget: null,
 };
@@ -64,22 +65,60 @@ describe('buildDeliverySteps', () => {
     expect(buildDeliverySteps({ ...base, criteria: { total: 3, passed: 1, overall: 'fail' } })[1].state).toBe('blocked');
   });
 
-  it('shows Shipped as "after next release" while the workspace queue holds merged work (D6)', () => {
-    const shipped = buildDeliverySteps({ ...base, release: { visible: true } }).find(s => s.key === 'shipped')!;
-    expect(shipped.state).toBe('todo');
+  // D6: the Shipped step reads THIS mission's merges against the release
+  // baseline. The workspace queue depth is a workspace fact and never decides it.
+  const BASELINE = '2026-03-10T12:00:00.000Z';
+  const BEFORE = '2026-03-09T08:00:00.000Z';
+  const AFTER = '2026-03-11T08:00:00.000Z';
+
+  it('says "after next release" only when some mission merge is newer than the release baseline', () => {
+    const shipped = buildDeliverySteps({ ...base, mergedAt: [BEFORE, AFTER], release: { releasedThrough: BASELINE } }).find(s => s.key === 'shipped')!;
     expect(shipped.detail).toBe('after next release');
-    // Workspace-level queue depth is not a mission fact: it never reaches the step.
+    expect(shipped.state).toBe('partial');
     expect(shipped.detail).not.toMatch(/unshipped/);
+    const none = buildDeliverySteps({ ...base, mergedAt: [AFTER], release: { releasedThrough: BASELINE } }).find(s => s.key === 'shipped')!;
+    expect(none).toMatchObject({ state: 'todo', value: '–', detail: 'after next release' });
   });
 
-  it('shows Shipped done once the queue is clean and the work landed', () => {
-    const shipped = buildDeliverySteps({ ...base, completedTasks: 6, release: { visible: false } }).find(s => s.key === 'shipped')!;
+  it('says released only when every mission merge is at or before the baseline', () => {
+    const shipped = buildDeliverySteps({ ...base, completedTasks: 6, mergedAt: [BEFORE, BASELINE], release: { releasedThrough: BASELINE } }).find(s => s.key === 'shipped')!;
+    expect(shipped).toMatchObject({ state: 'done', detail: 'released' });
+    const partial = buildDeliverySteps({ ...base, mergedAt: [BEFORE], release: { releasedThrough: BASELINE } }).find(s => s.key === 'shipped')!;
+    expect(partial.state).toBe('partial');
+    expect(partial.detail).toMatch(/released/);
+  });
+
+  it('hides Shipped for a mission with nothing merged, even while another mission holds the queue (regression)', () => {
+    // 0/6 completed, workspace gated queue non-empty because of OTHER missions.
+    expect(keys({ ...base, completedTasks: 0, mergedAt: [], release: { releasedThrough: BASELINE } })).not.toContain('shipped');
+    expect(keys({ ...base, completedTasks: 0, mergedAt: [], release: { releasedThrough: 'all' } })).not.toContain('shipped');
+  });
+
+  it('keeps a released mission released when another mission merges after the release (regression)', () => {
+    // The workspace queue is non-empty (another mission merged AFTER), but this
+    // mission's merges predate the baseline, so its step must not flip back.
+    const shipped = buildDeliverySteps({ ...base, completedTasks: 6, mergedAt: [BEFORE], release: { releasedThrough: BASELINE } }).find(s => s.key === 'shipped')!;
+    expect(shipped.detail).toBe('released');
+  });
+
+  it('does not call a deploy that predates the mission merge "released"', () => {
+    const shipped = buildDeliverySteps({ ...base, completedTasks: 6, mergedAt: [AFTER], release: { releasedThrough: BASELINE } }).find(s => s.key === 'shipped')!;
+    expect(shipped.detail).toBe('after next release');
+  });
+
+  it('reads a zero workspace queue as every merge released', () => {
+    const shipped = buildDeliverySteps({ ...base, completedTasks: 6, mergedAt: [AFTER], release: { releasedThrough: 'all' } }).find(s => s.key === 'shipped')!;
     expect(shipped.state).toBe('done');
   });
 
-  it('hides Shipped when nothing has merged and the queue is clean, and for a workspace with no release flow', () => {
-    expect(keys({ ...base, completedTasks: 0, release: { visible: false } })).not.toContain('shipped');
-    expect(keys({ ...base, release: null })).not.toContain('shipped');
+  it('accepts Postgres ::text timestamps for both sides', () => {
+    const shipped = buildDeliverySteps({ ...base, completedTasks: 6, mergedAt: ['2026-03-09 08:00:00.12+00'], release: { releasedThrough: '2026-03-10 12:00:00+00' } }).find(s => s.key === 'shipped')!;
+    expect(shipped.detail).toBe('released');
+  });
+
+  it('hides Shipped for a workspace with no release flow or an unparseable baseline', () => {
+    expect(keys({ ...base, mergedAt: [BEFORE], release: null })).not.toContain('shipped');
+    expect(keys({ ...base, mergedAt: [BEFORE], release: { releasedThrough: 'not a date' } })).not.toContain('shipped');
   });
 
   it('shows Budget only when it blocks or is close to the cap', () => {
@@ -94,30 +133,36 @@ describe('buildDeliverySteps', () => {
     expect(keys({
       ...base,
       criteria: { total: 2, passed: 1, overall: 'UNVERIFIED' },
-      release: { visible: true },
+      mergedAt: [AFTER],
+      release: { releasedThrough: BASELINE },
       budget: { budgetUsd: 10, spendUsd: 10, exhausted: true },
     })).toEqual(['integrated', 'verified', 'shipped', 'budget']);
   });
 });
 
 describe('deliveryReleaseInput', () => {
-  it('reads a gated queue with merged work as waiting for the next release', () => {
+  it('reads a gated queue as released through its baseline, never as "this mission waits"', () => {
+    expect(deliveryReleaseInput({
+      state: 'unseeded', archetype: 'gated', seeded: true, baselineSource: 'healthy',
+      queueDepth: 3, oldestMergedAt: null, releaseId: null, baselineAsOf: '2026-03-10T12:00:00.000Z',
+    })).toEqual({ releasedThrough: '2026-03-10T12:00:00.000Z' });
     expect(deliveryReleaseInput({
       state: 'unseeded', archetype: 'gated', seeded: true, baselineSource: 'healthy',
       queueDepth: 3, oldestMergedAt: null, releaseId: null,
-    })).toEqual({ visible: true });
+    })).toBeNull();
   });
 
-  it('reads a clean gated queue as released', () => {
-    expect(deliveryReleaseInput({ state: 'clean', reason: 'zero_queue' })).toEqual({ visible: false });
+  it('reads a clean gated queue as every merge released', () => {
+    expect(deliveryReleaseInput({ state: 'clean', reason: 'zero_queue' })).toEqual({ releasedThrough: 'all' });
   });
 
-  it('reads a healthy continuous deploy as released, and any other deploy state as unknown', () => {
-    const continuous = (deployState: string) => ({
+  it('reads a healthy continuous deploy as released through its deploy time, and any other deploy state as unknown', () => {
+    const continuous = (deployState: string, healthyAt: string | null = '2026-03-10T12:00:00.000Z') => ({
       state: 'unseeded' as const, archetype: 'continuous' as const, seeded: deployState === 'healthy',
-      deployState, deployedAt: null, healthyAt: null, releaseId: null,
+      deployState, deployedAt: '2026-03-10T11:50:00.000Z', healthyAt, releaseId: null,
     });
-    expect(deliveryReleaseInput(continuous('healthy'))).toEqual({ visible: false });
+    expect(deliveryReleaseInput(continuous('healthy'))).toEqual({ releasedThrough: '2026-03-10T12:00:00.000Z' });
+    expect(deliveryReleaseInput(continuous('healthy', null))).toEqual({ releasedThrough: '2026-03-10T11:50:00.000Z' });
     expect(deliveryReleaseInput(continuous('failed'))).toBeNull();
   });
 
@@ -128,12 +173,32 @@ describe('deliveryReleaseInput', () => {
   });
 });
 
+describe('missionTrunkMergedAt', () => {
+  const task = (id: string, mergedAt: string | null, taskClass = 'work') => ({ id, taskClass, workers: [{ mergedAt }] });
+
+  it('lists every worker merge for a mission without an integration branch', () => {
+    expect(missionTrunkMergedAt([task('a', '2026-03-01T00:00:00Z'), task('b', null)], null)).toEqual(['2026-03-01T00:00:00Z']);
+  });
+
+  it('normalises Date merges to ISO strings', () => {
+    expect(missionTrunkMergedAt([{ id: 'a', workers: [{ mergedAt: new Date('2026-03-01T00:00:00Z') }] }], null)).toEqual(['2026-03-01T00:00:00.000Z']);
+  });
+
+  it('counts only the merged integration PR for an integration-branch mission', () => {
+    const tasks = [task('a', '2026-03-01T00:00:00Z'), task('pr', '2026-03-05T00:00:00Z', 'bookkeeping')];
+    const open = { branch: 'mission/example', state: 'open' as const, prNumber: 7, prUrl: null, taskId: 'pr' };
+    expect(missionTrunkMergedAt(tasks, open)).toEqual([]);
+    expect(missionTrunkMergedAt(tasks, { ...open, state: 'merged' as const })).toEqual(['2026-03-05T00:00:00Z']);
+  });
+});
+
 describe('formatDeliverySummary', () => {
   it('joins every visible step into one line with its state glyph', () => {
     const line = formatDeliverySummary(buildDeliverySteps({
       ...base,
       criteria: { total: 3, passed: 2, overall: 'UNVERIFIED' },
-      release: { visible: true },
+      mergedAt: ['2026-03-11T08:00:00.000Z'],
+      release: { releasedThrough: '2026-03-10T12:00:00.000Z' },
     }));
     expect(line).toBe('Integrated ◐ 4/6 · Verified ◐ 2/3 · Shipped ○ –');
   });

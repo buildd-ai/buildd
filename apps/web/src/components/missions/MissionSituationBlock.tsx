@@ -73,7 +73,15 @@ export type PrimaryAffordance =
  */
 export function affordanceFor(
   focus: WaitingOnDescriptor | null,
-  ctx: { missionId: string },
+  ctx: {
+    missionId: string;
+    /**
+     * False when the page renders no `#mission-criteria` target (the Verified
+     * pill is hidden on a terminal mission whose criteria do not pass): a link
+     * to nothing is worse than the sentence alone. Default true.
+     */
+    criteriaReachable?: boolean;
+  },
 ): PrimaryAffordance {
   if (!focus) return null;
   switch (focus.kind) {
@@ -87,6 +95,7 @@ export function affordanceFor(
     }
     case 'criterion_failing':
     case 'criterion_unverified':
+      if (ctx.criteriaReachable === false) return null;
       return { kind: 'internal', label: 'Go to goal criteria', href: `#${MISSION_CRITERIA_ANCHOR}` };
     case 'task_failed':
       return taskAffordance('Open the failed task', focus.taskIds[0], ctx.missionId);
@@ -149,10 +158,12 @@ export interface MissionSituationBlockProps {
    * — the one-line why. The rest is the Feed's job.
    */
   because: CausalLink[];
+  /** False when the page renders no criteria target; see `affordanceFor`. */
+  criteriaReachable?: boolean;
 }
 
-export default function MissionSituationBlock({ missionId, situation, because }: MissionSituationBlockProps) {
-  const affordance = affordanceFor(situation.focus, { missionId });
+export default function MissionSituationBlock({ missionId, situation, because, criteriaReachable }: MissionSituationBlockProps) {
+  const affordance = affordanceFor(situation.focus, { missionId, criteriaReachable });
   const why = because[0] ?? null;
 
   return (

@@ -11,6 +11,8 @@ export type GatedReleaseFooter = {
   oldestMergedAt: DerivedMetric<string>;
   /** Which rung of the baseline ladder produced queueDepth — drives the "no releases yet" badge. */
   baselineSource: ReleaseBaselineSource;
+  /** The baseline instant the queue is measured from: merges at or before it have shipped. */
+  baselineAsOf?: string | null;
   releaseId: string | null;
 };
 

@@ -31,7 +31,7 @@ import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
 import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
-import { toMissionFeedTaskInput } from './task-sheet-nav';
+import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -48,8 +48,7 @@ import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDe
 import MissionDelivery from './MissionDelivery';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionFlightStripInline, MissionStripExpand } from './MissionStripControls';
-import { buildPulseCaption, buildPulseSegments, type MissionFeedTaskInput } from '@/lib/mission-pulse';
-import { buildDeliverySteps, deliveryReleaseInput } from '@/lib/mission-delivery';
+import { buildDeliverySteps, deliveryReleaseInput, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
 import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
@@ -74,7 +73,7 @@ import {
   MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
-import MissionSituationBlock, { affordanceFor } from '@/components/missions/MissionSituationBlock';
+import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 export const dynamic = 'force-dynamic';
@@ -505,11 +504,19 @@ export default async function MissionDetailPage({
   });
   const stateChip = missionAnswer?.chip ?? getMissionStateChip(displayState);
 
+  // The Verified pill is the page's only `#mission-criteria` target. It is
+  // hidden on a terminal mission whose criteria do not pass, and renders
+  // nothing on a terminal mission with no criteria; the situation must not
+  // link to it then. Same predicate as `showVerifiedPill` below.
+  const missionIsTerminal = ['completed', 'archived'].includes(mission.status);
+  const criteriaReachable = (!missionIsTerminal || missionCriteriaOverall === 'pass')
+    && !(missionIsTerminal && (((mission as any).goalCriteria as unknown[] | null) ?? []).length === 0);
+
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
   // parity with the one right action is what made this screen unreadable.
   const hasPrimaryAction = missionAnswer
-    ? affordanceFor(missionAnswer.situation.focus, { missionId: id }) !== null
+    ? affordanceFor(missionAnswer.situation.focus, { missionId: id, criteriaReachable }) !== null
     : false;
 
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
@@ -884,54 +891,13 @@ export default async function MissionDetailPage({
   const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
 
   // ── Mission feed (docs/design/mission-feed-mobile-continuity.md) ──────────
-  // Every mission task, serialisable, in the one input shape the pulse and the
-  // grouped list both read — so the header pulse, the list and `n / N` count
+  // Every mission task in the one input shape the pulse, the grouped list and
+  // the task sheet all read — so the header pulse, the list and `n / N` count
   // the same rows (addendum D1). Attempts and bookkeeping are folded by the
-  // builders, never here.
-  const iso = (d: Date | string | null | undefined) => (d == null ? null : new Date(d).toISOString());
-  const feedTasks: MissionFeedTaskInput[] = allTasks.map(t => {
-    const w = (t.workers as any[] | null)?.[0] ?? null;
-    return {
-      id: t.id,
-      title: t.title,
-      status: t.status,
-      createdAt: iso(t.createdAt)!,
-      updatedAt: iso(t.updatedAt),
-      taskClass: t.taskClass,
-      parentTaskId: t.parentTaskId,
-      mode: t.mode,
-      kind: t.kind ?? null,
-      roleSlug: t.roleSlug ?? null,
-      category: t.category ?? null,
-      creationSource: t.creationSource ?? null,
-      dependsOn: (t.dependsOn as string[] | null) ?? null,
-      missionPhaseIndex: t.missionPhaseIndex ?? null,
-      missionPhaseLabel: t.missionPhaseLabel ?? null,
-      worker: w
-        ? {
-            status: w.status,
-            startedAt: iso(w.startedAt),
-            updatedAt: iso(w.updatedAt),
-            prNumber: w.prNumber ?? null,
-            prUrl: w.prUrl ?? null,
-            prLifecycleStatus: w.prLifecycleStatus ?? null,
-            mergedAt: iso(w.mergedAt),
-          }
-        : null,
-    };
-  });
-  const pulseSegments = buildPulseSegments(feedTasks);
-  const segmentLabels = Object.fromEntries(feedTasks.map(t => [t.id, t.title]));
-  const pulseCaption = buildPulseCaption(pulseSegments, { liveWorkers: activeAgents });
-  const recordsCountByTask: Record<string, number> = {};
-  const liveLines: Record<string, string> = {};
-  for (const t of allTasks) {
-    const workers = (t.workers ?? []) as any[];
-    const n = selectMissionRecords(workers.flatMap(w => w.artifacts ?? [])).length;
-    if (n > 0) recordsCountByTask[t.id] = n;
-    const live = workers[0];
-    if (live && liveStatuses.has(live.status) && live.currentAction) liveLines[t.id] = String(live.currentAction);
-  }
+  // builders, never here (mission-feed-view.ts, unit-tested).
+  const {
+    feedTasks, pulseSegments, segmentLabels, pulseCaption, recordsCountByTask, liveLines,
+  } = buildMissionFeedView(allTasks as unknown as MissionFeedViewTask[], { activeAgents, liveStatuses });
   const renderedAt = Date.now();
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
@@ -1044,6 +1010,11 @@ export default async function MissionDetailPage({
     awaitingMerge,
     integrationPr: missionIntegrationPr,
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
+    // D6: this mission's own trunk merges, read against the release baseline.
+    mergedAt: missionTrunkMergedAt(
+      (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
+      missionIntegrationPr,
+    ),
     release: deliveryReleaseInput(releaseState),
     budget: budgetUsd != null
       ? { budgetUsd, spendUsd, exhausted: mission.status === 'budget_exhausted' }
@@ -1165,6 +1136,7 @@ export default async function MissionDetailPage({
           missionId={id}
           situation={missionAnswer.situation}
           because={missionAnswer.because}
+          criteriaReachable={criteriaReachable}
         />
       )}
 
@@ -1244,6 +1216,16 @@ export default async function MissionDetailPage({
       steps={deliverySteps}
       details={{
         integrated: missionPrCard || reviewSummary ? <div className="space-y-2">{missionPrCard}{reviewSummary}</div> : undefined,
+        // W2: Verified → the Verified pill's sheet (it opens on this hash).
+        verified: criteriaReachable ? (
+          <a
+            href={`#${MISSION_CRITERIA_ANCHOR}`}
+            className="flex min-h-11 items-center gap-2 font-mono text-[12px] text-accent-text hover:underline"
+          >
+            <span className="flex-1">Open goal criteria</span>
+            <span aria-hidden="true">›</span>
+          </a>
+        ) : undefined,
         shipped: mission.workspaceId ? (
           <MissionReleaseSection
             archetype={releaseArchetype}
@@ -1258,7 +1240,7 @@ export default async function MissionDetailPage({
   );
 
   const settings = (
-    <MissionSecondaryPanel configSummary={configSummary}>
+    <MissionSecondaryPanel variant="row" configSummary={configSummary}>
       {/* Where this mission sits, and the chips that used to crowd the header. */}
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-muted">
         {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
@@ -1401,7 +1383,7 @@ export default async function MissionDetailPage({
       workspaceId={mission.workspaceId}
       missionTitle={mission.title}
       chip={stateChip}
-      feedTasks={allTasks.map(toMissionFeedTaskInput)}
+      feedTasks={feedTasks}
       from={from === 'home' || from === 'missions' || from === 'initiative' ? from : null}
       initiativeId={initiativeId ?? null}
     >
@@ -1520,7 +1502,7 @@ export default async function MissionDetailPage({
               initialArtifactId={initialOpenArtifactId ?? null}
             />
             <MissionNotesSheet missionId={id} />
-            <div className="border-t border-border-default pt-3">{settings}</div>
+            {settings}
           </>
         )}
       />

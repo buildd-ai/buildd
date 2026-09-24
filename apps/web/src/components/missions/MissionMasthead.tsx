@@ -88,6 +88,11 @@ export interface MissionMastheadProps {
   onStep?: (dir: 'prev' | 'next') => void;
   /** taskId → label for the pulse's scrub label. */
   segmentLabels?: Readonly<Record<string, string>>;
+  /**
+   * sticky: classes for the header pulse alone (the caption stays). Mission
+   * detail passes `md:hidden`, because at md+ the time-axis strip replaces it.
+   */
+  pulseClassName?: string;
   className?: string;
 }
 
@@ -163,7 +168,7 @@ function StepLink({ dir, href, onStep }: { dir: 'prev' | 'next'; href: string | 
 export default function MissionMasthead(props: MissionMastheadProps) {
   const {
     size, title, chip, segments, situation, caption, href, primary, back, verified, actions, expand,
-    selectedTaskId, position, onStep, segmentLabels, className = '',
+    selectedTaskId, position, onStep, segmentLabels, pulseClassName = '', className = '',
   } = props;
   const { ref, folded } = useFoldOnScroll(size === 'sticky');
 
@@ -248,8 +253,8 @@ export default function MissionMasthead(props: MissionMastheadProps) {
           </div>
         )}
         <div className="flex items-center gap-2">
-          <MissionPulse variant="header" segments={segments} connected segmentLabels={segmentLabels} className="flex-1" />
-          {caption && <span className="shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
+          <MissionPulse variant="header" segments={segments} connected segmentLabels={segmentLabels} className={`flex-1 ${pulseClassName}`} />
+          {caption && <span className="ml-auto shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
           {expand}
         </div>
       </header>

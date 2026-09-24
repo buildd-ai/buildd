@@ -41,7 +41,7 @@ function renderMission(tasks: MissionFeedTaskInput[]) {
         <MissionDelivery
           steps={buildDeliverySteps({
             missionStatus: 'active', totalTasks: 15, completedTasks: 6, awaitingMerge: 0, integrationPr: null,
-            criteria: { total: 0, passed: null, overall: null }, release: null, budget: null,
+            criteria: { total: 0, passed: null, overall: null }, mergedAt: [], release: null, budget: null,
           })}
         />
       }
@@ -117,6 +117,24 @@ describe('MissionDetailView — sticky masthead (AC-5)', () => {
     expect(MISSION_ROW_SCROLL_MARGIN_CLASS).toBe(`scroll-mt-[${MISSION_MASTHEAD_FOLDED_PX}px]`);
     const html = renderMission(fixtureMission(15));
     expect(count(html, MISSION_ROW_SCROLL_MARGIN_CLASS)).toBe(15);
+  });
+});
+
+describe('MissionDetailView — md+ navigator', () => {
+  // At md+ the time-axis strip replaces the header pulse ("Desktop
+  // adaptation"). The rows the pulse focuses live only in the mobile list, so a
+  // header pulse left visible at md+ would outline a display:none row on its
+  // first click and do nothing visible.
+  it('hides the header pulse at md and up, keeping it on mobile', () => {
+    const html = renderMission(fixtureMission(15));
+    expect(html).toMatch(/data-testid="mission-pulse" data-variant="header"[^>]*class="[^"]*\bmd:hidden\b/);
+  });
+
+  it('keeps the counts caption visible at every width', () => {
+    const html = renderMission(fixtureMission(15));
+    const caption = html.match(/<span class="([^"]*)">6\/15<\/span>/);
+    expect(caption).not.toBeNull();
+    expect(caption![1]).not.toContain('hidden');
   });
 });
 

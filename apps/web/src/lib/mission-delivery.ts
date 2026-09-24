@@ -53,15 +53,39 @@ export interface DeliveryInput {
     overall: string | null;
   };
   /**
-   * The workspace release ledger, classified (`classifyReleaseState`). `null`
-   * when the workspace has no release flow (`none` archetype). `visible` means
-   * merged work is waiting for the next release.
+   * When THIS mission's work reached trunk (`missionTrunkMergedAt`): one entry
+   * per merge. Empty when nothing of the mission is on trunk yet.
    */
-  release: { visible: boolean } | null;
+  mergedAt: readonly string[];
+  /**
+   * The workspace release baseline (`deliveryReleaseInput`). `null` when the
+   * workspace has no release flow or no claimable baseline.
+   */
+  release: DeliveryRelease | null;
   budget: { budgetUsd: number; spendUsd: number | null; exhausted: boolean } | null;
   /** Completion stats, carried on the Integrated detail instead of stat tiles. */
   prCount?: number;
   durationLabel?: string | null;
+}
+
+/**
+ * How far the workspace's releases reach. A merge at or before
+ * `releasedThrough` has shipped; a later one waits for the next release.
+ * `'all'` means the workspace queue is empty, so every merge has shipped.
+ */
+export interface DeliveryRelease {
+  releasedThrough: string | 'all';
+}
+
+/**
+ * Milliseconds for an ISO string or a Postgres `::text` timestamp
+ * (`2026-03-10 12:00:00.12+00`), which `Date.parse` rejects on some engines.
+ * NaN when unparseable.
+ */
+export function timestampMs(value: string): number {
+  const direct = Date.parse(value);
+  if (!Number.isNaN(direct)) return direct;
+  return Date.parse(value.trim().replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00'));
 }
 
 /** Spend at or above this fraction of the budget earns a Budget step. */
@@ -112,17 +136,11 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
     });
   }
 
-  // D6: the workspace queue depth is a workspace fact. The mission's step says
-  // only where its own work stands; the count stays on the release surface.
-  if (input.release) {
-    if (input.release.visible) {
-      steps.push({ key: 'shipped', label: DELIVERY_STEP_LABEL.shipped, state: 'todo', value: '–', detail: 'after next release' });
-    } else if (completedTasks > 0) {
-      steps.push(workLanded
-        ? { key: 'shipped', label: DELIVERY_STEP_LABEL.shipped, state: 'done', value: '✓', detail: 'released' }
-        : { key: 'shipped', label: DELIVERY_STEP_LABEL.shipped, state: 'partial', value: '–', detail: 'landed work is released; the rest ships after it merges' });
-    }
-  }
+  // D6: the Shipped step is this mission's fact. The workspace queue depth
+  // never decides it: only this mission's merges, read against the release
+  // baseline, do. Nothing merged, or no claimable baseline, hides the step.
+  const shipped = shippedStep(input, workLanded);
+  if (shipped) steps.push(shipped);
 
   const { budget } = input;
   if (budget) {
@@ -137,20 +155,68 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
   return steps;
 }
 
-/**
- * The workspace release ledger (`classifyReleaseState`), as far as a mission's
- * Shipped step may read it. Only two answers are claims: a gated queue holding
- * merged work (waiting for the next release) and a clean queue or a healthy
- * continuous deploy (released). Everything else — no flow, no baseline, a
- * deploy in flight or failing — claims nothing and hides the step.
- */
-export function deliveryReleaseInput(state: ReleaseState): DeliveryInput['release'] {
-  if (state.state === 'unseeded') {
-    if (state.archetype === 'gated') return { visible: true };
-    return state.deployState === 'healthy' ? { visible: false } : null;
+function shippedStep(input: DeliveryInput, workLanded: boolean): DeliveryStep | null {
+  const { release } = input;
+  if (!release) return null;
+  const merges = input.mergedAt.map(timestampMs).filter(t => !Number.isNaN(t));
+  if (merges.length === 0) return null;
+  const through = release.releasedThrough === 'all' ? Infinity : timestampMs(release.releasedThrough);
+  if (Number.isNaN(through)) return null;
+
+  const waiting = merges.filter(t => t > through).length;
+  const base = { key: 'shipped' as const, label: DELIVERY_STEP_LABEL.shipped };
+  if (waiting > 0) {
+    return { ...base, state: waiting < merges.length ? 'partial' : 'todo', value: '–', detail: 'after next release' };
   }
-  if (state.state === 'clean' && state.reason === 'zero_queue') return { visible: false };
+  return workLanded
+    ? { ...base, state: 'done', value: '✓', detail: 'released' }
+    : { ...base, state: 'partial', value: '–', detail: 'landed work is released; the rest ships after it merges' };
+}
+
+/**
+ * The workspace release ledger (`classifyReleaseState`), reduced to the one
+ * thing a mission's Shipped step may read: how far releases reach. A gated
+ * workspace reaches its baseline (the last release); a clean gated queue
+ * reaches everything; a healthy continuous deploy reaches its deploy time.
+ * Everything else — no flow, no baseline, a deploy in flight or failing —
+ * claims nothing and hides the step.
+ */
+export function deliveryReleaseInput(state: ReleaseState): DeliveryRelease | null {
+  if (state.state === 'unseeded') {
+    if (state.archetype === 'gated') return state.baselineAsOf ? { releasedThrough: state.baselineAsOf } : null;
+    if (state.deployState !== 'healthy') return null;
+    const at = state.healthyAt ?? state.deployedAt;
+    return at ? { releasedThrough: at } : null;
+  }
+  if (state.state === 'clean' && state.reason === 'zero_queue') return { releasedThrough: 'all' };
   return null;
+}
+
+interface TrunkTaskLike {
+  id: string;
+  workers?: ReadonlyArray<{ mergedAt?: string | Date | null }> | null;
+}
+
+/**
+ * When this mission's work reached trunk. Without an integration branch,
+ * every worker merge. With one (Option A′), task PRs merge into the mission
+ * branch and reach trunk only through the integration PR, so only that PR's
+ * merge counts, and nothing does until it merges
+ * (`@buildd/core/release-queue-scope`, the same question the queue asks).
+ */
+export function missionTrunkMergedAt(
+  tasks: readonly TrunkTaskLike[],
+  integrationPr: MissionIntegrationPrView | null,
+): string[] {
+  const iso = (d: string | Date) => (typeof d === 'string' ? d : d.toISOString());
+  const mergesOf = (t: TrunkTaskLike) =>
+    (t.workers ?? []).flatMap(w => (w.mergedAt ? [iso(w.mergedAt)] : []));
+  if (integrationPr) {
+    if (integrationPr.state !== 'merged' || !integrationPr.taskId) return [];
+    const owner = tasks.find(t => t.id === integrationPr.taskId);
+    return owner ? mergesOf(owner) : [];
+  }
+  return tasks.flatMap(mergesOf);
 }
 
 /** `Integrated ◐ 4/6 · Verified ◐ 2/3 · Shipped ○ –` */

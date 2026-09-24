@@ -87,6 +87,12 @@ describe('classifyReleaseState — unseeded (§9.1, AC-43)', () => {
     expect(result.seeded).toBe(true);
   });
 
+  it('carries the baseline instant through, so a mission can compare its own merges to it', () => {
+    const result = classifyReleaseState({ archetype: 'gated', data: gated({ queueDepth: val(2), baselineAsOf: '2026-08-01T00:00:00.000Z' }) });
+    if (result.state !== 'unseeded' || result.archetype !== 'gated') throw new Error('expected gated unseeded');
+    expect(result.baselineAsOf).toBe('2026-08-01T00:00:00.000Z');
+  });
+
   it('continuous with a deploy state renders that state', () => {
     const result = classifyReleaseState({ archetype: 'continuous', data: continuous({ state: 'deploying' }) });
     if (result.state !== 'unseeded' || result.archetype !== 'continuous') throw new Error('expected continuous unseeded');

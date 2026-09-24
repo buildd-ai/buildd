@@ -40,7 +40,7 @@ export function MissionStripExpand({
         data-testid="mission-strip-expand"
         onClick={() => setOpen(true)}
         aria-label="Open the time-axis flight strip"
-        className="flex h-10 w-11 shrink-0 items-center justify-center font-mono text-[14px] text-text-secondary hover:text-text-primary"
+        className="flex h-11 w-11 shrink-0 items-center justify-center font-mono text-[14px] text-text-secondary hover:text-text-primary"
       >
         ⤢
       </button>

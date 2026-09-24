@@ -17,10 +17,10 @@
  *   (`createFreezeGate`). When it lifts, moved rows slide into place over
  *   {@link FLIP_MS} instead of jumping.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import MissionTaskRow from '@/components/missions/MissionTaskRow';
 import { useMissionFocusSnapshot, useMissionFocusStore } from '@/components/missions/mission-focus-context';
-import { buildMissionFeedGroups, type FeedGroup, type FeedRow } from '@/lib/mission-feed-groups';
+import { buildMissionFeedGroups, type FeedGroup, type FeedPhaseItem, type FeedRow } from '@/lib/mission-feed-groups';
 import type { MissionFeedTaskInput } from '@/lib/mission-pulse';
 import { missionTaskAnchorId, type MissionOrigin } from '@/lib/mission-task-href';
 
@@ -44,6 +44,14 @@ export function flipDeltas(prev: ReadonlyMap<string, number>, next: ReadonlyMap<
     if (Math.abs(d) >= 1) out.set(id, d);
   }
   return out;
+}
+
+/**
+ * The ids whose focus unfolds a phase: its own rows only. A slot's task lives
+ * in a pinned group, so focusing it must not force its home phase open.
+ */
+export function phaseRevealIds(items: readonly FeedPhaseItem[]): string[] {
+  return items.flatMap(i => (i.type === 'row' ? [i.row.taskId] : []));
 }
 
 export interface MissionFeedListProps {
@@ -191,14 +199,29 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
     return rows.map(row => <MissionTaskRow key={row.taskId} {...rowProps(row)} />);
   };
 
-  const onSlotClick = (taskId: string) => (e: MouseEvent) => {
-    // The slot is a marker, not the task: it moves focus to the pinned row and
-    // never reaches the sheet's delegated [data-task-id] handler.
-    e.stopPropagation();
-    if (!store) return;
-    e.preventDefault();
-    store.focus(taskId);
-  };
+  // A slot is a 20px marker, not a tap target (44px rule): the pinned row above
+  // is the target. `pointer-events-none` keeps a tap on it from reaching the
+  // sheet's delegated [data-task-id] handler; aria-hidden keeps it out of the
+  // reading order, where the pinned row already announces the task.
+  const renderItems = (items: readonly FeedPhaseItem<T>[], hidden: boolean) =>
+    items.map(item => {
+      if (item.type === 'row') {
+        if (hidden) hiddenNow.add(item.row.taskId);
+        return <MissionTaskRow key={item.row.taskId} {...rowProps(item.row)} />;
+      }
+      return (
+        <div
+          key={`slot-${item.taskId}`}
+          data-testid="mission-task-slot"
+          data-task-id={item.taskId}
+          aria-hidden="true"
+          className="pointer-events-none flex h-5 items-center gap-1 truncate pl-[2.75rem] pr-3 font-mono text-[11px] text-text-muted"
+        >
+          <span>↑</span>
+          <span className="min-w-0 truncate">{`${item.title} · in ${SLOT_LABEL[item.pinnedIn]}`}</span>
+        </div>
+      );
+    });
 
   return (
     <section ref={listRef} data-testid="mission-feed" aria-label="Tasks" className="border-t-2 border-border-strong">
@@ -242,15 +265,23 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
     // phase header. With no header there is nothing to unfold, so its rows
     // never fold either.
     const headerless = g.label === null && phaseGroupCount === 1;
-    const rowIds = g.items.map(i => (i.type === 'row' ? i.row.taskId : i.taskId));
+    const rowIds = phaseRevealIds(g.items);
     const expanded = headerless || isOpen(key, rowIds, !g.collapsed);
-    const own = g.items.filter((i): i is Extract<typeof i, { type: 'row' }> => i.type === 'row').map(i => i.row);
-    const slots = g.items.filter((i): i is Extract<typeof i, { type: 'slot' }> => i.type === 'slot');
     const limit = headerless ? null : g.visibleLimit;
+    // Items in model order: a slot sits at its place (grouping rule 4). The cap
+    // counts rows only; everything from the first row past it goes to overflow.
+    const own: FeedRow<T>[] = [];
+    let cut = g.items.length;
+    g.items.forEach((item, i) => {
+      if (item.type !== 'row') return;
+      if (limit !== null && own.length === limit && cut === g.items.length) cut = i;
+      own.push(item.row);
+    });
+    const shownItems = g.items.slice(0, cut);
+    const restItems = g.items.slice(cut);
+    const restRows = phaseRevealIds(restItems);
     const overflowKey = `${key}:more`;
-    const overflowOpen = isOpen(overflowKey, limit === null ? [] : own.slice(limit).map(r => r.taskId), false);
-    const shown = limit === null ? own : own.slice(0, limit);
-    const rest = limit === null ? [] : own.slice(limit);
+    const overflowOpen = isOpen(overflowKey, restRows, false);
     const records = own.reduce((n, r) => n + (recordsCountByTask?.[r.taskId] ?? 0), 0);
     const label = g.label ? `${g.ordinal} · ${g.label}` : 'Unphased';
     const headerMeta = [
@@ -275,25 +306,12 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
           </button>
         )}
         <div hidden={!expanded}>
-          {slots.map(s => (
-            <a
-              key={`slot-${s.taskId}`}
-              data-testid="mission-task-slot"
-              data-task-id={s.taskId}
-              href={`#${missionTaskAnchorId(s.taskId)}`}
-              onClick={onSlotClick(s.taskId)}
-              className="flex h-5 items-center gap-1 truncate pl-[2.75rem] pr-3 font-mono text-[11px] text-text-muted hover:text-text-primary"
-            >
-              <span aria-hidden="true">↑</span>
-              <span className="min-w-0 truncate">{`${s.title} · in ${SLOT_LABEL[s.pinnedIn]}`}</span>
-            </a>
-          ))}
-          {renderRows(shown, !expanded)}
-          {rest.length > 0 && (
+          {renderItems(shownItems, !expanded)}
+          {restRows.length > 0 && (
             <>
-              <div data-testid="mission-feed-overflow" hidden={!overflowOpen}>{renderRows(rest, !expanded || !overflowOpen)}</div>
+              <div data-testid="mission-feed-overflow" hidden={!overflowOpen}>{renderItems(restItems, !expanded || !overflowOpen)}</div>
               <MoreButton
-                label={overflowOpen ? 'Show fewer ▴' : `+${rest.length} queued ▸`}
+                label={overflowOpen ? 'Show fewer ▴' : `+${restRows.length} queued ▸`}
                 expanded={overflowOpen}
                 onClick={() => toggle(overflowKey, !overflowOpen)}
               />

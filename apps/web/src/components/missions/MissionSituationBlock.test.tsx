@@ -196,6 +196,19 @@ describe('affordanceFor', () => {
     });
   });
 
+  it('offers no criteria link when the page renders no criteria target (terminal mission, pill hidden)', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      criteriaGate: { state: 'failing', tone: 'warning', label: 'FAIL', detail: 'ships on trunk' },
+      criteriaItems: [{ verdict: 'fail', label: 'ships on trunk' }],
+    });
+    expect(affordanceFor(view.situation.focus, { missionId: 'm-1', criteriaReachable: false })).toBeNull();
+    const html = renderToStaticMarkup(
+      <MissionSituationBlock missionId="m-1" situation={view.situation} because={[]} criteriaReachable={false} />,
+    );
+    expect(html).not.toContain('#mission-criteria');
+  });
+
   it("opens a mission task in the sheet over the mission, never a bare task-page push", () => {
     const failed = { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] };
     expect(affordanceFor(failed, { missionId: 'm-1' })).toEqual({

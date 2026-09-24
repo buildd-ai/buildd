@@ -92,6 +92,8 @@ describe('loadReleaseFooterData', () => {
       queueDepth: { kind: 'value', value: 4 },
       oldestMergedAt: { kind: 'value', value: '2026-08-10T00:00:00.000Z' },
       baselineSource: 'prod_head',
+      // The mission Delivery step compares its own merges to this instant (D6).
+      baselineAsOf: '2026-08-01T00:00:00.000Z',
       releaseId: 'rel-latest',
     });
   });

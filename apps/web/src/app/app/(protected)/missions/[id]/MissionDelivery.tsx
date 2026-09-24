@@ -38,8 +38,22 @@ export default function MissionDelivery({ steps, details = {} }: MissionDelivery
   return (
     <details data-testid="mission-delivery" open={blocked} className="group mb-3 border-y border-border-default">
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
-        <span data-testid="mission-delivery-summary" className="min-w-0 flex-1 truncate">
-          {formatDeliverySummary(steps)}
+        {/* Wraps between steps rather than truncating: with all four steps the
+            line is wider than 358px, and truncation dropped Budget, the one
+            step that blocks. */}
+        <span
+          data-testid="mission-delivery-summary"
+          aria-label={formatDeliverySummary(steps)}
+          className="flex min-w-0 flex-1 flex-wrap gap-x-1.5 py-1"
+        >
+          {steps.map((s, i) => (
+            <span key={s.key} data-testid="mission-delivery-summary-step" data-step={s.key} className="whitespace-nowrap" aria-hidden="true">
+              {i > 0 && <span className="text-text-muted">{'· '}</span>}
+              {`${s.label} `}
+              <span className={STATE_TEXT[s.state]}>{DELIVERY_STATE_GLYPH[s.state]}</span>
+              {` ${s.value}`}
+            </span>
+          ))}
         </span>
         <span aria-hidden="true" className="shrink-0 text-text-muted group-open:rotate-180">▾</span>
       </summary>

@@ -99,6 +99,9 @@ export default function MissionDetailView({
           verified={verified}
           actions={actions}
           expand={expand ? <span className="md:hidden">{expand}</span> : undefined}
+          // At md+ the time-axis strip is the navigator; the rows this pulse
+          // focuses exist only in the mobile list.
+          pulseClassName="md:hidden"
           className="px-4 md:px-10"
         />
       </MastheadClickGuard>

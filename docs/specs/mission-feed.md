@@ -78,6 +78,12 @@ Timeline and Structure views are unchanged and are covered by
 - The Delivery line shows only steps with something to say
   (`buildDeliverySteps`). The workspace release queue depth never appears on a
   mission step (`deliveryReleaseInput`).
+- The Shipped step reads only this mission's trunk merges
+  (`missionTrunkMergedAt`) against the release baseline. A mission with nothing
+  merged has no Shipped step; "after next release" means one of its merges is
+  newer than the baseline; "released" means none is.
+- A slot marker sits at its task's sorted place in the phase and is not a tap
+  target.
 - `Records · N` counts `selectMissionRecords` and opens a sheet listing exactly
   those. Other artifacts are one tap further in the same sheet. The page has
   no unfiltered artifact list.
@@ -104,6 +110,10 @@ Timeline and Structure views are unchanged and are covered by
   is built THEN it has no steps and renders nothing.
 - AC-8: GIVEN a workspace with no release flow, or a gated workspace with no
   resolvable baseline WHEN Delivery is built THEN it has no Shipped step.
+- AC-8a: GIVEN a mission with no merged work and a workspace queue holding
+  another mission's merges WHEN Delivery is built THEN it has no Shipped step;
+  GIVEN a mission whose merges all predate the release baseline WHEN another
+  mission merges after it THEN its Shipped step still reads "released".
 - AC-9: GIVEN a mission with artifacts, some review-worthy WHEN the Records
   sheet opens THEN it lists only the review-worthy ones until "All artifacts"
   is tapped.
@@ -122,7 +132,10 @@ Timeline and Structure views are unchanged and are covered by
   mobile list, the freeze gate and the reorder slide (`flipDeltas`).
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionDelivery.tsx` and
   `apps/web/src/lib/mission-delivery.ts` — the Delivery line
-  (`buildDeliverySteps`, `formatDeliverySummary`, `deliveryReleaseInput`).
+  (`buildDeliverySteps`, `formatDeliverySummary`, `deliveryReleaseInput`,
+  `missionTrunkMergedAt`).
+- `apps/web/src/app/app/(protected)/missions/[id]/mission-feed-view.ts` — the
+  page's one feed derivation (`buildMissionFeedView`).
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.tsx` —
   the Records sheet (`resolveInitialRecordsView`).
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx` — the
