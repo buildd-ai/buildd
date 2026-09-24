@@ -103,11 +103,14 @@ jobs:
             echo "::warning::connection_uris not in branch response, fetching connection string via endpoint API"
             ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
             if [ -n "$ENDPOINT_ID" ]; then
-              # Get connection URI from the endpoint's connection_uri API
+              # Get connection URI from the endpoint's connection_uri API. The endpoint can
+              # still be provisioning right after branch creation, so a non-2xx response here
+              # is expected — `|| true` keeps it from aborting the step (bash -e) and falls
+              # through to the manual-construction fallback below instead.
               CONN_RESPONSE=$(curl -sf \
                 -H "Authorization: Bearer $NEON_API_KEY" \
-                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
-              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb" || true)
+              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty' 2>/dev/null || true)
             fi
           fi
 
@@ -115,8 +118,12 @@ jobs:
             echo "::warning::Could not extract connection URI from API, falling back to manual construction"
             ENDPOINTS=$(curl -sf \
               -H "Authorization: Bearer $NEON_API_KEY" \
-              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
-            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints" || true)
+            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host // empty' 2>/dev/null || true)
+            if [ -z "$HOST" ]; then
+              echo "::error::Could not determine Neon endpoint host for branch $BRANCH_ID"
+              exit 1
+            fi
             CONNECTION_URI="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
           fi
 
