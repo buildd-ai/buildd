@@ -20,6 +20,20 @@ export function isLongDescription(text: string): boolean {
   return text.length > DESCRIPTION_PREVIEW_CHARS || text.split('\n').length > DESCRIPTION_PREVIEW_LINES;
 }
 
+/**
+ * Four whole lines at 13px × leading-relaxed (≈21px each), then a mask fade so
+ * the cut never lands mid-glyph. A mask (not a surface-coloured overlay) works
+ * on whatever panel the description sits on.
+ */
+const COLLAPSED_CLASS =
+  'max-h-[5.25rem] overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]';
+
+const ERROR = (msg: string) => (
+  <span data-testid="mission-description-error" className="font-mono text-[11px] text-status-error">
+    {msg}
+  </span>
+);
+
 const ACTION_CLASS =
   'inline-flex min-h-11 items-center font-mono text-[11px] uppercase tracking-wider text-text-muted hover:text-text-primary transition-colors md:min-h-0 md:py-1';
 
@@ -38,6 +52,14 @@ export default function MissionDescription({
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Re-sync after a server refresh (MissionAutoRefresh) — but never under an
+  // open draft; a prop that changes mid-edit is picked up once editing ends.
+  const [syncedFrom, setSyncedFrom] = useState(initialDescription);
+  if (!editing && initialDescription !== syncedFrom) {
+    setSyncedFrom(initialDescription);
+    setDescription((initialDescription ?? '').trim());
+  }
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -51,12 +73,15 @@ export default function MissionDescription({
 
   const startEdit = useCallback(() => {
     setDraft(description);
+    setError(null);
     setEditing(true);
   }, [description]);
 
   const save = useCallback(async () => {
     const next = draft.trim();
     setEditing(false);
+    // This save supersedes whatever the props said while the draft was open.
+    setSyncedFrom(initialDescription);
     if (next === description) return;
     const before = description;
     setDescription(next);
@@ -68,13 +93,17 @@ export default function MissionDescription({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description: next }),
       });
-      if (!res.ok) setDescription(before);
+      if (!res.ok) {
+        setDescription(before);
+        setError('Save failed');
+      }
     } catch {
       setDescription(before);
+      setError('Save failed');
     } finally {
       setSaving(false);
     }
-  }, [draft, description, missionId]);
+  }, [draft, description, missionId, initialDescription]);
 
   if (!description && readonly) return null;
 
@@ -90,6 +119,8 @@ export default function MissionDescription({
             e.target.style.height = 'auto';
             e.target.style.height = `${e.target.scrollHeight}px`;
           }}
+          // Clicking away saves, as the old inline editor did.
+          onBlur={() => void save()}
           onKeyDown={(e) => {
             if (e.key === 'Escape') setEditing(false);
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void save();
@@ -98,10 +129,24 @@ export default function MissionDescription({
           className="w-full resize-none border border-border-default bg-surface-2 p-2 text-[13px] leading-relaxed text-text-primary outline-none focus:border-accent-text"
         />
         <div className="flex items-center gap-4">
-          <button type="button" onClick={() => void save()} className={`${ACTION_CLASS} text-accent-text`}>
+          {/* preventDefault on mousedown keeps focus in the textarea, so these
+              buttons act on click instead of the blur-save firing first. */}
+          <button
+            type="button"
+            data-testid="mission-description-save"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void save()}
+            className={`${ACTION_CLASS} text-accent-text`}
+          >
             Save
           </button>
-          <button type="button" onClick={() => setEditing(false)} className={ACTION_CLASS}>
+          <button
+            type="button"
+            data-testid="mission-description-cancel"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setEditing(false)}
+            className={ACTION_CLASS}
+          >
             Cancel
           </button>
           <span className="hidden font-mono text-[10px] text-text-muted md:inline">Markdown · ⌘↵ to save</span>
@@ -116,6 +161,7 @@ export default function MissionDescription({
         <button type="button" data-testid="mission-description-edit" onClick={startEdit} className={ACTION_CLASS}>
           + Add a description
         </button>
+        {error && ERROR(error)}
       </div>
     );
   }
@@ -127,7 +173,7 @@ export default function MissionDescription({
     <div data-testid="mission-description" className={`mb-3 ${saving ? 'opacity-60' : ''}`}>
       <div
         data-collapsed={collapsed ? 'true' : undefined}
-        className={`text-[13px] leading-relaxed text-text-desc ${collapsed ? 'max-h-24 overflow-hidden' : ''}`}
+        className={`text-[13px] leading-relaxed text-text-desc ${collapsed ? COLLAPSED_CLASS : ''}`}
       >
         <MarkdownContent content={description} variant="compact" className="[&>*:first-child]:mt-0" />
       </div>
@@ -148,6 +194,7 @@ export default function MissionDescription({
             Edit
           </button>
         )}
+        {error && ERROR(error)}
       </div>
     </div>
   );

@@ -65,7 +65,6 @@ describe('S3 retirements', () => {
     expect(src).toMatch(/description=\{\s*<MissionDescription\b/);
     expect(src.split('<MissionDescription').length - 1).toBe(1);
     // Settings' editor no longer receives the description (or re-renders the title).
-    expect(src).not.toContain('initialDescription={mission.description}\n        healthPill');
     expect(src).not.toMatch(/<MissionInlineEdit[^>]*initialDescription/);
   });
 });

@@ -57,6 +57,16 @@ describe('MissionDescription collapses long text', () => {
     expect(toggle).toContain('min-h-11');
   });
 
+  it('clips at a whole number of lines and fades the cut, whatever the background', () => {
+    const html = renderToStaticMarkup(<MissionDescription missionId="m-1" initialDescription={long} />);
+    const clip = html.slice(html.lastIndexOf('<', html.indexOf('data-collapsed="true"')), html.indexOf('>', html.indexOf('data-collapsed="true"')) + 1);
+    // 13px × leading-relaxed (1.625) ≈ 21px/line; 4 lines ≈ 5.25rem. max-h-24 cut mid-line.
+    expect(clip).toContain('max-h-[5.25rem]');
+    expect(clip).not.toContain('max-h-24');
+    // A mask, not a surface-coloured overlay, so it works on any panel.
+    expect(clip).toContain('[mask-image:linear-gradient(to_bottom,black_60%,transparent)]');
+  });
+
   it('clamps a short description that has many lines', () => {
     const lines = Array.from({ length: 8 }, (_, i) => `- item ${i}`).join('\n');
     const html = renderToStaticMarkup(<MissionDescription missionId="m-1" initialDescription={lines} />);

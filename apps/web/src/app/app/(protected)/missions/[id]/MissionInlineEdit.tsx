@@ -24,6 +24,12 @@ export default function MissionInlineEdit({ missionId, initialTitle }: MissionIn
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Re-sync after a server refresh when the title changed elsewhere (not mid-edit).
+  const [syncedFrom, setSyncedFrom] = useState(initialTitle);
+  if (!editing && initialTitle !== syncedFrom) {
+    setSyncedFrom(initialTitle);
+    setTitle(initialTitle);
+  }
 
   useEffect(() => {
     if (editing && inputRef.current) {
