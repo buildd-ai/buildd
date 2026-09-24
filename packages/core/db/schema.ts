@@ -1503,6 +1503,12 @@ export const workers = pgTable('workers', {
   // response, never cleared — each rejection is a distinct worker row, so
   // there is nothing later to go stale against.
   rejectedCompletionPayload: jsonb('rejected_completion_payload').$type<Record<string, unknown> | null>(),
+  // Latest loop verification evidence (command exit condition) the runner
+  // recorded for this worker. The runner's PreToolUse hook runs the command
+  // and writes it here BEFORE the agent's own complete_task reaches the
+  // server — that PATCH carries no evidence, so the loop dispatch falls back
+  // to this column. Bound to workerId + iteration inside the object.
+  verificationEvidence: jsonb('verification_evidence').$type<Record<string, unknown> | null>(),
   // MCP tool call log - appended by runner during execution
   mcpCalls: jsonb('mcp_calls').default([]).$type<Array<{
     server: string;

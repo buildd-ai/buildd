@@ -6,6 +6,7 @@ import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
+import { BUILDD_MCP_TOOL_NAME } from './action-events';
 
 /**
  * Dependencies that the hook factory needs from WorkerManager.
@@ -94,6 +95,54 @@ export class HookFactory {
       }
 
       // Never block the edit
+      return {};
+    };
+  }
+
+  /**
+   * PreToolUse hook for command-loop tasks: runs the verification command
+   * BEFORE the agent's own `complete_task` reaches the server, and records the
+   * evidence on the worker row.
+   *
+   * Why before: complete_task goes agent → buildd MCP → server directly, and
+   * the server makes the loop exit decision on that PATCH. The runner's own
+   * post-session evidence arrives after the row is terminal, is refused with
+   * the rest of the completion payload, and (by design — it is a state input,
+   * not a measurement) is not re-sent as metrics. Without this hook every
+   * agent-authored completion of a command loop was evaluated as "no
+   * verification evidence" and requeued, whatever the command would have said.
+   *
+   * The evidence travels as a runner-authored PATCH, never as a complete_task
+   * parameter: the agent must not be able to author its own pass.
+   *
+   * Fail-open: if recording fails the call proceeds, and the server behaves as
+   * it did before this hook existed. A complete_task carrying `error` is a
+   * failure report, not a completion to verify, so it is left alone.
+   */
+  createLoopVerificationHook(
+    worker: LocalWorker,
+    collect: () => Promise<Record<string, unknown> | undefined>,
+  ): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      if ((input as any).tool_name !== BUILDD_MCP_TOOL_NAME) return {};
+      const toolInput = ((input as any).tool_input ?? {}) as { action?: string; params?: Record<string, unknown> };
+      if (toolInput.action !== 'complete_task') return {};
+      if (toolInput.params?.error) return {};
+
+      this.ctx.addMilestone(worker, { type: 'status', label: 'Running verification command before complete_task…', ts: Date.now() });
+      const verificationEvidence = await collect();
+      if (!verificationEvidence) return {};
+      try {
+        await this.ctx.buildd.updateWorker(worker.id, { verificationEvidence });
+        this.ctx.addMilestone(worker, {
+          type: 'status',
+          label: `Verification ${verificationEvidence.outcome === 'ok' ? 'passed' : String(verificationEvidence.outcome)} (exit ${verificationEvidence.exitCode ?? '?'})`,
+          ts: Date.now(),
+        });
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] Could not record verification evidence before complete_task: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return {};
     };
   }
