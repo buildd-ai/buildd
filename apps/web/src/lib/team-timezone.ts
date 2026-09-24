@@ -14,15 +14,24 @@ import { DEFAULT_TIMEZONE, isValidTimezone, resolveTimezone } from '@buildd/core
 
 /** The team's canonical working zone, or UTC. */
 export async function getTeamTimezone(teamId: string | null | undefined): Promise<string> {
-  if (!teamId) return DEFAULT_TIMEZONE;
+  return resolveTimezone(await getTeamTimezoneSetting(teamId));
+}
+
+/**
+ * The team's zone exactly as set, or null when it has none (or the lookup
+ * fails). For the dashboard, where "unset" must fall back to the viewer's
+ * browser zone rather than to UTC — see `components/DisplayTimezone.tsx`.
+ */
+export async function getTeamTimezoneSetting(teamId: string | null | undefined): Promise<string | null> {
+  if (!teamId) return null;
   try {
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
       columns: { timezone: true },
     });
-    return resolveTimezone(team?.timezone);
+    return isValidTimezone(team?.timezone) ? team.timezone : null;
   } catch {
-    return DEFAULT_TIMEZONE;
+    return null;
   }
 }
 
