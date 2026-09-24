@@ -59,4 +59,12 @@ describe('S3 retirements', () => {
     expect(src).not.toContain('summaryContent');
     expect(src).not.toContain('feedContent');
   });
+
+  it('F5: the description renders once, under the masthead; Settings only renames', () => {
+    const src = readFileSync(PAGE, 'utf8');
+    expect(src).toMatch(/description=\{\s*<MissionDescription\b/);
+    expect(src.split('<MissionDescription').length - 1).toBe(1);
+    // Settings' editor no longer receives the description (or re-renders the title).
+    expect(src).not.toMatch(/<MissionInlineEdit[^>]*initialDescription/);
+  });
 });

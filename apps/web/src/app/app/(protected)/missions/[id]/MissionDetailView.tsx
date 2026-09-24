@@ -5,10 +5,12 @@
  * waiting on and what is left":
  *
  * 1. the sticky masthead — title, one state chip, the Verified pill, the pulse;
- * 2. the situation — the one sentence and its one action;
- * 3. Delivery — the one-line stepper;
- * 4. the task list — `MissionFeedList` below md, the Timeline/Structure toggle at md+;
- * 5. the footer rows — Orchestrator, Records, Notes, Settings.
+ * 2. the description — what the mission is for, as markdown, collapsed when
+ *    long (its one place on the page; Settings no longer carries it);
+ * 3. the situation — the one sentence and its one action;
+ * 4. Delivery — the one-line stepper;
+ * 5. the task list — `MissionFeedList` below md, the Timeline/Structure toggle at md+;
+ * 6. the footer rows — Orchestrator, Records, Notes, Settings.
  *
  * The task list is evidence for the answer, so it comes after it (AC-1).
  * Server component: every client piece arrives as a component or a slot, and
@@ -56,6 +58,8 @@ export interface MissionDetailViewProps {
   expand?: ReactNode;
   /** md+ only: the time-axis strip inline under the masthead. */
   desktopStrip?: ReactNode;
+  /** The mission description (`MissionDescription`), above the situation. */
+  description?: ReactNode;
   situation?: ReactNode;
   delivery?: ReactNode;
   feed: Omit<MissionFeedListProps, 'missionId'>;
@@ -78,6 +82,7 @@ export default function MissionDetailView({
   actions,
   expand,
   desktopStrip,
+  description,
   situation,
   delivery,
   feed,
@@ -109,6 +114,7 @@ export default function MissionDetailView({
       {desktopStrip && <div className="hidden px-10 md:block">{desktopStrip}</div>}
 
       <div className="px-4 pt-3 md:px-10">
+        {description}
         {situation}
         {delivery}
       </div>
