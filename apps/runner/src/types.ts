@@ -2,6 +2,7 @@ import type { RoleConfig, RoleInstructions } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
+import type { SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -331,6 +332,11 @@ export interface LocalWorker {
   // row, packaged or not; the only source of the agent's persona on both the
   // Claude (systemPrompt.append) and Codex (AGENTS.md) paths.
   roleInstructions?: RoleInstructions;
+  // Skill bundles resolved by the claim route for task.context.skillSlugs.
+  // Materialized to disk by syncSkillToLocal in startSession so the SDK's
+  // native Skill tool can find them — without this, a task instructed to
+  // invoke a skill has the instruction but not the skill.
+  skillBundles?: SkillBundle[];
   // Degraded connectors (advisory mode) — connectors that are unavailable but
   // task was allowed to proceed. Injected into system prompt in startSession.
   degradedConnectors?: Array<{ id: string; name: string; failureMode: string }>;

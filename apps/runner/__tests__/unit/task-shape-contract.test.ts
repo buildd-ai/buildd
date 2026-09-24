@@ -49,11 +49,24 @@ const SDK_TYPES_SRC = readFileSync(
 
 type Patch = { id: string; payload: any; accepted: boolean };
 const patches: Patch[] = [];
-/** Terminal status of the worker row server-side, and who wrote it. */
-let server: { status: 'completed' | 'failed' | null; writer: 'agent' | 'runner' | null } = { status: null, writer: null };
+/**
+ * Terminal status of the worker row server-side, and who wrote it.
+ * `storedEvidence` is workers.verification_evidence — written by any accepted
+ * non-metrics PATCH that carries verificationEvidence. `evidenceAtCompletion`
+ * is what the row held when the terminal write landed: it is what the
+ * server's loop dispatch evaluates a command exit condition against.
+ */
+let server: {
+  status: 'completed' | 'failed' | null;
+  writer: 'agent' | 'runner' | null;
+  storedEvidence?: Record<string, unknown>;
+  evidenceAtCompletion?: Record<string, unknown>;
+} = { status: null, writer: null };
 
 function agentCompletedTask() {
-  if (server.status === null) server = { status: 'completed', writer: 'agent' };
+  // The agent's complete_task PATCH (packages/core/mcp-tools.ts) never carries
+  // evidence itself, so the server can only use what is already stored.
+  if (server.status === null) server = { ...server, status: 'completed', writer: 'agent', evidenceAtCompletion: server.storedEvidence };
 }
 
 const mockUpdateWorker = mock(async (id: string, payload: any) => {
@@ -62,7 +75,8 @@ const mockUpdateWorker = mock(async (id: string, payload: any) => {
     patches.push({ id, payload, accepted: false });
     return { abort: true, actualStatus: server.status };
   }
-  if (terminal) server = { status: payload.status, writer: 'runner' };
+  if (payload?.verificationEvidence && !payload?.metricsOnly) server.storedEvidence = payload.verificationEvidence;
+  if (terminal) server = { ...server, status: payload.status, writer: 'runner', evidenceAtCompletion: server.storedEvidence };
   patches.push({ id, payload, accepted: true });
   return payload?.metricsOnly ? { updated: Object.keys(payload) } : {};
 });
@@ -73,6 +87,16 @@ const mockClaimTask = mock(async () => ({ workers: [] as any[] }));
 
 let scriptQueue: Script[] = [];
 let backendCalls: Array<{ backend: string; config: any; opts?: any }> = [];
+
+async function runPreToolUseHooks(config: any, entry: Record<string, any>) {
+  const block = entry.message.content.find((b: any) => b.type === 'tool_use');
+  for (const matcher of config?.options?.hooks?.PreToolUse ?? []) {
+    if (matcher.matcher && !new RegExp(`^(?:${matcher.matcher})$`).test(block.name)) continue;
+    for (const hook of matcher.hooks) {
+      await hook({ hook_event_name: 'PreToolUse', tool_name: block.name, tool_input: block.input, tool_use_id: block.id }, block.id, { signal: new AbortController().signal });
+    }
+  }
+}
 
 mock.module('../../src/backends/index.js', () => ({
   createBackend: (backend: string, config: any) => {
@@ -85,6 +109,11 @@ mock.module('../../src/backends/index.js', () => ({
         for (const entry of script) {
           if ('__throw' in entry) throw new Error(entry.__throw as string);
           if ('__event' in entry) { yield entry.__event; continue; }
+          // The SDK runs PreToolUse hooks BEFORE the tool executes, so any
+          // hook the runner registers on complete_task finishes before the
+          // server sees the call. Only complete_task is replayed through the
+          // hooks — it is the one call whose ordering against a hook matters.
+          if (isCompleteTaskCall(entry)) await runPreToolUseHooks(config, entry);
           await opts.onProgress?.(entry);
           if (isCompleteTaskCall(entry)) agentCompletedTask();
           const { events, stop } = translateScriptedMessage(entry);
@@ -136,7 +165,9 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    // A directory that exists: loop-command rows really run their
+    // verification command there (child_process is not faked).
+    resolve: () => '/tmp',
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
@@ -198,6 +229,8 @@ type Terminal = {
   /** resultMeta.closingTurnOutcome on whichever runner PATCH the server kept. */
   closingTurnOutcome?: string | RegExp;
   errorMatches?: RegExp;
+  /** The verification evidence the server held when the terminal write landed. */
+  evidenceAtCompletion?: Record<string, unknown>;
   /** Extra payload assertions on the runner's terminal/metrics PATCH. */
   payload?: (p: any) => void;
 };
@@ -319,6 +352,21 @@ const SHAPES: Shape[] = [
     expect: {
       status: 'completed', writer: 'runner', sessions: 2, summarySource: 'fallback',
       payload: p => expect(p.verificationEvidence).toMatchObject({ iteration: 2, conditionType: 'command', command: 'bun run check' }),
+    },
+  },
+
+  {
+    // The agent's own complete_task reaches the server directly, never
+    // through the runner, and the runner's post-session evidence only follows
+    // as a metrics-only PATCH that the server does not act on. So the
+    // command must run BEFORE complete_task lands, and its evidence must
+    // already be on the worker row the server evaluates the loop against.
+    name: 'loop command: agent calls complete_task itself; the server already holds the evidence',
+    task: { outputRequirement: 'auto', loopIteration: 1, loopConfig: { exitCondition: { type: 'command', command: 'true' } } },
+    scripts: [[init(), say('Iteration done.'), ...completeTask('Made the check pass.'), success()]],
+    expect: {
+      status: 'completed', writer: 'agent', sessions: 1,
+      evidenceAtCompletion: { iteration: 1, conditionType: 'command', command: 'true', outcome: 'ok', exitCode: 0 },
     },
   },
 
@@ -482,6 +530,11 @@ describe('task-shape contract: terminal outcome through the real completion path
         else expect(got).toBe(want.closingTurnOutcome);
       }
       if (want.errorMatches) expect(p.error).toMatch(want.errorMatches);
+      if (want.evidenceAtCompletion) {
+        expect(server.evidenceAtCompletion, 'evidence the server evaluated the loop against').toMatchObject({
+          workerId: kept!.id, ...want.evidenceAtCompletion,
+        });
+      }
       want.payload?.(p);
     });
   }

@@ -163,3 +163,48 @@ export async function runVerificationCommand(opts: {
     };
   }
 }
+
+/**
+ * Run the loop's verification command for a task and return its evidence, or
+ * undefined when the task has no command exit condition (or no command
+ * resolves). Never throws: an unexpected failure is reported as exec_error
+ * evidence so the server can still decide.
+ *
+ * Shared by the two moments the runner verifies: the PreToolUse hook on the
+ * agent's own complete_task (before that call reaches the server), and the
+ * post-session completion the runner authors itself.
+ */
+export async function collectLoopVerificationEvidence(opts: {
+  workerId: string;
+  task: {
+    loopConfig?: { exitCondition?: { type: string; command?: string } } | null;
+    loopIteration?: number | null;
+    context?: unknown;
+  };
+  cwd: string;
+}): Promise<VerificationEvidence | undefined> {
+  const exitCondition = opts.task.loopConfig?.exitCondition;
+  if (exitCondition?.type !== 'command') return undefined;
+  const command = resolveCommand(
+    exitCondition as LoopExitConditionCommand,
+    opts.task.context as Record<string, unknown> | undefined,
+  );
+  if (!command) {
+    console.warn(`[Worker ${opts.workerId}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
+    return undefined;
+  }
+  const iteration = opts.task.loopIteration ?? 0;
+  try {
+    return await runVerificationCommand({ workerId: opts.workerId, iteration, command, cwd: opts.cwd });
+  } catch (err) {
+    console.warn(`[Worker ${opts.workerId}] Verification command threw unexpectedly:`, err);
+    return {
+      workerId: opts.workerId,
+      iteration,
+      conditionType: 'command',
+      command,
+      outcome: 'exec_error',
+      stderr: err instanceof Error ? err.message : String(err),
+    };
+  }
+}

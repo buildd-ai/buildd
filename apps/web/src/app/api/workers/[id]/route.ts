@@ -989,6 +989,13 @@ export async function PATCH(
   if (typeof linesAdded === 'number' && (linesAdded > 0 || !(worker.linesAdded ?? 0))) updates.linesAdded = linesAdded;
   if (typeof linesRemoved === 'number' && (linesRemoved > 0 || !(worker.linesRemoved ?? 0))) updates.linesRemoved = linesRemoved;
   if (typeof dirtyWorktree === 'boolean') updates.dirtyWorktree = dirtyWorktree;
+  // Loop verification evidence: persisted from any PATCH that carries it. The
+  // one that matters is the runner's pre-complete_task write (a non-terminal
+  // PATCH) — the agent's complete_task that follows carries none, and the
+  // loop dispatch below falls back to what is stored here.
+  if (verificationEvidence && typeof verificationEvidence === 'object' && !Array.isArray(verificationEvidence)) {
+    updates.verificationEvidence = verificationEvidence as Record<string, unknown>;
+  }
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     // Contract violation: the agent stopped and asked, but stated no real
@@ -2432,7 +2439,10 @@ export async function PATCH(
             workerId: id,
             workerBranch: worker.branch ?? null,
             workerLastCommitSha: worker.lastCommitSha ?? null,
-            verificationEvidence,
+            // The runner's own completion carries evidence in the body; the
+            // agent's complete_task does not, so use what the runner recorded
+            // on the row before that call (see the verificationEvidence column).
+            verificationEvidence: verificationEvidence ?? worker.verificationEvidence ?? undefined,
             structuredOutput: body.structuredOutput,
             prLifecycleStatus: freshWorkerForLoop?.prLifecycleStatus ?? null,
             prNumber: freshWorkerForLoop?.prNumber ?? null,

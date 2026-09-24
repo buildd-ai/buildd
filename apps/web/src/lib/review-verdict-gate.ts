@@ -73,6 +73,14 @@
  * trusting a superseded approval, and a human or a fresh `re-review` request
  * clears it from there.
  *
+ * A caller that passes `carryForward` (installationId/repoFullName/baseRef)
+ * to `guardReviewVerdict` gets that "clears it from there" step run inline,
+ * on the same `carryForwardApprovalIfUnchanged` primitive request_pr_review's
+ * carry-forward path uses — so a `stale_approval` block from a rebase or base
+ * merge (diff unchanged) resolves in the same call instead of requiring a
+ * `request_pr_review` round trip first. Without `carryForward`, the block
+ * still requires that round trip, same as before.
+ *
  * ## Fail closed on an unknown commit — except for `stale_approval`
  *
  * For every OTHER block kind, if either SHA is unknown, staleness cannot be
@@ -88,6 +96,7 @@
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import type { PrReviewStatus, PrReviewState } from '@/lib/pr-review-status';
 import { fireGateEvent, GATE_SLUGS, type GateCallerOrigin } from '@/lib/gate-ledger';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 
 /** Which review condition is holding the door. */
 export type ReviewGateBlockKind = 'changes_requested' | 'escalated' | 'in_flight' | 'stale_approval';
@@ -187,8 +196,21 @@ export async function guardReviewVerdict(params: {
   taskId?: string | null;
   workerId?: string | null;
   callerOrigin?: GateCallerOrigin | null;
+  /**
+   * Lets a `stale_approval` block resolve itself inline instead of sending the
+   * caller through a separate `request_pr_review` round-trip — the same
+   * content-equivalence check that request_pr_review's carry-forward path
+   * uses (see approval-carry-forward.ts), run here so merge_pr and
+   * request_pr_review share one predicate instead of merge_pr only trusting
+   * whatever a PRIOR request_pr_review call happened to have recorded.
+   * Omit where a caller has no cheap access to these (e.g. an unattended path
+   * that has not already fetched the PR) — the block still surfaces, just
+   * without the inline resolution.
+   */
+  carryForward?: { installationId: number; repoFullName: string; baseRef: string } | null;
   deps?: {
     read?: (p: { workspaceId: string; prNumber: number }) => Promise<PrReviewStatus>;
+    carryForward?: typeof carryForwardApprovalIfUnchanged;
   };
 }): Promise<ReviewVerdictGateResult> {
   const read = params.deps?.read ?? readPrReviewStatus;
@@ -211,7 +233,33 @@ export async function guardReviewVerdict(params: {
       clearedBy: 'Retry, or merge with an explicit human override, which is recorded as a bypass.',
     };
   }
-  const result = evaluateReviewVerdictGate(status, params.headSha);
+  let result = evaluateReviewVerdictGate(status, params.headSha);
+
+  // A stale approval is only PROVABLY stale when the diff actually changed —
+  // see the module doc's "stale_approval" section. A rebase or base merge
+  // moves the head without moving the diff, and by the time this gate runs
+  // nothing may have recorded that yet (recording it is normally a side
+  // effect of a request_pr_review call). Check it here too, using the exact
+  // same primitive, so a caller that supplied `carryForward` does not have to
+  // make that round trip just to learn what this check can settle directly.
+  if (result.blocks && result.kind === 'stale_approval' && params.carryForward && params.headSha) {
+    const carryForward = params.deps?.carryForward ?? carryForwardApprovalIfUnchanged;
+    const carry = await carryForward({
+      installationId: params.carryForward.installationId,
+      repoFullName: params.carryForward.repoFullName,
+      workspaceId: params.workspaceId,
+      prNumber: params.prNumber,
+      baseRef: params.carryForward.baseRef,
+      headSha: params.headSha,
+    }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[review-gate] carry-forward check failed for PR #${params.prNumber}:`, message);
+      return { carried: false, reason: `carry-forward check failed: ${message}` };
+    });
+    if (carry.carried) {
+      result = { blocks: false, state: result.state };
+    }
+  }
 
   // The one PASS worth counting: every other PASS means nothing was ever
   // outstanding, but `review_failed` means a review ran and permanently
