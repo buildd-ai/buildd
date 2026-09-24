@@ -51,6 +51,7 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
+import { claimsHaltedForUpdate } from './update-drain';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { ClaimLogEntry } from './session-logger';
@@ -1239,6 +1240,8 @@ export class WorkerManager {
     // Post-update canary tripped: this build fails a role deterministically.
     // Claiming more work would only fail it too while the rollback drains.
     if (getUpdateCanary()?.claimsHalted()) return [];
+    // Draining for a self-update: running work finishes, nothing new starts.
+    if (claimsHaltedForUpdate()) return [];
     // NOTE: we intentionally do NOT gate on `hasCredentials` here. A runner with
     // zero local creds must still poll — server-managed credentials arrive inline
     // on the claim response and bootstrap it. The burn-loop guard below (auth-error
@@ -1569,6 +1572,10 @@ export class WorkerManager {
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
     if (getUpdateCanary()?.claimsHalted()) {
       console.log(`[WorkerManager] Update canary tripped — not claiming task ${task.id}`);
+      return null;
+    }
+    if (claimsHaltedForUpdate()) {
+      console.log(`[WorkerManager] Draining for update — not claiming task ${task.id}`);
       return null;
     }
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
