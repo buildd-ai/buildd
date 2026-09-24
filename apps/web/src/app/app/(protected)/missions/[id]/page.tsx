@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, buildReviewerRetryMap, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
@@ -588,20 +588,19 @@ export default async function MissionDetailPage({
   }
 
   // Map fix tasks dispatched after a reviewer requested changes (parentTaskId →
-  // retry task info). allTasks is newest-first, so the first entry wins — giving
-  // us the most-recent retry for each original task.
-  const reviewerRetryMap = new Map<string, { id: string; status: string; title: string; prNumber: number | null }>();
-  for (const t of allTasks) {
-    if ((t as any).reviewerRetryPrNumber != null && t.parentTaskId && !reviewerRetryMap.has(t.parentTaskId)) {
-      const lw = (t.workers as any[])?.[0];
-      reviewerRetryMap.set(t.parentTaskId, {
-        id: t.id,
-        status: t.status,
-        title: t.title,
-        prNumber: lw?.prNumber ?? null,
-      });
-    }
-  }
+  // retry task info), keeping the NEWEST retry per parent. `allTasks` is sorted
+  // ascending, so the old "first entry wins" loop kept the oldest (AC-21).
+  const reviewerRetryMap = buildReviewerRetryMap(
+    allTasks.map(t => ({
+      id: t.id,
+      status: t.status,
+      title: t.title,
+      parentTaskId: t.parentTaskId,
+      reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
+      createdAt: t.createdAt,
+      workers: (t.workers as Array<{ prNumber?: number | null }> | null | undefined) ?? null,
+    })),
+  );
 
   // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
   const timelineTasks = allTasks.filter(t => t.taskClass === 'work');
@@ -942,7 +941,7 @@ export default async function MissionDetailPage({
   // The breadcrumb initiative, the initiative-selector options and the release
   // block are mutually independent; only the Vercel-token probe depends on
   // anything in the group, so it stays chained behind the footer load it needs.
-  const [initiativeName, teamInitiativeOptions, releaseBlock] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseBlock, completionNote] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -978,6 +977,15 @@ export default async function MissionDetailPage({
       }
       return { footer, vercelToken };
     })(),
+    // D3: the completion summary reads the mission's own completion record,
+    // never the latest task's summary.
+    mission.status === 'completed'
+      ? db.query.missionNotes.findFirst({
+          where: and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE)),
+          columns: { body: true, createdAt: true },
+          orderBy: desc(missionNotes.createdAt),
+        }).then(row => row ?? null)
+      : Promise.resolve(null),
   ]);
 
   const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
@@ -1099,7 +1107,6 @@ export default async function MissionDetailPage({
                 failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
                 overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
               />
-              <MissionAuthorshipStats health={authorshipHealth} />
             </span>
           }
         />
@@ -1318,51 +1325,30 @@ export default async function MissionDetailPage({
 
         {/* Completion Summary — only for completed missions */}
         {mission.status === 'completed' && (() => {
-          // Priority: orchestrator (planning) summaries first, then work tasks.
-          // Within each group, prefer non-reaper, agent-authored completions so
-          // the agent's own retrospective wins over the reaper's artifact
-          // extraction, which in turn wins over an unauthored 'fallback' summary
-          // (the runner's captured last-assistant-message — often a stray aside,
-          // never a confirmed outcome; see summarySource on TaskResult).
-          const candidateTasks = allTasks.filter(t => t.status === 'completed' && (t.result as any)?.summary);
-          const isAuthored = (t: (typeof candidateTasks)[number]) =>
-            !(t.result as any)?.reaperAutoCompleted && (t.result as any)?.summarySource !== 'fallback';
-          const isReaper = (t: (typeof candidateTasks)[number]) => (t.result as any)?.reaperAutoCompleted === true;
-          const planningWithSummary = candidateTasks
-            .filter(t => t.mode === 'planning')
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          const workWithSummary = candidateTasks
-            .filter(t => t.mode !== 'planning')
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          const bestTask =
-            planningWithSummary.find(isAuthored) ??
-            workWithSummary.find(isAuthored) ??
-            planningWithSummary.find(isReaper) ??
-            workWithSummary.find(isReaper) ??
-            planningWithSummary[0] ??
-            workWithSummary[0];
-          const summary = (bestTask?.result as any)?.summary as string | undefined;
-          if (!summary) return null;
-          const reaperAutoCompleted = (bestTask?.result as any)?.reaperAutoCompleted === true;
-          const isFallbackSummary = (bestTask?.result as any)?.summarySource === 'fallback';
+          // D3: the mission's own completion/decision record — never whichever
+          // work task or retry finished last (selectMissionCompletionSummary).
+          const pick = selectMissionCompletionSummary({
+            tasks: allTasks.map(t => ({
+              id: t.id, title: t.title, status: t.status, mode: t.mode, taskClass: t.taskClass,
+              kind: t.kind, category: t.category, createdAt: t.createdAt, updatedAt: t.updatedAt, result: t.result,
+            })),
+            completionNote,
+          });
+          if (!pick) return null;
+          const summary = pick.text;
           return (
             <div className="card p-4 mt-4 border-l-2 border-status-success/40">
               <div className="flex items-center gap-2 mb-2">
                 <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
                   Completion Summary
                 </h3>
-                {reaperAutoCompleted && (
+                {pick.source === 'completion_record' && (
                   <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
-                    auto-completed · reaper
-                  </span>
-                )}
-                {isFallbackSummary && (
-                  <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
-                    unauthored · last message
+                    completion record
                   </span>
                 )}
               </div>
-              <p className="text-[13px] text-text-secondary leading-relaxed">{summary}</p>
+              <p className="text-[13px] text-text-secondary leading-relaxed whitespace-pre-line">{summary}</p>
             </div>
           );
         })()}
@@ -1613,6 +1599,13 @@ export default async function MissionDetailPage({
           {trackerLinks.some(l => l.provider === 'linear') && (
             <TrackerProgressPanel entityType="mission" entityId={id} />
           )}
+
+          {/* Diagnostics — steering-cost stats live here, not in the header
+              chip row (addendum D2: no internal jargon on cards or headers). */}
+          <div className="card p-4" data-testid="mission-diagnostics">
+            <h2 className="section-label mb-2">Diagnostics</h2>
+            <MissionAuthorshipStats health={authorshipHealth} />
+          </div>
         </MissionSecondaryPanel>
       )}
 

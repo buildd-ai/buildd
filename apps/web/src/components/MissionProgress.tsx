@@ -1,9 +1,11 @@
 import Link from 'next/link';
 import type { MissionSegment } from '@buildd/core/mission-helpers';
-import { deriveDriveState, getDrivePresentation, selectInFlightTasks, type Health, type InFlightTask } from '@/lib/mission-helpers';
+import { deriveDriveState, getDrivePresentation, HEALTH_CHIP_CLASS, selectInFlightTasks, type Health, type InFlightTask } from '@/lib/mission-helpers';
 import { SegmentStrip } from './SegmentStrip';
 
-const healthTone = { BLOCKED: 'border-status-warning text-status-warning', FAILING: 'border-status-error text-status-error', STALLED: 'border-status-warning text-status-warning' } as const;
+// One tone per state across surfaces: BLOCKED is error-toned here exactly as on
+// the detail header chip (docs/design/mission-feed-mobile-continuity.md, D2).
+const healthTone = HEALTH_CHIP_CLASS;
 
 export function MissionBadges({ mission, health, nextRun, isReviewReady }: { mission: { status: string; orchestrationMode?: string | null; lastDeferralReason?: string | null; lastDeferredAt?: string | null }; health: Health; nextRun: { text: string; urgency: unknown }; isReviewReady?: boolean }) {
   if (isReviewReady) {

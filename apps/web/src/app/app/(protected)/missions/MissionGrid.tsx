@@ -6,7 +6,6 @@ import Link from 'next/link';
 import type { MissionSegment, MissionFlightStripData } from '@buildd/core/mission-helpers';
 import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, type MissionAuthorshipHealth } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
-import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { FlightStripContainer } from '@/components/FlightStripContainer';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
@@ -545,7 +544,6 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             </span>
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
-          <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
         {hasFlightStripActivity(mission.flightStrip) && (
@@ -709,7 +707,6 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             </span>
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
-          <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
         {hasFlightStripActivity(mission.flightStrip) ? (
           <FlightStripContainer className="mt-2" data={mission.flightStrip!} />
