@@ -9,6 +9,8 @@ interface WaitingTask {
   id: string;
   title: string;
   workspaceId: string;
+  /** The task's mission, so a link can open it in mission context. */
+  missionId?: string | null;
   waitingFor: { type: string; prompt: string; options?: string[] } | null;
 }
 

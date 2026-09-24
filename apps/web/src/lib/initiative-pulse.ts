@@ -3,6 +3,7 @@ import { workers, tasks, missions, initiatives } from '@buildd/core/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import type { Verdict, Confidence } from './verdict-presentation';
+import { blockedByPRTaskIds, type BlockingTask } from './mission-card-view';
 
 /**
  * Initiative pulse — the daily-signal half of an initiative, shared by every
@@ -278,15 +279,7 @@ export function noPendingCounts(): PendingCounts {
   return zeroCounts();
 }
 
-/** What `countBlockedByPR` needs of a task it may be blocked *on*. */
-export interface BlockingTask {
-  status: string;
-  workers?: Array<{
-    prNumber?: number | null;
-    mergedAt?: unknown;
-    prLifecycleStatus?: string | null;
-  }> | null;
-}
+export type { BlockingTask } from './mission-card-view';
 
 /**
  * Count a mission's pending tasks that are blocked on a dependency whose PR is
@@ -297,35 +290,15 @@ export interface BlockingTask {
  * silently score cross-mission dependencies as unblocked. A task with several
  * blocking deps counts once.
  *
- * Pure. Shared by the Missions page and the Initiatives list so the two cannot
- * disagree about what "blocked" means.
+ * The rule is `blockedByPRTaskIds` (lib/mission-card-view.ts), shared with the
+ * mission card's "blocked on N PRs" link so the count and the link cannot
+ * disagree. Shared by the Missions page and the Initiatives list.
  */
 export function countBlockedByPR(
-  missionTasks: Array<{ status: string; dependsOn?: string[] | null }>,
+  missionTasks: Array<{ id?: string; status: string; dependsOn?: string[] | null }>,
   taskIndex: Map<string, BlockingTask>,
 ): number {
-  let count = 0;
-  for (const task of missionTasks) {
-    if (task.status !== 'pending') continue;
-    for (const depId of task.dependsOn ?? []) {
-      const dep = taskIndex.get(depId);
-      if (!dep || dep.status !== 'completed') continue;
-      // EVERY worker, not just the newest: a retried dependency can carry the
-      // PR the dependent task waits on an attempt or two back, and reading
-      // `workers[0]` alone scored that as unblocked — an undercount that hit
-      // every surface at once, so the §5.2 agreement invariant still passed.
-      // Matches `derivePendingCounts`, which already scans all workers for the
-      // awaiting-merge count.
-      const openPR = (dep.workers ?? []).some(
-        (w) => w?.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed',
-      );
-      if (openPR) {
-        count++;
-        break;
-      }
-    }
-  }
-  return count;
+  return blockedByPRTaskIds(missionTasks, taskIndex).length;
 }
 
 // ─── The winning verdict (spec §6.5) ─────────────────────────────────────────

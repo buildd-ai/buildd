@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { MissionFlightStripData, FlightStripBar, WorkLane } from '@buildd/core/mission-helpers';
 import {
@@ -12,8 +12,10 @@ import {
   FLIGHT_STRIP_DIVIDER_STROKE,
   FLIGHT_STRIP_TRACK_BG,
   FLIGHT_STRIP_LABEL_COLOR,
+  FLIGHT_STRIP_NOW_COLOR,
 } from './FlightStrip';
 import { computeFlightDetailStats, describeSteeringPattern, formatFlightDuration } from '@/lib/flight-detail-stats';
+import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 
 // ─── Expanded-row geometry — normative per the design:flight-strip/flight-detail-sheet
 // board (Sheet.dc.html, viewBox 358x170). Distinct from FlightStrip.tsx's compact card
@@ -66,7 +68,17 @@ function diamondPath(cx: number, cy: number, r: number): string {
 
 /** Pure SVG renderer for the expanded, full-width four-row strip. Shares color tokens and the
  * MissionFlightStripData model with FlightStrip.tsx, but not its compact-card geometry. */
-function ExpandedFlightStrip({ data, agentTimeMs }: { data: MissionFlightStripData; agentTimeMs: number }) {
+function ExpandedFlightStrip({
+  data,
+  agentTimeMs,
+  selectedTaskId = null,
+  onSelect,
+}: {
+  data: MissionFlightStripData;
+  agentTimeMs: number;
+  selectedTaskId?: string | null;
+  onSelect?: (taskId: string) => void;
+}) {
   const rows = laneRows(data);
   const showRail = data.rail.visible;
   const workW = VIEWBOX_W;
@@ -146,22 +158,53 @@ function ExpandedFlightStrip({ data, agentTimeMs }: { data: MissionFlightStripDa
               const x1 = position(bar.start);
               const x2 = position(bar.end);
               const width = Math.max(MIN_BAR_W, x2 - x1);
+              const selected = selectedTaskId !== null && bar.taskId === selectedTaskId;
+              // Every drawn bar is a target: selecting it carries the task into
+              // "Open mission →" (AC-20). Selection never navigates on its own,
+              // so a mis-tap on a thin bar costs nothing.
+              const tap = {
+                'data-testid': 'flight-detail-bar',
+                'data-task-id': bar.taskId,
+                role: 'button' as const,
+                tabIndex: 0,
+                'aria-pressed': selected,
+                'aria-label': `Select task ${i + 1} in ${row.label.split(' · ')[0]}`,
+                style: { cursor: 'pointer' },
+                onClick: () => onSelect?.(bar.taskId),
+                onKeyDown: (e: React.KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSelect?.(bar.taskId);
+                  }
+                },
+              };
+              const ring = selected ? (
+                <rect x={x1 - 1.5} y={y - 1.5} width={width + 3} height={ROW_H + 3} fill="none" stroke={FLIGHT_STRIP_NOW_COLOR} strokeWidth={2} pointerEvents="none" />
+              ) : null;
               if (bar.dashed) {
                 return (
-                  <rect
-                    key={`${row.key}-${i}`}
-                    x={x1}
-                    y={y + 0.5}
-                    width={Math.max(MIN_BAR_W, width)}
-                    height={ROW_H - 1}
-                    fill="none"
-                    stroke={FLIGHT_STRIP_QUEUED_STROKE}
-                    strokeWidth={1}
-                    strokeDasharray="3 2"
-                  />
+                  <g key={`${row.key}-${i}`}>
+                    <rect
+                      x={x1}
+                      y={y + 0.5}
+                      width={Math.max(MIN_BAR_W, width)}
+                      height={ROW_H - 1}
+                      fill="none"
+                      stroke={FLIGHT_STRIP_QUEUED_STROKE}
+                      strokeWidth={1}
+                      strokeDasharray="3 2"
+                      {...tap}
+                    />
+                    {ring}
+                  </g>
                 );
               }
-              return <rect key={`${row.key}-${i}`} x={x1} y={y} width={width} height={ROW_H} fill={fillFor(bar) ?? 'none'} />;
+              return (
+                <g key={`${row.key}-${i}`}>
+                  <rect x={x1} y={y} width={width} height={ROW_H} fill={fillFor(bar) ?? 'none'} {...tap} />
+                  {ring}
+                </g>
+              );
             })}
           </g>
         );
@@ -230,12 +273,19 @@ export interface FlightDetailSheetProps {
   data: MissionFlightStripData;
   missionId: string;
   missionTitle: string;
+  /** Breadcrumb origin carried into the mission (`?from=`). */
+  from?: MissionOrigin | null;
+  /** A bar already selected when the sheet opens. */
+  initialTaskId?: string | null;
 }
 
-/** Bottom sheet reached by tapping a bar on a missions-list card flight strip.
- * Renders the expanded four-row strip, derived stats, legend, a plain-language
- * steering summary, and a link back to the mission detail page. */
-export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle }: FlightDetailSheetProps) {
+/** Bottom sheet reached from a mission card's ⤢ control (Home and the missions
+ * list). Renders the expanded four-row strip, derived stats, legend, a
+ * plain-language steering summary, and "Open mission →". Selecting a bar
+ * carries that task into the mission as its sheet
+ * (docs/design/mission-feed-mobile-continuity.md, W1, AC-20). */
+export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle, from = null, initialTaskId = null }: FlightDetailSheetProps) {
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTaskId);
   const headingId = useId();
   const closeRef = useRef<HTMLAnchorElement>(null);
   const restoreFocusRef = useRef<Element | null>(null);
@@ -264,6 +314,9 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
   if (!open) return null;
 
   const stats = computeFlightDetailStats(data);
+  const openHref = selectedTaskId
+    ? missionTaskHref({ missionId, taskId: selectedTaskId, from, mode: 'sheet' })
+    : `/app/missions/${encodeURIComponent(missionId)}${from ? `?from=${encodeURIComponent(from)}` : ''}`;
   const summary = describeSteeringPattern(data);
 
   return (
@@ -290,7 +343,12 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
 
         <h2 className="text-[17px] font-medium leading-6 text-text-primary line-clamp-2">{missionTitle}</h2>
 
-        <ExpandedFlightStrip data={data} agentTimeMs={stats.agentTimeMs} />
+        <ExpandedFlightStrip
+          data={data}
+          agentTimeMs={stats.agentTimeMs}
+          selectedTaskId={selectedTaskId}
+          onSelect={id => setSelectedTaskId(prev => (prev === id ? null : id))}
+        />
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <LegendSwatch label="You stepped in">
@@ -328,10 +386,11 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
         <p className="text-[12px] leading-[19px] text-text-secondary">{summary}</p>
 
         <Link
-          href={`/app/missions/${missionId}`}
+          data-testid="flight-detail-open-mission"
+          href={openHref}
           className="flex items-center justify-center min-h-[48px] border-2 border-border-strong text-[13px] text-text-primary hover:bg-surface-3"
         >
-          Open mission →
+          {selectedTaskId ? 'Open task in mission →' : 'Open mission →'}
         </Link>
       </div>
     </div>

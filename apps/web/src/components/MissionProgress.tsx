@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { MissionSegment } from '@buildd/core/mission-helpers';
 import { deriveDriveState, getDrivePresentation, HEALTH_CHIP_CLASS, selectInFlightTasks, type Health, type InFlightTask } from '@/lib/mission-helpers';
 import { SegmentStrip } from './SegmentStrip';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 // One tone per state across surfaces: BLOCKED is error-toned here exactly as on
 // the detail header chip (docs/design/mission-feed-mobile-continuity.md, D2).
@@ -54,5 +55,5 @@ export function MissionProgress({ missionId, segments, completedTasks, totalTask
   const { primary, overflow } = selectInFlightTasks(inFlightTasks);
   const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 };
   const projected = [...segments].sort((a, b) => order[a.state] - order[b.state]);
-  return <div className="min-w-0 space-y-1.5"><div className="flex min-w-0 items-center gap-2"><SegmentStrip segments={projected} label={`${completedTasks} of ${totalTasks} tasks complete`} /><span className="shrink-0 font-mono text-[10px] tabular-nums text-text-muted">{completedTasks}/{totalTasks}</span></div>{primary && <div className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-text-muted"><Link href={`/app/tasks/${primary.id}`} className="min-w-0 truncate hover:text-accent-text">▸ {primary.title} — {primary.meta}</Link>{overflow > 0 && <Link href={`/app/missions/${missionId}?tab=tasks`} className="shrink-0 hover:text-accent-text">+{overflow}</Link>}</div>}</div>;
+  return <div className="min-w-0 space-y-1.5"><div className="flex min-w-0 items-center gap-2"><SegmentStrip segments={projected} label={`${completedTasks} of ${totalTasks} tasks complete`} /><span className="shrink-0 font-mono text-[10px] tabular-nums text-text-muted">{completedTasks}/{totalTasks}</span></div>{primary && <div className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-text-muted"><Link href={missionTaskHref({ missionId, taskId: primary.id, mode: 'sheet' })} className="min-w-0 truncate hover:text-accent-text">▸ {primary.title} — {primary.meta}</Link>{overflow > 0 && <Link href={`/app/missions/${missionId}`} className="shrink-0 hover:text-accent-text">+{overflow}</Link>}</div>}</div>;
 }

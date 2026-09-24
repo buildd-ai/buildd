@@ -4,6 +4,7 @@ import Link from 'next/link';
 import type { MissionSegment } from '@buildd/core/mission-helpers';
 import { selectInFlightTasks, type InFlightTask } from '@/lib/mission-helpers';
 import { SegmentStrip } from './SegmentStrip';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 // ─── Stage counts ─────────────────────────────────────────────────────────────
 
@@ -160,11 +161,11 @@ function FullBar({
       </div>
       {primary && (
         <div className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-text-muted">
-          <Link href={`/app/tasks/${primary.id}`} className="min-w-0 truncate hover:text-accent-text">
+          <Link href={missionTaskHref({ missionId, taskId: primary.id, mode: 'sheet' })} className="min-w-0 truncate hover:text-accent-text">
             ▸ {primary.title} — {primary.meta}
           </Link>
           {overflow > 0 && (
-            <Link href={`/app/missions/${missionId}?tab=tasks`} className="shrink-0 hover:text-accent-text">
+            <Link href={`/app/missions/${missionId}`} className="shrink-0 hover:text-accent-text">
               +{overflow}
             </Link>
           )}

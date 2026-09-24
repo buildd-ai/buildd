@@ -16,12 +16,12 @@ import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
-import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { WaitingOnYouDiscrepancyCard } from '@/components/WaitingOnYouDiscrepancyCard';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
-import { resolveActionCardContext } from '@/lib/action-card-context';
+import { actionCardTaskHref, resolveActionCardContext } from '@/lib/action-card-context';
+import { missionTaskHref } from '@/lib/mission-task-href';
 import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
@@ -39,9 +39,7 @@ import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
-import { computeMissionProgress, crossedMilestone, hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
-import { MissionBadges } from '@/components/MissionProgress';
-import { MissionProgressBar } from '@/components/MissionProgressBar';
+import { crossedMilestone } from '@buildd/core/mission-helpers';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import HomeAutoRefresh from './HomeAutoRefresh';
@@ -70,19 +68,15 @@ import { InitiativePulseLine } from './InitiativePulseLine';
 import { loadShippedMissionIds } from '@/lib/mission-ship-state';
 
 export const dynamic = 'force-dynamic';
-import {
-  deriveMissionHealth,
-  deriveTaskHealthSignal,
-  healthToGroup,
-  statusToGroup,
-  formatNextRun,
-  SECTION_DISPLAY,
-  GROUP_ACCENT_CLASS,
-  GROUP_ORDER,
-  type MissionHealth,
-  type MissionGroup,
-} from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
+import {
+  summarizeMissionForCard,
+  type MissionCardRow,
+  type MissionCardSummary,
+  type MissionCardView,
+} from '@/lib/mission-card-view';
+import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKER_COLUMNS } from '@/lib/mission-card-views';
+import { HomeMissions, selectHomeMissions, type HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveReviewerGate, deriveStoredVerdictFallback } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
@@ -163,35 +157,15 @@ export default async function HomePage({
     workerName: string;
     timestamp: Date;
     missionTitle: string | null;
+    missionId: string | null;
     prUrl: string | null;
     prLifecycleStatus: string | null;
     mergedAt: Date | string | null;
     prNumber: number | null;
   }[] = [];
 
-  let missions: {
-    id: string;
-    title: string;
-    description: string | null;
-    initiativeId: string | null;
-    totalTasks: number;
-    completedTasks: number;
-    progress: number;
-    activeWorkers: number;
-    health: MissionHealth;
-    group: MissionGroup;
-    nextScanMins: number | null;
-    nextRunAt: string | null;
-    workspaceName: string | null;
-    orchestrationMode: string | null;
-    status: string;
-    segments: import('@buildd/core/mission-helpers').MissionSegment[];
-    healthState: import('@/lib/mission-helpers').Health;
-    inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
-    lastDeferralReason: string | null;
-    lastDeferredAt: string | null;
-    blockedPRCount: number;
-  }[] = [];
+  let missions: HomeMissionSummary[] = [];
+  let missionCardViews: MissionCardView[] = [];
 
   let completedLast12h = 0;
   let totalTaskCount = 0;
@@ -649,6 +623,7 @@ export default async function HomePage({
             workerName: [w.workspace?.name, w.task?.roleSlug].filter(Boolean).join(' · ') || w.name,
             timestamp: w.completedAt || w.updatedAt,
             missionTitle: (w.task as any)?.mission?.title || null,
+            missionId: (w.task as any)?.missionId ?? null,
             prUrl: w.prUrl ?? null,
             prLifecycleStatus: w.prLifecycleStatus ?? null,
             mergedAt: w.mergedAt ?? null,
@@ -672,159 +647,49 @@ export default async function HomePage({
             : undefined;
 
           // Exclude archived missions: they can never be active/scheduled on Home.
+          // Columns are the card's (lib/mission-card-views.ts) so the visible
+          // cards cost no second task fan-out.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true },
             with: {
               tasks: {
-                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
-                with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true }, limit: 5 } },
+                columns: { ...MISSION_CARD_TASK_COLUMNS, result: true },
+                with: { workers: { columns: MISSION_CARD_WORKER_COLUMNS, limit: 5 } },
               },
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
 
-          // Count active workers per mission
-          const missionIds = allMissions.map(m => m.id);
-          let activeWorkerCounts: Record<string, number> = {};
-          if (missionIds.length > 0) {
-            const workerCounts = await db
-              .select({
-                missionId: tasks.missionId,
-                activeCount: sql<number>`count(distinct ${workers.id})::int`,
-              })
-              .from(workers)
-              .innerJoin(tasks, eq(workers.taskId, tasks.id))
-              .where(
-                and(
-                  inArray(tasks.missionId, missionIds),
-                  inArray(workers.status, [...LIVE_WORKER_STATUSES])
-                )
-              )
-              .groupBy(tasks.missionId);
-
-            for (const row of workerCounts) {
-              if (row.missionId) {
-                activeWorkerCounts[row.missionId] = row.activeCount;
-              }
-            }
-          }
-
-          // Build cross-mission task map for blocked-PR computation
-          const homeMissionTaskMap = new Map<string, { id: string; status: string; workers: any[] }>();
+          // Cross-mission task index: `dependsOn` crosses mission boundaries.
+          const homeMissionTaskMap = new Map<string, BlockingTask>();
           for (const m of allMissions) {
-            for (const t of m.tasks) {
-              homeMissionTaskMap.set(t.id, t as any);
-            }
-          }
-          function countHomeMissionBlockedByPR(missionTasks: any[]): number {
-            let count = 0;
-            for (const t of missionTasks) {
-              if (t.status !== 'pending') continue;
-              const deps = (t.dependsOn as string[] | null) ?? [];
-              for (const depId of deps) {
-                const dep = homeMissionTaskMap.get(depId);
-                if (!dep || dep.status !== 'completed') continue;
-                const depW = dep.workers?.[0];
-                if (depW?.prNumber && !depW.mergedAt && depW.prLifecycleStatus !== 'closed') {
-                  count++;
-                  break;
-                }
-              }
-            }
-            return count;
+            for (const t of m.tasks) homeMissionTaskMap.set(t.id, t as BlockingTask);
           }
 
-          missions = allMissions.map(mission => {
-            const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(mission.tasks);
-            const activeWorkers = activeWorkerCounts[mission.id] || 0;
-            const nextRunAt = (mission.schedule as any)?.nextRunAt ?? null;
-            const lastRunAt = (mission.schedule as any)?.lastRunAt ?? null;
-            const cronExpression = (mission.schedule as any)?.cronExpression ?? null;
-            const schedNextScanMins = nextRunAt
-              ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
-              : null;
+          // Every mission is summarised (group, schedule timing) so the section
+          // counts are right; only the visible ones pay for a full card view.
+          // Group is healthToGroup and live workers are LIVE_WORKER_STATUSES —
+          // the same builder the missions list uses (AC-14, D8).
+          const nowMs = Date.now();
+          const summaries = new Map<string, MissionCardSummary>();
+          for (const m of allMissions) summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, { now: nowMs }));
+          missions = allMissions.map(m => ({
+            id: m.id,
+            group: summaries.get(m.id)!.group,
+            nextScanMins: summaries.get(m.id)!.nextScanMins,
+          }));
 
-            const rawDeferralReason = (mission.schedule as any)?.lastDeferralReason ?? null;
-            // See heartbeat-prepass.ts: recorded as `nextRunAt` while the heartbeat
-            // is deliberately waiting on a known self-resolving condition.
-            const heartbeatWaitingUntil = rawDeferralReason === 'heartbeat_waiting' ? nextRunAt : null;
-
-            // Check if per-schedule concurrent cap is still exceeded; if not, clear the stale reason.
-            let lastDeferralReason = rawDeferralReason;
-            if (rawDeferralReason === 'concurrent_cap') {
-              const schedId = (mission.schedule as any)?.id;
-              const maxConcurrent: number = (mission.schedule as any)?.maxConcurrentFromSchedule ?? 1;
-              const activeScheduleTasks = (mission.tasks as any[]).filter((t: any) =>
-                t.scheduleId === schedId &&
-                ['pending', 'assigned', 'in_progress'].includes(t.status)
-              ).length;
-              if (activeScheduleTasks < maxConcurrent) lastDeferralReason = null;
-            }
-
-            // Earliest future startAt of user-scheduled pending tasks (loopIteration === 0).
-            const nowMs = Date.now();
-            let pendingUserScheduledAt: Date | null = null;
-            for (const t of mission.tasks as any[]) {
-              if (t.status !== 'pending') continue;
-              if ((t.loopIteration ?? 0) !== 0) continue;
-              if (!t.startAt) continue;
-              const ts = new Date(t.startAt).getTime();
-              if (ts > nowMs && (pendingUserScheduledAt === null || ts < pendingUserScheduledAt.getTime())) {
-                pendingUserScheduledAt = new Date(t.startAt);
-              }
-            }
-            if (pendingUserScheduledAt) lastDeferralReason = null;
-
-            const orchestrationMode = (mission as any).orchestrationMode ?? null;
-            const health = deriveMissionHealth({
-              status: mission.status,
-              activeAgents: activeWorkers,
-              cronExpression,
-              lastRunAt,
-              nextRunAt,
-              orchestrationMode,
-              isHeld: mission.isHeld ?? false,
-              pendingUserScheduledAt,
-              criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
-              hasPendingDeliverableWork: hasPendingDeliverableWork(mission.tasks),
-            });
-
-            const effectiveNextRunAt = nextRunAt
-              ? String(nextRunAt)
-              : pendingUserScheduledAt
-              ? pendingUserScheduledAt.toISOString()
-              : null;
-            const nextScanMins = schedNextScanMins ?? (pendingUserScheduledAt
-              ? Math.max(0, Math.round((pendingUserScheduledAt.getTime() - nowMs) / 60000))
-              : null);
-
-            return {
-              id: mission.id,
-              title: mission.title,
-              description: mission.description,
-              initiativeId: mission.initiativeId ?? null,
-              totalTasks,
-              completedTasks,
-              progress,
-              activeWorkers,
-              health,
-              group: statusToGroup({ status: mission.status, isHeld: mission.isHeld ?? false, startAt: mission.startAt ? String(mission.startAt) : null, progress }),
-              nextScanMins,
-              nextRunAt: effectiveNextRunAt,
-              workspaceName: (mission.workspace as any)?.name || null,
-              orchestrationMode,
-              status: mission.status,
-              segments,
-              healthState: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks),
-              inFlightTasks: mission.tasks.flatMap(t => (t as any).workers.filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
-              lastDeferralReason,
-              lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,
-              blockedPRCount: countHomeMissionBlockedByPR(mission.tasks as any[]),
-            };
+          const { visibleIds } = selectHomeMissions(missions);
+          const visibleRows = visibleIds
+            .map(id => allMissions.find(m => m.id === id))
+            .filter((m): m is (typeof allMissions)[number] => !!m) as unknown as MissionCardRow[];
+          const views = await loadMissionCardViews(visibleRows, {
+            from: 'home', now: nowMs, summaries, taskIndex: homeMissionTaskMap,
           });
+          missionCardViews = visibleIds.map(id => views.get(id)).filter((v): v is MissionCardView => !!v);
         }
 
         // Schedules with pending agent suggestions
@@ -2066,7 +1931,7 @@ export default async function HomePage({
                       return (
                         <Link
                           key={item.subjectKey}
-                          href={`/app/tasks/${item.taskId}`}
+                          href={actionCardTaskHref(item)!}
                           className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
@@ -2118,7 +1983,7 @@ export default async function HomePage({
                       return (
                         <Link
                           key={item.subjectKey}
-                          href={`/app/tasks/${item.taskId}`}
+                          href={actionCardTaskHref(item, { page: true })!}
                           className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
@@ -2153,11 +2018,11 @@ export default async function HomePage({
                               {item.taskTitle && (
                                 <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
                                   {item.conflictRetryTaskId ? (
-                                    <Link href={`/app/tasks/${item.conflictRetryTaskId}`} className="hover:underline">
+                                    <Link href={actionCardTaskHref(item, { taskId: item.conflictRetryTaskId, page: true })!} className="hover:underline">
                                       {item.taskTitle}
                                     </Link>
                                   ) : item.taskId ? (
-                                    <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                    <Link href={actionCardTaskHref(item)!} className="hover:underline">
                                       {item.taskTitle}
                                     </Link>
                                   ) : item.taskTitle}
@@ -2200,7 +2065,7 @@ export default async function HomePage({
                               {item.taskTitle && (
                                 <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
                                   {item.taskId ? (
-                                    <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                    <Link href={actionCardTaskHref(item)!} className="hover:underline">
                                       {item.taskTitle}
                                     </Link>
                                   ) : item.taskTitle}
@@ -2230,7 +2095,7 @@ export default async function HomePage({
                             </div>
                             {item.deadZoneLastRetryTaskId && (
                               <Link
-                                href={`/app/tasks/${item.deadZoneLastRetryTaskId}`}
+                                href={actionCardTaskHref(item, { taskId: item.deadZoneLastRetryTaskId, page: true })!}
                                 className="shrink-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
                               >
                                 Last attempt
@@ -2276,7 +2141,7 @@ export default async function HomePage({
                           {item.taskTitle && (
                             <div className="text-[13px] font-medium text-text-secondary truncate mt-0.5">
                               {item.taskId ? (
-                                <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                <Link href={actionCardTaskHref(item)!} className="hover:underline">
                                   {item.taskTitle}
                                 </Link>
                               ) : item.taskTitle}
@@ -2434,7 +2299,7 @@ export default async function HomePage({
                             )}
                           </div>
                           <Link
-                            href={`/app/tasks/${item.taskId}`}
+                            href={actionCardTaskHref(item)!}
                             className="text-[13px] font-medium text-text-primary truncate hover:underline block"
                           >
                             {item.taskTitle}
@@ -2473,7 +2338,7 @@ export default async function HomePage({
                           )}
                         </div>
                         <Link
-                          href={`/app/tasks/${item.taskId}`}
+                          href={actionCardTaskHref(item)!}
                           className="text-[13px] font-medium text-text-primary truncate hover:underline block"
                         >
                           {item.taskTitle}
@@ -2554,144 +2419,7 @@ export default async function HomePage({
             )}
 
             {/* Missions — active work only on Home */}
-            {(() => {
-              // Home shows running + attention + imminent scheduled (< 24h)
-              const activeMissions = missions.filter(m => m.group === 'running' || m.group === 'attention' || m.group === 'review');
-              // Show all scheduled missions (not just those within 24h) so active
-              // missions with infrequent cron schedules are never hidden on Home.
-              const soonScheduled = missions
-                .filter(m => m.group === 'scheduled')
-                .sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity))
-                .slice(0, 3);
-              const visibleMissions = [...activeMissions, ...soonScheduled];
-              const completedCount = missions.filter(m => m.group === 'completed').length;
-              const scheduledCount = missions.filter(m => m.group === 'scheduled').length;
-              const hiddenCount = missions.length - visibleMissions.length;
-
-              return (
-                <div className="mb-8 md:mb-0">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="section-label">Missions</div>
-                    {missions.length > 0 && (
-                      <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
-                        {activeMissions.length > 0
-                          ? `${activeMissions.length} active`
-                          : `${missions.length} total →`}
-                      </Link>
-                    )}
-                  </div>
-                  {missions.length === 0 ? (
-                    <div className="border border-dashed border-border-default rounded-[10px] p-6">
-                      <p className="text-[14px] text-text-secondary">
-                        No missions yet. <Link href="/app/missions/new" className="text-primary hover:underline">Create one</Link> to organize your work.
-                      </p>
-                    </div>
-                  ) : visibleMissions.length === 0 ? (
-                    <div className="border border-dashed border-border-default rounded-[10px] p-4">
-                      <p className="text-[13px] text-text-secondary">
-                        No active missions right now.{' '}
-                        <Link href="/app/missions" className="text-text-muted hover:text-text-secondary underline underline-offset-2">
-                          View all {missions.length}
-                        </Link>
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {(['review', 'running', 'attention', 'scheduled'] as const).map((groupKey) => {
-                        const items = groupKey === 'scheduled'
-                          ? soonScheduled
-                          : visibleMissions.filter(m => m.group === groupKey);
-                        if (items.length === 0) return null;
-                        const section = SECTION_DISPLAY[groupKey];
-
-                        return (
-                          <div key={groupKey} className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <span className="section-label-missions text-text-muted">
-                                {section.label}
-                              </span>
-                              <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
-                            </div>
-                            <div className="space-y-2">
-                              {items.map((mission) => {
-                                const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
-                                const isHibernating = nextRun.urgency === 'far';
-
-                                return (
-                                  <div
-                                    key={mission.id}
-                                    className={`block card card-interactive mission-card ${GROUP_ACCENT_CLASS[groupKey]} p-4 hover:bg-[var(--card-hover)] transition-all duration-150 ${isHibernating ? 'mission-card-hibernating' : ''}`}
-                                  >
-                                    <div className="flex items-start justify-between gap-3 mb-1.5">
-                                      <div className="flex items-center gap-2 min-w-0">
-                                        <Link href={`/app/missions/${mission.id}`} className="text-[15px] font-medium text-text-primary truncate hover:text-accent-text">
-                                          {mission.title}
-                                        </Link>
-                                      </div>
-                                    </div>
-                                    {mission.description && (
-                                      <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
-                                        {mission.description}
-                                      </p>
-                                    )}
-                                    <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} isReviewReady={groupKey === 'review'} />
-                                    {mission.totalTasks > 0 && <div className="my-2"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
-                                    <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
-                                      {mission.workspaceName && (
-                                        <>
-                                          <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80">
-                                            {mission.workspaceName}
-                                          </span>
-                                          {(mission.activeWorkers > 0 || mission.blockedPRCount > 0) && (
-                                            <span className="mx-0.5">&middot;</span>
-                                          )}
-                                        </>
-                                      )}
-                                      {mission.activeWorkers > 0 && (
-                                        <span className="text-accent-text font-medium">
-                                          {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
-                                        </span>
-                                      )}
-                                      {mission.blockedPRCount > 0 && (
-                                        <>
-                                          {mission.activeWorkers > 0 && <span className="mx-0.5">&middot;</span>}
-                                          <InternalLink
-                                            href="/app/home"
-                                            className="text-primary font-medium hover:underline"
-                                          >
-                                            blocked on {mission.blockedPRCount} PR{mission.blockedPRCount !== 1 ? 's' : ''}
-                                          </InternalLink>
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      <div className="flex items-center justify-between pt-1">
-                        <Link
-                          href="/app/missions"
-                          className="text-xs text-text-muted hover:text-text-secondary min-w-0 truncate"
-                        >
-                          {hiddenCount > 0
-                            ? `+${hiddenCount} more (${completedCount} completed, ${scheduledCount} scheduled) →`
-                            : 'View all missions'}
-                        </Link>
-                        <Link
-                          href="/app/missions/new"
-                          className="text-xs text-text-muted hover:text-primary shrink-0 pl-2"
-                        >
-                          + New Mission
-                        </Link>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+            <HomeMissions missions={missions} views={missionCardViews} />
 
             {/* Release Queue — gated workspaces with unshipped commits and CI green (spec §8) */}
             <ReleaseWidget items={releaseReadinessItems} />
@@ -2768,7 +2496,7 @@ export default async function HomePage({
                   const rowClass = `flex items-center gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`;
 
                   return event.taskId ? (
-                    <Link key={event.id} href={`/app/tasks/${event.taskId}`} className={`${rowClass} hover:bg-surface-3 transition-colors`}>
+                    <Link key={event.id} href={missionTaskHref({ missionId: event.missionId, taskId: event.taskId, from: 'home', mode: 'sheet' })} className={`${rowClass} hover:bg-surface-3 transition-colors`}>
                       {row}
                     </Link>
                   ) : (
