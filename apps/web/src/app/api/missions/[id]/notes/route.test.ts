@@ -51,7 +51,7 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
-  channels: { mission: (id: string) => `mission-${id}` },
+  channels: { mission: (id: string) => `mission-${id}`, task: (id: string) => `task-${id}` },
   events: { MISSION_NOTE_POSTED: 'mission:note_posted' },
 }));
 
@@ -308,6 +308,22 @@ describe('POST /api/missions/[id]/notes', () => {
     await POST(req, { params: mockParams });
 
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  // S6: the task page's question feed listens on the task channel only, so a
+  // mission question pinned to a task must also be announced there.
+  it('also announces a task-pinned note on that task channel', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: null });
+
+    await POST(createRequest({
+      method: 'POST',
+      body: { type: 'question', title: 'Which queue?', taskId: 'task-7' },
+    }), { params: mockParams });
+
+    const channelsHit = mockTriggerEvent.mock.calls.map((c: any[]) => c[0]);
+    expect(channelsHit).toEqual(['mission-mission-1', 'task-task-7']);
   });
 
   it('marks parent note as answered when replyTo is set', async () => {

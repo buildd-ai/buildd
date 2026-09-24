@@ -74,13 +74,19 @@ export async function POST(
     status: 'answered',
   }).returning();
 
-  await triggerEvent(channels.task(id), events.MISSION_NOTE_POSTED, {
+  // A mission-scoped question is also shown on its mission page, which listens
+  // on the mission channel — announce the reply there too.
+  const payload = {
     noteId: reply.id,
     type: 'reply',
     authorType: reply.authorType,
     title: reply.title,
     replyTo: noteId,
-  });
+  };
+  await triggerEvent(channels.task(id), events.MISSION_NOTE_POSTED, payload);
+  if (parentNote.missionId) {
+    await triggerEvent(channels.mission(parentNote.missionId), events.MISSION_NOTE_POSTED, payload);
+  }
 
   return NextResponse.json(reply, { status: 201 });
 }
