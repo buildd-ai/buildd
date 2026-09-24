@@ -4,6 +4,7 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
@@ -662,7 +663,7 @@ export async function completeMissionIfVerified(
   await postMissionFeedEvent({
     missionId,
     type: 'update',
-    title: 'Mission completed',
+    title: MISSION_COMPLETED_NOTE_TITLE,
     body:
       `Deliverables: ${statusSummary || 'none'}\n` +
       `Goal criteria: ${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : `unavailable (${decision.criteriaVerdict.reason})`}` +

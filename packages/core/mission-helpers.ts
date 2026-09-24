@@ -702,6 +702,11 @@ function titleIndicatesCheck(title: string): boolean {
  * `null` means unlabelled — a real, expected outcome. Callers must not
  * default it to `build` or any other lane; see `hasNoWorkLaneData` for
  * detecting when a whole mission's tasks carry no trustworthy lane data.
+ *
+ * @deprecated Rule L-4: superseded by {@link workKindLane} (the Rule L-1
+ * adapter over `resolveWorkKind`), which `computeMissionFlightStrip` now
+ * reads. Kept exported only until the mission detail page's last callers move
+ * off it; do not add new ones.
  */
 export function deriveWorkLane(task: {
   taskClass?: string | null;
@@ -725,6 +730,92 @@ export function deriveWorkLane(task: {
   if (task.title && titleIndicatesCheck(task.title)) return 'check';
 
   return null;
+}
+
+// ─── Work kind (the one precedence chain) + Rule L-1 kind → lane ─────────────
+
+/**
+ * The shape of the work a task does — `tasks.kind`. Mirrors the column union in
+ * `db/schema.ts` and `TASK_KINDS` in POST /api/tasks. The glyph table that
+ * draws each kind lives with the web presentation layer
+ * (`apps/web/src/lib/task-presentation.ts` `WORK_KIND_GLYPHS`); the kind itself
+ * lives here so the flight strip — computed in core, for the cache and its
+ * backfill — reads the same chain the rail glyphs do.
+ */
+export type WorkKind =
+  | 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+
+const WORK_KINDS: ReadonlySet<string> = new Set<WorkKind>([
+  'coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation',
+]);
+
+/**
+ * Role → kind, restricted to the SEEDED default roles. A literal table on
+ * purpose: a workspace-defined role is not guessed at, it simply falls through.
+ */
+export const ROLE_TO_WORK_KIND: Record<string, WorkKind> = {
+  organizer: 'coordination',
+  builder: 'engineering',
+  researcher: 'research',
+  writer: 'writing',
+  analyst: 'analysis',
+  reviewer: 'analysis',
+  'spec-validator': 'analysis',
+};
+
+export interface WorkKindInput {
+  kind?: WorkKind | string | null;
+  roleSlug?: string | null;
+  /** `deriveTaskType()`'s output, computed by the caller and passed IN. */
+  taskType?: TaskType | null;
+}
+
+/**
+ * Strict precedence, first non-null wins: `kind` → `roleSlug` (through
+ * {@link ROLE_TO_WORK_KIND}) → derived review type → null. No title, no
+ * description — the input type cannot carry them. `retry` deliberately
+ * resolves to nothing: it is lineage, not a kind of work.
+ */
+export function resolveWorkKind(input: WorkKindInput): { kind: WorkKind; source: 'kind' | 'role' | 'type' } | null {
+  if (typeof input.kind === 'string' && WORK_KINDS.has(input.kind)) return { kind: input.kind as WorkKind, source: 'kind' };
+  if (typeof input.roleSlug === 'string') {
+    const mapped = ROLE_TO_WORK_KIND[input.roleSlug];
+    if (mapped) return { kind: mapped, source: 'role' };
+  }
+  if (input.taskType === 'review' || input.taskType === 'review-retry') return { kind: 'analysis', source: 'type' };
+  return null;
+}
+
+/** Rule L-1 (docs/design/mission-flight-strip.md): kind → flight-strip lane. */
+export const WORK_KIND_LANE: Record<WorkKind, WorkLane> = {
+  engineering: 'build',
+  analysis: 'check',
+  observation: 'check',
+  research: 'think',
+  design: 'think',
+  writing: 'think',
+  coordination: 'think',
+};
+
+/**
+ * The lane adapter `computeMissionFlightStrip` reads: `resolveWorkKind` over
+ * the task's own fields, then {@link WORK_KIND_LANE}. `null` = unclassified
+ * (Rule L-2) — never defaulted to BUILD. The title is read ONLY through
+ * `deriveTaskType`'s platform-written bracket prefixes.
+ */
+export function workKindLane(task: {
+  kind?: string | null;
+  roleSlug?: string | null;
+  title?: string | null;
+  parentTaskId?: string | null;
+  mode?: string | null;
+}): WorkLane | null {
+  const resolved = resolveWorkKind({
+    kind: task.kind ?? null,
+    roleSlug: task.roleSlug ?? null,
+    taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
+  });
+  return resolved ? WORK_KIND_LANE[resolved.kind] : null;
 }
 
 /**
@@ -1223,6 +1314,8 @@ export interface FlightStripTask {
    * it is steering, not mission work, even when a caller passes it in. */
   creationSource?: string | null;
   mode?: string | null;
+  /** Read only by `deriveTaskType` inside `workKindLane` (legacy unlabelled retries). */
+  parentTaskId?: string | null;
 }
 
 export interface FlightStripWorker {
@@ -1393,7 +1486,7 @@ export function computeMissionFlightStrip(
     if (event.delta > 0) for (const index of visibleActive) spans[index].peak = Math.max(spans[index].peak, concurrent);
   }
   const bars: FlightStripBar[] = Array.from(keptIndices).sort((a, b) => a - b).map(index => spans[index]).map(s => ({
-    taskId: s.task.id, workerId: s.worker.id, lane: deriveWorkLane(s.task),
+    taskId: s.task.id, workerId: s.worker.id, lane: workKindLane(s.task),
     start: position(s.start), end: position(s.end),
     concurrency: Math.min(3, s.peak) as 1 | 2 | 3,
     fill: s.worker.exitCause === 'code_failure' || s.worker.exitCause === 'infra_failure' ? 'failure' : 'concurrency',
@@ -1402,7 +1495,7 @@ export function computeMissionFlightStrip(
   const activeTasks = new Set(spans.filter(s => LIVE_SET.has(s.worker.status as typeof MISSION_LIVE_WORKER_STATUSES[number])).map(s => s.task.id));
   const queued = tasks.filter(t => (t.status === 'pending' || t.status === 'queued' || t.status === 'assigned') && !activeTasks.has(t.id));
   for (const task of queued.slice(0, Math.max(0, FLIGHT_STRIP_BAR_CAP - bars.length))) {
-    bars.push({ taskId: task.id, workerId: null, lane: deriveWorkLane(task), start: position(now), end: position(now), concurrency: 0, fill: 'none', dashed: true });
+    bars.push({ taskId: task.id, workerId: null, lane: workKindLane(task), start: position(now), end: position(now), concurrency: 0, fill: 'none', dashed: true });
   }
 
   const steering = (opts.steeringEvents ?? []).filter(e => Number.isFinite(timestamp(e.at)))
@@ -1414,7 +1507,7 @@ export function computeMissionFlightStrip(
     id: e.id, kind: e.kind, position: position(timestamp(e.at)),
     count: e === cluster ? cycles.length - FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP + 1 : 1,
   }));
-  const hasLaneData = tasks.some(t => deriveWorkLane(t) !== null);
+  const hasLaneData = tasks.some(t => workKindLane(t) !== null);
   return {
     bars, foldedBars: Math.max(0, spans.length + queued.length - bars.length),
     lanes: hasLaneData ? ['think', 'build', 'check'] : [null], hasLaneData,

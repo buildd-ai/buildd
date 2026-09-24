@@ -1,4 +1,4 @@
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
@@ -258,12 +258,12 @@ export function getMissionStateChip(state: MissionDisplayState): { label: string
   switch (state) {
     case 'held':    return { label: 'HELD',             cls: 'border-status-warning text-status-warning' };
     case 'blocked': return { label: 'BLOCKED',          cls: 'border-status-error text-status-error' };
-    // "IDLE", not "STALLED": `MissionHealth` already uses the word `stalled` for
-    // a scheduling stall (mission has not run for 2× its cron interval), and the
-    // two have different inputs and different remedies. The chip names what the
-    // reader sees — no worker on open work — and leaves the word to the axis
-    // that owns it (design doc Q3).
-    case 'stalled': return { label: 'IDLE',             cls: 'border-status-warning text-status-warning' };
+    // "STALLED", not "IDLE" (docs/design/mission-feed-mobile-continuity.md, one
+    // vocabulary): the Home/list health chip already said STALLED for the same
+    // condition — open work, no live worker — so the detail header reading IDLE
+    // made one mission look like two states. `MissionHealth`'s scheduling
+    // `stalled` never renders as this chip, so the word no longer collides.
+    case 'stalled': return { label: 'STALLED',          cls: 'border-status-warning text-status-warning' };
     case 'running': return { label: 'RUNNING',          cls: 'border-status-success text-status-success' };
     case 'failed':  return { label: 'FAILED',           cls: 'border-status-error text-status-error' };
     case 'review':  return { label: 'READY FOR REVIEW', cls: 'border-status-success text-status-success' };
@@ -275,6 +275,181 @@ export function getMissionStateChip(state: MissionDisplayState): { label: string
     case 'complete':return { label: 'COMPLETE',         cls: 'border-border-default text-text-muted' };
     case 'active':  return { label: 'AUTO',             cls: 'border-status-info text-status-info' };
   }
+}
+
+/**
+ * Chip classes for the orthogonal `Health` axis (Home and list cards). Same
+ * tokens as the matching `getMissionStateChip` states, so BLOCKED is error-toned
+ * everywhere, never warning on one surface and error on another.
+ */
+export const HEALTH_CHIP_CLASS: Record<Exclude<Health, 'NOMINAL'>, string> = {
+  BLOCKED: getMissionStateChip('blocked').cls,
+  FAILING: getMissionStateChip('failed').cls,
+  STALLED: getMissionStateChip('stalled').cls,
+};
+
+// ─── D2: the verification neighbour ───────────────────────────────────────────
+
+export type CriteriaOverall = 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
+
+export interface VerificationNeighbour {
+  icon: string;
+  text: string;
+  title: string;
+  /** Token-only border/text classes. */
+  cls: string;
+}
+
+const TERMINAL_MISSION_STATUSES = new Set(['completed', 'archived', 'cancelled']);
+
+/**
+ * The goal-criteria pill that sits beside a mission's state chip on cards,
+ * or null when it must not render.
+ *
+ * Addendum D2: a mission shows one state chip with no contradictory
+ * neighbour. On a terminal mission the chip already answers "is this done"
+ * (COMPLETE), so any criteria pill beside it ("Needs verification",
+ * "Evaluating", even "Verified") is a second, competing state. The verdict of
+ * a closed mission belongs to its completion record, not to its chip row.
+ *
+ * Reads the same `deriveCriteriaGatePresentation` as the mission detail
+ * banner and the initiative KPI chip. NOT_EVALUATED / PENDING carry meaning
+ * the shared gate collapses (never evaluated vs. in flight), so they stay
+ * list-only nuances.
+ */
+export function deriveVerificationNeighbour(opts: {
+  missionStatus: string;
+  criteriaCount: number;
+  overall: CriteriaOverall;
+}): VerificationNeighbour | null {
+  if (TERMINAL_MISSION_STATUSES.has(opts.missionStatus)) return null;
+  if (opts.criteriaCount <= 0) return null;
+  if (opts.overall === 'NOT_EVALUATED') {
+    return { icon: '–', text: 'No evaluator', title: 'Criteria set, no evaluator available', cls: 'border-border-default text-text-muted/60' };
+  }
+  if (opts.overall === 'PENDING') {
+    return { icon: '⋯', text: 'Evaluating', title: 'Evaluation in progress', cls: 'border-border-default/70 text-text-muted/70' };
+  }
+  const gate = deriveCriteriaGatePresentation({ criteriaCount: opts.criteriaCount, overall: opts.overall });
+  if (!gate) return null;
+  const cls = CRITERIA_GATE_TONE_CLASS[gate.tone];
+  if (gate.state === 'clear') return { icon: '✓', text: 'Verified', title: 'All goal criteria verified', cls };
+  if (gate.state === 'failing') return { icon: '✗', text: 'Not met', title: 'Goal criteria not met', cls };
+  return { icon: '?', text: 'Needs verification', title: 'Goal criteria set but not yet verified', cls };
+}
+
+// ─── Reviewer retries ─────────────────────────────────────────────────────────
+
+/**
+ * parentTaskId → the NEWEST fix task a reviewer's request-changes dispatched
+ * for it. Order-independent: the mission page sorts its tasks ascending, and a
+ * "first entry wins" loop over that kept the OLDEST retry (AC-21).
+ */
+export function buildReviewerRetryMap(tasks: ReadonlyArray<{
+  id: string;
+  status: string;
+  title: string;
+  parentTaskId?: string | null;
+  reviewerRetryPrNumber?: number | null;
+  createdAt: Date | string;
+  workers?: ReadonlyArray<{ prNumber?: number | null }> | null;
+}>): Map<string, { id: string; status: string; title: string; prNumber: number | null }> {
+  const newest = new Map<string, (typeof tasks)[number]>();
+  for (const t of tasks) {
+    if (t.reviewerRetryPrNumber == null || !t.parentTaskId) continue;
+    const prev = newest.get(t.parentTaskId);
+    if (!prev || new Date(t.createdAt).getTime() >= new Date(prev.createdAt).getTime()) newest.set(t.parentTaskId, t);
+  }
+  const out = new Map<string, { id: string; status: string; title: string; prNumber: number | null }>();
+  for (const [parentId, t] of newest) {
+    out.set(parentId, { id: t.id, status: t.status, title: t.title, prNumber: t.workers?.[0]?.prNumber ?? null });
+  }
+  return out;
+}
+
+// ─── Completion summary ───────────────────────────────────────────────────────
+
+/** Title of the system note `mission-completion.ts` posts when a mission closes. */
+export const MISSION_COMPLETED_NOTE_TITLE = 'Mission completed';
+
+export interface MissionCompletionSummaryPick {
+  text: string;
+  source: 'completion_task' | 'orchestrator' | 'completion_record';
+  taskId: string | null;
+}
+
+type SummaryResult = { summary?: unknown; reaperAutoCompleted?: unknown; summarySource?: unknown } | null | undefined;
+
+function authoredSummary(result: unknown): string | null {
+  const r = result as SummaryResult;
+  if (!r || typeof r.summary !== 'string' || !r.summary.trim()) return null;
+  if (r.reaperAutoCompleted === true || r.summarySource === 'fallback') return null;
+  return r.summary;
+}
+
+const isCompletionEvaluation = (title: string) =>
+  title.startsWith('Evaluate mission completion:') || title.startsWith('Close mission');
+
+/**
+ * Addendum D3: the completion summary comes from the mission's OWN record,
+ * never from whichever task finished last. In order:
+ *
+ * 1. a completion-evaluation task's authored summary (the decision itself);
+ * 2. an orchestrator (planning) summary written at or after the last
+ *    deliverable finished — an earlier one describes a mission still in flight;
+ * 3. the system "Mission completed" note posted by the completion predicate;
+ * 4. nothing.
+ *
+ * Work tasks and attempts are never candidates: a stale retry's "no action
+ * needed" is a statement about the retry, not the mission. Unauthored
+ * (`summarySource: 'fallback'`) and reaper-extracted summaries are skipped.
+ *
+ * A mission completed by hand (a manual status change, outside
+ * completeMissionIfVerified) usually has none of 1-3, and gets no summary.
+ * That is deliberate: the page used to print the latest task's summary there,
+ * which is exactly the D3 defect. No record of the decision → no summary.
+ */
+export function selectMissionCompletionSummary(input: {
+  tasks: ReadonlyArray<{
+    id: string;
+    title: string;
+    status: string;
+    mode?: string | null;
+    taskClass?: string | null;
+    kind?: string | null;
+    category?: string | null;
+    createdAt: Date | string;
+    updatedAt?: Date | string | null;
+    result?: unknown;
+  }>;
+  completionNote: { body: string | null; createdAt: Date | string } | null;
+}): MissionCompletionSummaryPick | null {
+  const at = (t: { createdAt: Date | string; updatedAt?: Date | string | null }) => new Date(t.updatedAt ?? t.createdAt).getTime();
+  const newestFirst = [...input.tasks].filter(t => t.status === 'completed').sort((a, b) => at(b) - at(a));
+  const nonDeliverable = newestFirst.filter(t => t.taskClass !== 'attempt' && !isDeliverableTask(t));
+
+  for (const t of nonDeliverable) {
+    if (!isCompletionEvaluation(t.title)) continue;
+    const text = authoredSummary(t.result);
+    if (text) return { text, source: 'completion_task', taskId: t.id };
+  }
+
+  // Only a DELIVERED deliverable dates the last delivery. A cancelled or failed
+  // one touched after the final summary (a tidy-up cancel, a late status write)
+  // delivered nothing, so it must not make that summary read as stale.
+  const lastDeliverableAt = Math.max(
+    -Infinity,
+    ...newestFirst.filter(t => t.taskClass !== 'attempt' && isDeliverableTask(t)).map(at),
+  );
+  for (const t of nonDeliverable) {
+    if (t.mode !== 'planning' || at(t) < lastDeliverableAt) continue;
+    const text = authoredSummary(t.result);
+    if (text) return { text, source: 'orchestrator', taskId: t.id };
+  }
+
+  const body = input.completionNote?.body?.trim();
+  if (body) return { text: body, source: 'completion_record', taskId: null };
+  return null;
 }
 
 export type MissionGroup = 'running' | 'attention' | 'review' | 'scheduled' | 'paused' | 'completed';

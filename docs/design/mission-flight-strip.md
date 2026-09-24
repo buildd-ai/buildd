@@ -1,19 +1,24 @@
 ---
 status: partially
-# Reconciled 2026-09-23 (AC-1 pass). All four assertions below pass, and each
+# Reconciled 2026-09-23 (AC-1 pass). All five assertions below pass, and each
 # passes for the reason it names: computeMissionFlightStrip, FlightStrip.tsx,
 # FlightDetailSheet.tsx, the flight_strip_cache migration + backfill script,
-# and missions/page.tsx's cursor-based pagination have all genuinely shipped
+# and missions/page.tsx's `completedCursor` keyset pagination (Rule P-4) have
+# all genuinely shipped
 # — as has essentially all of Implementation Breakdown items 2, 3a, 3b, 3c.
 # AC-1 itself is now also satisfied: the pre-spec `computeMissionSkyline` /
 # `SkylineBlock` / `MissionSkylineData` model is deleted (its one live
 # consumer, the detail page's completed-mission stats row, now reads
 # `computeMissionFlightStrip`'s own `agentTimeMin`/`axisSpanMin`/
-# `parallelFactor`, §6). Status stays `partially`, not `implemented`, because
-# one real gap survives that AC-1 never covered: Rule L-4's swap of
+# `parallelFactor`, §6 — pinned by the `detail-stats-row-on-flight-strip-metrics`
+# assertion, suppressed below). Status stays `partially`, not `implemented`,
+# because one real gap survives that AC-1 never covered: Rule L-4's swap of
 # computeMissionFlightStrip's lane source from `deriveWorkLane` to a
-# `deriveWorkKind`-based Rule L-1 adapter hasn't happened. See
-# "Implementation Status" below.
+# `deriveWorkKind`-based Rule L-1 adapter hasn't happened. Nothing here
+# asserts Rule L-4 itself, so once AC-1 shipped, all five assertions would
+# pass forever and the checker would derive `implemented` regardless — hence
+# the suppression rather than promoting the status. See "Implementation
+# Status" below.
 assertions:
   - id: "compute-mission-flight-strip"
     type: "symbol"
@@ -29,9 +34,16 @@ assertions:
     contains: "flight_strip_cache"
   - id: "list-card-pagination-rule-p4"
     type: "symbol_reachable"
-    symbol: "cursor"
+    symbol: "completedCursor"
     entry: "apps/web/src/app/app/(protected)/missions/page.tsx"
     as: "read"
+  - id: "detail-stats-row-on-flight-strip-metrics"
+    type: "symbol_reachable"
+    symbol: "axisSpanMin"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
+    as: "read"
+    skip_until: "2026-12-19"
+    skip_reason: "axisSpanMin is genuinely read here (AC-1 shipped) — this isn't a false positive — but the doc must stay 'partially' until Rule L-4 (lane source swap to a deriveWorkKind-based adapter) lands, and no assertion here tracks Rule L-4 itself, so this assertion would otherwise pass forever under a non-terminal status."
 ---
 
 # Mission Flight Strip: Chart Encoding, Detail Alignment, Performance
@@ -43,17 +55,17 @@ assertions:
 
 ## Implementation Status (reconciled 2026-09-23)
 
-If you were dispatched here to reconcile this doc again: check `git log -- docs/design/mission-flight-strip.md` first — the table below may already be current. It was as of task `b71ed5d3`'s re-verification (2026-09-23, zero drift from the reconciliation above): every symbol, line reference, and test cited in this doc still matches the code exactly. This doc's `compute-mission-flight-strip` / `flight-strip-reachable-from-detail-page` / `flight-strip-cache-migration` ledger rows will keep re-opening after every checker run regardless — they test narrow code facts (a symbol export, a route, a migration) that pass independently of Rule L-4, so they can never carry this doc's status to a terminal value on their own, and a `code_ahead` row whose fix doesn't reach terminal status releases its claim for redispatch. That's expected per spec-conformance.md's claim-release rule, not a doc bug. Only Rule L-4 actually landing (Implementation Breakdown item 1) moves the status to `implemented` and lets those rows close for good.
+If you were dispatched here to reconcile this doc again: check `git log -- docs/design/mission-flight-strip.md` first — the table below may already be current. It was as of task `b71ed5d3`'s re-verification (2026-09-23, zero drift from the reconciliation above): every symbol, line reference, and test cited in this doc still matches the code exactly. This doc's `compute-mission-flight-strip` / `flight-strip-reachable-from-detail-page` / `flight-strip-cache-migration` / `list-card-pagination-rule-p4` / `detail-stats-row-on-flight-strip-metrics` ledger rows will keep re-opening after every checker run regardless — they test narrow code facts (a symbol export, a route, a migration, a pagination cursor, the stats row's §6 metric) that pass independently of Rule L-4, so they can never carry this doc's status to a terminal value on their own, and a `code_ahead` row whose fix doesn't reach terminal status releases its claim for redispatch. That's expected per spec-conformance.md's claim-release rule, not a doc bug. Only Rule L-4 actually landing (Implementation Breakdown item 1) moves the status to `implemented` and lets those rows close for good.
 
 | Item | Status |
 |---|---|
-| 1 — Core model | **Partially.** `computeMissionFlightStrip` ships with Rules X-1–X-5, C-1–C-3, S-1–S-3, and A-1/A-2 all implemented and covered by `packages/core/__tests__/mission-flight-strip.test.ts` — including the per-`exitCause` classification test (AC-4/AC-5) and the literal 14-vs-15-minute elision test (AC-8). Rule P-1's `flight_strip_cache` migration (`0172_eminent_riptide.sql`) and Rule P-5's backfill script (`packages/core/scripts/backfill-flight-strip-cache.ts`) have also shipped. §6's `agentTimeMin`/`axisSpanMin`/`parallelFactor` are now exposed directly on `MissionFlightStripData`, computed from raw ms spans with Rule L-3 planning-tick spans excluded, and covered by `packages/core/__tests__/mission-flight-strip.test.ts`. AC-1 is satisfied: `computeMissionSkyline`, `SkylineBlock`, and `MissionSkylineData` are deleted from `mission-helpers.ts`, and the detail page's completed-mission stats row (`missions/[id]/page.tsx`) reads the flight strip's own metrics instead. **Not done:** Rule L-4 items (a)–(c) below — `computeMissionFlightStrip` still sources every bar's lane from `deriveWorkLane`, not a Rule L-1 table over `deriveWorkKind`, and `deriveWorkLane` has not been deleted. |
+| 1 — Core model | **Partially.** `computeMissionFlightStrip` ships with Rules X-1–X-5, C-1–C-3, S-1–S-3, and A-1/A-2 all implemented and covered by `packages/core/__tests__/mission-flight-strip.test.ts` — including the per-`exitCause` classification test (AC-4/AC-5) and the literal 14-vs-15-minute elision test (AC-8). Rule P-1's `flight_strip_cache` migration (`0172_eminent_riptide.sql`) and Rule P-5's backfill script (`packages/core/scripts/backfill-flight-strip-cache.ts`) have also shipped. §6's `agentTimeMin`/`axisSpanMin`/`parallelFactor` are now exposed directly on `MissionFlightStripData`, computed from raw ms spans with Rule L-3 planning-tick spans excluded, and covered by `packages/core/__tests__/mission-flight-strip.test.ts`. AC-1 is satisfied: `computeMissionSkyline`, `SkylineBlock`, and `MissionSkylineData` are deleted from `mission-helpers.ts`, and the detail page's completed-mission stats row (`missions/[id]/page.tsx`) reads the flight strip's own metrics instead. **Not done:** Rule L-4 item (c) below. Items (a) and (b) shipped with `docs/design/mission-feed-mobile-continuity.md` slice S1: the Rule L-1 table is `WORK_KIND_LANE` and the adapter is `workKindLane`, both in `packages/core/mission-helpers.ts` beside `resolveWorkKind` (the chain `deriveWorkKind` now reads), and `computeMissionFlightStrip` sources every lane from it. `deriveWorkLane` is deprecated but not yet deleted: the detail page still calls it. |
 | 2 — SVG component | **Done.** `apps/web/src/components/FlightStrip.tsx` renders `MissionFlightStripData` (lanes, concurrency fill, failure fill, breaks, phase dividers, now-line, queued/dashed bars, fold summary), pure rendering with no data fetching. |
 | 3a — List card wiring | **Done.** `missions/page.tsx` and `apps/web/src/lib/missions-query.ts` add the `roleSlug`/`exitCause` columns, the `mission_notes authorType='user'` steering aggregate, Rule P-2's cache-read branch for completed missions, and Rule P-4's `completedCursor` keyset pagination. |
 | 3b — Detail page navigator | **Done.** `missions/[id]/page.tsx` pins `MissionFlightStripNav` under the title, groups the task list via `groupTasksByPhase` (`@/lib/flight-strip-nav`), selects the Records row via `selectMissionRecords`, summarizes the orchestrator row via `countOrchestratorPlans` + `schedule.totalChecks`, and relocates `MissionSettings` behind the overflow menu. |
 | 3c — Flight detail sheet | **Done.** `apps/web/src/components/FlightDetailSheet.tsx` renders the expanded four-lane view over the same `MissionFlightStripData`. |
 
-**One outstanding item:** finish Rule L-4 — add the Rule L-1 kind→lane adapter over `deriveWorkKind`, re-point `computeMissionFlightStrip` at it, and delete `deriveWorkLane`. Status stays `partially` until that lands.
+**One outstanding item:** finish Rule L-4 by deleting `deriveWorkLane` once the mission detail page stops calling it (slice S3 of `mission-feed-mobile-continuity.md`). The adapter and the re-point have shipped. Status stays `partially` until the deletion lands.
 
 ---
 

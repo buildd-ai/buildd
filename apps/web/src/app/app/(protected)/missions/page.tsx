@@ -9,10 +9,9 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeMissionFlightStrip, computeMissionAuthorshipHealth, deriveCriteriaGatePresentation, isDeliverableTask, hasPendingDeliverableWork, type MissionFlightStripData } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeMissionFlightStrip, deriveCriteriaGatePresentation, isDeliverableTask, hasPendingDeliverableWork, type MissionFlightStripData } from '@buildd/core/mission-helpers';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
-import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -177,12 +176,11 @@ export default async function MissionsPage({
     if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
   }
 
-  // These three read from the mission rows above and from nothing each other
-  // produces, so they are one wait rather than three. Previously the steering
-  // marks, the per-workspace release footers and the follow-up batch ran in
-  // sequence, and the release footers are themselves 3 deep per workspace.
+  // These two read from the mission rows above and from nothing each other
+  // produces, so they are one wait rather than two. The release footers are
+  // themselves 3 deep per workspace.
   const releaseFooterMap = new Map<string, ReleaseFooterData>();
-  const [steeringMarksByMission, , followupsByMission] = await Promise.all([
+  const [steeringMarksByMission] = await Promise.all([
     // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
     // one batched query across the whole active set, not one per mission.
     loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
@@ -197,13 +195,6 @@ export default async function MissionsPage({
           releaseConfig: ws.releaseConfig,
         }));
       }),
-    ),
-    // Steering-cost visibility: one batched query for every mission's
-    // post-completion follow-ups, so N missions cost one extra query instead of
-    // N. Missions with no completedAt are skipped inside — their metric renders
-    // `no_baseline`, not zero.
-    loadMissionFollowupTasks(
-      allMissions.map(m => ({ id: m.id, completedAt: (m as any).completedAt ?? null, taskIds: (m.tasks || []).map((t: any) => t.id) })),
     ),
   ]);
 
@@ -227,12 +218,6 @@ export default async function MissionsPage({
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
     const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(obj.tasks || []);
-    const authorshipHealth = computeMissionAuthorshipHealth({
-      tasks: obj.tasks || [],
-      missionCreatedAt: (obj as any).createdAt,
-      missionCompletedAt: (obj as any).completedAt ?? null,
-      followupTasks: followupsByMission.get(obj.id) ?? [],
-    });
     const activeAgents = obj.tasks
       ?.flatMap((t: any) => t.workers || [])
       .filter((w: any) => w.status === 'running').length || 0;
@@ -434,7 +419,6 @@ export default async function MissionsPage({
       priority: obj.priority ?? 0,
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
       goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null,
-      authorshipHealth,
       flightStrip,
       releaseFooter: obj.workspaceId ? (releaseFooterMap.get(obj.workspaceId) ?? null) : null,
     };
