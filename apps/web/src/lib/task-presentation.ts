@@ -5,6 +5,7 @@
 
 import { DEP_SATISFYING_STATUSES, DEP_UNBLOCKING_PR_LIFECYCLE } from './dep-gate-contract';
 import { isSubjectDead, type SubjectGateFields } from './subject-gate-contract';
+import { ROLE_TO_WORK_KIND, resolveWorkKind, type WorkKind as CoreWorkKind } from '@buildd/core/mission-helpers';
 
 /**
  * Re-exported so display surfaces read the SAME predicate the claim gate
@@ -161,8 +162,7 @@ export function deriveTaskPhase(i: TaskPhaseInput): TaskPhase {
  * The shape of the work a task does — `tasks.kind`. Mirrors the column union in
  * `packages/core/db/schema.ts` and `TASK_KINDS` in POST /api/tasks.
  */
-export type WorkKind =
-  | 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+export type WorkKind = CoreWorkKind;
 
 /**
  * The seven glyphs, one per kind. No circles and no squares — the rail has spent
@@ -195,16 +195,11 @@ export const WORK_KIND_GLYPHS: Record<WorkKind, { glyph: string; label: string }
  * Role is a FALLBACK TIER, not an overlay. It adds information only where
  * `kind` is absent — `builder` implies engineering, `organizer` implies
  * coordination, and printing both would print the same fact twice.
+ *
+ * The table itself lives in core beside `resolveWorkKind`, so the flight strip
+ * (computed in core) and these glyphs read one chain (Rule L-4).
  */
-export const ROLE_TO_WORK_KIND: Record<string, WorkKind> = {
-  organizer: 'coordination',
-  builder: 'engineering',
-  researcher: 'research',
-  writer: 'writing',
-  analyst: 'analysis',
-  reviewer: 'analysis',
-  'spec-validator': 'analysis',
-};
+export { ROLE_TO_WORK_KIND };
 
 export interface WorkKindInput {
   /** `tasks.kind` — the declared shape of the work. */
@@ -252,22 +247,8 @@ export interface WorkKindResult {
  * would repeat one fact and hide another.
  */
 export function deriveWorkKind(input: WorkKindInput): WorkKindResult | null {
-  const kind = input.kind;
-  if (typeof kind === 'string' && kind in WORK_KIND_GLYPHS) {
-    return { ...WORK_KIND_GLYPHS[kind as WorkKind], source: 'kind' };
-  }
-
-  const roleSlug = input.roleSlug;
-  if (typeof roleSlug === 'string') {
-    const mapped = ROLE_TO_WORK_KIND[roleSlug];
-    if (mapped) return { ...WORK_KIND_GLYPHS[mapped], source: 'role' };
-  }
-
-  if (input.taskType === 'review' || input.taskType === 'review-retry') {
-    return { ...WORK_KIND_GLYPHS.analysis, source: 'type' };
-  }
-
-  return null;
+  const resolved = resolveWorkKind(input);
+  return resolved ? { ...WORK_KIND_GLYPHS[resolved.kind], source: resolved.source } : null;
 }
 
 // ─── Stale worker ─────────────────────────────────────────────────────────────

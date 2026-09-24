@@ -201,9 +201,9 @@ describe('explainMission', () => {
 
     // The header chip rides on the same answer as the panel, so the two
     // cannot disagree: a blocked mission never reads AUTO/RUNNING up top.
-    // (Open work with no live worker: the view names it 'stalled' → IDLE.)
+    // (Open work with no live worker: the view names it 'stalled' → STALLED.)
     expect(answer.displayState).toBe('stalled');
-    expect(answer.chip.label).toBe('IDLE');
+    expect(answer.chip.label).toBe('STALLED');
     expect(['AUTO', 'RUNNING']).not.toContain(answer.chip.label);
   });
 

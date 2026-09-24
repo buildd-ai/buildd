@@ -4,9 +4,7 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { MissionSegment, MissionFlightStripData } from '@buildd/core/mission-helpers';
-import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, type MissionAuthorshipHealth } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
-import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { FlightStripContainer } from '@/components/FlightStripContainer';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
@@ -24,6 +22,8 @@ import {
   statusToGroup,
   formatNextRun,
   timeAgo,
+  deriveVerificationNeighbour,
+  type CriteriaOverall,
 } from '@/lib/mission-helpers';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
@@ -82,7 +82,6 @@ export interface MissionItem {
   priority: number;
   goalCriteriaCount: number;
   goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
-  authorshipHealth: MissionAuthorshipHealth;
   flightStrip: MissionFlightStripData | null;
   releaseFooter: ReleaseFooterData;
   /**
@@ -382,37 +381,15 @@ function FilterTabBar({
   );
 }
 
-/* ── Verification pill — compact indicator for goal criteria state ──
- * Reads the same `deriveCriteriaGatePresentation` as the mission detail
- * banner and the initiative KPI chip, so this list never disagrees with
- * either about what a given verdict means. */
-function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null }) {
-  // NOT_EVALUATED / PENDING carry meaning the shared gate collapses (never
-  // evaluated vs. in flight) — keep those two as list-only nuances.
-  if (criteriaCount === 0) return null;
-  if (overall === 'NOT_EVALUATED') {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted/60 font-mono text-[10px] rounded-sm" title="Criteria set — no evaluator available">
-        – No evaluator
-      </span>
-    );
-  }
-  if (overall === 'PENDING') {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default/70 text-text-muted/70 font-mono text-[10px] rounded-sm" title="Evaluation in progress">
-        ⋯ Evaluating
-      </span>
-    );
-  }
-
-  const gate = deriveCriteriaGatePresentation({ criteriaCount, overall });
-  if (!gate) return null;
-  const icon = gate.state === 'clear' ? '✓' : gate.state === 'failing' ? '✗' : '?';
-  const text = gate.state === 'clear' ? 'Verified' : gate.state === 'failing' ? 'Not met' : 'Needs verification';
-  const title = gate.state === 'clear' ? 'All goal criteria verified' : gate.state === 'failing' ? 'Goal criteria not met' : 'Goal criteria set but not yet verified';
+/* ── Verification pill: compact indicator for goal criteria state ──
+ * All logic lives in `deriveVerificationNeighbour` (D2): it reads the shared
+ * criteria gate and renders nothing beside a terminal mission's chip. */
+function VerificationPill({ missionStatus, criteriaCount, overall }: { missionStatus: string; criteriaCount: number; overall: CriteriaOverall }) {
+  const pill = deriveVerificationNeighbour({ missionStatus, criteriaCount, overall });
+  if (!pill) return null;
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] rounded-sm ${CRITERIA_GATE_TONE_CLASS[gate.tone]}`} title={title}>
-      {icon} {text}
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] rounded-sm ${pill.cls}`} title={pill.title} data-testid="mission-verification-pill">
+      {pill.icon} {pill.text}
     </span>
   );
 }
@@ -544,8 +521,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               New
             </span>
           )}
-          <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
-          <MissionAuthorshipStats health={mission.authorshipHealth} />
+          <VerificationPill missionStatus={mission.status} criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
         {hasFlightStripActivity(mission.flightStrip) && (
@@ -708,8 +684,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
               New
             </span>
           )}
-          <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
-          <MissionAuthorshipStats health={mission.authorshipHealth} />
+          <VerificationPill missionStatus={mission.status} criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
         {hasFlightStripActivity(mission.flightStrip) ? (
           <FlightStripContainer className="mt-2" data={mission.flightStrip!} />

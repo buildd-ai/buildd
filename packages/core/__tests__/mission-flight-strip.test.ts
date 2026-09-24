@@ -12,10 +12,12 @@ describe('computeMissionFlightStrip', () => {
     expect(strip.hasLaneData).toBe(false);
     expect(strip.bars[0].lane).toBeNull();
   });
-  it('uses lane precedence and preserves unknowns in partially labelled missions', () => {
+  it('uses the work-kind lane adapter and preserves unknowns in partially labelled missions', () => {
+    // Rule L-1: role builder → engineering → BUILD. The old deriveWorkLane
+    // chain read `taskClass === 'attempt'` first and said CHECK (Rule L-4).
     const strip = compute([{ ...task, taskClass: 'attempt', roleSlug: 'builder' }, { id: 'unknown', status: 'pending' }], [worker('one', 0, 100)]);
     expect(strip.lanes).toEqual(['think', 'build', 'check']);
-    expect(strip.bars.map(b => b.lane)).toEqual(['check', null]);
+    expect(strip.bars.map(b => b.lane)).toEqual(['build', null]);
   });
   // AC-8: the elision threshold is normative at 15 minutes (Rule X-2), not just
   // "whatever the constant currently says" — a literal-minutes test so a future
