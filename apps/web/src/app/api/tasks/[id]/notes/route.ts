@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq, and, isNull, asc } from 'drizzle-orm';
+import { eq, asc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
@@ -25,7 +25,9 @@ async function resolveTaskAccess(id: string, user: Awaited<ReturnType<typeof get
   return task;
 }
 
-// GET /api/tasks/[id]/notes — fetch task-scoped notes (task not linked to a mission)
+// GET /api/tasks/[id]/notes — every note scoped to this task. A mission task's
+// notes carry its missionId too; they are still this task's, and the task page
+// shows them (docs/design/mission-feed-mobile-continuity.md S6).
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -41,7 +43,7 @@ export async function GET(
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
   const notes = await db.query.missionNotes.findMany({
-    where: and(eq(missionNotes.taskId, id), isNull(missionNotes.missionId)),
+    where: eq(missionNotes.taskId, id),
     orderBy: [asc(missionNotes.createdAt)],
     limit: 100,
   });

@@ -87,6 +87,37 @@ describe('FlightDetailSheet', () => {
     expect(html).toContain('CHECK');
   });
 
+  // AC-20: "Open mission →" carries the selected bar into mission context.
+  it('Open mission carries the origin, and the selected bar as the task sheet', () => {
+    const plain = renderToStaticMarkup(
+      <FlightDetailSheet open={true} onClose={() => {}} data={BASE_DATA} missionId="m1" missionTitle="Ship the thing" from="home" />,
+    );
+    expect(plain).toContain('href="/app/missions/m1?from=home"');
+
+    const selected = renderToStaticMarkup(
+      <FlightDetailSheet
+        open={true}
+        onClose={() => {}}
+        data={BASE_DATA}
+        missionId="m1"
+        missionTitle="Ship the thing"
+        from="home"
+        initialTaskId="a"
+      />,
+    );
+    expect(selected).toContain('href="/app/missions/m1?from=home&amp;task=a"');
+    expect(selected).toContain('data-testid="flight-detail-open-mission"');
+  });
+
+  it('every drawn bar is a selectable target carrying its task id', () => {
+    const html = renderToStaticMarkup(
+      <FlightDetailSheet open={true} onClose={() => {}} data={BASE_DATA} missionId="m1" missionTitle="Ship the thing" initialTaskId="a" />,
+    );
+    expect(html).toContain('data-testid="flight-detail-bar"');
+    expect(html).toContain('data-task-id="a"');
+    expect(html).toContain('aria-pressed="true"');
+  });
+
   it('falls back to an unlabelled work row when the mission has no trustworthy lane data', () => {
     const html = renderToStaticMarkup(
       <FlightDetailSheet

@@ -6,6 +6,8 @@ import type { MissionNote } from '@buildd/shared';
 
 interface Props {
   taskId: string;
+  /** A mission task's feed lists mission-scoped questions, announced on the mission channel. */
+  missionId?: string | null;
   activeWorkerId: string | null;
   activeWorkerStatus: string | null;
 }
@@ -23,7 +25,14 @@ function timeAgo(date: string | Date): string {
 
 const LIVE_STATUSES = new Set(['running', 'starting']);
 
-export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerStatus }: Props) {
+/** Channels the feed refetches on: the task's, plus its mission's for a mission task. */
+export function questionFeedChannels(taskId: string, missionId: string | null | undefined, prefix: string): string[] {
+  const names = [`${prefix}task-${taskId}`];
+  if (missionId) names.push(`${prefix}mission-${missionId}`);
+  return names;
+}
+
+export default function TaskQuestionFeed({ taskId, missionId = null, activeWorkerId, activeWorkerStatus }: Props) {
   const [notes, setNotes] = useState<MissionNote[]>([]);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
@@ -48,16 +57,20 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
   }, [fetchNotes]);
 
   useEffect(() => {
-    const channelName = `${CHANNEL_PREFIX}task-${taskId}`;
-    const channel = subscribeToChannel(channelName);
-    if (!channel) return;
     const handler = () => fetchNotes();
-    channel.bind('mission:note_posted', handler);
+    const bound = questionFeedChannels(taskId, missionId, CHANNEL_PREFIX).flatMap(name => {
+      const channel = subscribeToChannel(name);
+      if (!channel) return [];
+      channel.bind('mission:note_posted', handler);
+      return [{ name, channel }];
+    });
     return () => {
-      channel.unbind('mission:note_posted', handler);
-      unsubscribeFromChannel(channelName);
+      for (const { name, channel } of bound) {
+        channel.unbind('mission:note_posted', handler);
+        unsubscribeFromChannel(name);
+      }
     };
-  }, [taskId, fetchNotes]);
+  }, [taskId, missionId, fetchNotes]);
 
   useEffect(() => {
     if (replyingTo) inputRef.current?.focus();
@@ -111,11 +124,11 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
     <div className="mb-6">
       {/* Waiting on you banner */}
       {openQuestions.length > 0 && (
-        <div className="flex items-center gap-2 px-4 py-3 mb-4 bg-[#D97706]/10 border border-[#D97706]/25 rounded-[10px]">
-          <svg className="w-4 h-4 text-[#D97706] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="flex items-center gap-2 px-4 py-3 mb-4 bg-status-warning/10 border border-status-warning/25 rounded-[10px]">
+          <svg className="w-4 h-4 text-status-warning shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <span className="text-[13px] font-medium text-[#D97706]">
+          <span className="text-[13px] font-medium text-status-warning">
             Waiting on you — {openQuestions.length === 1 ? 'the agent has a question' : `${openQuestions.length} agent questions need answers`}
           </span>
         </div>
@@ -132,10 +145,10 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
           const wasSent = sentFor.has(note.id);
 
           return (
-            <div key={note.id} className="rounded-[10px] border border-[#D97706]/30 bg-[#D97706]/[0.04] overflow-hidden">
+            <div key={note.id} className="rounded-[10px] border border-status-warning/30 bg-status-warning/[0.04] overflow-hidden">
               <div className="px-4 py-3">
                 <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-[9px] font-bold tracking-wider text-[#D97706] uppercase">Question</span>
+                  <span className="text-[9px] font-bold tracking-wider text-status-warning uppercase">Question</span>
                   <span className="flex-1" />
                   <span className="text-[11px] text-text-muted tabular-nums">{timeAgo(note.createdAt)}</span>
                 </div>
@@ -152,7 +165,7 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
                     <button
                       onClick={() => handleDefault(note.id, note.defaultChoice!)}
                       disabled={sending}
-                      className="w-full text-left px-3.5 py-2.5 rounded-[8px] border border-[#D97706]/30 bg-[#D97706]/10 text-[13px] text-[#D97706] font-medium hover:bg-[#D97706]/20 transition-colors disabled:opacity-50 active:scale-[0.98]"
+                      className="w-full text-left px-3.5 py-2.5 rounded-[8px] border border-status-warning/30 bg-status-warning/10 text-[13px] text-status-warning font-medium hover:bg-status-warning/20 transition-colors disabled:opacity-50 active:scale-[0.98]"
                     >
                       Proceed with default: {note.defaultChoice}
                     </button>
@@ -220,7 +233,7 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
             <div key={note.id} className="rounded-[10px] border border-border-default overflow-hidden">
               <div className="px-4 py-3 bg-surface-2">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[9px] font-bold tracking-wider text-[#D97706]/60 uppercase">Question</span>
+                  <span className="text-[9px] font-bold tracking-wider text-status-warning/60 uppercase">Question</span>
                   <svg className="w-3 h-3 text-status-success shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>

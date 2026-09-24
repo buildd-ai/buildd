@@ -667,70 +667,12 @@ export function deriveCriteriaGatePresentation(opts: {
 
 // ─── Work lane classification ─────────────────────────────────────────────────
 
-/** Kind of work a task represents, for the flight-strip's three lanes. */
-export type WorkLane = 'think' | 'build' | 'check';
-
-const CHECK_ROLE_SLUGS = new Set(['reviewer', 'spec-validator']);
-const THINK_ROLE_SLUGS = new Set(['researcher', 'organizer', 'architect']);
-const THINK_KINDS = new Set(['coordination', 'research', 'analysis', 'design']);
-const BUILD_KINDS = new Set(['engineering', 'writing']);
-
-/** Case-insensitive substring match — covers both a prefix tag and a mid-title mention. */
-function titleIndicatesCheck(title: string): boolean {
-  const t = title.toLowerCase();
-  return t.includes('[surface audit]') || t.includes('verify') || t.includes('review');
-}
-
 /**
- * Classify a task into one of the flight-strip's three lanes.
- *
- * `tasks.kind` alone cannot do this: it is unset on most tasks, and none of
- * its populated values means "check" — checking work is recorded elsewhere
- * (`taskClass = 'attempt'`, `roleSlug = 'reviewer'`, or only identifiable by
- * title shape). This is the one exported helper with the precedence order
- * below; every rung is a distinct source, checked in order, first match wins
- * (see docs/design/mission-flight-strip.md):
- *
- * 1. `taskClass === 'attempt'` → check
- * 2. `roleSlug`: reviewer/spec-validator → check; researcher/organizer/architect
- *    → think; builder → build
- * 3. `kind`: coordination/research/analysis/design → think; engineering/writing
- *    → build
- * 4. `title` matching `[surface audit]`, `verify…`, or `review…` → check
- * 5. otherwise → null
- *
- * `null` means unlabelled — a real, expected outcome. Callers must not
- * default it to `build` or any other lane; see `hasNoWorkLaneData` for
- * detecting when a whole mission's tasks carry no trustworthy lane data.
- *
- * @deprecated Rule L-4: superseded by {@link workKindLane} (the Rule L-1
- * adapter over `resolveWorkKind`), which `computeMissionFlightStrip` now
- * reads. Kept exported only until the mission detail page's last callers move
- * off it; do not add new ones.
+ * Kind of work a task represents, for the flight-strip's three lanes. Rule
+ * L-4: the only classifier is {@link workKindLane} (Rule L-1 over
+ * `resolveWorkKind`); there is no second, title-reading lane derivation.
  */
-export function deriveWorkLane(task: {
-  taskClass?: string | null;
-  roleSlug?: string | null;
-  kind?: string | null;
-  title?: string | null;
-}): WorkLane | null {
-  if (task.taskClass === 'attempt') return 'check';
-
-  if (task.roleSlug) {
-    if (CHECK_ROLE_SLUGS.has(task.roleSlug)) return 'check';
-    if (THINK_ROLE_SLUGS.has(task.roleSlug)) return 'think';
-    if (task.roleSlug === 'builder') return 'build';
-  }
-
-  if (task.kind) {
-    if (THINK_KINDS.has(task.kind)) return 'think';
-    if (BUILD_KINDS.has(task.kind)) return 'build';
-  }
-
-  if (task.title && titleIndicatesCheck(task.title)) return 'check';
-
-  return null;
-}
+export type WorkLane = 'think' | 'build' | 'check';
 
 // ─── Work kind (the one precedence chain) + Rule L-1 kind → lane ─────────────
 
@@ -818,15 +760,6 @@ export function workKindLane(task: {
   return resolved ? WORK_KIND_LANE[resolved.kind] : null;
 }
 
-/**
- * True when a non-empty set of tasks all resolved to `null` from
- * `deriveWorkLane` — the mission has no trustworthy lane data at all, and the
- * caller (the flight-strip chart) must render a single uncaptioned track
- * rather than caption three lanes the data cannot support.
- */
-export function hasNoWorkLaneData(tasks: Array<Parameters<typeof deriveWorkLane>[0]>): boolean {
-  return tasks.length > 0 && tasks.every(t => deriveWorkLane(t) === null);
-}
 
 // ─── Mission segment states ───────────────────────────────────────────────────
 

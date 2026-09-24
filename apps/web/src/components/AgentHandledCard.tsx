@@ -2,6 +2,7 @@ import Link from 'next/link';
 import Spinner from './Spinner';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import type { ActionQueueItem } from '@/lib/action-queue';
+import { actionCardTaskLink } from '@/lib/action-card-context';
 
 /**
  * Informational card for work an agent already owns — a live CI fix, or a check
@@ -26,7 +27,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
       {item.taskTitle && (
         <div className="text-[13px] font-medium text-text-primary truncate">
           {item.taskId ? (
-            <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+            <Link href={actionCardTaskLink(item)} className="hover:underline">
               {item.taskTitle}
             </Link>
           ) : item.taskTitle}
@@ -35,7 +36,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
 
       <div className="flex items-center gap-3 mt-0.5">
         {fixTaskId && (
-          <Link href={`/app/tasks/${fixTaskId}`} className="text-[11px] font-medium text-primary hover:underline">
+          <Link href={actionCardTaskLink(item, { taskId: fixTaskId, page: true })} className="text-[11px] font-medium text-primary hover:underline">
             View fix attempt
           </Link>
         )}

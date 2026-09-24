@@ -86,14 +86,19 @@ export async function POST(
       status: 'answered',
     }).returning();
 
-    // Trigger real-time event
-    await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, {
+    // Trigger real-time event — on the question's task channel too, where an
+    // open task page's question feed listens.
+    const payload = {
       noteId: reply.id,
       type: 'reply',
       authorType: reply.authorType,
       title: reply.title,
       replyTo: noteId,
-    });
+    };
+    await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, payload);
+    if (parentNote.taskId) {
+      await triggerEvent(channels.task(parentNote.taskId), events.MISSION_NOTE_POSTED, payload);
+    }
 
     return NextResponse.json(reply, { status: 201 });
   } catch (error) {

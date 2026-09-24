@@ -2,7 +2,7 @@
  * Rule L-1 (docs/design/mission-flight-strip.md): the flight strip's lane comes
  * from the ONE work-kind precedence chain (`resolveWorkKind`, which the web
  * `deriveWorkKind` glyph helper also reads), through a kind → lane table. No
- * title parsing, no `taskClass` rung — that was `deriveWorkLane`'s second
+ * title parsing, no `taskClass` rung — that was the retired lane chain's second
  * derivation, which Rule L-4 retires.
  */
 import { describe, expect, it } from 'bun:test';
@@ -51,7 +51,7 @@ describe('workKindLane (the adapter computeMissionFlightStrip reads)', () => {
     expect(workKindLane({ title: 'Verify the migration ran cleanly' })).toBeNull();
   });
 
-  it('writing is THINK under Rule L-1 (it was BUILD under deriveWorkLane)', () => {
+  it('writing is THINK under Rule L-1 (it was BUILD under the retired lane chain)', () => {
     expect(workKindLane({ kind: 'writing' })).toBe('think');
   });
 

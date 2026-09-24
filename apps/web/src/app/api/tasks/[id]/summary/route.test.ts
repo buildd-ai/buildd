@@ -36,6 +36,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id' },
   workers: { taskId: 'taskId', createdAt: 'createdAt' },
   workerErrorTraces: { taskId: 'taskId', ts: 'ts' },
+  artifacts: { createdAt: 'createdAt' },
 }));
 
 import { GET } from './route';
@@ -662,5 +663,99 @@ describe('GET /api/tasks/[id]/summary', () => {
     // Derived status: task is "running" but worker is "waiting_input"
     expect(data.status).toBe('waiting_input');
     expect(data.worker?.waitingFor?.prompt).toBe('Which approach do you prefer?');
+  });
+  // W4: the sheet shows a task's records and origin, so a completed task with
+  // no PR still says what it produced and where it came from.
+  describe('records and origin (sheet W4)', () => {
+    // Illustrative ids only.
+    const TASK = '0a1b2c3d-1111-4222-8333-444455556666';
+    const baseTask = {
+      id: TASK,
+      title: 'Write the plan',
+      status: 'completed',
+      description: null,
+      mode: null,
+      roleSlug: 'builder',
+      createdAt: new Date().toISOString(),
+      missionId: 'mission-1',
+      workspaceId: 'ws-1',
+      result: { summary: 'Planned.' },
+      context: null,
+    };
+    const latestWorker = { id: 'worker-2', status: 'completed', prUrl: null, prNumber: null, milestones: [] };
+
+    /** The latest-worker query and the records query share `workers.findMany`. */
+    function workersWith(artifactsByWorker: Array<Array<{ id: string; type: string; title: string | null }>>) {
+      mockWorkersFindMany.mockImplementation(((args: { with?: { artifacts?: unknown } }) =>
+        Promise.resolve(
+          args?.with?.artifacts
+            ? artifactsByWorker.map((artifacts, i) => ({ id: `worker-${i + 1}`, artifacts }))
+            : [latestWorker],
+        )) as never);
+    }
+
+    it('lists deliverable records across every worker, linking each to its own page', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue(baseTask);
+      workersWith([
+        [{ id: 'art-1', type: 'impl_plan', title: 'Internal plan' }, { id: 'art-2', type: 'report', title: 'plan.md' }],
+        [{ id: 'art-3', type: 'summary', title: null }],
+      ]);
+
+      const data = await (await callGET(TASK)).json();
+      expect(data.records).toEqual([
+        { id: 'art-2', type: 'report', title: 'plan.md', href: '/app/artifacts/art-2' },
+        { id: 'art-3', type: 'summary', title: null, href: '/app/artifacts/art-3' },
+      ]);
+    });
+
+    it('never selects artifact content for the records query', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue(baseTask);
+      workersWith([]);
+      await callGET(TASK);
+      const call = (mockWorkersFindMany.mock.calls as unknown as Array<[{ with?: { artifacts?: { columns?: Record<string, boolean> } } }]>)
+        .find(([a]) => a?.with?.artifacts);
+      expect(call).toBeDefined();
+      expect(call![0].with!.artifacts!.columns).toEqual({ id: true, type: true, title: true });
+    });
+
+    it('returns an empty records list for a task with no workers', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue(baseTask);
+      mockWorkersFindMany.mockResolvedValue([]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.records).toEqual([]);
+    });
+
+    it('derives origin from stored provenance (deriveTaskOrigin), not the title', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', name: 'Someone', email: 'someone@example.com' });
+      mockTasksFindFirst.mockResolvedValue({
+        ...baseTask,
+        title: '[orchestrator] Write the plan',
+        creationSource: 'orchestrator',
+        createdByWorkerId: 'worker-9',
+        createdByAccountId: null,
+        parentTaskId: null,
+        taskClass: 'work',
+        context: { cycleNumber: 3 },
+        creatorWorker: { id: 'worker-9', name: 'runner', task: { id: 'task-9', roleSlug: 'organizer' } },
+        mission: { title: 'Example mission' },
+      });
+      mockWorkersFindMany.mockResolvedValue([]);
+
+      const data = await (await callGET(TASK)).json();
+      expect(data.origin.actor).toBe('Organizer agent');
+      expect(data.origin.parts).toEqual(['mission heartbeat cycle 3']);
+      expect(data.origin.links).toContainEqual({ key: 'worker', label: 'Agent run', href: '/app/tasks/task-9' });
+    });
+
+    it('returns origin null when nothing about the creation is stored', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue({ ...baseTask, missionId: null, creationSource: null });
+      mockWorkersFindMany.mockResolvedValue([]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.origin).toBeNull();
+    });
   });
 });

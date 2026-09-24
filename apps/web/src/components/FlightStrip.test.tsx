@@ -11,6 +11,9 @@ import {
   FLIGHT_STRIP_NOW_COLOR,
   FLIGHT_STRIP_HUMAN_COLOR,
   FLIGHT_STRIP_LANE_FOLD_CAP,
+  axisLabelWidth,
+  cullAxisLabels,
+  laneLabelColumnWidth,
 } from './FlightStrip';
 
 const date = (ms: number) => new Date(ms);
@@ -243,5 +246,63 @@ describe('FlightStrip', () => {
       expect(html).not.toContain('scale(0.8)');
       expect(html).not.toContain('transform="scale');
     });
+  });
+});
+
+// Addendum D4: axis labels never overlap and lane labels are never truncated.
+describe('FlightStrip readability (D4)', () => {
+  const label = (id: string, x: number, text: string, priority: number, anchor: 'start' | 'middle' | 'end' = 'start') =>
+    ({ id, x, text, priority, anchor });
+
+  it('estimates mono label width from character count', () => {
+    expect(axisLabelWidth('P1', 8.5)).toBeCloseTo(2 * 8.5 * 0.6);
+  });
+
+  it('keeps labels that do not collide', () => {
+    const kept = cullAxisLabels([label('p1', 42, 'P1', 1), label('p2', 150, 'P2', 1)], { minX: 42, maxX: 318 });
+    expect(kept.map(l => l.id)).toEqual(['p1', 'p2']);
+  });
+
+  it('drops the lower-priority label when two would overlap or sit closer than the minimum gap', () => {
+    const kept = cullAxisLabels(
+      [label('p1', 42, 'P1', 1), label('p2', 60, '12m idle · P2', 1), label('now', 64, 'now', 3, 'middle')],
+      { minX: 42, maxX: 318 },
+    );
+    expect(kept.map(l => l.id)).toEqual(['p1', 'now']);
+  });
+
+  it('at equal priority the earlier (left) label wins', () => {
+    const kept = cullAxisLabels([label('a', 100, 'AAAA', 1), label('b', 110, 'BBBB', 1)], { minX: 0, maxX: 318 });
+    expect(kept.map(l => l.id)).toEqual(['a']);
+  });
+
+  it('drops a label that would run past the strip edge instead of clipping it', () => {
+    const kept = cullAxisLabels([label('p9', 300, 'long phase label', 1)], { minX: 42, maxX: 318 });
+    expect(kept).toEqual([]);
+  });
+
+  it('never renders two axis labels whose boxes overlap, even for crowded phases', () => {
+    const tasks = [{ id: 'a', status: 'completed' }];
+    const workers = [0, 1, 2, 3, 4].map(i => worker(`w${i}`, 'a', i * (GAP + 10), i * (GAP + 10) + 5));
+    const strip = computeMissionFlightStrip(tasks, workers);
+    expect(strip.phases.length).toBeGreaterThan(2);
+    const html = renderToStaticMarkup(<FlightStrip data={strip} width={256} />);
+    const axisTexts = [...html.matchAll(/<text data-axis-label="true" x="([\d.]+)"[^>]*?(?:text-anchor="(\w+)")?[^>]*>([^<]*)<\/text>/g)]
+      .map(m => {
+        const w = axisLabelWidth(m[3], 8.5);
+        const x = Number(m[1]);
+        const start = m[2] === 'middle' ? x - w / 2 : m[2] === 'end' ? x - w : x;
+        return { start, end: start + w };
+      })
+      .sort((a, b) => a.start - b.start);
+    expect(axisTexts.length).toBeGreaterThan(0);
+    for (let i = 1; i < axisTexts.length; i++) expect(axisTexts[i].start).toBeGreaterThanOrEqual(axisTexts[i - 1].end);
+  });
+
+  it('widens the lane-label column so UNCLASSIFIED is never truncated', () => {
+    const labels = ['THINK', 'BUILD', 'CHECK'];
+    expect(laneLabelColumnWidth(labels.map(text => ({ text, fontSize: 8.5 })))).toBe(42);
+    const w = laneLabelColumnWidth([...labels.map(text => ({ text, fontSize: 8.5 })), { text: 'UNCLASSIFIED', fontSize: 6 }]);
+    expect(w).toBeGreaterThanOrEqual(axisLabelWidth('UNCLASSIFIED', 6) + 2);
   });
 });

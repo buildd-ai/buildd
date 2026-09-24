@@ -5,19 +5,17 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
+import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
-import { MissionProgressBar } from '@/components/MissionProgressBar';
-import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
+import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
-import { groupTasksByPhase, selectMissionRecords } from '@/lib/flight-strip-nav';
-import MissionFlightStripNav from './MissionFlightStripNav';
+import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
@@ -33,6 +31,8 @@ import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
 import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
+import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
+import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -42,15 +42,22 @@ import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
-import MissionFeed from './MissionFeed';
+import { parseMissionListView } from '@/lib/mission-list-view';
+import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
+import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
+import MissionDelivery from './MissionDelivery';
+import MissionRecordsSheet from './MissionRecordsSheet';
+import { MissionFlightStripInline, MissionStripExpand } from './MissionStripControls';
+import { buildDeliverySteps, deliveryReleaseInput, missionTrunkMergedAt } from '@/lib/mission-delivery';
+import { classifyReleaseState } from '@/lib/release-state';
+import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
-import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
@@ -63,12 +70,11 @@ import { shouldQueryRelease } from '@/lib/release-state';
 import { countOf } from '@/lib/plural';
 import {
   deriveMissionIntegrationPr,
-  deriveMissionProgressSubline,
   shouldRenderMissionPrBlock,
   MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
-import MissionSituationBlock, { affordanceFor } from '@/components/missions/MissionSituationBlock';
+import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
 export const dynamic = 'force-dynamic';
@@ -79,110 +85,29 @@ export default async function MissionDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string }>;
+  // `?tab=` is retired: accepted and ignored, so old links still land.
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
 
-  let mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
-    with: {
-      workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
-      initiative: { columns: { id: true, title: true } },
-      tasks: {
-        columns: {
-          id: true,
-          title: true,
-          status: true,
-          priority: true,
-          createdAt: true,
-          updatedAt: true,
-          result: true,
-          mode: true,
-          roleSlug: true,
-          creationSource: true,
-          dependsOn: true,
-          parentTaskId: true,
-          // Read only to class Lane-2 rail edges as advisory ordering
-          // (docs/specs/timeline-mobile-rail.md Rule D3-2). Column already exists.
-          pathManifest: true,
-          category: true,
-          taskClass: true,
-          loopConfig: true,
-          loopState: true,
-          loopIteration: true,
-          startAt: true,
-          reviewerRetryPrNumber: true,
-          // Attempt-strip provenance (U8): deriveTaskOrigin reads the three
-          // retry counters plus context to say why each attempt exists.
-          ciRetryPrNumber: true,
-          conflictRetryPrNumber: true,
-          context: true,
-          // Authorship: computeMissionAuthorshipHealth's human-task-share input.
-          createdByWorkerId: true,
-          createdByAccountId: true,
-          // Mission legibility (docs/specs/mission-legibility.md): the stored
-          // phase the rail groups under a header, and the work-kind the glyph
-          // column draws. Both read straight off the row the rail and the
-          // Structure canvas already hold — no second fetch, no join, and no
-          // way for the two surfaces to disagree about staleness.
-          missionPhaseIndex: true,
-          missionPhaseLabel: true,
-          kind: true,
-        },
-        orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
-        with: {
-          workers: {
-            columns: {
-              id: true,
-              status: true,
-              waitingFor: true,
-              branch: true,
-              prUrl: true,
-              prNumber: true,
-              prLifecycleStatus: true,
-              mergedAt: true,
-              supersededByPrNumber: true,
-              supersededByPrUrl: true,
-              supersededReason: true,
-              costUsd: true,
-              turns: true,
-              completedAt: true,
-              startedAt: true,
-              updatedAt: true,
-              exitCause: true,
-              currentAction: true,
-              commitCount: true,
-              filesChanged: true,
-            },
-            orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
-            limit: 3,
-            with: {
-              artifacts: {
-                columns: {
-                  id: true,
-                  type: true,
-                  title: true,
-                  key: true,
-                  shareToken: true,
-                  content: true,
-                  visibility: true,
-                  metadata: true,
-                  createdAt: true,
-                },
-                limit: 5,
-              },
-            },
-          },
-        },
-      },
-      schedule: true,
-    },
-  });
+  // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
+  // or task `context`; the few fields the page reads from those two JSON
+  // columns arrive as a projected digest, read alongside (mission-page-query.ts).
+  const [missionRow, digestRows] = await Promise.all([
+    db.query.missions.findFirst({
+      where: eq(missions.id, id),
+      with: MISSION_DETAIL_WITH,
+    }),
+    db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
+  ]);
+  let mission = missionRow;
+  const taskDigests = indexTaskDigests(digestRows);
+  const digestOf = (taskId: string) => taskDigests.get(taskId) ?? { result: null, context: null };
 
   if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
@@ -211,45 +136,7 @@ export default async function MissionDetailPage({
         if (refreshed.some(Boolean)) {
           const refreshedMission = await db.query.missions.findFirst({
             where: eq(missions.id, id),
-            with: {
-              workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
-              initiative: { columns: { id: true, title: true } },
-              tasks: {
-                columns: {
-                  id: true, title: true, status: true, priority: true, createdAt: true,
-                  updatedAt: true, result: true, mode: true, roleSlug: true,
-                  creationSource: true, dependsOn: true, parentTaskId: true, pathManifest: true, category: true,
-                  taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
-                  reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
-                  context: true, createdByWorkerId: true, createdByAccountId: true,
-                  missionPhaseIndex: true, missionPhaseLabel: true, kind: true,
-                },
-                orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
-                with: {
-                  workers: {
-                    columns: {
-                      id: true, status: true, waitingFor: true, branch: true, prUrl: true,
-                      prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
-                      supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
-                      turns: true, completedAt: true, startedAt: true, updatedAt: true, exitCause: true,
-                      currentAction: true, commitCount: true, filesChanged: true,
-                    },
-                    orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
-                    limit: 3,
-                    with: {
-                      artifacts: {
-                        columns: {
-                          id: true, type: true, title: true, key: true, shareToken: true,
-                          content: true, visibility: true, metadata: true, createdAt: true,
-                        },
-                        limit: 5,
-                      },
-                    },
-                  },
-                },
-              },
-              schedule: true,
-            },
+            with: MISSION_DETAIL_WITH,
           });
           if (refreshedMission) mission = refreshedMission;
         }
@@ -415,9 +302,12 @@ export default async function MissionDetailPage({
     }
   }
 
+  // One vocabulary for "live" on every mission surface (LIVE_WORKER_STATUSES):
+  // a worker waiting on input is still a live worker.
+  const liveStatuses = new Set<string>(LIVE_WORKER_STATUSES);
   const activeAgents = mission.tasks
     ?.flatMap((t) => t.workers || [])
-    .filter((w) => w.status === 'running').length || 0;
+    .filter((w) => liveStatuses.has(w.status)).length || 0;
 
   const scheduleCron = (mission.schedule as any)?.cronExpression || null;
   // "No pending deliverable work" for the escalated health state — same
@@ -495,17 +385,24 @@ export default async function MissionDetailPage({
   });
   const stateChip = missionAnswer?.chip ?? getMissionStateChip(displayState);
 
+  // The Verified pill is the page's only `#mission-criteria` target. It is
+  // hidden on a terminal mission whose criteria do not pass, and renders
+  // nothing on a terminal mission with no criteria; the situation must not
+  // link to it then. Same predicate as `showVerifiedPill` below.
+  const missionIsTerminal = ['completed', 'archived'].includes(mission.status);
+  const criteriaReachable = (!missionIsTerminal || missionCriteriaOverall === 'pass')
+    && !(missionIsTerminal && (((mission as any).goalCriteria as unknown[] | null) ?? []).length === 0);
+
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
   // parity with the one right action is what made this screen unreadable.
   const hasPrimaryAction = missionAnswer
-    ? affordanceFor(missionAnswer.situation.focus, { missionId: id }) !== null
+    ? affordanceFor(missionAnswer.situation.focus, { missionId: id, criteriaReachable }) !== null
     : false;
 
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
   const detailNextScanMins = detailNextRunAt ? Math.max(0, Math.round((new Date(detailNextRunAt).getTime() - Date.now()) / 60_000)) : null;
   const driveNextRun = formatNextRun(detailNextScanMins, detailNextRunAt ? String(detailNextRunAt) : null);
-  const inFlightTasks = (mission.tasks || []).flatMap(t => (t.workers || []).filter(w => ['idle', 'running', 'starting', 'waiting_input'].includes(w.status)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns })));
 
   // Heartbeat data — derived from schedule's taskTemplate.context
   const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -531,7 +428,7 @@ export default async function MissionDetailPage({
       id: t.id,
       createdAt: t.createdAt,
       status: t.status,
-      result: t.result,
+      result: digestOf(t.id).result,
     }))
   );
   const TERMINAL_STATUSES = ['completed', 'cancelled', 'budget_exhausted'];
@@ -587,21 +484,18 @@ export default async function MissionDetailPage({
     }
   }
 
-  // Map fix tasks dispatched after a reviewer requested changes (parentTaskId →
-  // retry task info). allTasks is newest-first, so the first entry wins — giving
-  // us the most-recent retry for each original task.
-  const reviewerRetryMap = new Map<string, { id: string; status: string; title: string; prNumber: number | null }>();
-  for (const t of allTasks) {
-    if ((t as any).reviewerRetryPrNumber != null && t.parentTaskId && !reviewerRetryMap.has(t.parentTaskId)) {
-      const lw = (t.workers as any[])?.[0];
-      reviewerRetryMap.set(t.parentTaskId, {
-        id: t.id,
-        status: t.status,
-        title: t.title,
-        prNumber: lw?.prNumber ?? null,
-      });
-    }
-  }
+  // Fix tasks dispatched after a reviewer requested changes, parentTaskId →
+  // the NEWEST retry (AC-21). allTasks is sorted ascending, so the old
+  // "first entry wins" loop kept the oldest; the helper is order-independent.
+  const reviewerRetryMap = buildReviewerRetryMap(allTasks.map(t => ({
+    id: t.id,
+    status: t.status,
+    title: t.title,
+    parentTaskId: t.parentTaskId,
+    reviewerRetryPrNumber: (t as { reviewerRetryPrNumber?: number | null }).reviewerRetryPrNumber ?? null,
+    createdAt: t.createdAt,
+    workers: (t.workers as Array<{ prNumber?: number | null }> | null) ?? null,
+  })));
 
   // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
   const timelineTasks = allTasks.filter(t => t.taskClass === 'work');
@@ -624,7 +518,7 @@ export default async function MissionDetailPage({
       ciRetryPrNumber: (t as any).ciRetryPrNumber ?? null,
       reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
       conflictRetryPrNumber: (t as any).conflictRetryPrNumber ?? null,
-      context: (t.context as Record<string, unknown> | null) ?? null,
+      context: digestOf(t.id).context,
     })),
     {
       // No repo column is loaded here; every PR url on this mission points at
@@ -806,10 +700,8 @@ export default async function MissionDetailPage({
   ];
 
   // Retry lineage: childId → parentId for tasks both present in the timeline task
-  // set. Consumed by StructureView only — the mobile rail dropped it in v2, where
-  // a retry stopped being an edge and became the right column's outcome mark
-  // (timeline-mobile-rail.md Rule D3-6). The Structure canvas keeps its own retry
-  // edges: different surface, different viewport budget.
+  // set. Consumed by StructureView only; the mobile feed folds a retry under its
+  // parent row as an attempt instead (addendum D1).
   const timelineTaskIdSet = new Set(timelineTasks.map(t => t.id));
   const retryLinks = new Map<string, string>();
   for (const t of timelineTasks) {
@@ -818,31 +710,15 @@ export default async function MissionDetailPage({
     }
   }
 
-  // Mobile rail goal root (docs/specs/timeline-mobile-rail.md Rule D5-2). A raw
-  // pass count, not `deriveCriteriaGatePresentation`'s label/tone — the banner
-  // answers "what do I tell the user"; the root answers "how many of N passed".
-  // `passed: null` when the gate has never been evaluated, so the root can say
-  // `?/N` rather than misreporting `0/N` (Rule D5-3).
-  const railGoalTotal = Array.isArray(missionCriteria) ? missionCriteria.length : 0;
-  const railGoal = railGoalTotal > 0
-    ? {
-        total: railGoalTotal,
-        passed: criteriaStateItems.length > 0
-          ? criteriaStateItems.filter(c => c.verdict === 'pass').length
-          : null,
-      }
+  // Verified step: a raw pass count, not `deriveCriteriaGatePresentation`'s
+  // label/tone. `passed: null` when the gate has never been evaluated, so the
+  // step says `?/N` rather than misreporting `0/N`.
+  const criteriaTotal = Array.isArray(missionCriteria) ? missionCriteria.length : 0;
+  const criteriaPassed = criteriaStateItems.length > 0
+    ? criteriaStateItems.filter(c => c.verdict === 'pass').length
     : null;
 
-  // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.
-  // Use timelineTasks.length (exactly what renders in the timeline) instead of allTasksCount
-  // (which inflates the count by including planning tasks that don't appear as rows).
-  const N_SMALL = 8;
-  const defaultView = timelineTasks.length > N_SMALL ? 'summary' : 'timeline';
-
-  // PR roll-up counts for Summary view (§3.5)
   const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
-  const prsMerged = allWorkers.filter(w => w.prUrl && (w.mergedAt || w.prLifecycleStatus === 'merged')).length;
-  const prsOpen = allWorkers.filter(w => w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'merged' && w.prLifecycleStatus !== 'closed').length;
 
   // PRs with failing CI — surfaced in the all_prs_merged criterion panel (AC-3).
   // Derived from the same worker state the Activity chip reads (no extra GitHub call).
@@ -895,26 +771,24 @@ export default async function MissionDetailPage({
   const goalCriteriaStateFull = (mission as any).goalCriteriaState as GoalCriteriaState | null;
   const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
 
-  const flightStripNavTasksWithPhase = timelineTasks.map(t => ({
-    id: t.id,
-    title: t.title,
-    href: `/app/tasks/${t.id}`,
-    lane: deriveWorkLane(t),
-    status: t.status,
-    prNumber: ((t.workers as any[])?.[0]?.prNumber as number | null | undefined) ?? null,
-    artifacts: ((t.workers as any[]) ?? []).flatMap(w => (w.artifacts ?? [])).map((a: any) => ({ id: a.id, type: a.type, title: a.title })),
-    missionPhaseIndex: t.missionPhaseIndex ?? null,
-    missionPhaseLabel: t.missionPhaseLabel ?? null,
-  }));
-  const flightStripGroups = groupTasksByPhase(flightStripNavTasksWithPhase).map(g => ({
-    index: g.index,
-    label: g.label,
-    tasks: g.tasks.map(({ missionPhaseIndex, missionPhaseLabel, ...row }) => row),
-  }));
+  // ── Mission feed (docs/design/mission-feed-mobile-continuity.md) ──────────
+  // Every mission task in the one input shape the pulse, the grouped list and
+  // the task sheet all read — so the header pulse, the list and `n / N` count
+  // the same rows (addendum D1). Attempts and bookkeeping are folded by the
+  // builders, never here (mission-feed-view.ts, unit-tested).
+  const {
+    feedTasks, pulseSegments, segmentLabels, pulseCaption, recordsCountByTask, liveLines,
+  } = buildMissionFeedView(allTasks as unknown as MissionFeedViewTask[], { activeAgents, liveStatuses });
+  const renderedAt = Date.now();
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   const missionTaskIds = allTasks.map((t) => t.id);
+  // workerId → status as rendered, so the live policy can tell a heartbeat
+  // from a status change on the first event it sees.
+  const renderedWorkerStatuses: Record<string, string> = Object.fromEntries(
+    allTasks.flatMap(t => ((t.workers ?? []) as Array<{ id: string; status: string }>).map(w => [w.id, w.status])),
+  );
 
   // Fetch team's active/paused initiatives for the initiative selector
   const isTerminal = ['completed', 'archived'].includes(mission.status);
@@ -1004,634 +878,531 @@ export default async function MissionDetailPage({
   const hasVercelToken = releaseBlock.vercelToken;
   const releaseNowState = deriveReleaseNowState({ strategy: releaseStrategy, hasVercelToken });
 
-  return (
-    <SwipeProvider>
-    <TaskPanelWrapper>
-    <div className="px-4 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
-      {/* Real-time updates via Pusher */}
-      {mission.workspaceId && (
-        <MissionAutoRefresh
+  // ── Delivery (W2, addendum D5) ─────────────────────────────────────────────
+  // One stepper for what used to be the progress card, the mission PR card,
+  // the release card, the budget cards and the completion stat tiles.
+  const releaseState = mission.workspaceId
+    ? classifyReleaseState({ archetype: releaseArchetype, data: releaseFooterData })
+    : ({ state: 'none' } as const);
+  const budgetUsd = costBudgetUsd != null ? parseFloat(costBudgetUsd) : null;
+  const prCount = allWorkers.filter(w => w.prUrl).length;
+  const durationLabel = mission.status === 'completed'
+    ? (flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null)
+    : null;
+  const deliverySteps = buildDeliverySteps({
+    missionStatus: mission.status,
+    totalTasks,
+    completedTasks,
+    awaitingMerge,
+    integrationPr: missionIntegrationPr,
+    criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
+    // D6: this mission's own trunk merges, read against the release baseline.
+    mergedAt: missionTrunkMergedAt(
+      (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
+      missionIntegrationPr,
+    ),
+    release: deliveryReleaseInput(releaseState),
+    budget: budgetUsd != null
+      ? { budgetUsd, spendUsd, exhausted: mission.status === 'budget_exhausted' }
+      : null,
+    prCount: mission.status === 'completed' ? prCount : undefined,
+    durationLabel: durationLabel ? `${durationLabel} agent time` : null,
+  });
+
+  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: totalTasks > 0 && completedTasks >= totalTasks }) && missionIntegrationPr ? (
+    // Mission integration PR (Option A′) — the mission's review gate, and a
+    // different object from the task PRs that fed the branch.
+    <div className={`card p-3 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
+              {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
+            </span>
+            <span className="text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
+          </div>
+          <p className="text-[13px] text-text-secondary">
+            {missionIntegrationPr.state === 'not_opened'
+              ? `Every task PR under this mission merges into its integration branch. No PR from that branch into the target branch exists yet — so none of this mission's work has reached the target branch.`
+              : missionIntegrationPr.state === 'merged'
+                ? `This mission's work reached the target branch through one PR from its integration branch.`
+                : `This is the mission's review gate: one PR from the integration branch into the target branch. The merge policy applies here, not to the task PRs that fed it.`}
+          </p>
+        </div>
+        {missionIntegrationPr.prUrl && (
+          <a
+            href={missionIntegrationPr.prUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 text-[12px] font-mono text-text-secondary hover:text-text-primary transition-colors"
+          >
+            #{missionIntegrationPr.prNumber} →
+          </a>
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  const reviewSummary = displayState === 'review' ? (
+    <MissionReviewSummary
+      missionId={id}
+      tasks={allTasks
+        .filter(t => t.category !== 'review' && t.status !== 'cancelled')
+        .map(t => {
+          const w = (t.workers as any[])?.[0];
+          return {
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            prUrl: w?.prUrl ?? null,
+            prNumber: w?.prNumber ?? null,
+            prMerged: !!w?.mergedAt,
+            prClosed: w?.prLifecycleStatus === 'closed',
+          };
+        })}
+    />
+  ) : null;
+
+  const budgetDetail = budgetUsd == null ? null : mission.status === 'budget_exhausted' ? (
+    <div className="flex items-start justify-between gap-3">
+      <p className="text-[12px] text-text-secondary">
+        {spendUsd != null
+          ? `${formatEstimatedUsd(spendUsd, 4)} spent vs $${budgetUsd.toFixed(2)} budget — no new tasks will spawn.`
+          : `Budget of $${budgetUsd.toFixed(2)} reached — no new tasks will spawn.`}
+        {' '}Raise the budget to resume.
+      </p>
+      <div className="shrink-0">
+        <RaiseBudgetButton missionId={id} currentBudget={costBudgetUsd!} />
+      </div>
+    </div>
+  ) : spendUsd != null ? (
+    <p className="text-[12px] font-mono text-status-warning" title={ESTIMATED_COST_TITLE}>
+      {formatEstimatedUsd(spendUsd)} / ${budgetUsd.toFixed(2)}
+    </p>
+  ) : null;
+
+  // D3: the mission's own completion/decision record — never whichever work
+  // task or retry finished last (selectMissionCompletionSummary).
+  const completionPick = mission.status === 'completed'
+    ? selectMissionCompletionSummary({
+        tasks: allTasks.map(t => ({
+          id: t.id, title: t.title, status: t.status, mode: t.mode, taskClass: t.taskClass,
+          kind: t.kind, category: t.category, createdAt: t.createdAt, updatedAt: t.updatedAt, result: digestOf(t.id).result,
+        })),
+        completionNote,
+      })
+    : null;
+
+  // D2: beside a terminal mission's chip the pill only ever says Verified —
+  // never "Needs verification" next to COMPLETE.
+  const showVerifiedPill = !isTerminal || missionCriteriaOverall === 'pass';
+
+  const artifactItems = allArtifacts.map((a) => ({
+    id: a.id,
+    type: a.type,
+    title: a.title ?? a.key ?? null,
+    // Fetched when the Records sheet opens (AC-18).
+    content: null,
+    shareToken: a.shareToken ?? null,
+    visibility: (a.visibility as 'private' | 'public') ?? 'private',
+    metadata: (a.metadata as Record<string, unknown>) ?? {},
+    createdAt: String(a.createdAt),
+    taskTitle: a.taskTitle ?? null,
+  }));
+  const recordIds = new Set(missionRecords.map(a => a.id));
+  const recordItems = artifactItems.filter(a => recordIds.has(a.id));
+
+  const situation = (
+    <>
+      {/* ── The situation — what this mission is waiting on, and the one
+          action that advances it. Rendered from `explain`'s answer, the shared
+          accessor; the mission card renders the same sentence. */}
+      {missionAnswer && (
+        <MissionSituationBlock
           missionId={id}
-          workspaceId={mission.workspaceId}
-          taskIds={missionTaskIds}
+          situation={missionAnswer.situation}
+          because={missionAnswer.because}
+          criteriaReachable={criteriaReachable}
         />
       )}
 
-      {/* Freshen PR state on open — reconcile only, never a planning pass */}
-      <MissionReconcileOnOpen missionId={id} />
+      {/* ── Waiting on: owner decision — one owner for mission state. Naming
+          which remedy the cycle history supports (inferCriteriaFailureReading)
+          is the difference between an owner editing one line and an owner
+          filing a phantom task. */}
+      {displayState === 'waiting_decision' && (() => {
+        const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
+        const readingCopy = describeCriteriaFailureReading(reading);
+        // First non-passing criterion, by its stable `index` — not array
+        // position in `criteria`, which can skip entries.
+        const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+        const failingCriterionIndex = failingState ? failingState.index : null;
+        const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
+        const fileWorkHref = buildFileWorkHref({
+          missionId: id,
+          missionTitle: mission.title,
+          criterion: failingCriterion,
+          evidence: failingState?.evidence ?? null,
+        });
+        return (
+          <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
+                Waiting for human decision
+              </span>
+              <span className="text-[12px] text-text-secondary">{readingCopy}</span>
+            </div>
+            <MissionDecisionSheet
+              missionId={id}
+              goalCriteria={goalCriteria}
+              failingCriterionIndex={failingCriterionIndex}
+              fileWorkHref={fileWorkHref}
+            />
+          </div>
+        );
+      })()}
 
-      {/* Breadcrumbs + overflow menu (MissionSettings relocated behind it) */}
-      <div className="flex items-center justify-between gap-2 mb-5">
-        <div className="flex items-center gap-2 text-[12px] text-text-muted min-w-0">
-          {breadcrumb.links.map((link, i) => (
-            <span key={link.href} className="flex items-center gap-2 shrink-0">
-              {i > 0 && <span>/</span>}
-              <Link href={link.href} className="hover:text-text-secondary transition-colors">
-                {link.label}
-              </Link>
-            </span>
-          ))}
-          <span className="shrink-0">/</span>
-          <span className="text-text-secondary truncate">{breadcrumb.currentLabel}</span>
+      {/* ── Criteria gate, only for a caller the accessor could not answer for
+          (the explain read failed), so the gate is never silent. */}
+      {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
+        <p className="mb-3 text-[12px] text-text-muted">
+          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified.
+        </p>
+      )}
+      {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
+        <div className={`mb-3 flex items-start gap-2 border px-3 py-2.5 ${criteriaGate.tone === 'error' ? 'border-status-error/30 bg-status-error/5' : 'border-status-warning/30 bg-status-warning/5'}`}>
+          <span className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide ${CRITERIA_GATE_TONE_CLASS[criteriaGate.tone]}`}>
+            {criteriaGate.label}
+          </span>
+          {criteriaGate.detail && <span className="text-[12px] text-text-secondary">{criteriaGate.detail}</span>}
         </div>
-        <MissionOverflowMenu
-          missionId={id}
-          currentStatus={mission.status}
-          cronExpression={scheduleCron}
-          workspaceId={mission.workspaceId}
-          roles={roles}
-          hasSchedule={!!scheduleCron}
-          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
-          isHeld={isHeld}
-          displayState={displayState}
-          hasPrimaryAction={hasPrimaryAction}
-        />
-      </div>
+      )}
 
-      {/* ── Flight strip navigator (§7) — pinned under the title. Tapping a bar
-          scrolls to and outlines its task row, and vice versa. Task list
-          grouped by stored mission phase, tagged by lane; goal criteria live
-          in the Verified pill sheet above, not here; MissionSettings lives
-          behind the header's overflow menu, not here either. */}
-      <MissionFlightStripNav
-        data={flightStripData}
-        groups={flightStripGroups}
-        orchestratorPlans={orchestratorPlans}
-        orchestratorTicks={orchestratorTicks}
-        records={missionRecords.map(a => ({ id: a.id, title: a.title, type: a.type }))}
-        recordsHref="#mission-artifacts"
-      />
-
-      {/* ── Status Block ── */}
-      <div className="mb-6">
-        <MissionInlineEdit
-          missionId={id}
-          initialTitle={mission.title}
-          initialDescription={mission.description}
-          healthPill={
-            <span className="flex items-center gap-2 flex-wrap">
-              {/* Single derived-state chip — replaces the old multi-badge soup */}
-              <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${stateChip.cls}`}>
-                {stateChip.label}
+      {/* Completion summary — the outcome, for a completed mission. */}
+      {completionPick && (
+        <div className="card p-3 mb-3 border-l-2 border-status-success/40">
+          <div className="flex items-center gap-2 mb-1.5">
+            <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
+              Completed {new Date(mission.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            </h3>
+            {completionPick.source === 'completion_record' && (
+              <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+                completion record
               </span>
-              {/* Next-run detail for auto missions with a schedule */}
-              {displayState === 'active' && driveNextRun.text && (
-                <span className="text-[10px] text-text-muted font-mono normal-case tracking-normal">{driveNextRun.text}</span>
-              )}
-              {isHeartbeat && (
-                <HeartbeatStatusBadge
-                  lastStatus={lastHeartbeatStatus}
-                  lastAt={lastHeartbeatAt}
-                  isOverdue={heartbeatOverdue}
-                />
-              )}
-              {/* Policy chip — show only when overridden or has PRs awaiting merge */}
-              {mission.workspaceId && (hasPolicyOverride || awaitingMerge > 0) && (
-                <Link
-                  href={`/app/settings/workspace/${mission.workspaceId}`}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                  title={`Merge policy: ${policyLabel}${hasPolicyOverride ? ' (overridden)' : ' (inherited)'}`}
-                >
-                  <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 5v14m-7-7l7 7 7-7" />
-                  </svg>
-                  {policyLabel}
-                  {hasPolicyOverride && <span className="opacity-60">·override</span>}
-                </Link>
-              )}
-              <MissionVerifiedPill
-                missionId={id}
-                criteria={goalCriteria}
-                criteriaState={goalCriteriaStateFull}
-                autoVerify={autoVerifyFlag}
-                readonly={isTerminal}
-                failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
-                overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
-              />
-            </span>
-          }
-        />
-
-        {/* ── The situation — what this mission is waiting on, and the one
-            action that advances it. Rendered from `explain`'s answer, which is
-            the shared accessor; the mission card renders the same sentence as
-            its subtitle. Everything the mission merely SUPPORTS is a capability
-            and lives behind the disclosure in the settings panel below. */}
-        {missionAnswer && (
-          <MissionSituationBlock
-            missionId={id}
-            situation={missionAnswer.situation}
-            because={missionAnswer.because}
-          />
-        )}
-
-        {/* ── Waiting on: owner decision — one owner for mission state ──
-            Above the fold, between the chip row and the progress bar, per
-            docs/design/mission-state-ownership.md's waiting-on placement.
-            Naming which remedy the cycle history supports
-            (inferCriteriaFailureReading) is the difference between an owner
-            editing one line and an owner filing a phantom task. */}
-        {displayState === 'waiting_decision' && (() => {
-          const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
-          const readingCopy = describeCriteriaFailureReading(reading);
-          // First non-passing criterion, by its stable `index` — not array
-          // position in `criteria`, which can skip entries.
-          const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
-          const failingCriterionIndex = failingState ? failingState.index : null;
-          const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
-          const fileWorkHref = buildFileWorkHref({
-            missionId: id,
-            missionTitle: mission.title,
-            criterion: failingCriterion,
-            evidence: failingState?.evidence ?? null,
-          });
-          return (
-            <div className="mb-4 rounded border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
-              <div className="flex items-start gap-2">
-                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                  Waiting for human decision
-                </span>
-                <span className="text-[12px] text-text-secondary">
-                  {readingCopy} See Goal Criteria above ↑
-                </span>
-              </div>
-              <MissionDecisionSheet
-                missionId={id}
-                goalCriteria={goalCriteria}
-                failingCriterionIndex={failingCriterionIndex}
-                fileWorkHref={fileWorkHref}
-              />
-            </div>
-          );
-        })()}
-
-        {/* Progress — shown for all missions with tasks */}
-        {totalTasks > 0 && (
-          <div className="card p-4 mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[13px] text-text-secondary">Progress</span>
-              <span className="font-display text-lg text-status-success tabular-nums">
-                {progress ?? 0}%
-              </span>
-            </div>
-            <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
-            {/* BT-13: 'awaiting merge' count. Under Option A′ this line also
-                carries the mission PR, because every task-level counter reads
-                "done" while the mission's diff sits on the integration branch
-                (lib/mission-integration-pr.ts). */}
-            <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
-              {deriveMissionProgressSubline({
-                missionStatus: mission.status,
-                totalTasks,
-                completedTasks,
-                awaitingMerge,
-                integrationPr: missionIntegrationPr,
-              })}
-            </div>
+            )}
           </div>
-        )}
+          <p className="text-[13px] text-text-secondary leading-relaxed whitespace-pre-line">{completionPick.text}</p>
+        </div>
+      )}
+    </>
+  );
 
-        {/* Mission integration PR (Option A′) — the mission's review gate, and a
-            different object from the task PRs that fed the branch. Exactly one
-            exists per mission by construction; a mission that never opted in
-            renders nothing here. */}
-        {shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: totalTasks > 0 && completedTasks >= totalTasks }) && missionIntegrationPr && (
-          <div className={`card p-4 mb-4 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
-                  <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
-                    {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
-                  </span>
-                  <span className="text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
-                </div>
-                <p className="text-[13px] text-text-secondary">
-                  {missionIntegrationPr.state === 'not_opened'
-                    ? `Every task PR under this mission merges into its integration branch. No PR from that branch into the target branch exists yet — so none of this mission's work has reached the target branch.`
-                    : missionIntegrationPr.state === 'merged'
-                      ? `This mission's work reached the target branch through one PR from its integration branch.`
-                      : `This is the mission's review gate: one PR from the integration branch into the target branch. The merge policy applies here, not to the task PRs that fed it.`}
-                </p>
-              </div>
-              {missionIntegrationPr.prUrl && (
-                <a
-                  href={missionIntegrationPr.prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 text-[12px] font-mono text-text-secondary hover:text-text-primary transition-colors"
-                >
-                  #{missionIntegrationPr.prNumber} →
-                </a>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Release — §8.5: gated shows queue depth + oldest age, continuous shows
-            last deploy state; `none` archetype and a genuinely clean queue both
-            render nothing (§9.1). */}
-        {mission.workspaceId && (
+  const delivery = (
+    <MissionDelivery
+      steps={deliverySteps}
+      details={{
+        integrated: missionPrCard || reviewSummary ? <div className="space-y-2">{missionPrCard}{reviewSummary}</div> : undefined,
+        // W2: Verified → the Verified pill's sheet (it opens on this hash).
+        verified: criteriaReachable ? (
+          <a
+            href={`#${MISSION_CRITERIA_ANCHOR}`}
+            className="flex min-h-11 items-center gap-2 font-mono text-[12px] text-accent-text hover:underline"
+          >
+            <span className="flex-1">Open goal criteria</span>
+            <span aria-hidden="true">›</span>
+          </a>
+        ) : undefined,
+        shipped: mission.workspaceId ? (
           <MissionReleaseSection
             archetype={releaseArchetype}
             data={releaseFooterData}
             workspaceId={mission.workspaceId}
             releaseNowState={releaseNowState}
           />
+        ) : undefined,
+        budget: budgetDetail ?? undefined,
+      }}
+    />
+  );
+
+  const settings = (
+    <MissionSecondaryPanel variant="row" configSummary={configSummary}>
+      {/* Where this mission sits, and the chips that used to crowd the header. */}
+      <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-muted">
+        {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
+          <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
+            {displayWorkspaceName(mission.workspace.name)}
+          </Link>
         )}
-
-        {/* Budget exhausted banner */}
-        {mission.status === 'budget_exhausted' && costBudgetUsd != null && (
-          <div className="card p-4 mb-4 border-status-error/40 border-l-2">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[12px] font-semibold text-status-error uppercase tracking-wider">Budget exhausted</span>
-                </div>
-                <p className="text-[13px] text-text-secondary">
-                  {spendUsd != null
-                    ? `${formatEstimatedUsd(spendUsd, 4)} spent vs $${parseFloat(costBudgetUsd).toFixed(2)} budget — no new tasks will spawn.`
-                    : `Budget of $${parseFloat(costBudgetUsd).toFixed(2)} reached — no new tasks will spawn.`}
-                  {' '}Raise the budget to resume.
-                </p>
-              </div>
-              <div className="shrink-0">
-                <RaiseBudgetButton missionId={id} currentBudget={costBudgetUsd} />
-              </div>
-            </div>
-          </div>
+        {displayState === 'active' && driveNextRun.text && (
+          <span className="font-mono text-[11px]">{driveNextRun.text}</span>
         )}
-
-        {/* Spend vs budget (non-exhausted missions with a budget set) */}
-        {costBudgetUsd != null && mission.status !== 'budget_exhausted' && spendUsd != null && (
-          <div className="card p-3 mb-4">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[11px] text-text-muted">Cost budget</span>
-              <span className={`text-[12px] font-mono tabular-nums ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'text-status-warning' : 'text-text-secondary'}`} title={ESTIMATED_COST_TITLE}>
-                {formatEstimatedUsd(spendUsd)} / ${parseFloat(costBudgetUsd).toFixed(2)}
-              </span>
-            </div>
-            <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'bg-status-warning' : 'bg-status-success'}`}
-                style={{ width: `${Math.min(100, (spendUsd / parseFloat(costBudgetUsd)) * 100).toFixed(1)}%` }}
-              />
-            </div>
-            {spendUsd / parseFloat(costBudgetUsd) >= 0.8 && (
-              <p className="text-[11px] text-status-warning mt-1">
-                {Math.round((spendUsd / parseFloat(costBudgetUsd)) * 100)}% of budget used
-              </p>
-            )}
-          </div>
+        {isHeartbeat && (
+          <HeartbeatStatusBadge lastStatus={lastHeartbeatStatus} lastAt={lastHeartbeatAt} isOverdue={heartbeatOverdue} />
         )}
-
-        {/* Workspace + status row */}
-        <div className="flex items-center gap-2 text-[12px] text-text-muted">
-          {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
-            <Link
-              href={`/app/workspaces/${mission.workspace.id}`}
-              className="text-accent-text hover:underline"
-            >
-              {displayWorkspaceName(mission.workspace.name)}
-            </Link>
-          )}
-          {activeAgents > 0 && mission.status !== 'completed' && (
-            <>
-              {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
-                <span className="text-text-muted">&middot;</span>
-              )}
-              <span className="text-status-info">{activeAgents} agent{activeAgents !== 1 ? 's' : ''} active</span>
-            </>
-          )}
-          {mission.status === 'completed' && (
-            <>
-              {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
-                <span className="text-text-muted">&middot;</span>
-              )}
-              <span>Completed {new Date(mission.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-            </>
-          )}
-        </div>
-
-        {/* Initiative parent — always visible */}
-        <div className="mt-2">
-          <MissionInitiativeSelector
-            missionId={id}
-            currentInitiativeId={dbInitiative?.id ?? null}
-            currentInitiativeName={dbInitiative?.title ?? null}
-            initiatives={teamInitiativeOptions}
-            readonly={isTerminal}
-          />
-        </div>
-
-        {/* Completion Summary — only for completed missions */}
-        {mission.status === 'completed' && (() => {
-          // D3: the mission's own completion/decision record — never whichever
-          // work task or retry finished last (selectMissionCompletionSummary).
-          const pick = selectMissionCompletionSummary({
-            tasks: allTasks.map(t => ({
-              id: t.id, title: t.title, status: t.status, mode: t.mode, taskClass: t.taskClass,
-              kind: t.kind, category: t.category, createdAt: t.createdAt, updatedAt: t.updatedAt, result: t.result,
-            })),
-            completionNote,
-          });
-          if (!pick) return null;
-          const summary = pick.text;
-          return (
-            <div className="card p-4 mt-4 border-l-2 border-status-success/40">
-              <div className="flex items-center gap-2 mb-2">
-                <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
-                  Completion Summary
-                </h3>
-                {pick.source === 'completion_record' && (
-                  <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
-                    completion record
-                  </span>
-                )}
-              </div>
-              <p className="text-[13px] text-text-secondary leading-relaxed whitespace-pre-line">{summary}</p>
-            </div>
-          );
-        })()}
-
-        {/* Stats row — only for completed missions */}
-        {mission.status === 'completed' && (() => {
-          function fmtMin(min: number): string {
-            const h = Math.floor(min / 60);
-            const m = Math.round(min % 60);
-            if (h === 0) return `${m}m`;
-            if (m === 0) return `${h}h`;
-            if (h >= 24) { const d = Math.floor(h / 24); return `${d}d ${h % 24}h`; }
-            return `${h}h ${m}m`;
-          }
-          // Reuse the flight strip's own §6 metrics (already computed above for the
-          // navigator) rather than re-deriving duration from raw worker spans.
-          // agentTimeMin = Σ work-lane span durations (orchestrator ticks excluded,
-          // Rule L-3); axisSpanMin = their idle-elided union — the direct
-          // replacement for the retired skyline's activeSpanMin.
-          const agentLabel = flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : null;
-          const wallLabel = flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null;
-          // Show wall-clock secondary only when it meaningfully differs from agent time (>1 min gap).
-          const showWall = agentLabel && wallLabel && agentLabel !== wallLabel &&
-            Math.abs(flightStripData.axisSpanMin - flightStripData.agentTimeMin) > 1;
-          return (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
-              {[
-                { label: 'Tasks', value: String(totalTasks) },
-                { label: 'Completed', value: String(completedTasks) },
-                { label: 'PRs', value: String(allTasks.flatMap(t => t.workers || []).filter(w => w.prUrl).length) },
-              ].map(stat => (
-                <div key={stat.label} className="card p-3">
-                  <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wider">{stat.label}</div>
-                  <div className="font-display text-lg text-text-primary mt-1">{stat.value}</div>
-                </div>
-              ))}
-              <div className="card p-3">
-                <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wider">Duration</div>
-                <div className="font-display text-lg text-text-primary mt-1">{agentLabel ?? wallLabel ?? '—'}</div>
-                {showWall && (
-                  <div className="text-[10px] text-text-muted mt-0.5 font-mono">{wallLabel} wall</div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
+        {mission.workspaceId && (hasPolicyOverride || awaitingMerge > 0) && (
+          <Link
+            href={`/app/settings/workspace/${mission.workspaceId}`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+            title={`Merge policy: ${policyLabel}${hasPolicyOverride ? ' (overridden)' : ' (inherited)'}`}
+          >
+            {policyLabel}
+            {hasPolicyOverride && <span className="opacity-60">·override</span>}
+          </Link>
+        )}
       </div>
 
-      {/* Review outcome summary — shown when mission is ready for human sign-off */}
-      {displayState === 'review' && (
-        <div className="mb-2">
-          <MissionReviewSummary
-            missionId={id}
-            tasks={allTasks
-              .filter(t => t.category !== 'review' && t.status !== 'cancelled')
-              .map(t => {
-                const w = (t.workers as any[])?.[0];
-                return {
-                  id: t.id,
-                  title: t.title,
-                  status: t.status,
-                  prUrl: w?.prUrl ?? null,
-                  prNumber: w?.prNumber ?? null,
-                  prMerged: !!w?.mergedAt,
-                  prClosed: w?.prLifecycleStatus === 'closed',
-                };
-              })}
-          />
-        </div>
-      )}
-
-      {/* ── Criteria gate ──
-          The situation block above the fold now states a criteria hold in the
-          same sentence as every other blocker, ranked against them, with the
-          affordance that clears it. These two banners said the same thing a
-          second time, one screen lower, in their own vocabulary — which is the
-          "four panels, four answers" problem this surface keeps regrowing.
-          Kept only for a caller the accessor could not answer for, so a mission
-          whose `explain` read failed still sees the gate. */}
-      {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
-        <p className="mb-4 text-[12px] text-text-muted">
-          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria above ↑
-        </p>
-      )}
-      {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
-        <div className={`mb-4 flex items-start gap-2 rounded border px-3 py-2.5 ${criteriaGate.tone === 'error' ? 'border-status-error/30 bg-status-error/5' : 'border-status-warning/30 bg-status-warning/5'}`}>
-          <span className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide ${CRITERIA_GATE_TONE_CLASS[criteriaGate.tone]}`}>
-            {criteriaGate.label}
-          </span>
-          <span className="text-[12px] text-text-secondary">
-            {criteriaGate.detail ? `${criteriaGate.detail} — ` : ''}see Goal Criteria above ↑
-          </span>
-        </div>
-      )}
-
-      {/* ── Summary / Timeline / Feed Tabs — PRIMARY CONTENT ── */}
-      {/* Large missions (> N_small deliverable tasks) get a Summary tab as default. */}
-      <MissionTabs
-        defaultTab={defaultView === 'summary' ? 'summary' : 'timeline'}
-        summaryContent={defaultView === 'summary' ? (
-          <CondensedTimeline
-            view="summary"
-            groups={timelineGroups}
-            segments={segments}
-            effectivePolicyTier={effectivePolicy.tier}
-            policyLabel={policyLabel}
-            missionId={id}
-            allTasksCount={allTasksCount}
-            missionCompleted={mission.status === 'completed'}
-            bookkeepingTasks={bookkeepingTasks}
-            prsMerged={prsMerged}
-            prsOpen={prsOpen}
-            completedTasks={completedTasks}
-            totalTasks={totalTasks}
-            criteriaGate={criteriaGate}
-            taskMap={condensedTaskMapForGrouping}
-            railGoal={railGoal}
-          />
-        ) : undefined}
-        timelineContent={(
-          <CondensedTimeline
-            view="timeline"
-            groups={timelineGroups}
-            segments={segments}
-            effectivePolicyTier={effectivePolicy.tier}
-            policyLabel={policyLabel}
-            missionId={id}
-            allTasksCount={allTasksCount}
-            missionCompleted={mission.status === 'completed'}
-            bookkeepingTasks={bookkeepingTasks}
-            prsMerged={prsMerged}
-            prsOpen={prsOpen}
-            completedTasks={completedTasks}
-            totalTasks={totalTasks}
-            criteriaGate={criteriaGate}
-            taskMap={condensedTaskMapForGrouping}
-            railGoal={railGoal}
-          />
-        )}
-        feedContent={<MissionFeed missionId={id} />}
-        structureContent={allChains.length > 0 ? (
-          <StructureView
-            chains={allChains}
-            taskMap={condensedTaskMapForGrouping}
-            missionId={id}
-            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
-          />
-        ) : undefined}
+      <MissionInitiativeSelector
+        missionId={id}
+        currentInitiativeId={dbInitiative?.id ?? null}
+        currentInitiativeName={dbInitiative?.title ?? null}
+        initiatives={teamInitiativeOptions}
+        readonly={isTerminal}
       />
 
+      {/* Title and description — edited here; the masthead shows the title. */}
+      <MissionInlineEdit
+        missionId={id}
+        initialTitle={mission.title}
+        initialDescription={mission.description}
+        healthPill={null}
+      />
 
-      {/* ── Secondary: Settings (collapsed by default) ── */}
-      {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
-        <MissionSecondaryPanel configSummary={configSummary}>
-          {/* Monitoring toggle — schedules only, moved from top-level chrome */}
-          {scheduleCron && !['completed', 'archived'].includes(mission.status) && (
-            <MissionMonitoringToggle
-              missionId={id}
-              initialStatus={mission.status}
-              hasSchedule={!!scheduleCron}
-              schedule={mission.schedule ? {
-                nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
-                lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
-              } : null}
-              orchestrationMode={orchestrationMode}
-            />
-          )}
-
-          {/* Backend selector — moved from top-level chrome */}
-          {!['completed', 'archived'].includes(mission.status) && (
-            <div>
-              <h2 className="section-label mb-2">Agent backend</h2>
-              <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-              <p className="text-[11px] text-text-muted mt-1.5">Default engine for tasks spawned by this mission. Auto inherits the role or workspace default.</p>
-            </div>
-          )}
-
-          {/* Evaluation Log — heartbeat missions only, secondary content */}
-          {isHeartbeat && heartbeatTasks.length > 0 && (
-            <HeartbeatTimeline
-              tasks={heartbeatTasks.map(t => ({
-                id: t.id,
-                createdAt: t.createdAt,
-                status: t.status,
-                result: t.result,
-              }))}
-            />
-          )}
-
-          {/* Heartbeat Checklist & Quiet Hours */}
-          {isHeartbeat && (
-            <>
-              <HeartbeatChecklistEditor
-                missionId={id}
-                checklist={heartbeatChecklist}
-              />
-              <QuietHoursConfig
-                missionId={id}
-                activeHoursStart={activeHoursStart}
-                activeHoursEnd={activeHoursEnd}
-                activeHoursTimezone={activeHoursTimezone}
-              />
-            </>
-          )}
-
-          {/* Schedule Wizard */}
-          {!scheduleCron && !['completed', 'archived'].includes(mission.status) && (
-            <ScheduleWizard
-              missionId={id}
-              hasWorkspace={!!mission.workspaceId}
-              workspaces={teamWorkspaces}
-            />
-          )}
-
-          {/* Configuration — flattened into Settings, one tap away */}
-          {!['completed', 'archived'].includes(mission.status) && (
-            <div className="card p-4">
-              <h2 className="section-label mb-4">Configuration</h2>
-              <MissionConfig
-                missionId={id}
-                workspaceId={mission.workspaceId}
-                model={configModel}
-                workspaces={teamWorkspaces}
-                maxConcurrentTasks={mission.maxConcurrentTasks}
-                activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
-                costBudgetUsd={costBudgetUsd}
-              />
-              {/* Merge policy row — inherit/override pattern */}
-              {mission.workspaceId && (
-                <div className="mt-4 pt-3 border-t border-border-default">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[11px] text-text-muted uppercase tracking-wider font-semibold">Merge Policy</span>
-                  </div>
-                  <MissionMergePolicyRow
-                    missionId={id}
-                    missionTitle={mission.title}
-                    roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
-                    missionPolicy={(mission as any).mergePolicy ?? null}
-                    workspaceDefaultTier={workspaceDefaultPolicy.tier}
-                    workspaceName={mission.workspace?.name ?? null}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Linear Phase 2 — read-back tracking (only when linked) */}
-          {trackerLinks.some(l => l.provider === 'linear') && (
-            <TrackerProgressPanel entityType="mission" entityId={id} />
-          )}
-
-          {/* Diagnostics — steering-cost stats live here, not in the header
-              chip row (addendum D2: no internal jargon on cards or headers). */}
-          <div className="card p-4" data-testid="mission-diagnostics">
-            <h2 className="section-label mb-2">Diagnostics</h2>
-            <MissionAuthorshipStats health={authorshipHealth} />
-          </div>
-        </MissionSecondaryPanel>
+      {/* Monitoring toggle — schedules only */}
+      {scheduleCron && !['completed', 'archived'].includes(mission.status) && (
+        <MissionMonitoringToggle
+          missionId={id}
+          initialStatus={mission.status}
+          hasSchedule={!!scheduleCron}
+          schedule={mission.schedule ? {
+            nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
+            lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
+          } : null}
+          orchestrationMode={orchestrationMode}
+        />
       )}
 
-      {/* ── Artifacts ── */}
-      <div id="mission-artifacts">
-        <MissionArtifacts
-          artifacts={allArtifacts.map((a) => ({
-            id: a.id,
-            type: a.type,
-            title: a.title ?? a.key ?? null,
-            content: a.content ?? null,
-            shareToken: a.shareToken ?? null,
-            visibility: (a.visibility as 'private' | 'public') ?? 'private',
-            metadata: (a.metadata as Record<string, unknown>) ?? {},
-            createdAt: String(a.createdAt),
-            taskTitle: a.taskTitle ?? null,
-          }))}
-          baseUrl={baseUrl}
-          missionId={id}
-          initialOpenArtifactId={initialOpenArtifactId}
-        />
-      </div>
+      {!['completed', 'archived'].includes(mission.status) && (
+        <div>
+          <h2 className="section-label mb-2">Agent backend</h2>
+          <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
+          <p className="text-[11px] text-text-muted mt-1.5">Default engine for tasks spawned by this mission. Auto inherits the role or workspace default.</p>
+        </div>
+      )}
 
-    </div>
+      {/* Evaluation Log — heartbeat missions only */}
+      {isHeartbeat && heartbeatTasks.length > 0 && (
+        <HeartbeatTimeline
+          tasks={heartbeatTasks.map(t => ({
+            id: t.id,
+            createdAt: t.createdAt,
+            status: t.status,
+            result: digestOf(t.id).result,
+          }))}
+        />
+      )}
+
+      {isHeartbeat && (
+        <>
+          <HeartbeatChecklistEditor missionId={id} checklist={heartbeatChecklist} />
+          <QuietHoursConfig
+            missionId={id}
+            activeHoursStart={activeHoursStart}
+            activeHoursEnd={activeHoursEnd}
+            activeHoursTimezone={activeHoursTimezone}
+          />
+        </>
+      )}
+
+      {!scheduleCron && !['completed', 'archived'].includes(mission.status) && (
+        <ScheduleWizard missionId={id} hasWorkspace={!!mission.workspaceId} workspaces={teamWorkspaces} />
+      )}
+
+      {!['completed', 'archived'].includes(mission.status) && (
+        <div className="card p-4">
+          <h2 className="section-label mb-4">Configuration</h2>
+          <MissionConfig
+            missionId={id}
+            workspaceId={mission.workspaceId}
+            model={configModel}
+            workspaces={teamWorkspaces}
+            maxConcurrentTasks={mission.maxConcurrentTasks}
+            activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
+            costBudgetUsd={costBudgetUsd}
+          />
+          {mission.workspaceId && (
+            <div className="mt-4 pt-3 border-t border-border-default">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] text-text-muted uppercase tracking-wider font-semibold">Merge Policy</span>
+              </div>
+              <MissionMergePolicyRow
+                missionId={id}
+                missionTitle={mission.title}
+                roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
+                missionPolicy={(mission as any).mergePolicy ?? null}
+                workspaceDefaultTier={workspaceDefaultPolicy.tier}
+                workspaceName={mission.workspace?.name ?? null}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {trackerLinks.some(l => l.provider === 'linear') && (
+        <TrackerProgressPanel entityType="mission" entityId={id} />
+      )}
+
+      {/* Diagnostics — steering-cost stats live here, not in the header
+          chip row (addendum D2: no internal jargon on cards or headers). */}
+      <div className="card p-4" data-testid="mission-diagnostics">
+        <h2 className="section-label mb-2">Diagnostics</h2>
+        <MissionAuthorshipStats health={authorshipHealth} />
+      </div>
+    </MissionSecondaryPanel>
+  );
+
+  return (
+    <SwipeProvider>
+    {/* Task sheet owner (S4): ?task= via native history, never the router. */}
+    <TaskPanelWrapper
+      missionId={id}
+      workspaceId={mission.workspaceId}
+      missionTitle={mission.title}
+      chip={stateChip}
+      feedTasks={feedTasks}
+      from={from === 'home' || from === 'missions' || from === 'initiative' ? from : null}
+      initiativeId={initiativeId ?? null}
+    >
+      {/* Real-time (S7): progress patches the live store the list reads;
+          structural events re-render at most once per 3s, scroll-anchored. */}
+      <MissionAutoRefresh
+        missionId={id}
+        workspaceId={mission.workspaceId ?? ''}
+        taskIds={missionTaskIds}
+        workerStatuses={renderedWorkerStatuses}
+        renderedAt={renderedAt}
+      >
+      <MissionReconcileOnOpen missionId={id} />
+
+      <MissionDetailView
+        missionId={id}
+        title={mission.title}
+        chip={stateChip}
+        segments={pulseSegments}
+        segmentLabels={segmentLabels}
+        caption={pulseCaption}
+        back={mastheadBack(from, breadcrumb.links)}
+        verified={showVerifiedPill ? (
+          <MissionVerifiedPill
+            missionId={id}
+            criteria={goalCriteria}
+            criteriaState={goalCriteriaStateFull}
+            autoVerify={autoVerifyFlag}
+            readonly={isTerminal}
+            failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+            overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
+          />
+        ) : undefined}
+        actions={(
+          <MissionOverflowMenu
+            missionId={id}
+            currentStatus={mission.status}
+            cronExpression={scheduleCron}
+            workspaceId={mission.workspaceId}
+            roles={roles}
+            hasSchedule={!!scheduleCron}
+            orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
+            isHeld={isHeld}
+            displayState={displayState}
+            hasPrimaryAction={hasPrimaryAction}
+          />
+        )}
+        expand={<MissionStripExpand data={flightStripData} missionId={id} missionTitle={mission.title} />}
+        desktopStrip={<MissionFlightStripInline data={flightStripData} />}
+        situation={situation}
+        delivery={delivery}
+        feed={{
+          tasks: feedTasks,
+          now: renderedAt,
+          from: parseMissionOrigin(from),
+          initiativeId: initiativeId ?? null,
+          recordsCountByTask,
+          liveLines,
+        }}
+        desktopList={(
+          <MissionTabs
+            initialView={parseMissionListView(listViewParam)}
+            timelineContent={(
+              <CondensedTimeline
+                groups={timelineGroups}
+                segments={segments}
+                effectivePolicyTier={effectivePolicy.tier}
+                policyLabel={policyLabel}
+                missionId={id}
+                allTasksCount={allTasksCount}
+                missionCompleted={mission.status === 'completed'}
+                bookkeepingTasks={bookkeepingTasks}
+              />
+            )}
+            structureContent={allChains.length > 0 ? (
+              <StructureView
+                chains={allChains}
+                taskMap={condensedTaskMapForGrouping}
+                missionId={id}
+                retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
+              />
+            ) : undefined}
+          />
+        )}
+        mobileFooter={(orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
+          <details data-testid="mission-orchestrator-row" className="group border-t border-border-default">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
+              <span aria-hidden="true" className="text-text-muted">─</span>
+              <span className="flex-1">
+                {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
+              </span>
+              <span aria-hidden="true" className="group-open:rotate-90">›</span>
+            </summary>
+            <ul className="pb-2">
+              {bookkeepingTasks.map(t => (
+                <li key={t.id}>
+                  <Link
+                    href={taskPageHref({ taskId: t.id, missionId: id })}
+                    className="flex min-h-11 items-center gap-2 pl-5 font-mono text-[11px] text-text-secondary hover:text-text-primary"
+                  >
+                    <span className="min-w-0 truncate">{t.title}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : undefined}
+        footer={(
+          <>
+            <MissionRecordsSheet
+              missionId={id}
+              baseUrl={baseUrl}
+              records={recordItems}
+              allArtifacts={artifactItems}
+              initialArtifactId={initialOpenArtifactId ?? null}
+            />
+            <MissionNotesSheet missionId={id} />
+            {settings}
+          </>
+        )}
+      />
+      </MissionAutoRefresh>
     </TaskPanelWrapper>
     </SwipeProvider>
   );
+}
+
+function fmtMin(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  if (h >= 24) { const d = Math.floor(h / 24); return `${d}d ${h % 24}h`; }
+  return `${h}h ${m}m`;
 }

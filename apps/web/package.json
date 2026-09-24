@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.223.0",
+  "version": "0.224.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -40,9 +40,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.5",
+    "@tailwindcss/postcss": "^4.0.0",
     "@types/bun": "latest",
     "@types/node": "^26.0.0",
-    "@tailwindcss/postcss": "^4.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.18",

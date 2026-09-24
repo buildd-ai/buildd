@@ -1,10 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
 import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import BottomSheet from '@/components/BottomSheet';
 import MissionGoalCriteria from './MissionGoalCriteria';
+import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
+
+/**
+ * Open the criteria sheet from the situation's "Go to goal criteria" link, and
+ * on arrival with `#mission-criteria`. A delegated click listener rather than
+ * `hashchange`: a client-side link writes the hash with `pushState`, which
+ * fires no `hashchange`, and a second tap on the same hash changes nothing.
+ */
+function useOpenOnCriteriaLink(open: () => void) {
+  useEffect(() => {
+    if (window.location.hash === `#${MISSION_CRITERIA_ANCHOR}`) open();
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (target?.closest?.(`a[href$="#${MISSION_CRITERIA_ANCHOR}"]`)) open();
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, [open]);
+}
 
 interface Props {
   missionId: string;
@@ -33,6 +52,8 @@ export default function MissionVerifiedPill({
 }: Props) {
   const [open, setOpen] = useState(false);
   const criteriaCount = criteria.length;
+  const openSheet = useCallback(() => setOpen(true), []);
+  useOpenOnCriteriaLink(openSheet);
 
   // No criteria and nothing to add (terminal/readonly mission): no chrome at
   // all, matching the always-visible block's prior behavior exactly.
@@ -43,6 +64,7 @@ export default function MissionVerifiedPill({
       <>
         <button
           type="button"
+          id={MISSION_CRITERIA_ANCHOR}
           onClick={() => setOpen(true)}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted font-mono text-[10px] rounded-sm hover:text-text-secondary transition-colors"
         >
@@ -91,6 +113,7 @@ export default function MissionVerifiedPill({
     <>
       <button
         type="button"
+        id={MISSION_CRITERIA_ANCHOR}
         onClick={() => setOpen(true)}
         title={title}
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] rounded-sm transition-opacity hover:opacity-80 ${toneClass}`}

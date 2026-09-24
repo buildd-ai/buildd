@@ -163,13 +163,18 @@ export async function POST(
       status: effectiveStatus,
     }).returning();
 
-    // Trigger real-time event
-    await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, {
+    // Trigger real-time event — on the task channel too when the note is pinned
+    // to a task, where the task page's question feed listens.
+    const payload = {
       noteId: note.id,
       type: note.type,
       authorType: note.authorType,
       title: note.title,
-    });
+    };
+    await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, payload);
+    if (note.taskId) {
+      await triggerEvent(channels.task(note.taskId), events.MISSION_NOTE_POSTED, payload);
+    }
 
     return NextResponse.json(note, { status: 201 });
   } catch (error) {

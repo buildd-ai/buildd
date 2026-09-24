@@ -2,14 +2,15 @@
 status: partially
 # No assertions yet, deliberately. Per docs/design/spec-conformance.md §2 a
 # passing assertion under a non-terminal status is `code_ahead` and gets
-# redispatched, and every S1 symbol already passes. Slice progress is tracked
-# in "Build plan" below; add wiring assertions (e.g. buildMissionFeedGroups
-# reachable from missions/[id]/page.tsx) when S3 lands and the status can move.
+# redispatched, and every S1–S3 symbol already passes. S3's wiring
+# (buildMissionFeedGroups reachable from missions/[id]/page.tsx) is asserted by
+# docs/specs/mission-feed.md, the active contract. Add this doc's assertions
+# when the last slice lands and the status can move to implemented.
 ---
 
 # Mission feed: mobile-first continuity (home → mission → task)
 
-**Status:** Partially — S1 (pure model and vocabulary) is built, with D2's single-derivation part deferred to S5; S2–S7 are proposed.
+**Status:** Partially — S1 (pure model and vocabulary) is built, with D2's single-derivation part deferred to S5; S2 (shared components) is built; S3 (mission detail layout) is built, with the md+ list migration deferred; S4 (task sheet) is built; S5 (cards and inbound links, closing D2 for cards) is built; S6 and S7 are proposed.
 **Related:** `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `missions/[id]/MissionFlightStripNav.tsx`, `missions/[id]/CondensedTimeline.tsx`, `missions/[id]/MissionTabs.tsx`, `missions/[id]/TaskPanelWrapper.tsx`, `missions/[id]/TaskPanel.tsx`, `missions/[id]/MissionAutoRefresh.tsx`, `missions/[id]/MissionFeed.tsx`, `missions/MissionGrid.tsx`, `missions/page.tsx`, `home/page.tsx`, `tasks/[id]/page.tsx`, `tasks/[id]/respond/page.tsx`, `(protected)/layout.tsx`, `components/FlightStrip.tsx`, `components/FlightDetailSheet.tsx`, `components/SegmentStrip.tsx`, `components/BottomSheet.tsx`, `components/MissionProgressBar.tsx`, `components/MissionProgress.tsx`, `components/missions/MissionSituationBlock.tsx`, `components/NeedsInputBanner.tsx`, `lib/flight-strip-nav.ts`, `lib/mission-state-view.ts`, `lib/mission-helpers.ts`, `lib/task-presentation.ts`, `lib/task-origin.ts`, `lib/action-card-context.ts`, `lib/initiative-breadcrumb.ts`, `packages/core/mission-helpers.ts`, and the S1 modules `lib/mission-pulse.ts`, `lib/mission-feed-groups.ts`, `lib/mission-task-href.ts`. Sibling docs: `docs/design/mission-flight-strip.md` (§7), `mission-delivery-arc.md`, `mission-state-progress.md`, `mobile-artifact-feed.md` (§2.2–2.3), `mission-status-mobile-header-spec.md` (§1), `mobile-feed-spec.md`, `docs/specs/mission-legibility.md` (§4), `docs/specs/surface-ia-home-missions-initiatives.md` (§8.5).
 
 ---
@@ -135,6 +136,7 @@ One visual object carries from the Home card to the detail header to the task sh
 
 - **Above 40 work tasks** the pulse draws one segment per phase, with fill equal to the phase's done fraction. Scrub then targets phase headers.
 - With 15 tasks across 358px, each segment is about 22px wide inside a 40px band. That is thumb-usable.
+- The 40px band is a deliberate exception to the 44px tap-target rule. The band spans the full content width, segments sit edge to edge, and the scrub resolves the nearest segment under the finger, so the effective target is the whole strip rather than one segment. Every other control in the feed (rows, attempt links, masthead links, sheet close) is at least 44px.
 - It is built on `components/SegmentStrip.tsx` (`SegmentStrip` already takes `segments: {taskId, state}[]`), adding `selectedTaskId`, `inViewTaskIds` and `onSegmentSelect`.
 
 **`MissionMasthead`** wraps the title, one state chip, the situation sentence, the pulse and a counts caption, at three sizes:
@@ -304,7 +306,7 @@ At first paint the title, state, answer, action, delivery, everything that needs
 │ └────────────────────────────────────┘ │
 │ Live · editing lease.ts · 4m           │  LiveWorkerActivity
 │ PR #412 · CI ↻            [View diff]  │  PrCard
-│ Records: plan.md · schema.diff         │  real links (?artifact=)
+│ Records: plan.md · schema.diff         │  real links (/app/artifacts/Z)
 │ Origin: planned by orchestrator        │  deriveTaskOrigin (U6)
 │ Next needing you: Lease shadow mode  › │
 │ Open full page                       › │  /app/tasks/Y?from=mission&missionId=X
@@ -362,8 +364,8 @@ This replaces the bare "Next" chain CTA (`tasks/[id]/page.tsx:1191`). `/tasks/Y/
 
 | Action | Call | Back does |
 |---|---|---|
-| Open a task (row, second segment tap, situation action, "Next needing you") | `pushState(?task=Y)` | Closes the sheet. |
-| ‹ › inside the sheet | `replaceState(?task=Z)` | Closes the sheet. It does not walk back through siblings. |
+| Open a task while no sheet is open (row, second segment tap, situation action) | `pushState(?task=Y)` | Closes the sheet. |
+| ‹ ›, "Next needing you", or a row tap while the sheet is already open (docked md+) | `replaceState(?task=Z)` | Closes the sheet. It does not walk back through the tasks visited. |
 | Segment focus / scrub-release | `replaceState(#t-Y)` | No new entry. |
 | Card body → mission | `<Link>` push `?from=home` | Home. |
 | Card primary line | `<Link>` push `?from=home&task=Y` | Home. |
@@ -527,6 +529,16 @@ Each slice is one PR with tests written first. Ownership is disjoint so that sli
 
 **Deps:** S1.
 
+**Built.** What S2 shipped, including where it differs from the plan above. Nothing is wired into a page yet; S3–S6 mount these.
+
+- `MissionPulse` renders `buildPulseSegments` output in three variants (`card` 8px, `header` 12px in a 40px band, `context` 8px with the task ringed). Every segment carries `data-task-id`, `data-state`, `data-kind`, `data-gap-before`, `data-in-view`, `data-ringed` and `aria-current`. Colour comes only from `PULSE_STATE_TOKEN` through one token→class table. The scrub gesture is a pure state machine (`createPulseScrub` over `pulseLayout`/`segmentAt`). A click right after a handled release is swallowed, so a tap cannot select twice and open the sheet by accident. With `connected`, the pulse reads the selection and in-view set from `MissionFocusProvider`, which is how the sticky header gets them from a server-rendered page (no function props).
+- **Deviation:** the pulse is its own renderer instead of new props on `SegmentStrip`. `SegmentStrip` speaks the chain glyph vocabulary (`solid`/`half`/`ghost`/…). The pulse speaks `PulseState` with the accent/info tokens. Merging the two would recolour every existing `SegmentStrip` consumer. `SegmentStrip.tsx` is unchanged.
+- `MissionMasthead` renders `card` (stretched card link, with the primary line as a sibling link, never nested), `sticky` (`sticky top-0 z-20`, folds on scroll with hysteresis via `nextMastheadFolded`) and `micro` (`n / N · PHASE`, ‹ › as hrefs or `onStep`). It takes the accessor's `chip` and `situation` and phrases neither. `MISSION_MASTHEAD_FOLDED_PX` (84) is the folded-height token.
+- `MissionTaskRow` is a real `<a>` to `missionTaskHref(mode: 'sheet')`, with `id="t-<id>"`, `data-testid="mission-task-row"`, `data-task-id`, `data-status` (the pulse state) and `data-focused`. Its `scroll-margin-top` equals the folded masthead token (AC-5). The status glyph comes first, then the `deriveWorkKind` glyph (`MissionFeedTaskInput` gained `roleSlug` for its fallback tier). The PR `#N` is coloured by `PR_STATE_TOKEN`, with `↻` while checks run. Attempts fold into a `↻ N attempts` disclosure beside the link, not inside it. `buildTaskRowMeta` builds the meta line.
+- `BottomSheet` gained `lockTarget` (default body; `lockScroll`/`resolveLockTarget` are exported and tested for AC-9), `height="tall"` (`h-[88dvh]` with a scrolling body) and `testId`. Existing consumers are unchanged.
+- `MissionFocusProvider` wraps `createMissionFocusStore`, which takes injected history, location, timers and observer. It holds the selection, and the outline clears after `FOCUS_OUTLINE_MS`. First select writes `#t-<id>` with `replaceState`. A second select opens the task with `pushState(?task=)`, never `router.*`. S4 can take this over with `setOpenTask` and reports the sheet with `setSheetOpen`. A folded row is marked `revealedTaskIds` and scrolled once it registers. The store also runs the IntersectionObserver rooted on `<main>` and the freeze window (`FREEZE_AFTER_POINTER_MS`, or while the sheet is open), exposed as `createFreezeGate`. The React context lives in `components/missions/mission-focus-context.ts`, so components never import a route file. The 200ms FLIP on unfreeze is left to S3, which owns the list that moves.
+- **D4, S2 part:** the pulse is the mobile card and header object. `FlightStrip`'s axis labels (phase, `now`, `+N more`) are collision-culled by `cullAxisLabels` with a 4px minimum gap. `now` is clamped inside the strip, other labels that would overflow are dropped, and an unlabelled gap is fine. The lane-label column widens (`laneLabelColumnWidth`) only when a label such as UNCLASSIFIED would not fit, so lane labels are never cut off. `flight-strip-board-encodings.test.tsx` now counts phase dividers instead of requiring every phase label, because a culled label is correct. Moving the time strip into `FlightDetailSheet` on mobile is S3/S5.
+
 ### S3: Mission detail layout
 
 **Owns:**
@@ -556,6 +568,24 @@ Each slice is one PR with tests written first. Ownership is disjoint so that sli
 
 **Deps:** S1, S2. Keep it small and quick, because concurrent sessions touch `page.tsx`.
 
+**Built.** What S3 shipped, including where it differs from the plan above. The contract is `docs/specs/mission-feed.md`, which supersedes `docs/specs/timeline-mobile-rail.md`.
+
+- `page.tsx` loads and derives; the new `MissionDetailView` renders, in W2 order: sticky `MissionMasthead` (back label from `?from=` via `mastheadBack`, chip, Verified pill, header pulse, caption, ⋮), the situation, `MissionDelivery`, then the list, then the footer rows. The composition is a server component with every client piece passed in, so `MissionDetailView.test.tsx` renders the whole order for 3-, 15- and 45-task fixtures (AC-1/2/3/4/5). `TaskPanelWrapper` (S4) wraps it and mounts `MissionFocusProvider`; the page derives the feed once (`buildMissionFeedView`, `mission-feed-view.ts`) and hands the same `feedTasks` to the sheet owner, the pulse and the list.
+- `MissionFeedList` is the one mobile list, over `buildMissionFeedGroups`. Folded rows (finished phases, `+N queued`, NEEDS YOU past three) stay in the DOM with `hidden`, so every deliverable is exactly one `mission-task-row` and a `#t-` arrival always finds its row. A reveal from the focus store unfolds the row's group and scrolls it once it is visible. The freeze gate holds the task set while frozen; moved rows slide into place over 200ms (`flipDeltas`). A mission with no phased task renders no phase header and never folds (mission-legibility §4). A slot marker sits at the task's own place in its phase (where its row would sort unpinned); it is a non-interactive, `aria-hidden` 20px marker, because the pinned row is the tap target. Focusing a pinned row never unfolds its home phase.
+- `MissionDelivery` over `buildDeliverySteps` (`lib/mission-delivery.ts`) replaces the progress card, the mission PR card, the release card, both budget cards, the completion stat tiles and the agents row (D5). Empty steps are hidden. A blocked step opens it. The mission PR card and the review summary sit under Integrated, `MissionReleaseSection` under Shipped, the budget banner under Budget. The completion stats are the Integrated detail.
+- D6, S3 part: the Shipped step is this mission's fact. It compares the mission's own trunk merges (`missionTrunkMergedAt`: every worker merge, or only the merged integration PR for an integration-branch mission) with how far releases reach (`deliveryReleaseInput`: the gated baseline, everything for a zero queue, a healthy continuous deploy's time). Nothing merged hides the step; any merge newer than the baseline reads "after next release"; every merge at or before it reads "released". The workspace's queue depth and Release now appear once, inside the expanded Shipped step, never on the step line.
+- The one-line summary wraps between steps instead of truncating, so Budget never drops off at 358px. The expanded Verified step links to the Verified pill's sheet.
+- Footer rows: Orchestrator (a disclosure of the bookkeeping runs, mobile only because the md+ Timeline keeps its own footer), `Records · N` (`MissionRecordsSheet`: `selectMissionRecords`, then "All artifacts" in the same sheet; `?artifact=` opens it), Notes (`MissionNotesSheet` in `MissionFeed.tsx`, which mounts the feed only when opened) and Settings. The page-bottom artifact dump is gone.
+- Settings is a footer row like the others (44px). It also holds what used to crowd the header: title and description editing, the workspace link, next run, heartbeat badge, policy chip and initiative selector.
+- The situation's criteria affordance targets `#mission-criteria`, the Verified pill's id; the pill opens its sheet on that hash and on any click of a link to it. When the pill is not rendered (a terminal mission whose criteria do not pass, or one with none), the affordance is dropped rather than pointing at nothing. The "above ↑" copy is removed. Task affordances in the situation block link to `?task=` with `data-task-id`, so the sheet owner intercepts them.
+- D2 rule kept: beside a terminal mission's chip the Verified pill renders only when criteria pass.
+- Live workers on the detail page count `LIVE_WORKER_STATUSES`.
+- `deriveWorkLane` and `hasNoWorkLaneData` are deleted (L-4, AC-15). `reviewerRetryMap` is `buildReviewerRetryMap` (AC-21). `MissionFlightStripNav.tsx` is deleted. `mission-detail-retirements.test.ts` pins all of this with `git grep`.
+- **Deviation — md and up.** `CondensedTimeline` keeps `TimelineView` as the md+ list, behind the `MissionTabs` Timeline / Structure toggle (`?view=structure`, written with `replaceState`). It is not yet fed `MissionTaskRow`, so desktop still groups with the old chain classifier; that migration is a follow-up. `MobileRail` and the Summary view are removed from it. The md+ time-axis strip renders inline under the masthead (`MissionFlightStripInline`) in place of the header pulse, which is `md:hidden`; a bar opens its task directly, because the md+ list has no focusable `#t-` rows yet. On mobile ⤢ opens `FlightDetailSheet` (D4).
+- **Deviation — rail model.** The rail's pure model (`buildRail` and friends in `lib/condensed-timeline.ts`) and its model tests remain; nothing renders them. Deleting them is a follow-up.
+- **Not built here:** NEEDS YOU from open mission questions and open decisions (the `ctx` maps of `buildMissionFeedGroups`; the page passes none yet), the phase header's mini pulse (W2 `2 · BUILD ▮▮▯▯░ 3/5`), the Notes count, the `N new ↑` pill and the refresh scroll anchor (S7), and the sheet itself (S4).
+- Edits outside S3's own files: `pulseDoneCounts` and `buildPulseCaption` moved into `lib/mission-pulse.ts` (S1; re-exported from the S2 components), because the server page calls them and a function exported from a `'use client'` module is a client reference (`client-boundary.test.ts`). `buildMissionFeedGroups` (S1) now places a slot at its row's sorted position instead of first. `MissionMasthead` (S2) takes `pulseClassName`. `MissionVerifiedPill` (unowned) opens on clicks of `#mission-criteria` links. The gated release footer and `ReleaseState` carry `baselineAsOf`, the instant the queue is measured from.
+
 ### S4: Task sheet (parallel with S3)
 
 **Owns:**
@@ -576,6 +606,13 @@ Each slice is one PR with tests written first. Ownership is disjoint so that sli
 - Then AC-7, 8 and 10 with router spies, the popstate close, and `task-header-status` present in the sheet.
 
 **Deps:** S2.
+
+**As built (PR #2718):**
+- The sheet body carries W4's Records and Origin lines. `/api/tasks/:id/summary` returns `records` (titles only, across every worker, `impl_plan` excluded) and `origin` (`deriveTaskOrigin`, the same derivation as the task page). Records link to `/app/artifacts/Z` rather than `?artifact=Z`: the mission page reads `?artifact=` only on its first render, so a soft link from an open sheet would not open the viewer.
+- Opening moves focus into the sheet (mobile: modal, Tab trapped; md+: the docked panel). Closing returns focus to the task's row.
+- The drag handle sits above `BottomSheet`'s header (a `handle` slot), so it stays at the top while the body scrolls.
+- Whether the sheet entry was pushed is held in memory, so it does not survive a remount (Open full page → Back): ✕ then closes by replacing, leaving one extra mission entry behind. Accepted and pinned by a test (`task-sheet-history.ts`).
+- Cross-slice edits: `page.tsx` (S3) passes the new `TaskPanelWrapper` props; `MissionFocusProvider.tsx` (S2) writes through `nativeHistoryData`; `CondensedTimeline.tsx` drops `data-task-actionable`.
 
 ### S5: Cards and inbound links (parallel with S3 and S4)
 
@@ -601,6 +638,23 @@ Each slice is one PR with tests written first. Ownership is disjoint so that sli
 **Tests:** AC-11, 14 and 20. The Home render test asserts that the situation line and pulse are present and that the `running` group renders. `worker-needs-input-banner` is unchanged.
 
 **Deps:** S1, S2.
+
+**Built.** What S5 shipped, including where it differs from the plan above:
+
+- The card model is split in two. `lib/mission-card-view.ts` is pure and client-safe: `summarizeMissionForCard` (health, group, live workers, schedule timing, cheap enough for every loaded mission) and `buildMissionCardView` (the `deriveMissionStateView` chip and situation, the pulse, the `n/N` caption, the one primary line). `lib/mission-card-views.ts` holds `loadMissionCardViews`. It adds one batched read (human steering marks for the time-axis strip), capped at `MISSION_CARD_VIEW_CAP`, and Home calls it only for the missions it shows. The list page already loads those marks, so it calls the pure builder directly and its serial-wait ceiling does not move.
+- Group is `missionCardGroup`: terminal statuses map to `completed`, a future start gate maps to `scheduled`, and everything else goes through `healthToGroup`. Live workers are counted with `LIVE_WORKER_STATUSES`, so a worker in `waiting_input` makes its mission `running`, and "N active" counts it (D8). The header count and the tab counts both read `view.group`. A held or paused mission now sits in PAUSED / HELD per §1.1, not in SCHEDULED, which means Home no longer shows it.
+- D2 is closed for cards. One chip, from the detail header's accessor. `MissionBadges` and the verification pill are gone from Home and the list (`MissionBadges` survives only on the initiative page), and the `awaiting_verification` chip carries the criteria state.
+- Primary line precedence: the top NEEDS YOU row (`Answer:` / `Decide:` / `Merge:` / `Fix PR:` / `Retry:`), then the top MOVING row, then the first task blocked on a PR ("Blocked on N PRs", which used to link to `/app/home`). Every one of these links is `missionTaskHref(mode: 'sheet')`. The blocked-on-PR rule (`blockedByPRTaskIds`) now lives in the pure module, and `countBlockedByPR` returns its length, so the count and the link cannot disagree.
+- `components/missions/MissionCard.tsx` renders the card for both surfaces. A full card is `MissionMasthead size="card"`, which now also renders its `expand`/`actions` slots, above the stretched link. `⤢` (`mission-card-expand`) opens `FlightDetailSheet` only when there is a strip to draw (D4). The list's Arm button uses `actions`. A completed card is compact (`mission-card-compact`): the title plus `Completed <when> · n/n`, with no pulse and no strip (D7). Descriptions are no longer printed on cards, so raw markdown cannot leak, and the role, budget, deferral, policy and finding tokens are gone.
+- **Deviation (W1):** a bar tap in `FlightDetailSheet` **selects** the bar (`aria-pressed`, ring) instead of navigating, and "Open mission →" becomes "Open task in mission →" with `?task=<bar>` (AC-20). This is the same focus-first rule as the detail pulse: bars can be 2px wide, and a mis-tap should cost nothing. Each bar's target is a transparent band (`pointer-events: all`, at least 12px wide and the row height plus most of the gap), so a hollow queued bar or a 2px sliver is still hit. The bar's accessible name is its task title. Each opening of the sheet starts from `initialTaskId`, not from the last opening's selection.
+- **Deviation (W1):** only `⤢` (44px) opens `FlightDetailSheet`. The pulse is not a second entry point, and there is no long-press: the pulse sits inside the card-body link, and a second target on it would compete with the tap that opens the mission.
+- **Deviation (§1.3 of `mission-status-mobile-header-spec.md`):** paused and held cards stay full, not compact. Only completed cards are compact. A held mission's card carries its Arm action and the situation that explains the hold, and the compact layout has room for neither.
+- **Open (§1.1 vs D8):** held and budget-exhausted missions group as PAUSED / HELD, so they appear only under the list's All tab, never on Home or in the Active and Scheduled tabs, even when the next step is the user's (Arm). This follows §1.1 as written. It sits close to D8's "waiting on the user counts as active", so the design owner should confirm it.
+- Live workers on Home are an exact batched `count(distinct workers.id)` over `LIVE_WORKER_STATUSES`, passed into `summarizeMissionForCard`. The nested worker relation (`MISSION_CARD_WORKERS_WITH`, and the list's query) is capped at 5 per task, so it is ordered newest first (`startedAt`, then `updatedAt`) to keep the live re-claim inside the limit. The card reads a task's PR from its latest worker (`latestWorker`), never `workers[0]`.
+- Home no longer loads `tasks.result`. The card's failed-task list doesn't read it: the `infra` flag only matters alongside a completion decision, and a card never has one.
+- `selectHomeMissions` applies `MISSION_CARD_VIEW_CAP`, so capped active missions count in `hiddenCount`, and the "+N more" line names them (`N active, …`).
+- D6, placement part: `MissionReleaseFooter` renders once per workspace bucket on the list (`workspace-release-footer`), never on a card. Home keeps its single Release Queue widget. **Open:** the queue count right after a release reads from the baseline ladder (`resolveGatedReleaseBaseline`: healthy, then deployed, and so on). A just-cut release is not the baseline until it is healthy, so the "unshipped" count can lag. That ladder is shared with the release routes, so the fix belongs in `lib/release-baseline.ts` and is left out of this slice.
+- Inbound links: the Waiting-on-You cards (the ones inlined on Home, plus `WaitingOnYouMergeCard`, `WaitingOnYouReviewCard` and `AgentHandledCard`) go through `actionCardTaskHref`, which opens the sheet. Where a `<Link>` needs an href, `actionCardTaskLink` falls back to the mission, or to the task list, so an item without a task id cannot crash Home. `WaitingOnYouDiscrepancyCard` still links doc-fix tasks by hand: those tasks are not rows in the item's mission. The "needs input" OS notification (`NeedsInputProvider`) opens the same sheet as the banner. Retry attempts and plan approvals open their task page with `?from=mission&missionId=`. The card context line lands on `#t-<task>`. `TaskCard`, `NeedsInputBanner` (the waiting-input route now returns `missionId`), `MissionProgressBar`/`MissionProgress` and Home's recent activity all route through `missionTaskHref`. `?tab=tasks` is gone. `lib/mission-task-href-callsites.test.ts` is the AC-11 grep guard; S4 and S6 add `TaskPanel.tsx`, `tasks/[id]/page.tsx` and the respond page to its list.
 
 ### S6: Task page continuity
 

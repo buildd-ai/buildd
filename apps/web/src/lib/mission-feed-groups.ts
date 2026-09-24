@@ -167,13 +167,15 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
     const status = finished ? 'finished' : currentAssigned ? 'future' : 'current';
     if (status === 'current') currentAssigned = true;
 
-    const slots: FeedPhaseItem<T>[] = p.rows
-      .filter(r => r.state === 'needs_you' || r.state === 'moving')
-      .map(r => ({ type: 'slot', taskId: r.taskId, title: r.task.title, pinnedIn: r.state === 'needs_you' ? 'needs_you' : 'moving' }));
-    const own = p.rows
-      .filter(r => r.state !== 'needs_you' && r.state !== 'moving')
+    // Grouping rule 4: a pinned task's slot marker sits at its own place in
+    // the phase — where its row would sort if it were not pinned — not at the top.
+    const items: FeedPhaseItem<T>[] = p.rows
+      .slice()
       .sort((a, b) => rank(a) - rank(b) || a.position.n - b.position.n)
-      .map(row => ({ type: 'row' as const, row }));
+      .map((r): FeedPhaseItem<T> => (r.state === 'needs_you' || r.state === 'moving'
+        ? { type: 'slot', taskId: r.taskId, title: r.task.title, pinnedIn: r.state === 'needs_you' ? 'needs_you' : 'moving' }
+        : { type: 'row', row: r }));
+    const own = items.filter(i => i.type === 'row');
     const visibleLimit = status === 'future' ? FUTURE_PHASE_VISIBLE_CAP : null;
     const first = p.rows[0].task;
     groups.push({
@@ -188,7 +190,7 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
       hiddenCount: visibleLimit === null ? 0 : Math.max(0, own.length - visibleLimit),
       done,
       total: p.rows.length,
-      items: [...slots, ...own],
+      items,
     });
   });
 

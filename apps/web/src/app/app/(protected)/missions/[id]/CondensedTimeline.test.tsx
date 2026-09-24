@@ -31,12 +31,7 @@ function makeTask(id: string, overrides: Partial<CondensedTimelineTask> = {}): C
   };
 }
 
-/**
- * The Timeline renders two trees at once — the mobile rail (`md:hidden`) and the
- * desktop section list (`hidden md:block`) — per timeline-mobile-rail.md §10.1.
- * Assertions about desktop-only chrome must say so, or the rail's own (correct)
- * markup satisfies a `not.toContain` that was written before it existed.
- */
+/** The Timeline renders inside its md+ wrapper (`hidden md:block`). */
 const desktopTree = (html: string) => html.slice(html.indexOf('hidden md:block'));
 
 const makeSeg = (taskId: string, state = 'solid' as const) => ({ taskId, state });
@@ -64,11 +59,6 @@ const baseProps: CondensedTimelineProps = {
   allTasksCount: 0,
   missionCompleted: false,
   bookkeepingTasks: [],
-  view: 'timeline',
-  prsMerged: 0,
-  prsOpen: 0,
-  completedTasks: 0,
-  totalTasks: 0,
 };
 
 // ─── I-8: SegmentStrip in collapsed disclosure rows ───────────────────────────
@@ -169,59 +159,17 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
   });
 });
 
-// ─── §3.5: Density tiers — Summary vs Timeline ───────────────────────────────
-// Note: Summary/Timeline tab switching is now handled by MissionTabs (the parent).
-// CondensedTimeline renders only the view specified by the `view` prop.
+// ─── The md+ Timeline is the only tree ───────────────────────────────────────
+// Below md the mission page renders MissionFeedList; the Summary view became
+// NEEDS YOU there, and the mobile rail is retired
+// (docs/design/mission-feed-mobile-continuity.md).
 
-describe('CondensedTimeline — §3.5 density tiers', () => {
-  it('renders PR roll-up in Summary view', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="summary"
-        allTasksCount={10}
-        prsMerged={5}
-        prsOpen={2}
-      />,
-    );
-    expect(html).toContain('5 PRs merged');
-    expect(html).toContain('2 open');
-  });
-
-  it('shows Waiting on you section in Summary view', () => {
-    const waitingTask = makeTask('w1', { status: 'completed' });
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="summary"
-        allTasksCount={10}
-        groups={{ ...emptyGroups, waitingOnYou: [toChain(waitingTask)] }}
-      />,
-    );
-    expect(html).toContain('Waiting on you');
-    expect(html).toContain('Task w1');
-  });
-
-  it('shows "Waiting on" status line for running tasks in Summary view', () => {
+describe('CondensedTimeline — md+ only', () => {
+  it('renders the Timeline sections', () => {
     const runningTask = makeTask('r1', { status: 'in_progress' });
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        view="summary"
-        allTasksCount={5}
-        groups={{ ...emptyGroups, running: [toChain(runningTask)] }}
-      />,
-    );
-    expect(html).toContain('Waiting on:');
-    expect(html).toContain('1 task running');
-  });
-
-  it('renders TimelineView when view=timeline', () => {
-    const runningTask = makeTask('r1', { status: 'in_progress' });
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="timeline"
         allTasksCount={1}
         groups={{ ...emptyGroups, running: [toChain(runningTask)] }}
       />,
@@ -230,60 +178,13 @@ describe('CondensedTimeline — §3.5 density tiers', () => {
     expect(html).toContain('Task r1');
   });
 
-  it('does NOT render MissionProgressBar inside Summary view (progress bar lives in page header)', () => {
-    const seg = makeSeg('t1', 'solid');
+  it('renders no mobile tree beside it — no rail, no md:hidden copy of the list', () => {
+    const runningTask = makeTask('r1', { status: 'in_progress' });
     const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="summary"
-        allTasksCount={5}
-        completedTasks={3}
-        totalTasks={5}
-        segments={[seg]}
-      />,
+      <CondensedTimeline {...baseProps} allTasksCount={1} groups={{ ...emptyGroups, running: [toChain(runningTask)] }} />,
     );
-    // Progress bar with segment strip is NOT inside the SummaryView instance.
-    // It lives in the page header card (page.tsx) to avoid double-rendering.
-    expect(html).not.toContain('height:8px');
-  });
-
-  it('shows "No actions needed" only when criteria are passing and nothing is in flight', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="summary"
-        allTasksCount={5}
-      />,
-    );
-    expect(html).toContain('No actions needed');
-  });
-
-  it('does NOT show "No actions needed" when a criteria gate is failing', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="summary"
-        allTasksCount={5}
-        criteriaGate={{ state: 'failing', label: 'Criteria failing', tone: 'warning', detail: 'all_prs_merged' }}
-      />,
-    );
-    expect(html).not.toContain('No actions needed');
-    expect(html).toContain('Criteria failing');
-    expect(html).not.toMatch(/blocked/i);
-  });
-
-  it('shows a quiet gated-completion line, not "No actions needed", when criteria are simply unverified', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        view="summary"
-        allTasksCount={5}
-        criteriaGate={{ state: 'unverified', label: 'Not yet verified', tone: 'neutral', detail: null }}
-      />,
-    );
-    expect(html).not.toContain('No actions needed');
-    expect(html).not.toMatch(/blocked/i);
-    expect(html).toContain('not yet verified');
+    expect(html).not.toContain('md:hidden');
+    expect(html).not.toContain('data-testid="mission-rail"');
   });
 });
 
@@ -644,7 +545,6 @@ describe('CondensedTimeline — row menu card type', () => {
         groups={{ ...emptyGroups, running: [toChain(task)] }}
         segments={[makeSeg('term1', 'notch')]}
         allTasksCount={1}
-        totalTasks={1}
       />,
     );
     expect(html).toContain('data-card-type="completed-task"');

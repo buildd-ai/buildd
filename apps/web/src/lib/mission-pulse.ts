@@ -35,6 +35,8 @@ export interface MissionFeedTaskInput {
   parentTaskId?: string | null;
   mode?: string | null;
   kind?: string | null;
+  /** `tasks.roleSlug` — the work-kind glyph's fallback tier (`deriveWorkKind`). */
+  roleSlug?: string | null;
   category?: string | null;
   creationSource?: string | null;
   dependsOn?: readonly string[] | null;
@@ -313,6 +315,29 @@ function aggregateState(states: PulseState[]): PulseState {
   if (states.includes('failed')) return 'failed';
   if (states.every(s => s === 'done' || s === 'skipped')) return states.every(s => s === 'skipped') ? 'skipped' : 'done';
   return 'queued';
+}
+
+/** Done / total over rows (a folded phase segment counts its rows). */
+export function pulseDoneCounts(segments: readonly PulseSegment[]): { done: number; total: number } {
+  let done = 0;
+  let total = 0;
+  for (const s of segments) {
+    if (s.kind === 'phase') {
+      total += s.taskIds.length;
+      done += Math.round(s.fill * s.taskIds.length);
+    } else {
+      total += 1;
+      if (s.state === 'done' || s.state === 'skipped') done += 1;
+    }
+  }
+  return { done, total };
+}
+
+/** The pulse's counts caption: `done/total`, plus `· N live` when agents are working. */
+export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liveWorkers?: number } = {}): string {
+  const { done, total } = pulseDoneCounts(segments);
+  const live = opts.liveWorkers ?? 0;
+  return live > 0 ? `${done}/${total} · ${live} live` : `${done}/${total}`;
 }
 
 /**

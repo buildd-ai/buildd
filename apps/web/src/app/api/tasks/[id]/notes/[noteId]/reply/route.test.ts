@@ -168,6 +168,24 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
     expect(values.taskId).toBe('task-1');
   });
 
+  // S6: an open mission page listens on the mission channel, so a reply to a
+  // mission-scoped question from the task page must be announced there too.
+  it('announces a reply to a mission-scoped question on the mission channel as well', async () => {
+    mockNotesFindFirst.mockResolvedValue({ ...taskScopedQuestion, missionId: 'mission-1' });
+
+    await POST(createRequest({ title: 'Merge it' }), { params });
+
+    const channelsHit = mockTriggerEvent.mock.calls.map((c: any[]) => c[0]);
+    expect(channelsHit).toEqual(['task-task-1', 'mission-mission-1']);
+  });
+
+  it('announces a task-only reply on the task channel alone', async () => {
+    await POST(createRequest({ title: 'Use JWT' }), { params });
+
+    const channelsHit = mockTriggerEvent.mock.calls.map((c: any[]) => c[0]);
+    expect(channelsHit).toEqual(['task-task-1']);
+  });
+
   it('does not restrict the parent lookup to task-scoped notes', async () => {
     await POST(createRequest({ title: 'Use JWT' }), { params });
 

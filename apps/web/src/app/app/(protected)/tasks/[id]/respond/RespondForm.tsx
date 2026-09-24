@@ -3,15 +3,18 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import NeedsInputAnswerBox from '../NeedsInputAnswerBox';
+import { respondRedirectHref } from './respond-links';
 
 type Option = string | { label: string; description?: string; recommended?: boolean };
 
 interface Props {
   workerId: string;
+  /** The task's mission: an answered mission task returns to its row there. */
+  missionId?: string | null;
   options: Option[];
 }
 
-export default function RespondForm({ workerId, options }: Props) {
+export default function RespondForm({ workerId, missionId, options }: Props) {
   const router = useRouter();
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -31,8 +34,10 @@ export default function RespondForm({ workerId, options }: Props) {
       // On a resume this is the SAME task (the resumed worker continues under
       // it); on a cold continuation it is the new one. Either way it is where
       // the work now is. A task-less worker returns null — stay put rather than
-      // navigating to a page that cannot exist.
-      if (data.taskId) router.push(`/app/tasks/${data.taskId}`);
+      // navigating to a page that cannot exist. A mission task lands back on
+      // its row in the mission (`#t-<task>`).
+      const next = respondRedirectHref({ missionId, taskId: data.taskId });
+      if (next) router.push(next);
       else router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send answer');

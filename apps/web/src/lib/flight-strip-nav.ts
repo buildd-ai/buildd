@@ -1,6 +1,6 @@
 /**
- * Pure helpers for the mission-detail flight-strip navigator
- * (missions/[id]/page.tsx + MissionFlightStripNav.tsx).
+ * Pure helpers shared by the mission feed: phase grouping (the order the pulse
+ * and the task list share, `lib/mission-pulse.ts`) and the Records selection.
  */
 import { isReviewArtifact, type ArtifactProminenceInput } from '@/lib/artifact-prominence';
 

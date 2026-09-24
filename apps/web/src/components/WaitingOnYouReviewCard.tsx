@@ -7,6 +7,7 @@ import Spinner from './Spinner';
 import { AgentRecommendation } from './AgentRecommendation';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { ActionQueueItem } from '@/lib/action-queue';
+import { actionCardTaskLink } from '@/lib/action-card-context';
 
 
 interface WaitingOnYouReviewCardProps {
@@ -239,7 +240,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       {/* Task title: always visible so the user knows what's being escalated */}
       {item.taskId ? (
         <Link
-          href={`/app/tasks/${item.taskId}`}
+          href={actionCardTaskLink(item)}
           className="text-[13px] font-medium text-text-primary truncate hover:underline block mt-0.5"
         >
           {item.taskTitle}
@@ -392,7 +393,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 Fix task dispatched
               </div>
               {appliedTaskId && (
-                <Link href={`/app/tasks/${appliedTaskId}`} className="text-[12px] font-medium text-primary hover:underline">
+                <Link href={actionCardTaskLink(item, { taskId: appliedTaskId, page: true })} className="text-[12px] font-medium text-primary hover:underline">
                   View task
                 </Link>
               )}
@@ -541,7 +542,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               <div className="flex items-center gap-3">
                 {conflictRetryTaskId && (
                   <Link
-                    href={`/app/tasks/${conflictRetryTaskId}`}
+                    href={actionCardTaskLink(item, { taskId: conflictRetryTaskId, page: true })}
                     className="text-[12px] font-medium text-primary hover:underline"
                   >
                     View task

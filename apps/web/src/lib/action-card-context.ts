@@ -1,4 +1,5 @@
 import type { ActionQueueItem } from './action-queue';
+import { missionTaskHref, taskPageHref } from './mission-task-href';
 
 export interface ActionCardContext {
   /** Which layer of the hierarchy the label describes. */
@@ -15,16 +16,25 @@ export interface ActionCardContext {
  * from the widest arc the item belongs to: initiative › mission. A card with
  * neither falls back to its workspace, labelled as unlinked so an orphan PR
  * reads as a chore rather than as mission work.
+ *
+ * A mission label that names a task lands on that task's row in the mission
+ * (`#t-<id>`, docs/design/mission-feed-mobile-continuity.md), not at the top
+ * of a bare mission page.
  */
 export function resolveActionCardContext(item: ActionQueueItem): ActionCardContext | null {
   const initiativeTitle = item.initiativeTitle ?? null;
   const missionTitle = item.missionTitle ?? null;
 
   if (missionTitle) {
+    const href = !item.missionId
+      ? null
+      : item.taskId
+        ? missionTaskHref({ missionId: item.missionId, taskId: item.taskId, from: 'home', mode: 'focus' })
+        : `/app/missions/${encodeURIComponent(item.missionId)}?from=home`;
     return {
       kind: 'mission',
       label: initiativeTitle ? `${initiativeTitle} › ${missionTitle}` : missionTitle,
-      href: item.missionId ? `/app/missions/${item.missionId}` : null,
+      href,
     };
   }
 
@@ -41,4 +51,35 @@ export function resolveActionCardContext(item: ActionQueueItem): ActionCardConte
   }
 
   return null;
+}
+
+/**
+ * Where a Waiting-on-You card's task link goes. A mission task opens as the
+ * sheet over its mission; a task with no mission opens its own page.
+ *
+ * `page: true` is for a task that is not a row in the mission feed — a retry
+ * attempt, a plan to approve — which opens its full page, still carrying the
+ * mission back-link. `taskId` overrides the card's own task (e.g. the retry).
+ */
+export function actionCardTaskHref(
+  item: Pick<ActionQueueItem, 'taskId' | 'missionId'>,
+  opts: { taskId?: string | null; page?: boolean } = {},
+): string | null {
+  const taskId = opts.taskId ?? item.taskId;
+  if (!taskId) return null;
+  if (opts.page) return taskPageHref({ taskId, missionId: item.missionId ?? null });
+  return missionTaskHref({ missionId: item.missionId ?? null, taskId, from: 'home', mode: 'sheet' });
+}
+
+/**
+ * `actionCardTaskHref` for a `<Link>` that must have an href. A card that
+ * arrives without a task id still renders: it opens its mission, or the task
+ * list when it has no mission either, rather than crashing the Home render.
+ */
+export function actionCardTaskLink(
+  item: Pick<ActionQueueItem, 'taskId' | 'missionId'>,
+  opts: { taskId?: string | null; page?: boolean } = {},
+): string {
+  return actionCardTaskHref(item, opts)
+    ?? (item.missionId ? `/app/missions/${encodeURIComponent(item.missionId)}?from=home` : '/app/tasks');
 }

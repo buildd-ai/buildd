@@ -36,7 +36,7 @@ export async function GET() {
     const taskIds = relevantWorkers.map(w => w.taskId!);
     const waitingTasks = await db.query.tasks.findMany({
       where: inArray(tasks.id, taskIds),
-      columns: { id: true, title: true, status: true, workspaceId: true },
+      columns: { id: true, title: true, status: true, workspaceId: true, missionId: true },
     });
 
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
@@ -50,6 +50,8 @@ export async function GET() {
           id: t.id,
           title: t.title,
           workspaceId: t.workspaceId,
+          // Lets the banner open the task in its mission (mission-task-href.ts).
+          missionId: t.missionId ?? null,
           waitingFor: worker?.waitingFor as { type: string; prompt: string; options?: string[] } | null,
           actionUrl: `${appBaseUrl}/app/tasks/${t.id}/respond`,
         };

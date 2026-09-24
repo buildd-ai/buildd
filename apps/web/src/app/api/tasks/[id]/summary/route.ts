@@ -5,6 +5,15 @@ import { eq, desc, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isGateSatisfied } from '@/lib/task-presentation';
+import { deriveTaskOrigin } from '@/lib/task-origin';
+
+/** One record the task produced, as the sheet lists it (W4 "Records"). */
+export interface TaskSummaryRecord {
+  id: string;
+  type: string;
+  title: string | null;
+  href: string;
+}
 
 // GET /api/tasks/[id]/summary — lightweight task data for the slide-over panel
 export async function GET(
@@ -35,6 +44,26 @@ export async function GET(
         backend: true,
         context: true,
         dependsOn: true,
+        // Provenance (U6) — the columns deriveTaskOrigin reads.
+        creationSource: true,
+        createdByWorkerId: true,
+        createdByAccountId: true,
+        scheduleId: true,
+        parentTaskId: true,
+        ciRetryPrNumber: true,
+        reviewerRetryPrNumber: true,
+        conflictRetryPrNumber: true,
+        taskClass: true,
+      },
+      with: {
+        mission: { columns: { title: true } },
+        parentTask: { columns: { title: true } },
+        creatorAccount: { columns: { name: true } },
+        creatorWorker: {
+          columns: { name: true },
+          with: { task: { columns: { id: true, roleSlug: true } } },
+        },
+        schedule: { columns: { name: true } },
       },
     });
 
@@ -105,6 +134,39 @@ export async function GET(
       columns: { excerpt: true, pattern: true, ts: true },
     });
     const trace = latestTraces[0] || null;
+
+    // Records (W4): what the task produced, across every attempt's worker.
+    // Titles only — never `content`, which can be large.
+    const recordWorkers = await db.query.workers.findMany({
+      where: eq(workers.taskId, id),
+      orderBy: desc(workers.createdAt),
+      columns: { id: true },
+      with: { artifacts: { columns: { id: true, type: true, title: true } } },
+    });
+    const records: TaskSummaryRecord[] = (recordWorkers ?? [])
+      .flatMap(w => (w as { artifacts?: Array<{ id: string; type: string; title: string | null }> }).artifacts ?? [])
+      .filter(a => a.type !== 'impl_plan')
+      .map(a => ({ id: a.id, type: a.type, title: a.title ?? null, href: `/app/artifacts/${a.id}` }));
+
+    // Origin (U6): who created the task and why, from stored columns only —
+    // the same derivation as the task page. "You" is claimed only on a name
+    // match with the viewer, as there.
+    const viewerNames = [user.name, user.email, user.email?.split('@')[0]]
+      .filter((n): n is string => !!n)
+      .map(n => n.toLowerCase());
+    const creatorAccountName = task.creatorAccount?.name ?? null;
+    const derivedOrigin = deriveTaskOrigin(task as Parameters<typeof deriveTaskOrigin>[0], {
+      actorName: creatorAccountName ?? task.creatorWorker?.name ?? null,
+      isSelf: !!creatorAccountName && viewerNames.includes(creatorAccountName.toLowerCase()),
+      creatorRoleSlug: task.creatorWorker?.task?.roleSlug ?? null,
+      creatorWorkerTaskId: task.creatorWorker?.task?.id ?? null,
+      scheduleName: task.schedule?.name ?? null,
+      missionTitle: task.mission?.title ?? null,
+      parentTaskTitle: task.parentTask?.title ?? null,
+    });
+    const origin = derivedOrigin.isEmpty
+      ? null
+      : { actor: derivedOrigin.actor, parts: derivedOrigin.parts, links: derivedOrigin.links };
 
     // Count unresolved dependencies via the SHARED gate predicate.
     // This used to hand-roll the rule and said it "mirrors the gate used on the
@@ -184,6 +246,8 @@ export async function GET(
           }
         : null,
       blockedByCount,
+      records,
+      origin,
     });
   } catch (error) {
     console.error('Task summary error:', error);

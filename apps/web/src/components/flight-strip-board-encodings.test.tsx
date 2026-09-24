@@ -103,12 +103,17 @@ describe('board encoding consistency across FlightStrip and FlightDetailSheet', 
     const sheetHtml = renderToStaticMarkup(
       <FlightDetailSheet open={true} onClose={() => {}} data={data} missionId="m1" missionTitle="Rework-heavy run" />,
     );
-    // The first phase renders as a bare label ("P1"); later phases carry the
-    // elided-gap duration inline ("15m idle · P2"), matching the missions-list
-    // board's "7h idle · P2" convention.
+    // Every phase after the first draws a divider on the card strip. Its axis
+    // LABEL may be collision-culled at card width (addendum D4: labels never
+    // overlap, and an unlabelled gap is fine), so the divider is what counts.
+    const dividers = cardHtml.match(/stroke-dasharray="2 2"/g) ?? [];
+    expect(dividers).toHaveLength(data.phases.length - 1);
+    // The first phase renders as a bare label ("P1"); a later phase label, when
+    // it fits, carries the elided-gap duration inline ("15m idle · P2"),
+    // matching the missions-list board's "7h idle · P2" convention.
+    expect(cardHtml).toContain(`>${data.phases[0].label}<`);
     for (const [i, phase] of data.phases.entries()) {
-      const needle = i === 0 ? `>${phase.label}<` : `idle · ${phase.label}<`;
-      expect(cardHtml).toContain(needle);
+      if (i > 0 && cardHtml.includes(`>${phase.label}<`)) throw new Error(`phase ${phase.label} lost its idle prefix`);
       expect(sheetHtml).toContain(`>${phase.label}`);
     }
   });

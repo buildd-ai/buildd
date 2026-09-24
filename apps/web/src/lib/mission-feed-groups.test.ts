@@ -127,7 +127,7 @@ describe('phase fold defaults', () => {
     expect(check).toMatchObject({ status: 'future', collapsed: false, visibleLimit: FUTURE_PHASE_VISIBLE_CAP, hiddenCount: 2 });
   });
 
-  it('within a phase: slots, then failed, queued-ready, queued-blocked ("after #x"), done', () => {
+  it('within a phase: failed, queued-ready, queued-blocked ("after #x"), done — a pinned task leaves its slot at its own place (rule 4)', () => {
     const model = buildMissionFeedGroups([
       t('done', { ...BUILD, status: 'completed' }),
       t('blocked', { ...BUILD, dependsOn: ['ask'] }),
@@ -138,7 +138,7 @@ describe('phase fold defaults', () => {
     ]);
     const [build] = phaseGroups(model.groups);
     expect(build.items.map(i => (i.type === 'slot' ? `slot:${i.taskId}` : i.row.taskId))).toEqual([
-      'slot:ask', 'retrying', 'ready', 'blocked', 'done',
+      'retrying', 'ready', 'slot:ask', 'blocked', 'done',
     ]);
     const blocked = build.items.find(i => i.type === 'row' && i.row.taskId === 'blocked');
     expect(blocked?.type === 'row' && blocked.row.blockedByTaskId).toBe('ask');

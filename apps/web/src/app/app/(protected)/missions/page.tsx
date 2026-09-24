@@ -1,22 +1,23 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives } from '@buildd/core/db/schema';
-import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
+import { missions, accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { inArray, and, eq, sql, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
-import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeMissionFlightStrip, deriveCriteriaGatePresentation, isDeliverableTask, hasPendingDeliverableWork, type MissionFlightStripData } from '@buildd/core/mission-helpers';
-import { deriveMissionStateView } from '@/lib/mission-state-view';
-import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
-import { isValidTaskId } from '@/lib/task-id';
+import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { computeMissionFlightStrip, type MissionFlightStripData } from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { resolvePolicy } from '@/lib/merge-policy';
-import { MissionGrid } from './MissionGrid';
-import { countBlockedByPR, type BlockingTask } from '@/lib/initiative-pulse';
+import {
+  buildMissionCardView,
+  countActiveMissions,
+  summarizeMissionForCard,
+  type BlockingTask,
+  type MissionCardRow,
+} from '@/lib/mission-card-view';
+import { MissionGrid, type MissionItem } from './MissionGrid';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
@@ -29,6 +30,8 @@ import {
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
 
 export const dynamic = 'force-dynamic';
+
+const GROUP_SORT_COMPLETED_LAST = (g: string) => (g === 'completed' ? 1 : 0);
 
 export default async function MissionsPage({
   searchParams,
@@ -78,16 +81,12 @@ export default async function MissionsPage({
   // shape omits roleSlug/exitCause by construction — see missions-query.ts.
   const completedCursor = decodeCompletedCursor(completedCursorParam);
 
-  // Everything below needs only `activeTeamId`, `teamIds` and the URL filter,
-  // all of which are already resolved — so none of these depend on each other
-  // and they used to run as one long serial chain of neon-http round trips.
-  // The two chains that *are* dependent (accounts -> live-seat count, workspace
-  // scope -> roles) stay chained inside their own entry.
+  // Everything below needs only `activeTeamId` and the URL filter, all of
+  // which are already resolved — so none of these depend on each other. The
+  // one dependent chain (accounts -> live-seat count) stays inside its entry.
   const [
     seats,
-    teamRows,
     teamWorkspaces,
-    rolesResult,
     activeRows,
     completedRowsPage,
   ] = await Promise.all([
@@ -110,41 +109,16 @@ export default async function MissionsPage({
         ));
       return { maxSeats: max, activeSeats: row?.count ?? 0 };
     })(),
-    // Team name map for display (only when the user has multiple teams)
-    teamIds.length > 1
-      ? db.query.teams.findMany({
-          where: inArray(teams.id, teamIds),
-          columns: { id: true, name: true, slug: true },
-        })
-      : Promise.resolve([] as { id: string; name: string; slug: string }[]),
     // Active team's workspaces for the filter dropdown
     db
       .select({ id: workspaces.id, name: workspaces.name })
       .from(workspaces)
       .where(eq(workspaces.teamId, activeTeamId)),
-    // Roles for display. getUserWorkspaceIds is React cache()-wrapped, so on a
-    // normal navigation the layout has already resolved this scope and only the
-    // workspaceSkills read is a new round trip.
-    (async () => {
-      const wsIds = await getUserWorkspaceIds(user.id);
-      if (wsIds.length === 0) return [] as { slug: string; name: string; color: string }[];
-      return db.query.workspaceSkills.findMany({
-        where: and(
-          inArray(workspaceSkills.workspaceId, wsIds),
-          eq(workspaceSkills.enabled, true),
-        ),
-        columns: { slug: true, name: true, color: true },
-      });
-    })(),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
   ]);
 
   const { maxSeats, activeSeats } = seats;
-  const teamNameMap = new Map<string, string>();
-  teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
-  const rolesMap = new Map<string, { name: string; color: string }>();
-  rolesResult.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
   const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
     completedRowsPage as unknown as Array<{ completedAt: Date | string | null; id: string }>,
     COMPLETED_MISSIONS_PAGE_SIZE,
@@ -152,24 +126,16 @@ export default async function MissionsPage({
 
   const allMissions = [...activeRows, ...completedRows] as any[];
 
-  const POLICY_TIER_LABEL: Record<string, string> = {
-    'auto-threshold': 'Auto',
-    'agent-review': 'Agent Review',
-    'human': 'Human Gate',
-  };
-
-  // Blocked-PR count per mission (LAYER 3 chip). The index spans every loaded
-  // mission because `dependsOn` crosses mission boundaries; the counting rule
-  // itself is shared with the Initiatives list (lib/initiative-pulse.ts) so the
-  // two surfaces cannot disagree about what "blocked" means.
+  // Blocked-PR index spans every loaded mission because `dependsOn` crosses
+  // mission boundaries; the rule itself is shared with the Initiatives list
+  // (`blockedByPRTaskIds`) so the two surfaces cannot disagree.
   const allMissionTaskMap = new Map<string, BlockingTask>();
   for (const m of allMissions) {
-    for (const t of m.tasks || []) {
-      allMissionTaskMap.set(t.id, t as unknown as BlockingTask);
-    }
+    for (const t of m.tasks || []) allMissionTaskMap.set(t.id, t as BlockingTask);
   }
 
-  // Compute release footer data per unique workspace (gated: queue depth; continuous: last deploy state)
+  // D6: release state is workspace-level — one footer per workspace, rendered
+  // once on the list, never on each mission card.
   const uniqueWorkspaces = new Map<string, { id: string; name: string | null; gitConfig: unknown; releaseConfig: unknown }>();
   for (const m of allMissions) {
     const ws = m.workspace as { id: string; name: string; gitConfig: unknown; releaseConfig: unknown } | null | undefined;
@@ -179,7 +145,7 @@ export default async function MissionsPage({
   // These two read from the mission rows above and from nothing each other
   // produces, so they are one wait rather than two. The release footers are
   // themselves 3 deep per workspace.
-  const releaseFooterMap = new Map<string, ReleaseFooterData>();
+  const releaseFooters: Record<string, ReleaseFooterData> = {};
   const [steeringMarksByMission] = await Promise.all([
     // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
     // one batched query across the whole active set, not one per mission.
@@ -188,18 +154,19 @@ export default async function MissionsPage({
     // so the two surfaces cannot disagree about queue depth or deploy state.
     Promise.all(
       Array.from(uniqueWorkspaces.values()).map(async (ws) => {
-        releaseFooterMap.set(ws.id, await loadReleaseFooterData({
+        releaseFooters[ws.id] = await loadReleaseFooterData({
           id: ws.id,
           name: ws.name,
           gitConfig: ws.gitConfig,
           releaseConfig: ws.releaseConfig,
-        }));
+        });
       }),
     ),
   ]);
 
-  // Rule A-1/A-2: live flight-strip compute for every non-completed mission —
-  // the completed-only gate the old skyline had is gone.
+  // Rule A-1/A-2: live flight-strip compute for every non-completed mission.
+  // On a card it is reachable only from ⤢ (FlightDetailSheet, D4); completed
+  // cards are compact and draw no strip (D7).
   const flightStripByMission = new Map<string, MissionFlightStripData | null>();
   for (const obj of activeRows as any[]) {
     const { tasks: flightTasks, workers: flightWorkers } = adaptFlightStripInputs(obj.tasks || []);
@@ -211,235 +178,49 @@ export default async function MissionsPage({
       }),
     );
   }
-  for (const obj of completedRows as any[]) {
-    flightStripByMission.set(obj.id, (obj.flightStripCache as MissionFlightStripData | null) ?? null);
-  }
 
-  // Compute mission data
-  const missionsList = allMissions.map((obj) => {
-    const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(obj.tasks || []);
-    const activeAgents = obj.tasks
-      ?.flatMap((t: any) => t.workers || [])
-      .filter((w: any) => w.status === 'running').length || 0;
-
-    // Latest finding — most recent task with a result that has structuredOutput or summary
-    const latestFinding = obj.tasks?.find(
-      (t: any) => t.status === 'completed' && t.result && ((t.result as any).structuredOutput || (t.result as any).summary)
-    );
-
-    const nextRunAt = (obj.schedule as any)?.nextRunAt;
-    const lastRunAt = (obj.schedule as any)?.lastRunAt;
-    const nextScanMins = nextRunAt
-      ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
-      : null;
-
-
-    const scheduleCron = (obj.schedule as any)?.cronExpression || null;
-    const rawDeferralReason = (obj.schedule as any)?.lastDeferralReason || null;
-    const lastDeferredAt = (obj.schedule as any)?.lastDeferredAt ? String((obj.schedule as any).lastDeferredAt) : null;
-    // The heartbeat prepass records this as `nextRunAt` when it's deliberately
-    // waiting on a known self-resolving condition (see heartbeat-prepass.ts) —
-    // read it back so the mission renders BLOCKED, not idle, while it waits.
-    const heartbeatWaitingUntil = rawDeferralReason === 'heartbeat_waiting' ? nextRunAt ?? null : null;
-
-    // Compute whether the per-schedule concurrent cap is still actually exceeded.
-    // If not, clear the stale 'concurrent_cap' reason so the badge shows AUTO.
-    let lastDeferralReason = rawDeferralReason;
-    if (rawDeferralReason === 'concurrent_cap') {
-      const schedId = (obj.schedule as any)?.id;
-      const maxConcurrent: number = (obj.schedule as any)?.maxConcurrentFromSchedule ?? 1;
-      const activeScheduleTasks = (obj.tasks || []).filter((t: any) =>
-        t.scheduleId === schedId &&
-        ['pending', 'assigned', 'in_progress'].includes(t.status)
-      ).length;
-      if (activeScheduleTasks < maxConcurrent) lastDeferralReason = null;
-    }
-
-    // Compute the earliest future startAt from user-scheduled pending tasks
-    // (loopIteration === 0 means the task was explicitly scheduled, not a loop retry).
-    const now = Date.now();
-    let pendingUserScheduledAt: Date | null = null;
-    for (const t of (obj.tasks || []) as any[]) {
-      if (t.status !== 'pending') continue;
-      if ((t.loopIteration ?? 0) !== 0) continue;
-      if (!t.startAt) continue;
-      const ts = new Date(t.startAt).getTime();
-      if (ts > now && (pendingUserScheduledAt === null || ts < pendingUserScheduledAt.getTime())) {
-        pendingUserScheduledAt = new Date(t.startAt);
-      }
-    }
-    // A deliberately-scheduled pending task is not a seat-deferral.
-    if (pendingUserScheduledAt) lastDeferralReason = null;
-
-    // One value for both the health badge/sort group and the card subtitle, so
-    // 'escalated' is reachable here and the two cannot disagree.
-    const pendingDeliverableWork = hasPendingDeliverableWork(obj.tasks || []);
-    const health = deriveMissionHealth({
-      status: obj.status,
-      activeAgents,
-      cronExpression: scheduleCron,
-      lastRunAt,
-      nextRunAt,
-      orchestrationMode: obj.orchestrationMode,
-      isHeld: obj.isHeld ?? false,
-      pendingUserScheduledAt,
-      criteriaEscalatedAt: (obj as any)?.criteriaEscalatedAt,
-      hasPendingDeliverableWork: pendingDeliverableWork,
+  // One model per card — the same builder Home uses (lib/mission-card-view.ts),
+  // so a mission's chip, sentence, pulse and group read the same on both.
+  const now = Date.now();
+  const missionsList: MissionItem[] = allMissions.map((obj) => {
+    const row = obj as MissionCardRow;
+    const summary = summarizeMissionForCard(row, { now });
+    const view = buildMissionCardView(row, {
+      from: 'missions',
+      now,
+      summary,
+      taskIndex: allMissionTaskMap,
+      flightStrip: flightStripByMission.get(obj.id) ?? null,
     });
-
-    const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
-    const latestTaskId = isValidTaskId(rawLatestId) ? rawLatestId : null;
-
-    const workspaceForPolicy = obj.workspace as { id: string; name: string; gitConfig?: unknown } | null | undefined;
-    const effectivePolicy = obj.workspaceId
-      ? resolvePolicy(
-          { gitConfig: (workspaceForPolicy as any)?.gitConfig ?? null },
-          { mergePolicy: (obj as any).mergePolicy ?? null },
-        )
-      : null;
-    const effectivePolicyLabel = effectivePolicy ? (POLICY_TIER_LABEL[effectivePolicy.tier] ?? effectivePolicy.tier) : null;
 
     // lastActivityAt: most recent task update or lastTaskStartedAt
     const taskTimes = (obj.tasks || []).map((t: any) => t.updatedAt ? new Date(t.updatedAt as any).getTime() : 0);
-    const lastTaskStartedMs = (obj as any).lastTaskStartedAt ? new Date((obj as any).lastTaskStartedAt).getTime() : 0;
+    const lastTaskStartedMs = obj.lastTaskStartedAt ? new Date(obj.lastTaskStartedAt).getTime() : 0;
     const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
-    const lastActivityAt = lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null;
-
-    // Rule P-2/A-1/A-2: cache read for completed, live compute for everything
-    // else — see flightStripByMission above.
-    const flightStrip = flightStripByMission.get(obj.id) ?? null;
-
-    // When there's no schedule nextRunAt, use the earliest user-scheduled task
-    // time so that sorted SCHEDULED cards still show meaningful timing.
-    const effectiveNextRunAt = nextRunAt
-      ? String(nextRunAt)
-      : pendingUserScheduledAt
-      ? pendingUserScheduledAt.toISOString()
-      : null;
-    const effectiveNextScanMins = nextScanMins ?? (pendingUserScheduledAt
-      ? Math.max(0, Math.round((pendingUserScheduledAt.getTime() - Date.now()) / 60000))
-      : null);
-
-
-    // ── The card subtitle ──
-    // Same accessor, same sentence, as the mission header: whatever the header
-    // states as the situation, the card states as its subtitle. A list cannot
-    // afford a `canCompleteMission` decision per row, so it passes the rows it
-    // already loaded and takes the honestly-degraded view the accessor is built
-    // to return. What it must NOT do is invent its own phrasing — a card and a
-    // header describing one mission differently is the defect, not the layout.
-    const healthState = deriveTaskHealthSignal({ ...obj, heartbeatWaitingUntil }, obj.tasks || []);
-    const deliverables = (obj.tasks || []).filter(isDeliverableTask);
-    const criteriaStateForCard = (obj.goalCriteriaState ?? null) as
-      { overall?: string; criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null;
-    const criteriaGateForCard = ['completed', 'cancelled', 'archived'].includes(obj.status)
-      ? null
-      : deriveCriteriaGatePresentation({
-          criteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
-          overall: (criteriaStateForCard?.overall as any) ?? null,
-          items: (criteriaStateForCard?.criteria ?? []) as any,
-          completionAttempted: progress >= 100,
-        });
-    const integrationPr = deriveMissionIntegrationPr({ mission: obj as any, tasks: (obj.tasks ?? []) as any });
-    const unmergedPrs = (obj.tasks || []).flatMap((t: any) => {
-      if (t.status !== 'completed') return [];
-      const w = (t.workers as any[])?.[0];
-      if (!w?.prUrl || w?.mergedAt || w?.prLifecycleStatus === 'closed') return [];
-      return [{ taskId: t.id, title: t.title, prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null }];
-    });
-    const situation = deriveMissionStateView({
-      status: obj.status,
-      isHeld: obj.isHeld ?? false,
-      orchestrationMode: obj.orchestrationMode ?? null,
-      activeAgents,
-      progress,
-      health: healthState,
-      dependsOnMissionId: obj.dependsOnMissionId ?? null,
-      criteriaEscalatedAt: (obj as any).criteriaEscalatedAt ?? null,
-      hasPendingDeliverableWork: pendingDeliverableWork,
-      criteriaGate: criteriaGateForCard,
-      criteriaItems: (criteriaStateForCard?.criteria ?? []) as any,
-      openTasks: deliverables
-        .filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status))
-        .map((t: any) => ({ id: t.id, status: t.status, title: t.title })),
-      failedTasks: deliverables
-        .filter((t: any) => t.status === 'failed')
-        .map((t: any) => ({ id: t.id, title: t.title, infra: (t.result as any)?.errorType === 'infra_stalled' })),
-      missionPr: integrationPr && integrationPr.state === 'open'
-        ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
-        : null,
-      unmergedPrs,
-    }).situation;
 
     return {
-      id: obj.id,
-      title: obj.title,
-      description: obj.description,
-      status: obj.status,
-      health,
-      totalTasks,
-      completedTasks,
-      progress,
-      activeAgents,
-      nextScanMins: effectiveNextScanMins,
-      nextRunAt: effectiveNextRunAt,
-      startAt: obj.startAt ? String(obj.startAt) : null,
-      lastRunAt: lastRunAt ? String(lastRunAt) : null,
-      lastActivityAt,
-      createdAt: (obj as any).createdAt ? new Date((obj as any).createdAt).toISOString() : null,
-      teamName: teamNameMap.get(obj.teamId) || null,
-      role: null as { name: string; color: string } | null,
-      lastDeferralReason,
-      lastDeferredAt,
-      latestFinding: latestFinding
-        ? {
-            title: (latestFinding.result as any)?.summary?.slice(0, 120) || 'Finding',
-            time: String(latestFinding.updatedAt),
-          }
-        : null,
-      orchestrationMode: obj.orchestrationMode || null,
-      isHeld: obj.isHeld ?? false,
+      view,
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
-      primaryPrUrl: (obj as any).primaryPrUrl || null,
-      primaryPrNumber: (obj as any).primaryPrNumber || null,
-      latestTaskId,
-      costBudgetUsd: (obj as any).costBudgetUsd ?? null,
-      spendUsd: null,
-      segments,
-      effectivePolicyLabel,
-      hasPolicyOverride: (obj as any).mergePolicy != null,
-      awaitingMergePRCount: unmergedPrs.length,
-      healthState,
-      situation,
-      inFlightTasks: (obj.tasks || []).flatMap((t: any) => (t.workers || []).filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
-      blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),
-      initiativeId: obj.initiativeId || null,
-      initiativeName: (obj.initiative as any)?.title || null,
-      priority: obj.priority ?? 0,
-      goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
-      goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null,
-      flightStrip,
-      releaseFooter: obj.workspaceId ? (releaseFooterMap.get(obj.workspaceId) ?? null) : null,
+      isHeld: obj.isHeld ?? false,
+      nextScanMins: summary.nextScanMins,
+      lastActivityAt: lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null,
+      lastRunAt: (obj.schedule as any)?.lastRunAt ? String((obj.schedule as any).lastRunAt) : null,
     };
   });
 
-  // Sort: active/in-flight missions first by lastActivityAt desc, then completed
+  // Sort: unfinished missions first by lastActivityAt desc, then completed.
   missionsList.sort((a, b) => {
-    const aGroup = healthToGroup(a.health, a.progress);
-    const bGroup = healthToGroup(b.health, b.progress);
-    const aIsCompleted = aGroup === 'completed';
-    const bIsCompleted = bGroup === 'completed';
-    if (aIsCompleted !== bIsCompleted) return aIsCompleted ? 1 : -1;
+    const byGroup = GROUP_SORT_COMPLETED_LAST(a.view.group) - GROUP_SORT_COMPLETED_LAST(b.view.group);
+    if (byGroup !== 0) return byGroup;
     const aTime = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
     const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
     return bTime - aTime;
   });
 
-  const activeGroups = FILTER_TO_GROUPS.active ?? [];
-  const activeCount = missionsList.filter(
-    (m) => activeGroups.includes(statusToGroup({ status: m.status, isHeld: m.isHeld, startAt: m.startAt, progress: m.progress }))
-  ).length;
+  // D8: the header counts with the cards' own grouping (healthToGroup), so a
+  // mission waiting on you — a live worker — counts as active here too.
+  const activeCount = countActiveMissions(missionsList.map(m => m.view.group));
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
@@ -447,7 +228,7 @@ export default async function MissionsPage({
         {/* Row 1: title + active count */}
         <div className="flex items-baseline gap-3 min-w-0">
           <h1 className="hidden md:block text-xl font-semibold text-text-primary font-sans">Missions</h1>
-          <span className="text-xs text-text-secondary font-light">
+          <span data-testid="missions-active-count" className="text-xs text-text-secondary font-light">
             {activeCount} active
           </span>
         </div>
@@ -455,10 +236,10 @@ export default async function MissionsPage({
         <div className="flex items-center gap-2 flex-wrap">
           {maxSeats > 0 && (
             <span
-              className={`text-[11px] font-mono px-2 py-0.5 rounded-full ${
+              className={`text-[11px] font-mono px-2 py-0.5 border ${
                 activeSeats >= maxSeats
-                  ? 'bg-status-warning/15 text-status-warning'
-                  : 'bg-[rgba(122,172,202,0.12)] text-status-info'
+                  ? 'border-status-warning text-status-warning'
+                  : 'border-status-info text-status-info'
               }`}
               title={`${activeSeats} of ${maxSeats} concurrent worker seats in use`}
             >
@@ -488,7 +269,7 @@ export default async function MissionsPage({
           </p>
         </div>
       ) : (
-        <MissionGrid missions={missionsList} />
+        <MissionGrid missions={missionsList} releaseFooters={releaseFooters} />
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the
