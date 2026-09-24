@@ -270,9 +270,13 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
 
   function renderPhase(g: PhaseGroup<T>, key: string) {
     // mission-legibility §4: a mission where no task carries a phase renders no
-    // phase header. With no header there is nothing to unfold, so its rows
-    // never fold either.
-    const headerless = g.label === null && phaseGroupCount === 1;
+    // phase header while it has open work. With no header there is nothing to
+    // unfold, so its rows do not fold either. Once every row is finished the
+    // group folds like a finished phase (grouping rule 3), under a plain
+    // `Tasks ✓ n/n` header: a completed mission's first screen is its outcome,
+    // not every row it ever ran.
+    const unphasedOnly = g.label === null && phaseGroupCount === 1;
+    const headerless = unphasedOnly && g.status !== 'finished';
     const rowIds = phaseRevealIds(g.items);
     const expanded = headerless || isOpen(key, rowIds, !g.collapsed);
     const limit = headerless ? null : g.visibleLimit;
@@ -291,7 +295,7 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
     const overflowKey = `${key}:more`;
     const overflowOpen = isOpen(overflowKey, restRows, false);
     const records = own.reduce((n, r) => n + (recordsCountByTask?.[r.taskId] ?? 0), 0);
-    const label = g.label ? `${g.ordinal} · ${g.label}` : 'Unphased';
+    const label = g.label ? `${g.ordinal} · ${g.label}` : unphasedOnly ? 'Tasks' : 'Unphased';
     const headerMeta = [
       g.status === 'finished' ? `✓ ${g.done}/${g.total}` : `${g.done}/${g.total}`,
       g.status === 'finished' && records > 0 ? `${records} record${records === 1 ? '' : 's'}` : null,

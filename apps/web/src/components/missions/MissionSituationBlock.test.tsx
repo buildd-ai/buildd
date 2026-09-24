@@ -106,6 +106,16 @@ describe('mission header — genuinely mid-flight, nothing outstanding', () => {
   });
 });
 
+describe('provenance stays out of the reader’s view', () => {
+  it('never prints "from <source>"; the source rides on a data attribute for diagnostics', () => {
+    const { view, html } = render({ ...base, status: 'completed' });
+    expect(view.situation.derivedFrom).toBe('mission.status');
+    const text = html.replace(/<[^>]+>/g, ' ');
+    expect(text).not.toContain('mission.status');
+    expect(html).toContain('data-derived-from="mission.status"');
+  });
+});
+
 describe('the why, with its hard ref linked', () => {
   it('renders the top of the causal chain and links its PR', () => {
     const view = deriveMissionStateView({

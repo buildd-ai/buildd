@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useTransition } from 'react';
+import { useState, useMemo, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import MissionCard from '@/components/missions/MissionCard';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
@@ -127,7 +127,7 @@ export function MissionGrid({
     <div className="space-y-4">
       <FilterTabBar filter={filter} counts={counts} onSelect={setFilter} />
 
-      {workspaceBuckets.map((bucket) => {
+      {stackCompact(workspaceBuckets.map((bucket): RenderedBucket | null => {
         const wsKey = bucket.workspaceName ?? '__unassigned__';
         const isExpanded = expandedOldCompletions.has(wsKey);
 
@@ -158,25 +158,33 @@ export function MissionGrid({
           && oldCompleted.length > 0;
 
         if (isAllOldCompleted && !isExpanded) {
-          return (
-            <div key={wsKey} className="flex items-center gap-2 py-1.5 opacity-40 hover:opacity-60 transition-opacity">
-              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">
-                {bucket.workspaceName ?? 'Unassigned'}
-              </span>
-              <span className="text-[10px] text-text-muted font-mono">{bucket.missions.length} completed</span>
+          // One line, and the whole line is the 44px target. Consecutive rows
+          // stack with no gap between them (`stackCompact`).
+          return {
+            compact: true,
+            key: wsKey,
+            node: (
               <button
+                key={wsKey}
+                type="button"
+                data-testid="mission-workspace-compact"
+                aria-expanded={false}
                 onClick={() => toggleOldCompletions(wsKey)}
-                className="text-[11px] text-text-muted hover:text-text-secondary font-mono ml-auto min-h-[44px]"
+                className="flex min-h-11 w-full items-center gap-2 text-left opacity-40 transition-opacity hover:opacity-60"
               >
-                Show {oldCompleted.length} older ↓
+                <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">
+                  {bucket.workspaceName ?? 'Unassigned'}
+                </span>
+                <span className="text-[10px] text-text-muted font-mono">{bucket.missions.length} completed</span>
+                <span className="ml-auto text-[11px] text-text-muted font-mono">Show {oldCompleted.length} older ↓</span>
               </button>
-            </div>
-          );
+            ),
+          };
         }
 
         const release = bucket.workspaceId ? releaseFooters[bucket.workspaceId] ?? null : null;
 
-        return (
+        return { compact: false, key: wsKey, node: (
           <div key={wsKey} className="space-y-3" data-testid="mission-workspace-bucket">
             {multiWorkspace && (
               <div className="flex items-center gap-2 pt-2">
@@ -242,10 +250,43 @@ export function MissionGrid({
               );
             })}
           </div>
-        );
-      })}
+        ) };
+      }))}
     </div>
   );
+}
+
+interface RenderedBucket {
+  compact: boolean;
+  key: string;
+  node: ReactNode;
+}
+
+/**
+ * Consecutive completed-only workspace rows go in one list with no spacing of
+ * their own: each row is already a 44px target, and the parent's `space-y`
+ * between them read as large empty gaps between one-line headers.
+ */
+function stackCompact(buckets: ReadonlyArray<RenderedBucket | null>): ReactNode[] {
+  const out: ReactNode[] = [];
+  let run: RenderedBucket[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    out.push(
+      <div key={`compact:${run[0].key}`} data-testid="mission-compact-workspaces">
+        {run.map(b => b.node)}
+      </div>,
+    );
+    run = [];
+  };
+  for (const b of buckets) {
+    if (!b) continue;
+    if (b.compact) { run.push(b); continue; }
+    flush();
+    out.push(b.node);
+  }
+  flush();
+  return out;
 }
 
 function FilterTabBar({

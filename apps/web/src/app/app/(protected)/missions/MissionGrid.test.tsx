@@ -70,3 +70,48 @@ describe('MissionGrid', () => {
     expect(html).not.toContain('/app/tasks/');
   });
 });
+
+describe('MissionGrid — completed-only workspaces collapse to tight one-line headers', () => {
+  const longAgo = new Date(Date.now() - 30 * 24 * 3_600_000);
+  const old = (id: string, ws: string, name: string): MissionItem => ({
+    ...item({ id, title: `Example ${id}`, status: 'completed', completedAt: longAgo, tasks: [task(`${id}-t`, { status: 'completed' })] }, ws),
+    workspaceName: name,
+    lastActivityAt: longAgo.toISOString(),
+  });
+  const html = renderToStaticMarkup(
+    <MissionGrid missions={[old('o1', 'ws-a', 'Alpha'), old('o2', 'ws-b', 'Beta'), old('o3', 'ws-b', 'Beta'), running]} />,
+  );
+
+  it('stacks consecutive completed-only workspaces in one list, with no gap between them', () => {
+    const lists = html.match(/<div[^>]*data-testid="mission-compact-workspaces"[^>]*>/g) ?? [];
+    expect(lists).toHaveLength(1);
+    expect(lists[0]).not.toMatch(/space-y-|gap-|py-|my-/);
+    const list = html.slice(html.indexOf('data-testid="mission-compact-workspaces"'));
+    const rows = list.match(/<button[^>]*data-testid="mission-workspace-compact"[^>]*>/g) ?? [];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      // The row is the 44px tap target itself; no padding stacked on top of it.
+      expect(row).toContain('min-h-11');
+      expect(row).not.toMatch(/\bpy-|\bmy-/);
+    }
+  });
+
+  it('each row still names the workspace and its hidden count, and expands on tap', () => {
+    const list = html.slice(html.indexOf('data-testid="mission-compact-workspaces"'));
+    expect(list).toContain('Alpha');
+    expect(list).toContain('Show 1 older');
+    expect(list).toContain('Beta');
+    expect(list).toContain('Show 2 older');
+    expect(list).toMatch(/data-testid="mission-workspace-compact"[^>]*aria-expanded="false"/);
+  });
+});
+
+describe('MissionGrid — the Active count includes the missions waiting on you (D8)', () => {
+  it('counts a paused mission whose work is done (READY FOR REVIEW) as active', () => {
+    const review = item({ id: 'm-rev', title: 'Example review', status: 'paused', tasks: [task('r', { status: 'completed' })] });
+    expect(review.view.chip.label).toBe('READY FOR REVIEW');
+    const html = renderToStaticMarkup(<MissionGrid missions={[review]} />);
+    expect(html).toMatch(/Active<span class="ml-1 opacity-60">1<\/span>/);
+    expect(html).not.toContain('data-group="paused"');
+  });
+});

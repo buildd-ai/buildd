@@ -75,6 +75,46 @@ describe('missionCardGroup (healthToGroup, §1.1)', () => {
   });
 });
 
+describe('D8: a paused mission that is waiting on you is grouped, and counted, as active', () => {
+  const done = () => [task('a', { status: 'completed' }), task('b', { status: 'completed' })];
+  const view = (row: MissionCardRow) => buildMissionCardView(row, { from: 'missions', now: NOW });
+
+  it('work done, chip READY FOR REVIEW → review, not PAUSED / HELD', () => {
+    const v = view(mission({ status: 'paused', tasks: done() }));
+    expect(v.chip.label).toBe('READY FOR REVIEW');
+    expect(v.group).toBe('review');
+    expect(countActiveMissions([v.group])).toBe(1);
+  });
+
+  it('a worker waiting on your input → running', () => {
+    const row = mission({ status: 'paused', tasks: [task('a', { status: 'in_progress', workers: [{ status: 'waiting_input' }] })] });
+    expect(summarizeMissionForCard(row, { now: NOW }).group).toBe('running');
+  });
+
+  it('escalated criteria with no work left → attention (the owner must decide)', () => {
+    const row = mission({ status: 'paused', criteriaEscalatedAt: new Date(NOW - 60_000), tasks: done() });
+    const v = view(row);
+    expect(v.chip.label).toBe('AWAITING DECISION');
+    expect(v.group).toBe('attention');
+  });
+
+  it('paused mid-work with nothing live stays paused, and is not counted', () => {
+    const s = summarizeMissionForCard(mission({ status: 'paused', tasks: [task('a', { status: 'completed' }), task('b')] }), { now: NOW });
+    expect(s.group).toBe('paused');
+    expect(countActiveMissions([s.group])).toBe(0);
+  });
+
+  it('a held mission stays in PAUSED / HELD (§1.1), whatever its tasks read', () => {
+    expect(summarizeMissionForCard(mission({ isHeld: true, tasks: done() }), { now: NOW }).group).toBe('paused');
+  });
+
+  it('Home and the list agree: the summary and the card view carry the same group', () => {
+    for (const row of [mission({ status: 'paused', tasks: done() }), mission({ status: 'budget_exhausted', tasks: done() })]) {
+      expect(view(row).group).toBe(summarizeMissionForCard(row, { now: NOW }).group);
+    }
+  });
+});
+
 describe('countActiveMissions (D8: the header counts what the cards group)', () => {
   it('counts running, attention and review; not scheduled, paused or completed', () => {
     expect(countActiveMissions(['running', 'attention', 'review', 'scheduled', 'paused', 'completed'])).toBe(3);
