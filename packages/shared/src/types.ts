@@ -963,6 +963,34 @@ export interface WorkerEnvironment {
    * that predate this field; the claim gate fails open in that case.
    */
   claudeCliVersion?: string;
+  /**
+   * Post-update canary status (apps/runner/src/update-canary.ts). Present on
+   * runner builds that ship the canary; `lastTrip` is the loud part — a role
+   * that failed deterministically right after an update, and whether the
+   * runner rolled itself back.
+   */
+  updateCanary?: RunnerUpdateCanaryReport;
+}
+
+export interface RunnerUpdateCanaryReport {
+  enabled: boolean;
+  onProbation: boolean;
+  probationFrom: string | null;
+  probationTo: string | null;
+  probationStartedAt: string | null;
+  claimsHalted: boolean;
+  /** Commit the updater refuses to re-apply until a newer one is published. */
+  skippedCommit: string | null;
+  lastTrip: {
+    at: string;
+    role: string;
+    badCommit: string;
+    rolledBackTo: string;
+    failures: number;
+    signature: string;
+    rollbackStatus: 'pending' | 'started' | 'succeeded' | 'failed' | 'not_attempted';
+    rollbackError?: string;
+  } | null;
 }
 
 // ============================================================================
