@@ -45,13 +45,13 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { extractBuilddAction } from './action-events';
+import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
-import { runVerificationCommand, resolveCommand } from './runner-verification';
+import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { ClaimLogEntry } from './session-logger';
 import {
@@ -3942,6 +3942,19 @@ export class WorkerManager {
           ...(!isCodexTask
             ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
             : []),
+          // Command-loop tasks: verify before the agent's own complete_task
+          // lands, so the server's loop decision sees the evidence. Timeout
+          // is the command's own budget plus headroom for the PATCH — the
+          // SDK's default hook timeout would cut a full-length run short.
+          // Codex has no PreToolUse seam: an agent-authored completion there
+          // still reaches the server without evidence.
+          ...(!isCodexTask && task.loopConfig?.exitCondition?.type === 'command'
+            ? [{
+                matcher: BUILDD_MCP_TOOL_NAME,
+                timeout: Math.ceil(VERIFICATION_COMMAND_TIMEOUT_MS / 1000) + 30,
+                hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
+              }]
+            : []),
         ],
         PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
@@ -4559,44 +4572,14 @@ export class WorkerManager {
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
         // runner work (pr_checks_green = server reads webhooks; structured_predicate =
         // server reads the structuredOutput field already in this payload).
-        let verificationEvidence: Record<string, unknown> | undefined;
-        const loopConfig = task.loopConfig;
-        if (loopConfig?.exitCondition?.type === 'command') {
-          const resolvedCmd = resolveCommand(
-            loopConfig.exitCondition as { type: 'command'; command?: string },
-            task.context as Record<string, unknown> | undefined,
-          );
-          if (resolvedCmd) {
-            this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
-            try {
-              const evidence = await runVerificationCommand({
-                workerId: worker.id,
-                iteration: task.loopIteration ?? 0,
-                command: resolvedCmd,
-                cwd,
-              });
-              verificationEvidence = evidence as unknown as Record<string, unknown>;
-              const label = evidence.outcome === 'ok'
-                ? `Verification passed (exit ${evidence.exitCode})`
-                : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
-              this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-              console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
-            } catch (verifyErr) {
-              // Non-fatal: surface as exec_error evidence so server can still decide
-              console.warn(`[Worker ${worker.id}] Verification command threw unexpectedly:`, verifyErr);
-              verificationEvidence = {
-                workerId: worker.id,
-                iteration: task.loopIteration ?? 0,
-                conditionType: 'command',
-                command: resolvedCmd,
-                outcome: 'exec_error',
-                stderr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
-              };
-            }
-          } else {
-            console.warn(`[Worker ${worker.id}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
-          }
-        }
+        //
+        // This evidence only decides the loop when THIS payload is the first
+        // terminal write. When the agent called complete_task itself, the
+        // server has already decided — against the evidence the PreToolUse
+        // hook recorded before that call (see createLoopVerificationHook) —
+        // and this payload is refused; verificationEvidence is deliberately
+        // not a METRICS_ONLY_FIELDS member, so it is dropped with it.
+        const verificationEvidence = await this.runLoopVerification(worker, task, cwd);
 
         // Build subagent spans for terminal flush (not on hot path — only at completion).
         const subagentSpans = buildSubagentSpans(worker.subagentTasks);
@@ -5062,6 +5045,27 @@ export class WorkerManager {
     } catch (err) {
       console.warn(`[update-canary] failed to record outcome (non-fatal): ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  /**
+   * Run the loop's verification command (command exit condition only) with
+   * the progress milestones around it. Undefined for any other task shape.
+   */
+  private async runLoopVerification(
+    worker: LocalWorker,
+    task: BuilddTask,
+    cwd: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (task.loopConfig?.exitCondition?.type !== 'command') return undefined;
+    this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
+    const evidence = await collectLoopVerificationEvidence({ workerId: worker.id, task, cwd });
+    if (!evidence) return undefined;
+    const label = evidence.outcome === 'ok'
+      ? `Verification passed (exit ${evidence.exitCode})`
+      : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
+    this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+    console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
+    return evidence as unknown as Record<string, unknown>;
   }
 
   /**
