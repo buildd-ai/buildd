@@ -192,10 +192,18 @@ async function startWorkerWithTask(
 
   const task = makeTask(taskOverrides);
 
+  // Real claim responses carry skillBundles as a sibling of `task` (see
+  // attachSkillBundles / ClaimTasksResponse), never nested in task.context —
+  // pull it out here so call sites can keep writing it under context for
+  // readability (it travels with the other skill config there).
+  const { skillBundles, ...restContext } = task.context ?? {};
+  if (task.context) task.context = restContext;
+
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
     task,
+    ...(skillBundles ? { skillBundles } : {}),
   }] }));
 
   await manager.claimAndStart(task);

@@ -1,10 +1,14 @@
 import { describe, test, expect } from 'bun:test';
 import type { SkillBundle } from '@buildd/shared';
 
-// Extracted from WorkerManager.startSession() for testing
-function extractSkillSlugs(context: any): string[] {
-  const skillBundles = context?.skillBundles as SkillBundle[] | undefined;
-  const skillSlugs: string[] = [...(context?.skillSlugs || [])];
+// Extracted from WorkerManager.startSession() for testing.
+// skillBundles comes off the LocalWorker (claim response, sibling of task —
+// see attachSkillBundles); skillSlugs comes off task.context. Two separate
+// sources, never one merged `context` blob — a prior version of this helper
+// read both off `context` and masked the runner never having wired the claim
+// route's `worker.skillBundles` onto LocalWorker at all.
+function extractSkillSlugs(skillBundles: SkillBundle[] | undefined, contextSkillSlugs: string[] | undefined): string[] {
+  const skillSlugs: string[] = [...(contextSkillSlugs || [])];
 
   if (skillBundles && skillBundles.length > 0) {
     for (const bundle of skillBundles) {
@@ -48,57 +52,45 @@ function buildAgentDefinitions(
 }
 
 describe('extractSkillSlugs', () => {
-  test('no context returns empty array', () => {
-    expect(extractSkillSlugs(undefined)).toEqual([]);
-    expect(extractSkillSlugs(null)).toEqual([]);
-    expect(extractSkillSlugs({})).toEqual([]);
+  test('no bundles or slugs returns empty array', () => {
+    expect(extractSkillSlugs(undefined, undefined)).toEqual([]);
+    expect(extractSkillSlugs(undefined, [])).toEqual([]);
   });
 
-  test('context.skillSlugs present returns those slugs', () => {
-    const context = { skillSlugs: ['deploy'] };
-    expect(extractSkillSlugs(context)).toEqual(['deploy']);
+  test('context skillSlugs present returns those slugs', () => {
+    expect(extractSkillSlugs(undefined, ['deploy'])).toEqual(['deploy']);
   });
 
-  test('context.skillBundles includes bundle slugs', () => {
-    const context = {
-      skillBundles: [
-        { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' }
-      ] as SkillBundle[]
-    };
-    expect(extractSkillSlugs(context)).toEqual(['deploy']);
+  test('worker skillBundles includes bundle slugs', () => {
+    const skillBundles: SkillBundle[] = [
+      { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' }
+    ];
+    expect(extractSkillSlugs(skillBundles, undefined)).toEqual(['deploy']);
   });
 
   test('skillSlugs and skillBundles with overlap deduplicates', () => {
-    const context = {
-      skillSlugs: ['deploy', 'test'],
-      skillBundles: [
-        { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' },
-        { slug: 'review', name: 'Review', content: '', contentHash: 'def456' }
-      ] as SkillBundle[]
-    };
-    expect(extractSkillSlugs(context)).toEqual(['deploy', 'test', 'review']);
+    const skillBundles: SkillBundle[] = [
+      { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' },
+      { slug: 'review', name: 'Review', content: '', contentHash: 'def456' }
+    ];
+    expect(extractSkillSlugs(skillBundles, ['deploy', 'test'])).toEqual(['deploy', 'test', 'review']);
   });
 
   test('skillSlugs and skillBundles combined are merged and deduplicated', () => {
-    const context = {
-      skillSlugs: ['deploy'],
-      skillBundles: [
-        { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' },
-        { slug: 'test', name: 'Test', content: '', contentHash: 'def456' }
-      ] as SkillBundle[],
-    };
-    expect(extractSkillSlugs(context)).toEqual(['deploy', 'test']);
+    const skillBundles: SkillBundle[] = [
+      { slug: 'deploy', name: 'Deploy', content: '', contentHash: 'abc123' },
+      { slug: 'test', name: 'Test', content: '', contentHash: 'def456' }
+    ];
+    expect(extractSkillSlugs(skillBundles, ['deploy'])).toEqual(['deploy', 'test']);
   });
 
   test('multiple skillBundles all included', () => {
-    const context = {
-      skillBundles: [
-        { slug: 'a', name: 'A', content: '', contentHash: '1' },
-        { slug: 'b', name: 'B', content: '', contentHash: '2' },
-        { slug: 'c', name: 'C', content: '', contentHash: '3' }
-      ] as SkillBundle[]
-    };
-    expect(extractSkillSlugs(context)).toEqual(['a', 'b', 'c']);
+    const skillBundles: SkillBundle[] = [
+      { slug: 'a', name: 'A', content: '', contentHash: '1' },
+      { slug: 'b', name: 'B', content: '', contentHash: '2' },
+      { slug: 'c', name: 'C', content: '', contentHash: '3' }
+    ];
+    expect(extractSkillSlugs(skillBundles, undefined)).toEqual(['a', 'b', 'c']);
   });
 });
 
