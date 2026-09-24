@@ -96,9 +96,12 @@ jobs:
           if [ -z "$CONNECTION_URI" ]; then
             ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
             if [ -n "$ENDPOINT_ID" ]; then
+              # role_name is a REQUIRED query param on this endpoint (per Neon's
+              # OpenAPI spec) — omitting it 400s, and curl -f turns that into a
+              # bare exit 22 with no body.
               CONN_RESPONSE=$(curl -sf \
                 -H "Authorization: Bearer $NEON_API_KEY" \
-                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb&role_name=$NEON_DB_USER")
               CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
             fi
           fi

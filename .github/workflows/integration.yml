@@ -103,10 +103,13 @@ jobs:
             echo "::warning::connection_uris not in branch response, fetching connection string via endpoint API"
             ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
             if [ -n "$ENDPOINT_ID" ]; then
-              # Get connection URI from the endpoint's connection_uri API
+              # Get connection URI from the endpoint's connection_uri API.
+              # role_name is a REQUIRED query param on this endpoint (per Neon's
+              # OpenAPI spec) — omitting it 400s, and curl -f turns that into a
+              # bare exit 22 with no body, which is what made this so opaque.
               CONN_RESPONSE=$(curl -sf \
                 -H "Authorization: Bearer $NEON_API_KEY" \
-                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb&role_name=$NEON_DB_USER")
               CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
             fi
           fi
