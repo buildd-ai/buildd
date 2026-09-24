@@ -209,9 +209,11 @@ export async function POST(
   let reviewGateReason: string | null = null;
   let liveHeadSha: string | null = null;
   {
+    let liveBaseRef: string | null = null;
     try {
       const prForGate = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
       liveHeadSha = typeof prForGate?.head?.sha === 'string' ? prForGate.head.sha : null;
+      liveBaseRef = typeof prForGate?.base?.ref === 'string' ? prForGate.base.ref : null;
     } catch (e) {
       console.warn(`[pr-merge] could not read PR #${prNumber} head for the review gate:`, e);
     }
@@ -228,6 +230,7 @@ export async function POST(
       taskId: worker.taskId ?? null,
       workerId: worker.id,
       callerOrigin: 'dashboard',
+      carryForward: liveBaseRef ? { installationId, repoFullName, baseRef: liveBaseRef } : null,
     });
 
     if (reviewGate.blocks) {

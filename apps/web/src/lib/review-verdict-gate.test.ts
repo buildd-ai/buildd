@@ -328,6 +328,95 @@ describe('guardReviewVerdict', () => {
     expect(result.reason).toContain('connection reset');
     expect(result.clearedBy).toBeTruthy();
   });
+
+  describe('carryForward — merge_pr resolving a stale_approval inline', () => {
+    it('passes a stale approval when carryForward proves the diff is unchanged, without a prior request_pr_review call', async () => {
+      const carryForward = mock(async () => ({ carried: true, reason: 'PR diff unchanged' }));
+      const result = await guardReviewVerdict({
+        workspaceId: 'ws-1',
+        prNumber: 2666,
+        headSha: SHA_B,
+        carryForward: { installationId: 1, repoFullName: 'acme/app', baseRef: 'dev' },
+        deps: {
+          read: async () => status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A }),
+          carryForward,
+        },
+      });
+      expect(result.blocks).toBe(false);
+      expect(carryForward).toHaveBeenCalledTimes(1);
+      expect(carryForward.mock.calls[0]![0]).toMatchObject({
+        installationId: 1,
+        repoFullName: 'acme/app',
+        workspaceId: 'ws-1',
+        prNumber: 2666,
+        baseRef: 'dev',
+        headSha: SHA_B,
+      });
+    });
+
+    it('still blocks as stale_approval when carryForward finds the diff actually changed', async () => {
+      const carryForward = mock(async () => ({ carried: false, reason: 'PR diff changed' }));
+      const result = await guardReviewVerdict({
+        workspaceId: 'ws-1',
+        prNumber: 2666,
+        headSha: SHA_B,
+        carryForward: { installationId: 1, repoFullName: 'acme/app', baseRef: 'dev' },
+        deps: {
+          read: async () => status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A }),
+          carryForward,
+        },
+      });
+      expect(result.blocks).toBe(true);
+      expect(result.kind).toBe('stale_approval');
+    });
+
+    it('still blocks when carryForward itself throws — fails closed rather than surfacing an unhandled error', async () => {
+      const result = await guardReviewVerdict({
+        workspaceId: 'ws-1',
+        prNumber: 2666,
+        headSha: SHA_B,
+        carryForward: { installationId: 1, repoFullName: 'acme/app', baseRef: 'dev' },
+        deps: {
+          read: async () => status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A }),
+          carryForward: async () => {
+            throw new Error('github api timeout');
+          },
+        },
+      });
+      expect(result.blocks).toBe(true);
+      expect(result.kind).toBe('stale_approval');
+    });
+
+    it('does not attempt carryForward for a block kind other than stale_approval', async () => {
+      const carryForward = mock(async () => ({ carried: true, reason: 'irrelevant' }));
+      const result = await guardReviewVerdict({
+        workspaceId: 'ws-1',
+        prNumber: 2666,
+        headSha: SHA_B,
+        carryForward: { installationId: 1, repoFullName: 'acme/app', baseRef: 'dev' },
+        deps: {
+          read: async () => status({ state: 'changes_requested', reviewHeadSha: SHA_A }),
+          carryForward,
+        },
+      });
+      expect(result.blocks).toBe(true);
+      expect(result.kind).toBe('changes_requested');
+      expect(carryForward).not.toHaveBeenCalled();
+    });
+
+    it('does not attempt carryForward when the caller supplied none — same as before this feature', async () => {
+      const result = await guardReviewVerdict({
+        workspaceId: 'ws-1',
+        prNumber: 2666,
+        headSha: SHA_B,
+        deps: {
+          read: async () => status({ state: 'approved', verdict: 'approve', reviewHeadSha: SHA_A }),
+        },
+      });
+      expect(result.blocks).toBe(true);
+      expect(result.kind).toBe('stale_approval');
+    });
+  });
 });
 
 // Reviewer precision needs the merges that went past the reviewer, not only the
