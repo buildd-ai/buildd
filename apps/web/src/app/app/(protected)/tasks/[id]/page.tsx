@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases } from '@buildd/core/db/schema';
-import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
+import { eq, desc, inArray, asc, ne, and, count } from 'drizzle-orm';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
@@ -45,6 +45,14 @@ import { deriveTaskOrigin } from '@/lib/task-origin';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
+import MissionContextBar from './MissionContextBar';
+import TaskPageActionZone from './TaskPageActionZone';
+import TaskOverflowMenu from './TaskOverflowMenu';
+import { buildMissionContextBar, type MissionContextBarData } from './mission-context-bar';
+import { descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
+import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
+import type { MissionCardRow } from '@/lib/mission-card-view';
+import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -100,8 +108,9 @@ export default async function TaskDetailPage({
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
       },
-      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true } },
-      subTasks: { columns: { id: true, title: true, status: true } },
+      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true } },
+      // taskClass/mode/title tell a subtask from an attempt at this task (D9).
+      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true } },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
       creatorAccount: { columns: { id: true, name: true } },
@@ -130,19 +139,18 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers] = await Promise.all([
-    // For non-mission tasks: count open question notes (drives "Waiting on you" badge)
-    task.missionId
-      ? Promise.resolve([] as { c: number }[])
-      : db
-          .select({ c: count() })
-          .from(missionNotes)
-          .where(and(
-            eq(missionNotes.taskId, id),
-            isNull(missionNotes.missionId),
-            eq(missionNotes.type, 'question'),
-            eq(missionNotes.status, 'open'),
-          )),
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow] = await Promise.all([
+    // Open question notes scoped to this task (drives the "Waiting on you"
+    // badge). A mission task's questions carry its missionId too — they are
+    // still this task's, so no mission gate (S6).
+    db
+      .select({ c: count() })
+      .from(missionNotes)
+      .where(and(
+        eq(missionNotes.taskId, id),
+        eq(missionNotes.type, 'question'),
+        eq(missionNotes.status, 'open'),
+      )),
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
@@ -165,8 +173,32 @@ export default async function TaskDetailPage({
       orderBy: desc(workers.createdAt),
       with: { account: { columns: { name: true, authType: true } } },
     }),
+    // Mission context bar (W6): the mission row and its tasks' light columns —
+    // the same selection a Home card makes, so no result/context/artifact
+    // content — fed through the builders every mission surface shares.
+    task.missionId
+      ? db.query.missions.findFirst({
+          where: eq(missions.id, task.missionId),
+          columns: {
+            id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
+            dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true,
+            goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
+            integrationBranchEnabled: true,
+          },
+          with: {
+            tasks: {
+              columns: MISSION_CARD_TASK_COLUMNS,
+              with: { workers: MISSION_CARD_WORKERS_WITH },
+            },
+            schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
+          },
+        })
+      : Promise.resolve(null),
   ]);
   const openQuestionCount = Number(openQuestionRows[0]?.c ?? 0);
+  const missionContextBar: MissionContextBarData | null = missionContextRow
+    ? buildMissionContextBar(missionContextRow as unknown as MissionCardRow, task.id)
+    : null;
 
   // Read-through refresh: if the latest worker is completed with an open PR,
   // check GitHub in case the merged webhook was missed.
@@ -286,6 +318,14 @@ export default async function TaskDetailPage({
   const visibleArtifacts = suppressedSummaryArtifact
     ? deliverableArtifacts.filter(a => a.id !== suppressedSummaryArtifact.id)
     : deliverableArtifacts;
+  // D9: when the description is the deliverable summary itself, the summary
+  // (under Deliverables) is printed once and the description is not.
+  const descriptionIsSummary = descriptionDuplicatesSummary(task.description, resultSummary);
+
+  // D9: this task's children split into genuine subtasks and attempts at it
+  // (reviewer passes, retries) — the latter are never listed as subtasks.
+  const childTasks = partitionChildTasks(task.subTasks ?? []);
+  const isAttempt = isAttemptTask(task);
 
   // Fetch execution plan chain: siblings (if child) or children (if parent)
   const planParentId = task.parentTaskId ?? (task.subTasks?.length ? task.id : null);
@@ -300,7 +340,7 @@ export default async function TaskDetailPage({
   if (planParentId) {
     const chainBase = await db.query.tasks.findMany({
       where: eq(tasks.parentTaskId, planParentId),
-      columns: { id: true, title: true, status: true, roleSlug: true },
+      columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true },
       orderBy: asc(tasks.createdAt),
     });
 
@@ -309,18 +349,23 @@ export default async function TaskDetailPage({
       let chainTasksToFetch = chainBase;
       if (task.parentTaskId && task.parentTask) {
         chainTasksToFetch = [
-          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug },
+          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId },
           ...chainBase
         ];
       }
+      // D9: a reviewer pass or a retry is an attempt at its parent, never a
+      // step of an execution plan — and an attempt's page shows no plan.
+      chainTasksToFetch = selectExecutionPlan(task, chainTasksToFetch);
 
       const chainIds = chainTasksToFetch.map(t => t.id);
 
-      const chainWorkers = await db.query.workers.findMany({
-        where: inArray(workers.taskId, chainIds),
-        columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true },
-        orderBy: desc(workers.createdAt),
-      });
+      const chainWorkers = chainIds.length > 0
+        ? await db.query.workers.findMany({
+            where: inArray(workers.taskId, chainIds),
+            columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true },
+            orderBy: desc(workers.createdAt),
+          })
+        : [];
       const latestWorker = new Map<string, typeof chainWorkers[0]>();
       for (const w of chainWorkers) {
         if (w.taskId && !latestWorker.has(w.taskId)) latestWorker.set(w.taskId, w);
@@ -583,142 +628,161 @@ export default async function TaskDetailPage({
           workerHasOpenPr={workerHasOpenPr}
         />
 
-        {/* Breadcrumbs */}
-        <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
-          {task.mission ? (
-            <>
-              {initiative && (
-                <span className="hidden md:inline">
-                  <Link href={`/app/initiatives/${initiative.id}`} className="hover:text-text-primary">
-                    {initiative.title}
-                  </Link>
-                  <span className="mx-2">/</span>
-                </span>
-              )}
-              <Link href={`/app/missions/${task.mission.id}`} className="hover:text-text-primary inline-flex items-center gap-1">
+        {/* Mission context (W6): for a mission task, the sticky micro masthead
+            replaces the breadcrumb — up to the task's row (#t-), the pulse
+            ringed on this task, n / N · PHASE and ‹ › to its siblings. */}
+        {missionContextBar ? (
+          <MissionContextBar bar={missionContextBar} />
+        ) : (
+          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
+            {task.mission ? (
+              <Link
+                href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })}
+                className="hover:text-text-primary inline-flex items-center gap-1"
+              >
                 <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                 {task.mission.title}
               </Link>
-              <span className="mx-2">/</span>
-            </>
-          ) : (
-            <>
+            ) : (
               <Link href="/app/tasks" className="hover:text-text-primary inline-flex items-center gap-1">
                 <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                 Tasks
               </Link>
-              <span className="mx-2">/</span>
-            </>
-          )}
-          <span className="text-text-primary hidden md:inline">{task.title}</span>
-        </nav>
-
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-3 mb-6">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 mb-2 flex-wrap">
-              <h1 className="text-[28px] font-semibold tracking-tight break-words">{task.title}</h1>
-              <span data-testid="task-header-status" data-status={displayStatus}>
-                <StatusBadge status={displayStatus} />
-              </span>
-              {task.loopConfig && (
-                <LoopStatusChip
-                  loopIteration={task.loopIteration}
-                  maxLoops={task.loopConfig.maxLoops ?? 5}
-                  loopState={task.loopState}
-                  startAt={task.startAt?.toISOString() ?? null}
-                />
-              )}
-              {errorTraces.length > 0 && (
-                <a
-                  href="#agent-error-traces"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
-                  title="Pattern-matched errors caught from agent tool output. Click to see details."
-                  data-testid="task-error-count"
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-2.99l-6.93-12a2 2 0 00-3.48 0l-6.93 12A2 2 0 005.07 19z" />
-                  </svg>
-                  {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
-                </a>
-              )}
-              {task.mode === 'planning' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                  </svg>
-                  Planning
-                </span>
-              )}
-              {task.category && (
-                <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
-                  {task.category}
-                </span>
-              )}
-              {task.project && (
-                <span className="px-2 py-0.5 text-xs font-medium rounded bg-primary/10 text-primary">
-                  {task.project}
-                </span>
-              )}
-              <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
-            </div>
-            <p className="text-[14px] text-text-secondary">
-              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
-            </p>
-            {workerWithPr && (
-              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                <a
-                  href={workerWithPr.prUrl!}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[13px] text-primary hover:underline font-medium"
-                >
-                  PR #{workerWithPr.prNumber} ↗
-                </a>
-                {workerWithPr.prLifecycleStatus && (
-                  <span className={`px-1.5 py-0.5 text-[11px] font-medium rounded ${
-                    workerWithPr.prLifecycleStatus === 'merged'
-                      ? 'bg-status-success/15 text-status-success'
-                      : workerWithPr.prLifecycleStatus === 'closed'
-                      ? 'bg-status-error/15 text-status-error'
-                      : 'bg-primary/10 text-primary'
-                  }`}>
-                    {workerWithPr.prLifecycleStatus}
-                  </span>
-                )}
-              </div>
             )}
-          </div>
-          <div className="flex gap-2 flex-wrap shrink-0 md:justify-end md:max-w-[55%]">
-            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
-            <EditTaskButton
-              task={{
-                id: task.id,
-                title: task.title,
-                description: task.description,
-                priority: task.priority,
-                project: task.project,
-                workspaceId: task.workspaceId,
-                dependsOn: (task.dependsOn as string[]) || [],
-                mode: task.mode,
-                status: task.status,
-                backend: (task.backend as 'claude' | 'codex' | null) ?? null,
-              }}
-            />
-            {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
-            {task.externalUrl && (
+            <span className="mx-2">/</span>
+            <span className="text-text-primary hidden md:inline">{task.title}</span>
+          </nav>
+        )}
+
+        {/* Header — the title gets the full width (D9); status and chips sit on
+            the line below it with the admin actions behind ⋮. */}
+        <div className="mb-4">
+          <h1 className="text-[22px] md:text-[28px] font-semibold leading-tight tracking-tight break-words">{task.title}</h1>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <span data-testid="task-header-status" data-status={displayStatus}>
+              <StatusBadge status={displayStatus} />
+            </span>
+            {task.loopConfig && (
+              <LoopStatusChip
+                loopIteration={task.loopIteration}
+                maxLoops={task.loopConfig.maxLoops ?? 5}
+                loopState={task.loopState}
+                startAt={task.startAt?.toISOString() ?? null}
+              />
+            )}
+            {errorTraces.length > 0 && (
               <a
-                href={task.externalUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-[18px] py-[9px] text-[13px] font-medium border border-border-default rounded-[6px] hover:bg-surface-3"
+                href="#agent-error-traces"
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
+                title="Pattern-matched errors caught from agent tool output. Click to see details."
+                data-testid="task-error-count"
               >
-                View Source
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-2.99l-6.93-12a2 2 0 00-3.48 0l-6.93 12A2 2 0 005.07 19z" />
+                </svg>
+                {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
               </a>
             )}
-            <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
+            {task.mode === 'planning' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                </svg>
+                Planning
+              </span>
+            )}
+            {task.category && (
+              <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
+                {task.category}
+              </span>
+            )}
+            {task.project && (
+              <span className="px-2 py-0.5 text-xs font-medium rounded bg-primary/10 text-primary">
+                {task.project}
+              </span>
+            )}
+            <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
+            <span className="ml-auto flex items-center">
+              <TaskOverflowMenu>
+                <EditTaskButton
+                  task={{
+                    id: task.id,
+                    title: task.title,
+                    description: task.description,
+                    priority: task.priority,
+                    project: task.project,
+                    workspaceId: task.workspaceId,
+                    dependsOn: (task.dependsOn as string[]) || [],
+                    mode: task.mode,
+                    status: task.status,
+                    backend: (task.backend as 'claude' | 'codex' | null) ?? null,
+                  }}
+                />
+                {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
+                {task.externalUrl && (
+                  <a
+                    href={task.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2 text-sm text-center border border-border-default hover:bg-surface-3"
+                  >
+                    View Source ↗
+                  </a>
+                )}
+                <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
+              </TaskOverflowMenu>
+            </span>
           </div>
+          <p className="mt-1.5 text-[13px] text-text-secondary">
+            {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
+          </p>
+          {workerWithPr && (
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+              <a
+                href={workerWithPr.prUrl!}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[13px] text-primary hover:underline font-medium"
+              >
+                PR #{workerWithPr.prNumber} ↗
+              </a>
+              {workerWithPr.prLifecycleStatus && (
+                <span className={`px-1.5 py-0.5 text-[11px] font-medium rounded ${
+                  workerWithPr.prLifecycleStatus === 'merged'
+                    ? 'bg-status-success/15 text-status-success'
+                    : workerWithPr.prLifecycleStatus === 'closed'
+                    ? 'bg-status-error/15 text-status-error'
+                    : 'bg-primary/10 text-primary'
+                }`}>
+                  {workerWithPr.prLifecycleStatus}
+                </span>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* Action first (W6): the phase's one decision, before anything to read.
+            Retry/switch is the task sheet's own TaskActionZone, so the sheet and
+            the page cannot offer different things for a failure. Start keeps
+            its richer button (local-runner targeting, capacity). An open
+            question is answered in the live worker view below
+            (worker-needs-input-banner), which leads the list on mobile. */}
+        {(phase === 'failed' || canStart) && (
+          <div className="mb-6" data-testid="task-page-action-zone">
+            {phase === 'failed' && (
+              <TaskPageActionZone
+                taskId={task.id}
+                phase={phase}
+                isBlocked={false}
+                blockedByCount={0}
+                backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+                lastError={taskWorkers[0]?.error ? { excerpt: taskWorkers[0].error } : null}
+                worker={null}
+              />
+            )}
+            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
+          </div>
+        )}
 
         <div className="flex flex-col">
         {/* Triage metadata — only foregrounded in the pending family, where runner / backend
@@ -783,7 +847,7 @@ export default async function TaskDetailPage({
                 {inProgressBlockers.map((dep) => (
                   <div key={dep.id} className="flex items-center gap-2">
                     <Link
-                      href={`/app/tasks/${dep.id}`}
+                      href={taskPageHref({ taskId: dep.id })}
                       className="text-sm text-text-secondary hover:underline"
                     >
                       {dep.title}
@@ -812,7 +876,7 @@ export default async function TaskDetailPage({
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
               {task.mission ? (
-                <Link href={`/app/missions/${task.mission.id}`} className="text-accent-text hover:underline">
+                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })} className="text-accent-text hover:underline">
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
@@ -901,9 +965,9 @@ export default async function TaskDetailPage({
             <div className="card p-4 space-y-3">
               {task.parentTask && (
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Parent:</span>
+                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
                   <Link
-                    href={`/app/tasks/${task.parentTask.id}`}
+                    href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
                     className="text-sm text-primary-400 hover:underline"
                   >
                     {task.parentTask.title}
@@ -913,14 +977,17 @@ export default async function TaskDetailPage({
                   </span>
                 </div>
               )}
-              {task.subTasks && task.subTasks.length > 0 && (
-                <div>
-                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">Subtasks ({task.subTasks.length}):</span>
+              {([
+                ['Subtasks', childTasks.subtasks],
+                ['Attempts', childTasks.attempts],
+              ] as const).map(([label, list]) => list.length > 0 && (
+                <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
+                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
                   <div className="mt-2 space-y-1 ml-4">
-                    {task.subTasks.map((sub: { id: string; title: string; status: string }) => (
+                    {list.map((sub) => (
                       <div key={sub.id} className="flex items-center gap-2">
                         <Link
-                          href={`/app/tasks/${sub.id}`}
+                          href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
                           className="text-sm text-primary-400 hover:underline"
                         >
                           {sub.title}
@@ -932,7 +999,7 @@ export default async function TaskDetailPage({
                     ))}
                   </div>
                 </div>
-              )}
+              ))}
             </div>
           </div>
         )}
@@ -995,7 +1062,7 @@ export default async function TaskDetailPage({
 
         {/* Description — for machine-generated tasks (reviewer/builder) this is a
             templated prompt, i.e. reference material, so it sits below the plan. */}
-        {task.description && (
+        {task.description && !descriptionIsSummary && (
           <div className="mb-6">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Description
@@ -1029,7 +1096,7 @@ export default async function TaskDetailPage({
                   return (
                     <div key={dep.id} className="flex items-center gap-2 flex-wrap">
                       <Link
-                        href={`/app/tasks/${dep.id}`}
+                        href={taskPageHref({ taskId: dep.id })}
                         className="text-sm text-primary-400 hover:underline"
                       >
                         {dep.title}
@@ -1134,14 +1201,13 @@ export default async function TaskDetailPage({
           result={task.result as Record<string, unknown> | null}
         />
 
-        {/* Agent Questions — task-scoped notes of type=question (non-mission tasks only) */}
-        {!task.missionId && (
-          <TaskQuestionFeed
-            taskId={task.id}
-            activeWorkerId={activeWorker?.id ?? null}
-            activeWorkerStatus={activeWorker?.status ?? null}
-          />
-        )}
+        {/* Agent Questions — every question note scoped to this task, a mission
+            task's included (S6: no mission gate). */}
+        <TaskQuestionFeed
+          taskId={task.id}
+          activeWorkerId={activeWorker?.id ?? null}
+          activeWorkerStatus={activeWorker?.status ?? null}
+        />
 
         {/* Active Worker */}
         {activeWorker && (
@@ -1188,9 +1254,9 @@ export default async function TaskDetailPage({
 
         {/* Next step — where the plan goes after this task. Shown on completion so the
             operator can follow the thread forward instead of hunting the chain. */}
-        {phase === 'completed' && nextChainTask && (
+        {phase === 'completed' && nextChainTask && !missionContextBar && (
           <Link
-            href={`/app/tasks/${nextChainTask.id}`}
+            href={taskPageHref({ taskId: nextChainTask.id })}
             className="group mb-8 flex items-center gap-3 p-4 rounded-[10px] border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
           >
             <span className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
@@ -1387,7 +1453,7 @@ export default async function TaskDetailPage({
                         <p className="text-[11px] text-text-muted mt-0.5">
                           Session ended after the question was answered.{' '}
                           {worker.continuationTaskId ? (
-                            <a href={`/app/tasks/${worker.continuationTaskId}`} className="text-status-info hover:underline">
+                            <a href={taskPageHref({ taskId: worker.continuationTaskId, missionId: task.missionId })} className="text-status-info hover:underline">
                               Continued in a new task →
                             </a>
                           ) : (
@@ -1403,7 +1469,7 @@ export default async function TaskDetailPage({
                           Error reported after this session ended: {worker.postSupersessionError}
                           {worker.continuationTaskId && (
                             <>
-                              {' '}<a href={`/app/tasks/${worker.continuationTaskId}`} className="text-status-info hover:underline">See continuation →</a>
+                              {' '}<a href={taskPageHref({ taskId: worker.continuationTaskId, missionId: task.missionId })} className="text-status-info hover:underline">See continuation →</a>
                             </>
                           )}
                         </p>
@@ -1545,10 +1611,9 @@ export default async function TaskDetailPage({
             ) : (
               <>
                 <p className="text-text-secondary mb-2">This task is waiting to be started</p>
-                <p className="text-sm text-text-muted mb-4">
-                  Click &quot;Start Task&quot; above to assign it to a worker, or wait for a worker to claim it automatically.
+                <p className="text-sm text-text-muted">
+                  Start it above to assign it to a worker, or wait for a worker to claim it automatically.
                 </p>
-                <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />
               </>
             )}
           </div>

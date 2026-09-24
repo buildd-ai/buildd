@@ -6,6 +6,8 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import RespondForm from './RespondForm';
+import { respondBackLink } from './respond-links';
+import { taskPageHref } from '@/lib/mission-task-href';
 
 // Focused landing page for the "Agent needs your input" push notification.
 // Renders the question + options with no extra chrome, so the user can answer
@@ -21,7 +23,10 @@ export default async function RespondPage({
 
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
-    with: { workspace: { columns: { id: true, name: true } } },
+    with: {
+      workspace: { columns: { id: true, name: true } },
+      mission: { columns: { id: true, title: true } },
+    },
   });
   if (!task) notFound();
 
@@ -37,7 +42,7 @@ export default async function RespondPage({
   const pending = taskWorkers.find(w => w.waitingFor);
 
   // Nothing to answer — bounce to the full task page so the user sees state.
-  if (!pending) redirect(`/app/tasks/${id}`);
+  if (!pending) redirect(taskPageHref({ taskId: id, missionId: task.missionId }));
 
   const waitingFor = pending.waitingFor as {
     type: string;
@@ -45,14 +50,19 @@ export default async function RespondPage({
     options?: Array<string | { label: string; description?: string; recommended?: boolean }>;
   };
 
+  // A mission task returns to its row on the mission; the back link names the
+  // mission, not the workspace (docs/design/mission-feed-mobile-continuity.md W6).
+  const back = respondBackLink({ taskId: id, mission: task.mission, workspaceName: task.workspace.name });
+
   return (
     <div className="min-h-screen bg-surface-1 py-8 px-4 sm:px-6">
       <div className="max-w-xl mx-auto">
         <Link
-          href={`/app/tasks/${id}`}
+          href={back.href}
+          data-testid="respond-back-link"
           className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary"
         >
-          ← {task.workspace.name}
+          ← {back.label}
         </Link>
 
         <h1 className="mt-2 text-xl font-semibold text-text-primary leading-tight">
@@ -74,12 +84,12 @@ export default async function RespondPage({
             {waitingFor.prompt}
           </p>
 
-          <RespondForm workerId={pending.id} options={waitingFor.options || []} />
+          <RespondForm workerId={pending.id} missionId={task.missionId} options={waitingFor.options || []} />
         </div>
 
         <div className="mt-6 text-center">
           <Link
-            href={`/app/tasks/${id}`}
+            href={taskPageHref({ taskId: id, missionId: task.missionId })}
             className="text-sm text-text-muted hover:text-text-primary"
           >
             View full task →
