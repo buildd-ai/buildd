@@ -23,6 +23,10 @@ import { useMissionFocusSnapshot, useMissionFocusStore } from '@/components/miss
 import { buildMissionFeedGroups, type FeedGroup, type FeedPhaseItem, type FeedRow } from '@/lib/mission-feed-groups';
 import type { MissionFeedTaskInput } from '@/lib/mission-pulse';
 import { missionTaskAnchorId, type MissionOrigin } from '@/lib/mission-task-href';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { useMissionLiveLines } from './MissionLiveStore';
+
+const LIVE_STATUSES: ReadonlySet<string> = new Set(LIVE_WORKER_STATUSES);
 
 /** Duration of the reorder slide once a freeze lifts. */
 export const FLIP_MS = 200;
@@ -64,7 +68,10 @@ export interface MissionFeedListProps {
   initiativeId?: string | null;
   /** Review-worthy records per task (`selectMissionRecords`). */
   recordsCountByTask?: Readonly<Record<string, number>>;
-  /** Live current action per task, for MOVING rows. */
+  /**
+   * Live current action per task, for MOVING rows, as rendered. Progress
+   * heartbeats lay newer actions over it through the live store (S7).
+   */
   liveLines?: Readonly<Record<string, string>>;
   /** Test seam: rows to treat as revealed. Inside a provider the focus store decides. */
   revealedTaskIds?: ReadonlySet<string>;
@@ -105,9 +112,10 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
   from,
   initiativeId,
   recordsCountByTask,
-  liveLines,
+  liveLines: serverLiveLines,
   revealedTaskIds: revealedProp,
 }: MissionFeedListProps & { tasks: T[] }) {
+  const liveLines = useMissionLiveLines(serverLiveLines, LIVE_STATUSES);
   const store = useMissionFocusStore();
   const focus = useMissionFocusSnapshot();
 

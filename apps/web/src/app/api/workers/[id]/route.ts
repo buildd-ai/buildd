@@ -3850,6 +3850,13 @@ export async function PATCH(
     status: updated.status,
     updatedAt: updated.updatedAt,
   };
+  // The mission page's live store patches the MOVING row's line from this
+  // (docs/design/mission-feed-mobile-continuity.md, S7) instead of re-rendering.
+  // `updates.currentAction` is the persisted value: already secret-redacted and
+  // masked to 'working' for a sensitive workspace. Capped for Pusher's 10 KB.
+  if (typeof updates.currentAction === 'string' && updates.currentAction) {
+    pusherPayload.currentAction = updates.currentAction.slice(0, 200);
+  }
   if (taskProgress && Array.isArray(taskProgress) && taskProgress.length > 0) {
     // taskProgress is transient (not persisted) — must travel via Pusher
     pusherPayload.taskProgress = taskProgress;

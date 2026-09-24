@@ -11,10 +11,29 @@ interface Props {
   initialOpenArtifactId?: string | null;
 }
 
+/** `prev` with each artifact's `content` taken from `next`; everything else (share state) kept. */
+export function mergeArtifactContent(prev: ArtifactViewerItem[], next: readonly ArtifactViewerItem[]): ArtifactViewerItem[] {
+  const byId = new Map(next.map(a => [a.id, a]));
+  let changed = false;
+  const out = prev.map(it => {
+    const n = byId.get(it.id);
+    if (!n || n.content === it.content) return it;
+    changed = true;
+    return { ...it, content: n.content };
+  });
+  return changed ? out : prev;
+}
+
 export default function MissionArtifacts({ artifacts, baseUrl, missionId, initialOpenArtifactId }: Props) {
   const [items, setItems] = useState<ArtifactViewerItem[]>(artifacts);
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
+
+  // Bodies arrive after mount (the Records sheet fetches them on open). Take
+  // each new body from props while keeping the local share state.
+  useEffect(() => {
+    setItems(prev => mergeArtifactContent(prev, artifacts));
+  }, [artifacts]);
 
   // Open viewer on mount when ?artifact= param is present
   useEffect(() => {

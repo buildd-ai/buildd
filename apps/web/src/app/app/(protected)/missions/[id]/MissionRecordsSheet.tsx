@@ -8,8 +8,12 @@
  * sheet. It replaces the unfiltered artifact dump that used to close the page.
  *
  * `?artifact=Z` (mobile-artifact-feed.md §2.2) opens the sheet with Z's viewer.
+ *
+ * Bodies are lazy (slice S7, AC-18): the page renders artifact metadata only,
+ * and the sheet fetches the bodies of the list it is showing when it opens.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { fetchRecordsContent } from '@/lib/mission-records-content';
 import BottomSheet from '@/components/BottomSheet';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
@@ -37,6 +41,24 @@ export interface MissionRecordsSheetProps {
   initialArtifactId?: string | null;
   /** Test seam: render with the sheet open. */
   defaultOpen?: boolean;
+  /** Test seam: the body fetch. Defaults to `/api/missions/[id]/artifacts/content`. */
+  loadContent?: (missionId: string, ids: string[]) => Promise<Record<string, string | null>>;
+}
+
+/** Ids in `shown` whose body has not been fetched yet. */
+export function idsNeedingContent(
+  shown: readonly { id: string; content: string | null }[],
+  fetched: Readonly<Record<string, string | null>>,
+): string[] {
+  return shown.filter(a => a.content == null && !(a.id in fetched)).map(a => a.id);
+}
+
+/** `items` with fetched bodies filled in. */
+export function withContent<T extends { id: string; content: string | null }>(
+  items: readonly T[],
+  fetched: Readonly<Record<string, string | null>>,
+): T[] {
+  return items.map(a => (a.content == null && fetched[a.id] != null ? { ...a, content: fetched[a.id] } : a));
 }
 
 export default function MissionRecordsSheet({
@@ -46,10 +68,38 @@ export default function MissionRecordsSheet({
   allArtifacts,
   initialArtifactId,
   defaultOpen = false,
+  loadContent = fetchRecordsContent,
 }: MissionRecordsSheetProps) {
   const initial = resolveInitialRecordsView(initialArtifactId, records, allArtifacts);
   const [open, setOpen] = useState(defaultOpen || initial.open);
   const [showAll, setShowAll] = useState(initial.showAll);
+  const [fetched, setFetched] = useState<Record<string, string | null>>({});
+  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [attempt, setAttempt] = useState(0);
+
+  const shown = showAll ? allArtifacts : records;
+  const missing = open ? idsNeedingContent(shown, fetched) : [];
+  const missingKey = missing.join(',');
+
+  useEffect(() => {
+    if (!missingKey) return;
+    let cancelled = false;
+    const ids = missingKey.split(',');
+    setLoadState('loading');
+    loadContent(missionId, ids).then(
+      contents => {
+        if (cancelled) return;
+        // Ids the server did not return are recorded as null so they are not re-asked.
+        setFetched(prev => ({ ...prev, ...Object.fromEntries(ids.map(id => [id, contents[id] ?? null])) }));
+        setLoadState('idle');
+      },
+      () => { if (!cancelled) setLoadState('error'); },
+    );
+    return () => { cancelled = true; };
+  }, [missionId, missingKey, loadContent, attempt]);
+
+  const recordsWithContent = useMemo(() => withContent(records, fetched), [records, fetched]);
+  const allWithContent = useMemo(() => withContent(allArtifacts, fetched), [allArtifacts, fetched]);
 
   if (allArtifacts.length === 0) return null;
 
@@ -73,9 +123,22 @@ export default function MissionRecordsSheet({
         lockTarget={mainScroller}
         testId="mission-records-sheet"
       >
+        {loadState === 'loading' && (
+          <p data-testid="mission-records-loading" className="mb-2 font-mono text-[11px] text-text-muted">Loading record content…</p>
+        )}
+        {loadState === 'error' && (
+          <button
+            type="button"
+            data-testid="mission-records-retry"
+            onClick={() => setAttempt(n => n + 1)}
+            className="mb-2 flex min-h-11 items-center font-mono text-[11px] text-status-error"
+          >
+            Couldn’t load record content · Retry
+          </button>
+        )}
         {records.length > 0 ? (
           <MissionArtifacts
-            artifacts={records}
+            artifacts={recordsWithContent}
             baseUrl={baseUrl}
             missionId={missionId}
             initialOpenArtifactId={initial.open && !initial.showAll ? initialArtifactId : null}
@@ -85,7 +148,7 @@ export default function MissionRecordsSheet({
         )}
         {showAll ? (
           <MissionArtifacts
-            artifacts={allArtifacts}
+            artifacts={allWithContent}
             baseUrl={baseUrl}
             missionId={missionId}
             initialOpenArtifactId={initial.showAll ? initialArtifactId : null}

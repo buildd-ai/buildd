@@ -1,137 +1,187 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useMemo } from 'react';
+/**
+ * Keeps the mission page live without re-rendering it on every heartbeat
+ * (docs/design/mission-feed-mobile-continuity.md, "Realtime" and "Freeze
+ * rule", slice S7, AC-17).
+ *
+ * - Subscribes to the workspace and mission Pusher channels and hands every
+ *   event to `createMissionRefresher` (MissionLiveStore.ts): steady-status
+ *   `worker:progress` patches the live store its children read; structural
+ *   events call `router.refresh()`, at most once per 3s per tab.
+ * - Around each refresh it anchors the reader's row: `rect.top` before, a
+ *   `scrollTop` correction after the new render commits (mission-scroll-anchor.ts).
+ * - A task that arrives above the viewport shows a `N new ↑` pill
+ *   (`mission-new-rows-pill`) instead of pushing content down.
+ */
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import type { Clock } from '@/lib/realtime-throttle';
+import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
+import { missionTaskAnchorId } from '@/lib/mission-task-href';
+import {
+  MISSION_STRUCTURAL_EVENTS,
+  MissionLiveContext,
+  WORKSPACE_EVENTS,
+  createMissionLiveStore,
+  createMissionRefresher,
+  type MissionRefresher,
+} from './MissionLiveStore';
+import { addedIds, captureScrollAnchor, restoreScrollAnchor, rowsAbove, type ScrollAnchor } from './mission-scroll-anchor';
 
-/**
- * Invisible component that subscribes to workspace Pusher events
- * and triggers a page refresh when mission-related tasks are created,
- * claimed, or workers report progress. Follows the TaskAutoRefresh pattern.
- */
+// useLayoutEffect warns under SSR; the measurement is client-only anyway.
+const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+const defaultScroller = () => (typeof document === 'undefined' ? null : document.querySelector('main'));
+
+export interface MissionAutoRefreshProps {
+  missionId: string;
+  workspaceId: string;
+  /** Known task ids on this mission (for filtering worker events). */
+  taskIds: string[];
+  /** workerId → status as rendered: the baseline a status change is measured against. */
+  workerStatuses?: Record<string, string>;
+  /** Server render time. A new value means a new render committed. */
+  renderedAt?: number;
+  children?: ReactNode;
+  /** Test seams. */
+  clock?: Clock;
+  scroller?: () => HTMLElement | null;
+}
+
 export default function MissionAutoRefresh({
   missionId,
   workspaceId,
   taskIds,
-}: {
-  missionId: string;
-  workspaceId: string;
-  /** Known task IDs belonging to this mission (for filtering worker events) */
-  taskIds: string[];
-}) {
+  workerStatuses,
+  renderedAt,
+  children,
+  clock,
+  scroller = defaultScroller,
+}: MissionAutoRefreshProps) {
   const router = useRouter();
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const store = useMemo(() => createMissionLiveStore(), []);
+  const refresherRef = useRef<MissionRefresher | null>(null);
+  const anchorRef = useRef<ScrollAnchor | null>(null);
+  const [pendingNew, setPendingNew] = useState<string[]>([]);
 
-  // Stabilize taskIds to avoid re-renders on every SSR refresh
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const stableTaskIds = useMemo(() => new Set(taskIds), [taskIds.join(',')]);
-
-  const doRefresh = useCallback(() => {
-    // Debounce: collapse rapid events into a single refresh
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(() => {
-      router.refresh();
-      refreshTimerRef.current = null;
-    }, 500);
-  }, [router]);
+  const taskKey = taskIds.join(',');
+  // Latest props for callbacks bound once per subscription.
+  const latest = useRef({ taskIds, workerStatuses, scroller, router });
+  latest.current = { taskIds, workerStatuses, scroller, router };
 
   useEffect(() => {
     if (!workspaceId) return;
+    const refresher = createMissionRefresher({
+      missionId,
+      taskIds: latest.current.taskIds,
+      workerStatuses: latest.current.workerStatuses,
+      store,
+      refresh: () => {
+        const s = latest.current.scroller();
+        anchorRef.current = s ? captureScrollAnchor(s) : null;
+        latest.current.router.refresh();
+      },
+      isHidden: () => document.visibilityState === 'hidden',
+      clock,
+    });
+    refresherRef.current = refresher;
 
     const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
     const channel = subscribeToChannel(channelName);
-    if (!channel) return;
-
-    // Task created — new task spawned (filter by missionId in payload)
-    const handleTaskCreated = (data: { task?: { missionId?: string } }) => {
-      if (data.task?.missionId === missionId) {
-        doRefresh();
-      }
-    };
-
-    // Task claimed — worker picked up a task (filter by known task IDs)
-    const handleTaskClaimed = (data: { task?: { id?: string } }) => {
-      if (data.task?.id && stableTaskIds.has(data.task.id)) {
-        doRefresh();
-      }
-    };
-
-    // Worker progress — filter by taskId matching a mission task
-    // Accepts thin events {taskId} and legacy {worker:{taskId}}
-    const handleWorkerProgress = (data: { taskId?: string; worker?: { taskId?: string } }) => {
-      const taskId = data.taskId ?? data.worker?.taskId;
-      if (taskId && stableTaskIds.has(taskId)) {
-        doRefresh();
-      }
-    };
-
-    // Worker completed
-    const handleWorkerCompleted = (data: { taskId?: string; worker?: { taskId?: string } }) => {
-      const taskId = data.taskId ?? data.worker?.taskId;
-      if (taskId && stableTaskIds.has(taskId)) {
-        doRefresh();
-      }
-    };
-
-    // Worker failed
-    const handleWorkerFailed = (data: { taskId?: string; worker?: { taskId?: string } }) => {
-      const taskId = data.taskId ?? data.worker?.taskId;
-      if (taskId && stableTaskIds.has(taskId)) {
-        doRefresh();
-      }
-    };
-
-    // Children completed — planning task's subtasks all done
-    const handleChildrenCompleted = (data: { parentTaskId?: string }) => {
-      if (data.parentTaskId && stableTaskIds.has(data.parentTaskId)) {
-        doRefresh();
-      }
-    };
-
-    channel.bind('task:created', handleTaskCreated);
-    channel.bind('task:claimed', handleTaskClaimed);
-    channel.bind('worker:progress', handleWorkerProgress);
-    channel.bind('worker:completed', handleWorkerCompleted);
-    channel.bind('worker:failed', handleWorkerFailed);
-    channel.bind('task:children_completed', handleChildrenCompleted);
-
-    // Also subscribe to mission channel for note events
     const missionChannelName = `${CHANNEL_PREFIX}mission-${missionId}`;
     const missionChannel = subscribeToChannel(missionChannelName);
-    const handleNotePosted = () => doRefresh();
-    missionChannel?.bind('mission:note_posted', handleNotePosted);
 
-    // Completion decision — the gate ran and said yes or no. This event is
-    // emitted for every real decision per docs/specs/mission-task-lifecycle.md
-    // and, until now, had no subscriber anywhere: the refusal code and reason
-    // existed only in the feed and the server logs, so the page a reader opens
-    // to ask "why is this not done" did not update when the answer changed.
-    //
-    // Payload carries `allowed`, `code` and `reason`; a refresh is the right
-    // response either way, because both outcomes change what the page renders —
-    // a refusal updates the goal-criteria panel and the feed, and an approval
-    // moves the mission to completed. `mission_not_found` / `mission_not_active`
-    // are already filtered out server-side, so every event here is a real
-    // decision and the debounce absorbs bursts from a batch of terminal tasks.
-    const handleCompletionDecision = () => doRefresh();
-    missionChannel?.bind('mission:completion_decision', handleCompletionDecision);
+    const bound: Array<[typeof channel, string, (data: unknown) => void]> = [];
+    for (const event of WORKSPACE_EVENTS) {
+      const fn = (data: unknown) => refresher.onEvent(event, data);
+      channel?.bind(event, fn);
+      bound.push([channel, event, fn]);
+    }
+    // `mission:completion_decision` is emitted for every real completion
+    // decision (docs/specs/mission-task-lifecycle.md): a refusal updates the
+    // criteria and the feed, an approval moves the mission to completed.
+    for (const event of MISSION_STRUCTURAL_EVENTS) {
+      const fn = (data: unknown) => refresher.onEvent(event, data);
+      missionChannel?.bind(event, fn);
+      bound.push([missionChannel, event, fn]);
+    }
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresher.onVisible();
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
-      channel.unbind('task:created', handleTaskCreated);
-      channel.unbind('task:claimed', handleTaskClaimed);
-      channel.unbind('worker:progress', handleWorkerProgress);
-      channel.unbind('worker:completed', handleWorkerCompleted);
-      channel.unbind('worker:failed', handleWorkerFailed);
-      channel.unbind('task:children_completed', handleChildrenCompleted);
+      for (const [ch, event, fn] of bound) ch?.unbind(event, fn);
       unsubscribeFromChannel(channelName);
-      missionChannel?.unbind('mission:note_posted', handleNotePosted);
-      missionChannel?.unbind('mission:completion_decision', handleCompletionDecision);
       unsubscribeFromChannel(missionChannelName);
-      if (refreshTimerRef.current) {
-        clearTimeout(refreshTimerRef.current);
-      }
+      document.removeEventListener('visibilitychange', onVisible);
+      refresher.dispose();
+      if (refresherRef.current === refresher) refresherRef.current = null;
     };
-  }, [missionId, workspaceId, stableTaskIds, doRefresh]);
+  }, [missionId, workspaceId, store, clock]);
 
-  return null;
+  // New tasks appear after a render: follow their events too.
+  useEffect(() => {
+    refresherRef.current?.setTaskIds(taskKey ? taskKey.split(',') : []);
+  }, [taskKey]);
+
+  // ── After a new render commits ──
+  const seenRender = useRef(renderedAt);
+  const seenIds = useRef<Set<string>>(new Set(taskIds));
+  useIsoLayoutEffect(() => {
+    if (seenRender.current === renderedAt) return;
+    seenRender.current = renderedAt;
+    // The render carries the state every patch described.
+    store.reset();
+    const s = scroller();
+    const anchor = anchorRef.current;
+    anchorRef.current = null;
+    if (s && anchor) restoreScrollAnchor(s, anchor);
+
+    const added = addedIds(seenIds.current, taskIds);
+    seenIds.current = new Set(taskIds);
+    if (s && added.length > 0) {
+      const above = rowsAbove(s, new Set(added));
+      if (above.length > 0) setPendingNew(prev => [...prev, ...above.filter(id => !prev.includes(id))]);
+    }
+  }, [renderedAt, taskKey]);
+
+  // The pill clears as its rows scroll into view.
+  useEffect(() => {
+    if (pendingNew.length === 0) return;
+    const s = scroller();
+    if (!s) return;
+    const onScroll = () => {
+      const still = rowsAbove(s, new Set(pendingNew));
+      if (still.length !== pendingNew.length) setPendingNew(still);
+    };
+    s.addEventListener('scroll', onScroll, { passive: true });
+    return () => s.removeEventListener('scroll', onScroll);
+  }, [pendingNew, scroller]);
+
+  const showNew = () => {
+    const first = pendingNew[0];
+    setPendingNew([]);
+    if (first) document.getElementById(missionTaskAnchorId(first))?.scrollIntoView({ block: 'center' });
+  };
+
+  return (
+    <MissionLiveContext.Provider value={store}>
+      {children}
+      {pendingNew.length > 0 && (
+        <button
+          type="button"
+          data-testid="mission-new-rows-pill"
+          onClick={showNew}
+          style={{ top: `calc(env(safe-area-inset-top, 0px) + ${MISSION_MASTHEAD_FOLDED_PX + 8}px)` }}
+          className="fixed left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center border-2 border-border-strong bg-card px-4 font-mono text-[12px] font-semibold text-text-primary shadow-[var(--card-shadow)]"
+        >
+          {`${pendingNew.length} new ↑`}
+        </button>
+      )}
+    </MissionLiveContext.Provider>
+  );
 }

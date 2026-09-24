@@ -32,6 +32,7 @@ import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/conden
 import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
+import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -94,101 +95,19 @@ export default async function MissionDetailPage({
 
   const teamIds = await getUserTeamIds(user.id);
 
-  let mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
-    with: {
-      workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
-      initiative: { columns: { id: true, title: true } },
-      tasks: {
-        columns: {
-          id: true,
-          title: true,
-          status: true,
-          priority: true,
-          createdAt: true,
-          updatedAt: true,
-          result: true,
-          mode: true,
-          roleSlug: true,
-          creationSource: true,
-          dependsOn: true,
-          parentTaskId: true,
-          // Read only to class Lane-2 rail edges as advisory ordering
-          // (docs/specs/timeline-mobile-rail.md Rule D3-2). Column already exists.
-          pathManifest: true,
-          category: true,
-          taskClass: true,
-          loopConfig: true,
-          loopState: true,
-          loopIteration: true,
-          startAt: true,
-          reviewerRetryPrNumber: true,
-          // Attempt-strip provenance (U8): deriveTaskOrigin reads the three
-          // retry counters plus context to say why each attempt exists.
-          ciRetryPrNumber: true,
-          conflictRetryPrNumber: true,
-          context: true,
-          // Authorship: computeMissionAuthorshipHealth's human-task-share input.
-          createdByWorkerId: true,
-          createdByAccountId: true,
-          // Mission legibility (docs/specs/mission-legibility.md): the stored
-          // phase the rail groups under a header, and the work-kind the glyph
-          // column draws. Both read straight off the row the rail and the
-          // Structure canvas already hold — no second fetch, no join, and no
-          // way for the two surfaces to disagree about staleness.
-          missionPhaseIndex: true,
-          missionPhaseLabel: true,
-          kind: true,
-        },
-        orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
-        with: {
-          workers: {
-            columns: {
-              id: true,
-              status: true,
-              waitingFor: true,
-              branch: true,
-              prUrl: true,
-              prNumber: true,
-              prLifecycleStatus: true,
-              mergedAt: true,
-              supersededByPrNumber: true,
-              supersededByPrUrl: true,
-              supersededReason: true,
-              costUsd: true,
-              turns: true,
-              completedAt: true,
-              startedAt: true,
-              updatedAt: true,
-              exitCause: true,
-              currentAction: true,
-              commitCount: true,
-              filesChanged: true,
-            },
-            orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
-            limit: 3,
-            with: {
-              artifacts: {
-                columns: {
-                  id: true,
-                  type: true,
-                  title: true,
-                  key: true,
-                  shareToken: true,
-                  content: true,
-                  visibility: true,
-                  metadata: true,
-                  createdAt: true,
-                },
-                limit: 5,
-              },
-            },
-          },
-        },
-      },
-      schedule: true,
-    },
-  });
+  // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
+  // or task `context`; the few fields the page reads from those two JSON
+  // columns arrive as a projected digest, read alongside (mission-page-query.ts).
+  const [missionRow, digestRows] = await Promise.all([
+    db.query.missions.findFirst({
+      where: eq(missions.id, id),
+      with: MISSION_DETAIL_WITH,
+    }),
+    db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
+  ]);
+  let mission = missionRow;
+  const taskDigests = indexTaskDigests(digestRows);
+  const digestOf = (taskId: string) => taskDigests.get(taskId) ?? { result: null, context: null };
 
   if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
@@ -217,45 +136,7 @@ export default async function MissionDetailPage({
         if (refreshed.some(Boolean)) {
           const refreshedMission = await db.query.missions.findFirst({
             where: eq(missions.id, id),
-            with: {
-              workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
-              initiative: { columns: { id: true, title: true } },
-              tasks: {
-                columns: {
-                  id: true, title: true, status: true, priority: true, createdAt: true,
-                  updatedAt: true, result: true, mode: true, roleSlug: true,
-                  creationSource: true, dependsOn: true, parentTaskId: true, pathManifest: true, category: true,
-                  taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
-                  reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
-                  context: true, createdByWorkerId: true, createdByAccountId: true,
-                  missionPhaseIndex: true, missionPhaseLabel: true, kind: true,
-                },
-                orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
-                with: {
-                  workers: {
-                    columns: {
-                      id: true, status: true, waitingFor: true, branch: true, prUrl: true,
-                      prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
-                      supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
-                      turns: true, completedAt: true, startedAt: true, updatedAt: true, exitCause: true,
-                      currentAction: true, commitCount: true, filesChanged: true,
-                    },
-                    orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
-                    limit: 3,
-                    with: {
-                      artifacts: {
-                        columns: {
-                          id: true, type: true, title: true, key: true, shareToken: true,
-                          content: true, visibility: true, metadata: true, createdAt: true,
-                        },
-                        limit: 5,
-                      },
-                    },
-                  },
-                },
-              },
-              schedule: true,
-            },
+            with: MISSION_DETAIL_WITH,
           });
           if (refreshedMission) mission = refreshedMission;
         }
@@ -547,7 +428,7 @@ export default async function MissionDetailPage({
       id: t.id,
       createdAt: t.createdAt,
       status: t.status,
-      result: t.result,
+      result: digestOf(t.id).result,
     }))
   );
   const TERMINAL_STATUSES = ['completed', 'cancelled', 'budget_exhausted'];
@@ -637,7 +518,7 @@ export default async function MissionDetailPage({
       ciRetryPrNumber: (t as any).ciRetryPrNumber ?? null,
       reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
       conflictRetryPrNumber: (t as any).conflictRetryPrNumber ?? null,
-      context: (t.context as Record<string, unknown> | null) ?? null,
+      context: digestOf(t.id).context,
     })),
     {
       // No repo column is loaded here; every PR url on this mission points at
@@ -903,6 +784,11 @@ export default async function MissionDetailPage({
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   const missionTaskIds = allTasks.map((t) => t.id);
+  // workerId → status as rendered, so the live policy can tell a heartbeat
+  // from a status change on the first event it sees.
+  const renderedWorkerStatuses: Record<string, string> = Object.fromEntries(
+    allTasks.flatMap(t => ((t.workers ?? []) as Array<{ id: string; status: string }>).map(w => [w.id, w.status])),
+  );
 
   // Fetch team's active/paused initiatives for the initiative selector
   const isTerminal = ['completed', 'archived'].includes(mission.status);
@@ -1102,7 +988,7 @@ export default async function MissionDetailPage({
     ? selectMissionCompletionSummary({
         tasks: allTasks.map(t => ({
           id: t.id, title: t.title, status: t.status, mode: t.mode, taskClass: t.taskClass,
-          kind: t.kind, category: t.category, createdAt: t.createdAt, updatedAt: t.updatedAt, result: t.result,
+          kind: t.kind, category: t.category, createdAt: t.createdAt, updatedAt: t.updatedAt, result: digestOf(t.id).result,
         })),
         completionNote,
       })
@@ -1116,7 +1002,8 @@ export default async function MissionDetailPage({
     id: a.id,
     type: a.type,
     title: a.title ?? a.key ?? null,
-    content: a.content ?? null,
+    // Fetched when the Records sheet opens (AC-18).
+    content: null,
     shareToken: a.shareToken ?? null,
     visibility: (a.visibility as 'private' | 'public') ?? 'private',
     metadata: (a.metadata as Record<string, unknown>) ?? {},
@@ -1311,7 +1198,7 @@ export default async function MissionDetailPage({
             id: t.id,
             createdAt: t.createdAt,
             status: t.status,
-            result: t.result,
+            result: digestOf(t.id).result,
           }))}
         />
       )}
@@ -1387,16 +1274,15 @@ export default async function MissionDetailPage({
       from={from === 'home' || from === 'missions' || from === 'initiative' ? from : null}
       initiativeId={initiativeId ?? null}
     >
-      {/* Real-time updates via Pusher */}
-      {mission.workspaceId && (
-        <MissionAutoRefresh
-          missionId={id}
-          workspaceId={mission.workspaceId}
-          taskIds={missionTaskIds}
-        />
-      )}
-
-      {/* Freshen PR state on open — reconcile only, never a planning pass */}
+      {/* Real-time (S7): progress patches the live store the list reads;
+          structural events re-render at most once per 3s, scroll-anchored. */}
+      <MissionAutoRefresh
+        missionId={id}
+        workspaceId={mission.workspaceId ?? ''}
+        taskIds={missionTaskIds}
+        workerStatuses={renderedWorkerStatuses}
+        renderedAt={renderedAt}
+      >
       <MissionReconcileOnOpen missionId={id} />
 
       <MissionDetailView
@@ -1506,6 +1392,7 @@ export default async function MissionDetailPage({
           </>
         )}
       />
+      </MissionAutoRefresh>
     </TaskPanelWrapper>
     </SwipeProvider>
   );
