@@ -50,3 +50,11 @@ scripts/sql-render-coverage.test.ts
 # Checks CLAUDE.md's backticked paths, testids and symbols against `git
 # ls-files`. The rename or deletion that breaks it lands anywhere in the repo.
 scripts/agent-docs-drift.test.ts
+# Runs every task shape (reviewer/structured output, pr_required, planning,
+# loop, codex, max turns, errors, abort) through the real WorkerManager
+# completion path. The change that breaks it is to apps/runner/src/workers.ts,
+# whose colocated-test mapping never selects a file under __tests__/unit/ — the
+# exact hole a closing-turn change fell through when it shipped tested only on
+# sessions that end via complete_task. Its guard also reads the shape
+# vocabularies from packages/shared and the Agent SDK's result subtypes.
+apps/runner/__tests__/unit/task-shape-contract.test.ts
