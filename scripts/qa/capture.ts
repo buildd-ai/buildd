@@ -31,12 +31,14 @@
  *   VERCEL_AUTOMATION_BYPASS_SECRET — sets the x-vercel-protection-bypass header on every request
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
+ *   QA_VIEWPORT                     — "mobile" (390x844 touch phone) or WIDTHxHEIGHT (default: 1280x900)
  */
 
 import { chromium } from 'playwright';
 import type { BrowserContextOptions } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
+import { resolveViewport } from './viewport';
 
 // Playwright 1.61 can throw unhandled errors from internal cookie/URL handling when
 // a response URL is relative. Suppress these non-fatal background exceptions so the
@@ -106,9 +108,8 @@ const browser = await chromium.launch({
   args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
 });
 
-const contextOptions: BrowserContextOptions = {
-  viewport: { width: 1280, height: 900 },
-};
+const contextOptions: BrowserContextOptions = resolveViewport(process.env.QA_VIEWPORT);
+console.log(`[capture] viewport ${contextOptions.viewport?.width}x${contextOptions.viewport?.height}${contextOptions.isMobile ? ' (mobile, touch)' : ''}`);
 if (BYPASS_SECRET) {
   // Bypass Vercel preview protection on every request (nav + page.request).
   contextOptions.extraHTTPHeaders = { 'x-vercel-protection-bypass': BYPASS_SECRET };
@@ -212,6 +213,22 @@ for (const route of routes) {
     if (devOverlay && !process.env.QA_KEEP_DEV_OVERLAY) {
       await page.addStyleTag({ content: 'nextjs-portal{display:none!important}' });
     }
+
+    // The app scrolls inside <main class="overflow-y-auto">, not the window, so
+    // fullPage alone stops at the viewport. Unclip every inner scroll container
+    // (and its fixed-height ancestors) so the shot covers the whole page.
+    await page.evaluate(() => {
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>('body *'))) {
+        const style = getComputedStyle(el);
+        if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
+          for (let n: HTMLElement | null = el; n && n !== document.body; n = n.parentElement) {
+            n.style.setProperty('height', 'auto', 'important');
+            n.style.setProperty('max-height', 'none', 'important');
+            n.style.setProperty('overflow', 'visible', 'important');
+          }
+        }
+      }
+    });
 
     const screenshotFile = `${route.id}.png`;
     const screenshotPath = join(OUTPUT_DIR, 'screenshots', screenshotFile);
