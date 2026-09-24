@@ -50,6 +50,7 @@ import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountI
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
+import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { ClaimLogEntry } from './session-logger';
@@ -943,6 +944,18 @@ export class WorkerManager {
     }
   }
 
+  /** Environment as sent on the heartbeat: the scan plus post-update canary status. */
+  private heartbeatEnvironment(): WorkerEnvironment | undefined {
+    const canary = getUpdateCanary();
+    if (!this.environment || !canary) return this.environment;
+    return { ...this.environment, updateCanary: canary.report() };
+  }
+
+  /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */
+  async sendHeartbeatNow(): Promise<void> {
+    await this.sendHeartbeat();
+  }
+
   // Send heartbeat to server announcing this runner instance is alive and ready
   private async sendHeartbeat() {
     try {
@@ -961,7 +974,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1220,6 +1233,9 @@ export class WorkerManager {
   // Claim any pending tasks the server has available (no specific task ID)
   async claimPendingTasks(): Promise<LocalWorker[]> {
     if (!this.acceptRemoteTasks) return [];
+    // Post-update canary tripped: this build fails a role deterministically.
+    // Claiming more work would only fail it too while the rollback drains.
+    if (getUpdateCanary()?.claimsHalted()) return [];
     // NOTE: we intentionally do NOT gate on `hasCredentials` here. A runner with
     // zero local creds must still poll — server-managed credentials arrive inline
     // on the claim response and bootstrap it. The burn-loop guard below (auth-error
@@ -1548,6 +1564,10 @@ export class WorkerManager {
   }
 
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
+    if (getUpdateCanary()?.claimsHalted()) {
+      console.log(`[WorkerManager] Update canary tripped — not claiming task ${task.id}`);
+      return null;
+    }
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
     // quota exhausted), skip without re-claiming — tenant tasks can still run.
     // pausedContextFor fails toward claiming when the payload carries no
@@ -2071,6 +2091,7 @@ export class WorkerManager {
       }).catch(updateErr => {
         console.error(`[Worker ${worker.id}] Failed to report session start failure to server:`, updateErr);
       });
+      this.recordCanaryOutcome(worker, fullTask.roleSlug);
 
       this.emit({ type: 'worker_update', worker });
 
@@ -4926,6 +4947,8 @@ export class WorkerManager {
       // Clean up the per-worker secret redactor now that the session is fully done.
       this.secretRedactors.delete(worker.id);
 
+      if (!bwrapRetryAfterCleanup) this.recordCanaryOutcome(worker, task.roleSlug);
+
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {
         const err = worker.error.toLowerCase();
@@ -4989,6 +5012,24 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Restarting session without bwrap sandbox`);
         return this.startSession(worker, cwd, task);
       }
+    }
+  }
+
+  /**
+   * Feed a terminal outcome to the post-update canary (update-canary.ts). A
+   * no-op unless this process booted the canary and is on probation.
+   */
+  private recordCanaryOutcome(worker: LocalWorker, roleSlug: string | null | undefined): void {
+    const canary = getUpdateCanary();
+    if (!canary || (worker.status !== 'done' && worker.status !== 'error')) return;
+    try {
+      canary.recordOutcome({
+        role: canaryRoleOf(roleSlug),
+        workspaceId: worker.workspaceId ?? null,
+        ...classifyWorkerOutcome({ status: worker.status, error: worker.error }),
+      });
+    } catch (err) {
+      console.warn(`[update-canary] failed to record outcome (non-fatal): ${err instanceof Error ? err.message : err}`);
     }
   }
 

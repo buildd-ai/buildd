@@ -17,6 +17,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
   isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
   reapChild, withTimeout, TRACKED_BRANCH } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
+import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -565,6 +566,63 @@ initCurrentCommit().then(() => {
   updateState.currentCommit = getCurrentCommit();
 });
 
+// =============================================================================
+// POST-UPDATE CANARY (update-canary.ts)
+// =============================================================================
+// Boot is where an update is detected: a different commit than the last boot
+// puts the runner on probation with the previous commit as rollback target,
+// whichever path moved the tree. The persisted skip latch is seeded into the
+// same set every update path already consults, so a rolled-back SHA is never
+// re-applied; a newer advertised SHA is not in it and goes through normally.
+const updateCanary = initUpdateCanary();
+updateCanary.boot(getDiskCommit());
+{
+  const skipped = updateCanary.skippedCommit();
+  if (skipped) {
+    skippedUpdateTargets.add(skipped);
+    console.warn(`[update-canary] ${skipped.slice(0, 7)} was rolled back after a deterministic role failure — it will not be re-applied`);
+  }
+}
+if (!updateCanary.config.enabled) {
+  console.log('[update-canary] BUILDD_UPDATE_CANARY is off — no post-update probation or automatic rollback.');
+}
+let canaryRollbackInFlight = false;
+updateCanary.setTripHandler((trip) => {
+  canaryRollbackInFlight = trip.rollback;
+  void runCanaryTrip(updateCanary, trip, {
+    emit: (event) => {
+      broadcast(event);
+      workerManager?.sendHeartbeatNow().catch(() => {});
+    },
+    reportFriction: async (f) => {
+      if (!buildd) return;
+      await withTimeout(
+        buildd.createTask({
+          workspaceId: f.workspaceId,
+          title: f.title,
+          description: f.description,
+          context: { frictionSignature: f.signature, frictionExcerpt: f.excerpt },
+        }),
+        15_000,
+        null,
+      );
+    },
+    waitForIdle: async () => {
+      while (getActiveWorkerCount() > 0) {
+        await new Promise((r) => setTimeout(r, 5_000));
+      }
+    },
+    rollbackTo: (sha) => rollbackTo(sha),
+    setUpdating,
+    restart: (reason) => {
+      // The restarted process must be on the rolled-back code; the in-memory
+      // skip set is rebuilt from the persisted latch above.
+      skippedUpdateTargets.add(trip.badCommit);
+      scheduleGracefulRestart(reason);
+    },
+  }).finally(() => { canaryRollbackInFlight = false; });
+});
+
 // Cached models from Anthropic API (auto-refreshes every hour)
 let modelsCache: { models: { id: string; name: string }[]; fetchedAt: number } | null = null;
 const MODELS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
@@ -639,6 +697,12 @@ async function getTrackedBranchHead(): Promise<string | null> {
 async function setLatestCommit(sha: string) {
   if (updateState.latestCommit === sha) return;
   updateState.latestCommit = sha;
+  if (updateCanary.isSkipped(sha)) {
+    // Logged once per advertised SHA (this function early-returns on a repeat).
+    console.warn(`[update-canary] not advertising ${sha.slice(0, 7)}: this runner rolled it back after a role failed deterministically on it`);
+    abandonUpdateTarget(sha);
+    return;
+  }
   const wasAvailable = updateState.updateAvailable;
   if (checkForUpdate(updateState.currentCommit, sha)) {
     // Reachability FIRST. The server may advertise a commit on a branch this
@@ -2713,6 +2777,7 @@ if (isAutoUpdateDisabled()) {
 
 setInterval(async () => {
   const activeCount = getActiveWorkerCount();
+  updateCanary.tick();
 
   // Track idle state
   if (activeCount > 0) {
@@ -2765,6 +2830,7 @@ setInterval(async () => {
   if (
     updateState.updateAvailable &&
     !updateState.updating &&
+    !canaryRollbackInFlight &&
     !isAutoUpdateDisabled() &&
     canAttemptAutoUpdate({
       target: updateState.latestCommit,

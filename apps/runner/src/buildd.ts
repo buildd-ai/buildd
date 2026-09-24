@@ -363,6 +363,8 @@ export class BuilddClient {
     title: string;
     description: string;
     attachments?: Array<{ data: string; mimeType: string; filename: string }>;
+    /** e.g. `{ frictionSignature, frictionExcerpt }` — the server dedupes friction on the signature. */
+    context?: Record<string, unknown>;
   }) {
     return this.fetch('/api/tasks', {
       method: 'POST',
