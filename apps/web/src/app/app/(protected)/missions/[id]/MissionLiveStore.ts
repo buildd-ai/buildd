@@ -12,7 +12,8 @@
  * - Structural events **refresh**, trailing-throttled to at most one full render
  *   per {@link MISSION_REFRESH_WINDOW_MS} per tab: `task:created`,
  *   `task:claimed`, `worker:completed`, `worker:failed`,
- *   `task:children_completed`, `mission:note_posted`,
+ *   `task:children_completed`, `worker:artifact` (a new record: the Records
+ *   sheet, the row's `Records · N`, Delivery), `mission:note_posted`,
  *   `mission:completion_decision`.
  * - Two kinds of `worker:progress` are structural too, because they change
  *   which group a row is in: a worker **status change** (running →
@@ -38,6 +39,7 @@ export const WORKSPACE_STRUCTURAL_EVENTS = [
   'worker:completed',
   'worker:failed',
   'task:children_completed',
+  'worker:artifact',
 ] as const;
 /** Mission-channel events; the channel is already scoped to this mission. */
 export const MISSION_STRUCTURAL_EVENTS = ['mission:note_posted', 'mission:completion_decision'] as const;
@@ -111,6 +113,8 @@ interface EventPayload {
   updatedAt?: string | null;
   task?: { id?: string | null; missionId?: string | null };
   worker?: { taskId?: string | null; status?: string };
+  /** `worker:artifact` from lib/artifact-helpers.ts carries the row instead. */
+  artifact?: { workerId?: string | null; missionId?: string | null; metadata?: { taskId?: unknown } | null };
 }
 
 const asPayload = (data: unknown): EventPayload => (data && typeof data === 'object' ? (data as EventPayload) : {});
@@ -145,6 +149,17 @@ export function classifyMissionEvent(event: string, data: unknown, ctx: MissionE
       if (!ours(taskId)) return { kind: 'ignore' };
       if (p.workerId) ctx.lastStatusByWorker.delete(p.workerId);
       return { kind: 'refresh' };
+    case 'worker:artifact': {
+      // Two shapes: `{workerId, taskId}` (POST /api/workers/[id]/artifacts)
+      // and `{artifact}` (auto-artifact on completion, metadata.taskId).
+      const a = p.artifact;
+      const artifactTask = typeof a?.metadata?.taskId === 'string' ? a.metadata.taskId : null;
+      const workerId = p.workerId ?? a?.workerId ?? null;
+      const mine = ours(taskId) || ours(artifactTask)
+        || (!!a?.missionId && a.missionId === ctx.missionId)
+        || (!!workerId && ctx.lastStatusByWorker.has(workerId));
+      return mine ? { kind: 'refresh' } : { kind: 'ignore' };
+    }
     case 'mission:note_posted':
     case 'mission:completion_decision':
       return { kind: 'refresh' };

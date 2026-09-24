@@ -145,6 +145,32 @@ describe('AC-17: structural events render at most once per window', () => {
     expect(s.refreshes).toBe(1);
   });
 
+  it('a new record on one of our tasks is structural (Records sheet, row count, Delivery)', () => {
+    const s = setup();
+    // POST /api/workers/[id]/artifacts
+    s.r.onEvent('worker:artifact', { workerId: W1, taskId: T1 });
+    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
+    expect(s.refreshes).toBe(1);
+  });
+
+  it('an auto-artifact ({artifact}) counts when its worker, mission or task is ours', () => {
+    const s = setup();
+    s.r.onEvent('worker:artifact', { artifact: { id: 'art-1', workerId: W1, missionId: null } });
+    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
+    expect(s.refreshes).toBe(1);
+    s.r.onEvent('worker:artifact', { artifact: { id: 'art-2', workerId: 'w-unknown', missionId: M } });
+    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
+    expect(s.refreshes).toBe(2);
+  });
+
+  it('a record on another mission is ignored', () => {
+    const s = setup();
+    s.r.onEvent('worker:artifact', { workerId: 'w-other', taskId: 'task-other' });
+    s.r.onEvent('worker:artifact', { artifact: { id: 'art-3', workerId: 'w-other', missionId: 'mission-b' } });
+    s.clock.advance(MISSION_REFRESH_WINDOW_MS);
+    expect(s.refreshes).toBe(0);
+  });
+
   it('a task created on another mission is ignored', () => {
     const s = setup();
     s.r.onEvent('task:created', { task: { missionId: 'mission-b' } });

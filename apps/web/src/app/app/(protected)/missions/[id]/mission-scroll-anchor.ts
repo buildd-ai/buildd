@@ -14,6 +14,18 @@
 /** Anything with a task id that the page renders as a row. Slots are markers, not anchors. */
 export const ROW_SELECTOR = '[data-task-id]:not([data-testid="mission-task-slot"])';
 
+/**
+ * The feed's list rows: the only rows the `N new ↑` pill counts (and the only
+ * ones it can scroll to — they carry `missionTaskAnchorId`).
+ */
+export const LIST_ROW_SELECTOR = '[data-testid="mission-task-row"][data-task-id]';
+
+/**
+ * The sticky masthead. Its pulse segments carry `data-task-id` (MissionPulse)
+ * but always sit at or above the visible top, so nothing inside it is a row.
+ */
+const MASTHEAD_SELECTOR = '[data-testid="mission-masthead"]';
+
 export interface ScrollAnchor {
   el: Element;
   taskId: string;
@@ -23,8 +35,10 @@ export interface ScrollAnchor {
 /** Rendered = laid out. A folded (`hidden`) row or the md:hidden mobile list at desktop width is not. */
 export const isRendered = (el: Element): boolean => el.getClientRects().length > 0;
 
-function rows(scroller: Element, rendered: (el: Element) => boolean): Element[] {
-  return Array.from(scroller.querySelectorAll(ROW_SELECTOR)).filter(rendered);
+function rows(scroller: Element, rendered: (el: Element) => boolean, selector = ROW_SELECTOR): Element[] {
+  return Array.from(scroller.querySelectorAll(selector)).filter(
+    el => rendered(el) && !el.closest?.(MASTHEAD_SELECTOR),
+  );
 }
 
 /** The sticky masthead's bottom edge, or the scroller's top when there is none. */
@@ -78,7 +92,7 @@ export function restoreScrollAnchor(
   return delta;
 }
 
-/** Of `taskIds`, those whose rows sit wholly above the visible top. */
+/** Of `taskIds`, those whose list rows sit wholly above the visible top. */
 export function rowsAbove(
   scroller: Element,
   taskIds: ReadonlySet<string>,
@@ -87,7 +101,7 @@ export function rowsAbove(
   if (taskIds.size === 0) return [];
   const top = visibleTop(scroller);
   const out: string[] = [];
-  for (const el of rows(scroller, rendered)) {
+  for (const el of rows(scroller, rendered, LIST_ROW_SELECTOR)) {
     const id = el.getAttribute('data-task-id')!;
     if (taskIds.has(id) && !out.includes(id) && el.getBoundingClientRect().bottom <= top) out.push(id);
   }

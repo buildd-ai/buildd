@@ -123,19 +123,22 @@ export default function MissionRecordsSheet({
         lockTarget={mainScroller}
         testId="mission-records-sheet"
       >
-        {loadState === 'loading' && (
-          <p data-testid="mission-records-loading" className="mb-2 font-mono text-[11px] text-text-muted">Loading record content…</p>
-        )}
-        {loadState === 'error' && (
-          <button
-            type="button"
-            data-testid="mission-records-retry"
-            onClick={() => setAttempt(n => n + 1)}
-            className="mb-2 flex min-h-11 items-center font-mono text-[11px] text-status-error"
-          >
-            Couldn’t load record content · Retry
-          </button>
-        )}
+        {/* Mounted while the sheet is open so screen readers hear the change. */}
+        <div role="status" aria-live="polite" data-testid="mission-records-status">
+          {loadState === 'loading' && (
+            <p data-testid="mission-records-loading" className="mb-2 font-mono text-[11px] text-text-muted">Loading record content…</p>
+          )}
+          {loadState === 'error' && (
+            <button
+              type="button"
+              data-testid="mission-records-retry"
+              onClick={() => setAttempt(n => n + 1)}
+              className="mb-2 flex min-h-11 items-center font-mono text-[11px] text-status-error"
+            >
+              Couldn’t load record content · Retry
+            </button>
+          )}
+        </div>
         {records.length > 0 ? (
           <MissionArtifacts
             artifacts={recordsWithContent}

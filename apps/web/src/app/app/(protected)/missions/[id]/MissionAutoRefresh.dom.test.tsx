@@ -100,25 +100,35 @@ let root: ReturnType<typeof createRoot>;
 let clock: ReturnType<typeof fakeClock>;
 let snapshots = 0;
 
-function Rows({ taskIds }: { taskIds: string[] }) {
+const MASTHEAD_H = 84;
+
+function Rows({ taskIds, masthead }: { taskIds: string[]; masthead?: boolean }) {
   useMissionLiveSnapshot();
   snapshots++;
-  return createElement('div', null, taskIds.map(id =>
-    createElement('a', { key: id, id: `t-${id}`, 'data-testid': 'mission-task-row', 'data-task-id': id }, id)));
+  const rows = taskIds.map(id =>
+    createElement('a', { key: id, id: `t-${id}`, 'data-testid': 'mission-task-row', 'data-task-id': id }, id));
+  if (!masthead) return createElement('div', null, rows);
+  // The sticky masthead's pulse carries a `data-task-id` segment per task
+  // (MissionPulse), always at or above the masthead's bottom edge.
+  const pulse = createElement('div', { 'data-testid': 'mission-masthead', key: 'masthead' },
+    taskIds.map(id => createElement('span', { key: id, 'data-testid': 'mission-pulse-segment', 'data-task-id': id })));
+  return createElement('div', null, pulse, createElement('div', { key: 'list' }, rows));
 }
 
+let withMasthead = false;
 function render(taskIds: string[], renderedAt: number) {
   act(() => root.render(
     createElement(MissionAutoRefresh, {
       missionId: M, workspaceId: WS, taskIds, renderedAt, clock,
       workerStatuses: { w1: 'running' },
       scroller: () => main,
-    }, createElement(Rows, { taskIds })),
+    }, createElement(Rows, { taskIds, masthead: withMasthead })),
   ));
 }
 
 beforeEach(() => {
   routerCalls.length = 0;
+  withMasthead = false;
   channels.clear();
   snapshots = 0;
   scrollTop = 0;
@@ -131,9 +141,12 @@ beforeEach(() => {
   root = createRoot(container);
   HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
     if (this === main) return rect(0, 700) as DOMRect;
+    if (this.dataset?.testid === 'mission-masthead') return rect(0, MASTHEAD_H) as DOMRect;
+    if (this.dataset?.testid === 'mission-pulse-segment') return rect(40, 8) as DOMRect;
     if (this.dataset?.taskId) {
-      const rows = Array.from(main.querySelectorAll('[data-task-id]'));
-      return rect(rows.indexOf(this) * ROW_H - scrollTop, ROW_H) as DOMRect;
+      const rows = Array.from(main.querySelectorAll('[data-testid="mission-task-row"]'));
+      const offset = withMasthead ? MASTHEAD_H : 0;
+      return rect(offset + rows.indexOf(this) * ROW_H - scrollTop, ROW_H) as DOMRect;
     }
     return rect(0, 0) as DOMRect;
   };
@@ -179,6 +192,13 @@ describe('AC-17 with a mocked Pusher', () => {
     expect(routerCalls).toEqual(['refresh']);
   });
 
+  it('a new record (worker:artifact) on a mission task refreshes once', () => {
+    render(ids(3), 1);
+    act(() => emit(workspace, 'worker:artifact', { workerId: 'w1', taskId: 't1' }));
+    clock.advance(MISSION_REFRESH_WINDOW_MS);
+    expect(routerCalls).toEqual(['refresh']);
+  });
+
   it('never calls router.push or router.replace', () => {
     render(ids(3), 1);
     act(() => emit(workspace, 'worker:progress', { taskId: 't2' }));
@@ -207,6 +227,7 @@ describe('scroll anchor and the new-rows pill', () => {
     expect(scrollTop).toBe(6 * ROW_H);
     const pill = main.ownerDocument.querySelector('[data-testid="mission-new-rows-pill"]');
     expect(pill?.textContent).toBe('1 new ↑');
+    expect(pill?.getAttribute('aria-label')).toBe('1 new task above');
   });
 
   it('an insertion below the viewport moves nothing and shows no pill', () => {
@@ -217,6 +238,46 @@ describe('scroll anchor and the new-rows pill', () => {
     render([...initial, 'new0'], 2);
     expect(scrollTop).toBe(0);
     expect(document.querySelector('[data-testid="mission-new-rows-pill"]')).toBeNull();
+  });
+
+  it('a pulse segment in the sticky masthead does not count as a row above the viewport', () => {
+    // Regression: the pulse segment for a new task sits inside the masthead,
+    // so its bottom is always at or above the visible top. Only list rows count.
+    withMasthead = true;
+    const initial = ids(5);
+    render(initial, 1);
+    act(() => emit(workspace, 'task:created', { task: { missionId: M } }));
+    clock.advance(MISSION_REFRESH_WINDOW_MS);
+    // new0's real row lands on screen, below the masthead.
+    render([...initial, 'new0'], 2);
+    expect(scrollTop).toBe(0);
+    expect(document.querySelector('[data-testid="mission-new-rows-pill"]')).toBeNull();
+  });
+
+  it('with a masthead, an insertion above the viewport still shows the pill and anchors a list row', () => {
+    withMasthead = true;
+    const initial = ids(10);
+    render(initial, 1);
+    scrollTop = 5 * ROW_H;
+    act(() => emit(workspace, 'task:created', { task: { missionId: M } }));
+    clock.advance(MISSION_REFRESH_WINDOW_MS);
+    render(['new0', ...initial], 2);
+    expect(scrollTop).toBe(6 * ROW_H);
+    expect(document.querySelector('[data-testid="mission-new-rows-pill"]')).not.toBeNull();
+  });
+
+  it('the pill names its count for screen readers and hides the arrow', () => {
+    const initial = ids(10);
+    render(initial, 1);
+    scrollTop = 5 * ROW_H;
+    act(() => emit(workspace, 'task:created', { task: { missionId: M } }));
+    clock.advance(MISSION_REFRESH_WINDOW_MS);
+    render(['new0', 'new1', ...initial], 2);
+    const pill = document.querySelector('[data-testid="mission-new-rows-pill"]') as HTMLElement;
+    expect(pill.getAttribute('aria-label')).toBe('2 new tasks above');
+    expect(pill.querySelector('[aria-hidden="true"]')?.textContent).toBe('↑');
+    // Its arrival is announced politely.
+    expect(document.querySelector('[data-testid="mission-new-rows-status"]')?.textContent).toBe('2 new tasks above');
   });
 
   it('tapping the pill clears it', () => {

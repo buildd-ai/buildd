@@ -69,12 +69,23 @@ describe('MissionRecordsSheet lazy content (AC-18)', () => {
     expect(l.calls).toEqual([['r1', 'r2'], ['cap']]);
   });
 
+  it('the loading line sits in a polite live region', async () => {
+    const fn = () => new Promise<Record<string, string | null>>(() => {});
+    act(() => root.render(<MissionRecordsSheet missionId="m1" baseUrl="https://example.test" records={records} allArtifacts={all} loadContent={fn} defaultOpen />));
+    await flush();
+    const loading = document.querySelector('[data-testid="mission-records-loading"]') as HTMLElement;
+    expect(loading).not.toBeNull();
+    expect(loading.closest('[role="status"][aria-live="polite"]')).not.toBeNull();
+  });
+
   it('a failed fetch offers a retry that asks again', async () => {
     const l = loader(new Error('offline'));
     act(() => root.render(<MissionRecordsSheet missionId="m1" baseUrl="https://example.test" records={records} allArtifacts={all} loadContent={l.fn} defaultOpen />));
     await flush();
     const retry = document.querySelector('[data-testid="mission-records-retry"]') as HTMLElement;
     expect(retry).not.toBeNull();
+    // The error is announced from the same polite live region as the loading line.
+    expect(retry.closest('[role="status"][aria-live="polite"]')).not.toBeNull();
     act(() => { retry.click(); });
     await flush();
     expect(l.calls.length).toBe(2);

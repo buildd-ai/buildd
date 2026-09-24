@@ -168,18 +168,26 @@ export default function MissionAutoRefresh({
     if (first) document.getElementById(missionTaskAnchorId(first))?.scrollIntoView({ block: 'center' });
   };
 
+  const newLabel = `${pendingNew.length} new task${pendingNew.length === 1 ? '' : 's'} above`;
+
   return (
     <MissionLiveContext.Provider value={store}>
       {children}
+      {/* Always mounted, so the pill's arrival is announced. */}
+      <span role="status" aria-live="polite" data-testid="mission-new-rows-status" className="sr-only">
+        {pendingNew.length > 0 ? newLabel : ''}
+      </span>
       {pendingNew.length > 0 && (
         <button
           type="button"
           data-testid="mission-new-rows-pill"
+          aria-label={newLabel}
           onClick={showNew}
           style={{ top: `calc(env(safe-area-inset-top, 0px) + ${MISSION_MASTHEAD_FOLDED_PX + 8}px)` }}
           className="fixed left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center border-2 border-border-strong bg-card px-4 font-mono text-[12px] font-semibold text-text-primary shadow-[var(--card-shadow)]"
         >
-          {`${pendingNew.length} new ↑`}
+          {`${pendingNew.length} new `}
+          <span aria-hidden="true">↑</span>
         </button>
       )}
     </MissionLiveContext.Provider>
