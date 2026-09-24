@@ -37,12 +37,25 @@ function callArgs(src: string, fn: string): string[] {
   return calls;
 }
 
-const files = walk(APP_ROOT);
+// Home and the missions list derive health through the one card builder
+// (lib/mission-card-view.ts), so it is a list surface for this guard too.
+const SHARED_BUILDERS = [join(import.meta.dir, 'mission-card-view.ts')];
+
+const files = [...walk(APP_ROOT), ...SHARED_BUILDERS];
 
 describe('deriveMissionHealth call sites', () => {
   it('the scan finds the known list surfaces (it is not vacuously green)', () => {
     const callers = files.filter(f => readFileSync(f, 'utf8').includes('deriveMissionHealth({'));
-    expect(callers.length).toBeGreaterThanOrEqual(3);
+    // The team page, plus the card builder Home and the missions list share.
+    expect(callers.length).toBeGreaterThanOrEqual(2);
+    expect(callers.some(f => f.endsWith('mission-card-view.ts'))).toBe(true);
+  });
+
+  it('Home and the missions list build their cards with the shared builder', () => {
+    const home = readFileSync(join(APP_ROOT, 'app', '(protected)', 'home', 'page.tsx'), 'utf8');
+    const list = readFileSync(join(APP_ROOT, 'app', '(protected)', 'missions', 'page.tsx'), 'utf8');
+    expect(home).toContain('summarizeMissionForCard(');
+    expect(list).toContain('summarizeMissionForCard(');
   });
 
   for (const file of files) {

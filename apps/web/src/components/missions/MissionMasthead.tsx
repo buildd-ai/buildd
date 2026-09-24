@@ -79,9 +79,9 @@ export interface MissionMastheadProps {
   back?: { label: string; href: string } | null;
   /** sticky: the Verified pill, beside the chip on first paint. */
   verified?: ReactNode;
-  /** sticky: the ⋮ menu. */
+  /** sticky: the ⋮ menu. card: an inline control beside the pulse (e.g. Arm). */
   actions?: ReactNode;
-  /** sticky: the ⤢ control that opens the time-axis strip. */
+  /** sticky and card: the ⤢ control that opens the time-axis strip. */
   expand?: ReactNode;
   /** micro: the task this header is for — ringed on the pulse. */
   selectedTaskId?: string | null;
@@ -198,6 +198,13 @@ export default function MissionMasthead(props: MissionMastheadProps) {
         <div className="mt-2 flex items-center gap-3">
           <MissionPulse variant="card" segments={segments} className="flex-1" />
           {caption && <span className="shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
+          {/* Controls sit above the stretched card link, never inside it. */}
+          {(expand || actions) && (
+            <span className="relative z-10 flex shrink-0 items-center gap-1">
+              {actions}
+              {expand}
+            </span>
+          )}
         </div>
         {primary && (
           <Link

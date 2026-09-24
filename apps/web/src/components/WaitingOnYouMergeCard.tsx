@@ -10,6 +10,7 @@ import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import { AgentRecommendation } from './AgentRecommendation';
 import type { ActionQueueItem } from '@/lib/action-queue';
+import { actionCardTaskHref, actionCardTaskLink } from '@/lib/action-card-context';
 
 interface WaitingOnYouMergeCardProps {
   item: ActionQueueItem;
@@ -184,7 +185,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
     const blockedTasksHref = item.missionId
       ? `/app/missions/${item.missionId}`
       : item.taskId
-      ? `/app/tasks/${item.taskId}`
+      ? actionCardTaskHref(item)
       : null;
 
     const inner = (
@@ -306,7 +307,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             PR #{item.prNumber}
           </a>
         ) : item.taskId ? (
-          <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+          <Link href={actionCardTaskLink(item)} className="hover:underline">
             {item.taskTitle}
           </Link>
         ) : null}
@@ -433,7 +434,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           <div className="flex items-center gap-3">
             {optimistic.taskId && (
               <Link
-                href={`/app/tasks/${optimistic.taskId}`}
+                href={actionCardTaskLink(item, { taskId: optimistic.taskId, page: true })}
                 className="text-[12px] font-medium text-primary hover:underline"
               >
                 View task

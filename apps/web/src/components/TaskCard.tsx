@@ -20,6 +20,7 @@ import { TaskShipBadge } from '@/components/TaskShipBadge';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -303,7 +304,8 @@ export function TaskCard({
     now,
   });
 
-  const href = `/app/tasks/${id}`;
+  // A mission task opens as the sheet over its mission (mission-task-href.ts).
+  const href = missionTaskHref({ missionId, taskId: id, mode: 'sheet' });
   const showAttempt = (attemptCurrent ?? 0) >= 2;
   const tierColor = intensity ? TIER_COLOR[intensity.tier] : 'text-text-secondary';
 

@@ -40,13 +40,16 @@ const MISSION_WITH_SHARED = {
 };
 
 const taskOrderBy = (t: any, { desc }: any) => [desc(t.updatedAt)];
+/** Newest attempt first, so a live re-claim is always inside the per-task limit. */
+const workerOrderBy = (w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)];
 
 /**
  * Rule P-3 governs cost here (bounded by workspace maxConcurrentTasks), so
  * this half is deliberately NOT limited. Adds `roleSlug` (tasks) and
  * `exitCause` (workers) on top of the base columns — the two fields the
  * live flight-strip computation needs (Rule A-1/A-2) that nothing else on
- * this page reads.
+ * this page reads — plus the phase fields that order the card's pulse.
+ * Completed cards are compact (no pulse), so the completed query skips them.
  */
 export function buildActiveMissionsQueryArgs(missionsWhere: SQL | undefined) {
   return {
@@ -56,12 +59,14 @@ export function buildActiveMissionsQueryArgs(missionsWhere: SQL | undefined) {
     with: {
       ...MISSION_WITH_SHARED,
       tasks: {
-        columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true },
+        // Phase fields order the card's pulse (lib/mission-card-view.ts).
+        columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true },
         orderBy: taskOrderBy,
         with: {
           workers: {
             columns: { ...MISSION_WORKER_BASE_COLUMNS, exitCause: true },
             limit: 5,
+            orderBy: workerOrderBy,
           },
         },
       },
@@ -120,6 +125,7 @@ export function buildCompletedMissionsQueryArgs(missionsWhere: SQL | undefined, 
           workers: {
             columns: MISSION_WORKER_BASE_COLUMNS,
             limit: 5,
+            orderBy: workerOrderBy,
           },
         },
       },

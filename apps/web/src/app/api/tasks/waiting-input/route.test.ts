@@ -92,6 +92,7 @@ describe('GET /api/tasks/waiting-input', () => {
         title: 'Setup database',
         status: 'running',
         workspaceId: 'ws-1',
+        missionId: 'mission-1',
       },
     ]);
 
@@ -103,6 +104,7 @@ describe('GET /api/tasks/waiting-input', () => {
       id: 'task-1',
       title: 'Setup database',
       workspaceId: 'ws-1',
+      missionId: 'mission-1',
       waitingFor: { type: 'question', prompt: 'Which database?' },
       actionUrl: 'https://buildd.dev/app/tasks/task-1/respond',
     });

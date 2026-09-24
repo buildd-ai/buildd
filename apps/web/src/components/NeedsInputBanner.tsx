@@ -2,6 +2,15 @@
 
 import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
+import { missionTaskHref } from '@/lib/mission-task-href';
+
+/**
+ * A waiting task opens as the sheet over its mission, so answering it leaves
+ * you where the task lives; a task with no mission opens its own page.
+ */
+export function needsInputTaskHref(task: { id: string; missionId?: string | null }): string {
+  return missionTaskHref({ missionId: task.missionId ?? null, taskId: task.id, mode: 'sheet' });
+}
 
 export default function NeedsInputBanner() {
   const { tasks, count, alertPermission, enableAlerts } = useNeedsInput();
@@ -24,7 +33,7 @@ export default function NeedsInputBanner() {
           {count === 1 ? (
             <>
               <Link
-                href={`/app/tasks/${firstTask.id}`}
+                href={needsInputTaskHref(firstTask)}
                 className="underline underline-offset-2 hover:text-status-warning/80"
               >
                 {firstTask.title}
@@ -36,7 +45,7 @@ export default function NeedsInputBanner() {
               {count} tasks need your input
               {' \u2014 '}
               <Link
-                href={`/app/tasks/${firstTask.id}`}
+                href={needsInputTaskHref(firstTask)}
                 className="underline underline-offset-2 hover:text-status-warning/80"
               >
                 {firstTask.title}
@@ -50,7 +59,7 @@ export default function NeedsInputBanner() {
                 <span className="text-status-warning/70">
                   {' '}and{' '}
                   <Link
-                    href={`/app/tasks/${tasks[1].id}`}
+                    href={needsInputTaskHref(tasks[1])}
                     className="underline underline-offset-2 hover:text-status-warning/80"
                   >
                     1 more
