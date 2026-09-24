@@ -6,6 +6,7 @@ import AiFeedback from '@/components/AiFeedback';
 import type { MissionNote, MissionNoteType } from '@buildd/shared';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
 import { isReplyableQuestion } from '@/lib/mission-note-reply';
+import BottomSheet from '@/components/BottomSheet';
 
 const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: string; icon: string }> = {
   decision: { label: 'DECISION', color: 'text-status-success', bg: 'bg-status-success/10', icon: 'M9 12.75L11.25 15 15 9.75' },
@@ -295,5 +296,39 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * `Notes` — the mission's notes feed, in a sheet
+ * (docs/design/mission-feed-mobile-continuity.md, W3 footer rows). It was the
+ * Feed tab. The sheet mounts the feed only when opened, so the notes fetch and
+ * its Pusher subscription cost nothing until someone reads them.
+ */
+export function MissionNotesSheet({ missionId, defaultOpen = false }: { missionId: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="mission-notes-row"
+        onClick={() => setOpen(true)}
+        className="flex min-h-11 w-full items-center gap-2 border-t border-border-default text-left font-mono text-[12px] text-text-secondary hover:text-text-primary"
+      >
+        <span aria-hidden="true" className="text-text-muted">─</span>
+        <span className="flex-1">Notes</span>
+        <span aria-hidden="true">›</span>
+      </button>
+      <BottomSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Notes"
+        height="tall"
+        lockTarget={() => document.querySelector('main')}
+        testId="mission-notes-sheet"
+      >
+        <MissionFeed missionId={missionId} />
+      </BottomSheet>
+    </>
   );
 }

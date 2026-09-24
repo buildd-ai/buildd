@@ -80,7 +80,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### surfaces (8)
 
-- [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-16
+- [Mission Feed](./mission-feed.md) · @builder — verified 2026-09-23
+  The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
+- [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-23
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
@@ -92,8 +94,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-30
   The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.
-- [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-21
-  Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 - [Timezone Resolution](./timezone-resolution.md) · @max — verified 2026-09-02
   buildd MUST store exactly two timezones — one detected per user and one canonical per team — and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
 
@@ -115,7 +115,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 
-## Superseded (1)
+## Superseded (2)
 
 - [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13
   The initiative triage surface MUST rank initiatives by pending-action counts with 14-day effort sparklines and a task-weighted progress percentage computed over all of an initiative's tasks, uncapped. → replaced by `surface-ia-home-missions-initiatives`
+- [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-23
+  Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates. → replaced by `mission-feed`

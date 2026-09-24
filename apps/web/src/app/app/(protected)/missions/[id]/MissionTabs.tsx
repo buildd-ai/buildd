@@ -1,62 +1,56 @@
 'use client';
 
+/**
+ * The md-and-up list-header toggle (docs/design/mission-feed-mobile-continuity.md,
+ * "Desktop adaptation"): Timeline or Structure. That is all that is left of
+ * the mission tabs — the Summary tab was absorbed into NEEDS YOU and the Feed
+ * tab became the Notes sheet. Below md the page renders `MissionFeedList`
+ * instead and this toggle is never shown.
+ *
+ * `?view=structure` names the choice. It is written with `replaceState`, so
+ * switching views never re-renders the server page.
+ */
 import { useState, type ReactNode } from 'react';
+import type { MissionListView } from '@/lib/mission-list-view';
 
 export default function MissionTabs({
   timelineContent,
-  feedContent,
-  summaryContent,
   structureContent,
-  defaultTab = 'timeline',
+  initialView = 'timeline',
 }: {
   timelineContent: ReactNode;
-  feedContent: ReactNode;
-  /** When provided a Summary tab is added as the first tab. */
-  summaryContent?: ReactNode;
-  /** When provided a Structure tab is added (desktop only — hidden on mobile). */
+  /** Absent → no toggle, the timeline alone. */
   structureContent?: ReactNode;
-  /** Initial active tab. Defaults to 'timeline'. */
-  defaultTab?: 'summary' | 'timeline' | 'feed';
+  initialView?: MissionListView;
 }) {
-  const hasSummary = !!summaryContent;
-  const hasStructure = !!structureContent;
-  const [tab, setTab] = useState<'summary' | 'timeline' | 'feed' | 'structure'>(defaultTab);
+  const [view, setView] = useState<MissionListView>(structureContent ? initialView : 'timeline');
+
+  const choose = (next: MissionListView) => {
+    setView(next);
+    const url = new URL(window.location.href);
+    if (next === 'structure') url.searchParams.set('view', 'structure');
+    else url.searchParams.delete('view');
+    window.history.replaceState(window.history.state, '', url.toString());
+  };
 
   const btnCls = (active: boolean) =>
-    `px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
-      active
-        ? 'bg-surface-3 text-text-primary'
-        : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+    `min-h-9 border px-3 font-mono text-[12px] uppercase tracking-wider transition-colors ${
+      active ? 'border-border-strong bg-surface-3 text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
     }`;
 
   return (
-    <div>
-      <div className="flex items-center gap-1 mb-4">
-        {hasSummary && (
-          <button onClick={() => setTab('summary')} className={btnCls(tab === 'summary')}>
-            Summary
+    <div data-testid="mission-list-toggle-region">
+      {structureContent && (
+        <div role="group" aria-label="List view" className="mb-3 flex items-center gap-1">
+          <button type="button" aria-pressed={view === 'timeline'} onClick={() => choose('timeline')} className={btnCls(view === 'timeline')}>
+            Timeline
           </button>
-        )}
-        <button onClick={() => setTab('timeline')} className={btnCls(tab === 'timeline')}>
-          Timeline
-        </button>
-        <button onClick={() => setTab('feed')} className={btnCls(tab === 'feed')}>
-          Feed
-        </button>
-        {hasStructure && (
-          <button
-            onClick={() => setTab('structure')}
-            className={`hidden md:flex ${btnCls(tab === 'structure')}`}
-          >
+          <button type="button" aria-pressed={view === 'structure'} onClick={() => choose('structure')} className={btnCls(view === 'structure')}>
             Structure
           </button>
-        )}
-      </div>
-
-      {tab === 'summary' ? summaryContent
-        : tab === 'structure' ? structureContent
-        : tab === 'timeline' ? timelineContent
-        : feedContent}
+        </div>
+      )}
+      {view === 'structure' ? structureContent : timelineContent}
     </div>
   );
 }

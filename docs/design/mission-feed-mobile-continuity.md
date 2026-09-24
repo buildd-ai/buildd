@@ -2,14 +2,15 @@
 status: partially
 # No assertions yet, deliberately. Per docs/design/spec-conformance.md §2 a
 # passing assertion under a non-terminal status is `code_ahead` and gets
-# redispatched, and every S1 symbol already passes. Slice progress is tracked
-# in "Build plan" below; add wiring assertions (e.g. buildMissionFeedGroups
-# reachable from missions/[id]/page.tsx) when S3 lands and the status can move.
+# redispatched, and every S1–S3 symbol already passes. S3's wiring
+# (buildMissionFeedGroups reachable from missions/[id]/page.tsx) is asserted by
+# docs/specs/mission-feed.md, the active contract. Add this doc's assertions
+# when the last slice lands and the status can move to implemented.
 ---
 
 # Mission feed: mobile-first continuity (home → mission → task)
 
-**Status:** Partially — S1 (pure model and vocabulary) is built, with D2's single-derivation part deferred to S5; S2 (shared components, unwired) is built; S5 (cards and inbound links, closing D2 for cards) is built; S3, S4, S6 and S7 are proposed.
+**Status:** Partially — S1 (pure model and vocabulary) is built, with D2's single-derivation part deferred to S5; S2 (shared components) is built; S3 (mission detail layout) is built, with the md+ list migration deferred; S4 (task sheet) is built; S5 (cards and inbound links, closing D2 for cards) is built; S6 and S7 are proposed.
 **Related:** `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `missions/[id]/MissionFlightStripNav.tsx`, `missions/[id]/CondensedTimeline.tsx`, `missions/[id]/MissionTabs.tsx`, `missions/[id]/TaskPanelWrapper.tsx`, `missions/[id]/TaskPanel.tsx`, `missions/[id]/MissionAutoRefresh.tsx`, `missions/[id]/MissionFeed.tsx`, `missions/MissionGrid.tsx`, `missions/page.tsx`, `home/page.tsx`, `tasks/[id]/page.tsx`, `tasks/[id]/respond/page.tsx`, `(protected)/layout.tsx`, `components/FlightStrip.tsx`, `components/FlightDetailSheet.tsx`, `components/SegmentStrip.tsx`, `components/BottomSheet.tsx`, `components/MissionProgressBar.tsx`, `components/MissionProgress.tsx`, `components/missions/MissionSituationBlock.tsx`, `components/NeedsInputBanner.tsx`, `lib/flight-strip-nav.ts`, `lib/mission-state-view.ts`, `lib/mission-helpers.ts`, `lib/task-presentation.ts`, `lib/task-origin.ts`, `lib/action-card-context.ts`, `lib/initiative-breadcrumb.ts`, `packages/core/mission-helpers.ts`, and the S1 modules `lib/mission-pulse.ts`, `lib/mission-feed-groups.ts`, `lib/mission-task-href.ts`. Sibling docs: `docs/design/mission-flight-strip.md` (§7), `mission-delivery-arc.md`, `mission-state-progress.md`, `mobile-artifact-feed.md` (§2.2–2.3), `mission-status-mobile-header-spec.md` (§1), `mobile-feed-spec.md`, `docs/specs/mission-legibility.md` (§4), `docs/specs/surface-ia-home-missions-initiatives.md` (§8.5).
 
 ---
@@ -566,6 +567,23 @@ Each slice is one PR with tests written first. Ownership is disjoint so that sli
 - the grep tests for AC-15/16
 
 **Deps:** S1, S2. Keep it small and quick, because concurrent sessions touch `page.tsx`.
+
+**Built.** What S3 shipped, including where it differs from the plan above. The contract is `docs/specs/mission-feed.md`, which supersedes `docs/specs/timeline-mobile-rail.md`.
+
+- `page.tsx` loads and derives; the new `MissionDetailView` renders, in W2 order: sticky `MissionMasthead` (back label from `?from=` via `mastheadBack`, chip, Verified pill, header pulse, caption, ⋮), the situation, `MissionDelivery`, then the list, then the footer rows. The composition is a server component with every client piece passed in, so `MissionDetailView.test.tsx` renders the whole order for 3-, 15- and 45-task fixtures (AC-1/2/3/4/5). The page wraps it in `MissionFocusProvider` and keeps `TaskPanelWrapper` inside the provider as the sheet mount point for S4.
+- `MissionFeedList` is the one mobile list, over `buildMissionFeedGroups`. Folded rows (finished phases, `+N queued`, NEEDS YOU past three) stay in the DOM with `hidden`, so every deliverable is exactly one `mission-task-row` and a `#t-` arrival always finds its row. A reveal from the focus store unfolds the row's group and scrolls it once it is visible. The freeze gate holds the task set while frozen; moved rows slide into place over 200ms (`flipDeltas`). A mission with no phased task renders no phase header and never folds (mission-legibility §4). Slot markers focus the pinned row and stop the sheet's delegated handler.
+- `MissionDelivery` over `buildDeliverySteps` (`lib/mission-delivery.ts`) replaces the progress card, the mission PR card, the release card, both budget cards, the completion stat tiles and the agents row (D5). Empty steps are hidden. A blocked step opens it. The mission PR card and the review summary sit under Integrated, `MissionReleaseSection` under Shipped, the budget banner under Budget. The completion stats are the Integrated detail.
+- D6, S3 part: the Shipped step reads `deliveryReleaseInput`, which claims only "after next release" (a gated queue holding merged work) or "released" (a clean queue, a healthy continuous deploy). The workspace's queue depth and Release now appear once, inside the expanded Shipped step, never on the step line.
+- Footer rows: Orchestrator (a disclosure of the bookkeeping runs, mobile only because the md+ Timeline keeps its own footer), `Records · N` (`MissionRecordsSheet`: `selectMissionRecords`, then "All artifacts" in the same sheet; `?artifact=` opens it), Notes (`MissionNotesSheet` in `MissionFeed.tsx`, which mounts the feed only when opened) and Settings. The page-bottom artifact dump is gone.
+- Settings now also holds what used to crowd the header: title and description editing, the workspace link, next run, heartbeat badge, policy chip and initiative selector.
+- The situation's criteria affordance targets `#mission-criteria`, the Verified pill's id; the pill opens its sheet on that hash and on any click of a link to it. The "above ↑" copy is removed. Task affordances in the situation block link to `?task=` with `data-task-id`, so the sheet owner intercepts them.
+- D2 rule kept: beside a terminal mission's chip the Verified pill renders only when criteria pass.
+- Live workers on the detail page count `LIVE_WORKER_STATUSES`.
+- `deriveWorkLane` and `hasNoWorkLaneData` are deleted (L-4, AC-15). `reviewerRetryMap` is `buildReviewerRetryMap` (AC-21). `MissionFlightStripNav.tsx` is deleted. `mission-detail-retirements.test.ts` pins all of this with `git grep`.
+- **Deviation — md and up.** `CondensedTimeline` keeps `TimelineView` as the md+ list, behind the `MissionTabs` Timeline / Structure toggle (`?view=structure`, written with `replaceState`). It is not yet fed `MissionTaskRow`, so desktop still groups with the old chain classifier; that migration is a follow-up. `MobileRail` and the Summary view are removed from it. The md+ time-axis strip renders inline under the masthead (`MissionFlightStripInline`); a bar opens its task directly, because the md+ list has no focusable `#t-` rows yet. On mobile ⤢ opens `FlightDetailSheet` (D4).
+- **Deviation — rail model.** The rail's pure model (`buildRail` and friends in `lib/condensed-timeline.ts`) and its model tests remain; nothing renders them. Deleting them is a follow-up.
+- **Not built here:** NEEDS YOU from open mission questions and open decisions (the `ctx` maps of `buildMissionFeedGroups`; the page passes none yet), the Notes count, the `N new ↑` pill and the refresh scroll anchor (S7), and the sheet itself (S4).
+- `pulseDoneCounts` and `buildPulseCaption` moved into `lib/mission-pulse.ts` (re-exported from the S2 components), because the server page calls them and a function exported from a `'use client'` module is a client reference (`client-boundary.test.ts`).
 
 ### S4: Task sheet (parallel with S3)
 

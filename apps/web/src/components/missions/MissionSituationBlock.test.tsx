@@ -182,7 +182,7 @@ describe('affordanceFor', () => {
     expect(affordanceFor(null, { missionId: 'm-1' })).toBeNull();
   });
 
-  it('sends a criteria hold to the goal-criteria section', () => {
+  it('sends a criteria hold to the Verified pill, a real target on this page (AC-16)', () => {
     const view = deriveMissionStateView({
       ...base,
       criteriaGate: { state: 'failing', tone: 'warning', label: 'FAIL', detail: 'ships on trunk' },
@@ -192,7 +192,25 @@ describe('affordanceFor', () => {
     expect(affordanceFor(view.situation.focus, { missionId: 'm-1' })).toEqual({
       kind: 'internal',
       label: 'Go to goal criteria',
-      href: '#mission-goal-criteria',
+      href: '#mission-criteria',
     });
+  });
+
+  it("opens a mission task in the sheet over the mission, never a bare task-page push", () => {
+    const failed = { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] };
+    expect(affordanceFor(failed, { missionId: 'm-1' })).toEqual({
+      kind: 'internal',
+      label: 'Open the failed task',
+      href: '/app/missions/m-1?task=t-9',
+      taskId: 't-9',
+    });
+  });
+
+  it('marks a task affordance with data-task-id so the sheet owner intercepts it', () => {
+    const view = deriveMissionStateView(base);
+    const situation = { ...view.situation, focus: { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] } };
+    const html = renderToStaticMarkup(<MissionSituationBlock missionId="m-1" situation={situation} because={[]} />);
+    expect(html).toContain('data-task-id="t-9"');
+    expect(html).toContain('href="/app/missions/m-1?task=t-9"');
   });
 });

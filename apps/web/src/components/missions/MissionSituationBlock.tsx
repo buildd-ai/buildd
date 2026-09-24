@@ -29,6 +29,13 @@
 import Link from 'next/link';
 import type { CausalLink } from '@/lib/explain-types';
 import type { MissionSituation, WaitingOnDescriptor, WaitingOnTone } from '@/lib/mission-state-view';
+import { missionTaskHref } from '@/lib/mission-task-href';
+
+/**
+ * The element the criteria affordance targets: the Verified pill in the
+ * mission masthead, which opens the goal-criteria sheet on this hash.
+ */
+export const MISSION_CRITERIA_ANCHOR = 'mission-criteria';
 
 const TONE_BLOCK_CLASS: Record<WaitingOnTone, string> = {
   neutral: 'border-border-default bg-surface-3/40',
@@ -48,8 +55,12 @@ const TONE_TEXT_CLASS: Record<WaitingOnTone, string> = {
 export type PrimaryAffordance =
   /** Leaves the app — a PR on the forge. */
   | { kind: 'external'; label: string; href: string }
-  /** Somewhere else in the dashboard, or an anchor further down this page. */
-  | { kind: 'internal'; label: string; href: string }
+  /**
+   * Somewhere else in the dashboard, or an anchor on this page. `taskId` is set
+   * when the destination is one of this mission's tasks: the link carries
+   * `data-task-id`, so the task sheet opens over the mission instead of a push.
+   */
+  | { kind: 'internal'; label: string; href: string; taskId?: string }
   /** Nothing is wired for this blocker; the sentence carries it alone. */
   | null;
 
@@ -76,19 +87,13 @@ export function affordanceFor(
     }
     case 'criterion_failing':
     case 'criterion_unverified':
-      return { kind: 'internal', label: 'Go to goal criteria', href: '#mission-goal-criteria' };
+      return { kind: 'internal', label: 'Go to goal criteria', href: `#${MISSION_CRITERIA_ANCHOR}` };
     case 'task_failed':
-      return focus.taskIds[0]
-        ? { kind: 'internal', label: 'Open the failed task', href: `/app/tasks/${focus.taskIds[0]}` }
-        : null;
+      return taskAffordance('Open the failed task', focus.taskIds[0], ctx.missionId);
     case 'claim_deferral':
-      return focus.taskIds[0]
-        ? { kind: 'internal', label: 'Open the deferred task', href: `/app/tasks/${focus.taskIds[0]}` }
-        : null;
+      return taskAffordance('Open the deferred task', focus.taskIds[0], ctx.missionId);
     case 'task':
-      return focus.taskIds[0]
-        ? { kind: 'internal', label: 'Open the blocking task', href: `/app/tasks/${focus.taskIds[0]}` }
-        : null;
+      return taskAffordance('Open the blocking task', focus.taskIds[0], ctx.missionId);
     case 'dependency':
       return { kind: 'internal', label: 'Open the upstream mission', href: `/app/missions/${focus.missionId}` };
     case 'human_decision':
@@ -97,8 +102,13 @@ export function affordanceFor(
   }
 }
 
+function taskAffordance(label: string, taskId: string | undefined, missionId: string): PrimaryAffordance {
+  if (!taskId) return null;
+  return { kind: 'internal', label, href: missionTaskHref({ missionId, taskId, mode: 'sheet' }), taskId };
+}
+
 /** Render a causal link's hard ref as something clickable. Prose is never a ref. */
-function RefLink({ refs }: { refs: CausalLink['refs'] }) {
+function RefLink({ refs, missionId }: { refs: CausalLink['refs']; missionId: string }) {
   if (refs.prUrl) {
     return (
       <a
@@ -113,7 +123,11 @@ function RefLink({ refs }: { refs: CausalLink['refs'] }) {
   }
   if (refs.taskId) {
     return (
-      <Link href={`/app/tasks/${refs.taskId}`} className="font-mono text-accent-text hover:underline">
+      <Link
+        href={missionTaskHref({ missionId, taskId: refs.taskId, mode: 'sheet' })}
+        data-task-id={refs.taskId}
+        className="font-mono text-accent-text hover:underline"
+      >
         task {refs.taskId.slice(0, 8)}
       </Link>
     );
@@ -144,7 +158,7 @@ export default function MissionSituationBlock({ missionId, situation, because }:
   return (
     <div
       data-testid="mission-situation"
-      className={`mb-4 rounded border px-3 py-2.5 ${TONE_BLOCK_CLASS[situation.tone]}`}
+      className={`mb-3 border px-3 py-2.5 ${TONE_BLOCK_CLASS[situation.tone]}`}
     >
       <p
         data-testid="mission-situation-headline"
@@ -155,7 +169,7 @@ export default function MissionSituationBlock({ missionId, situation, because }:
 
       {why && (
         <p className="mt-1 text-[12px] text-text-secondary leading-snug">
-          {why.claim} <RefLink refs={why.refs} />
+          {why.claim} <RefLink refs={why.refs} missionId={missionId} />
         </p>
       )}
 
@@ -167,7 +181,7 @@ export default function MissionSituationBlock({ missionId, situation, because }:
               href={affordance.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors"
+              className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-[13px] font-semibold hover:bg-accent/90 transition-colors"
             >
               {affordance.label} →
             </a>
@@ -175,7 +189,8 @@ export default function MissionSituationBlock({ missionId, situation, because }:
             <Link
               data-testid="mission-primary-action"
               href={affordance.href}
-              className="inline-flex w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors"
+              data-task-id={affordance.taskId}
+              className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-[13px] font-semibold hover:bg-accent/90 transition-colors"
             >
               {affordance.label} →
             </Link>

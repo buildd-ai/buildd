@@ -18,7 +18,7 @@
  * - `context`: 8px with the current task ringed (sheet header, task page).
  */
 import { useMemo, useRef, useState } from 'react';
-import { PULSE_STATE_TOKEN, type PulseSegment, type PulseState } from '@/lib/mission-pulse';
+import { PULSE_STATE_TOKEN, pulseDoneCounts, type PulseSegment, type PulseState } from '@/lib/mission-pulse';
 import { useMissionFocusSnapshot, useMissionFocusStore } from './mission-focus-context';
 
 export type PulseVariant = 'card' | 'header' | 'context';
@@ -59,21 +59,9 @@ export const PULSE_STATE_LABEL: Record<PulseState, string> = {
   skipped: 'cancelled',
 };
 
-/** Done / total over rows (a folded phase segment counts its rows). */
-export function pulseDoneCounts(segments: readonly PulseSegment[]): { done: number; total: number } {
-  let done = 0;
-  let total = 0;
-  for (const s of segments) {
-    if (s.kind === 'phase') {
-      total += s.taskIds.length;
-      done += Math.round(s.fill * s.taskIds.length);
-    } else {
-      total += 1;
-      if (s.state === 'done' || s.state === 'skipped') done += 1;
-    }
-  }
-  return { done, total };
-}
+// Pure, so it lives in the plain model module: a server component may call it,
+// and a function exported from this 'use client' file is a client reference.
+export { pulseDoneCounts } from '@/lib/mission-pulse';
 
 // ─── Geometry (pure) ─────────────────────────────────────────────────────────
 

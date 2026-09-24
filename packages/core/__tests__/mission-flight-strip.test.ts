@@ -13,7 +13,7 @@ describe('computeMissionFlightStrip', () => {
     expect(strip.bars[0].lane).toBeNull();
   });
   it('uses the work-kind lane adapter and preserves unknowns in partially labelled missions', () => {
-    // Rule L-1: role builder → engineering → BUILD. The old deriveWorkLane
+    // Rule L-1: role builder → engineering → BUILD. The retired lane chain
     // chain read `taskClass === 'attempt'` first and said CHECK (Rule L-4).
     const strip = compute([{ ...task, taskClass: 'attempt', roleSlug: 'builder' }, { id: 'unknown', status: 'pending' }], [worker('one', 0, 100)]);
     expect(strip.lanes).toEqual(['think', 'build', 'check']);

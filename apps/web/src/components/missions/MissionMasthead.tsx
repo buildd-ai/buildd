@@ -25,7 +25,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { PulseSegment } from '@/lib/mission-pulse';
 import type { MissionSituation } from '@/lib/mission-state-view';
-import MissionPulse, { pulseDoneCounts } from './MissionPulse';
+import MissionPulse from './MissionPulse';
 import { MissionSituationLine } from './MissionSituationBlock';
 
 /**
@@ -43,12 +43,9 @@ export function nextMastheadFolded(prev: boolean, scrollTop: number): boolean {
   return scrollTop > FOLD_AT_PX;
 }
 
-/** `done/total`, plus `· N live` when agents are working. */
-export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liveWorkers?: number } = {}): string {
-  const { done, total } = pulseDoneCounts(segments);
-  const live = opts.liveWorkers ?? 0;
-  return live > 0 ? `${done}/${total} · ${live} live` : `${done}/${total}`;
-}
+// Pure, so it lives in the plain model module where a server component can
+// call it; re-exported here for the masthead's existing importers.
+export { buildPulseCaption } from '@/lib/mission-pulse';
 
 export interface MastheadChip {
   label: string;
