@@ -144,6 +144,14 @@ describe('phase fold defaults', () => {
     expect(blocked?.type === 'row' && blocked.row.blockedByTaskId).toBe('ask');
   });
 
+  it('a half-set phase (label without index, or index without label) is unphased — index and label agree', () => {
+    const { groups } = buildMissionFeedGroups([
+      t('h1', { missionPhaseIndex: null, missionPhaseLabel: 'THINK' }),
+      t('h2', { missionPhaseIndex: 3, missionPhaseLabel: null }),
+    ]);
+    for (const g of phaseGroups(groups)) expect([g.index, g.label]).toEqual([null, null]);
+  });
+
   it('an unphased mission is one current group with no label', () => {
     const groups = phaseGroups(buildMissionFeedGroups([t('a'), t('b')]).groups);
     expect(groups).toHaveLength(1);

@@ -45,4 +45,10 @@ describe('row anchors', () => {
     expect(parseMissionTaskHash('#mission-artifacts')).toBeNull();
     expect(parseMissionTaskHash('')).toBeNull();
   });
+
+  it('returns null instead of throwing on a malformed percent-escape', () => {
+    expect(() => parseMissionTaskHash('#t-%E0')).not.toThrow();
+    expect(parseMissionTaskHash('#t-%E0')).toBeNull();
+    expect(parseMissionTaskHash('#t-a%20b')).toBe('a b');
+  });
 });

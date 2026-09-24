@@ -8,6 +8,8 @@ import {
   orderDeliverables,
   PULSE_FOLD_THRESHOLD,
   PULSE_STATE_TOKEN,
+  PR_STATE_TOKEN,
+  type FeedPrState,
   type MissionFeedTaskInput,
 } from './mission-pulse';
 
@@ -74,6 +76,53 @@ describe('deriveFeedPrState', () => {
     expect(deriveFeedPrState({ status: 'completed', prNumber: 412, prLifecycleStatus: 'ci_failed' })?.state).toBe('ci_failed');
     expect(deriveFeedPrState({ status: 'completed', prNumber: 412, prLifecycleStatus: 'closed' })?.state).toBe('closed');
   });
+
+  // Every value of workers.prLifecycleStatus (packages/core/db/schema.ts), plus null.
+  const LIFECYCLE: Array<[string | null, FeedPrState, 'info' | 'success' | 'error']> = [
+    [null, 'open', 'info'],
+    ['pr_open', 'checks_running', 'info'],
+    ['ci_running', 'checks_running', 'info'],
+    ['ci_green', 'open', 'info'],
+    ['ci_failed', 'ci_failed', 'error'],
+    ['merged', 'merged', 'success'],
+    ['conflict', 'conflict', 'error'],
+    ['closed', 'closed', 'error'],
+    ['unresolvable', 'unresolvable', 'error'],
+  ];
+  for (const [lifecycle, state, token] of LIFECYCLE) {
+    it(`prLifecycleStatus=${lifecycle} → ${state} (${token})`, () => {
+      const pr = deriveFeedPrState({ status: 'completed', prNumber: 9, prLifecycleStatus: lifecycle });
+      expect(pr?.state).toBe(state);
+      expect(PR_STATE_TOKEN[pr!.state]).toBe(token);
+    });
+  }
+});
+
+describe('deriveFeedTaskState × PR lifecycle (completed task)', () => {
+  // [lifecycle, no open attempt, with an open fix attempt]
+  const TABLE: Array<[string | null, { state: string; needsYou: string | null }, { state: string; needsYou: string | null }]> = [
+    // Unknown lifecycle with a PR: the only safe reading is "open, yours to merge".
+    [null, { state: 'needs_you', needsYou: 'pr' }, { state: 'queued', needsYou: null }],
+    // CI has not reported / is running: the platform is handling it, auto-merge evaluates on green.
+    ['pr_open', { state: 'moving', needsYou: null }, { state: 'moving', needsYou: null }],
+    ['ci_running', { state: 'moving', needsYou: null }, { state: 'moving', needsYou: null }],
+    // Auto-merge runs on the green transition, so a PR still open at green was declined or auto-merge is off.
+    ['ci_green', { state: 'needs_you', needsYou: 'pr' }, { state: 'queued', needsYou: null }],
+    ['ci_failed', { state: 'needs_you', needsYou: 'pr' }, { state: 'failed', needsYou: null }],
+    ['conflict', { state: 'needs_you', needsYou: 'pr' }, { state: 'failed', needsYou: null }],
+    ['merged', { state: 'done', needsYou: null }, { state: 'done', needsYou: null }],
+    ['closed', { state: 'done', needsYou: null }, { state: 'done', needsYou: null }],
+    // Terminal: buildd cannot resolve the PR, so nobody can act on it from here.
+    ['unresolvable', { state: 'failed', needsYou: null }, { state: 'failed', needsYou: null }],
+  ];
+  for (const [lifecycle, bare, withAttempt] of TABLE) {
+    it(`prLifecycleStatus=${lifecycle}`, () => {
+      const task = t(`pr-${lifecycle}`, { status: 'completed', worker: { status: 'completed', prNumber: 9, prLifecycleStatus: lifecycle } });
+      expect(deriveFeedTaskState({ task, attempts: [] })).toMatchObject(bare);
+      const fix = t(`fix-${lifecycle}`, { taskClass: 'attempt', parentTaskId: task.id, status: 'pending' });
+      expect(deriveFeedTaskState({ task, attempts: [fix] })).toMatchObject(withAttempt);
+    });
+  }
 });
 
 describe('deriveFeedTaskState', () => {

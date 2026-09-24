@@ -164,23 +164,50 @@ export const PULSE_STATE_GLYPH: Record<PulseState, string> = {
 /** Why a row is in NEEDS YOU. */
 export type NeedsYouReason = 'input' | 'question' | 'decision' | 'pr' | 'failed';
 
-export type FeedPrState = 'open' | 'merged' | 'ci_failed' | 'closed';
+/**
+ * The PR as the feed shows it. Every `workers.prLifecycleStatus` value maps to
+ * exactly one of these (table-tested in mission-pulse.test.ts):
+ *
+ * | lifecycle            | FeedPrState      | tone    |
+ * |----------------------|------------------|---------|
+ * | null (unknown)       | open             | info    |
+ * | pr_open, ci_running  | checks_running   | info    |
+ * | ci_green             | open             | info    |
+ * | ci_failed            | ci_failed        | error   |
+ * | conflict             | conflict         | error   |
+ * | merged / mergedAt    | merged           | success |
+ * | closed               | closed           | error   |
+ * | unresolvable         | unresolvable     | error   |
+ */
+export type FeedPrState =
+  | 'open' | 'checks_running' | 'merged' | 'ci_failed' | 'conflict' | 'closed' | 'unresolvable';
 
 /** Design-token per PR state (the row's `#N` colour follows the real PR, not a constant). */
 export const PR_STATE_TOKEN: Record<FeedPrState, 'info' | 'success' | 'error'> = {
   open: 'info',
+  checks_running: 'info',
   merged: 'success',
   ci_failed: 'error',
+  conflict: 'error',
   closed: 'error',
+  unresolvable: 'error',
 };
 
 export function deriveFeedPrState(worker: MissionFeedWorkerInput | null | undefined): { number: number; state: FeedPrState } | null {
   if (!worker?.prNumber) return null;
-  const state: FeedPrState =
-    worker.mergedAt || worker.prLifecycleStatus === 'merged' ? 'merged'
-    : worker.prLifecycleStatus === 'closed' ? 'closed'
-    : worker.prLifecycleStatus === 'ci_failed' ? 'ci_failed'
-    : 'open';
+  if (worker.mergedAt) return { number: worker.prNumber, state: 'merged' };
+  const state: FeedPrState = (() => {
+    switch (worker.prLifecycleStatus) {
+      case 'merged': return 'merged';
+      case 'closed': return 'closed';
+      case 'unresolvable': return 'unresolvable';
+      case 'conflict': return 'conflict';
+      case 'ci_failed': return 'ci_failed';
+      case 'pr_open':
+      case 'ci_running': return 'checks_running';
+      default: return 'open'; // ci_green, or unknown
+    }
+  })();
   return { number: worker.prNumber, state };
 }
 
@@ -227,12 +254,27 @@ export function deriveFeedTaskState(row: DeliverableRow, ctx: MissionFeedContext
 
   if (task.status === 'completed') {
     const pr = deriveFeedPrState(task.worker);
-    if (pr && (pr.state === 'open' || pr.state === 'ci_failed')) {
-      // An open fix attempt means the platform owes the next push, not you.
-      if (openAttempt) return { state: pr.state === 'ci_failed' ? 'failed' : 'queued', needsYou: null, askedAt: null };
-      return needs('pr', fallbackAsk);
+    switch (pr?.state) {
+      // CI has not reported or is running. Auto-merge evaluates on the green
+      // transition, so the platform — not you — owns the next step.
+      case 'checks_running':
+        return { state: 'moving', needsYou: null, askedAt: null };
+      // Terminal: buildd cannot resolve this PR against GitHub. It belongs to
+      // the health surface, not the action queue (nobody can act on it here).
+      case 'unresolvable':
+        return { state: 'failed', needsYou: null, askedAt: null };
+      // Green (or unknown) and still open: auto-merge already ran on green and
+      // declined, or is off — the merge is yours. Red / conflicted with no fix
+      // attempt queued is yours too. An open fix attempt means the platform
+      // owes the next push, not you.
+      case 'open':
+        return openAttempt ? { state: 'queued', needsYou: null, askedAt: null } : needs('pr', fallbackAsk);
+      case 'ci_failed':
+      case 'conflict':
+        return openAttempt ? { state: 'failed', needsYou: null, askedAt: null } : needs('pr', fallbackAsk);
+      default: // merged, closed, or no PR
+        return { state: 'done', needsYou: null, askedAt: null };
     }
-    return { state: 'done', needsYou: null, askedAt: null };
   }
   if (task.status === 'failed') {
     return openAttempt ? { state: 'failed', needsYou: null, askedAt: null } : needs('failed', fallbackAsk);

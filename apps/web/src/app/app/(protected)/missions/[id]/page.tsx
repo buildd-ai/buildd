@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, buildReviewerRetryMap, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
@@ -588,19 +588,20 @@ export default async function MissionDetailPage({
   }
 
   // Map fix tasks dispatched after a reviewer requested changes (parentTaskId →
-  // retry task info), keeping the NEWEST retry per parent. `allTasks` is sorted
-  // ascending, so the old "first entry wins" loop kept the oldest (AC-21).
-  const reviewerRetryMap = buildReviewerRetryMap(
-    allTasks.map(t => ({
-      id: t.id,
-      status: t.status,
-      title: t.title,
-      parentTaskId: t.parentTaskId,
-      reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
-      createdAt: t.createdAt,
-      workers: (t.workers as Array<{ prNumber?: number | null }> | null | undefined) ?? null,
-    })),
-  );
+  // retry task info). allTasks is newest-first, so the first entry wins — giving
+  // us the most-recent retry for each original task.
+  const reviewerRetryMap = new Map<string, { id: string; status: string; title: string; prNumber: number | null }>();
+  for (const t of allTasks) {
+    if ((t as any).reviewerRetryPrNumber != null && t.parentTaskId && !reviewerRetryMap.has(t.parentTaskId)) {
+      const lw = (t.workers as any[])?.[0];
+      reviewerRetryMap.set(t.parentTaskId, {
+        id: t.id,
+        status: t.status,
+        title: t.title,
+        prNumber: lw?.prNumber ?? null,
+      });
+    }
+  }
 
   // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
   const timelineTasks = allTasks.filter(t => t.taskClass === 'work');

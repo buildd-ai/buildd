@@ -998,6 +998,32 @@ describe('selectMissionCompletionSummary (D3)', () => {
     expect(out).toEqual({ text: 'Deliverables: completed: 1\nGoal criteria: pass', source: 'completion_record', taskId: null });
   });
 
+  it('only COMPLETED deliverables date the last delivery — a cancelled or failed one touched later does not stale the final summary', async () => {
+    const { selectMissionCompletionSummary } = await import('./mission-helpers');
+    const out = selectMissionCompletionSummary({
+      tasks: [
+        task('w', { updatedAt: new Date(5_000) }),
+        task('p', { taskClass: 'bookkeeping', mode: 'planning', updatedAt: new Date(6_000), result: { summary: 'Both deliverables merged.' } }),
+        task('x', { status: 'cancelled', updatedAt: new Date(9_000) }),
+        task('f', { status: 'failed', updatedAt: new Date(9_500) }),
+      ],
+      completionNote: { body: 'Deliverables: completed: 1\nGoal criteria: pass', createdAt: new Date(10_000) },
+    });
+    expect(out).toEqual({ text: 'Both deliverables merged.', source: 'orchestrator', taskId: 'p' });
+  });
+
+  it('a mission completed by hand, with no completion record and no fresh orchestrator summary, shows no summary (by design)', async () => {
+    const { selectMissionCompletionSummary } = await import('./mission-helpers');
+    const out = selectMissionCompletionSummary({
+      tasks: [
+        task('w', { updatedAt: new Date(5_000), result: { summary: 'Shipped the lease column.' } }),
+        task('p', { taskClass: 'bookkeeping', mode: 'planning', updatedAt: new Date(4_000), result: { summary: 'Planned phase 2.' } }),
+      ],
+      completionNote: null,
+    });
+    expect(out).toBeNull();
+  });
+
   it('skips unauthored (fallback) and reaper summaries', async () => {
     const { selectMissionCompletionSummary } = await import('./mission-helpers');
     const out = selectMissionCompletionSummary({
@@ -1008,5 +1034,35 @@ describe('selectMissionCompletionSummary (D3)', () => {
       completionNote: null,
     });
     expect(out).toBeNull();
+  });
+});
+
+describe('deriveVerificationNeighbour (D2: no contradictory neighbour beside the state chip)', () => {
+  const VERDICTS = ['pass', 'fail', 'UNVERIFIED', 'NOT_EVALUATED', 'PENDING', null] as const;
+
+  it('a completed, archived or cancelled mission never renders a verification pill beside its chip, whatever the verdict', async () => {
+    const { deriveVerificationNeighbour } = await import('./mission-helpers');
+    for (const missionStatus of ['completed', 'archived', 'cancelled']) {
+      for (const overall of VERDICTS) {
+        expect(deriveVerificationNeighbour({ missionStatus, criteriaCount: 2, overall })).toBeNull();
+      }
+    }
+  });
+
+  it('no criteria, no pill', async () => {
+    const { deriveVerificationNeighbour } = await import('./mission-helpers');
+    expect(deriveVerificationNeighbour({ missionStatus: 'active', criteriaCount: 0, overall: 'fail' })).toBeNull();
+  });
+
+  it('an open mission shows the verdict with the shared gate vocabulary and token tones', async () => {
+    const { deriveVerificationNeighbour } = await import('./mission-helpers');
+    const at = (overall: (typeof VERDICTS)[number]) => deriveVerificationNeighbour({ missionStatus: 'active', criteriaCount: 2, overall });
+    expect(at('pass')).toMatchObject({ icon: '✓', text: 'Verified' });
+    expect(at('fail')).toMatchObject({ icon: '✗', text: 'Not met' });
+    expect(at('UNVERIFIED')).toMatchObject({ icon: '?', text: 'Needs verification' });
+    expect(at(null)).toMatchObject({ text: 'Needs verification' });
+    expect(at('NOT_EVALUATED')).toMatchObject({ text: 'No evaluator' });
+    expect(at('PENDING')).toMatchObject({ text: 'Evaluating' });
+    for (const v of VERDICTS) expect(at(v)!.cls).not.toMatch(/#[0-9a-f]{3,6}\b/i);
   });
 });

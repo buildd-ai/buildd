@@ -85,8 +85,8 @@ export interface MissionFeedModel<T extends MissionFeedTaskInput = MissionFeedTa
 
 const DONE_STATES = new Set<PulseState>(['done', 'skipped']);
 const ms = (d: Date | string | null | undefined) => (d == null ? NaN : new Date(d).getTime());
-const phaseKey = (t: MissionFeedTaskInput) =>
-  t.missionPhaseIndex != null && t.missionPhaseLabel != null ? `p${t.missionPhaseIndex}` : 'none';
+const hasPhase = (t: MissionFeedTaskInput) => t.missionPhaseIndex != null && t.missionPhaseLabel != null;
+const phaseKey = (t: MissionFeedTaskInput) => (hasPhase(t) ? `p${t.missionPhaseIndex}` : 'none');
 
 /** Rank inside a phase: failed, queued (ready before blocked), done, skipped. */
 function rank(row: FeedRow): number {
@@ -178,8 +178,9 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
     const first = p.rows[0].task;
     groups.push({
       kind: 'phase',
-      index: first.missionPhaseIndex != null && first.missionPhaseLabel != null ? first.missionPhaseIndex : null,
-      label: first.missionPhaseIndex != null ? first.missionPhaseLabel ?? null : null,
+      // A phase is only a phase with both halves; a half-set pair is unphased (same rule as phaseKey).
+      index: hasPhase(first) ? first.missionPhaseIndex! : null,
+      label: hasPhase(first) ? first.missionPhaseLabel! : null,
       ordinal: i + 1,
       status,
       collapsed: status === 'finished',

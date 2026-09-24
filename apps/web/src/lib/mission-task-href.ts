@@ -28,12 +28,17 @@ export function missionTaskAnchorId(taskId: string): string {
   return `t-${taskId}`;
 }
 
-/** Task id from a `#t-<id>` hash, or null for any other hash. */
+/** Task id from a `#t-<id>` hash, or null for any other (or malformed) hash. Never throws. */
 export function parseMissionTaskHash(hash: string | null | undefined): string | null {
   if (!hash) return null;
   const h = hash.startsWith('#') ? hash.slice(1) : hash;
   if (!h.startsWith('t-') || h.length <= 2) return null;
-  return decodeURIComponent(h.slice(2));
+  try {
+    return decodeURIComponent(h.slice(2));
+  } catch {
+    // A hand-edited or truncated URL ("#t-%E0") is not a task anchor.
+    return null;
+  }
 }
 
 /** The task's own full page. For a mission task it carries the mission back-link context. */

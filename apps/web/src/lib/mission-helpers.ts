@@ -1,4 +1,4 @@
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
@@ -288,6 +288,56 @@ export const HEALTH_CHIP_CLASS: Record<Exclude<Health, 'NOMINAL'>, string> = {
   STALLED: getMissionStateChip('stalled').cls,
 };
 
+// ─── D2: the verification neighbour ───────────────────────────────────────────
+
+export type CriteriaOverall = 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
+
+export interface VerificationNeighbour {
+  icon: string;
+  text: string;
+  title: string;
+  /** Token-only border/text classes. */
+  cls: string;
+}
+
+const TERMINAL_MISSION_STATUSES = new Set(['completed', 'archived', 'cancelled']);
+
+/**
+ * The goal-criteria pill that sits beside a mission's state chip on cards,
+ * or null when it must not render.
+ *
+ * Addendum D2: a mission shows one state chip with no contradictory
+ * neighbour. On a terminal mission the chip already answers "is this done"
+ * (COMPLETE), so any criteria pill beside it ("Needs verification",
+ * "Evaluating", even "Verified") is a second, competing state. The verdict of
+ * a closed mission belongs to its completion record, not to its chip row.
+ *
+ * Reads the same `deriveCriteriaGatePresentation` as the mission detail
+ * banner and the initiative KPI chip. NOT_EVALUATED / PENDING carry meaning
+ * the shared gate collapses (never evaluated vs. in flight), so they stay
+ * list-only nuances.
+ */
+export function deriveVerificationNeighbour(opts: {
+  missionStatus: string;
+  criteriaCount: number;
+  overall: CriteriaOverall;
+}): VerificationNeighbour | null {
+  if (TERMINAL_MISSION_STATUSES.has(opts.missionStatus)) return null;
+  if (opts.criteriaCount <= 0) return null;
+  if (opts.overall === 'NOT_EVALUATED') {
+    return { icon: '–', text: 'No evaluator', title: 'Criteria set, no evaluator available', cls: 'border-border-default text-text-muted/60' };
+  }
+  if (opts.overall === 'PENDING') {
+    return { icon: '⋯', text: 'Evaluating', title: 'Evaluation in progress', cls: 'border-border-default/70 text-text-muted/70' };
+  }
+  const gate = deriveCriteriaGatePresentation({ criteriaCount: opts.criteriaCount, overall: opts.overall });
+  if (!gate) return null;
+  const cls = CRITERIA_GATE_TONE_CLASS[gate.tone];
+  if (gate.state === 'clear') return { icon: '✓', text: 'Verified', title: 'All goal criteria verified', cls };
+  if (gate.state === 'failing') return { icon: '✗', text: 'Not met', title: 'Goal criteria not met', cls };
+  return { icon: '?', text: 'Needs verification', title: 'Goal criteria set but not yet verified', cls };
+}
+
 // ─── Reviewer retries ─────────────────────────────────────────────────────────
 
 /**
@@ -353,6 +403,11 @@ const isCompletionEvaluation = (title: string) =>
  * Work tasks and attempts are never candidates: a stale retry's "no action
  * needed" is a statement about the retry, not the mission. Unauthored
  * (`summarySource: 'fallback'`) and reaper-extracted summaries are skipped.
+ *
+ * A mission completed by hand (a manual status change, outside
+ * completeMissionIfVerified) usually has none of 1-3, and gets no summary.
+ * That is deliberate: the page used to print the latest task's summary there,
+ * which is exactly the D3 defect. No record of the decision → no summary.
  */
 export function selectMissionCompletionSummary(input: {
   tasks: ReadonlyArray<{
@@ -379,9 +434,12 @@ export function selectMissionCompletionSummary(input: {
     if (text) return { text, source: 'completion_task', taskId: t.id };
   }
 
+  // Only a DELIVERED deliverable dates the last delivery. A cancelled or failed
+  // one touched after the final summary (a tidy-up cancel, a late status write)
+  // delivered nothing, so it must not make that summary read as stale.
   const lastDeliverableAt = Math.max(
     -Infinity,
-    ...input.tasks.filter(t => t.taskClass !== 'attempt' && isDeliverableTask(t)).map(at),
+    ...newestFirst.filter(t => t.taskClass !== 'attempt' && isDeliverableTask(t)).map(at),
   );
   for (const t of nonDeliverable) {
     if (t.mode !== 'planning' || at(t) < lastDeliverableAt) continue;
