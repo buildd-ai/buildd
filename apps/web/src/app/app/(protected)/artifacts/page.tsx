@@ -1,17 +1,23 @@
-import { db } from '@buildd/core/db';
-import { workspaces, artifacts, workers, tasks } from '@buildd/core/db/schema';
-import { desc, inArray } from 'drizzle-orm';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
-import { isSystemWorkspace } from '@buildd/shared';
 import ArtifactList from '@/components/ArtifactList';
-import { artifactVisibilityScope } from '@/lib/artifact-scope';
-import { isReviewArtifact } from '@/lib/artifact-prominence';
+import {
+  loadArtifactsPage,
+  parseArtifactLimit,
+  parseArtifactScope,
+  ARTIFACTS_PAGE_SIZE,
+  ARTIFACTS_MAX_LIMIT,
+} from './load-artifacts';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ArtifactsPage() {
+export default async function ArtifactsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ limit?: string | string[]; scope?: string | string[] }>;
+}) {
   const user = await getCurrentUser();
 
   if (!user) {
@@ -32,81 +38,17 @@ export default async function ArtifactsPage() {
     );
   }
 
-  // Get workspace names for display
-  const userWorkspaces = await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, wsIds),
-    columns: { id: true, name: true },
-  });
-  const wsNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
-
-  // Get all workers across user's workspaces
-  const allWorkers = await db.query.workers.findMany({
-    where: inArray(workers.workspaceId, wsIds),
-    columns: { id: true, taskId: true, workspaceId: true },
-  });
-
-  const workerIds = allWorkers.map(w => w.id);
-
-  // Every artifact this user can see. Worker-scoped only used to be the whole
-  // query, which made mission- and initiative-level artifacts (worker_id NULL)
-  // permanently invisible here — see `artifactVisibilityScope` for the tenancy
-  // argument behind each arm.
-  const visibleArtifacts = await db.query.artifacts.findMany({
-    where: artifactVisibilityScope({ workspaceIds: wsIds, workerIds }),
-    orderBy: desc(artifacts.createdAt),
-  });
-
-  // Prominence is derived, not stored: the list ships every artifact and the
-  // client defaults to the review-worthy ones. No type is hidden outright.
-  const reviewCount = visibleArtifacts.filter(isReviewArtifact).length;
-
-  // Build mappings
-  const taskIds = [...new Set(allWorkers.filter(w => w.taskId).map(w => w.taskId!))];
-  const taskMap = new Map<string, { id: string; title: string }>();
-  if (taskIds.length > 0) {
-    const taskRows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, taskIds),
-      columns: { id: true, title: true },
-    });
-    for (const t of taskRows) {
-      taskMap.set(t.id, t);
-    }
-  }
-
-  const workerMeta = new Map<string, { taskId: string | null; workspaceId: string }>();
-  for (const w of allWorkers) {
-    workerMeta.set(w.id, { taskId: w.taskId, workspaceId: w.workspaceId });
-  }
-
+  const params = await searchParams;
+  const limit = parseArtifactLimit(params?.limit);
+  // The review filter runs in SQL, so the default view is a full page of
+  // review items rather than whatever share of the newest rows qualifies.
+  const scope = parseArtifactScope(params?.scope);
+  const page = await loadArtifactsPage(wsIds, limit, scope);
+  const nextLimit = Math.min(limit + ARTIFACTS_PAGE_SIZE, ARTIFACTS_MAX_LIMIT);
+  // Switching scope starts again from the first page.
+  const scopeHref = (s: 'review' | 'all') => `/app/artifacts?scope=${s}`;
+  const scopedTotal = scope === 'review' ? page.reviewCount : page.total;
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-
-  const artifactItems = visibleArtifacts.map(a => {
-    const meta = a.workerId ? workerMeta.get(a.workerId) : undefined;
-    const taskId = meta?.taskId || null;
-    const task = taskId ? taskMap.get(taskId) : null;
-    // A non-worker artifact carries its own workspace; fall back to the
-    // worker's for legacy rows that never had workspace_id set.
-    const workspaceId = a.workspaceId || meta?.workspaceId || null;
-    const workspaceName = workspaceId ? wsNameMap.get(workspaceId) || null : null;
-    return {
-      id: a.id,
-      type: a.type,
-      title: a.title,
-      content: a.content,
-      shareToken: a.shareToken,
-      visibility: (a.visibility as 'private' | 'public') ?? 'private',
-      metadata: (a.metadata || {}) as Record<string, unknown>,
-      createdAt: a.createdAt.toISOString(),
-      taskTitle: task?.title || null,
-      taskId: task?.id || null,
-      workspaceName,
-      // Prominence signals — the client re-applies `isReviewArtifact` so the
-      // scope toggle and this page agree by construction.
-      key: a.key,
-      missionId: a.missionId,
-      initiativeId: a.initiativeId,
-    };
-  });
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
@@ -115,17 +57,45 @@ export default async function ArtifactsPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Artifacts</h1>
             <p className="text-text-muted mt-1">
-              {reviewCount} for review of {visibleArtifacts.length} artifact{visibleArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length} workspace{userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length !== 1 ? 's' : ''}
+              {page.reviewCount} for review of {page.total} artifact{page.total !== 1 ? 's' : ''} across {page.workspaceCount} workspace{page.workspaceCount !== 1 ? 's' : ''}
+              {page.hasMore && (
+                <> &middot; showing the {page.items.length} most recent of {scopedTotal} {scope === 'review' ? 'for review' : 'in total'}</>
+              )}
             </p>
           </div>
         </div>
 
         <ArtifactList
-          artifacts={artifactItems}
+          artifacts={page.items}
           showWorkspace
-          showReviewFilter
+          serverScope={{
+            scope,
+            reviewCount: page.reviewCount,
+            totalCount: page.total,
+            hrefs: { review: scopeHref('review'), all: scopeHref('all') },
+            partial: page.hasMore,
+          }}
           baseUrl={baseUrl}
         />
+
+        {page.hasMore && limit >= ARTIFACTS_MAX_LIMIT && (
+          <p className="mt-6 text-center text-xs text-text-muted" data-testid="artifacts-cap-reached">
+            This list stops at the newest {ARTIFACTS_MAX_LIMIT}; older artifacts are not shown here.
+          </p>
+        )}
+
+        {page.hasMore && limit < ARTIFACTS_MAX_LIMIT && (
+          <div className="mt-6 flex justify-center">
+            <Link
+              href={`/app/artifacts?scope=${scope}&limit=${nextLimit}`}
+              scroll={false}
+              data-testid="artifacts-show-more"
+              className="text-sm text-text-secondary hover:text-text-primary underline"
+            >
+              Show older artifacts
+            </Link>
+          </div>
+        )}
       </div>
     </main>
   );

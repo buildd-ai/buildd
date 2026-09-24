@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useId, useRef } from 'react';
+import Dialog from './ui/Dialog';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -12,6 +13,16 @@ interface ConfirmDialogProps {
   loading?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+}
+
+type ConfirmVariant = NonNullable<ConfirmDialogProps['variant']>;
+
+/**
+ * Which button takes focus on open. Destructive variants start on Cancel so a
+ * stray Enter or Space cannot confirm a delete.
+ */
+export function confirmInitialFocus(variant: ConfirmVariant): 'cancel' | 'confirm' {
+  return variant === 'default' ? 'confirm' : 'cancel';
 }
 
 export default function ConfirmDialog({
@@ -26,31 +37,15 @@ export default function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (open) {
-      confirmButtonRef.current?.focus();
-    }
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !loading) {
-        onCancel();
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, loading, onCancel]);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const messageId = useId();
 
   if (!open) return null;
 
   const variantStyles = {
     danger: {
-      button: 'bg-status-error text-white hover:opacity-90',
+      button: 'border-2 border-status-error text-status-error bg-transparent hover:bg-surface-4',
       icon: (
         <svg className="w-6 h-6 text-status-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -58,7 +53,7 @@ export default function ConfirmDialog({
       ),
     },
     warning: {
-      button: 'bg-status-warning text-surface-1 hover:opacity-90',
+      button: 'border-2 border-status-warning text-status-warning bg-transparent hover:bg-surface-4',
       icon: (
         <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -78,44 +73,49 @@ export default function ConfirmDialog({
   const styles = variantStyles[variant];
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      onClick={(e) => e.target === e.currentTarget && !loading && onCancel()}
+    <Dialog
+      open={open}
+      onClose={onCancel}
+      labelledBy={titleId}
+      describedBy={messageId}
+      dismissible={!loading}
+      initialFocusRef={confirmInitialFocus(variant) === 'cancel' ? cancelButtonRef : confirmButtonRef}
     >
-      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-[calc(100vw-2rem)] sm:max-w-sm mx-4">
-        <div className="p-6 overflow-y-auto max-h-[70vh]">
-          <div className="flex items-start gap-4">
-            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center">
-              {styles.icon}
-            </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-lg font-semibold text-text-primary">
-                {title}
-              </h3>
-              <p className="mt-2 text-sm text-text-secondary whitespace-pre-wrap">
-                {message}
-              </p>
-            </div>
+      <div className="p-6 overflow-y-auto max-h-[70vh]">
+        <div className="flex items-start gap-4">
+          <div className="flex-shrink-0 w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center">
+            {styles.icon}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 id={titleId} className="text-lg font-semibold text-text-primary">
+              {title}
+            </h3>
+            <p id={messageId} className="mt-2 text-sm text-text-secondary whitespace-pre-wrap">
+              {message}
+            </p>
           </div>
         </div>
-        <div className="px-6 py-4 bg-surface-3 rounded-b-lg flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-          <button
-            onClick={onCancel}
-            disabled={loading}
-            className="w-full sm:w-auto px-4 py-2 text-sm text-text-secondary hover:bg-surface-4 rounded-lg disabled:opacity-50"
-          >
-            {cancelLabel}
-          </button>
-          <button
-            ref={confirmButtonRef}
-            onClick={onConfirm}
-            disabled={loading}
-            className={`w-full sm:w-auto px-4 py-2 text-sm rounded-lg disabled:opacity-50 ${styles.button}`}
-          >
-            {loading ? 'Processing…' : confirmLabel}
-          </button>
-        </div>
       </div>
-    </div>
+      <div className="px-6 py-4 bg-surface-3 rounded-b-lg flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+        <button
+          ref={cancelButtonRef}
+          type="button"
+          onClick={onCancel}
+          disabled={loading}
+          className="w-full sm:w-auto px-4 py-2 text-sm text-text-secondary hover:bg-surface-4 rounded-lg disabled:opacity-50"
+        >
+          {cancelLabel}
+        </button>
+        <button
+          ref={confirmButtonRef}
+          type="button"
+          onClick={onConfirm}
+          disabled={loading}
+          className={`w-full sm:w-auto px-4 py-2 text-sm rounded-lg disabled:opacity-50 ${styles.button}`}
+        >
+          {loading ? 'Processing…' : confirmLabel}
+        </button>
+      </div>
+    </Dialog>
   );
 }

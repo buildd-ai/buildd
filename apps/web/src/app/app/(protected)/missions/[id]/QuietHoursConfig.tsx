@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatHour } from '@/lib/heartbeat-helpers';
 import { Select } from '@/components/ui/Select';
+import Switch from '@/components/ui/Switch';
 
 interface QuietHoursConfigProps {
   missionId: string;
@@ -77,13 +78,7 @@ export default function QuietHoursConfig({
           </svg>
           <span className="text-[13px] font-medium text-text-primary">Quiet Hours</span>
         </div>
-        <button
-          onClick={handleToggle}
-          disabled={disabled}
-          className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-status-success/60' : 'bg-surface-3 border border-card-border'}`}
-        >
-          <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
-        </button>
+        <Switch checked={enabled} onChange={() => handleToggle()} disabled={disabled} label="Quiet hours" />
       </div>
 
       <p className="text-[11px] text-text-secondary mt-1">

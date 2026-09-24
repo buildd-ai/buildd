@@ -40,14 +40,29 @@ interface Props {
    * would be judged on `type` alone.
    */
   showReviewFilter?: boolean;
+  /**
+   * Server-driven scope, for callers that load one page already filtered in
+   * SQL. The toggle becomes navigation (so the server re-queries the other
+   * scope), its counts come from the caller, and rows are not re-filtered.
+   * Takes precedence over `showReviewFilter`.
+   */
+  serverScope?: {
+    scope: 'review' | 'all';
+    reviewCount: number;
+    totalCount: number;
+    hrefs: { review: string; all: string };
+    /** More rows exist than were loaded, so search covers the loaded rows only. */
+    partial?: boolean;
+  };
 }
 
 const TYPE_FILTERS = ['all', 'content', 'report', 'data', 'link', 'summary'] as const;
 
-export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showReviewFilter }: Props) {
+export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showReviewFilter, serverScope }: Props) {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
-  const [scope, setScope] = useState<'review' | 'all'>(showReviewFilter ? 'review' : 'all');
+  const [clientScope, setScope] = useState<'review' | 'all'>(showReviewFilter ? 'review' : 'all');
+  const scope = serverScope ? serverScope.scope : clientScope;
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   // Local overrides so share/unshare reflect immediately without a page refresh.
@@ -125,8 +140,12 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
 
   // Review scope narrows the pool BEFORE type pills and search, so every
   // count on the page is a count within the scope you are looking at.
-  const reviewCount = showReviewFilter ? artifacts.filter(isReviewArtifact).length : artifacts.length;
-  const scoped = showReviewFilter && scope === 'review' ? artifacts.filter(isReviewArtifact) : artifacts;
+  // A server-scoped page is already filtered in SQL and carries SQL counts.
+  const reviewCount = serverScope
+    ? serverScope.reviewCount
+    : showReviewFilter ? artifacts.filter(isReviewArtifact).length : artifacts.length;
+  const totalCount = serverScope ? serverScope.totalCount : artifacts.length;
+  const scoped = !serverScope && showReviewFilter && scope === 'review' ? artifacts.filter(isReviewArtifact) : artifacts;
 
   const filtered = scoped.filter((a) => {
     if (typeFilter !== 'all' && a.type !== typeFilter) return false;
@@ -169,7 +188,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
     setViewerOpen(true);
   }
 
-  if (artifacts.length === 0) {
+  if (totalCount === 0) {
     return (
       <div className="text-center py-16 text-text-muted">
         <svg className="w-12 h-12 mx-auto mb-4 text-text-muted/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -190,36 +209,63 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
         {artifacts.length > 3 && (
           <input
             type="text"
-            placeholder="Search artifacts…"
+            placeholder={serverScope?.partial ? 'Search loaded artifacts…' : 'Search artifacts…'}
+            aria-describedby={serverScope?.partial ? 'artifact-search-partial' : undefined}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="flex-1 px-3 py-2 border border-border-default rounded-lg bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
           />
         )}
       </div>
+      {serverScope?.partial && artifacts.length > 3 && (
+        <p
+          id="artifact-search-partial"
+          data-testid="artifact-search-partial"
+          className="-mt-4 mb-4 text-xs text-text-muted"
+        >
+          Search covers the {artifacts.length} artifacts loaded below. Load older artifacts to search further back.
+        </p>
+      )}
 
       {/* Review scope toggle — deliberate deliverables by default, everything
           else one click away (progressive disclosure, not a hidden list). */}
-      {showReviewFilter && (
+      {(showReviewFilter || serverScope) && (
         <div className="flex mb-4 border-2 border-border-strong w-fit" role="group" aria-label="Artifact scope">
           {([
             ['review', 'For review', reviewCount],
-            ['all', 'All artifacts', artifacts.length],
+            ['all', 'All artifacts', totalCount],
           ] as const).map(([value, label, count], i) => {
             const isActive = scope === value;
-            return (
+            const className = `px-3 py-1.5 text-xs font-medium font-mono uppercase tracking-wide transition-colors ${
+              i > 0 ? 'border-l-2 border-border-strong' : ''
+            } ${isActive ? 'bg-primary text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-3'}`;
+            const body = (
+              <>
+                {label}
+                <span className="ml-1.5 opacity-70">{count}</span>
+              </>
+            );
+            return serverScope ? (
+              <Link
+                key={value}
+                href={serverScope.hrefs[value]}
+                scroll={false}
+                aria-current={isActive ? 'page' : undefined}
+                data-testid={`artifact-scope-${value}`}
+                className={className}
+              >
+                {body}
+              </Link>
+            ) : (
               <button
                 key={value}
                 type="button"
                 onClick={() => setScope(value)}
                 aria-pressed={isActive}
                 data-testid={`artifact-scope-${value}`}
-                className={`px-3 py-1.5 text-xs font-medium font-mono uppercase tracking-wide transition-colors ${
-                  i > 0 ? 'border-l-2 border-border-strong' : ''
-                } ${isActive ? 'bg-primary text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-3'}`}
+                className={className}
               >
-                {label}
-                <span className="ml-1.5 opacity-70">{count}</span>
+                {body}
               </button>
             );
           })}
@@ -376,13 +422,19 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
       {!search && typeFilter === 'all' && scope === 'review' && scoped.length === 0 && (
         <p className="text-center py-8 text-text-muted text-sm">
           Nothing waiting for review.{' '}
-          <button
-            type="button"
-            onClick={() => setScope('all')}
-            className="underline hover:text-text-primary"
-          >
-            Show all {artifacts.length} artifacts
-          </button>
+          {serverScope ? (
+            <Link href={serverScope.hrefs.all} scroll={false} className="underline hover:text-text-primary">
+              Show all {totalCount} artifacts
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setScope('all')}
+              className="underline hover:text-text-primary"
+            >
+              Show all {totalCount} artifacts
+            </button>
+          )}
         </p>
       )}
     </div>
