@@ -21,9 +21,7 @@ import type { Clock } from '@/lib/realtime-throttle';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
 import { missionTaskAnchorId } from '@/lib/mission-task-href';
 import {
-  MISSION_STRUCTURAL_EVENTS,
   MissionLiveContext,
-  WORKSPACE_EVENTS,
   createMissionLiveStore,
   createMissionRefresher,
   type MissionRefresher,
@@ -32,6 +30,22 @@ import { addedIds, captureScrollAnchor, restoreScrollAnchor, rowsAbove, type Scr
 
 // useLayoutEffect warns under SSR; the measurement is client-only anyway.
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+/**
+ * Workspace-channel events the page follows. All but `worker:progress` are
+ * structural; `classifyMissionEvent` (MissionLiveStore.ts) decides per event.
+ */
+export const WORKSPACE_EVENTS = [
+  'task:created',
+  'task:claimed',
+  'worker:completed',
+  'worker:failed',
+  'task:children_completed',
+  'worker:artifact',
+  'worker:progress',
+] as const;
+/** Mission-channel events; the channel is already scoped to this mission. */
+export const MISSION_EVENTS = ['mission:note_posted', 'mission:completion_decision'] as const;
 
 const defaultScroller = () => (typeof document === 'undefined' ? null : document.querySelector('main'));
 
@@ -93,19 +107,20 @@ export default function MissionAutoRefresh({
     const missionChannelName = `${CHANNEL_PREFIX}mission-${missionId}`;
     const missionChannel = subscribeToChannel(missionChannelName);
 
-    const bound: Array<[typeof channel, string, (data: unknown) => void]> = [];
-    for (const event of WORKSPACE_EVENTS) {
-      const fn = (data: unknown) => refresher.onEvent(event, data);
-      channel?.bind(event, fn);
-      bound.push([channel, event, fn]);
-    }
     // `mission:completion_decision` is emitted for every real completion
     // decision (docs/specs/mission-task-lifecycle.md): a refusal updates the
     // criteria and the feed, an approval moves the mission to completed.
-    for (const event of MISSION_STRUCTURAL_EVENTS) {
-      const fn = (data: unknown) => refresher.onEvent(event, data);
-      missionChannel?.bind(event, fn);
-      bound.push([missionChannel, event, fn]);
+    const subscriptions: Array<[typeof channel, readonly string[]]> = [
+      [channel, WORKSPACE_EVENTS],
+      [missionChannel, MISSION_EVENTS],
+    ];
+    const bound: Array<[typeof channel, string, (data: unknown) => void]> = [];
+    for (const [ch, events] of subscriptions) {
+      for (const event of events) {
+        const fn = (data: unknown) => refresher.onEvent(event, data);
+        ch?.bind(event, fn);
+        bound.push([ch, event, fn]);
+      }
     }
 
     const onVisible = () => {

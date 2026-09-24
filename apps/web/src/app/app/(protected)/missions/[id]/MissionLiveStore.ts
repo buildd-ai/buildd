@@ -32,18 +32,8 @@ import { createThrottle, realClock, type Clock } from '@/lib/realtime-throttle';
 /** At most one full mission render per this window, per open tab. */
 export const MISSION_REFRESH_WINDOW_MS = 3_000;
 
-/** Workspace-channel events that change the page's structure. */
-export const WORKSPACE_STRUCTURAL_EVENTS = [
-  'task:created',
-  'task:claimed',
-  'worker:completed',
-  'worker:failed',
-  'task:children_completed',
-  'worker:artifact',
-] as const;
-/** Mission-channel events; the channel is already scoped to this mission. */
-export const MISSION_STRUCTURAL_EVENTS = ['mission:note_posted', 'mission:completion_decision'] as const;
-export const WORKSPACE_EVENTS = [...WORKSPACE_STRUCTURAL_EVENTS, 'worker:progress'] as const;
+// The subscribed event lists live with the subscriber (MissionAutoRefresh.tsx):
+// the Pusher coverage guards read event names from the files that bind them.
 
 // ── Store ────────────────────────────────────────────────────────────────────
 
