@@ -12,12 +12,14 @@
 #   scripts/qa/shoot.sh                                  # capture the full manifest
 #   scripts/qa/shoot.sh /app/tasks/<id> /app/missions/<id>   # capture specific pages
 #   DEV_USER_EMAIL=you@example.com scripts/qa/shoot.sh   # render as a real user's workspace
+#   QA_VIEWPORT=mobile scripts/qa/shoot.sh /app/missions/<id>   # phone-width shots
 #
 # Env vars:
 #   DEV_USER_EMAIL   — render as this real DB user (else a mock dev@localhost user)
 #   QA_PORT          — port to serve the app on (default: 3100, to avoid clashing with `bun dev`)
 #   QA_OUTPUT        — screenshot output dir (default: /tmp/qa)
 #   QA_ROUTES        — comma-separated ad-hoc paths (CLI args override this)
+#   QA_VIEWPORT      — "mobile" (390x844 touch phone) or WIDTHxHEIGHT (default: 1280x900)
 #   DISABLE_WRITES   — default "true" here, so a capture pass can't mutate the DB
 #   DATABASE_URL     — inherited from your .env; point it at a dev clone to be safe
 #
