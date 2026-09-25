@@ -67,7 +67,7 @@ assertions:
 - AC-3: GIVEN a PR with one EXPAND migration and one CONTRACT migration WHEN evaluated THEN the PR is rejected with a message containing `mixes EXPAND and CONTRACT` and includes the triggering statement.
 - AC-4: GIVEN a migration file containing an unrecognised SQL statement (e.g. `DO $$ BEGIN ... END $$`) WHEN classified THEN `operationClass` is `CONTRACT`.
 - AC-5: GIVEN a `schema.ts` change with no accompanying generated migration WHEN evaluated THEN `operationClass` is `CONTRACT` with reason `schema changed without a generated SQL migration`.
-- AC-6: GIVEN a workspace whose `escalateToPaths` does NOT contain `drizzle/` WHEN a PR with an EXPAND migration is submitted THEN the inspector still runs, classifies it as EXPAND, and the PR passes auto-merge safety. (Removing `drizzle/` from path config does NOT disable the gate.)
+- AC-6: GIVEN a workspace whose path configuration (detected risk-class paths, or a legacy stored `escalateToPaths`) does NOT contain `drizzle/` WHEN a PR with an EXPAND migration is submitted THEN the inspector still runs, classifies it as EXPAND, and the PR passes auto-merge safety. (Removing `drizzle/` from path config does NOT disable the gate.)
 - AC-7: GIVEN a PR that modifies or deletes an existing generated migration file WHEN evaluated THEN `operationClass` is `CONTRACT` (immutable migration history invariant).
 - AC-8: GIVEN two open PRs whose migrations share the same sequence number WHEN either is evaluated THEN `operationClass` is `CONTRACT` (collision guard).
 

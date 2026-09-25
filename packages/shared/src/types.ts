@@ -347,12 +347,15 @@ export interface RiskClassEntry {
   name: RiskClassName;
   /** Auto-detected paths for this class in this repo. Set by init scan, never by user. */
   detectedPaths: string[];
-  /** Optional user additions — visible, editable, but empty by default. */
+  /**
+   * @deprecated Hand-written additions are no longer accepted on write and are
+   * ignored when matching. Refresh `detectedPaths` with a re-scan instead.
+   */
   userPaths?: string[];
 }
 
 /**
- * New workspace policy model — supersedes `agentReview.escalateToPaths` when present.
+ * Workspace policy model — the only source of merge-policy paths.
  * A single preset selects per-class escalation behavior; detected paths are derived,
  * not authored. The reviewer sees intent ("destructive schema changes escalate here"),
  * not a raw glob list.
@@ -389,13 +392,21 @@ export interface MergePolicy {
   threshold?: {
     maxLines?: number;          // total additions+deletions; default 800
     maxSourceLines?: number;    // non-test lines only; default = maxLines
-    denyPaths?: string[];       // block if any touched file starts with these prefixes
+    /**
+     * @deprecated Hand-written; rejected on write. Still read (prefix match) as a
+     * one-release fallback for stored values — see `LEGACY_PATH_FALLBACK_NOTE`.
+     */
+    denyPaths?: string[];
   };
 
   // Tier 2 config (required when tier = 'agent-review')
   agentReview?: {
     reviewerRole: string;               // slug of reviewer skill in workspace_skills
-    escalateToPaths?: string[];         // force escalate if any touched file matches
+    /**
+     * @deprecated Hand-written; rejected on write. Still read (prefix match) as a
+     * one-release fallback for stored values — see `LEGACY_PATH_FALLBACK_NOTE`.
+     */
+    escalateToPaths?: string[];
     maxConfidenceThreshold?: number;    // 0–1; escalate if confidence < threshold (default 0.6)
     gateCondition?: 'approve-and-merge' | 'approve-only'; // default 'approve-and-merge'
   };
@@ -409,10 +420,69 @@ const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotify
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
+// ── Removed hand-written path fields ────────────────────────────────────────
+//
+// Merge-policy paths are auto-detected from the repo (POST /policy-init →
+// policyConfig.riskClasses[].detectedPaths). The hand-typed lists below are
+// refused on every write path; stored values are still read for one release.
+
+/**
+ * Dated marker for the read-only fallback that still honours stored
+ * `escalateToPaths` / `denyPaths`. Added 2026-09-24; remove the fallback (and
+ * these fields from the types) in the next release.
+ */
+export const LEGACY_PATH_FALLBACK_NOTE = 'legacy-hand-written-paths: read-only fallback added 2026-09-24, remove next release';
+
+/** 400 body text for a request that carries a removed path field. */
+export function removedPolicyPathFieldError(field: string): string {
+  return `${field} is no longer accepted: merge-policy paths are detected from the repo, not typed. ` +
+    `Use "Re-scan repo" on the workspace Merge Policy page (or MCP manage_workspaces action=init) to refresh them.`;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** First removed path field present in a MergePolicy-shaped value, as a dotted path under `prefix`. */
+export function findRemovedPathFieldInMergePolicy(mp: unknown, prefix = 'mergePolicy'): string | null {
+  if (!isObj(mp)) return null;
+  if (isObj(mp.threshold) && 'denyPaths' in mp.threshold) return `${prefix}.threshold.denyPaths`;
+  if (isObj(mp.agentReview) && 'escalateToPaths' in mp.agentReview) return `${prefix}.agentReview.escalateToPaths`;
+  return null;
+}
+
+/** First removed path field present in a WorkspacePolicyConfig-shaped value. */
+export function findRemovedPathFieldInPolicyConfig(pc: unknown, prefix = 'policyConfig'): string | null {
+  if (!isObj(pc) || !Array.isArray(pc.riskClasses)) return null;
+  const hit = pc.riskClasses.findIndex((e) => isObj(e) && 'userPaths' in e);
+  return hit === -1 ? null : `${prefix}.riskClasses[${hit}].userPaths`;
+}
+
+/**
+ * First removed path field present in a gitConfig-shaped write body (a full
+ * gitConfig, a partial one, or the config form's flat body). Presence is what
+ * counts — an empty array is refused too, so a stale client learns immediately.
+ */
+export function findRemovedPathFieldInGitConfig(gc: unknown, prefix = ''): string | null {
+  if (!isObj(gc)) return null;
+  const at = (k: string) => (prefix ? `${prefix}.${k}` : k);
+  for (const key of ['autoMergeDenyPaths', 'escalateToPaths']) {
+    if (key in gc) return at(key);
+  }
+  return findRemovedPathFieldInMergePolicy(gc.mergePolicy, at('mergePolicy'))
+    ?? findRemovedPathFieldInPolicyConfig(gc.policyConfig, at('policyConfig'));
+}
+
 export type MergePolicyParseResult =
   | { ok: true; policy: MergePolicy }
   | { ok: false; error: string; field?: string };
 
+/**
+ * Shape-check a MergePolicy. Deliberately still tolerates the deprecated
+ * `threshold.denyPaths` / `agentReview.escalateToPaths` keys, because this also
+ * backs the fail-soft READ path — rejecting them here would drop a stored legacy
+ * policy to the default. Write paths must call
+ * `findRemovedPathFieldInMergePolicy` first and refuse with
+ * `removedPolicyPathFieldError`.
+ */
 export function parseMergePolicy(val: unknown): MergePolicyParseResult {
   if (!val || typeof val !== 'object' || Array.isArray(val)) {
     return { ok: false, error: 'mergePolicy must be an object' };

@@ -319,7 +319,7 @@ describe('POST /api/workspaces/[id]/config', () => {
       method: 'POST',
       headers: new Headers({ 'content-type': 'application/json' }),
       body: JSON.stringify({
-        mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500, denyPaths: ['drizzle/'] } },
+        mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500 } },
       }),
     });
     const validRes = await POST(validReq, { params: mockParams });
@@ -530,6 +530,34 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.defaultBranch).toBe('dev');
       expect(written.sandbox.enabled).toBe(true);
       expect(written.sandbox.excludedCommands).toEqual(['docker']);
+    });
+
+    // Hand-written merge-policy paths are refused; the repo scan owns paths.
+    it('rejects each removed hand-written path field with a 400 that points to Re-scan repo', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+      const cases: Array<[Record<string, unknown>, string]> = [
+        [{ autoMergeDenyPaths: ['drizzle/'] }, 'autoMergeDenyPaths'],
+        [{ escalateToPaths: ['infra/'] }, 'escalateToPaths'],
+        [{ mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } } }, 'mergePolicy.agentReview.escalateToPaths'],
+        [{ mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } }, 'mergePolicy.threshold.denyPaths'],
+        [{ policyConfig: { preset: 'balanced', riskClasses: [{ name: 'auth_and_secrets', detectedPaths: [], userPaths: ['x'] }] } }, 'policyConfig.riskClasses[0].userPaths'],
+      ];
+      for (const [extra, field] of cases) {
+        const res = await post({ ...formBody, ...extra });
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.field).toBe(field);
+        expect(json.error).toContain('Re-scan repo');
+      }
+      expect(setArgs).toHaveLength(0);
+    });
+
+    it('a form save without those fields behaves exactly as before', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { autoMergeMaxLines: 400 } });
+      const res = await post({ ...formBody, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r' } } });
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.mergePolicy).toEqual({ tier: 'agent-review', agentReview: { reviewerRole: 'r' } });
+      expect(setArgs[0].gitConfig.autoMergeMaxLines).toBe(400);
     });
 
     it('keeps sandbox credentials when the form disables the sandbox', async () => {
@@ -954,6 +982,18 @@ describe('PATCH /api/workspaces/[id]/config — policyConfig (apply proposed pol
     const res = await patch({ policyConfig }, { authorization: 'Bearer bld_admin' });
     expect(res.status).toBe(200);
     expect(setArgs[0].configStatus).toBe('admin_confirmed');
+  });
+
+  it('rejects a hand-written userPaths entry with a 400 that points to Re-scan repo', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+    const res = await patch({
+      policyConfig: { ...policyConfig, riskClasses: [{ name: 'destructive_schema_change', detectedPaths: [], userPaths: ['db/seed.sql'] }] },
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.field).toBe('policyConfig.riskClasses[0].userPaths');
+    expect(json.error).toContain('Re-scan repo');
+    expect(setArgs).toHaveLength(0);
   });
 
   it('rejects a malformed policyConfig with 400', async () => {

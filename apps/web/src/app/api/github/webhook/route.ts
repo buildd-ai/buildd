@@ -2002,7 +2002,7 @@ async function maybeDispatchReviewer(
       files: prFiles,
     });
 
-    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
+    // Apply semantic risk-class policy override (detected policyConfig paths)
     const policyConfig = workspace.gitConfig?.policyConfig ?? null;
     const policy = applyPolicyConfigToMergePolicy(
       basePolicy,

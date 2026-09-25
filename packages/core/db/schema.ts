@@ -317,9 +317,9 @@ export interface WorkspaceGitConfig {
   // Takes precedence over autoMergePR when present.
   autoMergeOnGreenCI?: boolean;
 
-  // Safety rails for autoMergePR — if set, PRs that violate these are NOT auto-merged
-  // even when CI is green. A mission notification is sent instead.
-  autoMergeDenyPaths?: string[];      // e.g. ["drizzle/", "src/lib/auth/"] — any touched path starting with these blocks auto-merge
+  // Safety rails for autoMergePR — legacy, no longer consulted.
+  /** @deprecated Hand-written paths are refused on write (400); paths are auto-detected via policyConfig. */
+  autoMergeDenyPaths?: string[];
   autoMergeMaxLines?: number;         // total additions+deletions threshold (default 800)
 
   // Default runner preference for new tasks created in this workspace
@@ -331,8 +331,8 @@ export interface WorkspaceGitConfig {
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
 
-  // Semantic risk-class policy — supersedes mergePolicy.agentReview.escalateToPaths when set.
-  // Paths are derived by init scan; never hand-typed. Reviewer sees class intent, not raw globs.
+  // Semantic risk-class policy — the only source of merge-policy paths.
+  // Paths are derived by init scan (re-scan to refresh); never hand-typed. Reviewer sees class intent, not raw globs.
   policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
 
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.

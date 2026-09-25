@@ -4,15 +4,17 @@ import { parseMergePolicy } from '@buildd/shared';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 
+// Write-path schema. Hand-written `threshold.denyPaths` / `agentReview.escalateToPaths`
+// are deliberately absent, so `.strict()` refuses them; callers check
+// `findRemovedPathFieldInMergePolicy` first for the clearer 400. Reads go through
+// `parseMergePolicyRead`, which still tolerates stored values for one release.
 const thresholdSchema = z.object({
   maxLines: z.number().optional(),
   maxSourceLines: z.number().optional(),
-  denyPaths: z.array(z.string()).optional(),
 }).strict();
 
 const agentReviewSchema = z.object({
   reviewerRole: z.string(),
-  escalateToPaths: z.array(z.string()).optional(),
   maxConfidenceThreshold: z.number().optional(),
   gateCondition: z.enum(['approve-and-merge', 'approve-only']).optional(),
 }).strict();

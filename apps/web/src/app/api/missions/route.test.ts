@@ -503,6 +503,22 @@ describe('POST /api/missions', () => {
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
+  it('rejects a hand-written mergePolicy path with a 400 that points to Re-scan repo', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Legacy paths',
+        mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } },
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.field).toBe('mergePolicy.agentReview.escalateToPaths');
+    expect(body.error).toContain('Re-scan repo');
+  });
+
   it('rejects non-integer maxConcurrentTasks', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',

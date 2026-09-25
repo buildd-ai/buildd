@@ -17,7 +17,7 @@ const TIER_OPTIONS: { value: MergePolicyTier | 'inherit'; label: string; hint: s
   {
     value: 'auto-threshold',
     label: 'Auto-Threshold',
-    hint: 'Merge automatically when CI passes and PR is within size/path limits.',
+    hint: 'Merge automatically when CI passes and PR is within the size limit.',
   },
   {
     value: 'agent-review',
@@ -52,14 +52,8 @@ export default function MissionPolicyDrawer({
   const [maxLines, setMaxLines] = useState(
     String(initialPolicy?.threshold?.maxLines ?? 800),
   );
-  const [denyPaths, setDenyPaths] = useState<string[]>(
-    initialPolicy?.threshold?.denyPaths ?? [],
-  );
   const [reviewerRole, setReviewerRole] = useState(
     initialPolicy?.agentReview?.reviewerRole ?? '',
-  );
-  const [escalatePaths, setEscalatePaths] = useState<string[]>(
-    initialPolicy?.agentReview?.escalateToPaths ?? [],
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,13 +64,11 @@ export default function MissionPolicyDrawer({
     if (tier === 'auto-threshold') {
       p.threshold = {
         maxLines: parseInt(maxLines) || 800,
-        denyPaths,
       };
     }
     if (tier === 'agent-review') {
       p.agentReview = {
         reviewerRole,
-        escalateToPaths: escalatePaths,
       };
     }
     return p;
@@ -155,7 +147,7 @@ export default function MissionPolicyDrawer({
                   placeholder="800"
                 />
               </div>
-              <PathList label="Deny paths" paths={denyPaths} onChange={setDenyPaths} />
+              <DetectedPathsNote />
             </div>
           )}
 
@@ -178,11 +170,7 @@ export default function MissionPolicyDrawer({
                   <p className="mt-1 text-xs text-text-muted">No roles found in this workspace.</p>
                 )}
               </div>
-              <PathList
-                label="Escalate to human for paths"
-                paths={escalatePaths}
-                onChange={setEscalatePaths}
-              />
+              <DetectedPathsNote />
             </div>
           )}
 
@@ -216,60 +204,15 @@ export default function MissionPolicyDrawer({
   );
 }
 
-function PathList({
-  label,
-  paths,
-  onChange,
-}: {
-  label: string;
-  paths: string[];
-  onChange: (p: string[]) => void;
-}) {
-  const [draft, setDraft] = useState('');
-
-  function addDraft() {
-    const v = draft.trim();
-    if (v) {
-      onChange([...paths, v]);
-      setDraft('');
-    }
-  }
-
+/**
+ * Paths are not typed here. Risk-class paths are detected from the repo at the
+ * workspace level (Merge Policy → Re-scan repo) and apply to every mission.
+ */
+function DetectedPathsNote() {
   return (
-    <div>
-      <label className="text-xs font-medium text-text-secondary">{label}</label>
-      <div className="mt-1 space-y-1">
-        {paths.map((p, i) => (
-          <div key={i} className="flex items-center gap-2 min-h-[44px]">
-            <span className="flex-1 text-sm font-mono text-text-secondary px-2 py-1 bg-input rounded border border-border-default truncate">
-              {p}
-            </span>
-            <button
-              onClick={() => onChange(paths.filter((_, j) => j !== i))}
-              aria-label={`Remove ${p}`}
-              className="shrink-0 w-9 h-9 flex items-center justify-center text-status-error hover:opacity-75 transition-opacity rounded"
-            >
-              ✕
-            </button>
-          </div>
-        ))}
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addDraft(); } }}
-            placeholder="e.g. drizzle/"
-            className="flex-1 min-h-[44px] px-3 py-2 text-sm font-mono bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-          />
-          <button
-            onClick={addDraft}
-            className="shrink-0 px-3 min-h-[44px] text-sm border border-border-default rounded hover:bg-accent-soft transition-colors"
-          >
-            Add
-          </button>
-        </div>
-      </div>
-    </div>
+    <p className="text-xs text-text-muted leading-relaxed" data-testid="mission-policy-detected-paths-note">
+      Protected paths are detected from the repo by the workspace risk-class policy — use
+      Re-scan repo on the workspace Merge Policy page to refresh them.
+    </p>
   );
 }

@@ -12,7 +12,7 @@ import { runMission } from '@/lib/mission-run';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { resolveFeedActor, postMissionFeedEvent } from '@/lib/mission-feed';
 import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
-import { parseMergePolicy } from '@buildd/shared';
+import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import {
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
@@ -218,6 +218,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (mergePolicy !== undefined && mergePolicy !== null) {
+      const removedField = findRemovedPathFieldInMergePolicy(mergePolicy);
+      if (removedField) {
+        return NextResponse.json({ error: removedPolicyPathFieldError(removedField), field: removedField }, { status: 400 });
+      }
       const parsed = parseMergePolicy(mergePolicy);
       if (!parsed.ok) {
         return NextResponse.json({ error: parsed.error, field: parsed.field }, { status: 422 });

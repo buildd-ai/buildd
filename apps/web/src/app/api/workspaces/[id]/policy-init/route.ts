@@ -9,7 +9,7 @@
  * configStatus='admin_confirmed'.
  *
  * Body params:
- *   preset?: WorkspacePolicyPreset  — defaults to 'balanced'
+ *   preset?: WorkspacePolicyPreset  — defaults to the applied preset, else 'balanced'
  *   reviewerRole?: string           — slug of reviewer skill
  */
 
@@ -21,7 +21,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
-import { detectAllRiskClasses, inferPolicyConfigFromLegacy } from '@/lib/workspace-policy';
+import { detectAllRiskClasses } from '@/lib/workspace-policy';
 import type { WorkspacePolicyPreset, WorkspacePolicyConfig } from '@/lib/workspace-policy';
 import { detectSpecConformanceRoots } from '@buildd/core/spec-conformance-detect';
 import { buildTier3ScheduleParams } from '@buildd/core/spec-conformance-schedule';
@@ -57,8 +57,7 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const preset: WorkspacePolicyPreset = body.preset ?? 'balanced';
-  if (!['cautious', 'balanced', 'autonomous'].includes(preset)) {
+  if (body.preset !== undefined && !['cautious', 'balanced', 'autonomous'].includes(body.preset)) {
     return NextResponse.json({ error: 'preset must be cautious | balanced | autonomous' }, { status: 400 });
   }
 
@@ -74,6 +73,9 @@ export async function POST(
   if (!workspace) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
+
+  // A re-scan keeps the applied preset unless the caller picks a new one.
+  const preset: WorkspacePolicyPreset = body.preset ?? workspace.gitConfig?.policyConfig?.preset ?? 'balanced';
 
   const githubRepo = workspace.githubRepo;
   if (!githubRepo?.installation) {
@@ -124,26 +126,18 @@ export async function POST(
     workspace.gitConfig?.mergePolicy?.agentReview?.reviewerRole ??
     'reviewer';
 
-  // AC-6: If detection finds nothing but legacy escalateToPaths exist, migrate them
-  const existingEscalatePaths = workspace.gitConfig?.mergePolicy?.agentReview?.escalateToPaths ?? [];
-  let proposed: WorkspacePolicyConfig;
-
-  if (riskClasses.every((c) => c.detectedPaths.length === 0) && existingEscalatePaths.length > 0) {
-    proposed = inferPolicyConfigFromLegacy(existingEscalatePaths, existingReviewerRole, preset);
-  } else {
-    proposed = { preset, riskClasses, reviewerRole: existingReviewerRole };
-  }
-
-  // Carry forward any userPaths from the current policyConfig so they're not lost
-  const current = workspace.gitConfig?.policyConfig;
-  if (current) {
-    for (const entry of proposed.riskClasses) {
-      const existingEntry = current.riskClasses.find((c) => c.name === entry.name);
-      if (existingEntry?.userPaths?.length) {
-        entry.userPaths = [...(entry.userPaths ?? []), ...existingEntry.userPaths];
-      }
-    }
-  }
+  // Paths are detected, never carried over from hand-written lists: legacy
+  // `escalateToPaths` / `userPaths` are not migrated into the proposal (they
+  // were refused on write; stored values keep their read-only fallback).
+  const current = workspace.gitConfig?.policyConfig ?? null;
+  const proposed: WorkspacePolicyConfig = {
+    preset,
+    riskClasses,
+    reviewerRole: existingReviewerRole,
+    // Re-scanning refreshes paths; it must not silently flip other policy knobs.
+    ...(current?.reviewerPatchEvidence !== undefined ? { reviewerPatchEvidence: current.reviewerPatchEvidence } : {}),
+    ...(current?.reviewerPatchTokenBudget !== undefined ? { reviewerPatchTokenBudget: current.reviewerPatchTokenBudget } : {}),
+  };
 
   // Spec conformance (docs/design/spec-conformance.md §14): detect this
   // repo's docs layout the same way risk classes are detected above — never
@@ -163,6 +157,9 @@ export async function POST(
 
   return NextResponse.json({
     proposed,
+    // The applied policy this proposal would replace, so a caller can show the
+    // per-class path diff (the "Re-scan repo" sheet) before applying.
+    current,
     repoFullName,
     fileCount: files.length,
     detectedClassCount: riskClasses.filter((c) => c.detectedPaths.length > 0).length,
