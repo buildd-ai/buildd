@@ -4,11 +4,13 @@
  * A rebase or base merge moves the head SHA without changing what the PR
  * does. Comparing `base...sha` at both commits (GitHub's three-dot compare
  * diffs from the merge base) yields the PR's own diff at each point; if the
- * two are identical up to hunk positions, a verdict on the first still
+ * two carry the same added/removed lines, a verdict on the first still
  * describes the second. Per file, an identical blob SHA proves identical
  * content outright — the only check available for a file GitHub sends no
  * patch for (a large generated drizzle snapshot, a binary); otherwise the
- * normalized patches must match. Anything unverifiable — a failed read, a
+ * PR's own added/removed lines must match exactly, in order. Context the
+ * base changed around them is not the PR's change — CI on the new head is
+ * what checks the combination. Anything unverifiable — a failed read, a
  * truncated file list, a patchless file whose blob changed — is reported as
  * NOT equivalent.
  */
@@ -29,9 +31,17 @@ type Api = (installationId: number, path: string) => Promise<unknown>;
 /** GitHub's compare endpoint returns at most this many files. */
 const COMPARE_FILE_LIMIT = 300;
 
-/** Strip hunk line numbers: a base change above a hunk shifts them, nothing else. */
+/**
+ * Reduce a patch to the PR's own changed lines, in order. Hunk headers (line
+ * numbers, enclosing-function label) and context lines are dropped: a base
+ * change above or beside a hunk moves or alters those without changing what
+ * the PR itself adds or removes.
+ */
 export function normalizePatch(patch: string): string {
-  return patch.replace(/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/gm, '@@');
+  return patch
+    .split('\n')
+    .filter((line) => line.startsWith('+') || line.startsWith('-'))
+    .join('\n');
 }
 
 export async function isContentEquivalentHead(params: {
