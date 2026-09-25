@@ -13,6 +13,7 @@ import {
   type MissionCardTaskRow,
 } from './mission-card-view';
 import { pulseDoneCounts } from './mission-pulse';
+import { situationDetail } from './mission-state-view';
 
 const NOW = Date.now();
 let clock = Date.UTC(2026, 0, 1);
@@ -133,5 +134,74 @@ describe('F7a: no "0/0" caption', () => {
 
   it('only cancelled work also reads as no work', () => {
     expect(view(mission({ tasks: [task('a', { status: 'cancelled' })] })).caption).toBe('');
+  });
+});
+
+describe('F1: a paused mission whose open tasks stalled under a failing criterion needs you', () => {
+  // Two pending work tasks and no live worker: task health reads STALLED, so
+  // the precedence verdict is `blocked` — but the situation still says the
+  // failing "no open tasks" is the owner's to clear.
+  const stalledRow = () => mission({
+    status: 'paused',
+    tasks: [task('a', { status: 'completed' }), task('b', { title: 'Wire the claim route' }), task('c', { title: 'Backfill the column' })],
+    ...failingNoOpenTasks,
+  });
+
+  it('groups as attention, not PAUSED / HELD, and counts as active', () => {
+    const s = summarizeMissionForCard(stalledRow(), { now: NOW });
+    expect(s.healthState).toBe('STALLED');
+    expect(s.state.situation.focus?.kind).toBe('criterion_failing');
+    expect(s.group).toBe('attention');
+    expect(countActiveMissions([s.group])).toBe(1);
+  });
+
+  it('the situation names the blockers through the real derivation', () => {
+    const v = view(stalledRow());
+    const detail = situationDetail(v.situation, []);
+    expect(detail?.kind).toBe('blockers');
+    if (detail?.kind !== 'blockers') throw new Error('unreachable');
+    expect(detail.items.map(b => b.taskId)).toEqual(['b', 'c']);
+    expect(detail.items[0].status).toBe('queued');
+  });
+
+  it('a held mission in the same shape stays PAUSED / HELD (arming is a start)', () => {
+    expect(summarizeMissionForCard({ ...stalledRow(), status: 'active', isHeld: true }, { now: NOW }).group).toBe('paused');
+  });
+});
+
+describe('F3: a plan that shipped a PR is the deliverable (orchestrator-only missions)', () => {
+  const planRow = () => mission({
+    tasks: [task('plan', {
+      status: 'completed', taskClass: 'bookkeeping', mode: 'planning', title: 'Plan the rollout',
+      workers: [{ status: 'completed', prUrl: 'https://example.test/pr/3', prNumber: 3, mergedAt: new Date(NOW - 1000) }],
+    })],
+  });
+
+  it('counts as 1/1 and groups as review, like computeMissionProgress', () => {
+    const row = planRow();
+    const s = summarizeMissionForCard(row, { now: NOW });
+    expect({ done: s.completedTasks, total: s.totalTasks, progress: s.progress }).toEqual({ done: 1, total: 1, progress: 100 });
+    expect(s.group).toBe('review');
+    expect(view(row).caption).toBe('1/1');
+  });
+
+  it('a planning task with no PR is still bookkeeping', () => {
+    const row = mission({ tasks: [task('plan', { status: 'completed', taskClass: 'bookkeeping', mode: 'planning', title: 'Plan the rollout' })] });
+    expect(summarizeMissionForCard(row, { now: NOW }).totalTasks).toBe(0);
+  });
+});
+
+describe('the situation copy agrees with the grouping while work is in flight', () => {
+  it('a running mission with a failing "no open tasks" does not say "waiting on you"', () => {
+    const row = mission({
+      tasks: [task('a', { status: 'in_progress', workers: [{ status: 'running', startedAt: new Date(NOW - 60_000) }] }), task('b')],
+      ...failingNoOpenTasks,
+    });
+    const s = summarizeMissionForCard(row, { now: NOW });
+    expect(s.state.kind).toBe('running');
+    expect(s.group).toBe('running');
+    expect(s.state.situation.headline).toMatch(/^Running \(1 agent\)/);
+    expect(s.state.situation.headline).not.toMatch(/waiting on you/i);
+    expect(s.state.situation.headline).toContain('"no open tasks"');
   });
 });

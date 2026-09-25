@@ -1143,7 +1143,7 @@ function fromResolution(r: Resolution | null): OutstandingEntry | null {
  * "waiting on you to …" when the owner is the only one who can clear it,
  * a statement of fact when they are not.
  */
-function situationPhrase(d: WaitingOnDescriptor): string {
+function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {}): string {
   switch (d.kind) {
     case 'dependency':
       return 'waiting on an upstream mission to meet its gate condition';
@@ -1174,13 +1174,16 @@ function situationPhrase(d: WaitingOnDescriptor): string {
       if (d.stale) {
         return `waiting on you to re-run verification — ${named} failed when last checked, but no task is open now`;
       }
+      // While work is in flight a failing criterion is the work not being
+      // finished yet, not an ask (`missionNeedsYou`), so it is stated as fact.
+      const ask = opts.running ? '' : 'waiting on you — ';
       const n = d.blockers?.length ?? 0;
       if (n > 0) {
-        return `waiting on you — ${named} ${d.count === 1 ? 'is' : 'are'} failing on ${n === 1 ? '1 task' : `${n} tasks`}`;
+        return `${ask}${named} ${d.count === 1 ? 'is' : 'are'} failing on ${n === 1 ? '1 task' : `${n} tasks`}`;
       }
       return d.count === 1 && d.criteria[0]
-        ? `waiting on you — the goal criterion "${d.criteria[0]}" is failing`
-        : `waiting on you — ${d.count} goal criteria are failing`;
+        ? `${ask}the goal criterion "${d.criteria[0]}" is failing`
+        : `${ask}${d.count} goal criteria are failing`;
     }
     case 'criterion_unverified':
       return d.count === 1
@@ -1250,7 +1253,7 @@ function deriveSituation(
     };
   }
 
-  const phrase = situationPhrase(focus);
+  const phrase = situationPhrase(focus, { running: resolved.kind === 'running' });
   const headline = resolved.kind === 'running'
     ? `Running (${countAgents(input.activeAgents)}) — but ${phrase}.`
     : `${capitalize(phrase)}.`;
@@ -1326,9 +1329,10 @@ const NEEDS_YOU_KINDS: ReadonlySet<MissionStateKind> = new Set([
 
 /**
  * Facts that are the owner's to clear even when they did not win precedence
- * (a live worker, a hold). A criterion fact is NOT one of them unless it is the
- * verdict: while work is still moving, a failing "no open tasks" is the work
- * not being finished yet, not an ask.
+ * (a live worker, a hold). A criterion fact is NOT one of them: while work is
+ * still moving, a failing "no open tasks" is the work not being finished yet,
+ * not an ask. With nothing moving, `missionNeedsYou` reads it off the
+ * situation's focus instead.
  */
 const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
   'merge',
@@ -1349,7 +1353,13 @@ export function missionNeedsYou(view: MissionStateView): boolean {
   if (view.kind === 'complete') return false;
   if (NEEDS_YOU_KINDS.has(view.kind)) return true;
   const holdAsk = view.kind === 'held' ? view.waitingOn : null;
-  return view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind));
+  if (view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind))) return true;
+  // needsYou follows the situation. With no work in flight (not `running`) and
+  // no hold, a failing criterion the headline leads with is the owner's to
+  // clear, even when it did not win precedence: a paused mission whose open
+  // tasks stalled resolves to `blocked` (STALLED) yet reads "Waiting on you —
+  // "no open tasks" is failing on 2 tasks". Nothing automated moves it.
+  return view.kind !== 'running' && view.kind !== 'held' && view.situation.focus?.kind === 'criterion_failing';
 }
 
 // ─── The situation's one explanatory line ─────────────────────────────────────

@@ -77,10 +77,22 @@ const normTitle = (title: string) => stripTaskTypePrefix(title).trim().toLowerCa
 const SUPERSEDABLE = new Set(['cancelled', 'failed']);
 
 /**
+ * A planning task that opened a PR is a deliverable: in an orchestrator-only
+ * mission the plan IS the work (`computeMissionProgress` counts it the same
+ * way). Without this such a mission read 0/0, lost its REVIEW group and its
+ * detail page treated the landed plan as no work at all.
+ */
+export function isPlanDeliverable(t: Pick<MissionFeedTaskInput, 'mode' | 'worker'>): boolean {
+  return t.mode === 'planning' && !!t.worker?.prUrl;
+}
+
+/**
  * Addendum D1: retries and cancelled re-creations fold under their parent, so
  * the rows shown equal the deliverables counted.
  *
  * - `attempt` rows (`taskClass`) attach to `parentTaskId`.
+ * - Work tasks are rows, and so is a planning task that opened a PR
+ *   (`isPlanDeliverable`); every other planning/bookkeeping task is not.
  * - A cancelled or failed deliverable with a LATER deliverable of the same
  *   title (bracket prefix stripped) is a re-creation: it folds under the newest
  *   such task. Two completed tasks that share a title stay two rows.
@@ -96,7 +108,7 @@ export function foldMissionDeliverables<T extends MissionFeedTaskInput>(tasks: r
   for (const t of sorted) {
     // `taskClass` is the one attempt discriminator (task-class invariants A.5).
     if (isAttempt(t)) attempts.push(t);
-    else if (isDeliverableTask(t)) deliverables.push(t);
+    else if (isDeliverableTask(t) || isPlanDeliverable(t)) deliverables.push(t);
     else bookkeeping.push(t);
   }
 

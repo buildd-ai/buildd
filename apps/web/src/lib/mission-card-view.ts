@@ -251,6 +251,18 @@ export function missionCardGroup(input: {
   return healthToGroup(input.health, input.progress);
 }
 
+/**
+ * THE mission progress: the pulse's count (`pulseDoneCounts` /
+ * `missionDeliverableCounts`, F3) as a percentage. The card's grouping, the
+ * card's criteria gate and the detail page's (`explain`) all read this, so the
+ * n/N the caption prints and the "completion attempted" both gates ask about
+ * cannot come from two definitions. `progress` is 0 when nothing counts.
+ */
+export function missionCardProgress(tasks: readonly MissionCardTaskRow[]): { done: number; total: number; progress: number } {
+  const { done, total } = missionDeliverableCounts(tasks.map(toFeedTask));
+  return { done, total, progress: total > 0 ? Math.round((done / total) * 100) : 0 };
+}
+
 /** Most cards one surface builds in a request (Home, the list). */
 export const MISSION_CARD_VIEW_CAP = 30;
 
@@ -262,10 +274,7 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
   const schedule = row.schedule ?? null;
-  // F3: the pulse's count (`pulseDoneCounts` / `missionDeliverableCounts`), so
-  // the grouping reads the same n/N the caption prints.
-  const { done: completedTasks, total: totalTasks } = missionDeliverableCounts(tasks.map(toFeedTask));
-  const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+  const { done: completedTasks, total: totalTasks, progress } = missionCardProgress(tasks);
   const liveWorkers = opts.liveWorkers ?? countLiveWorkers(tasks);
 
   const nextRunAt = schedule?.nextRunAt ?? null;
