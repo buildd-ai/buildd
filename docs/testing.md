@@ -124,7 +124,9 @@ gh run watch <id> --exit-status && gh run download <id> -n qa-screenshots
 ```
 
 Inputs: `routes`, `viewport` (`mobile` | `WxH`, default desktop), `mission_id`,
-`task_id`, `judge` (default `false`). `scripts/visual-qa-workflow.test.ts` pins them.
+`task_id`. Dispatch only captures and uploads. The agent reads the PNGs and judges
+them itself; the per-token `/api/qa/judge` step runs only on the label-gated
+release-PR path. `scripts/visual-qa-workflow.test.ts` pins this.
 
 ## UI Fixtures
 

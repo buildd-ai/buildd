@@ -12,8 +12,9 @@ name: Visual QA
 # Ad-hoc screenshots (humans and worker agents — workers have no DATABASE_URL):
 #   gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
 #   gh run download <run-id> -n qa-screenshots
-# See .claude/skills/visual-review/SKILL.md. The judge only runs on dispatch
-# when -f judge=true.
+# See .claude/skills/visual-review/SKILL.md. Dispatch is capture + artifact
+# only: the judge (/api/qa/judge, per-token API billing) never runs on dispatch.
+# The dispatching agent reads the PNGs and judges them itself.
 
 on:
   pull_request:
@@ -41,11 +42,6 @@ on:
         type: string
         required: false
         default: ""
-      judge:
-        description: "Also judge the captures via /api/qa/judge and post a check run."
-        type: boolean
-        required: false
-        default: false
 
 # PR runs supersede each other per ref. Dispatches are independent requests
 # (two workers can shoot the same branch at once), so each gets its own group.
@@ -115,30 +111,38 @@ jobs:
             echo "::error::Failed to create Neon branch: $(echo "$RESPONSE" | jq -c '{code, message}')"
             exit 1
           fi
+          # Publish the id NOW: any later failure (bash -e) must still let the
+          # always-run cleanup step delete this prod clone.
+          echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
 
           CONNECTION_URI=$(echo "$RESPONSE" | jq -r '.connection_uris[0].connection_uri // empty')
           if [ -z "$CONNECTION_URI" ]; then
             ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
             if [ -n "$ENDPOINT_ID" ]; then
+              # Non-2xx is expected while the endpoint provisions; `|| true` falls
+              # through to manual construction instead of aborting (bash -e).
               CONN_RESPONSE=$(curl -sf \
                 -H "Authorization: Bearer $NEON_API_KEY" \
-                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
-              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb" || true)
+              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty' 2>/dev/null || true)
             fi
           fi
 
           if [ -z "$CONNECTION_URI" ]; then
             ENDPOINTS=$(curl -sf \
               -H "Authorization: Bearer $NEON_API_KEY" \
-              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
-            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints" || true)
+            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host // empty' 2>/dev/null || true)
+            if [ -z "$HOST" ]; then
+              echo "::error::Could not determine Neon endpoint host for branch $BRANCH_ID"
+              exit 1
+            fi
             CONNECTION_URI="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
           fi
 
           [[ "$CONNECTION_URI" != *"sslmode=require"* ]] && \
             CONNECTION_URI="${CONNECTION_URI}$(echo "$CONNECTION_URI" | grep -q '?' && echo '&' || echo '?')sslmode=require"
 
-          echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
           # Do NOT echo the connection URI — it contains credentials
           echo "database_url=$CONNECTION_URI" >> "$GITHUB_OUTPUT"
           echo "::notice::Neon branch $BRANCH_NAME ($BRANCH_ID) created from prod"
@@ -270,7 +274,7 @@ jobs:
       # The buildd server calls Anthropic using its own credentials.
       # Only BUILDD_QA_KEY (a bld_xxx API key) is needed in GitHub secrets.
       - name: Judge pages (via buildd)
-        if: github.event_name == 'pull_request' || inputs.judge
+        if: github.event_name == 'pull_request'
         continue-on-error: true
         run: bun scripts/qa/judge.ts
         env:
@@ -299,9 +303,9 @@ jobs:
           if-no-files-found: warn
 
       # --- Post PR comment + create report-only check run ---
-      # Only when the judge ran — an unjudged dispatch has nothing to report.
+      # Release-PR path only — dispatch has no judge, so nothing to report.
       - name: Post results
-        if: always() && (github.event_name == 'pull_request' || inputs.judge)
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v9
         env:
           QA_OUTPUT: /tmp/qa

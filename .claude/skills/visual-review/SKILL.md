@@ -57,14 +57,17 @@ gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 # → /tmp/qa-ci/screenshots/*.png, /tmp/qa-ci/a11y/*.json, /tmp/qa-ci/captures.json
 ```
 
-Then Read the PNGs.
+Then Read the PNGs. **You are the judge.** You're already on the team's OAuth
+seat and you know what you changed, so review the shots yourself against "What to
+check" below. Never call `/api/qa/judge` and never run `scripts/qa/judge.ts`. That
+endpoint bills per token on a server API key, and it's reserved for the
+label-gated release-PR path.
 
 | Input | Maps to | Notes |
 |---|---|---|
 | `routes` | `QA_ROUTES` | Comma-separated paths. Empty = full manifest (`apps/web/src/qa/visual-qa-routes.json`). |
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
 | `mission_id` / `task_id` | `QA_MISSION_ID` / `QA_TASK_ID` | Fill `:id` routes in manifest mode only. |
-| `judge` | (step gate) | `true` also runs the Claude judge and posts a check. Default off. |
 
 - The data is a scrubbed prod clone, so the ids in your routes must exist there.
   Take them from the dashboard, not from seed scripts. The CI user is one workspace

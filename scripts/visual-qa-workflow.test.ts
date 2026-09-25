@@ -24,14 +24,12 @@ const step = (name: RegExp) => {
 };
 
 describe('visual-qa.yml dispatch contract', () => {
-  test('workflow_dispatch exposes routes / viewport / mission_id / task_id / judge', () => {
+  test('workflow_dispatch exposes routes / viewport / mission_id / task_id', () => {
     const inputs = on.workflow_dispatch?.inputs ?? {};
     for (const k of ['routes', 'viewport', 'mission_id', 'task_id']) {
       expect(inputs[k]?.type).toBe('string');
       expect(inputs[k]?.required).toBe(false);
     }
-    expect(inputs.judge?.type).toBe('boolean');
-    expect(inputs.judge?.default).toBe(false);
   });
 
   test('capture maps the inputs to QA_* env (never interpolated into the script)', () => {
@@ -53,10 +51,12 @@ describe('visual-qa.yml dispatch contract', () => {
     expect(upload.with['retention-days']).toBeLessThanOrEqual(7);
   });
 
-  test('judge is opt-in on dispatch, still on for the release-PR path', () => {
-    const judge = step(/^Judge/);
-    expect(judge.if).toContain("github.event_name == 'pull_request'");
-    expect(judge.if).toContain('inputs.judge');
+  // /api/qa/judge bills per token. A dispatching agent is already on an OAuth
+  // seat and judges the PNGs itself, so dispatch must never reach the judge.
+  test('judge and its check run are release-PR only, never on dispatch', () => {
+    expect(on.workflow_dispatch?.inputs?.judge).toBeUndefined();
+    expect(step(/^Judge/).if).toBe("github.event_name == 'pull_request'");
+    expect(step(/^Post results/).if).toBe("always() && github.event_name == 'pull_request'");
   });
 
   test('release-PR label gate is unchanged', () => {
@@ -70,6 +70,18 @@ describe('visual-qa.yml dispatch contract', () => {
     const nameLine = (neon.run as string).split('\n').find(l => l.includes('BRANCH_NAME='));
     expect(nameLine).toContain('github.run_id');
     expect(nameLine).toContain('github.run_attempt');
+  });
+
+  // A curl failing after the branch exists used to abort (bash -e) before
+  // branch_id was written, so cleanup skipped and the prod clone leaked.
+  test('branch_id is published before anything that can fail after creation', () => {
+    const lines = (step(/^Create Neon/).run as string).split('\n');
+    const published = lines.findIndex(l => l.includes('branch_id=') && l.includes('GITHUB_OUTPUT'));
+    const created = lines.findIndex(l => /BRANCH_ID=\$\(/.test(l));
+    expect(created).toBeGreaterThan(-1);
+    expect(published).toBeGreaterThan(created);
+    const between = lines.slice(created, published).join('\n');
+    expect(between).not.toContain('curl');
   });
 
   test('concurrent dispatches on one ref do not cancel each other', () => {
