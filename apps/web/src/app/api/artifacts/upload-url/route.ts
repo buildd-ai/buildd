@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, artifacts, workspaces } from '@buildd/core/db/schema';
+import { workers, artifacts, workspaces, tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -21,6 +21,8 @@ import { appBaseUrl } from '@/lib/app-url';
  */
 export const MAX_ARTIFACT_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // POST /api/artifacts/upload-url - Get a presigned upload URL and create artifact record
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -36,8 +38,9 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { workerId, filename, mimeType, sizeBytes, title, type, metadata } = body as {
+  const { workerId, filename, mimeType, sizeBytes, title, type, metadata, missionId } = body as {
     workerId: string;
+    missionId?: string | null;
     filename: string;
     mimeType: string;
     sizeBytes: number;
@@ -111,6 +114,33 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Mission scoping, so a mission page can find the artifact (e.g. a visual
+  // audit's screenshots). The mission is always the worker's own task's,
+  // decided here, never trusted from the client: the same rule as
+  // create_artifact (workers/[id]/artifacts). An explicit `missionId` is only
+  // accepted when it names that same mission. Comparing ids (not
+  // missions.workspaceId) is deliberate: team-level missions have a NULL
+  // workspaceId, and a task's own mission is authorized by the task.
+  if (missionId !== undefined && missionId !== null && (typeof missionId !== 'string' || !UUID_RE.test(missionId))) {
+    return NextResponse.json({ error: 'missionId must be a uuid' }, { status: 400 });
+  }
+  const linkedTask = worker.taskId
+    ? await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { missionId: true },
+      })
+    : null;
+  const taskMissionId = linkedTask?.missionId ?? null;
+  if (missionId && missionId !== taskMissionId) {
+    return NextResponse.json(
+      { error: taskMissionId
+          ? "missionId does not match the worker's task mission"
+          : "missionId was sent but the worker's task has no mission" },
+      { status: 400 }
+    );
+  }
+  const artifactMissionId = taskMissionId;
+
   const uuid = randomUUID();
   let storageKey: string;
   try {
@@ -130,8 +160,14 @@ export async function POST(req: NextRequest) {
   const [artifact] = await db
     .insert(artifacts)
     .values({
+      // The row id IS the key's upload id (artifacts/<ws>/<id>/<name>). That
+      // binds this row to the object only this route minted: a row written
+      // elsewhere with a caller-chosen storageKey can't carry a matching id,
+      // which is what the visual-audit evidence check relies on.
+      id: uuid,
       workerId,
       workspaceId: worker.workspaceId || null,
+      missionId: artifactMissionId,
       type: artifactType,
       title: artifactTitle,
       storageKey,

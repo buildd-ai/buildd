@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { consumesRetryAttempt, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
 import { NextRequest } from 'next/server';
@@ -66,7 +66,7 @@ const mockExhaustMissionBudget = mock(() => Promise.resolve());
 // and resolves to the same task object the tests already set on
 // mockTasksFindFirst, wrapped in an array — so existing `outputRequirement`
 // setups drive both the relational and the select-based reads.
-const mockSelect = mock(() => {
+const selectAllColumns = () => {
   const chain: any = {
     from: () => chain,
     where: () => chain,
@@ -76,7 +76,27 @@ const mockSelect = mock(() => {
       mockTasksFindFirst().then((row: any) => (row ? [row] : [])).then(resolve, reject),
   };
   return chain;
-});
+};
+// Projection-honouring variant: a select returns ONLY the columns it names, so
+// a column dropped from a projection reads as undefined, as it would in SQL.
+const selectProjectedColumns = (projection?: Record<string, unknown>) => {
+  const chain: any = {
+    from: () => chain,
+    where: () => chain,
+    limit: () => chain,
+    orderBy: () => chain,
+    then: (resolve: any, reject: any) =>
+      mockTasksFindFirst()
+        .then((row: any) => {
+          if (!row) return [];
+          if (!projection) return [row];
+          return [Object.fromEntries(Object.keys(projection).map((k) => [k, row[k]]))];
+        })
+        .then(resolve, reject),
+  };
+  return chain;
+};
+const mockSelect = mock(selectAllColumns);
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -526,6 +546,15 @@ const mockFireTerminalRecord = mock((input: any) => { firedTerminalRecords.push(
 mock.module('@/lib/terminal-record-ledger', () => ({
   fireTerminalRecord: mockFireTerminalRecord,
   TERMINAL_OUTCOMES: ['completed', 'failed', 'refused', 'crashed'],
+}));
+
+// Visual-auditor evidence check. Its own queries/predicates are covered in
+// lib/visual-audit-evidence.test.ts; here only the gate's wiring is under test.
+const okEvidence = { ok: true, requiredRoutes: [], missing: [], emptyFindings: [], notUploaded: [], unlinkedIssues: [] };
+const mockLoadVisualAuditEvidence = mock((_opts: any) => Promise.resolve(okEvidence as any));
+mock.module('@/lib/visual-audit-evidence', () => ({
+  loadVisualAuditEvidence: mockLoadVisualAuditEvidence,
+  formatVisualEvidenceRejection: (v: any) => `Visual audit evidence incomplete. Missing: ${v.missing.join(', ')}`,
 }));
 
 import { GET, PATCH } from './route';
@@ -4029,6 +4058,142 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).hint).toBe('create_pr or create_artifact');
+    });
+
+    // The mission arm exists for rows written with workerId NULL (the mission
+    // artifacts route). A row owned by ANOTHER worker is that worker's
+    // deliverable: before upload-url set missionId it could not match; now
+    // every mission upload carries one, so without the NULL bound a sibling's
+    // screenshot (or the auditor's) satisfied this task's gate.
+    it("artifact_required is NOT satisfied by a sibling worker's mission artifact", async () => {
+      const matches = (pred: any, row: Record<string, any>): boolean => {
+        if (!pred) return true;
+        switch (pred.type) {
+          case 'and': return pred.args.every((a: any) => matches(a, row));
+          case 'or': return pred.args.some((a: any) => matches(a, row));
+          case 'not': return !matches(pred.expr, row);
+          case 'eq': return row[pred.field] === pred.value;
+          case 'isNull': return row[pred.field] === null || row[pred.field] === undefined;
+          case 'gte': return new Date(row[pred.field]).getTime() >= new Date(pred.value).getTime();
+          default: return true;
+        }
+      };
+      const siblingShot = {
+        'artifacts.workerId': 'worker-sibling',
+        'artifacts.missionId': 'mission-1',
+        'artifacts.updatedAt': new Date('2026-08-01T10:05:00.000Z'),
+      };
+      mockArtifactsFindMany.mockImplementation((args: any) =>
+        Promise.resolve(matches(args?.where, siblingShot) ? [{ id: 'art-1' }] : []),
+      );
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        branch: 'buildd/mission-research', commitCount: 0, prUrl: null, prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'), pendingInstructions: null, milestones: null, waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('create_pr or create_artifact');
+    });
+
+    describe('visual-auditor evidence check (replaces hasDeliverableArtifact)', () => {
+      const failing = {
+        ok: false, requiredRoutes: ['/app/missions'], missing: ['/app/missions @ desktop'],
+        emptyFindings: [], notUploaded: [], unlinkedIssues: [],
+      };
+
+      function auditWorker(overrides: Record<string, unknown> = {}) {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+          branch: 'buildd/audit', commitCount: 0, prUrl: null, prNumber: null,
+          startedAt: new Date('2026-08-01T10:00:00.000Z'), pendingInstructions: null, milestones: null, waitingFor: null,
+          ...overrides,
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1', roleSlug: 'visual-auditor',
+        });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+      }
+      const complete = () => PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Audited.', summarySource: 'agent' },
+      }), { params: mockParams });
+
+      beforeEach(() => {
+        mockLoadVisualAuditEvidence.mockReset();
+        mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+        // The gate keys off terminalTaskRow's `roleSlug`. With the all-columns
+        // select mock, dropping `roleSlug: tasks.roleSlug` from that projection
+        // still passed every test here while prod would never gate an audit.
+        mockSelect.mockImplementation(selectProjectedColumns as any);
+      });
+      afterEach(() => {
+        mockSelect.mockImplementation(selectAllColumns);
+      });
+
+      it('refuses with a message naming what is missing, and records the refusal', async () => {
+        auditWorker();
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        let capturedSet: any = null;
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((vals: any) => { capturedSet = vals; return { where: mock(() => ({ returning: mock(() => []) })) }; }),
+        });
+
+        const res = await complete();
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('/app/missions @ desktop');
+        expect(data.hint).toBe('visual_evidence');
+        expect(data.gate).toBeTruthy();
+        expect(capturedSet?.rejectedCompletionPayload?.reason).toBe('visual_evidence');
+        expect(mockLoadVisualAuditEvidence).toHaveBeenCalledWith({
+          workerId: WORKER_ID, taskId: 'task-1', missionId: 'mission-1', workspaceId: 'ws-1',
+          workerStartedAt: new Date('2026-08-01T10:00:00.000Z'),
+        });
+      });
+
+      it('a sibling mission artifact does not satisfy it (the generic artifact check is replaced)', async () => {
+        auditWorker();
+        mockArtifactsFindMany.mockResolvedValue([{ id: 'sibling-art' }] as any);
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        expect((await complete()).status).toBe(400);
+      });
+
+      it('a PR on the worker does not bypass it', async () => {
+        auditWorker({ prUrl: 'https://github.com/o/r/pull/7', prNumber: 7 });
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        expect((await complete()).status).toBe(400);
+      });
+
+      it('completes when the evidence is complete, with no artifact row of the generic kind', async () => {
+        auditWorker();
+        mockArtifactsFindMany.mockResolvedValue([]);
+        const res = await complete();
+        expect(res.status).toBe(200);
+        expect(mockLoadVisualAuditEvidence).toHaveBeenCalledTimes(1);
+      });
+
+      it('is not consulted for any other role', async () => {
+        auditWorker();
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1', roleSlug: 'builder',
+        });
+        mockArtifactsFindMany.mockResolvedValue([{ id: 'art-1' }] as any);
+        const res = await complete();
+        expect(res.status).toBe(200);
+        expect(mockLoadVisualAuditEvidence).not.toHaveBeenCalled();
+      });
     });
 
     // Regression for the 54-turn-run-lost incident: a research task declares

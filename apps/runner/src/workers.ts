@@ -48,6 +48,8 @@ import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { advertisedRoleSlugs } from './role-advertising';
+import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
@@ -1283,7 +1285,7 @@ export class WorkerManager {
         }>;
       };
       try {
-        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
+        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment);
       } catch (err: any) {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
@@ -1610,7 +1612,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, undefined, false, this.environment);
+      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment);
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -4260,25 +4262,23 @@ export class WorkerManager {
           // while the session is still alive rather than failing post-loop.
           let outputReqNudged = false;
           const outputReq = task.outputRequirement || 'auto';
-          if ((outputReq === 'pr_required' || outputReq === 'artifact_required') && outputReqNudgeCount < maxOutputReqNudges) {
+          if (outputReqNudgeCount < maxOutputReqNudges) {
             // A create_pr *call* is not proof of a PR — GitHub can reject it
             // (e.g. 422 when the branch was never pushed). Only count a PR that
             // a create_pr result actually confirmed (worker.prCreated, set in
             // handleMessage from the tool result), or a commit carrying PR info.
             const hasPR = worker.prCreated === true ||
               worker.commits.some((c: any) => c.prUrl || c.prNumber);
-            const hasArtifact = worker.toolCalls?.some((tc: any) =>
-              tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_artifact');
+            const nudge = outputRequirementNudge({
+              outputRequirement: outputReq,
+              roleSlug: task.roleSlug,
+              hasPR,
+              toolCalls: worker.toolCalls,
+            });
 
-            const unmet = outputReq === 'pr_required' ? !hasPR :
-              /* artifact_required */ !hasPR && !hasArtifact;
-
-            if (unmet) {
+            if (nudge) {
               const sessionRef = this.sessions.get(worker.id);
               if (sessionRef) {
-                const nudge = outputReq === 'pr_required'
-                  ? 'You are not done yet — this task requires a pull request. Create one using `buildd` action: create_pr, then call complete_task.'
-                  : 'You are not done yet — this task requires a deliverable. Create a PR (create_pr) or artifact (create_artifact), then call complete_task.';
                 console.log(`[Worker ${worker.id}] Output requirement not met (${outputReq}) — nudging agent`);
                 sessionLog(worker.id, 'info', 'output_requirement_nudge', outputReq, worker.taskId);
                 this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });

@@ -5,7 +5,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, VISUAL_AUDITOR_ROLE_SLUG, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import {
@@ -995,6 +995,16 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // Routing survives the retry: without it a visual-auditor audit would
+        // be claimable by any runner and skip its evidence check.
+        roleSlug: originalTask.roleSlug,
+        // A visual-auditor's required routes are re-derived at completion from
+        // its dependsOn (lib/visual-audit-evidence.ts). Its deps are the
+        // mission's builder tasks, already done, so copying them gates nothing
+        // new; dropping them would shrink the audit to "any one route".
+        ...(originalTask.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && Array.isArray(originalTask.dependsOn)
+          ? { dependsOn: originalTask.dependsOn }
+          : {}),
       })
       .returning({ id: tasks.id });
 
