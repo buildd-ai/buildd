@@ -9,12 +9,9 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
+import { normalizeBackend } from '@/lib/normalize-backend';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
-function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
-    return raw === 'claude' || raw === 'codex' ? raw : null;
-}
-
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;

@@ -7,16 +7,11 @@ import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE } from '@/lib/role-tool-scope';
-import { ColorSwatches } from '@/components/ColorSwatches';
+import { ColorSwatches, ROLE_COLOR_VALUES } from '@/components/ColorSwatches';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
   'WebSearch', 'WebFetch', 'Agent', 'NotebookEdit',
-];
-
-const COLOR_PALETTE = [
-  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
-  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
 
 interface WorkspaceOption {
@@ -59,7 +54,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
   const [canDelegateTo, setCanDelegateTo] = useState<string[]>([]);
   const [background, setBackground] = useState(false);
   const [maxTurns, setMaxTurns] = useState('');
-  const [color, setColor] = useState(COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)]);
+  const [color, setColor] = useState(ROLE_COLOR_VALUES[Math.floor(Math.random() * ROLE_COLOR_VALUES.length)]);
 
   function handleNameChange(value: string) {
     setName(value);
@@ -317,7 +312,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
 
             <div>
               <label className="block text-sm font-medium mb-1.5">Color</label>
-              <ColorSwatches colors={COLOR_PALETTE} value={color} onChange={setColor} />
+              <ColorSwatches value={color} onChange={setColor} />
             </div>
           </div>
         </div>

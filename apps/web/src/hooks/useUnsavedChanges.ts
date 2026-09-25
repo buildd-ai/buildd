@@ -6,7 +6,10 @@ import { formSnapshot, type DirtyOptions } from '@/lib/form-dirty';
  *
  * The first render's state is the saved baseline. After a successful save call
  * `markSaved(snapshotAtSubmit)` with the `snapshot` captured when the save
- * started, so edits typed while the request was in flight stay dirty.
+ * started, so edits typed while the request was in flight stay dirty. Prefer
+ * `snapshotOf(<payload rebuilt from the server's response>)` when the server
+ * echoes the saved row: a field the server dropped then stays dirty instead of
+ * reading as saved.
  */
 export function useDirtyState<T extends object>(state: T, opts: DirtyOptions<keyof T> = {}) {
   const snapshot = formSnapshot(state, opts);
@@ -15,6 +18,8 @@ export function useDirtyState<T extends object>(state: T, opts: DirtyOptions<key
     dirty: snapshot !== saved,
     snapshot,
     markSaved: (s: string = snapshot) => setSaved(s),
+    /** Snapshot another state value (e.g. the server's echo) the same way. */
+    snapshotOf: (s: T) => formSnapshot(s, opts),
   };
 }
 

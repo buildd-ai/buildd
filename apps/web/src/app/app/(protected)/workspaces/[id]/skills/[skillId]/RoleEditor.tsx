@@ -18,11 +18,6 @@ const AVAILABLE_TOOLS = [
   'WebSearch', 'WebFetch', 'Agent', 'NotebookEdit',
 ];
 
-const COLOR_PALETTE = [
-  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
-  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
-];
-
 /** Toggle selections: stored order carries no meaning, re-toggling appends. */
 const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo', 'connectorRefs'] as const };
 
@@ -94,6 +89,30 @@ interface Skill {
   isRole: boolean;
   repoUrl: string | null;
   createdAt: string;
+}
+
+/**
+ * The payload (+ scope) this editor sends, rebuilt from a stored skill with the
+ * same normalisation the form's initial state applies. Used as the post-save
+ * baseline from the server's echo.
+ */
+function payloadFromSkill(s: Skill) {
+  return {
+    name: s.name,
+    description: s.description || null,
+    content: s.content,
+    model: normalizeAlias(s.model),
+    defaultBackend: s.defaultBackend ?? null,
+    allowedTools: s.allowedTools,
+    canDelegateTo: s.canDelegateTo,
+    background: s.background,
+    maxTurns: s.maxTurns || null,
+    color: s.color,
+    connectorRefs: s.connectorRefs ?? [],
+    isRole: s.isRole,
+    repoUrl: s.repoUrl || null,
+    scope: (s.workspaceId === null ? 'team' : 'workspace') as Scope,
+  };
 }
 
 interface WorkspaceOption {
@@ -478,7 +497,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     isRole,
     repoUrl: repoUrl || null,
   };
-  const { dirty, snapshot, markSaved } = useDirtyState({ ...payload, scope }, DIRTY_OPTS);
+  const { dirty, snapshot, markSaved, snapshotOf } = useDirtyState({ ...payload, scope }, DIRTY_OPTS);
   useWarnOnUnload(dirty);
 
   async function handleSave() {
@@ -517,7 +536,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         }
         throw new Error(data.error || 'Failed to save');
       }
-      markSaved(submitted);
+      // Baseline = what the server says it stored; fall back to what we sent.
+      const data = await res.json().catch(() => null) as { skill?: Skill } | null;
+      markSaved(data?.skill ? snapshotOf(payloadFromSkill(data.skill)) : submitted);
 
       // If promoted to team-level, redirect to team role settings
       if (scope === 'team') {
@@ -941,7 +962,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             {/* Color */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Avatar Color</label>
-              <ColorSwatches colors={COLOR_PALETTE} value={color} onChange={setColor} size="md" />
+              <ColorSwatches value={color} onChange={setColor} size="md" />
             </div>
 
             {/* Delete */}

@@ -7,13 +7,10 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
+import { normalizeBackend } from '@/lib/normalize-backend';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
-}
-
-function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
-  return raw === 'claude' || raw === 'codex' ? raw : null;
 }
 
 /**

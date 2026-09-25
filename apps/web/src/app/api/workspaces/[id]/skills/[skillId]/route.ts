@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
+import { normalizeBackend } from '@/lib/normalize-backend';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -118,7 +119,7 @@ export async function PATCH(
     try {
         const body = await req.json();
         const { name, description, content, source, metadata, enabled,
-            model, allowedTools, canDelegateTo, background, maxTurns, color,
+            model, defaultBackend, allowedTools, canDelegateTo, background, maxTurns, color,
             mcpServers, requiredEnvVars, connectorRefs, isRole, repoUrl, accountId } = body;
 
         const existing = await db.query.workspaceSkills.findFirst({
@@ -143,6 +144,7 @@ export async function PATCH(
         if (metadata !== undefined) updates.metadata = metadata;
         if (enabled !== undefined) updates.enabled = enabled;
         if (model !== undefined) updates.model = model;
+        if (defaultBackend !== undefined) updates.defaultBackend = normalizeBackend(defaultBackend);
         if (allowedTools !== undefined) updates.allowedTools = allowedTools;
         if (canDelegateTo !== undefined) updates.canDelegateTo = canDelegateTo;
         if (background !== undefined) updates.background = background;

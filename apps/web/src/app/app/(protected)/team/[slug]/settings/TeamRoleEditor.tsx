@@ -19,11 +19,6 @@ const AVAILABLE_TOOLS = [
   'WebSearch', 'WebFetch', 'Agent', 'NotebookEdit',
 ];
 
-const COLOR_PALETTE = [
-  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
-  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
-];
-
 /** Toggle selections: stored order carries no meaning, re-toggling appends. */
 const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo'] as const };
 
@@ -65,6 +60,27 @@ interface Props {
   overrides: Role[];
   workspaces: WorkspaceOption[];
   delegateOptions: DelegateOption[];
+}
+
+/**
+ * The payload this editor sends, rebuilt from a stored role with the same
+ * normalisation the form's initial state applies. Used as the post-save
+ * baseline from the server's echo.
+ */
+function payloadFromRole(r: Role) {
+  return {
+    name: r.name,
+    description: r.description || null,
+    content: r.content,
+    model: normalizeAlias(r.model),
+    defaultBackend: r.defaultBackend ?? null,
+    allowedTools: r.allowedTools,
+    canDelegateTo: r.canDelegateTo,
+    background: r.background,
+    maxTurns: r.maxTurns || null,
+    color: r.color,
+    workspaceId: undefined as string | undefined,
+  };
 }
 
 /** Fields that can be individually overridden per workspace */
@@ -389,7 +405,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     // Only a move to a workspace changes anything on save.
     workspaceId: scope === 'workspace' && targetWorkspaceId ? targetWorkspaceId : undefined,
   };
-  const { dirty, snapshot, markSaved } = useDirtyState(payload, DIRTY_OPTS);
+  const { dirty, snapshot, markSaved, snapshotOf } = useDirtyState(payload, DIRTY_OPTS);
   useWarnOnUnload(dirty);
 
   async function handleSave() {
@@ -410,7 +426,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         const data = await res.json();
         throw new Error(data.error || 'Failed to save');
       }
-      markSaved(submitted);
+      // Baseline = what the server says it stored; fall back to what we sent.
+      const data = await res.json().catch(() => null) as { skill?: Role } | null;
+      markSaved(data?.skill ? snapshotOf(payloadFromRole(data.skill)) : submitted);
 
       // If scope changed to workspace, redirect to workspace skills editor
       if (scope === 'workspace' && targetWorkspaceId) {
@@ -742,7 +760,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             {/* Color */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Avatar Color</label>
-              <ColorSwatches colors={COLOR_PALETTE} value={color} onChange={setColor} size="md" />
+              <ColorSwatches value={color} onChange={setColor} size="md" />
             </div>
 
             {/* Delete */}
