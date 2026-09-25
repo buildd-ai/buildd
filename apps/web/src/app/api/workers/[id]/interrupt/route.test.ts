@@ -13,6 +13,7 @@ const mockWorkersFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCompletedTask = mock(() => Promise.resolve());
+const mockReleaseAndNotify = mock(() => Promise.resolve());
 
 // Set up the update chain mock
 function makeUpdateChain() {
@@ -72,6 +73,10 @@ mock.module('@/lib/task-dependencies', () => ({
   checkDependsOnResolved: mock(() => Promise.resolve()),
 }));
 
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mockReleaseAndNotify,
+}));
+
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers_table',
   tasks: 'tasks_table',
@@ -104,6 +109,8 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockTriggerEvent.mockResolvedValue(undefined);
     mockResolveCompletedTask.mockReset();
     mockResolveCompletedTask.mockResolvedValue(undefined);
+    mockReleaseAndNotify.mockReset();
+    mockReleaseAndNotify.mockResolvedValue(undefined);
     workersUpdateChain = makeUpdateChain();
     tasksUpdateChain = makeUpdateChain();
   });
@@ -200,6 +207,10 @@ describe('POST /api/workers/[id]/interrupt', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-rev-1', 'ws-1');
+    // This terminal transition happens outside PATCH /api/workers/[id], so the
+    // route must release the reviewer task's own path claims itself — a leak
+    // regression test for the path-claims fix.
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-rev-1', 'abandoned');
   });
 
   it('fires Pusher abort to worker channel when cancelQueued=true', async () => {
@@ -309,5 +320,6 @@ describe('POST /api/workers/[id]/interrupt', () => {
     expect(insertValues).not.toHaveBeenCalled();
     expect(mockResolveCompletedTask).not.toHaveBeenCalled();
     expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockReleaseAndNotify).not.toHaveBeenCalled();
   });
 });

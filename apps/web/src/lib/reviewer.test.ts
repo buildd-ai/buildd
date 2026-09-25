@@ -140,6 +140,14 @@ mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mockAppendPrActivity,
 }));
 
+const releaseAndNotifyCalls: Array<[string, string]> = [];
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mock((taskId: string, reason: string) => {
+    releaseAndNotifyCalls.push([taskId, reason]);
+    return Promise.resolve();
+  }),
+}));
+
 // buildDeltaReviewerContext dynamically imports '@/lib/github' only when a
 // caller omits prFiles/deltaFiles. Every existing test in this file supplies
 // those directly, so this mock is inert for them — it only engages for the
@@ -607,6 +615,7 @@ function resetSupersedeFixtures() {
   workerUpdateCalls = [];
   pusherCalls.length = 0;
   mockAppendPrActivity.mockClear();
+  releaseAndNotifyCalls.length = 0;
 }
 
 describe('supersedeReviewerTaskOnMerge', () => {
@@ -626,6 +635,10 @@ describe('supersedeReviewerTaskOnMerge', () => {
     expect(workerUpdateCalls).toHaveLength(0); // no live worker → nothing to interrupt
     expect(insertedMissionNote?.type).toBe('reviewer_superseded');
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+    // Path-claims leak regression: this cancellation happens outside
+    // PATCH /api/tasks/[id], so it must release the reviewer task's own path
+    // claims itself.
+    expect(releaseAndNotifyCalls).toEqual([['reviewer-task-1', 'abandoned']]);
   });
 
   it('interrupts the live worker when the reviewer task is RUNNING', async () => {
@@ -709,6 +722,7 @@ describe('supersedeReviewerTaskOnMerge', () => {
     expect(result).toEqual({ superseded: false, reviewerTaskId: null });
     expect(insertedMissionNote).toBeUndefined();
     expect(mockAppendPrActivity).not.toHaveBeenCalled();
+    expect(releaseAndNotifyCalls).toHaveLength(0);
   });
 
   it('does not record a supersession when the cancel write loses its CAS race', async () => {
@@ -728,6 +742,7 @@ describe('supersedeReviewerTaskOnMerge', () => {
     expect(result).toEqual({ superseded: false, reviewerTaskId: null });
     expect(insertedMissionNote).toBeUndefined();
     expect(mockAppendPrActivity).not.toHaveBeenCalled();
+    expect(releaseAndNotifyCalls).toHaveLength(0);
   });
 
   it('skips the mission note when the reviewer task has no mission', async () => {

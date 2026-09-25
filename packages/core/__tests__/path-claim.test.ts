@@ -31,6 +31,7 @@ const findManyQueues: Record<string, any[][]> = {
   pathClaimWaiters: [],
   missionNotes: [],
   workers: [],
+  tasks: [],
 };
 
 function queueFindMany(table: keyof typeof findManyQueues, rows: any[]) {
@@ -73,6 +74,7 @@ let pathClaimsFindMany = makeFindMany('pathClaims');
 let pathClaimWaitersFindMany = makeFindMany('pathClaimWaiters');
 let missionNotesFindMany = makeFindMany('missionNotes');
 let workersFindMany = makeFindMany('workers');
+let tasksFindMany = makeFindMany('tasks');
 
 // ── Module mocks (must come before import) ───────────────────────────────────
 
@@ -87,6 +89,7 @@ mock.module('../db/client', () => ({
       pathClaimWaiters: { findMany: (...args: any[]) => pathClaimWaitersFindMany(...args) },
       missionNotes: { findMany: (...args: any[]) => missionNotesFindMany(...args) },
       workers: { findMany: (...args: any[]) => workersFindMany(...args) },
+      tasks: { findMany: (...args: any[]) => tasksFindMany(...args) },
     },
     update: (...args: any[]) => mockUpdate(...args),
     insert: (...args: any[]) => mockInsert(...args),
@@ -99,6 +102,7 @@ mock.module('../db/schema', () => ({
   pathClaimWaiters: { workspaceId: 'workspace_id', blockingTaskId: 'blocking_task_id', waitingTaskId: 'waiting_task_id', notifiedAt: 'notified_at', id: 'id', registeredAt: 'registered_at', blockedPath: 'blocked_path' },
   missionNotes: { missionId: 'mission_id' },
   workers: { taskId: 'task_id', status: 'status', updatedAt: 'updated_at' },
+  tasks: { id: 'id', status: 'status' },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -132,6 +136,7 @@ import {
   rearmWaiter,
   registerWaiter,
   getActiveClaimsByWorkspace,
+  findStaleClaimHolderTaskIds,
 } from '../path-claim';
 import { PARKED_HOLDER_TTL_MS } from '../path-claim-ttl';
 
@@ -148,6 +153,7 @@ function resetQueues() {
   pathClaimWaitersFindMany = makeFindMany('pathClaimWaiters');
   missionNotesFindMany = makeFindMany('missionNotes');
   workersFindMany = makeFindMany('workers');
+  tasksFindMany = makeFindMany('tasks');
   mockPathsOverlap.mockReset();
   mockUpdate.mockReset();
   mockInsert.mockReset();
@@ -291,6 +297,120 @@ describe('getActiveClaimsByWorkspace', () => {
     workersFindMany = mock(async () => { throw new Error('db down'); });
     const map = await getActiveClaimsByWorkspace(WS);
     expect(map.size).toBe(1);
+  });
+
+  // ── Terminal-holder backstop (path-claims leak fix) ──────────────────────
+  //
+  // A leak that this task exists to close: a terminal-transition write that
+  // was supposed to release a task's claims (releaseAndNotify) never ran, so
+  // the row stays active forever and defers every overlapping sibling task.
+  // These read-time filters cannot clear the stale row (only the maintenance
+  // sweep does that), but they must stop it from blocking anyone new.
+
+  it('drops a holder whose task itself is terminal, even with a stale live-looking worker', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A, path: 'src/a.ts' }]);
+    // Live-status query (dropExpiredParkedHolders): still reports a live worker —
+    // the race this guards is a worker whose own PATCH hasn't landed yet.
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'running', updatedAt: new Date() }]);
+    queueFindMany('tasks', [{ id: TASK_A, status: 'cancelled' }]);
+
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect(map.size).toBe(0);
+  });
+
+  it('drops a holder with at least one known worker and none of them live', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A, path: 'src/a.ts' }]);
+    queueFindMany('workers', []); // live-status query: no live worker
+    queueFindMany('tasks', [{ id: TASK_A, status: 'pending' }]); // task never flipped terminal
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'superseded' }]); // all-workers query
+
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect(map.size).toBe(0);
+  });
+
+  it('keeps a holder when no worker row is found at all for it — missing data, not proof of staleness', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A, path: 'src/a.ts' }]);
+    queueFindMany('workers', []); // live-status query
+    queueFindMany('tasks', [{ id: TASK_A, status: 'pending' }]);
+    queueFindMany('workers', []); // all-workers query: nothing found
+
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect(map.size).toBe(1);
+  });
+
+  it('keeps a holder whose task is non-terminal and has a live worker', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A, path: 'src/a.ts' }]);
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'running', updatedAt: new Date() }]);
+    queueFindMany('tasks', [{ id: TASK_A, status: 'assigned' }]);
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'running' }]);
+
+    const map = await getActiveClaimsByWorkspace(WS);
+    expect(map.size).toBe(1);
+  });
+});
+
+describe('findStaleClaimHolderTaskIds', () => {
+  beforeEach(resetQueues);
+
+  it('returns an empty array when there are no active claims anywhere', async () => {
+    queueFindMany('pathClaims', []);
+    const stale = await findStaleClaimHolderTaskIds();
+    expect(stale).toEqual([]);
+    expect(tasksFindMany).not.toHaveBeenCalled();
+  });
+
+  it('names a task holding an active claim whose status is terminal', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A }]);
+    queueFindMany('tasks', [{ id: TASK_A, status: 'failed' }]);
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'failed' }]);
+
+    const stale = await findStaleClaimHolderTaskIds();
+    expect(stale).toEqual([TASK_A]);
+  });
+
+  it('names a task with a known worker that is not itself terminal but every worker is', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A }]);
+    queueFindMany('tasks', [{ id: TASK_A, status: 'pending' }]);
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'superseded' }]);
+
+    const stale = await findStaleClaimHolderTaskIds();
+    expect(stale).toEqual([TASK_A]);
+  });
+
+  it('does not name a task that has a live worker', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A }]);
+    queueFindMany('tasks', [{ id: TASK_A, status: 'assigned' }]);
+    queueFindMany('workers', [{ taskId: TASK_A, status: 'running' }]);
+
+    const stale = await findStaleClaimHolderTaskIds();
+    expect(stale).toEqual([]);
+  });
+
+  it('does not name a task with no worker rows found at all', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_A }]);
+    queueFindMany('tasks', [{ id: TASK_A, status: 'pending' }]);
+    queueFindMany('workers', []);
+
+    const stale = await findStaleClaimHolderTaskIds();
+    expect(stale).toEqual([]);
+  });
+});
+
+describe('checkPathClaimConflict — terminal-holder backstop', () => {
+  beforeEach(resetQueues);
+
+  // The acceptance criterion for the path-claims leak fix: a claim held by a
+  // task whose worker is terminal must not defer an overlapping pending task,
+  // even when the leaked row's own `releaseAndNotify` call never happened.
+  it('a claim held by a task whose worker is terminal does not defer an overlapping pending task', async () => {
+    queueFindMany('pathClaims', [{ taskId: TASK_B, path: 'src/shared.ts' }]);
+    queueFindMany('workers', []); // parked-TTL query: no live worker
+    queueFindMany('tasks', [{ id: TASK_B, status: 'completed' }]);
+    queueFindMany('workers', [{ taskId: TASK_B, status: 'completed' }]); // all-workers query
+    mockPathsOverlap.mockReturnValue(true);
+
+    const result = await checkPathClaimConflict(WS, TASK_A, ['src/shared.ts']);
+    expect(result).toBeNull();
   });
 });
 

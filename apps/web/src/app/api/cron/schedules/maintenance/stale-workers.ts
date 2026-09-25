@@ -4,6 +4,7 @@ import { reportOps } from '@buildd/core/report-ops';
 import { and, lt, inArray } from 'drizzle-orm';
 import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 /**
  * Lightweight stale-worker cleanup: mark workers as failed when their
@@ -51,6 +52,15 @@ export async function runStaleWorkerCleanup(now: Date): Promise<number> {
             .update(tasks)
             .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: now })
             .where(inArray(tasks.id, orphanTaskIds));
+
+          // These workers were just terminated outside PATCH /api/workers/[id],
+          // so this cleanup must release their path claims itself — a runner
+          // that went offline never got to report a real outcome, so nothing
+          // landed. Without this a retried task's own stale claim can block
+          // its own re-claim, or strand any sibling task overlapping its paths.
+          for (const orphanTaskId of orphanTaskIds) {
+            await releaseAndNotify(orphanTaskId, 'abandoned');
+          }
         }
         heartbeatOrphans = orphanedWorkers.length;
       }
