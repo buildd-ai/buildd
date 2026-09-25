@@ -1,6 +1,31 @@
+---
+status: implemented
+# Promoted on merge of #2786/#2787/#2788. Each assertion names a shipped piece:
+# the scoped role gate, code-derived routes, the evidence check on completion,
+# and the qa/ screenshot key minted at upload. The generic multi-workspace
+# phase in "Implementation sketch" is still unbuilt and carries no assertion.
+assertions:
+  - id: "explicit-role-gate"
+    type: "symbol_reachable"
+    symbol: "roleSlugGate"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+  - id: "required-routes-from-files"
+    type: "symbol"
+    name: "requiredRoutes"
+    path: "packages/core/visual-qa-routes.ts"
+  - id: "evidence-check-on-completion"
+    type: "symbol_reachable"
+    symbol: "loadVisualAuditEvidence"
+    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+  - id: "qa-key-minted-at-upload"
+    type: "symbol_reachable"
+    symbol: "buildAuditScreenshotKey"
+    entry: "apps/web/src/app/api/artifacts/upload-url/route.ts"
+---
+
 # Visual QA Auditor for Missions
 
-**Status:** Proposed — PR 1 (teeth) and PR 3 (loop) in progress
+**Status:** Implemented — #2786 (teeth), #2787 (loop), #2788 (visible). The generic multi-workspace phase is still proposed.
 **Related:** `packages/core/surface-audit.ts`, `apps/web/src/lib/mission-surface-audit.ts`,
 `apps/web/src/lib/mission-completion.ts`, `apps/web/src/app/api/workers/claim/route.ts`,
 `apps/runner/src/env-scan.ts`, `apps/web/src/lib/default-roles.ts`, `apps/web/src/lib/storage-keys.ts`,
