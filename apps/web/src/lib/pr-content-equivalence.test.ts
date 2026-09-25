@@ -74,6 +74,22 @@ describe('isContentEquivalentHead', () => {
     expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(true);
   });
 
+  it('ignores context lines the base changed around the PR\'s own hunk', async () => {
+    const { api } = apiReturning({
+      [BASE.fromSha]: { files: [{ ...file('x.ts', '@@ -1,3 +1,3 @@ fn\n old-neighbour\n-a\n+b'), sha: 'blob-1' }] },
+      [BASE.toSha]: { files: [{ ...file('x.ts', '@@ -1,3 +1,3 @@ fn2\n new-neighbour\n-a\n+b'), sha: 'blob-2' }] },
+    });
+    expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(true);
+  });
+
+  it('still rejects when the PR\'s own added or removed lines changed', async () => {
+    const { api } = apiReturning({
+      [BASE.fromSha]: { files: [{ ...file('x.ts', '@@ -1,2 +1,2 @@\n ctx\n-a\n+b'), sha: 'blob-1' }] },
+      [BASE.toSha]: { files: [{ ...file('x.ts', '@@ -1,2 +1,2 @@\n ctx\n-a\n+c'), sha: 'blob-2' }] },
+    });
+    expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(false);
+  });
+
   it('rejects a patchless file whose blob changed', async () => {
     const { api } = apiReturning({
       [BASE.fromSha]: { files: [{ filename: 'big.json', status: 'added', sha: 'blob-1' }] },
