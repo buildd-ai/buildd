@@ -25,7 +25,7 @@ import {
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
-import { hostUserMemoryExcludes } from './host-memory-excludes';
+import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memory-excludes';
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
@@ -3735,8 +3735,16 @@ export class WorkerManager {
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
         // 'user' is needed for skills in ~/.claude/skills, but must not carry
-        // the host operator's own CLAUDE.md / rules into the worker.
-        settings: { claudeMdExcludes: hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR) },
+        // the host operator's own CLAUDE.md / rules into the worker. 'project'
+        // walks every ancestor of the cwd, which for a nested worktree includes
+        // the primary clone — its CLAUDE.md arrived headed with the primary path
+        // and sent agents there (see primaryCloneMemoryExcludes).
+        settings: {
+          claudeMdExcludes: [
+            ...hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR),
+            ...primaryCloneMemoryExcludes(cwd, repoPath),
+          ],
+        },
         permissionMode,
         systemPrompt,
         enableFileCheckpointing: true,
@@ -3979,6 +3987,12 @@ export class WorkerManager {
         PreToolUse: [
           ...(readJailPrefixes
             ? [{ hooks: [this.hookFactory.createReadJailHook(worker, cwd, readJailPrefixes)] }]
+            : []),
+          // Worktree confinement: a nested worktree's session must not cd into,
+          // run in, or edit the primary clone (or a sibling worktree). Claude
+          // only — Codex has no PreToolUse seam. See worktree-confinement.ts.
+          ...(!isCodexTask && cwd !== repoPath
+            ? [{ hooks: [this.hookFactory.createWorktreeConfinementHook(worker, cwd, repoPath)] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
           // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
