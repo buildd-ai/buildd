@@ -1192,7 +1192,10 @@ export interface ClaimTasksInput {
   maxTasks?: number;
   runner: string;
   environment?: WorkerEnvironment;
-  availableSkills?: string[]; // skill slugs this runner can execute
+  // Skill slugs this runner can execute. Omitted/empty = may claim any
+  // role-routed task EXCEPT the opt-in EXPLICIT_ROLE_SLUGS, which always need
+  // an explicit match.
+  availableSkills?: string[];
   // Explicit opt-in for a multi-workspace OAuth token to claim the next pending
   // task across ALL its accessible workspaces in one call (server ranks/picks).
   // Distinguishes a deliberate cross-workspace runner poll from an accidental
@@ -1616,6 +1619,17 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
 // against Task.requiredCapabilities during claim.
 // Use these constants everywhere so typos can't cause silent mismatches.
 export const CAPABILITY_BROWSER = 'browser';
+
+// Role slug for the mission visual auditor (see docs/design/visual-qa-auditor.md).
+// Its tasks need a runner that can actually launch a browser, so a runner
+// advertises this slug in `availableSkills` only when env-scan reports
+// CAPABILITY_BROWSER.
+export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
+
+// Role slugs that are opt-in: a task routed to one of these is claimable ONLY
+// by a runner that lists the slug in `availableSkills`. Every other roleSlug
+// keeps the legacy rule (an empty `availableSkills` list claims anything).
+export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
 
 // ============================================================================
 // GOAL CRITERIA & INITIATIVE KPIs
