@@ -14,10 +14,10 @@ import { PRESET_ACTIONS, effectivePathsForClass } from './workspace-policy';
 /** `warning` = legacy, should be fixed. `action` = an offer, not a problem. */
 export type HealthSeverity = 'warning' | 'action' | 'info';
 
-export type HealthActionKind = 'review-policy' | 'restrict-access' | 'move-team';
+export type HealthActionKind = 'review-policy' | 'move-team';
 
 export interface HealthItem {
-  id: 'policy' | 'access-open' | 'team-placement' | 'system-workspace';
+  id: 'policy' | 'team-placement' | 'system-workspace';
   severity: HealthSeverity;
   label: string;
   /** One-line consequence of taking the action, when it is not obvious. */
@@ -80,16 +80,6 @@ export function checkWorkspaceHealth(input: WorkspaceHealthInput): HealthItem[] 
         ? 'Uses legacy merge settings instead of a risk-class policy'
         : 'Merge policy has not been reviewed',
       action: { kind: 'review-policy', label: 'Review proposed policy' },
-    });
-  }
-
-  if (input.accessMode === 'open') {
-    items.push({
-      id: 'access-open',
-      severity: 'warning',
-      label: 'Open access — any signed-in user can view and work in this workspace',
-      note: 'Only members of this workspace’s team keep access.',
-      action: { kind: 'restrict-access', label: 'Restrict to team members' },
     });
   }
 

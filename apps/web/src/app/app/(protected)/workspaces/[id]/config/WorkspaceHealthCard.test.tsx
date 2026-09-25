@@ -34,11 +34,10 @@ describe('WorkspaceHealthCard', () => {
     const html = render(legacy);
     expect(html).toContain('Workspace health');
     expect(html).toContain('>Review proposed policy<');
-    expect(html).toContain('>Restrict to team members<');
     expect(html).toContain('>Move to team…<');
-    expect(html.match(/<button/g)).toHaveLength(3);
-    // one-line consequence note for the access change
-    expect(html).toContain('Only members of this workspace');
+    expect(html.match(/<button/g)).toHaveLength(2);
+    // open access is open within the owning team — never offered as a fix
+    expect(html).not.toContain('Restrict to team members');
   });
 
   it('shows the system-workspace info line without a button', () => {
@@ -49,7 +48,7 @@ describe('WorkspaceHealthCard', () => {
 
   it('keeps every action button at least 44px tall', () => {
     const buttons = render(legacy).match(/<button[^>]*>/g) ?? [];
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(2);
     for (const b of buttons) expect(b).toContain('min-h-11');
   });
 });
