@@ -94,7 +94,7 @@ const OVERRIDABLE_FIELDS: { key: OverridableField; label: string }[] = [
 /** Shows an inherited field value from the team default */
 function InheritedBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-surface-3 text-text-muted">
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
         <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z M4 22v-7" />
       </svg>
@@ -106,7 +106,7 @@ function InheritedBadge() {
 /** Shows an overridden field badge */
 function OverrideBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
       Override
     </span>
   );
@@ -189,12 +189,12 @@ function WorkspaceOverrideEditor({
           </svg>
           <span className="text-[13px] font-medium text-text-primary">{workspaceName}</span>
           {overriddenFields.size > 0 && (
-            <span className="text-[10px] text-text-muted">
+            <span className="text-[11px] md:text-[10px] text-text-muted">
               {overriddenFields.size} field{overriddenFields.size !== 1 ? 's' : ''} overridden
             </span>
           )}
           {overriddenFields.size === 0 && (
-            <span className="text-[10px] text-text-muted">All inherited</span>
+            <span className="text-[11px] md:text-[10px] text-text-muted">All inherited</span>
           )}
         </div>
         <svg
@@ -536,7 +536,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               <span className="font-mono text-xs">{role.slug}</span>
               <span>&middot;</span>
               <span className="text-[11px] text-text-muted">Applies to</span>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
                 All workspaces
               </span>
             </div>
@@ -865,11 +865,11 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                     <div key={ws.id} className="flex items-center justify-between text-[12px]">
                       <span className="text-text-primary">{ws.name}</span>
                       {override ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-text/10 text-accent-text text-[10px] font-medium">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-text/10 text-accent-text text-[11px] md:text-[10px] font-medium">
                           Workspace override
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-3 text-text-muted text-[10px]">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-3 text-text-muted text-[11px] md:text-[10px]">
                           Team default
                         </span>
                       )}

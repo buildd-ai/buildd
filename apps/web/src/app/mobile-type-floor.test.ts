@@ -32,15 +32,6 @@ const TOKEN_EXEMPT: Array<{ file: string; context: string; why: string }> = [
   { file: 'components/TeamSwitcherRail.tsx', context: 'text-[7px] font-mono uppercase', why: 'desktop-only rail (hidden md:flex)' },
 ];
 
-/**
- * Whole files owned by a parallel change (role editors ship their own mobile
- * pass). Remove the entry once that lands.
- */
-const FILE_EXEMPT = [
-  'app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx',
-  'app/app/(protected)/team/[slug]/settings/TeamRoleEditor.tsx',
-];
-
 /** A text-[Npx] token with its full variant chain, e.g. `dark:hover:text-[9px]`. */
 const PX_TOKEN = /(?<![\w\]-])((?:[\w-]+(?:\[[^\]\s]*\])?:)*)text-\[(\d+(?:\.\d+)?)px\]/g;
 const DESKTOP_ONLY_VARIANTS = new Set(['md', 'lg', 'xl', '2xl']);
@@ -93,7 +84,6 @@ describe('mobile type floor (markup)', () => {
   it('has no sub-11px text-[Npx] that can apply below md, outside the exemptions', () => {
     const violations: string[] = [];
     for (const rel of sourceFiles()) {
-      if (FILE_EXEMPT.includes(rel)) continue;
       const lines = readFileSync(join(SRC, rel), 'utf8').split('\n');
       lines.forEach((line, i) => {
         for (const t of smallTokensInLine(line)) {
