@@ -1163,19 +1163,19 @@ export async function POST(req: NextRequest) {
     // parallel when the orchestrator forgot to serialize them with dependsOn edges.
     // (Regression guard for the PRs #1126/#1129 incident.)
     //
-    // Exception: conflict-retry tasks are exempt from blocking on their own PR.
-    // A conflict-retry task works on the same PR as its original (to rebase &
-    // resolve conflicts), so the original's open PR should not block the retry.
-    // Exclude the conflict-retry PR number from the overlap check.
+    // Exception: fix attempts are exempt from blocking on their own PR.
+    // Conflict, review and CI fix attempts all copy the original's pathManifest
+    // and resume on the PR's branch, so that PR always overlaps — it is the
+    // thing being fixed, not a concurrent edit. Exempting only conflict retries
+    // stranded every review/CI fix behind the PR it was dispatched to fix.
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
-      const conflictRetryPrNumber = (task as any).conflictRetryPrNumber as number | null | undefined;
-      // Filter out the conflict-retry PR if this task is retrying a conflict.
-      // The original PR is on the same task/branch being worked on, so overlap
-      // is not a conflict risk — it's the expected case.
-      const filterOpenPrTasks = conflictRetryPrNumber
-        ? openPrTasks.filter(pr => pr.prNumber !== conflictRetryPrNumber)
+      const ownRetryPrNumber = ((task as any).conflictRetryPrNumber
+        ?? (task as any).reviewerRetryPrNumber
+        ?? (task as any).ciRetryPrNumber) as number | null | undefined;
+      const filterOpenPrTasks = ownRetryPrNumber
+        ? openPrTasks.filter(pr => pr.prNumber !== ownRetryPrNumber)
         : openPrTasks;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       if (blocking) {
