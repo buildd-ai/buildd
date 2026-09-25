@@ -224,7 +224,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-[10px] font-mono font-medium text-primary tracking-wide uppercase">
+            <span className="text-[11px] font-mono font-medium text-accent-text tracking-wide uppercase">
               Merge
             </span>
             {(item.upstreamTaskTitle ?? item.taskTitle) && (
@@ -233,7 +233,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
               </span>
             )}
             {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-              <span className="text-[10px] text-text-muted">
+              <span className="text-[11px] text-text-muted">
                 {item.waitingMinutes < 60
                   ? `${item.waitingMinutes}m`
                   : `${Math.floor(item.waitingMinutes / 60)}h`}
@@ -369,7 +369,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 href={item.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[12px] font-medium text-primary hover:underline"
+                className="text-[12px] font-medium text-accent-text hover:underline"
               >
                 Open PR
               </a>
@@ -408,7 +408,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                   href={item.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[11px] font-medium text-primary hover:underline"
+                  className="text-[11px] font-medium text-accent-text hover:underline"
                 >
                   Check PR
                 </a>
@@ -435,7 +435,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             {optimistic.taskId && (
               <Link
                 href={actionCardTaskLink(item, { taskId: optimistic.taskId, page: true })}
-                className="text-[12px] font-medium text-primary hover:underline"
+                className="text-[12px] font-medium text-accent-text hover:underline"
               >
                 View task
               </Link>
@@ -466,7 +466,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 href={item.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[12px] font-medium text-primary hover:underline"
+                className="text-[12px] font-medium text-accent-text hover:underline"
               >
                 Resolve conflicts on GitHub
               </a>

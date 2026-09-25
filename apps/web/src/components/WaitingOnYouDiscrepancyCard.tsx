@@ -25,9 +25,9 @@ function ageLabel(hours: number | null | undefined): string | null {
 }
 
 const PRIMARY_BTN =
-  'text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
+  'inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
 const SECONDARY_BTN =
-  'text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
+  'inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
 
 /**
  * DISCREPANCY card for Home (docs/design/spec-conformance.md §12).
@@ -247,31 +247,33 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
       }
     >
       <div className="min-w-0">
-        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-          <span className={`text-[10px] font-mono font-medium ${accent} tracking-wide uppercase`}>
+        {/* Separated by gap, not "·" glyphs: a glyph leading an item wraps
+            onto the next line alone on a narrow card. */}
+        <div className="flex items-center gap-x-3 gap-y-0.5 mb-0.5 flex-wrap">
+          <span className={`text-[11px] font-mono font-medium ${accent} tracking-wide uppercase`}>
             {inFlight ? 'Doc fix' : 'Discrepancy'}
           </span>
           <span className="text-[11px] text-text-muted">{DIRECTION_LABEL[direction]}</span>
-          {age && <span className="text-[10px] text-text-muted">· {age}</span>}
+          {age && <span className="text-[11px] text-text-muted">{age}</span>}
         </div>
 
         {/* The spec path is the identity of this card — it wraps rather than
             truncating. At 393pt a truncated doc path is unidentifiable, which
             is the whole failure the Home mobile work already fixed once. */}
-        <div className="text-[13px] font-medium text-text-primary break-all mb-1">
+        <div className="text-[13px] font-medium text-text-primary [overflow-wrap:anywhere] min-w-0 mb-1">
           {item.specPath}
         </div>
 
         {claimCount > 0 && (
           <details className="mb-2">
-            <summary className="text-[12px] text-text-secondary cursor-pointer list-none marker:content-none">
+            <summary className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-text-secondary cursor-pointer list-none marker:content-none">
               <span className="underline decoration-dotted underline-offset-2">
                 {claimCount} claim{claimCount === 1 ? '' : 's'}
               </span>
             </summary>
             <ul className="mt-1 space-y-0.5">
               {assertionIds.map((a) => (
-                <li key={a} className="text-[11px] text-text-secondary font-mono break-all">
+                <li key={a} className="text-[11px] text-text-secondary font-mono [overflow-wrap:anywhere]">
                   {a}
                 </li>
               ))}
@@ -282,7 +284,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
         {inFlight && (
           <Link
             href={`/app/tasks/${item.docFixTaskId}`}
-            className="text-[12px] font-medium text-primary hover:underline"
+            className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
           >
             {docFixPrOpen
               ? 'Doc fix PR open — merge to continue →'
@@ -292,13 +294,18 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
           </Link>
         )}
 
+        {/* The decision is the Accept button below; this link only opens the
+            task, so it says so rather than naming the decision. */}
         {mergedFixTaskId && (
-          <Link
-            href={`/app/tasks/${mergedFixTaskId}`}
-            className="text-[12px] font-medium text-primary hover:underline"
-          >
-            Doc fix merged — still open. Accept, or correct the assertion →
-          </Link>
+          <div>
+            <p className="text-[12px] text-text-secondary">Doc fix merged, but the gap is still open.</p>
+            <Link
+              href={`/app/tasks/${mergedFixTaskId}`}
+              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
+            >
+              Open the doc-fix task →
+            </Link>
+          </div>
         )}
       </div>
 
@@ -312,7 +319,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
           {inFlight ? null : item.promotedMissionId ? (
             <Link
               href={`/app/missions/${item.promotedMissionId}`}
-              className="text-[12px] font-medium text-primary hover:underline whitespace-nowrap"
+              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline whitespace-nowrap"
             >
               View mission →
             </Link>

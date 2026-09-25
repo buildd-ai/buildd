@@ -80,4 +80,11 @@ describe('Home mounts the pulse line (§2.1)', () => {
     expect(mount).toBeGreaterThan(greeting);
     expect(mount).toBeLessThan(waiting);
   });
+
+  it('the line link is a 44px tap target on a phone', () => {
+    const html = renderToStaticMarkup(
+      <InitiativePulseLine items={[arc('i-1', 'Alpha', 'grinding'), arc('i-2', 'Beta', 'stuck')]} />,
+    );
+    expect(html).toContain('min-h-11');
+  });
 });
