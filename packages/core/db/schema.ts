@@ -1997,6 +1997,22 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // from a merged PR alone, instead of requiring SSH into the host.
   runnerCommit: text('runner_commit'),
   runnerVersion: text('runner_version'),
+  // The same live update-state the runner reports on its own local
+  // /api/version — currentCommit is the commit the RUNNING process loaded
+  // (cached at boot / last successful self-update), diskCommit is a fresh
+  // `git rev-parse HEAD` read at heartbeat time; a mismatch (commitDrift)
+  // means something rewrote the on-disk tree without restarting the runner.
+  // All nullable: absent on a runner build that predates this field, or on a
+  // heartbeat whose disk read failed — null means "unknown", not "clean".
+  currentCommit: text('current_commit'),
+  diskCommit: text('disk_commit'),
+  commitDrift: boolean('commit_drift'),
+  updating: boolean('updating'),
+  updateAvailable: boolean('update_available'),
+  // The branch this install tracks (BUILDD_BRANCH) — already sent on every
+  // heartbeat to resolve latestCommit (see the heartbeat route), but not
+  // persisted until now, so GET /api/workers/active can show it per runner.
+  trackedBranch: text('tracked_branch'),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

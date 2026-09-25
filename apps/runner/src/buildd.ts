@@ -5,7 +5,7 @@ import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@build
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
-import { TRACKED_BRANCH } from './updater';
+import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
 
 /**
@@ -661,6 +661,16 @@ export class BuilddClient {
      */
     runnerCommit?: string | null,
     runnerVersion?: string | null,
+    /**
+     * The same live update-state this install reports on its own local
+     * `/api/version` (currentCommit/diskCommit/commitDrift/updating/
+     * updateAvailable/trackedBranch) — see updater.ts's
+     * getRunnerUpdateSnapshot. Null on a runner build that predates this
+     * field, or in a test harness that never registers a provider; the
+     * fields are omitted from the payload entirely in that case rather than
+     * sent as nulls, matching the runnerCommit/runnerVersion convention below.
+     */
+    updateSnapshot?: RunnerUpdateSnapshot | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
@@ -690,6 +700,14 @@ export class BuilddClient {
     }
     if (runnerCommit) payload.runnerCommit = runnerCommit;
     if (runnerVersion) payload.runnerVersion = runnerVersion;
+    if (updateSnapshot) {
+      payload.currentCommit = updateSnapshot.currentCommit;
+      payload.diskCommit = updateSnapshot.diskCommit;
+      payload.commitDrift = updateSnapshot.commitDrift;
+      payload.updating = updateSnapshot.updating;
+      payload.updateAvailable = updateSnapshot.updateAvailable;
+      payload.trackedBranch = updateSnapshot.trackedBranch;
+    }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),

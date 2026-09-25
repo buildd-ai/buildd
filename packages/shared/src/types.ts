@@ -1068,6 +1068,28 @@ export interface RunnerUpdateCanaryReport {
   } | null;
 }
 
+/**
+ * The runner's own live update-state — the same fields it reports on its
+ * local, unauthenticated-off-box `/api/version` endpoint
+ * (`apps/runner/src/index.ts`) — now also sent on every heartbeat (see
+ * `apps/runner/src/updater.ts`'s `getRunnerUpdateSnapshot` and
+ * `apps/runner/src/buildd.ts`'s `sendHeartbeat`) and persisted on
+ * `worker_heartbeats`. Lets `GET /api/workers/active` show a runner's
+ * drift/update status without SSH into the host.
+ */
+export interface RunnerUpdateSnapshot {
+  /** The commit this process loaded at boot (or after its last successful self-update) — not a fresh disk read. */
+  currentCommit: string | null;
+  /** Fresh `git rev-parse HEAD`, read at snapshot time. */
+  diskCommit: string | null;
+  /** True when diskCommit and currentCommit disagree — an external process rewrote the tree without restarting this runner. */
+  commitDrift: boolean;
+  updating: boolean;
+  updateAvailable: boolean;
+  /** The branch this install tracks (its `BUILDD_BRANCH`). */
+  trackedBranch: string;
+}
+
 // ============================================================================
 // API INPUT TYPES
 // ============================================================================
