@@ -122,7 +122,7 @@ export default async function HomePage({
   const { workspace: wsFilter, initiative: initFilter } = (await searchParams) ?? {};
   const user = await getCurrentUser();
 
-  const isDev = process.env.NODE_ENV === 'development';
+  const isDev = process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL; // no-DB dev only
 
   let activeItems: {
     id: string;
