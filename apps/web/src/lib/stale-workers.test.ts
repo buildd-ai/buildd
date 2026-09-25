@@ -259,6 +259,30 @@ describe('cleanupStuckWaitingInput', () => {
     expect(capturedValues.workspaceId).toBe('ws-1');
   });
 
+  it('keeps roleSlug on the retry, so a visual-auditor audit stays browser-routed and evidence-gated', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: '[surface audit] M', description: 'd', priority: 0,
+      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
+      mode: 'execution', outputRequirement: 'artifact_required', outputSchema: null,
+      roleSlug: 'visual-auditor',
+    });
+    let capturedValues: any = null;
+    mockTasksInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { returning: mock(() => [{ id: 'new-task-id' }]) };
+      }),
+    });
+
+    await cleanupStuckWaitingInput('account-1');
+
+    expect(capturedValues.roleSlug).toBe('visual-auditor');
+  });
+
   it('sets resumeBranch alongside baseBranch on the retry task, so the runner resumes the stalled branch rather than treating it as a declared base', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([

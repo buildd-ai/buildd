@@ -8,7 +8,9 @@ import {
   surfaceAuditTitle,
   touchesUiSurface,
 } from '@buildd/core/surface-audit';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 export interface EnsureSurfaceAuditParams {
@@ -105,11 +107,18 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     workspaceId,
     missionId,
     title: surfaceAuditTitle(mission.title),
-    description: buildSurfaceAuditDescription({ missionTitle: mission.title, scopedPaths }),
+    description: buildSurfaceAuditDescription({
+      missionTitle: mission.title,
+      scopedPaths,
+      requiredRoutes: visualQaRequiredRoutes(scopedPaths),
+    }),
     taskClass: 'work',
     dependsOn,
     outputRequirement: 'artifact_required',
-    roleSlug: 'builder',
+    // An explicit role slug: only a runner that found a working browser
+    // advertises it (claim/role-gate.ts), so the audit can't be done from the
+    // diff by a runner that can't render a page.
+    roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
   }).returning();
 
   if (auditTask) {

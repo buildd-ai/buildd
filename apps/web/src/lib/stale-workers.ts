@@ -995,6 +995,9 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // Routing survives the retry: without it a visual-auditor audit would
+        // be claimable by any runner and skip its evidence check.
+        roleSlug: originalTask.roleSlug,
       })
       .returning({ id: tasks.id });
 

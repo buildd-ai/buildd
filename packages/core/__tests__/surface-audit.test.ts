@@ -93,6 +93,26 @@ describe('buildSurfaceAuditDescription', () => {
     expect(desc).toContain('THIS SAME mission');
   });
 
+  it('lists the required routes and the per-shot evidence contract', () => {
+    const desc = buildSurfaceAuditDescription({
+      missionTitle: 'Mobile nav redesign',
+      scopedPaths: ['apps/web/src/app/app/(protected)/missions/page.tsx'],
+      requiredRoutes: ['/app/missions', '/app/tasks/:id'],
+    });
+    expect(desc).toContain('- `/app/missions`');
+    expect(desc).toContain('- `/app/tasks/:id`');
+    expect(desc).toContain('mobile');
+    expect(desc).toContain('desktop');
+    expect(desc).toContain('visual-review');
+    expect(desc).toContain('upload_artifact');
+    expect(desc).toContain('[surface fix]');
+  });
+
+  it('says so when no required route could be derived (auditor picks, but still shoots)', () => {
+    const desc = buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], requiredRoutes: [] });
+    expect(desc).toContain('no required routes derived');
+  });
+
   it('falls back to a description-scan note when no concrete paths were declared', () => {
     const desc = buildSurfaceAuditDescription({ missionTitle: 'Mobile nav redesign', scopedPaths: [] });
     expect(desc).toContain('no concrete paths declared');

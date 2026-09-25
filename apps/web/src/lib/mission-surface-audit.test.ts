@@ -69,7 +69,26 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(inserted.missionId).toBe(MISSION_ID);
     expect(inserted.dependsOn).toEqual(['builder-1']);
     expect(inserted.outputRequirement).toBe('artifact_required');
+    // Routed to the browser-gated auditor, not any builder runner.
+    expect(inserted.roleSlug).toBe('visual-auditor');
     expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists the required routes derived from the builder tasks\' page files', async () => {
+    const created = uiTask('builder-1', {
+      pathManifest: ['apps/web/src/app/app/(protected)/missions/[id]/page.tsx'],
+    });
+    tasksFindMany.mockResolvedValue([created]);
+
+    await ensureMissionSurfaceAudit({
+      missionId: MISSION_ID,
+      workspaceId: WORKSPACE_ID,
+      createdTask: created,
+      targetWorkspace,
+    });
+
+    const inserted = tasksInsertValues.mock.calls[0][0];
+    expect(inserted.description).toContain('`/app/missions/:id`');
   });
 
   it('does not create a second audit task on a later decomposition pass — extends dependsOn instead', async () => {

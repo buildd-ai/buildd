@@ -86,14 +86,26 @@ const SURFACE_AUDIT_CHECKLIST_ITEMS = [
 export function buildSurfaceAuditDescription(opts: {
   missionTitle: string;
   scopedPaths: string[];
+  /**
+   * Routes derived by code (`requiredRoutes` in ./visual-qa-routes). The
+   * completion gate recomputes these from the audit's dependsOn, so this list
+   * is the auditor's starting point, not the contract.
+   */
+  requiredRoutes?: string[];
 }): string {
-  const { missionTitle, scopedPaths } = opts;
+  const { missionTitle, scopedPaths, requiredRoutes = [] } = opts;
   const scopeList = scopedPaths.length > 0
     ? scopedPaths.map(p => `- \`${p}\``).join('\n')
     : "- (no concrete paths declared by this mission's builder tasks — audit the UI-facing routes/components named in their descriptions)";
+  const routeList = requiredRoutes.length > 0
+    ? requiredRoutes.map(r => `- \`${r}\``).join('\n')
+    : '- (no required routes derived: no changed page/layout file. Pick the routes that render the scoped paths and capture those.)';
   const checklist = SURFACE_AUDIT_CHECKLIST_ITEMS.map(item => `- [ ] ${item}`).join('\n');
   return [
     `Auto-appended surface audit for mission "${missionTitle}" — reuses the Weekly mobile UI audit's checklist, scoped to this mission's own routes/components instead of the whole app.`,
+    '',
+    'Required routes (each at mobile AND desktop; you may add routes, never drop one):',
+    routeList,
     '',
     "Scope (paths declared by this mission's builder tasks):",
     scopeList,
@@ -101,6 +113,8 @@ export function buildSurfaceAuditDescription(opts: {
     'Checklist:',
     checklist,
     '',
-    'File any defects found as tasks in THIS SAME mission (not friction reports). Complete this task with an artifact summarizing what was checked and what was found.',
+    'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, finding, verdict }). Completion is refused until every required route has a mobile and a desktop shot from you, each with a non-empty finding.',
+    '',
+    'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot as metadata.qa.fixTaskId.',
   ].join('\n');
 }
