@@ -69,7 +69,7 @@ describe('object storage key construction', () => {
     // A template literal that opens with a known object-key prefix is a key
     // being built by hand. Keys must come from lib/storage-keys.ts so the
     // segment rules apply everywhere.
-    const pattern = /`(artifacts|attachments|roles|sessions)\//;
+    const pattern = /`(artifacts|attachments|roles|sessions|qa)\//;
     const offenders = sourceFiles
       .filter((f) => f.path !== KEY_BUILDER_MODULE && pattern.test(f.text))
       .map((f) => f.path);

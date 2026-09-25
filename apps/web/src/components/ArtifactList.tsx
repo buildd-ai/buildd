@@ -27,6 +27,7 @@ interface ArtifactItem {
   key?: string | null;
   missionId?: string | null;
   initiativeId?: string | null;
+  storageKey?: string | null;
 }
 
 interface Props {
