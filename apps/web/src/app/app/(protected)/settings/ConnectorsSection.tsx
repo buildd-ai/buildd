@@ -144,20 +144,20 @@ export default function ConnectorsSection({
       title="Connectors"
       bare
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           {teams.length > 1 && (
             <select
               value={selectedTeamId}
               onChange={(e) => setSelectedTeamId(e.target.value)}
               aria-label="Team"
-              className="h-8 px-2 text-xs bg-surface text-text-secondary"
+              className="h-8 min-w-0 px-2 text-xs bg-surface text-text-secondary"
             >
               {teams.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </select>
           )}
-          <Link href="/app/connections" className="btn btn-quiet">Manage</Link>
+          <Link href="/app/connections" className="btn btn-quiet shrink-0">Manage</Link>
         </div>
       }
     >

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isNavActive } from './nav-active';
+import { isNavActive, isAccountRoute } from './nav-active';
 
 describe('isNavActive', () => {
   describe('/app/home', () => {
@@ -77,5 +77,17 @@ describe('isNavActive', () => {
     it('/app/accounts is not active for any primary nav tab', () => {
       expect(isNavActive('/app/accounts', '/app/health')).toBe(false);
     });
+  });
+});
+
+describe('isAccountRoute', () => {
+  // /app/you and /app/settings are reached from the header avatar, not a tab;
+  // the avatar carries the "you are here" state for them.
+  it.each(['/app/you', '/app/settings', '/app/settings/workspace/ws-1', '/app/connections'])('%s is an account route', (p) => {
+    expect(isAccountRoute(p)).toBe(true);
+  });
+
+  it.each(['/app/home', '/app/team', '/app/settingsx', '/app/youth'])('%s is not', (p) => {
+    expect(isAccountRoute(p)).toBe(false);
   });
 });

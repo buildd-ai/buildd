@@ -41,8 +41,8 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
         aria-expanded={open}
         aria-label={`Switch team (current: ${currentTeam.name})`}
         // Negative margins widen the tap target without changing the breadcrumb's
-        // visual baseline or line height.
-        className="flex items-center gap-1 min-w-0 -mx-1 -my-1.5 px-1 py-1.5 rounded text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
+        // visual baseline or line height; min-h-11 makes it 44px on touch.
+        className="flex items-center gap-1 min-w-0 -mx-1 -my-1.5 px-1 py-1.5 max-md:min-h-11 rounded text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
       >
         <span className="truncate max-w-[140px]">{currentTeam.name}</span>
         <svg
@@ -62,7 +62,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
             <button
               key={team.id}
               onClick={() => switchTeam(team.id)}
-              className={`w-full text-left px-3 py-2 text-sm hover:bg-surface-3 ${
+              className={`w-full text-left px-3 py-3 md:py-2 text-sm hover:bg-surface-3 ${
                 team.id === currentTeam.id
                   ? 'text-text-primary font-medium'
                   : 'text-text-secondary'

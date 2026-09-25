@@ -67,13 +67,33 @@ export default async function ProtectedLayout({
 
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-              {/* Global notification banner for tasks needing input */}
-              <NeedsInputBanner />
-              {/* Banner shown when a connector's auth expires mid-task */}
-              <ConnectorReconnectBanner />
-              {/* Mobile page header for non-tasks pages */}
-              <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} workspaces={teamWorkspaces} />
-              <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
+              {/* Mobile page header (top-level pages) + the global banners, as one
+                  stack: fixed on mobile so a banner is never hidden under the header. */}
+              <MobilePageHeader
+                teams={userTeams}
+                currentTeamId={currentTeamId}
+                userInitial={userInitial}
+                workspaces={teamWorkspaces}
+                banners={
+                  <>
+                    {/* Tasks needing input */}
+                    <NeedsInputBanner />
+                    {/* A connector's auth expired mid-task */}
+                    <ConnectorReconnectBanner />
+                  </>
+                }
+              />
+              {/* data-scroll-root: overlays lock this, not body (lib/scroll-root.ts).
+                  overflow-x-hidden: with overflow-y auto, x would otherwise
+                  compute to auto and stray overflow became a sideways touch pan.
+                  (overflow-x-clip would compute to hidden here too — clip is only
+                  kept when the other axis is visible/clip.) <main> is still an x
+                  scroll container, so focus()/scrollIntoView() on content past
+                  the right edge can shift it; the fix for that is not
+                  overflowing — real horizontal scrollers own an overflow-x-auto
+                  box. An inner clip wrapper would avoid it, but page roots rely
+                  on <main> as their h-full containing block. */}
+              <main data-scroll-root className="flex-1 overflow-y-auto overflow-x-hidden pb-16 md:pb-0">
                 {children}
               </main>
             </div>

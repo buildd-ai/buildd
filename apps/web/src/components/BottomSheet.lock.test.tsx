@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 type Effect = () => void | (() => void);
 const effects: Effect[] = [];
 
-// Keep the real module (the JSX runtime reads its internals); swap only the two hooks.
+// Keep the real module (the JSX runtime reads its internals); swap only the hooks it uses.
 const realReact = await import('react');
 mock.module('react', () => ({
   ...realReact,
@@ -21,6 +21,8 @@ mock.module('react', () => ({
   useEffect: (fn: Effect) => {
     effects.push(fn);
   },
+  // Server snapshot: render in place (no portal) so the component can be called bare.
+  useSyncExternalStore: (_sub: unknown, _get: unknown, getServer: () => unknown) => getServer(),
 }));
 
 const { default: BottomSheet } = await import('./BottomSheet');

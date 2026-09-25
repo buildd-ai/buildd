@@ -5,6 +5,7 @@ import { useCallback, useState, useRef, useEffect, useLayoutEffect } from 'react
 import Link from 'next/link';
 import { displayWorkspaceName } from '@buildd/shared';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import BottomSheet from './BottomSheet';
 
 export interface WorkspaceFilterProps {
   workspaces: { id: string; name: string }[];
@@ -77,7 +78,17 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     setHighlightedIndex(-1);
   }, []);
 
-  useClickOutside(containerRef, close);
+  // The mobile sheet is portaled out of containerRef and closes via its own
+  // backdrop, so outside-click only governs the desktop dropdown — otherwise the
+  // mousedown that starts every tap on an option would close the sheet first.
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+  useClickOutside(
+    containerRef,
+    useCallback(() => {
+      if (!isMobileRef.current) close();
+    }, [close]),
+  );
 
   const handleSelect = useCallback(
     (id: string | null) => {
@@ -111,14 +122,6 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
       }, 0);
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Lock body scroll on mobile bottom sheet
-  useEffect(() => {
-    if (open && isMobile) {
-      document.body.style.overflow = 'hidden';
-      return () => { document.body.style.overflow = ''; };
-    }
-  }, [open, isMobile]);
 
   // Scroll highlighted option into view on keyboard nav
   useEffect(() => {
@@ -171,7 +174,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
       ref={listRef}
       role="listbox"
       aria-label="Workspaces"
-      className={isMobile ? 'overflow-y-auto flex-1 py-1' : 'max-h-56 overflow-y-auto py-1'}
+      className={isMobile ? 'py-1' : 'max-h-56 overflow-y-auto py-1'}
     >
       {options.map((option, i) => {
         const isSelected = option.id === selectedId || (option.id === null && !selectedId);
@@ -224,7 +227,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     : null;
 
   const newWorkspaceFooter = (
-    <div className={`border-t border-border-default ${isMobile ? 'pb-[env(safe-area-inset-bottom)]' : ''}`}>
+    <div className="border-t border-border-default">
       {wsNavLinks && (
         <div className="border-b border-border-default">
           <div className={`font-mono uppercase tracking-widest text-text-muted ${isMobile ? 'px-5 pt-3 pb-1 text-[9px]' : 'px-3 pt-2 pb-0.5 text-[8px]'}`}>
@@ -288,7 +291,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
         aria-label="Filter by workspace"
         onClick={() => setOpen((prev) => !prev)}
         onKeyDown={handleKeyDown}
-        className={`px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
+        className={`max-md:min-h-11 max-md:min-w-11 max-md:justify-center max-md:items-center px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
           open ? 'shadow-sm text-text-primary' : ''
         }`}
       >
@@ -324,36 +327,14 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
         </div>
       </button>
 
-      {/* Mobile: bottom sheet */}
-      {open && isMobile && (
-        <div
-          className="fixed inset-0 z-50 bg-black/60"
-          onClick={close}
-          aria-hidden="true"
-        >
-          <div
-            className="absolute bottom-0 left-0 right-0 bg-surface-2 border-t-2 border-border-strong max-h-[70vh] flex flex-col animate-slide-up"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-label="Select workspace"
-          >
-            <div className="flex items-center justify-between px-5 py-3 border-b border-border-default">
-              <span className="text-sm font-mono font-medium text-text-primary">Workspace</span>
-              <button
-                type="button"
-                onClick={close}
-                className="text-text-muted hover:text-text-secondary p-1"
-                aria-label="Close"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="square" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            {optionsList}
-            {newWorkspaceFooter}
-          </div>
-        </div>
+      {/* Mobile: the shared BottomSheet — portaled to <body> (inside the fixed
+          header it sat under the bottom nav), modal with focus moved in and
+          trapped, Escape to close, and the shell's scroll root locked. */}
+      {isMobile && (
+        <BottomSheet open={open} onClose={close} title="Workspace" trapFocus flush testId="workspace-filter-sheet">
+          {optionsList}
+          {newWorkspaceFooter}
+        </BottomSheet>
       )}
 
       {/* Desktop: anchored panel */}

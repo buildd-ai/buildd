@@ -1,6 +1,7 @@
 'use client';
 
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface MarkdownContentProps {
   content: string;
@@ -18,6 +19,9 @@ export default function MarkdownContent({ content, className = '', variant = 'de
   return (
     <div className={`prose prose-sm dark:prose-invert max-w-none ${className}`}>
       <ReactMarkdown
+        // GFM: tables, strikethrough, task lists, autolinks. Agent output leans on
+        // tables; without this they rendered as raw `| a | b |` rows.
+        remarkPlugins={[remarkGfm]}
         components={{
           // Style overrides for better integration
           h1: ({ children }) => (
@@ -36,7 +40,7 @@ export default function MarkdownContent({ content, className = '', variant = 'de
           code: ({ children, className }) => {
             const isInline = !className;
             return isInline ? (
-              <code className={`px-1 py-0.5 bg-surface-3 rounded font-mono ${compact ? 'text-[12px]' : 'text-sm'}`}>
+              <code className={`px-1 py-0.5 bg-surface-3 rounded font-mono [overflow-wrap:anywhere] ${compact ? 'text-[12px]' : 'text-sm'}`}>
                 {children}
               </code>
             ) : (
@@ -57,6 +61,12 @@ export default function MarkdownContent({ content, className = '', variant = 'de
             >
               {children}
             </a>
+          ),
+          // A wide table scrolls inside its own box instead of widening the page.
+          table: ({ children }) => (
+            <div className="overflow-x-auto my-2 max-w-full">
+              <table className="my-0">{children}</table>
+            </div>
           ),
           blockquote: ({ children }) => (
             <blockquote className="border-l-4 border-border-default pl-4 my-2 italic text-text-secondary">
