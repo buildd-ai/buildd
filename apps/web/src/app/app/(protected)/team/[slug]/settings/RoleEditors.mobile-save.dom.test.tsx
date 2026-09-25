@@ -100,11 +100,13 @@ const editors = [
   {
     name: 'TeamRoleEditor',
     render: () => <TeamRoleEditor role={role as any} overrides={[]} workspaces={[]} delegateOptions={[]} />,
+    renderWith: (o: object) => <TeamRoleEditor role={{ ...role, ...o } as any} overrides={[]} workspaces={[]} delegateOptions={[]} />,
     url: '/api/roles/role-1',
   },
   {
     name: 'RoleEditor',
     render: () => <RoleEditor workspaceId="ws-1" workspaceName="Example WS" skill={skill as any} delegateOptions={[]} workspaces={[]} />,
+    renderWith: (o: object) => <RoleEditor workspaceId="ws-1" workspaceName="Example WS" skill={{ ...skill, ...o } as any} delegateOptions={[]} workspaces={[]} />,
     url: '/api/workspaces/ws-1/skills/skill-1',
   },
 ];
@@ -117,6 +119,12 @@ for (const e of editors) {
       expect(headerSave().disabled).toBe(true);
       expect(q('[data-testid="header-save-dirty"]')).toBeNull();
       expect(unloadIsGuarded()).toBe(false);
+    });
+
+    it('a legacy model alias normalised by ModelPicker on mount is still clean', async () => {
+      await act(async () => root.render(e.renderWith({ model: 'sonnet' })));
+      expect(bar()).toBeNull();
+      expect(headerSave().disabled).toBe(true);
     });
 
     it('an edit makes it dirty: bar says Unsaved changes, both saves enabled, unload guarded', async () => {

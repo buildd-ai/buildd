@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
-import { ModelPicker } from '@/components/ModelPicker';
+import { ModelPicker, normalizeAlias } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
 import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
@@ -377,7 +377,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     name,
     description: description || null,
     content,
-    model,
+    // ModelPicker rewrites legacy aliases (sonnet → standard) on mount; the
+    // two save the same tier, so compare canonically or the form loads dirty.
+    model: normalizeAlias(model),
     defaultBackend,
     allowedTools,
     canDelegateTo,

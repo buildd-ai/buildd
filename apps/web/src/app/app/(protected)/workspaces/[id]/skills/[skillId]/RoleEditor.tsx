@@ -9,7 +9,7 @@ import { ScopeSelector } from '@/components/ScopeSelector';
 import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
 import { ColorSwatches } from '@/components/ColorSwatches';
 import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
-import { ModelPicker } from '@/components/ModelPicker';
+import { ModelPicker, normalizeAlias } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
 
@@ -465,7 +465,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     name,
     description: description || null,
     content,
-    model,
+    // ModelPicker rewrites legacy aliases (sonnet → standard) on mount; the
+    // two save the same tier, so compare canonically or the form loads dirty.
+    model: normalizeAlias(model),
     defaultBackend,
     allowedTools,
     canDelegateTo,
