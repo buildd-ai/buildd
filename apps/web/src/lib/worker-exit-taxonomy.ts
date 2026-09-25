@@ -39,7 +39,16 @@ export type WorkerExitCause =
    * refusal stops being reported as an agent code defect, and so the
    * chargeability decision lives in exactly one place (consumesRetryAttempt).
    */
-  | 'output_unmet';
+  | 'output_unmet'
+  /**
+   * The task was cancelled (by a human, the platform, or an issue close) while
+   * this worker's session was still running. Whatever the session reports
+   * afterwards — a fallback completion the output gate would refuse, an abort,
+   * a crash — describes work nobody wants any more. Bookkeeping: excluded from
+   * the failure rate and never charged a retry (a cancelled task is never
+   * retried anyway).
+   */
+  | 'task_cancelled';
 
 /**
  * Failure strings that mean "the coordination server told the runner to stop",
@@ -78,6 +87,10 @@ export function isUnrecognizedModelError(error: string | null | undefined): bool
 /** Error text for a worker row that the claim route minted but no runner ever started. */
 export const NEVER_STARTED_ERROR =
   'Worker was never started by a runner (claimed but no session began) — cleaned up as a bookkeeping artifact, not a task failure';
+
+/** Error text for a completion that landed on a task cancelled while the session ran. */
+export const TASK_CANCELLED_UNDER_SESSION_ERROR =
+  'Task was cancelled while the session was running — recorded as a cancellation, not a failure';
 
 /** Error text for a session that reached started_at but streamed nothing at all. */
 export const SILENT_START_ERROR =
@@ -149,7 +162,13 @@ export function classifyReportedFailure(input: {
    * bounded infra retry budget instead of the task's own.
    */
   unrecognizedModel?: boolean;
+  /**
+   * The worker's task is `cancelled` server-side. Checked first: once the task
+   * is cancelled no other signal describes an outcome anyone is waiting on.
+   */
+  taskCancelled?: boolean;
 }): WorkerExitCause {
+  if (input.taskCancelled) return 'task_cancelled';
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
@@ -239,7 +258,7 @@ export function isSilentStartShape(worker: {
 /**
  * Exits the taxonomy itself calls bookkeeping rather than failure: a parked
  * question that timed out, a claim no runner ever started, a deferral /
- * unmet loop condition. They stay `failed` rows (and stay searchable by
+ * unmet loop condition, a task cancelled under a running session. They stay `failed` rows (and stay searchable by
  * signature), but they are not the workspace failing and must not move its
  * failure rate. infra_failure and silent_start are deliberately NOT here —
  * they are real failures, just not chargeable ones.
@@ -247,7 +266,8 @@ export function isSilentStartShape(worker: {
 export function isBookkeepingExit(exitCause: WorkerExitCause | null | undefined): boolean {
   return exitCause === 'needs_input'
     || exitCause === 'never_started'
-    || exitCause === 'condition_unmet';
+    || exitCause === 'condition_unmet'
+    || exitCause === 'task_cancelled';
 }
 
 export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefined): boolean {
@@ -269,5 +289,7 @@ export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefin
     // charged: that refusal is about the session's deliverables, and a fresh
     // attempt can plausibly ship them. If the evidence says otherwise, this is
     // the one line to change.
-    && exitCause !== 'server_refused';
+    && exitCause !== 'server_refused'
+    // The task was cancelled under the session — nothing about the work.
+    && exitCause !== 'task_cancelled';
 }

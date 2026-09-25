@@ -672,7 +672,12 @@ export type WorkerExitCause =
    * A declared output gate refused the completion: the session ran and shipped
    * nothing reviewable. Charged — but not as a code failure.
    */
-  | 'output_unmet';
+  | 'output_unmet'
+  /**
+   * The task was cancelled while this worker's session was still running.
+   * Bookkeeping — excluded from the failure rate, never charged a retry.
+   */
+  | 'task_cancelled';
 
 export interface Worker {
   id: string;
