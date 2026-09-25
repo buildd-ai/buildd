@@ -116,6 +116,10 @@ describe('resolveActiveTeamId', () => {
     mockTeamMembersFindMany.mockReset();
     mockTeamsFindFirst.mockReset();
     mockTeamsFindFirst.mockResolvedValue(null);
+    // No team has workspaces unless a test says so — the default then falls
+    // back to personal → first team, which the older cases below pin.
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
   });
 
   it('returns the cookie team when the user is a member', async () => {
@@ -147,6 +151,34 @@ describe('resolveActiveTeamId', () => {
     mockTeamMembersFindMany.mockResolvedValue([]);
     mockTeamsFindFirst.mockResolvedValue(null);
     expect(await resolveActiveTeamId('user-1', 'A')).toBeNull();
+  });
+
+  // Same default as resolveActiveTeamScope, so every scoped page agrees with
+  // the header: without a valid cookie, personal only if it has workspaces.
+  it('no cookie + empty personal team + another team with workspaces → that team', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'A' }, { teamId: 'P' }]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'P' });
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-a', name: 'Alpha', teamId: 'A' }]);
+    expect(await resolveActiveTeamId('user-1', null)).toBe('A');
+    expect(await resolveActiveTeamId('user-1', 'Z')).toBe('A');
+  });
+
+  it('agrees with resolveActiveTeamScope on every cookie shape', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'B' }, { teamId: 'A' }, { teamId: 'P' }]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'P' });
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-b', name: 'Beta', teamId: 'B' },
+      { id: 'ws-a', name: 'Alpha', teamId: 'A' },
+    ]);
+    for (const cookie of [null, undefined, 'Z', 'B', 'P']) {
+      expect(await resolveActiveTeamId('user-1', cookie)).toBe((await resolveActiveTeamScope('user-1', cookie)).teamId);
+    }
+  });
+
+  it('a valid cookie is returned without a workspace query', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'A' }, { teamId: 'B' }]);
+    expect(await resolveActiveTeamId('user-1', 'B')).toBe('B');
+    expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
   });
 
   it('resolves personal team for accounts with no teamMembers row (P0 regression: mission detail 404)', async () => {

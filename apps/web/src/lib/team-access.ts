@@ -315,10 +315,12 @@ export const getUserDefaultTeamId = cache(async (userId: string): Promise<string
 /**
  * Resolve the single "active team" for a session from the `buildd-team` cookie.
  *
- * The cookie is honored only when it names a team the user is a member of;
- * otherwise resolution falls back to the user's personal team, then their first
- * team. Returns null only when the user belongs to no team. This is the single
- * source of truth for team-scoped (namespaced) views — see
+ * The cookie is honored only when it names a team the user is a member of.
+ * Otherwise the default applies (pickDefaultTeam below): the first team with
+ * workspaces, personal preferred, then personal, then first team. Returns null
+ * only when the user belongs to no team. This is the single source of truth
+ * for team-scoped (namespaced) views, and matches resolveActiveTeamScope, which
+ * the shell and Home use, so every page agrees with the header — see
  * docs/specs/team-namespace-scoping.md.
  *
  * Cached per-request via React cache() so layout + page share the same result.
@@ -330,12 +332,38 @@ export const resolveActiveTeamId = cache(async (
   const teamIds = await getUserTeamIds(userId);
   if (teamIds.length === 0) return null;
   if (cookieValue && teamIds.includes(cookieValue)) return cookieValue;
-
-  const personalId = await getUserDefaultTeamId(userId);
-  if (personalId && teamIds.includes(personalId)) return personalId;
-
-  return teamIds[0];
+  return (await pickDefaultTeam(userId, teamIds)).teamId;
 });
+
+/**
+ * The default active team when there is no usable cookie: the personal team
+ * if it has workspaces, else the first team (id order) that has workspaces;
+ * when no team has any, the personal team, else the first team. First load
+ * must never land on an empty team while the user has workspaces elsewhere
+ * (#1032). Id order because getUserTeamIds carries no ORDER BY, so row order
+ * is not stable across requests. `teamIds` must be non-empty.
+ *
+ * Returns the picked team's workspaces too, from the same single query.
+ */
+async function pickDefaultTeam(
+  userId: string,
+  teamIds: string[],
+): Promise<{ teamId: string; workspaces: { id: string; name: string }[] }> {
+  const [personalId, rows] = await Promise.all([
+    getUserDefaultTeamId(userId),
+    db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true, name: true, teamId: true },
+    }),
+  ]);
+  const others = teamIds.filter((id) => id !== personalId).sort();
+  const order = personalId && teamIds.includes(personalId) ? [personalId, ...others] : others;
+  const teamId = order.find((id) => rows.some((w) => w.teamId === id)) ?? order[0];
+  return {
+    teamId,
+    workspaces: rows.filter((w) => w.teamId === teamId).map((w) => ({ id: w.id, name: w.name })),
+  };
+}
 
 export type ActiveTeamScope = {
   /** The resolved active team, or null when the user belongs to no team. */
@@ -350,12 +378,8 @@ export type ActiveTeamScope = {
  * header can never name a team whose workspaces Home is not showing.
  *
  * A valid cookie wins, even for a team with no workspaces (the user chose it).
- * Without one (absent, or a team the user left) the default is the first team
- * that HAS workspaces, personal preferred; only when no team has any does it
- * fall back to personal, then the first team. First load must never land on
- * an empty team while the user has workspaces elsewhere (#1032). "First" is
- * team id order: getUserTeamIds carries no ORDER BY, so row order is not
- * stable across requests.
+ * Without one (absent, or a team the user left) pickDefaultTeam decides —
+ * the same rule resolveActiveTeamId applies, so the two always agree.
  *
  * Errors propagate: a caller that shows "no workspaces" on failure would turn
  * an outage into a false empty state.
@@ -377,21 +401,7 @@ export const resolveActiveTeamScope = cache(async (
     return { teamId: cookieValue, workspaces: ws.map((w) => ({ id: w.id, name: w.name })) };
   }
 
-  // No usable cookie: one query for every candidate team's workspaces.
-  const [personalId, rows] = await Promise.all([
-    getUserDefaultTeamId(userId),
-    db.query.workspaces.findMany({
-      where: inArray(workspaces.teamId, teamIds),
-      columns: { id: true, name: true, teamId: true },
-    }),
-  ]);
-  const others = teamIds.filter((id) => id !== personalId).sort();
-  const order = personalId && teamIds.includes(personalId) ? [personalId, ...others] : others;
-  const teamId = order.find((id) => rows.some((w) => w.teamId === id)) ?? order[0];
-  return {
-    teamId,
-    workspaces: rows.filter((w) => w.teamId === teamId).map((w) => ({ id: w.id, name: w.name })),
-  };
+  return pickDefaultTeam(userId, teamIds);
 });
 
 export type UserTeam = {

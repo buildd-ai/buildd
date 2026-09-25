@@ -61,7 +61,7 @@ truth for scoped views.
 - The active team MUST be a team the current user is a member of.
 - If the cookie is missing, points to a team the user is not a member of, or
   references a deleted team, resolution MUST fall back to the user's default
-  team (personal team first, else first team by stable order).
+  team: the first team with workspaces, personal preferred (see AC-2).
 - Active-team resolution MUST be performed server-side (not trusted from client
   state alone).
 
@@ -69,10 +69,11 @@ truth for scoped views.
 - AC-1: GIVEN a `buildd-team` cookie naming a team the user belongs to, WHEN any
   scoped page or scoped API route loads, THEN that team is the active team.
 - AC-2: GIVEN no `buildd-team` cookie, WHEN a scoped view loads, THEN the active
-  team resolves to the user's personal team if one exists, else the first team.
-  (⚠️ The shell and Home use the workspace-aware default in "Home follows the
-  active team" below; the other scoped pages still call `resolveActiveTeamId`
-  and differ from it only when the personal team is empty.)
+  team resolves to the personal team if it has workspaces, else the first team
+  (stable id order) that has workspaces; only when no team has any, the
+  personal team, else the first team. `resolveActiveTeamId` and
+  `resolveActiveTeamScope` share this rule, so every scoped view agrees with
+  the shell.
 - AC-3 (error): GIVEN a `buildd-team` cookie naming a team the user is NOT a
   member of, WHEN a scoped view loads, THEN the cookie value is ignored and the
   default team is used (no 500, no leak of the other team's data).
