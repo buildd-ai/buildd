@@ -8,7 +8,9 @@ import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect'
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
-import { MobileSaveBar } from '@/components/MobileSaveBar';
+import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
+import { ColorSwatches } from '@/components/ColorSwatches';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type Scope = 'team' | 'workspace';
 
@@ -21,6 +23,9 @@ const COLOR_PALETTE = [
   '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
   '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
+
+/** Toggle selections: stored order carries no meaning, re-toggling appends. */
+const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo'] as const };
 
 interface Role {
   id: string;
@@ -366,28 +371,33 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     );
   };
 
+  // What Save would send. Dirty = this differs from the last-saved copy.
+  // Workspace overrides save independently and are deliberately not in here.
+  const payload = {
+    name,
+    description: description || null,
+    content,
+    model,
+    defaultBackend,
+    allowedTools,
+    canDelegateTo,
+    background,
+    maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
+    color,
+    // Only a move to a workspace changes anything on save.
+    workspaceId: scope === 'workspace' && targetWorkspaceId ? targetWorkspaceId : undefined,
+  };
+  const { dirty, snapshot, markSaved } = useDirtyState(payload, DIRTY_OPTS);
+  useWarnOnUnload(dirty);
+
   async function handleSave() {
+    const submitted = snapshot;
     setSaving(true);
     setSaved(false);
     setError(null);
     try {
-      const body: Record<string, unknown> = {
-        name,
-        description: description || null,
-        content,
-        model,
-        defaultBackend,
-        allowedTools,
-        canDelegateTo,
-        background,
-        maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
-        color,
-      };
-
-      // Include scope change if applicable
-      if (scope === 'workspace' && targetWorkspaceId) {
-        body.workspaceId = targetWorkspaceId;
-      }
+      const body: Record<string, unknown> = { ...payload };
+      if (body.workspaceId === undefined) delete body.workspaceId;
 
       const res = await fetch(`/api/roles/${role.id}`, {
         method: 'PATCH',
@@ -398,6 +408,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         const data = await res.json();
         throw new Error(data.error || 'Failed to save');
       }
+      markSaved(submitted);
 
       // If scope changed to workspace, redirect to workspace skills editor
       if (scope === 'workspace' && targetWorkspaceId) {
@@ -511,13 +522,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
           </div>
           {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="hidden md:inline-flex flex-shrink-0 px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
+          <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} />
         </div>
 
         {error && (
@@ -735,19 +740,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             {/* Color */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Avatar Color</label>
-              <div className="flex gap-2">
-                {COLOR_PALETTE.map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    className={`w-7 h-7 rounded-full transition-all ${
-                      color === c ? 'ring-2 ring-offset-2 ring-text-primary scale-110' : 'hover:scale-110'
-                    }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
+              <ColorSwatches colors={COLOR_PALETTE} value={color} onChange={setColor} size="md" />
             </div>
 
             {/* Delete */}
@@ -870,7 +863,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
         {/* Sits below Workspace Overrides but saves the team role above, so it
             says so; overrides keep their own "Save override" buttons. */}
-        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} label="Save role" />
+        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save role" />
       </div>
       {confirmDialog}
     </main>
