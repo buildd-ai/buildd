@@ -1544,6 +1544,7 @@ export async function PATCH(
           taskId: worker.taskId,
           missionId: taskMissionId,
           workspaceId: worker.workspaceId,
+          workerStartedAt,
         });
         if (!evidence.ok) {
           const frictionSignature = await persistRejectedCompletionPayload('visual_evidence');

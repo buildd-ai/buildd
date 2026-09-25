@@ -9,9 +9,13 @@
  *
  *   - every required route × {mobile, desktop} has a screenshot artifact
  *     written by THIS worker,
- *   - whose R2 object exists (a row with no upload doesn't count),
+ *   - whose storage object was minted for THAT row by upload-url
+ *     (`artifacts/<workspaceId>/<artifactId>/<name>`, see mintedByUploadUrl)
+ *     and exists (a row with no upload, or pointing at someone else's object,
+ *     doesn't count),
  *   - with a non-empty `metadata.qa.finding`,
- *   - and every `issue` shot links a fix task in the same mission.
+ *   - and every `issue` shot links a live `[surface fix]` task in the same
+ *     mission that is not the audit itself.
  *
  * The model decides what it saw; this decides whether it looked, and at what.
  * The verdicts themselves never block.
@@ -51,7 +55,7 @@ export interface VisualEvidenceVerdict {
   missing: string[];
   /** Artifact ids whose finding is empty. */
   emptyFindings: string[];
-  /** Artifact ids whose storage object is absent. */
+  /** Artifact ids whose storage object is absent or was not minted for the row. */
   notUploaded: string[];
   /** Artifact ids with verdict `issue` and no linked fix task. */
   unlinkedIssues: string[];
@@ -97,6 +101,61 @@ function routeSatisfies(required: string, recorded: string): boolean {
     })
     .join('/');
   return new RegExp(`^${pattern}$`).test(recorded);
+}
+
+/**
+ * Was this row's object minted for this row by POST /api/artifacts/upload-url?
+ *
+ * upload-url inserts the row with id = the key's upload id, so its key is
+ * exactly `artifacts/<workspaceId>/<row id>/<name>`. Nothing else produces that
+ * shape: create_artifact takes a caller-chosen storageKey but its row id is a
+ * fresh default the caller can't predict, and PATCH /api/artifacts/[id] can't
+ * change storageKey. So one uploaded image (a sibling's, an old run's, or one
+ * of this worker's own) can't back many route × viewport rows. Row ids are
+ * unique, so the counting keys are distinct by construction.
+ */
+export function mintedByUploadUrl(shot: { id: string; storageKey: string | null }, workspaceId: string): boolean {
+  if (!shot.storageKey) return false;
+  const parts = shot.storageKey.split('/');
+  return parts.length === 4
+    && parts[0] === 'artifacts'
+    && parts[1] === workspaceId
+    && parts[2] === shot.id
+    && parts[3].length > 0;
+}
+
+export const SURFACE_FIX_TITLE_PREFIX = '[surface fix]';
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * Which of the looked-up tasks may stand as an issue's fix task.
+ *
+ * Same mission and workspace is enforced by the query. On top of that a fix
+ * task must be a `[surface fix]` task other than the audit itself, and must
+ * either still be open or have been created during this audit run. Otherwise
+ * an auditor could point every issue at itself or at a finished builder task,
+ * and no open deliverable would ever hold the mission.
+ *
+ * dependsOn is deliberately NOT excluded: ensureMissionSurfaceAudit appends
+ * every new work task in the mission, the auditor's own `[surface fix]` tasks
+ * included, to the audit's dependsOn. A finished builder task is kept out by
+ * the title and open-or-new rules instead.
+ */
+export function eligibleFixTaskIds(
+  rows: Array<{ id: string; title: string | null; status: string | null; createdAt: Date | string | null }>,
+  opts: { auditTaskId: string; workerStartedAt: Date | string | null | undefined },
+): Set<string> {
+  const excluded = new Set([opts.auditTaskId]);
+  const started = opts.workerStartedAt ? new Date(opts.workerStartedAt).getTime() : null;
+  const ok = new Set<string>();
+  for (const r of rows) {
+    if (excluded.has(r.id)) continue;
+    if (!(r.title ?? '').trimStart().toLowerCase().startsWith(SURFACE_FIX_TITLE_PREFIX)) continue;
+    const open = !TERMINAL_TASK_STATUSES.has(r.status ?? '');
+    const createdThisRun = started !== null && r.createdAt !== null && new Date(r.createdAt).getTime() >= started;
+    if (open || createdThisRun) ok.add(r.id);
+  }
+  return ok;
 }
 
 /** Pure evaluation over already-loaded shots and lookups. */
@@ -173,12 +232,15 @@ export function formatVisualEvidenceRejection(v: VisualEvidenceVerdict): string 
     parts.push(`Shots with an empty finding (set metadata.qa.finding via update_artifact): ${list(v.emptyFindings)}.`);
   }
   if (v.notUploaded.length > 0) {
-    parts.push(`Shots whose upload never landed (re-upload them): ${list(v.notUploaded)}.`);
+    parts.push(
+      `Shots with no object uploaded for them via upload_artifact (re-upload each; a storageKey reused ` +
+        `from another artifact does not count): ${list(v.notUploaded)}.`,
+    );
   }
   if (v.unlinkedIssues.length > 0) {
     parts.push(
       `Issue shots with no fix task: ${list(v.unlinkedIssues)}. File a "[surface fix] <route>: <finding>" task in this ` +
-        'mission and set metadata.qa.fixTaskId on the shot.',
+        'mission and set metadata.qa.fixTaskId on the shot (an open fix task, or one you filed this run).',
     );
   }
   parts.push('If the app did not boot, do not complete: ask with the AskUserQuestion tool (not post_note) and stop.');
@@ -198,8 +260,10 @@ export async function loadVisualAuditEvidence(opts: {
   taskId: string;
   missionId: string | null;
   workspaceId: string;
+  /** This worker's startedAt: a fix task created since then counts even if already closed. */
+  workerStartedAt?: Date | string | null;
 }): Promise<VisualEvidenceVerdict> {
-  const { workerId, taskId, missionId, workspaceId } = opts;
+  const { workerId, taskId, missionId, workspaceId, workerStartedAt } = opts;
 
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
@@ -228,7 +292,8 @@ export async function loadVisualAuditEvidence(opts: {
 
   // HEAD each candidate. objectExists throws on anything but not-found; treat
   // that as absent, so a storage outage refuses rather than passes.
-  const candidates = shots.filter((s) => s.storageKey && parseQaMeta(s.metadata));
+  // Only objects upload-url minted for the row itself are candidates.
+  const candidates = shots.filter((s) => mintedByUploadUrl(s, workspaceId) && parseQaMeta(s.metadata));
   const present = await Promise.all(
     candidates.map((s) => objectExists(s.storageKey!).catch(() => false)),
   );
@@ -247,7 +312,7 @@ export async function loadVisualAuditEvidence(opts: {
           missionId ? eq(tasks.missionId, missionId) : undefined,
           eq(tasks.workspaceId, workspaceId),
         ),
-        columns: { id: true },
+        columns: { id: true, title: true, status: true, createdAt: true },
       })
     : [];
 
@@ -255,6 +320,6 @@ export async function loadVisualAuditEvidence(opts: {
     requiredRoutes,
     shots,
     uploadedIds,
-    linkedFixTaskIds: new Set(linked.map((t) => t.id)),
+    linkedFixTaskIds: eligibleFixTaskIds(linked, { auditTaskId: taskId, workerStartedAt }),
   });
 }

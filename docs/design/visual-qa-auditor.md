@@ -132,9 +132,17 @@ In `workers/[id]/route.ts`, and only for `visual-auditor` tasks, this check **re
 
 - Every required route × viewport has a screenshot artifact from **this** worker.
 - Each of those artifacts has its R2 object present (a HEAD request), so a row with no
-  upload doesn't count.
+  upload doesn't count. The object must also be the one upload-url minted for that row:
+  upload-url inserts the row with id = the key's upload id, and the check requires
+  `storageKey = artifacts/<workspace>/<row id>/<name>`. A row pointing at a reused key
+  (create_artifact accepts any key under the workspace prefix) doesn't count.
 - Each has a non-empty `finding`.
-- Each `issue` has a linked fix task.
+- Each `issue` has a linked fix task: a `[surface fix]` task in the same mission and
+  workspace, not the audit itself, and either still open or created during this run.
+
+Separately, `hasDeliverableArtifact`'s mission arm now only matches rows with no owning
+worker. Once uploads carry `missionId`, a sibling's (or the auditor's) screenshot would
+otherwise satisfy another mission task's `artifact_required` / `auto` gate.
 
 The model decides what it saw. Code decides whether it looked, and at what.
 

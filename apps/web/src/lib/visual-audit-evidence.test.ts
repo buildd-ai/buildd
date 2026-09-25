@@ -23,6 +23,8 @@ const {
   formatVisualEvidenceRejection,
   loadVisualAuditEvidence,
   parseQaMeta,
+  mintedByUploadUrl,
+  eligibleFixTaskIds,
 } = await import('./visual-audit-evidence');
 
 const dialect = new PgDialect();
@@ -197,7 +199,7 @@ describe('loadVisualAuditEvidence', () => {
       // dependency manifests
       .mockResolvedValueOnce([{ pathManifest: ['apps/web/src/app/app/(protected)/missions/page.tsx', '**'] }])
       // linked fix tasks
-      .mockResolvedValueOnce([{ id: FIX }]);
+      .mockResolvedValueOnce([{ id: FIX, title: '[surface fix] /app/missions: overflow', status: 'pending', createdAt: new Date() }]);
     mockArtifactsFindMany.mockResolvedValue([
       shot('a', qa('/app/missions', 'mobile')),
       shot('b', qa('/app/missions', 'desktop', { verdict: 'issue', fixTaskId: FIX })),
@@ -245,11 +247,87 @@ describe('loadVisualAuditEvidence', () => {
     expect(v.missing).toContain('/app/missions @ mobile');
   });
 
+  // Reusing one stored object: create_artifact accepts any storageKey under the
+  // workspace prefix and stamps workerId = this worker, so without the minted
+  // check one upload could back every route × viewport row.
+  it('a row pointing at another artifact\'s object does not count, and is not HEADed', async () => {
+    mockTasksFindFirst.mockResolvedValue({ dependsOn: [], context: { visualQa: { requiredRoutes: ['/app/home'] } } });
+    mockArtifactsFindMany.mockResolvedValue([
+      shot('a', qa('/app/home', 'mobile')),
+      // Same object as 'a', recorded as the desktop shot.
+      shot('b', qa('/app/home', 'desktop'), 'artifacts/ws-1/a/s.png'),
+    ]);
+    const v = await loadVisualAuditEvidence({ workerId: WORKER, taskId: TASK, missionId: MISSION, workspaceId: 'ws-1' });
+    expect(mockObjectExists).toHaveBeenCalledTimes(1);
+    expect(v.notUploaded).toEqual(['b']);
+    expect(v.missing).toEqual(['/app/home @ desktop']);
+    expect(v.ok).toBe(false);
+  });
+
+  it('an issue linked to the audit itself or to a finished builder dependency is unlinked', async () => {
+    mockTasksFindFirst.mockResolvedValue({ dependsOn: [DEP], context: {} });
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ pathManifest: [] }])
+      .mockResolvedValueOnce([
+        { id: TASK, title: '[surface fix] self', status: 'in_progress', createdAt: new Date() },
+        { id: DEP, title: 'Build the missions page', status: 'completed', createdAt: new Date(0) },
+      ]);
+    mockArtifactsFindMany.mockResolvedValue([
+      shot('a', qa('/app/x', 'mobile', { verdict: 'issue', fixTaskId: TASK })),
+      shot('b', qa('/app/x', 'desktop', { verdict: 'issue', fixTaskId: DEP })),
+    ]);
+    const v = await loadVisualAuditEvidence({
+      workerId: WORKER, taskId: TASK, missionId: MISSION, workspaceId: 'ws-1', workerStartedAt: new Date(1_000),
+    });
+    expect(v.unlinkedIssues.sort()).toEqual(['a', 'b']);
+    expect(v.ok).toBe(false);
+  });
+
   it('skips the fix-task query when no issue carries a well-formed id', async () => {
     mockTasksFindFirst.mockResolvedValue({ dependsOn: [], context: {} });
     mockArtifactsFindMany.mockResolvedValue([shot('a', qa('/app/x', 'mobile', { verdict: 'issue', fixTaskId: 'not-a-uuid' }))]);
     const v = await loadVisualAuditEvidence({ workerId: WORKER, taskId: TASK, missionId: MISSION, workspaceId: 'ws-1' });
     expect(mockTasksFindMany).not.toHaveBeenCalled();
     expect(v.unlinkedIssues).toEqual(['a']);
+  });
+});
+
+describe('mintedByUploadUrl', () => {
+  it('accepts exactly artifacts/<workspace>/<row id>/<name>', () => {
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'artifacts/ws-1/a/s.png' }, 'ws-1')).toBe(true);
+  });
+  it('rejects another row\'s key, another workspace, other prefixes, extra depth and null', () => {
+    expect(mintedByUploadUrl({ id: 'b', storageKey: 'artifacts/ws-1/a/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'artifacts/ws-2/a/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'attachments/ws-1/a/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'artifacts/ws-1/a/x/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'artifacts/ws-1/a/' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: null }, 'ws-1')).toBe(false);
+  });
+});
+
+describe('eligibleFixTaskIds', () => {
+  const started = new Date('2026-08-01T10:00:00.000Z');
+  const before = new Date('2026-08-01T09:00:00.000Z');
+  const after = new Date('2026-08-01T10:30:00.000Z');
+  const opts = { auditTaskId: 'audit', workerStartedAt: started };
+  const row = (id: string, status: string, createdAt: Date, title = `[surface fix] /x: ${id}`) => ({ id, title, status, createdAt });
+
+  it('accepts an open [surface fix] task, and one created (and closed) during this run', () => {
+    expect([...eligibleFixTaskIds([row('open-old', 'pending', before), row('closed-new', 'completed', after)], opts)].sort())
+      .toEqual(['closed-new', 'open-old']);
+  });
+  // ensureMissionSurfaceAudit appends the auditor's own fix tasks to its
+  // dependsOn, so being a dependency must not disqualify a fix task.
+  it('accepts a fix task that has been appended to the audit\'s dependsOn', () => {
+    expect([...eligibleFixTaskIds([row('fix-dep', 'pending', after)], opts)]).toEqual(['fix-dep']);
+  });
+  it('rejects the audit itself, non-fix titles (a builder task), and fix tasks closed before this run', () => {
+    expect([...eligibleFixTaskIds([
+      row('audit', 'in_progress', after),
+      row('builder', 'completed', before, 'Build the page'),
+      row('other', 'pending', after, 'Build the page'),
+      row('stale', 'completed', before),
+    ], opts)]).toEqual([]);
   });
 });

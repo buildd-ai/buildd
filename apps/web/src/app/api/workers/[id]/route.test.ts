@@ -4159,6 +4159,7 @@ describe('PATCH /api/workers/[id]', () => {
         expect(capturedSet?.rejectedCompletionPayload?.reason).toBe('visual_evidence');
         expect(mockLoadVisualAuditEvidence).toHaveBeenCalledWith({
           workerId: WORKER_ID, taskId: 'task-1', missionId: 'mission-1', workspaceId: 'ws-1',
+          workerStartedAt: new Date('2026-08-01T10:00:00.000Z'),
         });
       });
 
