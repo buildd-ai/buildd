@@ -181,7 +181,7 @@ export function formatVisualEvidenceRejection(v: VisualEvidenceVerdict): string 
         'mission and set metadata.qa.fixTaskId on the shot.',
     );
   }
-  parts.push('If the app did not boot, do not complete: post_note a question and stop.');
+  parts.push('If the app did not boot, do not complete: ask with the AskUserQuestion tool (not post_note) and stop.');
   return parts.join(' ');
 }
 

@@ -149,7 +149,13 @@ The model decides what it saw. Code decides whether it looked, and at what.
   criteria reviewer was built to escape.
 - **Boot failure:** the auditor does not mark the task `failed`. `failed` is terminal in
   `mission-completion.ts` and would *release* the gate. It asks a question instead
-  ("app did not boot: …"), and the open task holds the mission. The evidence check
+  ("app did not boot: …") with `AskUserQuestion`, which the runner parks as
+  `waiting_input`, and the open task holds the mission. Not `post_note`: a note does not
+  park, so the session ends and the runner's fallback completion is refused and recorded
+  as a failure. The runner's in-session output-requirement nudge skips visual-auditor
+  tasks for the same reason. After the 4h mission waiting-input timeout the task is
+  failed and cloned; the clone keeps `roleSlug` and `dependsOn`, so it holds the mission
+  and re-derives the same required routes. The evidence check
   refuses a completion with no screenshots in any case. (A worker cannot report
   `infra_stalled` itself: only the server sets it, after repeated infra retries, so it
   is not a boot-failure path.)

@@ -545,9 +545,11 @@ exactly that and complete again.
 
 If the app did not boot, or the workflow could not produce screenshots, you have seen nothing,
 and that must never pass. Do not mark the task failed and do not complete it: a failed task
-releases the mission. Instead \`post_note\` with \`type: 'question'\`, title "App did not boot:
-<one-line reason>", and the error output in the body, then stop. The open task holds the mission
-until a human answers.
+releases the mission. Instead call the \`AskUserQuestion\` tool with the question "App did not
+boot: <one-line reason>" and the error output, and stop there. That parks this task in
+waiting_input, and the open task holds the mission until a human answers. Do NOT use
+\`post_note\` for this: a note does not park you, the session ends, and the runner's fallback
+completion is refused for missing screenshots and recorded as a failure.
 
 ## Pull Gates (REQUIRED before saving memory)
 
@@ -561,9 +563,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     model: 'sonnet',
     isRole: true,
     // Read-only by prompt: Bash is here to dispatch/download the capture
-    // workflow or run shoot.sh, not to edit. No Write/Edit. Like every role's
-    // allowedTools this is enforced only on the useSkillAgents subagent path.
-    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'mcp__buildd__buildd'],
+    // workflow or run shoot.sh, not to edit. No Write/Edit. AskUserQuestion is
+    // the boot-failure parking path. Like every role's allowedTools this is
+    // enforced only on the useSkillAgents subagent path.
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', 'mcp__buildd__buildd'],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },

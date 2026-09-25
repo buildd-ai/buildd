@@ -32,7 +32,8 @@ describe('DEFAULT_ROLES', () => {
     });
 
     it('is read-only: can look and capture, cannot edit files or delegate', () => {
-      expect([...role().allowedTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read', 'mcp__buildd__buildd']);
+      expect([...role().allowedTools].sort()).toEqual(['AskUserQuestion', 'Bash', 'Glob', 'Grep', 'Read', 'mcp__buildd__buildd']);
+      for (const t of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) expect(role().allowedTools).not.toContain(t);
       expect(role().canDelegateTo).toEqual([]);
     });
 
@@ -51,11 +52,18 @@ describe('DEFAULT_ROLES', () => {
       expect(c).toMatch(/never open (a )?PR/i);
     });
 
-    it('prompt turns a boot failure into a question, never a failed task', () => {
+    // post_note is non-blocking: the session would end, the runner's fallback
+    // completion would hit the visual_evidence 400, and the worker would be
+    // recorded failed (output_unmet). AskUserQuestion is what the runner parks
+    // as waiting_input, which keeps the task open and the mission held.
+    it('prompt parks a boot failure with AskUserQuestion, never a failed task or a note', () => {
       const c = role().content;
-      expect(c).toMatch(/did not boot/i);
-      expect(c).toContain("type: 'question'");
-      expect(c).toMatch(/do not (mark|fail|complete)/i);
+      const boot = c.slice(c.indexOf('## Boot failure'), c.indexOf('## Pull Gates'));
+      expect(boot).toMatch(/did not\s+boot/i);
+      expect(boot).toContain('AskUserQuestion');
+      expect(boot).toContain('waiting_input');
+      expect(boot).toMatch(/do not (mark|fail|complete)/i);
+      expect(boot).toMatch(/do not use\s+`post_note`/i);
     });
   });
 
