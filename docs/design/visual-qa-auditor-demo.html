@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en" data-theme="night">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visual QA auditor — proposal demo</title>
+<style>
+:root[data-theme="night"]{
+  --bg:#1a1816; --surface-1:#211f1c; --surface-2:#2a2724; --surface-3:#302c28; --card:#2a2724;
+  --text:#ede8e2; --text-2:#a89f96; --text-3:#968e86;
+  --primary:#f4811f; --accent-text:#f59b4e;
+  --border:rgba(255,245,230,.14); --border-strong:rgba(255,245,230,.55);
+  --card-shadow:5px 5px 0 0 rgba(255,245,230,.5); --shadow-c:rgba(255,245,230,.5);
+  --success:#5ec495; --warning:#e0b35a; --error:#d4736a; --info:#7aacca;
+  --overlay:rgba(10,9,8,.86);
+}
+:root[data-theme="day"]{
+  --bg:#e7e3db; --surface-1:#eee9e3; --surface-2:#e5dfd8; --surface-3:#dbd4cc; --card:#ffffff;
+  --text:#1f1b17; --text-2:#423c35; --text-3:#6a625a;
+  --primary:#f4811f; --accent-text:#aa410b;
+  --border:rgba(0,0,0,.42); --border-strong:#1a1512;
+  --card-shadow:5px 5px 0 0 rgba(26,21,18,.95); --shadow-c:rgba(26,21,18,.95);
+  --success:#3a9864; --warning:#9a7a20; --error:#c0524a; --info:#5088b0;
+  --overlay:rgba(31,27,23,.82);
+}
+*{box-sizing:border-box;border-radius:0 !important}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font-family:"Outfit",system-ui,sans-serif;font-size:15px;line-height:1.5}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.wrap{max-width:1180px;margin:0 auto;padding:36px 28px 80px}
+.label{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;text-transform:uppercase;letter-spacing:2px;color:var(--text-3)}
+.label.accent{color:var(--accent-text)}
+a{color:var(--accent-text)}
+.card{background:var(--card);outline:2px solid var(--border-strong);box-shadow:var(--card-shadow);padding:22px}
+header.top{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:34px}
+h1{font-size:44px;line-height:1.05;margin:8px 0 14px;font-weight:700;letter-spacing:-.5px}
+h1 span{color:var(--primary)}
+.summary{max-width:760px;color:var(--text-2);font-size:16px;margin:0}
+.summary code,.note code,.cfg code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.88em;color:var(--text)}
+button{font:inherit;color:inherit;cursor:pointer}
+.toggle{background:var(--card);border:2px solid var(--border-strong);box-shadow:3px 3px 0 0 var(--shadow-c);padding:8px 14px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;white-space:nowrap}
+.toggle:active{transform:translate(3px,3px);box-shadow:none}
+.toggle b{color:var(--accent-text);font-weight:600}
+section{margin-top:52px}
+.sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:16px;border-bottom:2px solid var(--border-strong);padding-bottom:8px}
+.sec-head h2{margin:0;font-size:22px;font-weight:600}
+.note{color:var(--text-2);font-size:14px;margin:6px 0 18px;max-width:820px}
+
+/* ---------- diagram ---------- */
+.diagram-scroll{overflow-x:auto;padding:4px 10px 10px 4px}
+svg.flow{display:block;width:100%;min-width:940px;height:auto}
+svg .lane{fill:var(--surface-1)}
+svg .lane.alt{fill:var(--surface-2)}
+svg .lane-head{fill:var(--surface-3)}
+svg .lane-rule{stroke:var(--border);stroke-width:1}
+svg .lane-t{font:600 11px "IBM Plex Mono",ui-monospace,monospace;letter-spacing:2px;fill:var(--text);text-transform:uppercase}
+svg .lane-s{font:10px "IBM Plex Mono",ui-monospace,monospace;fill:var(--text-3)}
+svg .bx{fill:var(--card);stroke:var(--border-strong);stroke-width:2}
+svg .sh{fill:var(--shadow-c)}
+svg .t{font:600 13px "Outfit",system-ui,sans-serif;fill:var(--text)}
+svg .s{font:9.5px "IBM Plex Mono",ui-monospace,monospace;fill:var(--text-2)}
+svg .num{font:600 9px "IBM Plex Mono",ui-monospace,monospace;fill:var(--accent-text);letter-spacing:1px}
+svg .flowline{fill:none;stroke:var(--primary);stroke-width:2}
+svg .branch{fill:none;stroke:var(--text-2);stroke-width:1.5}
+svg .dashed{stroke-dasharray:5 4}
+svg .al{font:10px "IBM Plex Mono",ui-monospace,monospace;fill:var(--text-3)}
+svg .mk-o{fill:var(--primary)}
+svg .mk-g{fill:var(--text-2)}
+svg .d-issue{fill:var(--error)} svg .d-unsure{fill:var(--info)} svg .d-ok{fill:var(--success)}
+.legend{display:flex;gap:22px;flex-wrap:wrap;margin-top:14px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--text-3)}
+.legend i{display:inline-block;width:22px;height:0;border-top:2px solid var(--primary);vertical-align:middle;margin-right:8px}
+.legend i.g{border-top:1.5px solid var(--text-2)}
+.legend i.d{border-top:1.5px dashed var(--text-2)}
+
+/* ---------- mission mock ---------- */
+.crumbs{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;color:var(--text-3)}
+.crumbs b{color:var(--text);font-weight:500}
+.mhead{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:20px}
+.mhead h3{margin:6px 0 0;font-size:26px;font-weight:600}
+.mstats{display:flex;gap:18px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;color:var(--text-2)}
+.badge{display:inline-flex;align-items:center;gap:6px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;letter-spacing:1.5px;
+  text-transform:uppercase;border:1.5px solid currentColor;padding:2px 7px;line-height:1.4;white-space:nowrap}
+.badge.ok{color:var(--success)} .badge.issue{color:var(--error)} .badge.unsure{color:var(--info)} .badge.warn{color:var(--warning)} .badge.idle{color:var(--text-3)}
+.dot{display:inline-block;width:8px;height:8px;flex:none}
+.dot.ok{background:var(--success)} .dot.issue{background:var(--error)} .dot.unsure{background:var(--info)}
+.steps{display:grid;grid-template-columns:1fr auto 1fr auto 1.35fr auto 1fr;align-items:stretch;gap:0;margin:12px 0 22px}
+.step{border:2px solid var(--border);background:var(--surface-1);padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.step .sn{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--text-3)}
+.step .st{font-weight:600;font-size:15px}
+.step.new{border-color:var(--primary);background:var(--card);box-shadow:4px 4px 0 0 var(--primary)}
+.step.new .sn{color:var(--accent-text)}
+.step.dim .st{color:var(--text-3)}
+.arrow{align-self:center;padding:0 8px;color:var(--text-3);font-family:"IBM Plex Mono",ui-monospace,monospace}
+.vr{border:2px solid var(--border-strong);background:var(--surface-1);padding:18px}
+.vr-top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}
+.vr-top h4{margin:0;font-size:17px;font-weight:600;display:flex;gap:10px;align-items:center}
+.count{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;color:var(--text)}
+.count .i{color:var(--error)} .count .u{color:var(--info)}
+.vlegend{display:flex;gap:14px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--text-3);align-items:center}
+.vlegend span{display:inline-flex;gap:6px;align-items:center}
+.strip{display:flex;flex-wrap:wrap;gap:22px 28px;padding:14px 0 6px}
+.group .gl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--text-2);margin-bottom:8px}
+.group .row{display:flex;gap:10px;align-items:flex-end}
+.thumb{background:none;border:0;padding:0;display:flex;flex-direction:column;align-items:center;gap:5px}
+.thumb .frame{position:relative;outline:2px solid var(--border-strong);box-shadow:3px 3px 0 0 var(--shadow-c);transition:transform .08s}
+.thumb:hover .frame,.thumb:focus-visible .frame{transform:translate(-2px,-2px);box-shadow:5px 5px 0 0 var(--primary);outline-color:var(--primary)}
+.thumb:focus-visible{outline:none}
+.thumb .frame .dot{position:absolute;top:-4px;right:-4px;width:10px;height:10px;outline:2px solid var(--card);z-index:2}
+.thumb .cap{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:9.5px;color:var(--text-3);letter-spacing:.5px}
+.thumb .mp{height:104px}
+.gate{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+.gate .box{border:2px solid var(--border);background:var(--surface-1);padding:14px 16px}
+.gate ul{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:9px;font-size:14px}
+.gate li{display:flex;gap:10px;align-items:baseline;justify-content:space-between}
+.gate li .l{display:flex;gap:9px;align-items:baseline;min-width:0}
+.gate li .l .dot{transform:translateY(-1px)}
+.gate .mono{font-size:12px}
+.check{font-family:"IBM Plex Mono",ui-monospace,monospace;color:var(--success);font-weight:600}
+.prline{margin-top:16px;border:2px dashed var(--border);padding:10px 14px;font-size:13px;color:var(--text-2);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.prline .mono{font-size:12px;color:var(--text)}
+
+/* ---------- mock pages (screenshots) ---------- */
+.mp{position:relative;overflow:hidden;background:var(--m-bg);display:block}
+.mp.desktop{aspect-ratio:1280/900}
+.mp.mobile{aspect-ratio:390/844}
+.mp.dark{--m-bg:#1a1816;--m-card:#2a2724;--m-block:#4b453f;--m-block2:#625a52;--m-line:#3a3531;--m-soft:#37322d}
+.mp.light{--m-bg:#eee9e3;--m-card:#ffffff;--m-block:#cdc5bb;--m-block2:#b3aa9f;--m-line:#d8d1c8;--m-soft:#e2dcd4}
+.mp i{position:absolute;display:block;background:var(--m-block)}
+.mp i.c{background:var(--m-card);box-shadow:0 0 0 1px var(--m-line)}
+.mp i.s{background:var(--m-soft)}
+.mp i.b2{background:var(--m-block2)}
+.mp i.acc{background:#f4811f}
+.mp i.flag{background:transparent;box-shadow:none;outline:2px solid var(--error);outline-offset:0;z-index:3}
+.mp i.flag.fill{background:rgba(212,115,106,.18)}
+.mp i.pale{background:#ecdfb4}
+.mp.expired{background:var(--surface-2);outline:2px dashed var(--border-strong);outline-offset:-2px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center}
+.mp.expired span{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text-2)}
+.mp.expired small{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:8.5px;color:var(--text-3)}
+
+/* ---------- lightbox ---------- */
+.lb{position:fixed;inset:0;background:var(--overlay);display:none;align-items:center;justify-content:center;padding:28px;z-index:50}
+.lb.open{display:flex}
+.lb-panel{background:var(--card);outline:2px solid var(--border-strong);box-shadow:var(--card-shadow);width:min(1100px,100%);max-height:calc(100vh - 56px);
+  display:grid;grid-template-columns:minmax(0,1fr) 330px;overflow:auto}
+.lb-stage{background:var(--surface-3);padding:26px;display:flex;align-items:center;justify-content:center;min-height:420px;border-right:2px solid var(--border-strong)}
+.lb-stage .mp{outline:2px solid var(--border-strong);box-shadow:5px 5px 0 0 var(--shadow-c)}
+.lb-stage .mp.mobile{height:min(66vh,620px)}
+.lb-stage .mp.desktop{width:100%;max-width:700px}
+.lb-stage .mp.expired{width:100%;max-width:600px;aspect-ratio:1280/900}
+.lb-stage .mp.expired span{font-size:14px}
+.lb-stage .mp.expired small{font-size:12px}
+.lb-meta{padding:22px;display:flex;flex-direction:column;gap:16px}
+.lb-meta .route{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:17px;font-weight:600;word-break:break-all}
+.kv{display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-size:13px}
+.kv dt{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-3);padding-top:2px}
+.kv dd{margin:0;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px}
+.finding{border-left:3px solid var(--border-strong);padding:4px 0 4px 12px;font-size:15px;margin:0}
+.filed{border:2px solid var(--border);padding:10px 12px;font-size:13.5px;background:var(--surface-1)}
+.filed a{font-weight:500}
+.key{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;color:var(--text-3);word-break:break-all}
+.lb-nav{display:flex;gap:8px;margin-top:auto}
+.lb-nav button{flex:1;background:var(--surface-1);border:2px solid var(--border-strong);padding:7px 8px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;letter-spacing:1.5px;text-transform:uppercase}
+.lb-nav button:hover{background:var(--surface-3)}
+.lb-close{position:absolute;top:18px;right:22px;background:var(--card);border:2px solid var(--border-strong);box-shadow:3px 3px 0 0 var(--shadow-c);width:36px;height:36px;font-size:18px;line-height:1}
+
+/* ---------- config ---------- */
+.cfg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 26px;max-width:900px}
+.cfg-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:12px}
+.cfg-head h3{margin:0;font-size:18px;font-weight:600}
+.fld{display:flex;flex-direction:column;gap:6px}
+.fld.full{grid-column:1/-1}
+.fld .in{border:2px solid var(--border-strong);background:var(--surface-1);padding:8px 10px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:38px}
+.fld .in .caret{color:var(--text-3);font-size:11px}
+.fld .hint{font-size:12.5px;color:var(--text-3)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:2px solid var(--border-strong);background:var(--surface-1);padding:4px 9px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;display:inline-flex;gap:8px;align-items:center}
+.chip .x{color:var(--text-3)}
+.chip.on .box{background:var(--primary)}
+.chip .box{width:10px;height:10px;border:2px solid var(--border-strong);display:inline-block}
+.chip.add{border-style:dashed;color:var(--text-3)}
+.switch{display:inline-flex;align-items:center;gap:10px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;letter-spacing:1.5px;text-transform:uppercase}
+.switch .tr{width:38px;height:20px;border:2px solid var(--border-strong);background:var(--primary);position:relative}
+.switch .tr::after{content:"";position:absolute;right:2px;top:2px;width:12px;height:12px;background:var(--card);outline:2px solid var(--border-strong)}
+.cfg-foot{margin-top:20px;display:flex;justify-content:flex-end;gap:10px}
+.btn{border:2px solid var(--border-strong);background:var(--card);padding:8px 16px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;box-shadow:3px 3px 0 0 var(--shadow-c)}
+.btn.pri{background:var(--primary);color:#1a1512;border-color:var(--border-strong)}
+footer{margin-top:60px;color:var(--text-3);font-size:12px;font-family:"IBM Plex Mono",ui-monospace,monospace}
+
+@media (max-width:820px){
+  .steps{grid-template-columns:1fr;gap:8px}.arrow{display:none}
+  .gate,.cfg{grid-template-columns:1fr}
+  .lb-panel{grid-template-columns:1fr}.lb-stage{border-right:0;border-bottom:2px solid var(--border-strong)}
+  h1{font-size:34px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <div class="label accent">Proposal · demo · placeholder data</div>
+    <h1>Visual QA <span>auditor</span></h1>
+    <p class="summary">When a mission's builder tasks touch UI files, buildd appends one <code>[surface audit]</code> task that waits for all of them to merge. A read-only visual-auditor runner with the <code>browser</code> capability boots the workspace's app headless against a preview database, visits the routes the diff affected, and captures mobile and desktop screenshots. Screenshots go to a private R2 bucket and expire after 30 days. They show up as screenshot artifacts grouped by run under a new <b>Visual review</b> step in the mission's Delivery section. Verdicts are advisory: each <b>issue</b> is filed as a mission task, which blocks completion through the existing <code>pending_deliverables</code> check. Each <b>unsure</b> becomes a question for a human.</p>
+  </div>
+  <button class="toggle" id="themeToggle" aria-label="Toggle day/night theme">Theme: <b id="themeName">Night</b></button>
+</header>
+
+<!-- ============ 01 FLOW ============ -->
+<section>
+  <div class="sec-head"><span class="label accent">01</span><h2>Flow</h2><span class="label">where each step runs</span></div>
+  <div class="card diagram-scroll">
+    <svg class="flow" id="flow" viewBox="0 0 1100 572" role="img" aria-label="Visual QA flow diagram"></svg>
+    <div class="legend">
+      <span><i></i>main path</span>
+      <span><i class="g"></i>verdict branch</span>
+      <span><i class="d"></i>link only</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 02 MISSION PAGE ============ -->
+<section>
+  <div class="sec-head"><span class="label accent">02</span><h2>Mission page: Delivery</h2><span class="label">click any thumbnail</span></div>
+  <p class="note">The new step sits between <b>verified</b> and <b>shipped</b>. Each thumbnail is a stand-in screenshot rendered in the theme it was captured in. The coloured square is the verdict.</p>
+
+  <div class="card">
+    <div class="mhead">
+      <div>
+        <div class="crumbs">Workspace 1 / Missions / <b>Mobile task header</b></div>
+        <h3>Mission: Mobile task header</h3>
+      </div>
+      <div class="mstats"><span>5 tasks</span><span>3 builder · merged</span><span>1 [surface audit] · done</span></div>
+    </div>
+
+    <div class="label">Delivery</div>
+    <div class="steps">
+      <div class="step"><span class="sn">01</span><span class="st">Integrated</span><span class="badge ok">done</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="sn">02</span><span class="st">Verified</span><span class="badge ok">done</span></div>
+      <div class="arrow">→</div>
+      <div class="step new"><span class="sn">03 · new</span><span class="st">Visual review</span><span style="display:flex;gap:6px;flex-wrap:wrap"><span class="badge issue">2 issues</span><span class="badge unsure">1 unsure</span></span></div>
+      <div class="arrow">→</div>
+      <div class="step dim"><span class="sn">04</span><span class="st">Shipped</span><span class="badge warn">blocked</span></div>
+    </div>
+
+    <div class="vr">
+      <div class="vr-top">
+        <h4>Visual review <span class="count mono" id="count"></span></h4>
+        <div class="vlegend">
+          <span><i class="dot ok"></i>ok</span><span><i class="dot issue"></i>issue</span><span><i class="dot unsure"></i>unsure</span>
+          <span>M/D = mobile/desktop · dk/lt = theme</span>
+        </div>
+      </div>
+      <div class="strip" id="strip"></div>
+
+      <div class="gate">
+        <div class="box">
+          <div class="label">Filed from findings</div>
+          <ul id="filedList"></ul>
+        </div>
+        <div class="box">
+          <div class="label">Completion check (mechanical)</div>
+          <ul>
+            <li><span class="l">Coverage: 4 routes × 2 viewports ≥ 1 shot each</span><span class="check">8/8 ✓</span></li>
+            <li><span class="l">Every shot has a one-line finding</span><span class="check">12/12 ✓</span></li>
+            <li><span class="l">Every R2 object exists (HEAD)</span><span class="check">✓</span></li>
+            <li><span class="l" style="color:var(--text-3)">The verdict is advisory. Filed tasks block the mission, the verdict does not.</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="prline">
+        <span class="label">PR comment</span>
+        <span class="mono">Visual review: 2 issues, 1 unsure. View on dashboard →</span>
+        <span style="color:var(--text-3)">A link only, with no images, because the repo is public.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 03 CONFIG ============ -->
+<section>
+  <div class="sec-head"><span class="label accent">03</span><h2>Per-workspace config</h2><span class="label">later phase · after it proves out on buildd</span></div>
+  <div class="card" style="max-width:960px">
+    <div class="cfg-head">
+      <h3>Visual QA auditor</h3>
+      <span class="switch">Enabled <span class="tr"></span></span>
+    </div>
+    <div class="cfg">
+      <div class="fld">
+        <span class="label">Boot command</span>
+        <div class="in">bun dev</div>
+        <span class="hint">Runs in the runner sandbox, headless.</span>
+      </div>
+      <div class="fld">
+        <span class="label">Port</span>
+        <div class="in">3000</div>
+        <span class="hint">The auditor polls this port until the app responds.</span>
+      </div>
+      <div class="fld">
+        <span class="label">Auth bypass env</span>
+        <div class="in">DEV_USER_EMAIL=qa@example.test</div>
+        <span class="hint">Or <code>NODE_ENV=development</code> if the app skips its auth guard in dev.</span>
+      </div>
+      <div class="fld">
+        <span class="label">Data secret</span>
+        <div class="in"><span>PREVIEW_DATABASE_URL</span><span class="caret">▼</span></div>
+        <span class="hint">Must be a preview DB branch URL, never prod. Stored in <code>secrets</code>.</span>
+      </div>
+      <div class="fld full">
+        <span class="label">UI globs (trigger)</span>
+        <div class="chips">
+          <span class="chip">apps/web/src/app/** <span class="x">×</span></span>
+          <span class="chip">apps/web/src/components/** <span class="x">×</span></span>
+          <span class="chip add">+ add glob</span>
+        </div>
+        <span class="hint">A merged builder diff that matches any glob appends one <code>[surface audit]</code> task to the mission.</span>
+      </div>
+      <div class="fld">
+        <span class="label">Viewports</span>
+        <div class="chips">
+          <span class="chip on"><i class="box"></i>mobile 390×844</span>
+          <span class="chip on"><i class="box"></i>desktop 1280×900</span>
+        </div>
+      </div>
+      <div class="fld">
+        <span class="label">Themes</span>
+        <div class="chips">
+          <span class="chip on"><i class="box"></i>dark</span>
+          <span class="chip on"><i class="box"></i>light</span>
+        </div>
+      </div>
+      <div class="fld">
+        <span class="label">Routes manifest (optional)</span>
+        <div class="in">qa/routes.json</div>
+        <span class="hint">Merged with the routes derived from the diff.</span>
+      </div>
+      <div class="fld">
+        <span class="label">Retention days</span>
+        <div class="in">30</div>
+        <span class="hint">R2 lifecycle rule on <code>artifacts/&lt;ws&gt;/qa/</code>. Expired objects show as a tile.</span>
+      </div>
+    </div>
+    <div class="cfg-foot"><span class="btn">Test boot</span><span class="btn pri">Save</span></div>
+  </div>
+</section>
+
+<footer>Proposal mock. All names, routes and findings are placeholders.</footer>
+</div>
+
+<!-- ============ LIGHTBOX ============ -->
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="Screenshot detail">
+  <button class="lb-close" id="lbClose" aria-label="Close">×</button>
+  <div class="lb-panel">
+    <div class="lb-stage" id="lbStage"></div>
+    <div class="lb-meta">
+      <div class="label" id="lbIdx"></div>
+      <div class="route" id="lbRoute"></div>
+      <dl class="kv">
+        <dt>Viewport</dt><dd id="lbVp"></dd>
+        <dt>Theme</dt><dd id="lbTheme"></dd>
+        <dt>Verdict</dt><dd id="lbVerdict"></dd>
+      </dl>
+      <div>
+        <div class="label" style="margin-bottom:6px">Finding</div>
+        <p class="finding" id="lbFinding"></p>
+      </div>
+      <div class="filed" id="lbFiled"></div>
+      <div class="key" id="lbKey"></div>
+      <div class="lb-nav"><button id="lbPrev">← Prev</button><button id="lbNext">Next →</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- theme ---------- */
+(function(){
+  var root=document.documentElement, name=document.getElementById('themeName');
+  document.getElementById('themeToggle').addEventListener('click',function(){
+    var next=root.getAttribute('data-theme')==='night'?'day':'night';
+    root.setAttribute('data-theme',next); name.textContent=next==='night'?'Night':'Day';
+  });
+})();
+
+/* ---------- flow diagram ---------- */
+(function(){
+  var svg=document.getElementById('flow'), o=[];
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+  o.push('<defs>'+
+    '<marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-o" d="M0,0 L10,5 L0,10 z"/></marker>'+
+    '<marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-g" d="M0,0 L10,5 L0,10 z"/></marker>'+
+  '</defs>');
+  var lanes=[
+    {y:0,h:232,t:'buildd API',s:['tasks · artifacts','completion gate'],alt:false},
+    {y:232,h:120,t:'Runner sandbox',s:['visual-auditor role','only if Chromium launches'],alt:true},
+    {y:352,h:104,t:'R2 · private',s:['presigned only','30-day decay'],alt:false},
+    {y:456,h:116,t:'Dashboard',s:['mission page','Delivery section'],alt:true}
+  ];
+  lanes.forEach(function(l){
+    o.push('<rect class="lane'+(l.alt?' alt':'')+'" x="0" y="'+l.y+'" width="1100" height="'+l.h+'"/>');
+    o.push('<rect class="lane-head" x="0" y="'+l.y+'" width="128" height="'+l.h+'"/>');
+    o.push('<line class="lane-rule" x1="0" x2="1100" y1="'+(l.y+l.h)+'" y2="'+(l.y+l.h)+'"/>');
+    var cy=l.y+l.h/2-14;
+    o.push('<text class="lane-t" x="14" y="'+cy+'">'+esc(l.t)+'</text>');
+    l.s.forEach(function(s,i){o.push('<text class="lane-s" x="14" y="'+(cy+17+i*13)+'">'+esc(s)+'</text>')});
+  });
+  function box(x,y,w,h,title,subs,opts){
+    opts=opts||{};
+    var g='<g>';
+    g+='<rect class="sh" x="'+(x+4)+'" y="'+(y+4)+'" width="'+w+'" height="'+h+'"/>';
+    g+='<rect class="bx" x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'"/>';
+    var tx=x+10;
+    if(opts.dot){g+='<rect class="d-'+opts.dot+'" x="'+(x+10)+'" y="'+(y+11)+'" width="9" height="9"/>';tx=x+25}
+    if(opts.num){g+='<text class="num" x="'+(x+w-8)+'" y="'+(y+14)+'" text-anchor="end">'+opts.num+'</text>'}
+    g+='<text class="t" x="'+tx+'" y="'+(y+20)+'">'+esc(title)+'</text>';
+    (subs||[]).forEach(function(s,i){g+='<text class="s" x="'+(x+10)+'" y="'+(y+37+i*13)+'">'+esc(s)+'</text>'});
+    return g+'</g>';
+  }
+  function path(d,cls,mk){o.push('<path class="'+cls+'" d="'+d+'"'+(mk?' marker-end="url(#'+mk+')"':'')+'/>')}
+  function lbl(x,y,t,anchor){o.push('<text class="al" x="'+x+'" y="'+y+'"'+(anchor?' text-anchor="'+anchor+'"':'')+'>'+esc(t)+'</text>')}
+
+  /* arrows first (under boxes) */
+  path('M320,60 H346','flowline','ao');                      // B1 -> B2
+  path('M440,90 V200 H230 V261','flowline','ao');            // B2 -> B3
+  lbl(238,222,'claim (role gate)');
+  [310,492,674,856].forEach(function(x){path('M'+x+',295 H'+(x+18),'flowline','ao')});
+  path('M958,265 V94','flowline','ao');                       // B7 -> artifact
+  lbl(966,236,'register');
+  lbl(966,249,'artifact');
+  path('M958,325 V371','flowline','ao');                      // B7 -> R2
+  lbl(966,352,'presigned PUT');
+  path('M958,435 V474','flowline','ao');                      // R2 -> Visual review
+  lbl(966,460,'presigned GET');
+  path('M1050,60 H1082 V508 H1042','flowline','ao');          // artifact -> Visual review
+  lbl(1078,300,'metadata','end');
+  path('M878,508 H826','branch dashed','ag');                 // VR -> PR link
+  /* verdict branch */
+  path('M870,60 H712 V122','branch');
+  path('M565,122 H878','branch');
+  path('M565,122 V136','branch','ag');
+  path('M732,122 V136','branch','ag');
+  path('M878,122 V136','branch','ag');
+  lbl(560,114,'verdict per shot');
+
+  /* boxes */
+  o.push(box(150,30,170,60,'Builder tasks merge',['diff touches UI globs','→ appends audit task'],{num:'1'}));
+  o.push(box(350,30,180,60,'[surface audit] task',['dependsOn every builder','unblocks on last merge'],{num:'2'}));
+  o.push(box(870,30,180,60,'screenshot artifacts',['1 per shot · runKey','route·viewport·verdict'],{num:'8'}));
+  o.push(box(480,140,170,72,'issue',['→ new task in mission','→ blocks completion','  (pending_deliverables)'],{dot:'issue'}));
+  o.push(box(665,140,135,72,'unsure',['→ human question'],{dot:'unsure'}));
+  o.push(box(815,140,122,72,'ok',['→ pass'],{dot:'ok'}));
+
+  o.push(box(150,265,160,60,'visual-auditor claims',['read-only role','no source edits'],{num:'3'}));
+  o.push(box(332,265,160,60,'Boot app headless',['bootCommand + bypass','preview DB · ready?'],{num:'4'}));
+  o.push(box(514,265,160,60,'Derive routes',['merged diffs','+ routes manifest'],{num:'5'}));
+  o.push(box(696,265,160,60,'Navigate & capture',['Playwright · GET only','390×844 · 1280×900'],{num:'6'}));
+  o.push(box(878,265,160,60,'Upload PNGs',['upload_artifact','per shot, missionId set'],{num:'7'}));
+
+  o.push(box(878,375,160,60,'R2 bucket',['private','lifecycle 30 days'],{}));
+  lbl(862,398,'artifacts/<ws>/qa/<runKey>/<n>.png','end');
+  lbl(862,414,'prefix expires after 30d → "expired" tile','end');
+
+  o.push(box(878,478,160,60,'Visual review',['Delivery step','thumbs + lightbox'],{num:'9'}));
+  o.push(box(620,478,200,60,'PR comment',['dashboard link only','no images (public)'],{}));
+
+  svg.innerHTML=o.join('');
+})();
+
+/* ---------- screenshot data ---------- */
+var SHOTS=[
+  {route:'/app/tasks/:id',vp:'mobile',theme:'dark',kind:'detail',verdict:'issue',variant:'overflow',
+   finding:'Task header title overflows the right edge at 390px, and the status badge is clipped off-screen.',
+   filed:{type:'task',text:'[surface fix] Task header title overflows at 390px'}},
+  {route:'/app/tasks/:id',vp:'mobile',theme:'light',kind:'detail',verdict:'ok',finding:'Header wraps to two lines and the badge stays visible.'},
+  {route:'/app/tasks/:id',vp:'desktop',theme:'dark',kind:'detail',verdict:'ok',finding:'Header, badge and log panel are aligned. Nothing is clipped.'},
+  {route:'/app/tasks/:id',vp:'desktop',theme:'light',kind:'detail',verdict:'ok',finding:'Matches the dark render and borders stay legible.'},
+  {route:'/app/missions/:id',vp:'mobile',theme:'dark',kind:'mission',verdict:'unsure',variant:'wrap',
+   finding:'Delivery steps wrap into two rows at 390px. That may be the intended layout.',
+   filed:{type:'question',text:'Delivery steps wrap to two rows on mobile. Is that intended?'}},
+  {route:'/app/missions/:id',vp:'mobile',theme:'light',kind:'mission',verdict:'ok',finding:'Cards stack in one column and spacing is consistent.'},
+  {route:'/app/missions/:id',vp:'desktop',theme:'dark',kind:'mission',verdict:'ok',finding:'The four delivery steps fit on one row and the cards grid is balanced.'},
+  {route:'/app/missions/:id',vp:'desktop',theme:'light',kind:'mission',verdict:'issue',variant:'contrast',
+   finding:'Warning badge text on a white card is well below readable contrast in the light theme.',
+   filed:{type:'task',text:'[surface fix] Warning badge low contrast on light card'}},
+  {route:'/app/tasks',vp:'mobile',theme:'dark',kind:'list',verdict:'ok',finding:'List rows truncate cleanly and status dots line up.'},
+  {route:'/app/tasks',vp:'desktop',theme:'dark',kind:'list',verdict:'ok',expired:true,finding:'Table columns align and there is no horizontal scroll.'},
+  {route:'/app/workspaces/:id/config',vp:'mobile',theme:'dark',kind:'config',verdict:'ok',finding:'Form fields fill the width and labels sit above their inputs.'},
+  {route:'/app/workspaces/:id/config',vp:'desktop',theme:'dark',kind:'config',verdict:'ok',finding:'Two-column form and the save bar is pinned to the bottom.'}
+];
+
+/* ---------- mock page renderer (all % units, so it scales) ---------- */
+function B(l,t,w,h,cls){return '<i class="'+(cls||'')+'" style="left:'+l+'%;top:'+t+'%;width:'+w+'%;height:'+h+'%"></i>'}
+function mock(s){
+  if(s.expired) return '<div class="mp '+s.vp+' expired"><span>expired</span><small>R2 object gone · 30d</small></div>';
+  var d=s.vp==='desktop', h=[];
+  // top bar
+  h.push(B(0,0,100,d?7:6,'c'));
+  h.push(B(d?2:4,d?2.2:1.8,d?6:14,d?2.6:2.4,'acc'));
+  h.push(B(d?88:82,d?2.2:1.8,d?9:12,d?2.6:2.4,'b2'));
+  var x0,w,y0;
+  if(d){
+    h.push(B(0,7,15,93,'c'));
+    for(var n=0;n<7;n++) h.push(B(2,12+n*6,n===1?11:9,2.2,n===1?'b2':''));
+    x0=18;w=79;y0=12;
+  } else {
+    h.push(B(0,93,100,7,'c'));
+    for(var m=0;m<4;m++) h.push(B(10+m*22,95.2,12,2.4,m===0?'b2':''));
+    x0=5;w=90;y0=10;
+  }
+  // title + badge
+  if(s.variant==='overflow'){
+    h.push(B(x0,y0,w*1.25,3.6,'b2'));
+    h.push(B(x0+w*1.08,y0+4.6,26,2.6,'b2'));
+    h.push(B(72,y0-1.5,28,10.5,'flag fill'));
+  } else {
+    h.push(B(x0,y0,w*(d?0.42:0.78),d?4:3.2,'b2'));
+    if(!d) h.push(B(x0,y0+4.4,w*0.5,3.2,'b2'));
+    var bx=d?x0+w*0.45:x0, by=d?y0+0.6:y0+9;
+    h.push(B(bx,by,d?9:26,d?2.8:2.4,s.variant==='contrast'?'pale':''));
+    if(s.variant==='contrast') h.push(B(bx-1,by-1.4,11,5.6,'flag'));
+  }
+  var y1=y0+(d?8:(s.variant==='overflow'?10:14));
+  if(s.kind==='detail'){
+    if(d){
+      h.push(B(x0,y1,w*0.62,34,'c'));h.push(B(x0+w*0.65,y1,w*0.35,34,'c'));
+      for(var a=0;a<4;a++) h.push(B(x0+2,y1+4+a*6,w*(0.45-a*0.06),2.2,'s'));
+      h.push(B(x0,y1+38,w,40,'c'));
+      for(var b=0;b<8;b++) h.push(B(x0+2,y1+42+b*4.3,w*(0.3+((b*37)%50)/100),1.8,'s'));
+    } else {
+      h.push(B(x0,y1,w,22,'c'));
+      for(var c=0;c<3;c++) h.push(B(x0+4,y1+3+c*5,w*(0.7-c*0.15),2,'s'));
+      h.push(B(x0,y1+25,w,93-y1-29,'c'));
+      for(var e=0;e<9;e++) h.push(B(x0+4,y1+28+e*4,w*(0.35+((e*29)%50)/100),1.6,'s'));
+    }
+  } else if(s.kind==='mission'){
+    if(d){
+      for(var f=0;f<4;f++) h.push(B(x0+f*(w/4),y1,w/4-1.5,9,f===2?'c b2':'c'));
+      for(var g=0;g<6;g++) h.push(B(x0+(g%3)*(w/3),y1+13+Math.floor(g/3)*27,w/3-1.5,24,'c'));
+      h.push(B(x0,y1+68,w,12,'c'));
+    } else {
+      if(s.variant==='wrap'){
+        for(var k=0;k<4;k++) h.push(B(x0+(k%3)*(w/3),y1+Math.floor(k/3)*6.5,w/3-2,5.2,k===2?'c b2':'c'));
+        var yy=y1+14;
+      } else {
+        for(var k2=0;k2<4;k2++) h.push(B(x0+k2*(w/4),y1,w/4-2,5.2,k2===2?'c b2':'c'));
+        var yy=y1+8;
+      }
+      for(var q=0;q<3;q++) h.push(B(x0,yy+q*17,w,15,'c'));
+    }
+  } else if(s.kind==='list'){
+    for(var r=0;r<(d?11:10);r++){
+      var ry=y1+r*(d?7:7.4);
+      h.push(B(x0,ry,w,d?6:6.4,'c'));
+      h.push(B(x0+1.5,ry+2,d?1.2:3,d?1.8:1.8,r%4===1?'b2':''));
+      h.push(B(x0+(d?4:8),ry+2,w*(d?0.4:0.55),1.8,'s'));
+      if(d) h.push(B(x0+w*0.7,ry+2,w*0.12,1.8,'s'));
+    }
+  } else if(s.kind==='config'){
+    var cols=d?2:1, fw=d?w/2-2:w;
+    for(var p=0;p<(d?8:6);p++){
+      var cx=x0+(p%cols)*(w/2), cy=y1+Math.floor(p/cols)*(d?14:12);
+      h.push(B(cx,cy,fw*0.35,1.8,''));
+      h.push(B(cx,cy+3,fw,d?6:5,'c'));
+    }
+    h.push(B(x0+w-(d?14:34),d?86:86,d?14:34,d?5:4,'acc'));
+  }
+  return '<div class="mp '+s.vp+' '+s.theme+'">'+h.join('')+'</div>';
+}
+
+/* ---------- strip + counts ---------- */
+(function(){
+  var issues=SHOTS.filter(function(s){return s.verdict==='issue'}).length;
+  var unsure=SHOTS.filter(function(s){return s.verdict==='unsure'}).length;
+  document.getElementById('count').innerHTML=SHOTS.length+' shots · <span class="i">'+issues+' issues</span> · <span class="u">'+unsure+' unsure</span>';
+  var groups=[], by={};
+  SHOTS.forEach(function(s,i){
+    if(!by[s.route]){by[s.route]=[];groups.push(s.route)}
+    by[s.route].push(i);
+  });
+  var html=groups.map(function(r){
+    return '<div class="group"><div class="gl">'+r+'</div><div class="row">'+by[r].map(function(i){
+      var s=SHOTS[i];
+      return '<button class="thumb" data-i="'+i+'" aria-label="'+s.route+' '+s.vp+' '+s.theme+' — '+s.verdict+'">'+
+        '<span class="frame"><i class="dot '+s.verdict+'"></i>'+mock(s)+'</span>'+
+        '<span class="cap">'+(s.vp==='mobile'?'M':'D')+'·'+(s.theme==='dark'?'dk':'lt')+'</span></button>';
+    }).join('')+'</div></div>';
+  }).join('');
+  var strip=document.getElementById('strip');
+  strip.innerHTML=html;
+  strip.addEventListener('click',function(e){
+    var t=e.target.closest('.thumb'); if(t) openLb(+t.getAttribute('data-i'));
+  });
+  var fl=SHOTS.map(function(s,i){return {s:s,i:i}}).filter(function(x){return x.s.filed});
+  document.getElementById('filedList').innerHTML=fl.map(function(x){
+    var s=x.s, isQ=s.filed.type==='question';
+    return '<li><span class="l"><i class="dot '+s.verdict+'"></i><a href="#" data-i="'+x.i+'">'+(isQ?'Question: ':'')+s.filed.text+'</a></span>'+
+      '<span class="badge '+(isQ?'unsure':'warn')+'">'+(isQ?'awaiting human':'pending')+'</span></li>';
+  }).join('');
+  document.getElementById('filedList').addEventListener('click',function(e){
+    var a=e.target.closest('a[data-i]'); if(a){e.preventDefault();openLb(+a.getAttribute('data-i'))}
+  });
+})();
+
+/* ---------- lightbox ---------- */
+var cur=0, lb=document.getElementById('lb'), lastFocus=null;
+function openLb(i){
+  cur=(i+SHOTS.length)%SHOTS.length;
+  var s=SHOTS[cur];
+  if(!lb.classList.contains('open')) lastFocus=document.activeElement;
+  document.getElementById('lbStage').innerHTML=mock(s);
+  document.getElementById('lbIdx').textContent='Shot '+(cur+1)+' / '+SHOTS.length;
+  document.getElementById('lbRoute').textContent=s.route;
+  document.getElementById('lbVp').textContent=s.vp==='mobile'?'mobile · 390×844':'desktop · 1280×900';
+  document.getElementById('lbTheme').textContent=s.theme;
+  document.getElementById('lbVerdict').innerHTML='<span class="badge '+s.verdict+'"><i class="dot '+s.verdict+'"></i>'+s.verdict+'</span>';
+  document.getElementById('lbFinding').textContent=s.finding;
+  var f=document.getElementById('lbFiled');
+  if(s.filed && s.filed.type==='task'){
+    f.innerHTML='<div class="label" style="margin-bottom:4px">Filed as task</div><a href="#" onclick="return false">'+s.filed.text+'</a><div style="color:var(--text-3);font-size:12px;margin-top:4px">In this mission. It blocks completion until merged.</div>';
+  } else if(s.filed){
+    f.innerHTML='<div class="label" style="margin-bottom:4px">Asked a human</div><a href="#" onclick="return false">'+s.filed.text+'</a>';
+  } else {
+    f.innerHTML='<div class="label" style="margin-bottom:4px">Follow-up</div><span style="color:var(--text-3)">None. The shot passed.</span>';
+  }
+  document.getElementById('lbKey').textContent=(s.expired?'expired · ':'')+'artifacts/<ws>/qa/<runKey>/'+(cur+1)+'.png';
+  lb.classList.add('open');
+  document.getElementById('lbClose').focus();
+}
+function closeLb(){lb.classList.remove('open'); if(lastFocus) lastFocus.focus()}
+document.getElementById('lbClose').addEventListener('click',closeLb);
+document.getElementById('lbPrev').addEventListener('click',function(){openLb(cur-1)});
+document.getElementById('lbNext').addEventListener('click',function(){openLb(cur+1)});
+lb.addEventListener('click',function(e){if(e.target===lb) closeLb()});
+document.addEventListener('keydown',function(e){
+  if(!lb.classList.contains('open')) return;
+  if(e.key==='Escape') closeLb();
+  else if(e.key==='ArrowLeft') openLb(cur-1);
+  else if(e.key==='ArrowRight') openLb(cur+1);
+});
+</script>
+</body>
+</html>
