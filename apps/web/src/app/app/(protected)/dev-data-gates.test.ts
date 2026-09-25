@@ -23,15 +23,61 @@ function pageFiles(dir: string): string[] {
 
 const GATE = /const\s+isDev\s*=\s*process\.env\.NODE_ENV\s*===\s*'development'([^;]*);/;
 
-describe('dev data gates: API', () => {
-  // The new-task page reads its workspace list from here; empty in dev blocked it.
-  const API = join(ROOT, '../../api/workspaces/route.ts');
+const API_ROOT = join(ROOT, '../../api');
 
-  it('/api/workspaces short-circuits only when there is no DATABASE_URL', () => {
-    const src = readFileSync(API, 'utf8');
-    const gates = src.split('\n').filter((l) => l.includes("process.env.NODE_ENV === 'development'"));
-    expect(gates.length).toBeGreaterThan(0);
-    for (const line of gates) expect(line).toContain('!process.env.DATABASE_URL');
+function routeFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) return routeFiles(p);
+    return name === 'route.ts' ? [p] : [];
+  });
+}
+
+/**
+ * Routes still short-circuiting on NODE_ENV alone, on purpose. These
+ * authenticate with next-auth `auth()` directly rather than getCurrentUser, and
+ * local dev has no session under DEV_USER_EMAIL — un-gating them would turn an
+ * empty dev response into a 401, not into real data. Moving them to
+ * getCurrentUser is the fix; until then they stay gated. Shrink this list only.
+ */
+const AUTH_SESSION_ONLY = new Set([
+  'workspaces/[id]/accounts/route.ts',
+  'github/installations/route.ts',
+  'github/installations/[id]/route.ts',
+  'github/installations/[id]/repos/route.ts',
+]);
+
+const DEV_GATE_LINE = /process\.env\.NODE_ENV\s*===\s*'development'/;
+
+describe('dev data gates: API', () => {
+  const gated = routeFiles(API_ROOT).flatMap((file) =>
+    readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((l) => /^\s*if\s*\(/.test(l) && DEV_GATE_LINE.test(l))
+      .map((line) => ({ file: file.slice(API_ROOT.length + 1), line })),
+  );
+
+  it('finds the gated routes (guards against this test matching nothing)', () => {
+    expect(gated.length).toBeGreaterThan(0);
+  });
+
+  it.each(['workspaces/route.ts', 'tasks/route.ts', 'accounts/route.ts'])('%s is scanned', (f) => {
+    expect(gated.map((g) => g.file)).toContain(f);
+  });
+
+  it('every dev short-circuit in app/api also requires DATABASE_URL to be absent (except the auth()-only routes)', () => {
+    const nodeEnvOnly = gated
+      .filter((g) => !AUTH_SESSION_ONLY.has(g.file) && !g.line.includes('!process.env.DATABASE_URL'))
+      .map((g) => `${g.file}: ${g.line.trim()}`);
+    expect(nodeEnvOnly).toEqual([]);
+  });
+
+  it('the auth()-only exemptions are still real (drop an entry once its route moves to getCurrentUser)', () => {
+    for (const f of AUTH_SESSION_ONLY) {
+      const src = readFileSync(join(API_ROOT, f), 'utf8');
+      expect(src).toContain('await auth()');
+      expect(src).not.toContain('getCurrentUser');
+    }
   });
 });
 

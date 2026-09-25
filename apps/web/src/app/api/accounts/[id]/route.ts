@@ -16,7 +16,7 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return NextResponse.json({ account: null });
   }
 
@@ -50,7 +50,7 @@ export async function DELETE(
 ) {
   const { id } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return NextResponse.json({ success: true });
   }
 

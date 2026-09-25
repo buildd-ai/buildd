@@ -14,7 +14,7 @@ function generateApiKey(): string {
 }
 
 export async function GET() {
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return NextResponse.json({ accounts: [] });
   }
 
@@ -40,7 +40,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return NextResponse.json({
       id: 'dev-account',
       name: 'Dev Account',

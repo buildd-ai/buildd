@@ -80,7 +80,7 @@ function detectContentBearingSchemaFields(schema: Record<string, unknown>): stri
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return NextResponse.json({ tasks: [] });
   }
 
@@ -348,7 +348,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   // Dev mode returns mock
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return NextResponse.json({ id: 'dev-task', title: 'Dev Task' });
   }
 

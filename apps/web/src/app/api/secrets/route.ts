@@ -74,7 +74,7 @@ async function authenticateAndGetTeamIds(req: NextRequest): Promise<{ teamIds: s
   }
 
   // Fall back to session auth
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
     return { teamIds: [] };
   }
 
