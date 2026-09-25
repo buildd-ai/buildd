@@ -8,37 +8,56 @@ import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getWorkspaceTimezone } from '@/lib/team-timezone';
 
+type AuthOk = { ok: true; userId?: string; accountId?: string };
+// status 401 = no valid principal at all (missing/invalid key, no session) — a
+// real auth failure. status 403 = a real principal was authenticated but this
+// workspace isn't in its scope — distinct from an expired/revoked key so a
+// caller doesn't misread "wrong workspace" as "rotate your token".
+type AuthFail = { ok: false; status: 401 | 403 };
+
 /**
  * Authenticate via session or API key.
  *
  * Mutating ops (POST/PATCH/DELETE) require admin-level account.
  * Read ops (GET) accept any authenticated account in the workspace —
  * worker and trigger tokens need visibility for routine discovery via MCP.
- *
- * Returns { userId?, accountId? } or null.
  */
 async function resolveAuth(
   req: NextRequest,
   workspaceId: string,
   { requireAdmin = true }: { requireAdmin?: boolean } = {}
-) {
+): Promise<AuthOk | AuthFail> {
+  let authenticatedButOutOfScope = false;
+
   // Try session auth first (session users have full access)
   const user = await getCurrentUser();
   if (user) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
-    if (access) return { userId: user.id };
+    if (access) return { ok: true, userId: user.id };
+    authenticatedButOutOfScope = true;
   }
 
   // Try API key auth
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
   if (account) {
-    if (requireAdmin && account.level !== 'admin') return null;
+    if (requireAdmin && account.level !== 'admin') return { ok: false, status: 403 };
     const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
-    if (hasAccess) return { accountId: account.id };
+    if (hasAccess) return { ok: true, accountId: account.id };
+    authenticatedButOutOfScope = true;
   }
 
-  return null;
+  return { ok: false, status: authenticatedButOutOfScope ? 403 : 401 };
+}
+
+function authFailureResponse(authResult: AuthFail, workspaceId: string) {
+  if (authResult.status === 403) {
+    return NextResponse.json(
+      { error: 'forbidden', reason: 'This account does not have access to the requested workspace.', workspaceId },
+      { status: 403 }
+    );
+  }
+  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 }
 
 // GET /api/workspaces/[id]/schedules - List schedules for a workspace
@@ -48,8 +67,8 @@ export async function GET(
 ) {
   const { id } = await params;
   const authResult = await resolveAuth(req, id, { requireAdmin: false });
-  if (!authResult) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!authResult.ok) {
+    return authFailureResponse(authResult, id);
   }
 
   const schedules = await db.query.taskSchedules.findMany({
@@ -67,8 +86,8 @@ export async function POST(
 ) {
   const { id } = await params;
   const authResult = await resolveAuth(req, id);
-  if (!authResult) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!authResult.ok) {
+    return authFailureResponse(authResult, id);
   }
 
   try {

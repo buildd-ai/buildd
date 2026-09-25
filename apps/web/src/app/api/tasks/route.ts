@@ -335,8 +335,14 @@ export async function GET(req: NextRequest) {
       } : undefined,
     }, undefined, { route: req.nextUrl.pathname });
   } catch (error) {
+    // Audit mode (a terminal ?status) reaches a workspace's entire history with
+    // no 24h window — the one query path where an unusual row shape or a slow
+    // scan is most likely to surface. A bare "Failed to get tasks" discarded
+    // exactly the detail needed to tell those apart, forcing every prior
+    // diagnosis of this endpoint to start from a live repro instead of the log.
+    const detail = error instanceof Error ? error.message : String(error);
     console.error('Get tasks error:', error);
-    return NextResponse.json({ error: 'Failed to get tasks' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to get tasks', detail }, { status: 500 });
   }
 }
 
