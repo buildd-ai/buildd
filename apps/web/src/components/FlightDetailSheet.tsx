@@ -18,6 +18,7 @@ import {
 } from './FlightStrip';
 import { computeFlightDetailStats, describeSteeringPattern, formatFlightDuration } from '@/lib/flight-detail-stats';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
+import { findScrollRoot } from '@/lib/scroll-root';
 
 // ─── Expanded-row geometry — normative per the design:flight-strip/flight-detail-sheet
 // board (Sheet.dc.html, viewBox 358x170). Distinct from FlightStrip.tsx's compact card
@@ -379,8 +380,11 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
     if (!open) return;
     restoreFocusRef.current = document.activeElement;
     closeRef.current?.focus();
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    // Lock the shell's scroller (<main data-scroll-root>), not body: the app
+    // shell never scrolls the document, so a body lock left the page moving.
+    const scrollRoot = findScrollRoot(document);
+    const previousOverflow = scrollRoot.style.overflow;
+    scrollRoot.style.overflow = 'hidden';
 
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -395,7 +399,7 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       dialog?.removeEventListener(FLIGHT_DETAIL_CLOSE_EVENT, handleCloseRequest);
-      document.body.style.overflow = previousOverflow;
+      scrollRoot.style.overflow = previousOverflow;
       if (restoreFocusRef.current instanceof HTMLElement) restoreFocusRef.current.focus();
     };
   }, [open, onClose]);
