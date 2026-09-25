@@ -11,7 +11,7 @@ import type {
 } from '@buildd/shared';
 import { inferenceCall, describeInferenceError, type InferenceError } from '@buildd/core/inference-client';
 import { resolveProseCriterion, type ProseRunnerEvidence } from './mission-criteria-prose';
-import { resolveEvaluationStrategy, resolveWorkspaceCriteriaGrader } from './mission-criteria-strategy';
+import { resolveWorkspaceCriteriaGrader } from './mission-criteria-strategy';
 import { pickCriteriaGrader, type CriteriaGrader } from './mission-criteria-grader';
 import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './mission-criteria-worker-eval';
 import { applyReviewerFindings } from './criteria-reviewer-findings';
@@ -219,9 +219,9 @@ export async function evaluateCriteriaNow(
      */
     dispatchCommands?: boolean;
     /**
-     * Allow dispatching a worker evaluator task (the batched 'worker' strategy).
+     * Allow dispatching the batched worker evaluator task for command criteria.
      * Defaults to `false` to guard against dispatch from the routine heartbeat LLM
-     * path — the worker strategy is intentionally TRIGGER-GATED to mission-complete
+     * path — the worker evaluator is intentionally TRIGGER-GATED to mission-complete
      * evaluation only. Pass `true` only from `ensureCriteriaVerdict` (which is called
      * from the completion gate) and the on-demand evaluate route.
      */
@@ -369,35 +369,23 @@ export async function evaluateCriteriaNow(
     );
   }
 
-  // ── Resolve evaluation strategy ────────────────────────────────────────────
-  // workspace-override → team-default → 'inline'
-  const strategy = await resolveEvaluationStrategy(mission.teamId, mission.workspaceId);
   const canDispatch = opts.dispatchCommands !== false && opts.allowWorkerDispatch === true;
   const alreadyFailing = state.criteria.some(c => c.verdict === 'fail');
 
-  // ── Worker strategy: one batched task evaluates all LLM-eligible + command criteria ─
+  // ── Command criteria: one batched worker task runs them ────────────────────
   //
   // TRIGGER-GATED: allowWorkerDispatch is only set from ensureCriteriaVerdict (the
   // completion gate) and the on-demand route. The routine heartbeat prepass calls
   // evaluateCriteriaNow with allowWorkerDispatch=false (the default) so it never
   // dispatches a worker evaluator task mid-planning-cycle.
   //
-  // Command criteria ALSO route here regardless of configured strategy, since they
-  // are structurally unevaluable by an inline LLM call — the pure evaluator cannot
-  // know whether a command exits 0.
-  const commandCriteria = state.criteria.filter(
+  // Command criteria are structurally unevaluable by an LLM call — the pure
+  // evaluator cannot know whether a command exits 0 — so they always go here.
+  // Prose criteria never do: they pick a grader per criterion below. (The old
+  // per-workspace/team 'worker' strategy that batched prose here too is gone.)
+  const workerBound = state.criteria.filter(
     cs => cs.type === 'command' && (cs.verdict === 'UNVERIFIED' || cs.verdict === 'NOT_EVALUATED')
   );
-  const llmEligible = state.criteria.filter(
-    c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
-  );
-
-  // Criteria destined for the worker evaluator: all LLM-eligible (when strategy='worker')
-  // and all command criteria (always). Under 'inline' strategy, command criteria are the
-  // only ones that cannot be graded inline.
-  const workerBound = strategy === 'worker'
-    ? [...llmEligible, ...commandCriteria].filter((cs, i, arr) => arr.findIndex(x => x.index === cs.index) === i)
-    : commandCriteria;
 
   if (workerBound.length > 0 && !alreadyFailing) {
     if (!canDispatch) {
@@ -442,16 +430,13 @@ export async function evaluateCriteriaNow(
 
   if (alreadyFailing) {
     for (const cs of state.criteria) {
-      if ((cs.type === 'command' || (strategy === 'worker' && isLlmEligible(cs.type))) && cs.verdict === 'NOT_EVALUATED') {
+      if (cs.type === 'command' && cs.verdict === 'NOT_EVALUATED') {
         cs.evidence = 'Not run: another criterion has already failed, so the mission cannot pass this round';
       }
     }
   }
 
-  // ── Prose criteria (inline strategy only): api grader or runner grader ─────
-  //
-  // When strategy='worker', prose criteria were already routed to the batched
-  // worker evaluator above. This block only runs for strategy='inline'.
+  // ── Prose criteria: api grader or runner grader ────────────────────────────
   //
   // Each prose criterion has a grader (criterion > workspace gitConfig > auto):
   //   api    — one batched `inferenceCall` on the team's API key. With no key the
@@ -462,11 +447,9 @@ export async function evaluateCriteriaNow(
   //            provider that cannot serve inference, capability switched off),
   //            fall through to runner. The check is the inference client's own
   //            credential resolution, not a second lookup here.
-  const inlineLlmEligible = strategy === 'worker'
-    ? []
-    : state.criteria.filter(
-        c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
-      );
+  const inlineLlmEligible = state.criteria.filter(
+    c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
+  );
 
   if (inlineLlmEligible.length > 0) {
     // Carry forward a recent LLM verdict rather than paying for it again — but

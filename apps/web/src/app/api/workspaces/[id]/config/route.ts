@@ -7,9 +7,42 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { parseMergePolicy } from '@buildd/shared';
+import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
 const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
+const VALID_CRITERIA_GRADERS = ['auto', 'api', 'runner'] as const;
+const VALID_POLICY_PRESETS: WorkspacePolicyPreset[] = ['cautious', 'balanced', 'autonomous'];
+const VALID_RISK_CLASSES: RiskClassName[] = [
+    'destructive_schema_change', 'ci_deploy_config', 'auth_and_secrets', 'dependency_bump', 'public_api_contract',
+];
+
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string');
+
+/**
+ * Shape-check a policyConfig (the output of POST /policy-init). Enough that the
+ * merge gate never reads a malformed entry; not a second copy of the detector.
+ */
+function parsePolicyConfig(pc: unknown): { ok: true; config: WorkspacePolicyConfig } | { ok: false; error: string } {
+    if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return { ok: false, error: 'policyConfig must be an object' };
+    const p = pc as Record<string, unknown>;
+    if (!VALID_POLICY_PRESETS.includes(p.preset as WorkspacePolicyPreset)) {
+        return { ok: false, error: `policyConfig.preset must be one of: ${VALID_POLICY_PRESETS.join(', ')}` };
+    }
+    if (!Array.isArray(p.riskClasses)) return { ok: false, error: 'policyConfig.riskClasses must be an array' };
+    for (const entry of p.riskClasses as Array<Record<string, unknown>>) {
+        if (!entry || typeof entry !== 'object' || !VALID_RISK_CLASSES.includes(entry.name as RiskClassName)) {
+            return { ok: false, error: `policyConfig.riskClasses: unknown class '${String(entry?.name)}'` };
+        }
+        if (!isStringArray(entry.detectedPaths) || (entry.userPaths !== undefined && !isStringArray(entry.userPaths))) {
+            return { ok: false, error: `policyConfig.riskClasses.${entry.name}: paths must be string arrays` };
+        }
+    }
+    if (p.reviewerRole !== undefined && typeof p.reviewerRole !== 'string') {
+        return { ok: false, error: 'policyConfig.reviewerRole must be a string' };
+    }
+    return { ok: true, config: p as unknown as WorkspacePolicyConfig };
+}
 
 // Parse + validate the releaseConfig body fragment. Returns the sanitized config or
 // a string error message the caller can surface to the UI.
@@ -252,6 +285,16 @@ export async function POST(
             );
         }
 
+        if (
+            body.criteriaGrader !== undefined && body.criteriaGrader !== null &&
+            !VALID_CRITERIA_GRADERS.includes(body.criteriaGrader)
+        ) {
+            return NextResponse.json(
+                { error: `Invalid criteriaGrader '${body.criteriaGrader}'. Valid: ${VALID_CRITERIA_GRADERS.join(', ')}` },
+                { status: 400 },
+            );
+        }
+
         // Handle releaseConfig update if provided (separate from gitConfig)
         if (body.releaseConfig !== undefined) {
             let releaseConfig: WorkspaceReleaseConfig | null = null;
@@ -375,6 +418,13 @@ export async function POST(
         // enforceGreenCI — surfaced via the workspace CI policy toggle
         if (typeof body.enforceGreenCI === 'boolean') gitConfig.enforceGreenCI = body.enforceGreenCI;
         if (typeof body.autoMergeOnGreenCI === 'boolean') gitConfig.autoMergeOnGreenCI = body.autoMergeOnGreenCI;
+        // Prose goal-criteria grader (validated above). Absent keeps the existing
+        // value; 'auto' and null clear it, because missing already means auto.
+        if (body.criteriaGrader !== undefined) {
+            gitConfig.criteriaGrader = body.criteriaGrader === 'api' || body.criteriaGrader === 'runner'
+                ? body.criteriaGrader
+                : undefined;
+        }
 
         // mergePolicy write-path validation: unknown keys rejected, not silently stripped
         if (body.mergePolicy !== undefined) {
@@ -439,6 +489,10 @@ export async function POST(
 //
 // branchStrategy: 'mission-branch' | 'direct' | null (null clears the override,
 // falling back to 'mission-branch' at runtime — see resolveBranchStrategy()).
+//
+// policyConfig: a WorkspacePolicyConfig (the proposal POST /policy-init returns).
+// Sets gitConfig.policyConfig AND configStatus='admin_confirmed' in one write.
+// Admin only (session owner/admin, or an admin-level API key).
 export async function PATCH(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
@@ -468,11 +522,41 @@ export async function PATCH(
 
         const hasReleaseConfig = !!body && typeof body === 'object' && 'releaseConfig' in body;
         const hasBranchStrategy = !!body && typeof body === 'object' && 'branchStrategy' in body;
-        if (!hasReleaseConfig && !hasBranchStrategy) {
-            return NextResponse.json({ error: 'Body must contain releaseConfig or branchStrategy' }, { status: 400 });
+        const hasPolicyConfig = !!body && typeof body === 'object' && 'policyConfig' in body;
+        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy or policyConfig' }, { status: 400 });
         }
 
         let responseBody: Record<string, unknown> = { success: true };
+
+        // policyConfig: apply a proposal from POST /policy-init. Writing it is the
+        // admin's confirmation of the workspace policy, so configStatus flips to
+        // admin_confirmed in the same UPDATE. Merges into gitConfig — the POST path
+        // would reset every form-managed field to its default instead.
+        if (hasPolicyConfig) {
+            // Stricter than verifyWriteAccess for keys: the policy decides which PRs
+            // merge without a human, so a worker-level key may not set it.
+            if (auth.apiAccount && auth.apiAccount.level !== 'admin') {
+                return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
+            }
+            const parsed = parsePolicyConfig((body as Record<string, unknown>).policyConfig);
+            if (!parsed.ok) {
+                return NextResponse.json({ error: parsed.error }, { status: 400 });
+            }
+            const existing = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { gitConfig: true },
+            });
+            const gitConfig: WorkspaceGitConfig = {
+                ...(existing?.gitConfig ?? {} as WorkspaceGitConfig),
+                policyConfig: parsed.config,
+            };
+            await db
+                .update(workspaces)
+                .set({ gitConfig, configStatus: 'admin_confirmed', updatedAt: new Date() })
+                .where(eq(workspaces.id, id));
+            responseBody = { ...responseBody, gitConfig, configStatus: 'admin_confirmed' };
+        }
 
         if (hasBranchStrategy) {
             const bs = (body as Record<string, unknown>).branchStrategy;

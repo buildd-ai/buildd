@@ -5,7 +5,8 @@
  * with detected paths per semantic risk class.
  *
  * The response is a proposal only — caller decides whether to apply it via
- * PATCH /api/workspaces/[id] with gitConfig.policyConfig.
+ * PATCH /api/workspaces/[id]/config with { policyConfig }, which also sets
+ * configStatus='admin_confirmed'.
  *
  * Body params:
  *   preset?: WorkspacePolicyPreset  — defaults to 'balanced'
@@ -165,7 +166,7 @@ export async function POST(
     repoFullName,
     fileCount: files.length,
     detectedClassCount: riskClasses.filter((c) => c.detectedPaths.length > 0).length,
-    hint: `Apply with: PATCH /api/workspaces/${id} body: { gitConfig: { policyConfig: <proposed> } }`,
+    hint: `Apply with: PATCH /api/workspaces/${id}/config body: { policyConfig: <proposed> } (also marks the config admin_confirmed)`,
     specConformance: {
       detected: detectedRoots,
       proposed: proposedSpecConformance,
