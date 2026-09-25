@@ -25,6 +25,8 @@ import PlanChainView from './PlanChainView';
 import TaskModelCell from './TaskModelCell';
 import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } from '@buildd/core/model-display';
 import TaskAutoRefresh from './TaskAutoRefresh';
+import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
+import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -237,7 +239,7 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  const [taskArtifacts, errorTraces, ship] = await Promise.all([
+  const [taskArtifacts, errorTraces, ship, teamTimezone] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -268,6 +270,10 @@ export default async function TaskDetailPage({
       }
       return { shippedRelease, label };
     })(),
+    // Stamps on this page render in the task's own team zone (the same zone
+    // its PR activity comment uses), not the layout's current-team zone.
+    // Null → the viewer's browser zone; never the server's UTC. Never throws.
+    getTeamTimezoneSetting((task.workspace as any)?.teamId as string | undefined),
   ]);
   const shippedRelease = ship.shippedRelease;
   const shippedReleaseLabel = ship.label;
@@ -618,6 +624,7 @@ export default async function TaskDetailPage({
   const DEFAULT_ICON = TASK_ICONS.pending;
 
   return (
+    <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
       <div className="max-w-4xl w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
@@ -737,7 +744,7 @@ export default async function TaskDetailPage({
             </span>
           </div>
           <p className="mt-1.5 text-[13px] text-text-secondary">
-            {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
+            {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created <ZonedTime value={task.createdAt} format="date" />
           </p>
           {workerWithPr && (
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -954,7 +961,7 @@ export default async function TaskDetailPage({
                       {t.excerpt}
                     </span>
                     <span className="hidden sm:inline text-xs text-text-muted shrink-0">
-                      {new Date(t.ts).toLocaleTimeString()}
+                      <ZonedTime value={t.ts} format="time-seconds" />
                     </span>
                   </div>
                 ))}
@@ -1596,7 +1603,7 @@ export default async function TaskDetailPage({
             <TaskModelCell summary={modelSummary} />
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
-            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary">{new Date(task.createdAt).toLocaleDateString()}</dd></div>
+            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary"><ZonedTime value={task.createdAt} format="date" /></dd></div>
             {task.category && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
             {task.project && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
             <div className="col-span-2 md:col-span-3"><dt className="text-text-muted text-[11px] uppercase tracking-wider">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
@@ -1625,5 +1632,6 @@ export default async function TaskDetailPage({
         )}
       </div>
     </div>
+    </DisplayTimezoneProvider>
   );
 }

@@ -1,4 +1,5 @@
 import type { LoopHistoryEntry, LoopState } from '@buildd/shared';
+import { ZonedTime } from './DisplayTimezone';
 
 function formatDuration(evidence?: Record<string, unknown>): string | null {
   const durationMs = evidence?.durationMs;
@@ -66,7 +67,7 @@ export function LoopStatusChip({
           : `LOOPING · attempt ${attempt}/${maxLoops}`}
       {deferred && (
         <span className="normal-case font-normal opacity-80">
-          · resumes {new Date(startAt!).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+          · resumes <ZonedTime value={startAt!} format="datetime-short" />
         </span>
       )}
     </span>
@@ -114,7 +115,7 @@ export function LoopHistory({
                     <p className="mt-1 text-sm text-text-secondary">{entry.summary}</p>
                   </div>
                   <div className="text-right text-[11px] text-text-muted shrink-0">
-                    <div>{new Date(entry.evaluatedAt).toLocaleString()}</div>
+                    <div><ZonedTime value={entry.evaluatedAt} /></div>
                     {duration && <div>{duration}</div>}
                   </div>
                 </div>

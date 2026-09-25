@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useLocalUiHealth } from '../useLocalUiHealth';
 import { subscribeToChannel, unsubscribeFromChannel, getSubscribedChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import Spinner from '@/components/Spinner';
+import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import { formatInZone } from '@/lib/zoned-time';
 
 interface Props {
   taskId: string;
@@ -58,6 +60,7 @@ export function StartTaskShell({
 }
 
 export default function StartTaskButton({ taskId, workspaceId }: Props) {
+  const displayTz = useDisplayTimezone();
   const [loading, setLoading] = useState(false);
   const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
@@ -541,7 +544,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         </div>
         <p className="text-text-primary font-medium mb-1">
           {gateData?.gateReason === 'deferred_start' && deferredStartAt
-            ? `Starts at ${new Date(deferredStartAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+            ? `Starts at ${displayTz ? formatInZone(deferredStartAt, displayTz, 'time') : '…'}`
             : gateData?.gateReason === 'unmerged_dep_pr'
             ? 'Blocked: dependency PR not merged'
             : gateData?.gateReason === 'mission_held'

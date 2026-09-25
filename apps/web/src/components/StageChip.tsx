@@ -2,6 +2,7 @@
 
 import type { LoopState } from '@buildd/shared';
 import { LoopStatusChip } from '@/components/LoopStatus';
+import { ZonedTime } from '@/components/DisplayTimezone';
 import type { Stage } from '@/lib/stage';
 
 // Stage derivation lives in `@/lib/stage` so the server render can call it —
@@ -77,7 +78,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
   if (stage === 'QUEUED' && startAt && new Date(startAt).getTime() > Date.now()) {
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide bg-status-info/10 text-status-info shrink-0">
-        Starts {new Date(startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+        Starts <ZonedTime value={startAt} format="time" />
       </span>
     );
   }

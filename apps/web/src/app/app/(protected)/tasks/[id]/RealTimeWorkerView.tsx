@@ -12,6 +12,8 @@ import NeedsInputAnswerBox from './NeedsInputAnswerBox';
 import StatusBadge from '@/components/StatusBadge';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
+import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import { formatInZone } from '@/lib/zoned-time';
 
 // Exported for testing: whether a worker-channel event should bypass the
 // debounce. A status change (e.g. running -> waiting_input) is a one-off
@@ -101,6 +103,7 @@ interface Props {
 type TaskProgressEntry = AgentProgressEntry;
 
 export default function RealTimeWorkerView({ initialWorker, taskId, statusColors, modelTier }: Props) {
+  const displayTz = useDisplayTimezone();
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const lastStatusRef = useRef(initialWorker.status);
@@ -515,7 +518,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
             )
         }
         {worker.startedAt && (
-          <span title={`Started: ${new Date(worker.startedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' })}`}>
+          <span title={displayTz ? `Started: ${formatInZone(worker.startedAt, displayTz)}` : undefined}>
             {Math.round((Date.now() - new Date(worker.startedAt).getTime()) / 60000)}m elapsed
           </span>
         )}

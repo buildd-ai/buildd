@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import { formatInZone } from '@/lib/zoned-time';
 
 // `label` is optional on purpose: workspaces with dataClass 'sensitive' have their
 // milestone labels stripped server-side (apps/web/src/app/api/workers/[id]/route.ts),
@@ -86,6 +88,7 @@ export default function WorkerActivityTimeline({
   maxVisible = 8,
 }: WorkerActivityTimelineProps) {
   const [expanded, setExpanded] = useState(false);
+  const displayTz = useDisplayTimezone();
 
   if (!milestones.length && !currentAction) {
     return null;
@@ -109,7 +112,7 @@ export default function WorkerActivityTimeline({
     if (diffMins < 60) return `${diffMins}m ago`;
     const diffHours = Math.floor(diffMins / 60);
     if (diffHours < 24) return `${diffHours}h ago`;
-    return new Date(ts).toLocaleDateString();
+    return displayTz ? formatInZone(ts, displayTz, 'date') : '';
   };
 
   // Compute checkpoint progress from milestones

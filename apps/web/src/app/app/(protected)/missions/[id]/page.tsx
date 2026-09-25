@@ -63,6 +63,8 @@ import { getLinksForEntity } from '@buildd/core/external-links';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
+import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
+import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { MissionReleaseSection } from './MissionReleaseSection';
@@ -363,11 +365,14 @@ export default async function MissionDetailPage({
 
   // explainMission, the mission spend and the tracker links share no inputs
   // beyond the mission id, so they are one wait instead of three.
-  const [explained, spendUsd, trackerLinks] = await Promise.all([
+  const [explained, spendUsd, trackerLinks, teamTimezone] = await Promise.all([
     explainMission(id),
     costBudgetUsd != null ? getMissionSpendUsd(id) : Promise.resolve(null),
     // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
     getLinksForEntity(db, 'mission', id),
+    // Stamps render in this mission's team zone; null → the viewer's browser
+    // zone, never the server's UTC. Never throws.
+    getTeamTimezoneSetting(mission.teamId),
   ]);
   const missionAnswer = explained?.subjects[0] ?? null;
 
@@ -1079,7 +1084,7 @@ export default async function MissionDetailPage({
         <div className="card p-3 mb-3 border-l-2 border-status-success/40">
           <div className="flex items-center gap-2 mb-1.5">
             <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
-              Completed {new Date(mission.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+              Completed <ZonedTime value={mission.updatedAt} format="date" />
             </h3>
             {completionPick.source === 'completion_record' && (
               <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
@@ -1261,6 +1266,7 @@ export default async function MissionDetailPage({
   );
 
   return (
+    <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <SwipeProvider>
     {/* Task sheet owner (S4): ?task= via native history, never the router. */}
     <TaskPanelWrapper
@@ -1395,6 +1401,7 @@ export default async function MissionDetailPage({
       </MissionAutoRefresh>
     </TaskPanelWrapper>
     </SwipeProvider>
+    </DisplayTimezoneProvider>
   );
 }
 
