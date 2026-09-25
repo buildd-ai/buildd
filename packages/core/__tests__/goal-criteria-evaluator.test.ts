@@ -445,6 +445,37 @@ describe("evaluateGoalCriteria — all_prs_merged under Option A'", () => {
     expect(state.criteria[0].verdict).toBe('UNVERIFIED');
     expect(state.criteria[0].evidence).toContain('No PRs found');
   });
+
+  // Regression: a CI-retry task pushes to its parent's PR, so two worker rows
+  // carry one PR. The evidence counted rows ("All 2 task PR(s)").
+  it('counts a task PR a CI retry also pushed to once', () => {
+    const RETRY_TASK = { id: 'task-a-ci', status: 'completed', taskClass: 'attempt', parentTaskId: 'task-a', title: '[builder · after CI #1] Do the work' };
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, RETRY_TASK, MISSION_PR_TASK],
+        workers: [taskPrWorker(), taskPrWorker({ taskId: 'task-a-ci', mergedAt: null }), missionPrWorker()],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain('All 1 task PR(s) merged');
+  });
+});
+
+describe('evaluateGoalCriteria — all_prs_merged counts PRs, not worker rows', () => {
+  it('a parent and its CI retry sharing one PR read as one merged PR', () => {
+    const state = evaluateGoalCriteria(
+      NOT_OPTED_IN,
+      [{ type: 'all_prs_merged' }],
+      makeCtx({
+        tasks: [TASK_PR_TASK, { id: 'task-a-ci', status: 'completed', taskClass: 'attempt', parentTaskId: 'task-a', title: '[builder · after CI #1] Do the work' }],
+        workers: [taskPrWorker(), taskPrWorker({ taskId: 'task-a-ci', mergedAt: null })],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toBe('All 1 PR(s) merged');
+  });
 });
 
 describe('evaluateGoalCriteria — command criterion', () => {

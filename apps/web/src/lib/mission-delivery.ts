@@ -10,6 +10,7 @@
  * own block between the outcome and the task list. A step with nothing to say
  * is hidden, never rendered empty.
  */
+import { countDistinctPrs } from '@buildd/core/pr-shipped';
 import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './mission-integration-pr';
 import type { ReleaseState } from './release-state';
 
@@ -283,6 +284,17 @@ export function missionTrunkMergedAt(
     return owner ? mergesOf(owner) : [];
   }
   return tasks.flatMap(mergesOf);
+}
+
+/**
+ * The Integrated step's "N PRs": distinct PRs across the mission's workers.
+ * A CI-retry task pushes to its parent's PR, so counting worker rows put one
+ * more PR on this step than the `all_prs_merged` evidence names.
+ */
+export function missionPrCount(
+  tasks: ReadonlyArray<{ workers?: ReadonlyArray<{ prUrl?: string | null }> | null }>,
+): number {
+  return countDistinctPrs(tasks.flatMap(t => t.workers ?? []));
 }
 
 /** `Integrated ◐ 4/6 · Verified ◐ 2/3 · Shipped ○ –` */

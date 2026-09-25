@@ -661,9 +661,14 @@ function WaveBandedDone({
         const isOpen = isBandExpanded(band.label);
         const bandChains = band.items.map(item => item.chain);
         const bandSegs = getSegments(bandChains);
-        const prCount = bandChains.filter(c =>
-          c.head.latestWorker?.prUrl && (c.head.latestWorker.mergedAt || c.head.latestWorker.prLifecycleStatus === 'merged')
-        ).length;
+        // Distinct merged PRs, not chains: a CI-retry task pushes to its
+        // parent's PR, and both rows can sit in the same band.
+        const prCount = new Set(
+          bandChains
+            .map(c => c.head.latestWorker)
+            .filter(w => w?.prUrl && (w.mergedAt || w.prLifecycleStatus === 'merged'))
+            .map(w => w!.prUrl),
+        ).size;
 
         return (
           <div key={band.label}>
