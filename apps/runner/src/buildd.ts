@@ -1,4 +1,5 @@
 import type { BuilddTask, LocalUIConfig } from './types';
+import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
@@ -152,7 +153,12 @@ export class BuilddClient {
   }
 
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
-    const body: Record<string, unknown> = { maxTasks, workspaceId, taskId, runner: runner || 'runner' };
+    const body: Record<string, unknown> = {
+      maxTasks, workspaceId, taskId, runner: runner || 'runner',
+      // This build honours cbmExperiment.withheld (workers.ts); without the flag
+      // the server does not enrol this runner's tasks in the CBM experiment.
+      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE],
+    };
     if (availableSkills && availableSkills.length > 0) {
       body.availableSkills = availableSkills;
     }

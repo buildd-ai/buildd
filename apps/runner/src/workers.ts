@@ -106,7 +106,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -1672,7 +1672,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; skillBundles?: SkillBundle[] },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1820,9 +1820,20 @@ export class WorkerManager {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s): ${Object.keys(claimedWorker.mcpSecrets).join(', ')}`);
     }
-    if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
-      (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
-      console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s): ${claimedWorker.mcpConnectors.map(c => c.name).join(', ')}`);
+    if (claimedWorker.cbmExperiment?.withheld) {
+      worker.cbmExperimentWithheld = true;
+      console.log(`[Worker ${claimedWorker.id}] CBM withheld by experiment ${claimedWorker.cbmExperiment.experimentId} (policy v${claimedWorker.cbmExperiment.policyVersion})`);
+    }
+    // A codebase-memory CONNECTOR is one of the routes the withheld arm closes.
+    // Dropped here, before it is stored, rather than unmounted later: a stored
+    // connector is also a required server for the MCP pre-flight, which would
+    // then fail the task for missing the very server the experiment withheld.
+    const claimConnectors = worker.cbmExperimentWithheld
+      ? withoutCbmConnectors(claimedWorker.mcpConnectors)
+      : claimedWorker.mcpConnectors;
+    if (claimConnectors && claimConnectors.length > 0) {
+      (worker as any).mcpConnectors = claimConnectors;
+      console.log(`[Worker ${claimedWorker.id}] Received ${claimConnectors.length} MCP connector(s): ${claimConnectors.map(c => c.name).join(', ')}`);
     }
     if (claimedWorker.codexCredential) {
       worker.codexCredential = claimedWorker.codexCredential;
@@ -2793,6 +2804,7 @@ export class WorkerManager {
         defaultBaseRef: cbmDefaultBaseRef,
         isCodexTask,
         cbmRoleDisabled: !!(worker as any).cbmDisabled,
+        cbmExperimentWithheld: !!worker.cbmExperimentWithheld,
       });
       const cbmEnforced = cbmActivation.enforced;
       // Whether the CBM server actually landed in the Codex config.toml. Tracked
@@ -3851,6 +3863,16 @@ export class WorkerManager {
       if (cbmEnforced && !cbmMountBlocked && !isCodexTask && !queryOptions.mcpServers[CBM_SERVER_NAME]) {
         queryOptions.mcpServers[CBM_SERVER_NAME] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
+      }
+
+      // cbm_access experiment, withheld arm: the activation already refused, so
+      // the runner neither mounted CBM nor appended its steering block. Remove
+      // every other route to the tools too — see applyCbmWithholding.
+      if (worker.cbmExperimentWithheld && !isCodexTask) {
+        (queryOptions as any).disallowedTools = applyCbmWithholding({
+          mcpServers: queryOptions.mcpServers as Record<string, unknown> | undefined,
+          disallowedTools: (queryOptions as any).disallowedTools,
+        });
       }
 
       // CBM observability, final classification. The provisional outcome above was

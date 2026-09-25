@@ -127,6 +127,19 @@ second, simpler experiment — a retrieval path-source A/B test — that draws
 through the same randomiser but does not use the `experiments` table at all;
 its config resolves from `system_cache`/env, not a registry row).
 
+
+**Update, CBM on the registry:** item 5 below (the CBM control arm that never
+enrolled) and open question 10 are answered by a second registry kind,
+`cbm_access` (`packages/core/cbm-access-experiment.ts` and its `-source`
+half, wired in `apps/web/src/app/api/workers/claim/cbm-experiment.ts`). It
+reuses `experiments` / `experiment_assignments` / the generic readout rather
+than a parallel mechanism: per-task unit, attempts inherit, eligibility is
+Claude + repo-backed + graph-relevant kind, and the withheld arm is enforced
+by the runner as a new `experiment_withheld` disable reason. It needed new
+enforcement after all: withholding has to close every route CBM can arrive by
+(runner mount, connector, project `.mcp.json`) and drop the steering, which a
+role opt-out never did. Nothing enrols until an admin starts one.
+
 ---
 
 ## Problem
