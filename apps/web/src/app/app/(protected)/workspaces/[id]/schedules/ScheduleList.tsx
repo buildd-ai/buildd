@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { isValidTaskId } from '@/lib/task-id';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import { useConfirm } from '@/components/useConfirm';
-import Switch from '@/components/ui/Switch';
+import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 
 interface PendingSuggestion {
   cronExpression?: string;
@@ -249,19 +249,20 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               )}
             </div>
 
-            <div className="flex items-center gap-2 ml-4">
+            <div className="flex items-center gap-1 md:gap-2 ml-2 md:ml-4 shrink-0">
               {/* Enable/Disable toggle */}
               <Switch
                 checked={schedule.enabled}
                 onChange={() => toggleEnabled(schedule)}
                 disabled={toggling === schedule.id}
                 label={`Enable ${schedule.name}`}
+                className={SWITCH_HIT_AREA}
               />
 
               {/* Edit */}
               <button
                 onClick={() => router.push(`/app/workspaces/${workspaceId}/schedules?edit=${schedule.id}`)}
-                className="p-1.5 text-text-muted hover:text-text-secondary"
+                className="inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 p-1.5 text-text-muted hover:text-text-secondary"
                 title="Edit"
                 aria-label={`Edit ${schedule.name}`}
               >
@@ -274,7 +275,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               <button
                 onClick={() => deleteSchedule(schedule.id)}
                 disabled={deleting === schedule.id}
-                className="p-1.5 text-text-muted hover:text-status-error"
+                className="inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 p-1.5 text-text-muted hover:text-status-error"
                 title="Delete"
                 aria-label={`Delete ${schedule.name}`}
               >

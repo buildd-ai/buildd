@@ -122,7 +122,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               type="text"
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Builder"
               required
             />
@@ -134,7 +134,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               type="text"
               value={slug}
               onChange={(e) => handleSlugChange(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
               placeholder="builder"
               pattern="^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
             />
@@ -147,7 +147,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Ship high-quality code"
             />
           </div>
@@ -158,7 +158,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={10}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
               placeholder="You are Builder, a senior software engineer…"
               required
             />
@@ -195,7 +195,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
                       key={opt.slug}
                       type="button"
                       onClick={() => toggleDelegate(opt.slug)}
-                      className={`px-3 py-1 rounded-full text-[12px] font-medium border transition-colors ${
+                      className={`min-h-11 md:min-h-0 px-3 py-1 rounded-full text-[12px] font-medium border transition-colors ${
                         active
                           ? 'bg-status-success/10 border-status-success text-status-success'
                           : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
@@ -225,9 +225,9 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
                     key={tool}
                     type="button"
                     onClick={() => toggleTool(tool)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-colors ${
+                    className={`min-h-11 md:min-h-0 px-2.5 md:px-2 py-0.5 rounded text-[11px] font-mono border transition-colors ${
                       active
-                        ? 'bg-text-primary text-white border-text-primary'
+                        ? 'bg-text-primary text-surface-1 border-text-primary'
                         : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
                     }`}
                   >
@@ -256,7 +256,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
                 type="number"
                 value={maxTurns}
                 onChange={(e) => setMaxTurns(e.target.value)}
-                className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm"
+                className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                 placeholder="--"
                 min="1"
               />

@@ -227,7 +227,7 @@ export interface ShellPanel {
   /** False when no task in the window recorded a shell call. */
   present: boolean;
   calls: number;
-  /** Tasks that called it at least once — necessarily histogram-covered tasks. */
+  /** Exact-histogram tasks that called it at least once — a subset of `histogramTasks`. */
   tasks: number;
   /** `calls / histogramTasks`. */
   callsPerTask: number;
@@ -240,11 +240,15 @@ export interface ShellPanel {
 export function buildShellPanel(current: UsageStats): ShellPanel {
   const entry = current.tools.byTool.find(t => t.name === SHELL_TOOL);
   const histogramTasks = current.tools.coverage.histogram;
+  // Numerator and denominator from the same population: a task that mixes an
+  // exact worker with a reconstructed one is not in `histogramTasks`, so its
+  // Bash calls must not be counted against it either (that read "N+1/N").
+  const calls = entry?.exactCalls ?? 0;
   return {
-    present: !!entry,
-    calls: entry?.calls ?? 0,
-    tasks: entry?.tasks ?? 0,
-    callsPerTask: entry && histogramTasks > 0 ? entry.calls / histogramTasks : 0,
+    present: calls > 0,
+    calls,
+    tasks: entry?.exactTasks ?? 0,
+    callsPerTask: histogramTasks > 0 ? calls / histogramTasks : 0,
     histogramTasks,
     allTasks: current.totals.tasks,
   };

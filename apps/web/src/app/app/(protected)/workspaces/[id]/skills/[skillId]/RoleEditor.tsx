@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ScopeSelector } from '@/components/ScopeSelector';
+import { MobileSaveBar } from '@/components/MobileSaveBar';
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
@@ -235,7 +236,7 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
           value={query}
           onChange={(e) => handleInput(e.target.value)}
           placeholder="Search MCP Registry…"
-          className="w-full px-2.5 py-1.5 border border-border-default rounded-md text-[12px] bg-surface-1 text-text-primary"
+          className="w-full px-2.5 py-1.5 border border-border-default rounded-md text-base md:text-[12px] bg-surface-1 text-text-primary"
         />
       </div>
       {loading && (
@@ -557,14 +558,14 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         {/* Header: Avatar + Name + Save */}
         <div className="flex items-center gap-4 mb-8">
           <div
-            className="w-14 h-14 rounded-full flex items-center justify-center flex-shrink-0"
+            className="w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center flex-shrink-0"
             style={{ backgroundColor: color }}
           >
             <span className="text-white text-2xl font-bold">{initial}</span>
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-text-primary">{name}</h1>
-            <div className="flex items-center gap-2 flex-wrap text-[13px] text-text-muted mt-0.5">
+            <h1 className="text-xl md:text-2xl font-bold text-text-primary [overflow-wrap:anywhere]">{name}</h1>
+            <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[13px] text-text-muted mt-0.5">
               <span className="font-mono text-xs">{skill.slug}</span>
               <span>&middot;</span>
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
@@ -578,10 +579,11 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               <span>Created {createdDate}</span>
             </div>
           </div>
+          {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
+            className="hidden md:inline-flex flex-shrink-0 px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
           >
             {saving ? 'Saving…' : 'Save Changes'}
           </button>
@@ -641,7 +643,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Builder"
               />
             </div>
@@ -652,7 +654,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Describe this role's core purpose (one sentence)"
               />
               <p className="text-xs text-text-muted mt-1">Shown on the Team page and in task routing.</p>
@@ -664,7 +666,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 rows={14}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
               <p className="text-xs text-text-muted mt-1">Full SKILL.md content. This becomes the agent&apos;s system prompt.</p>
@@ -700,7 +702,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                         key={opt.slug}
                         type="button"
                         onClick={() => toggleDelegate(opt.slug)}
-                        className={`px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
+                        className={`min-h-11 md:min-h-0 px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
                           active
                             ? 'bg-text-primary border-text-primary text-surface-1'
                             : 'bg-transparent border-border-strong text-text-secondary hover:text-text-primary'
@@ -724,7 +726,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       type="button"
                       onClick={checkConnectorHealth}
                       disabled={healthChecking}
-                      className="text-[12px] text-text-muted hover:text-text-secondary font-medium disabled:opacity-50"
+                      className="min-h-11 md:min-h-0 text-[12px] text-text-muted hover:text-text-secondary font-medium disabled:opacity-50"
                     >
                       {healthChecking ? 'Checking…' : healthStatus.size > 0 ? 'Recheck health' : 'Check health'}
                     </button>
@@ -732,7 +734,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                   <button
                     type="button"
                     onClick={() => setShowBrowse(!showBrowse)}
-                    className="text-[12px] text-primary hover:text-primary-hover font-medium"
+                    className="min-h-11 md:min-h-0 text-[12px] text-primary hover:text-primary-hover font-medium"
                   >
                     {showBrowse ? 'Hide Registry' : 'Browse Registry'}
                   </button>
@@ -773,7 +775,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       <button
                         type="button"
                         onClick={() => toggleConnector(connector.id)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors"
+                        className="w-full flex items-center gap-2 px-3 py-2 min-h-11 text-left hover:bg-surface-2 transition-colors"
                       >
                         <span
                           className={`w-4 h-4 flex-shrink-0 border-2 flex items-center justify-center ${
@@ -855,9 +857,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                         key={tool}
                         type="button"
                         onClick={() => toggleTool(tool)}
-                        className={`px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
+                        className={`min-h-11 md:min-h-0 px-3 md:px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
                           active
-                            ? 'bg-text-primary text-white border-text-primary'
+                            ? 'bg-text-primary text-surface-1 border-text-primary'
                             : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
                         }`}
                       >
@@ -916,7 +918,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                     type="number"
                     value={maxTurns}
                     onChange={(e) => setMaxTurns(e.target.value)}
-                    className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
+                    className="w-20 min-h-11 md:min-h-0 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-base md:text-sm text-text-primary"
                     placeholder="--"
                     min="1"
                   />
@@ -954,6 +956,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             </div>
           </div>
         </div>
+
+        <MobileSaveBar onSave={handleSave} saving={saving} />
       </div>
       {confirmDialog}
     </main>

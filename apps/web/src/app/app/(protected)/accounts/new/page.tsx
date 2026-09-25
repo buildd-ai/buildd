@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import ApiKeyModal from '@/components/ApiKeyModal';
+import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
 
 interface Team {
   id: string;
@@ -59,12 +60,9 @@ export default function NewAccountPage() {
         if (res.ok) {
           const data = await res.json();
           setTeams(data.teams || []);
-          const personal = (data.teams || []).find((t: Team) => t.slug.startsWith('personal-'));
-          if (personal) {
-            setSelectedTeamId(personal.id);
-          } else if (data.teams?.length > 0) {
-            setSelectedTeamId(data.teams[0].id);
-          }
+          // Default to the team the user is viewing (team switcher), not Personal.
+          const initial = defaultTeamId(data.teams || [], readActiveTeamCookie());
+          if (initial) setSelectedTeamId(initial);
         }
       } catch {
         // Teams not available
@@ -169,7 +167,7 @@ export default function NewAccountPage() {
               name="name"
               required
               placeholder="my-laptop-agent"
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             />
           </div>
 
@@ -273,7 +271,7 @@ export default function NewAccountPage() {
                       max="10"
                       value={maxConcurrent}
                       onChange={(e) => setMaxConcurrent(e.target.value)}
-                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                     />
                   </div>
                 )}

@@ -185,7 +185,7 @@ function ExperimentCard({ item, canManage }: { item: HealthExperimentItem; canMa
                 onChange={ev => setDecision(ev.target.value)}
                 rows={2}
                 placeholder="What was decided, and why. Concluding is final."
-                className="w-full px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1"
+                className="w-full px-3 py-2 text-base md:text-sm border border-border-default rounded-md bg-surface-1"
               />
               <button
                 data-testid="experiment-conclude-confirm"
@@ -215,14 +215,14 @@ function CreateExperimentForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const input = 'w-full px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1';
+  const input = 'w-full px-3 py-2 text-base md:text-sm border border-border-default rounded-md bg-surface-1';
 
   if (!open) {
     return (
       <button
         data-testid="experiment-create-open"
         onClick={() => setOpen(true)}
-        className="text-xs text-accent hover:underline"
+        className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-accent-text hover:underline"
       >
         + New experiment
       </button>

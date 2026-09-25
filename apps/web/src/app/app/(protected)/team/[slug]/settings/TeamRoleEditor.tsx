@@ -8,6 +8,7 @@ import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect'
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
+import { MobileSaveBar } from '@/components/MobileSaveBar';
 
 type Scope = 'team' | 'workspace';
 
@@ -195,7 +196,7 @@ function WorkspaceOverrideEditor({
                   <button
                     type="button"
                     onClick={() => resetField('allowedTools')}
-                    className="text-[10px] text-text-muted hover:text-status-error ml-auto"
+                    className="ml-auto inline-flex items-center min-h-11 md:min-h-0 px-2 md:px-0 text-[11px] md:text-[10px] text-text-muted hover:text-status-error"
                   >
                     Reset to inherited
                   </button>
@@ -206,7 +207,7 @@ function WorkspaceOverrideEditor({
                   <button
                     type="button"
                     onClick={() => { setOverrideField(prev => { const s = new Set(prev); s.add('allowedTools'); return s; }); }}
-                    className="text-[10px] text-accent-text hover:underline ml-auto"
+                    className="ml-auto inline-flex items-center min-h-11 md:min-h-0 px-2 md:px-0 text-[11px] md:text-[10px] text-accent-text hover:underline"
                   >
                     Override
                   </button>
@@ -222,9 +223,9 @@ function WorkspaceOverrideEditor({
                       key={tool}
                       type="button"
                       onClick={() => toggleToolOverride(tool)}
-                      className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-colors ${
+                      className={`min-h-11 md:min-h-0 px-2.5 md:px-2 py-0.5 rounded text-[11px] font-mono border transition-colors ${
                         active
-                          ? 'bg-text-primary text-white border-text-primary'
+                          ? 'bg-text-primary text-surface-1 border-text-primary'
                           : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
                       }`}
                     >
@@ -239,7 +240,7 @@ function WorkspaceOverrideEditor({
                   <span className="text-xs text-text-muted">Subagent defaults (inherited)</span>
                 ) : (
                   teamDefault.allowedTools.map(tool => (
-                    <span key={tool} className="px-2 py-0.5 rounded text-[11px] font-mono border bg-text-primary text-white border-text-primary">
+                    <span key={tool} className="px-2 py-0.5 rounded text-[11px] font-mono border bg-text-primary text-surface-1 border-text-primary">
                       {tool}
                     </span>
                   ))
@@ -259,7 +260,7 @@ function WorkspaceOverrideEditor({
                   <button
                     type="button"
                     onClick={() => resetField('content')}
-                    className="text-[10px] text-text-muted hover:text-status-error ml-auto"
+                    className="ml-auto inline-flex items-center min-h-11 md:min-h-0 px-2 md:px-0 text-[11px] md:text-[10px] text-text-muted hover:text-status-error"
                   >
                     Reset to inherited
                   </button>
@@ -270,7 +271,7 @@ function WorkspaceOverrideEditor({
                   <button
                     type="button"
                     onClick={() => setOverrideField(prev => { const s = new Set(prev); s.add('content'); return s; })}
-                    className="text-[10px] text-accent-text hover:underline ml-auto"
+                    className="ml-auto inline-flex items-center min-h-11 md:min-h-0 px-2 md:px-0 text-[11px] md:text-[10px] text-accent-text hover:underline"
                   >
                     Override
                   </button>
@@ -282,7 +283,7 @@ function WorkspaceOverrideEditor({
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 rows={8}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="Custom instructions for this workspace…"
               />
             ) : (
@@ -489,14 +490,14 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
           <div
-            className="w-14 h-14 rounded-full flex items-center justify-center flex-shrink-0"
+            className="w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center flex-shrink-0"
             style={{ backgroundColor: color }}
           >
             <span className="text-white text-2xl font-bold">{initial}</span>
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-text-primary">{name}</h1>
-            <div className="flex items-center gap-2 text-[13px] text-text-muted mt-0.5">
+            <h1 className="text-xl md:text-2xl font-bold text-text-primary [overflow-wrap:anywhere]">{name}</h1>
+            <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[13px] text-text-muted mt-0.5">
               <span className="font-mono text-xs">{role.slug}</span>
               <span>&middot;</span>
               <span className="text-[11px] text-text-muted">Applies to</span>
@@ -505,10 +506,11 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               </span>
             </div>
           </div>
+          {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
+            className="hidden md:inline-flex flex-shrink-0 px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
           >
             {saving ? 'Saving…' : 'Save Changes'}
           </button>
@@ -588,7 +590,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
               />
             </div>
 
@@ -598,7 +600,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Describe this role's core purpose"
               />
             </div>
@@ -609,7 +611,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 rows={14}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
               <p className="text-xs text-text-muted mt-1">Full system prompt for this role. Individual workspaces can override this.</p>
@@ -633,12 +635,15 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 <label className="block text-sm font-medium text-text-primary mb-2">Can Delegate To</label>
                 <div className="flex flex-wrap gap-2">
                   {(() => {
+                    // canDelegateTo stores slugs, so one chip per slug (the
+                    // server dedupes too; this keeps React keys unique).
+                    const uniqueOptions = [...new Map(delegateOptions.map(o => [o.slug, o] as const)).values()];
                     // Detect duplicate names so we can qualify them with workspace context
                     const nameCount = new Map<string, number>();
-                    for (const opt of delegateOptions) {
+                    for (const opt of uniqueOptions) {
                       nameCount.set(opt.name, (nameCount.get(opt.name) ?? 0) + 1);
                     }
-                    return delegateOptions.map(opt => {
+                    return uniqueOptions.map(opt => {
                       const active = canDelegateTo.includes(opt.slug);
                       const isAmbiguous = (nameCount.get(opt.name) ?? 0) > 1;
                       const label = isAmbiguous && opt.workspaceName
@@ -649,7 +654,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                           key={opt.slug}
                           type="button"
                           onClick={() => toggleDelegate(opt.slug)}
-                          className={`px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
+                          className={`min-h-11 md:min-h-0 px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
                             active
                               ? 'bg-text-primary border-text-primary text-surface-1'
                               : 'bg-transparent border-border-strong text-text-secondary hover:text-text-primary'
@@ -681,9 +686,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                         key={tool}
                         type="button"
                         onClick={() => toggleTool(tool)}
-                        className={`px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
+                        className={`min-h-11 md:min-h-0 px-3 md:px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
                           active
-                            ? 'bg-text-primary text-white border-text-primary'
+                            ? 'bg-text-primary text-surface-1 border-text-primary'
                             : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
                         }`}
                       >
@@ -715,7 +720,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                     type="number"
                     value={maxTurns}
                     onChange={(e) => setMaxTurns(e.target.value)}
-                    className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
+                    className="w-20 min-h-11 md:min-h-0 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-base md:text-sm text-text-primary"
                     placeholder="--"
                     min="1"
                   />
@@ -756,8 +761,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
         {/* Workspace Overrides Section */}
         <div className="border-t border-border-default pt-8">
-          <div className="flex items-center justify-between mb-4">
-            <div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+            <div className="min-w-0">
               <h2 className="text-[15px] font-semibold text-text-primary">Workspace Overrides</h2>
               <p className="text-[12px] text-text-muted mt-0.5">
                 Individual workspaces can override specific fields. Non-overridden fields inherit the team default above.
@@ -767,7 +772,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               <button
                 type="button"
                 onClick={() => setShowAddOverride(!showAddOverride)}
-                className="px-3 py-1.5 border border-border-default rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-surface-2 transition-colors"
+                className="self-start flex-shrink-0 min-h-11 md:min-h-0 px-3 py-1.5 border border-border-default rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-surface-2 transition-colors"
               >
                 + Add override
               </button>
@@ -778,7 +783,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           {showAddOverride && availableForOverride.length > 0 && (
             <div className="mb-4 p-4 border border-border-default rounded-lg bg-surface-2">
               <p className="text-[13px] text-text-primary mb-3">Create an override for a specific workspace</p>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <Select
                   value={addOverrideWsId}
                   onChange={setAddOverrideWsId}
@@ -858,6 +863,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
           )}
         </div>
+
+        <MobileSaveBar onSave={handleSave} saving={saving} />
       </div>
       {confirmDialog}
     </main>

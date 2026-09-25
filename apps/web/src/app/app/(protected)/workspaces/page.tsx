@@ -132,16 +132,14 @@ export default async function WorkspacesPage() {
   return (
     <main className="min-h-screen pt-14 px-4 pb-8 md:p-8">
       <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <Link href="/app/home" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-              ← Home
-            </Link>
-            <h1 className="text-3xl font-bold">Workspaces</h1>
-          </div>
+        <Link href="/app/home" className="text-sm text-text-muted hover:text-text-secondary mb-2 inline-block">
+          ← Home
+        </Link>
+        <div className="flex flex-wrap justify-between items-center gap-3 mb-8">
+          <h1 className="text-2xl md:text-3xl font-bold min-w-0">Workspaces</h1>
           <Link
             href="/app/workspaces/new"
-            className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
+            className="shrink-0 whitespace-nowrap px-3 py-2 md:px-4 text-sm md:text-base bg-primary text-white hover:bg-primary-hover rounded-lg"
           >
             + New Workspace
           </Link>

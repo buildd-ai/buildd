@@ -147,7 +147,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
           </label>
           <select
             id="work-tracker-select"
-            className="w-full border border-border-subtle rounded px-3 py-2 bg-surface-1 text-sm"
+            className="w-full border border-border-subtle rounded px-3 py-2 bg-surface-1 text-base md:text-sm"
             value={selection}
             onChange={e => setSelection(e.target.value)}
           >
@@ -178,7 +178,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
           <input
             id="work-tracker-label"
             type="text"
-            className="w-full border border-border-subtle rounded px-3 py-2 bg-surface-1 text-sm"
+            className="w-full border border-border-subtle rounded px-3 py-2 bg-surface-1 text-base md:text-sm"
             placeholder="buildd"
             value={inboundLabel}
             onChange={e => setInboundLabel(e.target.value)}

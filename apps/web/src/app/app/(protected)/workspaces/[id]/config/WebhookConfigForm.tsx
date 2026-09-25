@@ -99,7 +99,7 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                             type="url"
                             value={url}
                             onChange={(e) => setUrl(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
                             placeholder="http://localhost:18789/hooks/agent"
                         />
                         <p className="text-xs text-text-muted mt-1">
@@ -113,7 +113,7 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                             type="password"
                             value={token}
                             onChange={(e) => setToken(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
                             placeholder="your-webhook-secret"
                         />
                         <p className="text-xs text-text-muted mt-1">

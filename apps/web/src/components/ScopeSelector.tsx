@@ -52,7 +52,7 @@ export function ScopeSelector({
         <select
           value={workspaceId}
           onChange={(e) => onWorkspaceChange(e.target.value)}
-          className="h-8 px-2 bg-surface text-sm"
+          className="h-11 md:h-8 px-2 bg-surface text-base md:text-sm"
         >
           {workspaces.map((ws) => (
             <option key={ws.id} value={ws.id}>{ws.name}</option>
