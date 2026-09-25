@@ -26,3 +26,6 @@ __pycache__/
 
 # Isolated BUILDD_HOME for the auto-update health probe (see runHealthProbe).
 .health-probe/
+
+# scripts/demo storyboard captures
+scripts/demo/out/
