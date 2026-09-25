@@ -64,7 +64,7 @@ export async function GET(
   const { id } = await params;
 
   // Dev mode returns mock task data so polling doesn't break
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({
       id,
       title: 'Development mode task',

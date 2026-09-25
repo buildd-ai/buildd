@@ -29,7 +29,7 @@ export async function GET(
 ) {
   const { id: workspaceId } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({ connectors: [] });
   }
 

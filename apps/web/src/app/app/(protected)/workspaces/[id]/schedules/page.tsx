@@ -19,7 +19,7 @@ export default async function SchedulesPage({
   const query = await searchParams;
   const showNew = query.new === '1';
 
-  const isDev = process.env.NODE_ENV === 'development';
+  const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   if (isDev) {
