@@ -658,6 +658,49 @@ describe('canCompleteMission — the goal-criteria gate', () => {
     expect(d.reason).toContain('in flight');
   });
 
+  it('holds while a runner-graded prose criterion is in flight, then passes once its verdict lands', async () => {
+    const criteria = [{ type: 'description', description: 'Contract applied', notMechanizableReason: 'stated reason', grader: 'runner' }];
+    activeMission({ goalCriteria: criteria });
+    taskRows = [work('completed')];
+    mockEnsureCriteriaVerdict.mockImplementation(() => Promise.resolve({
+      evaluatedAt: '2026-09-01T12:00:00.000Z',
+      evaluatedBy: 'auto',
+      overall: 'UNVERIFIED',
+      criteria: [{ index: 0, type: 'description', verdict: 'PENDING', evidence: 'Verifying on runner… (task abcd1234, pending)', workerTaskId: 'abcd1234' }],
+    }) as any);
+
+    const held = await canCompleteMission('m1');
+    expect(held.ok).toBe(false);
+    expect(held.code).toBe('criteria_pending');
+
+    // `unsure` from the runner lands as NOT_EVALUATED — still not a pass.
+    activeMission({
+      goalCriteria: criteria,
+      goalCriteriaState: {
+        evaluatedAt: '2026-09-01T12:05:00.000Z',
+        evaluatedBy: 'auto',
+        overall: 'UNVERIFIED',
+        criteria: [{ index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'Runner was unsure: x', workerTaskId: 'abcd1234' }],
+      },
+    });
+    const unsure = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(unsure.ok).toBe(false);
+    expect(unsure.code).toBe('criteria_unverified');
+
+    // The write-back hook stored a pass and re-attempts with evaluateCriteria=false.
+    activeMission({
+      goalCriteria: criteria,
+      goalCriteriaState: {
+        evaluatedAt: '2026-09-01T12:10:00.000Z',
+        evaluatedBy: 'auto',
+        overall: 'pass',
+        criteria: [{ index: 0, type: 'description', verdict: 'pass', evidence: 'applied', workerTaskId: 'abcd1234', evaluatedAt: '2026-09-01T12:10:00.000Z' }],
+      },
+    });
+    const passed = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(passed.ok).toBe(true);
+  });
+
   it('uses the stored verdict without evaluating when evaluateCriteria=false', async () => {
     activeMission({ goalCriteria: [{ type: 'command', command: 'bun test' }], goalCriteriaState: PASSING_STATE });
     taskRows = [work('completed')];

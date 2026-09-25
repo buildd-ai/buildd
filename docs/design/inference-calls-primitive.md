@@ -334,7 +334,10 @@ Corrections to this doc's assumptions:
   (`mission-criteria-prose.ts`), which can use the OAuth subscription an inference
   call structurally cannot. Non-credential errors (transport, 5xx, rate limit,
   parse) do NOT dispatch — they report and let the next evaluation round retry, so
-  a provider blip never costs an agent run.
+  a provider blip never costs an agent run. That fallback is the `auto` grader;
+  a criterion (or workspace, via `gitConfig.criteriaGrader`) can pin `api`
+  (no fallback — a missing key reads `NOT_EVALUATED`) or `runner` (never calls
+  this client). See `docs/specs/mission-task-lifecycle.md` → Mission Completion Gate.
 
 Also landed, beyond this doc's original scope:
 

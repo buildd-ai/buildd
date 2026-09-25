@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -15,7 +17,7 @@ const mockInsert = mock(() => ({
   values: mockInsertValues,
 }));
 
-const mockWorkersUpdateReturning = mock(() => [{ id: 'worker-1', status: 'superseded' }]);
+const mockWorkersUpdateReturning = mock(() => [{ id: WORKER_ID, status: 'superseded' }]);
 const mockWorkersUpdateWhere = mock(() => ({
   returning: mockWorkersUpdateReturning,
 }));
@@ -126,10 +128,10 @@ function createMockRequestWithAuth(body?: any, apiKey?: string): NextRequest {
   return new NextRequest('http://localhost:3000/api/workers/worker-1/respond', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 const baseWorker = {
-  id: 'worker-1',
+  id: WORKER_ID,
   taskId: 'task-1',
   workspaceId: 'workspace-1',
   accountId: 'account-1',
@@ -187,7 +189,7 @@ describe('POST /api/workers/[id]/respond', () => {
       return { returning: mockInsertReturning };
     }) as any);
     mockInsert.mockReturnValue({ values: mockInsertValues });
-    mockWorkersUpdateReturning.mockReturnValue([{ id: 'worker-1', status: 'superseded' }]);
+    mockWorkersUpdateReturning.mockReturnValue([{ id: WORKER_ID, status: 'superseded' }]);
     mockWorkersUpdateWhere.mockReturnValue({ returning: mockWorkersUpdateReturning });
     mockWorkersUpdateSet.mockImplementation((() => {
       callOrder.push('update');
@@ -339,7 +341,7 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(insertedValues.context.previousAttempt.question).toBe('Which authentication method should we use?');
     expect(insertedValues.context.previousAttempt.milestones).toEqual(baseWorker.milestones);
     expect(insertedValues.context.previousAttempt.branch).toBe('buildd/task-1-fix-auth');
-    expect(insertedValues.context.previousAttempt.workerId).toBe('worker-1');
+    expect(insertedValues.context.previousAttempt.workerId).toBe(WORKER_ID);
   });
 
   it('sets baseBranch and parentTaskId correctly', async () => {
@@ -779,7 +781,7 @@ describe('POST /api/workers/[id]/respond', () => {
 
       expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
       const [channel, event, payload] = mockTriggerEvent.mock.calls[0] as any[];
-      expect(channel).toBe('worker-worker-1');
+      expect(channel).toBe(`worker-${WORKER_ID}`);
       expect(event).toBe('worker:command');
       expect(payload).toMatchObject({ action: 'message', text: 'Use JWT tokens' });
     });
@@ -809,7 +811,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(tasksUpdated[0].context.answerDelivery).toMatchObject({
         path: 'resume',
         reasonCode: 'resume_eligible',
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
       });
       expect(tasksUpdated[0].context.answerDelivery.ackDeadlineAt).toBeTruthy();
       // Warm resume path: the SAME worker/task continue, so nothing was

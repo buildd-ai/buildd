@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const REVIEWER_WORKER_ID = '22222222-2222-4222-8222-222222222222';
+const PLAIN_WORKER_ID = '33333333-3333-4333-8333-333333333333';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -88,7 +91,7 @@ mock.module('drizzle-orm', () => ({
 
 import { POST } from './route';
 
-function makeRequest(workerId = 'w-reviewer-1') {
+function makeRequest(workerId = REVIEWER_WORKER_ID) {
   return new NextRequest(`http://localhost/api/workers/${workerId}/interrupt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -114,7 +117,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
 
   it('returns 401 when unauthenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(401);
   });
 
@@ -125,7 +128,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
       body: '',
     });
 
-    const res = await POST(request, { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(request, { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
 
     expect(res.status).toBe(415);
     expect(mockGetCurrentUser).not.toHaveBeenCalled();
@@ -135,37 +138,37 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindFirst.mockResolvedValue(null);
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(404);
   });
 
   it('returns 403 when user lacks access to workspace', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-other']);
-    mockWorkersFindFirst.mockResolvedValue({ id: 'w-reviewer-1', workspaceId: 'ws-1', taskId: 't-rev-1', status: 'running' });
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    mockWorkersFindFirst.mockResolvedValue({ id: REVIEWER_WORKER_ID, workspaceId: 'ws-1', taskId: 't-rev-1', status: 'running' });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(403);
   });
 
   it('returns 400 when worker task is not a reviewer task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
-    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', workspaceId: 'ws-1', taskId: 't-1', status: 'running' });
+    mockWorkersFindFirst.mockResolvedValue({ id: PLAIN_WORKER_ID, workspaceId: 'ws-1', taskId: 't-1', status: 'running' });
     mockTasksFindFirst.mockResolvedValue({ id: 't-1', category: 'feature', context: {} });
-    const res = await POST(makeRequest('w-1'), { params: Promise.resolve({ id: 'w-1' }) });
+    const res = await POST(makeRequest(PLAIN_WORKER_ID), { params: Promise.resolve({ id: PLAIN_WORKER_ID }) });
     expect(res.status).toBe(400);
   });
 
   it('returns 409 when reviewer worker is already terminal', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
-    mockWorkersFindFirst.mockResolvedValue({ id: 'w-reviewer-1', workspaceId: 'ws-1', taskId: 't-rev-1', status: 'completed' });
+    mockWorkersFindFirst.mockResolvedValue({ id: REVIEWER_WORKER_ID, workspaceId: 'ws-1', taskId: 't-rev-1', status: 'completed' });
     mockTasksFindFirst.mockResolvedValue({
       id: 't-rev-1',
       category: 'review',
       context: { reviewerFor: 't-1', prNumber: 42 },
     });
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(409);
   });
 
@@ -173,7 +176,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'w-reviewer-1',
+      id: REVIEWER_WORKER_ID,
       workspaceId: 'ws-1',
       taskId: 't-rev-1',
       status: 'running',
@@ -193,13 +196,13 @@ describe('POST /api/workers/[id]/interrupt', () => {
     const db = (await import('@buildd/core/db')).db;
     (db.update as any) = (table: any) => {
       if (table === 'workers_table') {
-        return makeReturningUpdateChain([{ id: 'w-reviewer-1' }]);
+        return makeReturningUpdateChain([{ id: REVIEWER_WORKER_ID }]);
       }
       return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
     };
     (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
 
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
@@ -214,7 +217,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'w-reviewer-1',
+      id: REVIEWER_WORKER_ID,
       workspaceId: 'ws-1',
       taskId: 't-rev-1',
       status: 'running',
@@ -229,7 +232,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
 
     const db = (await import('@buildd/core/db')).db;
     (db.update as any) = (table: any) => {
-      if (table === 'workers_table') return makeReturningUpdateChain([{ id: 'w-reviewer-1' }]);
+      if (table === 'workers_table') return makeReturningUpdateChain([{ id: REVIEWER_WORKER_ID }]);
       return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
     };
     (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
@@ -240,13 +243,13 @@ describe('POST /api/workers/[id]/interrupt', () => {
       body: JSON.stringify({ cancelQueued: true }),
     });
 
-    const res = await POST(request, { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(request, { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(200);
 
     // triggerEvent is called twice: once for the worker channel (cancelQueued),
     // once for the workspace channel (WORKER_FAILED).
     const calls = mockTriggerEvent.mock.calls;
-    const workerChannelCall = calls.find((c: any[]) => c[0] === 'worker:w-reviewer-1');
+    const workerChannelCall = calls.find((c: any[]) => c[0] === `worker:${REVIEWER_WORKER_ID}`);
     expect(workerChannelCall).toBeDefined();
     expect(workerChannelCall![1]).toBe('worker:command');
     expect(workerChannelCall![2]).toMatchObject({ action: 'abort', cancelQueued: true });
@@ -256,7 +259,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'w-reviewer-1',
+      id: REVIEWER_WORKER_ID,
       workspaceId: 'ws-1',
       taskId: 't-rev-1',
       status: 'running',
@@ -271,17 +274,17 @@ describe('POST /api/workers/[id]/interrupt', () => {
 
     const db = (await import('@buildd/core/db')).db;
     (db.update as any) = (table: any) => {
-      if (table === 'workers_table') return makeReturningUpdateChain([{ id: 'w-reviewer-1' }]);
+      if (table === 'workers_table') return makeReturningUpdateChain([{ id: REVIEWER_WORKER_ID }]);
       return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
     };
     (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
 
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
     expect(res.status).toBe(200);
 
     // Only the workspace WORKER_FAILED event fires — no worker channel event.
     const calls = mockTriggerEvent.mock.calls;
-    const workerChannelCall = calls.find((c: any[]) => c[0] === 'worker:w-reviewer-1');
+    const workerChannelCall = calls.find((c: any[]) => c[0] === `worker:${REVIEWER_WORKER_ID}`);
     expect(workerChannelCall).toBeUndefined();
   });
 
@@ -289,7 +292,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'w-reviewer-1',
+      id: REVIEWER_WORKER_ID,
       workspaceId: 'ws-1',
       taskId: 't-rev-1',
       status: 'running',
@@ -310,7 +313,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
     };
     (db.insert as any) = () => ({ values: insertValues });
 
-    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
 
     expect(res.status).toBe(409);
     expect(taskUpdate).not.toHaveBeenCalled();

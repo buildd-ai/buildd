@@ -525,7 +525,10 @@ export async function setupWorktree(
       try {
         const countStr = execSync(
           `git rev-list --count "origin/${defaultBranch}..origin/${candidate}"`,
-          { ...execOpts, timeout: 10000 },
+          // Piped: a missing candidate is an expected negative (caught below and
+          // logged by resolveWorktreeBase). Inherited stderr put git's
+          // "fatal: ambiguous argument" in the runner log on every such start.
+          { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
         ).trim();
         const count = parseInt(countStr, 10);
         if (!isNaN(count) && count > 50) {
@@ -557,7 +560,7 @@ export async function setupWorktree(
       try {
         const out = execSync(
           `git rev-list --count "origin/${defaultBranch}..${candidate}"`,
-          { ...execOpts, timeout: 10000 },
+          { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
         ).trim();
         const n = parseInt(out, 10);
         return isNaN(n) ? 0 : n;

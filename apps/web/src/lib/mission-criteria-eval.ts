@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { evaluateGoalCriteria, recalculateOverall } from '@buildd/core/mission-helpers';
+import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask } from '@buildd/core/mission-helpers';
 import type {
   GoalCriterion,
   GoalCriteriaState,
@@ -10,9 +10,9 @@ import type {
   CriteriaReviewerReport,
 } from '@buildd/shared';
 import { inferenceCall, describeInferenceError, type InferenceError } from '@buildd/core/inference-client';
-import { resolveCommandCriterion } from './mission-criteria-verify';
-import { resolveProseCriteria } from './mission-criteria-prose';
-import { resolveEvaluationStrategy } from './mission-criteria-strategy';
+import { resolveProseCriterion, type ProseRunnerEvidence } from './mission-criteria-prose';
+import { resolveEvaluationStrategy, resolveWorkspaceCriteriaGrader } from './mission-criteria-strategy';
+import { pickCriteriaGrader, type CriteriaGrader } from './mission-criteria-grader';
 import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './mission-criteria-worker-eval';
 import { applyReviewerFindings } from './criteria-reviewer-findings';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
@@ -33,8 +33,16 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
  * mission that passed in June still read `pass` today even if the behaviour had
  * since regressed. Mechanical criteria are now re-checked on every request (they
  * are a DB query), command criteria are re-run once their last run ages past
- * COMMAND_VERDICT_TTL_MS, and only LLM grading is cached — for LLM_REVERIFY_MS,
- * because it costs tokens.
+ * COMMAND_VERDICT_TTL_MS, and only prose grading is cached — for LLM_REVERIFY_MS,
+ * because it costs tokens or an agent run.
+ *
+ * Prose (`description`) criteria have two graders, chosen per criterion
+ * (criterion `grader` > workspace `gitConfig.criteriaGrader` > `auto`):
+ * `api` — a batched `inferenceCall` on the team's API key, billed per token —
+ * and `runner` — one read-only verification task per criterion
+ * (`mission-criteria-prose.ts`), graded on the team's own runner credential, an
+ * OAuth seat included. `auto` uses `api` when the inference client resolves a
+ * key and `runner` otherwise.
  */
 
 /** Re-exported so callers have one import site for the folding rule. */
@@ -206,7 +214,7 @@ export async function evaluateCriteriaNow(
     noteTitle?: string;
     /**
      * Dispatch verification tasks for criteria that need one — `command` criteria
-     * and, when no API key is present in this process, prose criteria (default true).
+     * and runner-graded prose criteria (default true).
      * `false` makes this a read-only evaluation that spends no agent runs.
      */
     dispatchCommands?: boolean;
@@ -427,10 +435,20 @@ export async function evaluateCriteriaNow(
     }
   }
 
-  // ── LLM grading for prose criteria (inline strategy only) ──────────────────
+  // ── Prose criteria (inline strategy only): api grader or runner grader ─────
   //
-  // When strategy='worker', prose criteria were already routed to the worker
-  // evaluator above. This block only runs for strategy='inline'.
+  // When strategy='worker', prose criteria were already routed to the batched
+  // worker evaluator above. This block only runs for strategy='inline'.
+  //
+  // Each prose criterion has a grader (criterion > workspace gitConfig > auto):
+  //   api    — one batched `inferenceCall` on the team's API key. With no key the
+  //            criterion says so (NOT_EVALUATED) — it never switches to a runner.
+  //   runner — one read-only verification task per criterion on the team's own
+  //            runner credential (an OAuth seat included). No inference call.
+  //   auto   — try api; when the inference client finds no path (no key, a
+  //            provider that cannot serve inference, capability switched off),
+  //            fall through to runner. The check is the inference client's own
+  //            credential resolution, not a second lookup here.
   const inlineLlmEligible = strategy === 'worker'
     ? []
     : state.criteria.filter(
@@ -452,11 +470,20 @@ export async function evaluateCriteriaNow(
         c.verdict = prior.verdict;
         c.evidence = prior.evidence;
         if (prior.evidenceRefs) c.evidenceRefs = prior.evidenceRefs;
+        if (prior.workerTaskId) c.workerTaskId = prior.workerTaskId;
+        if (prior.evaluatedAt) c.evaluatedAt = prior.evaluatedAt;
         carried.add(c.index);
       }
     }
 
     const toJudge = inlineLlmEligible.filter(c => !carried.has(c.index));
+
+    const workspaceGrader = toJudge.length > 0 ? await resolveWorkspaceCriteriaGrader(mission.workspaceId) : null;
+    const graderOf = (index: number): CriteriaGrader =>
+      pickCriteriaGrader(criteria[index] as { grader?: unknown } | undefined, workspaceGrader);
+
+    const apiBound = toJudge.filter(c => graderOf(c.index) !== 'runner');
+    const runnerBound = toJudge.filter(c => graderOf(c.index) === 'runner');
 
     // Newest first. A grader has no other signal for which of two artifacts
     // addressing the same claim is current — an audit written before a fix
@@ -484,28 +511,17 @@ export async function evaluateCriteriaNow(
       }))
       .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
 
-    // Two ways to grade prose, tried in this order.
-    //
-    // 1. An inference call, when the team has an inference key. Seconds, cents,
-    //    and the provider/model come from their tier registry — so pointing the
-    //    budget tier at OpenRouter routes judgments there with no change here.
-    // 2. A dispatched agent run, when there is no key. Slower, but it uses the
-    //    OAuth subscription the team already pays for, which is the only credential
-    //    most teams have. An inference call structurally cannot use a subscription
-    //    seat (see inference-client's docstring), so this is not a fallback for a
-    //    flaky key — it is the path for teams that never had one.
-    let inferenceError: InferenceError | undefined;
-
-    if (toJudge.length > 0) {
+    // ── api grader ──
+    if (apiBound.length > 0) {
       const judged = await judgeWithLLM(
-        toJudge.map(c => ({ index: c.index, text: criterionText(criteria[c.index]) })),
+        apiBound.map(c => ({ index: c.index, text: criterionText(criteria[c.index]) })),
         mission.title,
         mission.description ?? null,
         completedTasks,
         evidenceArtifacts,
         { teamId: mission.teamId, workspaceId: mission.workspaceId },
       );
-      inferenceError = judged.error;
+      const inferenceError = judged.error;
 
       for (const lv of judged.verdicts) {
         const criterionState = state.criteria.find(c => c.index === lv.index);
@@ -516,80 +532,113 @@ export async function evaluateCriteriaNow(
       }
 
       if (!inferenceError) {
-        for (const c of toJudge) {
+        for (const c of apiBound) {
           const cs = state.criteria.find(s => s.index === c.index);
           if (cs && cs.verdict === 'NOT_EVALUATED') {
             cs.evidence = 'The evaluator returned no verdict for this criterion';
             fireNotEvaluated(cs.index, 'evaluator_no_output');
           }
         }
-      }
-    }
-
-    // Three errors mean "this team has no inference path for grading", not "a call
-    // failed": no key, a provider that cannot serve single-shot calls, and the
-    // operator having switched this capability off on purpose. All three fall
-    // through to a dispatched agent run, which is the point of that path —
-    // grading still happens, on the subscription seat, just slower.
-    //
-    // Every other error is a real call that went wrong. Report it and let the next
-    // evaluation round retry rather than spending an agent run on a blip.
-    const NO_INFERENCE_PATH = ['missing_key', 'unsupported_provider', 'capability_disabled'];
-    const needsDispatch = toJudge.length > 0 && !!inferenceError && NO_INFERENCE_PATH.includes(inferenceError.kind);
-
-    if (toJudge.length > 0 && inferenceError && !needsDispatch) {
-      for (const c of toJudge) {
-        const cs = state.criteria.find(s => s.index === c.index);
-        if (cs) {
+      } else {
+        // Three errors mean "this team has no inference path for grading", not
+        // "a call failed": no key, a provider that cannot serve single-shot
+        // calls, and the operator having switched this capability off. Under
+        // `auto` those fall through to the runner grader — grading still happens,
+        // on the team's seat, just asynchronously. An explicit `api` does not:
+        // the owner asked for per-token grading, so say it cannot happen.
+        //
+        // Every other error is a real call that went wrong. Report it and let the
+        // next evaluation round retry rather than spending an agent run on a blip.
+        const NO_INFERENCE_PATH = ['missing_key', 'unsupported_provider', 'capability_disabled'];
+        const noPath = NO_INFERENCE_PATH.includes(inferenceError.kind);
+        for (const c of apiBound) {
+          const cs = state.criteria.find(s => s.index === c.index);
+          if (!cs) continue;
+          if (noPath && graderOf(c.index) === 'auto') {
+            runnerBound.push(c);
+            continue;
+          }
           cs.verdict = 'NOT_EVALUATED';
-          cs.evidence = `Not graded: ${describeInferenceError(inferenceError)}`;
+          cs.evidence = noPath
+            ? `Not graded: grader is "api" but ${describeInferenceError(inferenceError)} — connect an API key, or set grader "runner" (or "auto") to grade on a runner`
+            : `Not graded: ${describeInferenceError(inferenceError)}`;
           fireNotEvaluated(cs.index, inferenceError.kind);
         }
       }
-    } else if (needsDispatch) {
-      const proseInputs = toJudge.map(c => ({
-        index: c.index,
-        text: criterionText(criteria[c.index]),
-        fingerprint: c.fingerprint,
-      }));
+    }
 
-      // NO_INFERENCE_PATH's kind, normalized to the dispatch-ledger's cause
-      // vocabulary — every setAll('NOT_EVALUATED', ...) below only runs because
-      // inferenceError.kind was already one of these three.
-      const dispatchCause = inferenceError!.kind === 'missing_key' ? 'no_api_key' : inferenceError!.kind;
-
-      const setAll = (verdict: CriterionVerdict, evidence: string, taskId?: string) => {
-        for (const c of toJudge) {
-          const cs = state.criteria.find(s => s.index === c.index);
-          if (!cs) continue;
-          cs.verdict = verdict;
-          cs.evidence = evidence;
-          if (taskId) cs.workerTaskId = taskId;
-          if (verdict === 'NOT_EVALUATED') fireNotEvaluated(cs.index, dispatchCause);
-        }
-      };
-
+    // ── runner grader: one verification task per criterion ──
+    if (runnerBound.length > 0) {
       if (opts.dispatchCommands === false) {
         // Read-only evaluation: report what is missing without spending an agent run.
-        setAll('NOT_EVALUATED', 'Prose criteria not graded: this run does not dispatch evaluation tasks');
-      } else if (alreadyFailing) {
-        // The fold is `fail` whatever the model says, so grading now would buy a
-        // verdict that cannot change the outcome. Re-graded once the failure clears.
-        setAll('NOT_EVALUATED', 'Not graded: another criterion has already failed, so the mission cannot pass this round');
-      } else {
-        const resolution = await resolveProseCriteria({
-          missionId,
-          criteria: proseInputs,
-          evidence: { tasks: completedTasks, artifacts: evidenceArtifacts },
-        });
-
-        if (resolution.kind === 'pending') {
-          // PENDING, not NOT_EVALUATED: a verdict is genuinely in flight, and
-          // `handleProseEvalOutcome` will replace it when the evaluator reports.
-          setAll('PENDING', resolution.evidence, resolution.taskId);
-        } else {
-          setAll('NOT_EVALUATED', resolution.evidence);
+        for (const c of runnerBound) {
+          c.verdict = 'NOT_EVALUATED';
+          c.evidence = 'Prose criterion not graded: this run does not dispatch verification tasks';
+          fireNotEvaluated(c.index, 'no_dispatch');
         }
+      } else if (alreadyFailing) {
+        // The fold is `fail` whatever the runner says, so grading now would buy a
+        // verdict that cannot change the outcome. Re-graded once the failure clears.
+        for (const c of runnerBound) {
+          c.verdict = 'NOT_EVALUATED';
+          c.evidence = 'Not graded: another criterion has already failed, so the mission cannot pass this round';
+        }
+      } else {
+        const prByTask = new Map(missionWorkers.filter(w => w.taskId).map(w => [w.taskId as string, w]));
+        const runnerEvidence: ProseRunnerEvidence = {
+          deliverables: missionTasks.filter(t => isDeliverableTask(t)).map(t => {
+            const w = prByTask.get(t.id);
+            return {
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              prUrl: w?.prUrl ?? null,
+              prNumber: w?.prNumber ?? null,
+              merged: w?.mergedAt != null,
+            };
+          }),
+          artifacts: missionArtifacts.map(a => ({ id: a.id, title: a.title, type: a.type, key: a.key ?? null })),
+        };
+
+        // Independent per criterion: one criterion's missing runner or stuck
+        // task never holds another's verdict.
+        const resolutions = await Promise.all(runnerBound.map(c => resolveProseCriterion({
+          missionId,
+          criterionIndex: c.index,
+          text: criterionText(criteria[c.index]),
+          fingerprint: c.fingerprint ?? '',
+          evidence: runnerEvidence,
+        }).catch(e => ({ kind: 'unavailable' as const, evidence: `Runner grading failed to dispatch: ${e instanceof Error ? e.message : String(e)}` }))));
+
+        runnerBound.forEach((c, i) => {
+          const r = resolutions[i]!;
+          if (r.kind === 'pending') {
+            // PENDING, not NOT_EVALUATED: a verdict is genuinely in flight, and the
+            // completion gate reports it as `criteria_pending`. Neither counts as a pass.
+            c.verdict = 'PENDING';
+            c.evidence = r.evidence;
+            c.workerTaskId = r.taskId;
+            if (r.awaitingRunner) {
+              c.awaitingRunner = true;
+              // The situation line names the criterion it is waiting on; a prose
+              // criterion with no label would otherwise read as "description".
+              if (!c.label) {
+                const t = criterionText(criteria[c.index]).trim();
+                c.label = t.length > 80 ? t.slice(0, 80) + '…' : t;
+              }
+            }
+          } else if (r.kind === 'verdict') {
+            c.verdict = r.verdict;
+            c.evidence = r.evidence;
+            c.workerTaskId = r.taskId;
+            c.evaluatedAt = r.evaluatedAt;
+            if (r.verdict === 'NOT_EVALUATED') fireNotEvaluated(c.index, 'evaluator_no_output', { taskId: r.taskId });
+          } else {
+            c.verdict = 'NOT_EVALUATED';
+            c.evidence = r.evidence;
+            fireNotEvaluated(c.index, 'evaluator_unavailable', { resolutionEvidence: r.evidence });
+          }
+        });
       }
     }
   }

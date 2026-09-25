@@ -388,6 +388,19 @@ describe('computeFailureAnalytics — totals', () => {
     expect(a.totals.failureRatePct).toBe(50);
   });
 
+  // Regression: a worker whose task was cancelled out from under it is not the
+  // work failing, and must not move the rate in either direction.
+  it('excludes a task_cancelled exit from the failure rate', () => {
+    const workers = [
+      worker({ status: 'failed', exitCause: 'task_cancelled', error: 'Task was cancelled while the session was running' }),
+      worker({ status: 'failed', exitCause: 'code_failure', error: 'TypeError: cannot read x' }),
+      worker({ status: 'completed', error: null, exitCause: null }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.totals.terminal).toBe(2);
+    expect(a.totals.failed).toBe(1);
+  });
+
   // never_started (a claim no runner began) and condition_unmet (a Codex
   // deferral / unmet loop condition) are bookkeeping by the taxonomy's own
   // definition, and used to inflate the rate, the died-early cohort and the

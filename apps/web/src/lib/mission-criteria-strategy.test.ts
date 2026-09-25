@@ -25,7 +25,8 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { resolveEvaluationStrategy } = await import('./mission-criteria-strategy');
+const { resolveEvaluationStrategy, resolveWorkspaceCriteriaGrader } = await import('./mission-criteria-strategy');
+const { pickCriteriaGrader } = await import('./mission-criteria-grader');
 
 function reset() {
   workspaceRow = null;
@@ -73,5 +74,38 @@ describe('resolveEvaluationStrategy', () => {
     workspaceRow = { criteriaEvaluationStrategy: 'inline', teamId: 'team-1' };
     teamRow = { criteriaEvaluationStrategy: 'worker' };
     expect(await resolveEvaluationStrategy('team-1', 'ws-1')).toBe('inline');
+  });
+});
+
+describe('prose criterion grader — mission > workspace > auto', () => {
+  beforeEach(reset);
+
+  it('reads gitConfig.criteriaGrader off the workspace', async () => {
+    workspaceRow = { gitConfig: { criteriaGrader: 'runner' } };
+    expect(await resolveWorkspaceCriteriaGrader('ws-1')).toBe('runner');
+  });
+
+  it('is null with no workspace, no gitConfig, or an unrecognised value', async () => {
+    expect(await resolveWorkspaceCriteriaGrader(null)).toBeNull();
+    workspaceRow = { gitConfig: null };
+    expect(await resolveWorkspaceCriteriaGrader('ws-1')).toBeNull();
+    workspaceRow = { gitConfig: { criteriaGrader: 'llm' } };
+    expect(await resolveWorkspaceCriteriaGrader('ws-1')).toBeNull();
+  });
+
+  it('the criterion setting wins over the workspace', () => {
+    expect(pickCriteriaGrader({ grader: 'api' }, 'runner')).toBe('api');
+    expect(pickCriteriaGrader({ grader: 'runner' }, 'api')).toBe('runner');
+  });
+
+  it('falls back to the workspace, then to auto', () => {
+    expect(pickCriteriaGrader({}, 'runner')).toBe('runner');
+    expect(pickCriteriaGrader({}, null)).toBe('auto');
+    expect(pickCriteriaGrader(null, null)).toBe('auto');
+  });
+
+  it('ignores an unrecognised criterion value instead of trusting it', () => {
+    expect(pickCriteriaGrader({ grader: 'gpt' }, 'runner')).toBe('runner');
+    expect(pickCriteriaGrader({ grader: 42 }, null)).toBe('auto');
   });
 });

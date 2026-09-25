@@ -214,6 +214,11 @@ export interface WorkspaceGitConfig {
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
   defaultBackend?: 'claude' | 'codex';
 
+  // Who grades prose (`description`) goal criteria in this workspace:
+  // 'api' (inference call, per-token), 'runner' (read-only task on a runner's
+  // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
+  // else runner). A criterion's own `grader` wins; absent here means 'auto'.
+  criteriaGrader?: 'auto' | 'api' | 'runner';
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
@@ -1534,8 +1539,10 @@ export const workers = pgTable('workers', {
   //                     retries; bounded instead by the PATCH route's infraRetryCount budget.
   // output_unmet:       a declared output gate refused the completion — the session ran and
   //                     shipped nothing reviewable. Charged, but not as a code failure.
+  // task_cancelled:     the task was cancelled while the session was still running — whatever
+  //                     the session reported afterwards is moot. Bookkeeping; never charged.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
   // Subagent spans flushed once at worker terminal state (not on every progress event).
   // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
   // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).

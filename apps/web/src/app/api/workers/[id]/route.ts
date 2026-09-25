@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
@@ -57,7 +58,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
@@ -521,6 +522,11 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // A non-UUID can never name a worker; querying with one throws 22P02 (a 500).
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
+
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
     with: { task: true, workspace: true },
@@ -550,6 +556,10 @@ export async function PATCH(
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
   const worker = await db.query.workers.findFirst({
@@ -722,7 +732,11 @@ export async function PATCH(
   }
 
   const {
-    status, error, costUsd, turns, localUiUrl, currentAction, milestones,
+    // `let` below, not destructured as const: a completion that lands on a
+    // task already cancelled server-side is rewritten to a `failed` /
+    // task_cancelled report before the output gate runs (see
+    // taskCancelledUnderSession).
+    status: reportedStatus, error: reportedError, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
     appendMcpCalls,
     appendErrorTraces,
@@ -778,6 +792,8 @@ export async function PATCH(
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
   } = body;
+  let status = reportedStatus;
+  let error = reportedError;
 
   // ── Who may consume the human-instruction queue ────────────────────────────
   //
@@ -1137,7 +1153,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1172,6 +1188,68 @@ export async function PATCH(
       : eq(artifacts.workerId, id);
     const rows = await db.query.artifacts.findMany({ where, limit: 1 });
     return rows.length > 0;
+  }
+
+  // The task was cancelled while this session was still running. The cancel's
+  // abort push is best-effort, so the session can outlive it: the agent's own
+  // complete_task is then refused by the MCP write fence (TASK CANCELLED), the
+  // SDK session still ends cleanly, and the runner's fallback completion PATCH
+  // lands here. The output gate below would demand a PR/artifact for a task
+  // nobody wants any more and 400 it — which the runner recorded as a terminal
+  // error and failure analytics counted as a failure.
+  //
+  // So a completion on a cancelled task that delivered nothing is recorded as
+  // what it is — a cancellation — instead of being gated. One that DID deliver
+  // (a PR or artifact made before the cancel landed) keeps completing exactly
+  // as before; that is the same carve-out the MCP write fence makes. Failed /
+  // error reports on a cancelled task take the same exit cause via
+  // classifyReportedFailure below (the runner's abort path reports `failed`).
+  //
+  // "Delivered" includes an open PR on the worker's branch that is not on the
+  // worker row yet (opened via `gh pr create`, not create_pr): the gate's
+  // GitHub auto-detect below is the door that adopts it, so a cancellation
+  // rewrite here must not pre-empt it. Only probed when nothing else counts.
+  const workerBranch = worker.branch;
+  const workerWorkspaceId = worker.workspaceId;
+  async function hasOpenPrOnWorkerBranch(): Promise<boolean> {
+    if (!workerBranch) return false;
+    try {
+      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workerWorkspaceId) });
+      if (!ws?.githubRepoId) return false;
+      const repo = await db.query.githubRepos.findFirst({
+        where: eq(githubRepos.id, ws.githubRepoId),
+        with: { installation: true },
+      }) as { fullName: string; installation: { installationId: number } | null } | undefined;
+      if (!repo?.installation) return false;
+      const owner = repo.fullName.split('/')[0];
+      const prs = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(owner + ':' + workerBranch)}&state=open`,
+      );
+      return Array.isArray(prs) && prs.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  const taskCancelledUnderSession = isTerminalStatus && terminalTaskRow[0]?.status === 'cancelled';
+  if (
+    status === 'completed' && taskCancelledUnderSession && !workerHasPR
+    && !(await hasDeliverableArtifact()) && !(await hasOpenPrOnWorkerBranch())
+  ) {
+    status = 'failed';
+    error = TASK_CANCELLED_UNDER_SESSION_ERROR;
+    updates.status = 'failed';
+    updates.error = error;
+    // Nothing of this worker's shipped; there is no branch to release.
+    skipRelease = true;
+    // The status-transition milestone above was written for the reported
+    // status; keep the audit trail truthful about what was recorded.
+    const trail = updates.milestones as Array<Record<string, unknown>> | undefined;
+    const last = trail?.[trail.length - 1];
+    if (last?.type === 'statusTransition' && last.to === 'completed') {
+      last.to = 'failed';
+      if (typeof last.label === 'string') last.label = `Status: ${worker.status} → failed (task cancelled)`;
+    }
   }
 
   if (status === 'completed') {
@@ -1548,14 +1626,18 @@ export async function PATCH(
         // shape `error` produces.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
+          // Each variant is a complete leading sentence. The no-work variant
+          // used to be spliced into "Task has … but no pull request or
+          // artifact", which read "…without the agent calling complete_task
+          // but no pull request or artifact".
           const workDescription = effectiveCommits > 0
-            ? `${effectiveCommits} commit(s) on branch`
+            ? `Task has ${effectiveCommits} commit(s) on branch but no pull request or artifact.`
             : effectiveDirtyWorktree
-              ? 'uncommitted changes in the worktree'
-              : 'no confirmed outcome — the session ended without the agent calling complete_task';
+              ? 'Task has uncommitted changes in the worktree but no pull request or artifact.'
+              : 'Task has no confirmed outcome: the session ended without the agent calling complete_task, and there is no pull request or artifact.';
           const frictionSignature = await persistRejectedCompletionPayload('auto');
           return NextResponse.json({
-            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
+            error: `${workDescription} Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
             // Machine-readable identity of the refusal, so the runner reports
             // this as the output-gate decision it is instead of unwinding into
@@ -1814,6 +1896,7 @@ export async function PATCH(
   const isUnrecognizedModel = (status === 'failed' || status === 'error') && isUnrecognizedModelError(error);
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
+      taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
