@@ -422,16 +422,17 @@ export function evaluateGoalCriteria(
         // protection — it only stops a pending audit from pinning this
         // criterion at FAIL, which left the organizer unable to either plan
         // or report completion and re-dispatched it on every heartbeat.
-        const deliverable = context.tasks.filter(
-          t => isDeliverableTask(t) && !isSurfaceAuditTask(t.title ?? ''),
-        );
-        const open = deliverable.filter(t =>
-          !['completed', 'cancelled', 'failed'].includes(t.status)
-        );
+        // Bookkeeping (orchestrator ticks, criteria evaluations, planning
+        // passes) and attempts are never deliverables — `isNoOpenTasksCandidate`
+        // is the one predicate, shared with the surfaces that name blockers.
+        const deliverable = context.tasks.filter(isNoOpenTasksCandidate);
+        const open = deliverable.filter(t => !TERMINAL_DELIVERABLE_STATUSES.has(t.status));
         verdict = open.length === 0 ? 'pass' : 'fail';
+        // Titles, not bare statuses: the stored evidence is read long after the
+        // run, and "pending, pending" names nothing a reader can go and close.
         evidence = open.length === 0
           ? `All ${deliverable.length} deliverable task(s) are closed`
-          : `${open.length} task(s) still open: ${open.map(t => t.status).join(', ')}`;
+          : `${open.length} task(s) still open: ${open.map(t => (t.title ? `${t.title} (${t.status})` : t.status)).join(', ')}`;
         break;
       }
 
@@ -835,6 +836,16 @@ export function isDeliverableTask(task: {
 }
 
 const TERMINAL_DELIVERABLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
+
+/**
+ * True when the `no_open_tasks` criterion counts this task at all: a
+ * deliverable (`isDeliverableTask`, so bookkeeping and attempts never count)
+ * that is not the auto-appended `[surface audit]` check. The criterion fails
+ * while any such task is open; surfaces naming what holds it use this too.
+ */
+export function isNoOpenTasksCandidate(task: Parameters<typeof isDeliverableTask>[0]): boolean {
+  return isDeliverableTask(task) && !isSurfaceAuditTask(task.title ?? '');
+}
 
 /**
  * True when a deliverable task (`isDeliverableTask`) is still open. This is the

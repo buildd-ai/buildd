@@ -22,6 +22,14 @@ export const DELIVERY_STATE_GLYPH: Record<DeliveryStepState, string> = {
   blocked: '✕',
 };
 
+/** The glyph colour per state, shared by every Delivery step row (summary, default rows, Shipped). */
+export const DELIVERY_STATE_TEXT: Record<DeliveryStepState, string> = {
+  done: 'text-status-success',
+  partial: 'text-status-info',
+  todo: 'text-text-muted',
+  blocked: 'text-status-error',
+};
+
 export const DELIVERY_STEP_LABEL: Record<DeliveryStepKey, string> = {
   integrated: 'Integrated',
   verified: 'Verified',

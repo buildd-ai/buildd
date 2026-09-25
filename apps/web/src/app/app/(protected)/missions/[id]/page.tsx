@@ -23,6 +23,7 @@ import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
+import MissionDescription from './MissionDescription';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import CondensedTimeline from './CondensedTimeline';
@@ -33,6 +34,7 @@ import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/conden
 import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
+import { pulseDoneCounts } from '@/lib/mission-pulse';
 import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
@@ -43,7 +45,7 @@ import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
-import { parseMissionListView } from '@/lib/mission-list-view';
+import { parseMissionListView, missionListViewOpensDisclosure } from '@/lib/mission-list-view';
 import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
@@ -63,9 +65,9 @@ import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
-import { MissionReleaseSection, deriveReleaseNowState } from './MissionReleaseSection';
-import { getSecretsProvider } from '@buildd/core/secrets';
-import type { ReleaseStrategy, WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { MissionReleaseSection } from './MissionReleaseSection';
+import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
+import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
 import { shouldQueryRelease } from '@/lib/release-state';
 import { countOf } from '@/lib/plural';
@@ -275,7 +277,7 @@ export default async function MissionDetailPage({
   const allTasksCount = (mission.tasks || []).filter(t => t.taskClass !== 'attempt').length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
-  const { totalTasks, completedTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
+  const { totalTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
   // Option A′: the mission integration PR is a different object from the task
   // PRs, and no progress counter sees it — `computeMissionProgress` counts
   // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
@@ -780,6 +782,7 @@ export default async function MissionDetailPage({
   const {
     feedTasks, pulseSegments, segmentLabels, pulseCaption, recordsCountByTask, liveLines,
   } = buildMissionFeedView(allTasks as unknown as MissionFeedViewTask[], { activeAgents, liveStatuses });
+  const feedCounts = pulseDoneCounts(pulseSegments);
   const renderedAt = Date.now();
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
@@ -810,14 +813,10 @@ export default async function MissionDetailPage({
         gitConfig: releaseWorkspace.gitConfig as WorkspaceGitConfig | null,
       })
     : 'none';
-  const releaseStrategy: ReleaseStrategy | null = releaseWorkspace?.releaseConfig?.enabled
-    ? (releaseWorkspace.releaseConfig.strategy ?? 'branch_merge')
-    : null;
 
-  // The breadcrumb initiative, the initiative-selector options and the release
-  // block are mutually independent; only the Vercel-token probe depends on
-  // anything in the group, so it stays chained behind the footer load it needs.
-  const [initiativeName, teamInitiativeOptions, releaseBlock, completionNote] = await Promise.all([
+  // The breadcrumb initiative, the initiative-selector options, the release
+  // footer and the completion note are mutually independent.
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -837,22 +836,16 @@ export default async function MissionDetailPage({
           orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
           limit: 50,
         }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }))),
-    (async () => {
-      const footer = shouldQueryRelease(releaseArchetype) && releaseWorkspace
-        ? await loadReleaseFooterData({
-            id: releaseWorkspace.id,
-            name: releaseWorkspace.name,
-            gitConfig: releaseWorkspace.gitConfig,
-            releaseConfig: releaseWorkspace.releaseConfig,
-          })
-        : null;
-      let vercelToken: boolean | null = null;
-      if (footer && releaseStrategy === 'branch_merge') {
-        const secrets = await getSecretsProvider().list(mission.teamId);
-        vercelToken = secrets.some((s) => s.purpose === 'vercel_token');
-      }
-      return { footer, vercelToken };
-    })(),
+    // The mission reads only its own Shipped fact from this (D6); the
+    // workspace queue and the Release now trigger are not rendered here.
+    shouldQueryRelease(releaseArchetype) && releaseWorkspace
+      ? loadReleaseFooterData({
+          id: releaseWorkspace.id,
+          name: releaseWorkspace.name,
+          gitConfig: releaseWorkspace.gitConfig,
+          releaseConfig: releaseWorkspace.releaseConfig,
+        })
+      : Promise.resolve(null),
     // D3: the completion summary reads the mission's own completion record,
     // never the latest task's summary.
     mission.status === 'completed'
@@ -862,6 +855,9 @@ export default async function MissionDetailPage({
           orderBy: desc(missionNotes.createdAt),
         }).then(row => row ?? null)
       : Promise.resolve(null),
+    // F6: the Shipped link opens the release carrying THIS mission's work
+    // (release_tasks attribution), not the workspace's latest release.
+    shouldQueryRelease(releaseArchetype) ? loadMissionCarryingReleaseId(id) : Promise.resolve(null),
   ]);
 
   const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
@@ -875,9 +871,6 @@ export default async function MissionDetailPage({
     missionTitle: mission.title,
   });
 
-  const releaseFooterData = releaseBlock.footer;
-  const hasVercelToken = releaseBlock.vercelToken;
-  const releaseNowState = deriveReleaseNowState({ strategy: releaseStrategy, hasVercelToken });
 
   // ── Delivery (W2, addendum D5) ─────────────────────────────────────────────
   // One stepper for what used to be the progress card, the mission PR card,
@@ -892,8 +885,9 @@ export default async function MissionDetailPage({
     : null;
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
-    totalTasks,
-    completedTasks,
+    // F3: Integrated counts what the header pulse counts (`pulseDoneCounts`).
+    totalTasks: feedCounts.total,
+    completedTasks: feedCounts.done,
     awaitingMerge,
     integrationPr: missionIntegrationPr,
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
@@ -910,7 +904,7 @@ export default async function MissionDetailPage({
     durationLabel: durationLabel ? `${durationLabel} agent time` : null,
   });
 
-  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: totalTasks > 0 && completedTasks >= totalTasks }) && missionIntegrationPr ? (
+  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′) — the mission's review gate, and a
     // different object from the task PRs that fed the branch.
     <div className={`card p-3 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>
@@ -1118,15 +1112,18 @@ export default async function MissionDetailPage({
             <span aria-hidden="true">›</span>
           </a>
         ) : undefined,
+        budget: budgetDetail ?? undefined,
+      }}
+      rows={{
+        // F6: one line for THIS mission's release status, linking to the
+        // release. No workspace queue, no Release now.
         shipped: mission.workspaceId ? (
           <MissionReleaseSection
-            archetype={releaseArchetype}
-            data={releaseFooterData}
+            step={deliverySteps.find(s => s.key === 'shipped')}
+            releaseId={carryingReleaseId}
             workspaceId={mission.workspaceId}
-            releaseNowState={releaseNowState}
           />
         ) : undefined,
-        budget: budgetDetail ?? undefined,
       }}
     />
   );
@@ -1166,13 +1163,9 @@ export default async function MissionDetailPage({
         readonly={isTerminal}
       />
 
-      {/* Title and description — edited here; the masthead shows the title. */}
-      <MissionInlineEdit
-        missionId={id}
-        initialTitle={mission.title}
-        initialDescription={mission.description}
-        healthPill={null}
-      />
+      {/* Rename only: the masthead shows the title, the description has its
+          own place under the masthead (MissionDescription). */}
+      <MissionInlineEdit missionId={id} initialTitle={mission.title} />
 
       {/* Monitoring toggle — schedules only */}
       {scheduleCron && !['completed', 'archived'].includes(mission.status) && (
@@ -1325,6 +1318,7 @@ export default async function MissionDetailPage({
         )}
         expand={<MissionStripExpand data={flightStripData} missionId={id} missionTitle={mission.title} />}
         desktopStrip={<MissionFlightStripInline data={flightStripData} />}
+        description={<MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} />}
         situation={situation}
         delivery={delivery}
         feed={{
@@ -1335,6 +1329,7 @@ export default async function MissionDetailPage({
           recordsCountByTask,
           liveLines,
         }}
+        desktopListOpen={missionListViewOpensDisclosure(listViewParam)}
         desktopList={(
           <MissionTabs
             initialView={parseMissionListView(listViewParam)}
@@ -1360,7 +1355,7 @@ export default async function MissionDetailPage({
             ) : undefined}
           />
         )}
-        mobileFooter={(orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
+        orchestratorRow={(orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
           <details data-testid="mission-orchestrator-row" className="group border-t border-border-default">
             <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
               <span aria-hidden="true" className="text-text-muted">─</span>

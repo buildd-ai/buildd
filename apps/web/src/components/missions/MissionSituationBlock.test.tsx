@@ -143,6 +143,36 @@ describe('the why, with its hard ref linked', () => {
   });
 });
 
+describe('F2: a failing criterion is said once, and names what holds it', () => {
+  const failing = {
+    ...base,
+    progress: 100,
+    criteriaItems: [{ verdict: 'fail', type: 'no_open_tasks', label: 'no open tasks' }],
+    criteriaGate: { state: 'failing' as const, label: 'Criteria failing', tone: 'warning' as const, detail: 'no open tasks' },
+  };
+
+  it('stale verdict: headline plus the re-run instruction, no restated causal claim', () => {
+    const { html, view } = render({ ...failing, openTasks: [] });
+    expect(html).toContain('no task is open now');
+    expect(html).toContain(view.situation.nextAction!);
+    expect(html).not.toContain('returned a failing verdict');
+    expect(html.split('no open tasks').length - 1).toBe(1);
+  });
+
+  it('open blockers: up to three linked into the task sheet, then +N more', () => {
+    const openTasks = ['a', 'b', 'c', 'd'].map(id => ({ id: `t-${id}`, status: 'pending', title: `Blocker ${id}` }));
+    const { html } = render({ ...failing, openTasks });
+    expect(html).toContain('data-testid="mission-situation-blockers"');
+    expect(html).toContain('Blocker a');
+    expect(html).toContain('Blocker c');
+    expect(html).not.toContain('Blocker d');
+    expect(html).toContain('+1 more');
+    expect(html).toContain('data-task-id="t-a"');
+    expect(html).toContain('/app/missions/m-1?');
+    expect(html).toContain('· queued');
+  });
+});
+
 describe('the card renders the header sentence', () => {
   const cases: Array<[string, MissionStateInput]> = [
     ['mission PR open', missionPrOpen],
