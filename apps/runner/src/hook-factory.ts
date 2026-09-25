@@ -7,6 +7,7 @@ import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
 import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 
 /**
  * Dependencies that the hook factory needs from WorkerManager.
@@ -197,6 +198,20 @@ export class HookFactory {
 
       const toolName = (input as any).tool_name;
       const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      // An AskUserQuestion that asks nothing is not a question — deny it under
+      // every input policy (see ask-user-question.ts). handleMessage skips the
+      // park/abort for the same input, so the denial is what the agent sees.
+      if (toolName === 'AskUserQuestion' && !asksAQuestion(toolInput)) {
+        console.log(`[Worker ${worker.id}] Denied AskUserQuestion with no question text`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'deny' as const,
+            permissionDecisionReason: EMPTY_QUESTION_DENY_REASON,
+          },
+        };
+      }
 
       // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
       // Prompt-level instruction alone is unreliable — enforce at hook level.

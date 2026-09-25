@@ -108,6 +108,7 @@ import {
 } from './bwrap-mount-allowlist';
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
+import { asksAQuestion } from './ask-user-question.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -5494,6 +5495,11 @@ export class WorkerManager {
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName === 'AskUserQuestion' && !asksAQuestion(input)) {
+            // Asks nothing (e.g. `questions: []` used to "wait" on background
+            // work). Not a question: never park, abort, or notify — the
+            // PreToolUse hook denies it and the session continues.
+            console.log(`[Worker ${worker.id}] AskUserQuestion with no question text — not parking (toolUseId=${block.id})`);
           } else if (toolName === 'AskUserQuestion') {
             // Agent is asking a question — standalone status milestone + waiting state
             const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
