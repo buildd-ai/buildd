@@ -13,6 +13,12 @@ export interface GroupSectionProps {
   failedCount?: number;
   verified?: boolean | null;
   taskCount: number;
+  /**
+   * The list scrolls under the fixed mobile header (MobilePageHeader, md:hidden),
+   * so below md the band must stick beneath it instead of at the scroller's top
+   * edge. Leave unset where that header is not rendered (detail pages).
+   */
+  belowMobileHeader?: boolean;
 }
 
 /**
@@ -24,11 +30,14 @@ export interface GroupSectionProps {
  * Mission groups: title links to /app/missions/{id}, histogram shown.
  * Time-band groups: title is a non-interactive label, no histogram.
  */
-export function GroupSection({ title, missionId, stageCounts, failedCount = 0, verified, taskCount }: GroupSectionProps) {
+export function GroupSection({ title, missionId, stageCounts, failedCount = 0, verified, taskCount, belowMobileHeader = false }: GroupSectionProps) {
   const hasMission = !!missionId;
+  // 53px = MobilePageHeader's rendered height (py-2.5 + 32px controls + 1px
+  // border). A layout that changes it can set --mobile-header-h instead.
+  const stickyTop = belowMobileHeader ? 'top-[var(--mobile-header-h,53px)] md:top-0' : 'top-0';
 
   return (
-    <div className="sticky top-0 z-10 w-full bg-surface-1 border-b border-border-default px-4 py-2">
+    <div className={`sticky ${stickyTop} z-10 w-full bg-surface-1 border-b border-border-default px-4 py-2`}>
       <div className="flex items-center gap-3 min-w-0">
         {/* Mission icon */}
         {hasMission && (

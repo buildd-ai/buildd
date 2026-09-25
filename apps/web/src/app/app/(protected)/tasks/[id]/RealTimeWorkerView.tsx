@@ -14,6 +14,7 @@ import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
+import { formatElapsed } from './format-elapsed';
 
 // Exported for testing: whether a worker-channel event should bypass the
 // debounce. A status change (e.g. running -> waiting_input) is a one-off
@@ -295,7 +296,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
             <button
               data-testid="worker-interrupt-btn"
               onClick={() => setInterruptMode(!interruptMode)}
-              className="px-2.5 py-1.5 text-[11px] font-medium border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 transition-colors"
+              className="min-h-11 md:min-h-0 px-3 md:px-2.5 py-1.5 text-[11px] font-medium border border-status-warning/30 text-status-warning rounded hover:bg-status-warning/10 transition-colors"
               title="Send an urgent message to interrupt the agent"
             >
               Interrupt
@@ -305,13 +306,13 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
                 <button
                   onClick={handleAbort}
                   disabled={abortLoading}
-                  className="px-2.5 py-1.5 text-[11px] font-medium bg-status-error text-white rounded hover:opacity-90 disabled:opacity-50"
+                  className="min-h-11 md:min-h-0 px-3 md:px-2.5 py-1.5 text-[11px] font-medium bg-status-error text-white rounded hover:opacity-90 disabled:opacity-50"
                 >
                   {abortLoading ? '...' : 'Confirm abort'}
                 </button>
                 <button
                   onClick={() => setShowAbortConfirm(false)}
-                  className="px-2 py-1.5 text-[11px] text-text-muted hover:text-text-primary"
+                  className="min-h-11 md:min-h-0 px-3 md:px-2 py-1.5 text-[11px] text-text-muted hover:text-text-primary"
                 >
                   Cancel
                 </button>
@@ -320,7 +321,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
               <button
                 data-testid="worker-abort-btn"
                 onClick={() => setShowAbortConfirm(true)}
-                className="px-2.5 py-1.5 text-[11px] font-medium border border-status-error/30 text-status-error rounded hover:bg-status-error/10 transition-colors"
+                className="min-h-11 md:min-h-0 px-3 md:px-2.5 py-1.5 text-[11px] font-medium border border-status-error/30 text-status-error rounded hover:bg-status-error/10 transition-colors"
                 title="Stop the worker immediately"
               >
                 Abort
@@ -400,7 +401,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
               type="text"
               autoFocus
               placeholder="e.g., Stop what you're doing and focus on..."
-              className="flex-1 px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-status-warning/50 focus:border-status-warning"
+              className="flex-1 px-3 py-2 text-base md:text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-status-warning/50 focus:border-status-warning"
             />
             <div className="flex gap-2">
               <button
@@ -443,7 +444,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
             </span>
             <span data-testid="worker-needs-input-label" className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Needs input</span>
           </div>
-          <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
+          <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary [overflow-wrap:anywhere]">{worker.waitingFor.prompt}</p>
           {answerError && (
             <p data-testid="worker-answer-error" className="mt-2 text-sm text-status-error">
               {answerError.message}
@@ -474,14 +475,14 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
                         disabled={answerSending !== null}
                         className="text-left px-3 py-2 text-sm bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
                       >
-                        <span className="flex items-center gap-2">
-                          <span className="font-medium">{answerSending === label ? 'Sending…' : label}</span>
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="font-medium min-w-0 [overflow-wrap:anywhere]">{answerSending === label ? 'Sending…' : label}</span>
                           {recommended && (
                             <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
                           )}
                         </span>
                         {description && (
-                          <span className="block mt-0.5 text-xs text-text-muted">{description}</span>
+                          <span className="block mt-0.5 text-xs text-text-muted [overflow-wrap:anywhere]">{description}</span>
                         )}
                       </button>
                     );
@@ -519,7 +520,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
         }
         {worker.startedAt && (
           <span title={displayTz ? `Started: ${formatInZone(worker.startedAt, displayTz)}` : undefined}>
-            {Math.round((Date.now() - new Date(worker.startedAt).getTime()) / 60000)}m elapsed
+            {formatElapsed(Date.now() - new Date(worker.startedAt).getTime())} elapsed
           </span>
         )}
         {worker.prUrl && (
@@ -541,7 +542,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
           {/* Mobile: collapsible toggle */}
           <button
             onClick={() => setShowMetricsDetail(!showMetricsDetail)}
-            className="md:hidden flex items-center gap-1.5 mt-3 text-xs text-text-muted hover:text-text-secondary transition-colors"
+            className="md:hidden flex items-center gap-1.5 mt-1 min-h-11 text-xs text-text-muted hover:text-text-secondary transition-colors"
           >
             <svg
               className={`w-3 h-3 transition-transform ${showMetricsDetail ? 'rotate-90' : ''}`}

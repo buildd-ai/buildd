@@ -153,3 +153,19 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(pageSource).toContain('<span data-testid="task-header-status" data-status={displayStatus}>');
   });
 });
+
+// Mobile layout (source-level: the page is a server component, see header).
+describe('mobile layout — tasks/[id]/page.tsx', () => {
+  it('Worker History: badge and PR link share one wrapper that wraps under the text below md', () => {
+    const meta = pageSource.match(/data-testid="worker-history-meta"[\s\S]*?<\/div>/)?.[0] ?? '';
+    expect(meta).toContain('pl-11 md:pl-0');
+    expect(meta).toContain('<StatusBadge');
+    expect(meta).toContain('worker.prUrl &&');
+    // The old layout rendered an always-present empty flex div for the PR link.
+    expect(pageSource).not.toMatch(/\/>\s*<div className="flex items-center gap-2">\s*\{worker\.prUrl && \(/);
+  });
+
+  it('breadcrumb separator is hidden on mobile, where the task title after it is hidden', () => {
+    expect(pageSource).toContain('<span className="mx-2 hidden md:inline" aria-hidden="true">/</span>');
+  });
+});

@@ -38,3 +38,36 @@ describe('resolveRejectOutcome', () => {
     expect(resolveRejectOutcome({ taskId: null }).navigateTo).toBeNull();
   });
 });
+
+const { renderToStaticMarkup } = await import('react-dom/server');
+const { PlanStepDescription, PLAN_STEP_PREVIEW_CHARS } = await import('./PlanReviewPanel');
+
+// Step descriptions were a bare <p>: markdown showed as raw `**` and backticks,
+// a long path or URL ran off a phone screen, and a long step pushed the
+// Approve / Reject buttons far below the fold.
+describe('PlanStepDescription', () => {
+  it('renders markdown instead of raw syntax', () => {
+    const html = renderToStaticMarkup(<PlanStepDescription content={'Touch **only** `src/lib/example.ts`'} />);
+    expect(html).toContain('<strong>only</strong>');
+    expect(html).toContain('<code');
+    expect(html).not.toContain('**only**');
+  });
+
+  it('lets long unbroken paths wrap anywhere', () => {
+    const html = renderToStaticMarkup(<PlanStepDescription content="apps/example/src/some/deeply/nested/directory/structure/file-name.ts" />);
+    expect(html).toContain('[overflow-wrap:anywhere]');
+  });
+
+  it('shows short descriptions in full with no toggle', () => {
+    const html = renderToStaticMarkup(<PlanStepDescription content="Add the column." />);
+    expect(html).not.toContain('Show more');
+    expect(html).not.toContain('line-clamp');
+  });
+
+  it('clamps long descriptions behind a "Show more" toggle', () => {
+    const html = renderToStaticMarkup(<PlanStepDescription content={'word '.repeat(PLAN_STEP_PREVIEW_CHARS)} />);
+    expect(html).toContain('line-clamp-4');
+    expect(html).toContain('Show more');
+    expect(html).toContain('aria-expanded="false"');
+  });
+});

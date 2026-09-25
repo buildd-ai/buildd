@@ -77,7 +77,7 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="e.g., Focus on edge cases, add more tests..."
-          className="flex-1 px-3 py-2 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+          className="flex-1 px-3 py-2 text-base md:text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
           disabled={loading}
         />
         <button

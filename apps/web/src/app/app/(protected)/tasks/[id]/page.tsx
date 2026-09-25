@@ -659,7 +659,8 @@ export default async function TaskDetailPage({
                 Tasks
               </Link>
             )}
-            <span className="mx-2">/</span>
+            {/* Mobile shows only the back link — the title is the h1 right below. */}
+            <span className="mx-2 hidden md:inline" aria-hidden="true">/</span>
             <span className="text-text-primary hidden md:inline">{task.title}</span>
           </nav>
         )}
@@ -984,15 +985,15 @@ export default async function TaskDetailPage({
             </div>
             <div className="card p-4 space-y-3">
               {task.parentTask && (
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="w-full md:w-auto font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
                   <Link
                     href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
-                    className="text-sm text-primary-400 hover:underline"
+                    className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
                   >
                     {task.parentTask.title}
                   </Link>
-                  <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
+                  <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
                     {task.parentTask.status}
                   </span>
                 </div>
@@ -1003,16 +1004,16 @@ export default async function TaskDetailPage({
               ] as const).map(([label, list]) => list.length > 0 && (
                 <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
                   <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
-                  <div className="mt-2 space-y-1 ml-4">
+                  <div className="mt-2 space-y-1 ml-2 md:ml-4">
                     {list.map((sub) => (
-                      <div key={sub.id} className="flex items-center gap-2">
+                      <div key={sub.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
                         <Link
                           href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
-                          className="text-sm text-primary-400 hover:underline"
+                          className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
                         >
                           {sub.title}
                         </Link>
-                        <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
+                        <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
                           {sub.status}
                         </span>
                       </div>
@@ -1448,11 +1449,14 @@ export default async function TaskDetailPage({
               {taskWorkers.map((worker) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
-                  <div key={worker.id} className="flex items-center gap-4 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
+                  // Below md the badge + PR link wrap onto their own line under the
+                  // text (the text column takes the rest of the first line, and
+                  // pl-11 = icon w-7 + gap-4 lines them up with it).
+                  <div key={worker.id} className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-2 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
                     <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
                       {iconStyle.icon}
                     </div>
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 basis-[calc(100%-2.75rem)] md:basis-0">
                       <div className="text-[13px] font-medium text-text-primary truncate">{worker.name}</div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
                         {worker.branch}
@@ -1565,18 +1569,18 @@ export default async function TaskDetailPage({
                         </div>
                       )}
                     </div>
-                    <StatusBadge status={
-                      worker.status === 'failed' && worker.exitCause && BADGED_EXIT_CAUSES.has(worker.exitCause)
-                        ? worker.exitCause
-                        : worker.status
-                    } />
-                    <div className="flex items-center gap-2">
+                    <div data-testid="worker-history-meta" className="flex items-center gap-2 pl-11 md:pl-0 shrink-0">
+                      <StatusBadge status={
+                        worker.status === 'failed' && worker.exitCause && BADGED_EXIT_CAUSES.has(worker.exitCause)
+                          ? worker.exitCause
+                          : worker.status
+                      } />
                       {worker.prUrl && (
                         <a
                           href={worker.prUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
+                          className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-[5px] text-xs whitespace-nowrap bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
                         >
                           PR #{worker.prNumber}
                         </a>

@@ -494,11 +494,13 @@ export default function NewTaskPage() {
 
             {/* Mode toggles — single row */}
             <div>
-              <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
+              {/* Mobile: an equal-width 3-column grid so the three modes fit a 320px
+                  screen; desktop keeps the compact pill row with a divider. */}
+              <div className="grid grid-cols-3 w-full gap-1 p-1 bg-surface-3 rounded-lg md:flex md:items-center md:w-fit">
                 <button
                   type="button"
                   onClick={() => setRecurring(false)}
-                  className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                  className={`flex items-center justify-center whitespace-nowrap min-h-11 md:min-h-0 px-2 md:px-4 py-1.5 text-sm rounded-md transition-colors ${
                     !recurring
                       ? 'bg-surface-1 text-text-primary shadow-sm'
                       : 'text-text-secondary hover:text-text-primary'
@@ -509,31 +511,31 @@ export default function NewTaskPage() {
                 <button
                   type="button"
                   onClick={() => setRecurring(true)}
-                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                  className={`flex items-center justify-center gap-1.5 whitespace-nowrap min-h-11 md:min-h-0 px-2 md:px-4 py-1.5 text-sm rounded-md transition-colors ${
                     recurring
                       ? 'bg-surface-1 text-text-primary shadow-sm'
                       : 'text-text-secondary hover:text-text-primary'
                   }`}
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg className="hidden sm:block shrink-0 w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   Recurring
                 </button>
-                <div className="w-px h-5 bg-border-default mx-0.5" />
+                <div className="hidden md:block w-px h-5 bg-border-default mx-0.5" />
                 <button
                   type="button"
                   onClick={() => {
                     setMode(mode === 'planning' ? 'execution' : 'planning');
                     if (mode !== 'planning') setUseOutputSchema(true);
                   }}
-                  className={`px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                  className={`flex items-center justify-center gap-1.5 whitespace-nowrap min-h-11 md:min-h-0 px-2 md:px-4 py-1.5 text-sm rounded-md transition-colors ${
                     mode === 'planning'
                       ? 'bg-surface-1 text-text-primary shadow-sm'
                       : 'text-text-secondary hover:text-text-primary'
                   }`}
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg className="hidden sm:block shrink-0 w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
                   </svg>
                   Planning
@@ -898,7 +900,7 @@ export default function NewTaskPage() {
                             }}
                             rows={8}
                             spellCheck={false}
-                            className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-sm"
+                            className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-base md:text-sm"
                             placeholder='{"type": "object", "properties": {...}, "required": [...]}'
                           />
                           {outputSchemaError && (
@@ -928,7 +930,7 @@ export default function NewTaskPage() {
                         value={taskTargetBranch}
                         onChange={(e) => setTaskTargetBranch(e.target.value.trim())}
                         placeholder="e.g. release/1.0, hotfix, main"
-                        className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                        className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
                       />
                       <p className="text-xs text-text-secondary mt-1">Override workspace default for this task only. PRs will target this branch.</p>
                     </div>
@@ -1019,7 +1021,7 @@ export default function NewTaskPage() {
                     id="cron"
                     value={cronExpression}
                     onChange={(e) => setCronExpression(e.target.value)}
-                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-sm"
+                    className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary font-mono text-base md:text-sm"
                     placeholder="0 9 * * *"
                     required
                   />

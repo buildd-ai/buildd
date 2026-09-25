@@ -608,3 +608,19 @@ export function deriveIntensity({
 
   return { tier, sparkline };
 }
+
+// ─── PR title prefix ──────────────────────────────────────────────────────────
+
+/**
+ * Drops a leading `PR #N:` (or `PR #N -` / `PR #N —`) from a title when a
+ * stage chip beside it already shows `#N`, so a row does not state the PR
+ * number twice. Anything else — another number, no number, a prefix that is
+ * not leading, or a title that would be left empty — is returned unchanged.
+ */
+export function stripPrTitlePrefix(title: string, prNumber: number | null | undefined): string {
+  if (!prNumber) return title;
+  const m = title.match(new RegExp(`^\\s*PR\\s*#${prNumber}(?!\\d)\\s*[:\\-–—]\\s*`, 'i'));
+  if (!m) return title;
+  const rest = title.slice(m[0].length);
+  return rest.trim() ? rest : title;
+}
