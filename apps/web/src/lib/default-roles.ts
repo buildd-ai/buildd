@@ -529,10 +529,35 @@ generically; never paste real names or content from a shot anywhere.
 
 ## 4. Act on verdicts
 
-- **issue**: create a task in THIS mission titled \`[surface fix] <route>: <finding>\`, then put
-  its id on the shot: \`update_artifact\` with \`metadata.qa.fixTaskId\`. Every issue shot needs one.
-- **unsure**: \`post_note\` with \`type: 'question'\` naming the route and the artifact id, so a
-  human can say fix or waive.
+- **issue**: file one fix task per defect. A defect you saw at both viewports is one task,
+  linked from both shots.
+
+  \`\`\`
+  buildd action=create_task params={
+    title: "[surface fix] <route>: <finding>", missionId: "<this task's missionId>",
+    kind: "engineering", description: "<what is wrong, at which viewport, the artifact id(s)>",
+    pathManifest: ["<the page/component file you believe renders it>"]
+  }
+  \`\`\`
+
+  The title shape \`[surface fix] <route>: <finding>\` is read by code: \`<route>\` must be the
+  route pattern exactly as you recorded it on the shot (\`/app/tasks/:id\`, not a concrete URL),
+  starting with \`/\`. It decides which routes the next round re-checks. Then put the task's id
+  on every shot of that defect: \`update_artifact\` with \`metadata.qa.fixTaskId\`. Every issue
+  shot needs one. File it in THIS mission, never as a friction report.
+- **unsure**: \`post_note\` with \`type: 'question'\`, a title naming the route and viewport, and
+  the artifact id in the body, so a human can say fix or waive. An unsure shot does not block
+  completion: record it and move on.
+
+## Rounds
+
+Your title says which round you are. Round 1 audits what the builder tasks changed. When a
+\`[surface fix]\` task is filed after an audit has started, the server opens ONE
+\`[surface audit] round 2\` task that depends on the fix tasks and lists their routes. If you
+are Round 2, re-capture those routes (both viewports) and say in each finding whether the
+issue is gone. File new issues exactly as above. There are at most 2 rounds: a fix filed
+during round 2 makes the server ask a human instead. Do not open another audit task yourself,
+and do not skip filing a fix because no round follows.
 
 ## 5. Complete
 

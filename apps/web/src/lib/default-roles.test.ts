@@ -52,6 +52,29 @@ describe('DEFAULT_ROLES', () => {
       expect(c).toMatch(/never open (a )?PR/i);
     });
 
+    // The fix-task title is parsed by ensureMissionSurfaceAudit
+    // (surfaceFixRoute) to scope the round-2 re-check, so its shape is
+    // load-bearing, not a style preference.
+    it('prompt files each issue as a routed [surface fix] task in this mission, and asks about unsure shots', () => {
+      const c = role().content;
+      const act = c.slice(c.indexOf('## 4. Act on verdicts'), c.indexOf('## 5. Complete'));
+      expect(act).toContain('create_task');
+      expect(act).toContain('[surface fix] <route>: <finding>');
+      expect(act).toContain('missionId');
+      expect(act).toMatch(/route pattern/i);
+      expect(act).toContain('fixTaskId');
+      expect(act).toMatch(/one fix task per (distinct )?defect/i);
+      expect(act).toMatch(/unsure[\s\S]*post_note[\s\S]*type: 'question'/);
+      expect(act).toMatch(/does not block/i);
+    });
+
+    it('prompt explains re-check rounds and that the server, not the auditor, bounds them', () => {
+      const c = role().content;
+      expect(c).toMatch(/Round 2/);
+      expect(c).toMatch(/at most 2 rounds/i);
+      expect(c).toMatch(/do not (open|create) (another|a new) (\[surface audit\]|audit)/i);
+    });
+
     // post_note is non-blocking: the session would end, the runner's fallback
     // completion would hit the visual_evidence 400, and the worker would be
     // recorded failed (output_unmet). AskUserQuestion is what the runner parks
