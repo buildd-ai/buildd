@@ -60,7 +60,6 @@ permissions:
   pull-requests: write
   checks: write
   statuses: write
-  id-token: write # claude-code-action's GitHub App token exchange (same as ci-fix.yml)
 
 jobs:
   visual-qa:
@@ -297,6 +296,10 @@ jobs:
           # Release PRs can be opened by the release bot; name the two bots this
           # repo produces (never '*'), as ci-fix.yml does.
           allowed_bots: "buildd-ai,buildd-release"
+          # Use the job token, not the OIDC → GitHub App exchange: that exchange
+          # refuses unless this file matches the default branch byte-for-byte, so
+          # a dispatch on any branch that edits this workflow would skip the judge.
+          github_token: ${{ github.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Read/Glob/Write confined to /tmp/qa; no Bash, no network, no repo edits.
           # ~4 turns per route plus overhead; 40 covers the manifest with headroom.
@@ -343,6 +346,7 @@ jobs:
             /tmp/qa/screenshots/
             /tmp/qa/a11y/
             /tmp/qa/*.json
+            /tmp/qa/report.md
           retention-days: 7
           if-no-files-found: warn
 

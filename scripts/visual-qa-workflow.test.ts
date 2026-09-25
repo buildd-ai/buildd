@@ -50,6 +50,7 @@ describe('visual-qa.yml dispatch contract', () => {
     expect(upload.with.name).toBe('qa-screenshots');
     expect(upload.with.path).toContain('screenshots');
     expect(upload.with.path).toContain('a11y');
+    expect(upload.with.path).toContain('report.md');
     expect(upload.with['retention-days']).toBeLessThanOrEqual(7);
   });
 
@@ -73,6 +74,12 @@ describe('visual-qa.yml dispatch contract', () => {
     expect(oauth.uses).toBe('anthropics/claude-code-action@v1');
     expect(oauth.with.claude_code_oauth_token).toBe('${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}');
     expect(oauth.with.anthropic_api_key).toBeUndefined();
+    // Without an explicit token the action exchanges OIDC for its GitHub App
+    // token, which it refuses unless this file is byte-identical to the default
+    // branch: every judge=true dispatch from a branch that touched this file
+    // would silently skip. The job's GITHUB_TOKEN is all it needs.
+    expect(oauth.with.github_token).toBe('${{ github.token }}');
+    expect(wf.permissions['id-token']).toBeUndefined();
   });
 
   test('the OAuth judge can only read/write the QA output dir: no Bash, no network', () => {
