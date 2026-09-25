@@ -178,6 +178,11 @@ const WORKER_WITH = {
 const LIVE_WORKER_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
 const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
 
+/** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
+function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
+  return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
+}
+
 function iso(d: Date | string | null | undefined): string | null {
   if (!d) return null;
   return d instanceof Date ? d.toISOString() : new Date(d).toISOString();
@@ -382,7 +387,7 @@ async function viewForMission(missionId: string): Promise<{
     mission: m,
     loaded,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: hasLiveWorker(t) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,
@@ -581,7 +586,7 @@ async function viewForTask(taskId: string): Promise<{
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,

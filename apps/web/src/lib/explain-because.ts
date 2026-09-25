@@ -39,8 +39,16 @@ export interface BecauseSubjectRefs {
 
 /** Row-level detail the chain needs to name what the view only counted. */
 export interface StateBecauseExtras {
-  /** Open deliverable rows, for naming which tasks are holding. */
-  openTasks?: Array<{ id: string; title: string | null; status: string }>;
+  /**
+   * Open deliverable rows, for naming which tasks are holding.
+   *
+   * `live` is per-task: true when a worker in a live status is on this row.
+   * The mission-level `activeAgents` count cannot answer it — a running
+   * mission has open rows both with and without a worker, and "no live
+   * worker" is only true of the latter. Omitted = unknown; see
+   * `openTaskLinks`.
+   */
+  openTasks?: Array<{ id: string; title: string | null; status: string; live?: boolean }>;
   /** Failed rows with the signature their failure was bucketed under. */
   failedTasks?: Array<{ id: string; title: string | null; errorSignature?: string | null }>;
   /** Unmerged PRs holding completion. */
@@ -122,6 +130,44 @@ export function buildStateBecause(
   return orderChain(links);
 }
 
+/**
+ * One link per open deliverable, worded by whether THAT row has a live worker.
+ *
+ * "No live worker" is a claim about a single task. It used to be stamped on
+ * every open row whenever the open-task fact was outstanding — including the
+ * `running` reading of that fact, where by construction something IS live —
+ * so a task a worker was running read as orphaned, and the situation block
+ * offered to "open the blocking task".
+ *
+ * Unknown liveness falls back to the fact's own reading: the `warning` tone is
+ * only produced when nothing in the mission is live, so every row really has
+ * no worker; the `neutral` tone means something is, and the row is described
+ * without guessing which.
+ *
+ * Rows without a worker lead: `because[0]` is the line the situation block
+ * prints, and the task nothing is executing is the one worth reading about.
+ */
+function openTaskLinks(
+  w: Extract<WaitingOnDescriptor, { kind: 'task' }>,
+  base: ExplainRefs,
+  extra: StateBecauseExtras,
+): Link[] {
+  const nothingLive = w.tone === 'warning';
+  const orphaned = (t: { live?: boolean }) => (t.live === undefined ? nothingLive : !t.live);
+  const rows = [...(extra.openTasks ?? [])].sort((a, b) => Number(orphaned(b)) - Number(orphaned(a)));
+  return rows.slice(0, 10).map(t =>
+    link(
+      orphaned(t)
+        ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`
+        : t.live
+          ? `Task "${t.title ?? t.id}" is ${t.status} — a worker is running it.`
+          : `Task "${t.title ?? t.id}" is ${t.status} and not finished yet.`,
+      'tasks.status + workers.status',
+      { ...base, taskId: t.id },
+    ),
+  );
+}
+
 function causeLinksFor(
   w: WaitingOnDescriptor,
   base: ExplainRefs,
@@ -153,13 +199,7 @@ function causeLinksFor(
           ),
         ];
       }
-      return (extra.openTasks ?? []).slice(0, 10).map(t =>
-        link(
-          `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`,
-          'tasks.status + workers.status',
-          { ...base, taskId: t.id },
-        ),
-      );
+      return openTaskLinks(w, base, extra);
 
     case 'task_failed':
       return (extra.failedTasks ?? []).slice(0, 10).map(t =>
