@@ -249,6 +249,26 @@ describe('affordanceFor', () => {
     expect(html).not.toContain('#mission-criteria');
   });
 
+  // Regression: a running mission's open task was offered as "the blocking
+  // task" — the same false claim as "no live worker", in button form.
+  it('does not call an open task "blocking" while agents are running on the mission', () => {
+    const running = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      openTasks: [{ id: 't-1', status: 'in_progress', title: 'Build the page' }],
+    });
+    expect(running.situation.focus?.kind).toBe('task');
+    expect(affordanceFor(running.situation.focus, { missionId: 'm-1' })?.label).toBe('View the open task');
+
+    const stalled = deriveMissionStateView({
+      ...base,
+      health: 'STALLED',
+      openTasks: [{ id: 't-1', status: 'in_progress', title: 'Build the page' }],
+    });
+    expect(stalled.situation.focus?.kind).toBe('task');
+    expect(affordanceFor(stalled.situation.focus, { missionId: 'm-1' })?.label).toBe('Open the blocking task');
+  });
+
   it("opens a mission task in the sheet over the mission, never a bare task-page push", () => {
     const failed = { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] };
     expect(affordanceFor(failed, { missionId: 'm-1' })).toEqual({

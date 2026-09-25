@@ -35,6 +35,71 @@ describe('buildStateBecause', () => {
     }
   });
 
+  // Regression: while a mission is running, every open deliverable was named
+  // "is in_progress with no live worker" — including the one a worker was
+  // actively running. The sentence must be earned per task.
+  describe('open-task links and worker liveness', () => {
+    const running = [
+      { id: 'task-live', title: 'Build the page', status: 'in_progress', live: true },
+      { id: 'task-queued', title: 'Write the docs', status: 'pending', live: false },
+    ];
+
+    it('never says "no live worker" about a task that has one', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        activeAgents: 1,
+        openTasks: running.map(({ id, title, status }) => ({ id, title, status })),
+      });
+      const chain = buildStateBecause(view, { missionId: 'm' }, { openTasks: running });
+
+      const liveLink = chain.find(l => l.refs.taskId === 'task-live');
+      expect(liveLink).toBeDefined();
+      expect(liveLink!.claim).not.toContain('no live worker');
+      expect(liveLink!.claim).toContain('Build the page');
+      // The row without a worker is still named as such, and leads the chain —
+      // it is the one worth a reader's attention.
+      expect(chain[0].refs.taskId).toBe('task-queued');
+      expect(chain[0].claim).toContain('no live worker');
+    });
+
+    it('does not claim "no live worker" when per-task liveness is unknown and agents are running', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        activeAgents: 2,
+        openTasks: [{ id: 'task-a', status: 'in_progress', title: 'Build the page' }],
+      });
+      const chain = buildStateBecause(view, { missionId: 'm' }, {
+        openTasks: [{ id: 'task-a', title: 'Build the page', status: 'in_progress' }],
+      });
+      for (const l of chain) expect(l.claim).not.toContain('no live worker');
+    });
+
+    it('still names a genuinely orphaned in_progress task', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        health: 'STALLED',
+        openTasks: [{ id: 'task-orphan', status: 'in_progress', title: 'Build the page' }],
+      });
+      const chain = buildStateBecause(view, { missionId: 'm' }, {
+        openTasks: [{ id: 'task-orphan', title: 'Build the page', status: 'in_progress', live: false }],
+      });
+      expect(chain[0].refs.taskId).toBe('task-orphan');
+      expect(chain[0].claim).toBe('Task "Build the page" is in_progress with no live worker.');
+    });
+
+    it('treats unknown liveness on a stalled mission as orphaned', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        health: 'STALLED',
+        openTasks: [{ id: 'task-orphan', status: 'in_progress', title: 'Build the page' }],
+      });
+      const chain = buildStateBecause(view, { missionId: 'm' }, {
+        openTasks: [{ id: 'task-orphan', title: 'Build the page', status: 'in_progress' }],
+      });
+      expect(chain[0].claim).toContain('no live worker');
+    });
+  });
+
   it('names each failing criterion as its own link', () => {
     const items = [
       { verdict: 'fail', label: 'no double-fire' },
