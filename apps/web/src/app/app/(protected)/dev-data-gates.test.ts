@@ -1,44 +1,43 @@
 /**
- * Pages must not skip their data queries just because NODE_ENV is development.
+ * Dev-mode data gates: reads may un-gate, writes may not.
  *
- * The `isDev` gates date from the first dashboard scaffold, when local dev had
- * no database. Keyed on NODE_ENV alone they kept `bun dev` blank even with a
- * real DATABASE_URL and DEV_USER_EMAIL (which getCurrentUser already honours),
- * so local QA could not see these pages. They now fire only when there is no
- * DATABASE_URL — the no-DB escape hatch the gates were written for.
+ * The `NODE_ENV === 'development'` short-circuits date from the first dashboard
+ * scaffold, when local dev had no database. Keyed on NODE_ENV alone they kept
+ * `bun dev` blank even with a real DATABASE_URL and DEV_USER_EMAIL (which
+ * getCurrentUser already honours), so local QA could not see these pages.
+ *
+ * READS (pages, GET handlers) now serve real data only when dev has BOTH a
+ * DATABASE_URL and a DEV_USER_EMAIL; otherwise they keep the placeholder
+ * (a DB with only the mock dev user would render empty pages or 500).
+ *
+ * WRITES stay short-circuited on NODE_ENV alone. The usual local DATABASE_URL
+ * points at production, so an un-gated POST /api/tasks from `bun dev` creates a
+ * real task that production runners claim. Keep it that way.
  */
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
 const ROOT = import.meta.dir;
-
-function pageFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) return pageFiles(p);
-    return name === 'page.tsx' ? [p] : [];
-  });
-}
-
-const GATE = /const\s+isDev\s*=\s*process\.env\.NODE_ENV\s*===\s*'development'([^;]*);/;
-
 const API_ROOT = join(ROOT, '../../api');
 
-function routeFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) return routeFiles(p);
-    return name === 'route.ts' ? [p] : [];
+function files(dir: string, name: string): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) return files(p, name);
+    return entry === name ? [p] : [];
   });
 }
 
+const DEV = /process\.env\.NODE_ENV\s*===\s*'development'/;
+const REQUIRES_DB = /!process\.env\.DATABASE_URL/;
+const REQUIRES_DEV_USER = /!process\.env\.DEV_USER_EMAIL/;
+
 /**
- * Routes still short-circuiting on NODE_ENV alone, on purpose. These
- * authenticate with next-auth `auth()` directly rather than getCurrentUser, and
- * local dev has no session under DEV_USER_EMAIL — un-gating them would turn an
- * empty dev response into a 401, not into real data. Moving them to
- * getCurrentUser is the fix; until then they stay gated. Shrink this list only.
+ * GET routes that stay gated: they authenticate with next-auth `auth()`
+ * directly, and local dev has no session under DEV_USER_EMAIL, so un-gating
+ * would turn an empty response into a 401 rather than real data. The fix is
+ * moving them to getCurrentUser. Shrink this list only.
  */
 const AUTH_SESSION_ONLY = new Set([
   'workspaces/[id]/accounts/route.ts',
@@ -47,46 +46,36 @@ const AUTH_SESSION_ONLY = new Set([
   'github/installations/[id]/repos/route.ts',
 ]);
 
-const DEV_GATE_LINE = /process\.env\.NODE_ENV\s*===\s*'development'/;
+interface Gate {
+  file: string;
+  /** Enclosing exported HTTP handler, or null for a non-exported helper. */
+  handler: string | null;
+  line: string;
+}
 
-describe('dev data gates: API', () => {
-  const gated = routeFiles(API_ROOT).flatMap((file) =>
-    readFileSync(file, 'utf8')
-      .split('\n')
-      .filter((l) => /^\s*if\s*\(/.test(l) && DEV_GATE_LINE.test(l))
-      .map((line) => ({ file: file.slice(API_ROOT.length + 1), line })),
-  );
-
-  it('finds the gated routes (guards against this test matching nothing)', () => {
-    expect(gated.length).toBeGreaterThan(0);
-  });
-
-  it.each(['workspaces/route.ts', 'tasks/route.ts', 'accounts/route.ts'])('%s is scanned', (f) => {
-    expect(gated.map((g) => g.file)).toContain(f);
-  });
-
-  it('every dev short-circuit in app/api also requires DATABASE_URL to be absent (except the auth()-only routes)', () => {
-    const nodeEnvOnly = gated
-      .filter((g) => !AUTH_SESSION_ONLY.has(g.file) && !g.line.includes('!process.env.DATABASE_URL'))
-      .map((g) => `${g.file}: ${g.line.trim()}`);
-    expect(nodeEnvOnly).toEqual([]);
-  });
-
-  it('the auth()-only exemptions are still real (drop an entry once its route moves to getCurrentUser)', () => {
-    for (const f of AUTH_SESSION_ONLY) {
-      const src = readFileSync(join(API_ROOT, f), 'utf8');
-      expect(src).toContain('await auth()');
-      expect(src).not.toContain('getCurrentUser');
+/** Every `if (… NODE_ENV === 'development' …)` in app/api, tagged with its handler. */
+function apiGates(): Gate[] {
+  return files(API_ROOT, 'route.ts').flatMap((path) => {
+    const file = path.slice(API_ROOT.length + 1);
+    let handler: string | null = null;
+    const out: Gate[] = [];
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const fn = line.match(/^export\s+(?:async\s+)?function\s+([A-Z]+)\b/);
+      if (fn) handler = fn[1];
+      else if (/^(?:async\s+)?function\s/.test(line) || /^export\s+(?:async\s+)?function\s+[a-z]/.test(line)) handler = null;
+      if (/^\s*if\s*\(/.test(line) && DEV.test(line)) out.push({ file, handler, line: line.trim() });
     }
+    return out;
   });
-});
+}
 
-describe('dev data gates', () => {
-  const gated = pageFiles(ROOT)
-    .map((file) => ({ file: file.slice(ROOT.length + 1), m: readFileSync(file, 'utf8').match(GATE) }))
+describe('dev data gates: pages (reads)', () => {
+  const GATE = /const\s+isDev\s*=\s*process\.env\.NODE_ENV\s*===\s*'development'([^;]*);/;
+  const gated = files(ROOT, 'page.tsx')
+    .map((f) => ({ file: f.slice(ROOT.length + 1), m: readFileSync(f, 'utf8').match(GATE) }))
     .filter((g) => g.m);
 
-  it('finds the gated pages (guards against this test matching nothing)', () => {
+  it('finds the gated pages (guards against matching nothing)', () => {
     expect(gated.length).toBeGreaterThan(0);
   });
 
@@ -94,8 +83,43 @@ describe('dev data gates', () => {
     expect(gated.map((g) => g.file)).toContain(f);
   });
 
-  it('every isDev gate also requires DATABASE_URL to be absent', () => {
-    const nodeEnvOnly = gated.filter((g) => !/!\s*process\.env\.DATABASE_URL/.test(g.m![1])).map((g) => g.file);
-    expect(nodeEnvOnly).toEqual([]);
+  it('every page gate keeps the placeholder unless dev has a DATABASE_URL and a DEV_USER_EMAIL', () => {
+    const bad = gated.filter((g) => !REQUIRES_DB.test(g.m![1]) || !REQUIRES_DEV_USER.test(g.m![1])).map((g) => g.file);
+    expect(bad).toEqual([]);
+  });
+});
+
+describe('dev data gates: API', () => {
+  const gates = apiGates();
+  const reads = gates.filter((g) => g.handler === 'GET' && !AUTH_SESSION_ONLY.has(g.file));
+  const writes = gates.filter((g) => g.handler !== 'GET');
+
+  it('finds GET and mutation gates (guards against matching nothing)', () => {
+    expect(reads.length).toBeGreaterThan(0);
+    expect(writes.length).toBeGreaterThan(0);
+    expect(reads.map((g) => g.file)).toContain('tasks/route.ts');
+    expect(writes.map((g) => `${g.file} ${g.handler}`)).toContain('tasks/route.ts POST');
+  });
+
+  it('GET gates serve real data only with a DATABASE_URL and a DEV_USER_EMAIL', () => {
+    const bad = reads
+      .filter((g) => !REQUIRES_DB.test(g.line) || !REQUIRES_DEV_USER.test(g.line))
+      .map((g) => `${g.file} GET: ${g.line}`);
+    expect(bad).toEqual([]);
+  });
+
+  it('mutation gates (POST/PUT/PATCH/DELETE and shared auth helpers) still short-circuit on NODE_ENV alone', () => {
+    // A DATABASE_URL condition here would let `bun dev` write to whatever DB it
+    // points at — usually production.
+    const unGated = writes.filter((g) => REQUIRES_DB.test(g.line)).map((g) => `${g.file} ${g.handler ?? '(helper)'}: ${g.line}`);
+    expect(unGated).toEqual([]);
+  });
+
+  it('the auth()-only GET exemptions are still real (drop one once its route moves to getCurrentUser)', () => {
+    for (const f of AUTH_SESSION_ONLY) {
+      const src = readFileSync(join(API_ROOT, f), 'utf8');
+      expect(src).toContain('await auth()');
+      expect(src).not.toContain('getCurrentUser');
+    }
   });
 });

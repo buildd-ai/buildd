@@ -82,7 +82,7 @@ export default async function TaskDetailPage({
   const { id } = await params;
   const { artifact: initialOpenArtifactId } = await searchParams;
   if (!isValidTaskId(id)) notFound();
-  const isDev = process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL; // no-DB dev only
+  const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   if (isDev) {

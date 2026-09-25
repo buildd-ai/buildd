@@ -14,7 +14,7 @@ export default async function WorkspaceDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const isDev = process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL; // no-DB dev only
+  const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   if (isDev) {

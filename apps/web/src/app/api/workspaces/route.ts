@@ -12,8 +12,8 @@ import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 
 export async function GET(req: NextRequest) {
-  // No-DB dev mode returns empty
-  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
+  // Dev mode returns empty
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({ workspaces: [] });
   }
 
@@ -147,8 +147,8 @@ function extractRepoName(repoUrl: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
-  // No-DB dev mode returns mock
-  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
+  // Dev mode returns mock
+  if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ id: 'dev-workspace', name: 'Dev Workspace' });
   }
 

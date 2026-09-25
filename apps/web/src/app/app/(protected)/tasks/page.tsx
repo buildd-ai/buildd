@@ -19,7 +19,7 @@ export default async function TasksPage({
   searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string }>;
 }) {
   const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = await searchParams;
-  const isDev = process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL; // no-DB dev only
+  const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   if (!isDev && !user) {

@@ -64,7 +64,7 @@ export async function GET(
   const { id } = await params;
 
   // Dev mode returns mock task data so polling doesn't break
-  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({
       id,
       title: 'Development mode task',
@@ -187,7 +187,7 @@ export async function PATCH(
   const { id } = await params;
 
   // Dev mode returns mock
-  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
+  if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ id, title: 'Updated Task' });
   }
 
@@ -484,7 +484,7 @@ export async function DELETE(
   const { id } = await params;
 
   // Dev mode returns success
-  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
+  if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ success: true });
   }
 

@@ -18,7 +18,7 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  if (process.env.NODE_ENV === 'development' && !process.env.DATABASE_URL) {
+  if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({
       apiKey: 'bld_dev_regenerated_key_123',
       apiKeyPrefix: 'bld_dev_rege',
