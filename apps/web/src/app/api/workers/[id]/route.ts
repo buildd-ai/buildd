@@ -1194,8 +1194,38 @@ export async function PATCH(
   // as before; that is the same carve-out the MCP write fence makes. Failed /
   // error reports on a cancelled task take the same exit cause via
   // classifyReportedFailure below (the runner's abort path reports `failed`).
+  //
+  // "Delivered" includes an open PR on the worker's branch that is not on the
+  // worker row yet (opened via `gh pr create`, not create_pr): the gate's
+  // GitHub auto-detect below is the door that adopts it, so a cancellation
+  // rewrite here must not pre-empt it. Only probed when nothing else counts.
+  const workerBranch = worker.branch;
+  const workerWorkspaceId = worker.workspaceId;
+  async function hasOpenPrOnWorkerBranch(): Promise<boolean> {
+    if (!workerBranch) return false;
+    try {
+      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workerWorkspaceId) });
+      if (!ws?.githubRepoId) return false;
+      const repo = await db.query.githubRepos.findFirst({
+        where: eq(githubRepos.id, ws.githubRepoId),
+        with: { installation: true },
+      }) as { fullName: string; installation: { installationId: number } | null } | undefined;
+      if (!repo?.installation) return false;
+      const owner = repo.fullName.split('/')[0];
+      const prs = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(owner + ':' + workerBranch)}&state=open`,
+      );
+      return Array.isArray(prs) && prs.length > 0;
+    } catch {
+      return false;
+    }
+  }
   const taskCancelledUnderSession = isTerminalStatus && terminalTaskRow[0]?.status === 'cancelled';
-  if (status === 'completed' && taskCancelledUnderSession && !workerHasPR && !(await hasDeliverableArtifact())) {
+  if (
+    status === 'completed' && taskCancelledUnderSession && !workerHasPR
+    && !(await hasDeliverableArtifact()) && !(await hasOpenPrOnWorkerBranch())
+  ) {
     status = 'failed';
     error = TASK_CANCELLED_UNDER_SESSION_ERROR;
     updates.status = 'failed';

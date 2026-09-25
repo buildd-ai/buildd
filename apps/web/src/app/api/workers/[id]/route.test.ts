@@ -9862,6 +9862,29 @@ describe('PATCH /api/workers/[id]', () => {
       expect(workerSetCalls.some((s: any) => s.status === 'completed')).toBe(true);
     });
 
+    // A PR opened outside create_pr (e.g. `gh pr create`) is not on the worker
+    // row yet: the output gate's GitHub auto-detect is what adopts it. The
+    // cancellation rewrite must not pre-empt that door — before it existed,
+    // this completion adopted the PR and completed.
+    it('keeps a PR the auto-detect would adopt from GitHub as a completion', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker({ commitCount: 2 }));
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'auto', context: {} });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({ id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 } });
+      mockGithubApi.mockResolvedValue([{ html_url: 'https://github.com/org/repo/pull/42', number: 42, state: 'open' }]);
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'stopped', summarySource: 'fallback' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSetCalls.some((s: any) => s.exitCause === 'task_cancelled')).toBe(false);
+      expect(workerSetCalls.some((s: any) => s.prUrl === 'https://github.com/org/repo/pull/42')).toBe(true);
+      expect(workerSetCalls.some((s: any) => s.status === 'completed')).toBe(true);
+    });
+
     it('classifies a failed report on a cancelled task as task_cancelled, not code_failure', async () => {
       mockWorkersFindFirst.mockResolvedValue(runningWorker());
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'none', context: {} });
