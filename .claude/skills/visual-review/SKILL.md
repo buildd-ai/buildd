@@ -42,9 +42,18 @@ QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
 
 ## Worker recipe (no DB)
 
-`.github/workflows/visual-qa.yml` stands the app up in CI on a PII-scrubbed,
-copy-on-write Neon clone, captures, and uploads an artifact. Push your branch first,
-because the run checks out `--ref`.
+`.github/workflows/visual-qa.yml` stands the app up in CI on a copy-on-write Neon
+clone, captures, and uploads an artifact. Push your branch first, because the run
+checks out `--ref`.
+
+**The CI clone is scrubbed to placeholders, so CI shots show layout, not real
+content.** `scripts/qa/scrub-pii.sql` rewrites every tenant-authored or
+identifying text column (`Workspace 3`, `org-2/repo-2`, `Mission 12: lorem ipsum…`,
+`buildd/<8hex>-task-<n>`, PR `#<n>`), and `scripts/qa/scrub-guard.sql` fails the run
+before anything renders if a non-placeholder value or a known identifier
+survives. Ids, statuses, timestamps and counts are kept, so every state still
+renders at a realistic length. To review real copy, use the local recipe against
+a dev database.
 
 ```bash
 gh workflow run visual-qa.yml --ref <branch> \
@@ -55,14 +64,16 @@ RUN=$(gh run list --workflow visual-qa.yml --branch <branch> --event workflow_di
 gh run watch "$RUN" --exit-status
 gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 # → /tmp/qa-ci/screenshots/*.png, /tmp/qa-ci/a11y/*.json, /tmp/qa-ci/captures.json
-# The repo is public, so any GitHub user can download this artifact, and the shots
-# show real workspace names and titles. Delete it once you have your copy:
+# The repo is public, so any GitHub user can download this artifact. It holds
+# placeholders only and expires after 1 day; still, delete it once you have your copy:
 gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id' \
   | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
 
-Never paste screenshot contents (team names, mission or task titles) into PR
-bodies, commits or comments. Describe what you saw generically.
+Never paste screenshot contents into PR bodies, commits or comments, even from a
+scrubbed run. Describe what you saw generically. If a CI shot ever shows real
+names or titles, the scrub missed a column: delete the artifact and fix
+`scrub-pii.sql` (its test lists every text column in the schema).
 
 Then Read the PNGs. **Normally you are the judge.** You know what you changed, so
 review the shots yourself against "What to check" below. That costs nothing extra.
@@ -83,7 +94,11 @@ don't turn it on by habit.
   Take them from the dashboard, not from seed scripts. The CI user is one workspace
   owner, so pages outside that user's teams redirect or come up empty.
 - Each dispatch gets its own Neon branch and concurrency group, so parallel
-  dispatches don't collide or cancel each other.
+  dispatches don't collide or cancel each other. Leaked `ci/visual-qa-*` branches
+  older than 2h are swept at the start of every run.
+- A red `Guard scrubbed clone` step means the scrub missed something. No app, no
+  shots, no artifact. The error names `table.column` only; fix the scrub, don't
+  work around the guard.
 - If capture crashes, a dispatch run fails (on release PRs it's report-only). A
   single route failing does **not** fail the run, so a green run can still hold a
   bad shot. Check `captures.json`, which records `error`, `redirected` and
