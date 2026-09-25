@@ -1,19 +1,62 @@
 import { describe, it, expect } from 'bun:test';
 import { DEFAULT_ROLES } from './default-roles';
+import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
   const bySlug = Object.fromEntries(DEFAULT_ROLES.map(r => [r.slug, r]));
 
-  it('seeds the full seven-role set', () => {
+  it('seeds the full eight-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([
-      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'writer',
+      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
     ]);
   });
 
   // Visual QA is a CI workflow only (visual-qa.yml) — NOT a routable agent role.
-  // If this fails, remove the 'visual-qa' entry from DEFAULT_ROLES.
+  // 'visual-auditor' (the mission audit role, below) is a different slug and
+  // must not be renamed to it. If this fails, remove the 'visual-qa' entry.
   it('does NOT seed a visual-qa role (CI-only workflow, not an agent role)', () => {
     expect(bySlug['visual-qa']).toBeUndefined();
+  });
+
+  describe('visual-auditor (mission surface audit role)', () => {
+    const role = () => bySlug[VISUAL_AUDITOR_ROLE_SLUG];
+
+    it('is seeded under the shared slug constant the claim gate routes on', () => {
+      expect(role()).toBeDefined();
+      expect(EXPLICIT_ROLE_SLUGS).toContain(role().slug);
+    });
+
+    it('is a separate role from the PR reviewer', () => {
+      expect(role().slug).not.toBe(bySlug.reviewer.slug);
+      expect(role().content).not.toBe(bySlug.reviewer.content);
+    });
+
+    it('is read-only: can look and capture, cannot edit files or delegate', () => {
+      expect([...role().allowedTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read', 'mcp__buildd__buildd']);
+      expect(role().canDelegateTo).toEqual([]);
+    });
+
+    it('prompt carries the capture recipe and the evidence contract', () => {
+      const c = role().content;
+      expect(c).toContain('visual-review');
+      expect(c).toContain('visual-qa.yml');
+      expect(c).toContain('scripts/qa/shoot.sh');
+      expect(c).toContain('DATABASE_URL');
+      expect(c).toContain('upload_artifact');
+      expect(c).toContain('missionId');
+      for (const key of ['runKey', 'route', 'viewport', 'finding', 'verdict']) expect(c).toContain(key);
+      expect(c).toContain('mobile');
+      expect(c).toContain('desktop');
+      expect(c).toContain('[surface fix]');
+      expect(c).toMatch(/never open (a )?PR/i);
+    });
+
+    it('prompt turns a boot failure into a question, never a failed task', () => {
+      const c = role().content;
+      expect(c).toMatch(/did not boot/i);
+      expect(c).toContain("type: 'question'");
+      expect(c).toMatch(/do not (mark|fail|complete)/i);
+    });
   });
 
   it('Organizer defaults to Sonnet (router upshifts to Opus for complex coordination)', () => {
