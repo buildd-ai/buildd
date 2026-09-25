@@ -55,7 +55,7 @@ afterEach(() => {
 function openSheet() {
   const trigger = header.querySelector<HTMLButtonElement>('button[aria-label="Filter by workspace"]')!;
   act(() => trigger.click());
-  return document.querySelector<HTMLElement>('[role="dialog"][aria-label="Select workspace"]');
+  return document.querySelector<HTMLElement>('[role="dialog"][aria-label="Workspace"]');
 }
 
 describe('WorkspaceFilter mobile sheet', () => {
@@ -82,9 +82,36 @@ describe('WorkspaceFilter mobile sheet', () => {
       option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     });
     // Still mounted after the mousedown that precedes every tap.
-    expect(document.querySelector('[aria-label="Select workspace"]')).not.toBeNull();
+    expect(document.querySelector('[role="dialog"][aria-label="Workspace"]')).not.toBeNull();
     act(() => option.click());
     expect(replaced).toEqual(['/app/missions?workspace=ws-beta']);
+  });
+
+  it('is a modal dialog that takes focus on open', () => {
+    const dialog = openSheet()!;
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it('Escape closes it', () => {
+    openSheet();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[role="dialog"][aria-label="Workspace"]')).toBeNull();
+    expect(main.style.overflow).toBe('auto');
+  });
+
+  it('keeps Tab inside the sheet', () => {
+    const dialog = openSheet()!;
+    const focusables = Array.from(dialog.querySelectorAll<HTMLElement>('a[href], button:not([disabled])'));
+    focusables[focusables.length - 1].focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    act(() => {
+      document.dispatchEvent(tab);
+    });
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(focusables[0]);
   });
 
   it('trigger is a 44px tap target below md', () => {

@@ -118,9 +118,9 @@ export function mobilePageTitle(pathname: string): string | null {
  * WorkspaceFilter only renders here — anywhere else it would be a control that
  * changes the URL and nothing else. nav-config.test.tsx checks each page.tsx.
  */
-const WORKSPACE_FILTERED_PAGES = new Set([
+export const WORKSPACE_FILTERED_PAGES: ReadonlySet<string> = new Set([
   '/app/home',
-  '/app/dashboard',
+  '/app/dashboard', // redirect-only (next.config.mjs → /app/home); the header still renders mid-redirect
   '/app/missions',
   '/app/releases',
   '/app/tasks',

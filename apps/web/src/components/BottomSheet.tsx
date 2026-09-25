@@ -32,6 +32,8 @@ interface BottomSheetProps {
    * until it closes. Off by default so existing consumers see no change.
    */
   trapFocus?: boolean;
+  /** Drop the body's p-4 — for full-bleed rows (a list of options) that pad themselves. */
+  flush?: boolean;
 }
 
 const FOCUSABLE =
@@ -90,6 +92,7 @@ export default function BottomSheet({
   testId,
   handle,
   trapFocus = false,
+  flush = false,
 }: BottomSheetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   // Read through a ref so an inline `() => main` does not re-run the lock effect every render.
@@ -101,14 +104,19 @@ export default function BottomSheet({
 
   const canPortal = useCanPortal();
 
+  // `canPortal` is a dep: a sheet hydrated already open (?task= on a hard load)
+  // first mounts in place, then moves into the portal as a NEW node. Re-running
+  // here re-focuses the live panel; the handler also reads panelRef on each key,
+  // so the Tab trap never searches the detached in-place node.
   useEffect(() => {
     if (!open) return;
-    const panel = panelRef.current;
-    if (trapRef.current && panel && !panel.contains(document.activeElement)) {
-      panel.focus({ preventScroll: true });
+    const initial = panelRef.current;
+    if (trapRef.current && initial && !initial.contains(document.activeElement)) {
+      initial.focus({ preventScroll: true });
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
+      const panel = panelRef.current;
       if (e.key !== 'Tab' || !trapRef.current || !panel) return;
       const target = nextTrappedFocus(
         Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)),
@@ -126,7 +134,7 @@ export default function BottomSheet({
       document.removeEventListener('keydown', handleKey);
       unlock();
     };
-  }, [open, onClose]);
+  }, [open, onClose, canPortal]);
 
   if (!open) return null;
 
@@ -164,7 +172,7 @@ export default function BottomSheet({
             </svg>
           </button>
         </div>
-        <div className={tall ? 'flex-1 min-h-0 overflow-y-auto overscroll-contain p-4' : 'p-4'}>{children}</div>
+        <div className={`${tall ? 'flex-1 min-h-0 overflow-y-auto overscroll-contain' : ''} ${flush ? '' : 'p-4'}`}>{children}</div>
       </div>
     </div>
   );

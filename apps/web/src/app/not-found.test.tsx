@@ -8,6 +8,9 @@ describe('root not-found', () => {
     expect(html).not.toContain('system-ui');
     expect(html).not.toContain('style=');
     expect(html).toContain('card');
-    expect(html).toMatch(/class="btn btn-primary[^"]*"[^>]*>Go home|href="\/app\/home"/);
+    // The home link is the branded primary button (class and href on the same <a>).
+    const link = html.match(/<a[^>]*>Go home<\/a>/)?.[0] ?? '';
+    expect(link).toContain('href="/app/home"');
+    expect(link).toMatch(/class="btn btn-primary[\s"]/);
   });
 });

@@ -18,7 +18,6 @@ const PT14 = /(^|[\s"'`])pt-14(?=[\s"'`]|$)/m;
  * list when its owner drops the offset (the test fails if an entry goes stale).
  */
 const KNOWN_EXCEPTIONS = new Set<string>([
-  'settings/workspace/[workspaceId]/page.tsx', // settings/* — shell PR
   'accounts/new/page.tsx', // accounts/** — config PR
 ]);
 

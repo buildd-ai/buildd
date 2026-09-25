@@ -84,10 +84,16 @@ export default async function ProtectedLayout({
                 }
               />
               {/* data-scroll-root: overlays lock this, not body (lib/scroll-root.ts).
-                  overflow-x-clip: with overflow-y auto, x would compute to auto and
-                  any stray overflow became a sideways pan; real horizontal
-                  scrollers own their own overflow-x-auto box. */}
-              <main data-scroll-root className="flex-1 overflow-y-auto overflow-x-clip pb-16 md:pb-0">
+                  overflow-x-hidden: with overflow-y auto, x would otherwise
+                  compute to auto and stray overflow became a sideways touch pan.
+                  (overflow-x-clip would compute to hidden here too — clip is only
+                  kept when the other axis is visible/clip.) <main> is still an x
+                  scroll container, so focus()/scrollIntoView() on content past
+                  the right edge can shift it; the fix for that is not
+                  overflowing — real horizontal scrollers own an overflow-x-auto
+                  box. An inner clip wrapper would avoid it, but page roots rely
+                  on <main> as their h-full containing block. */}
+              <main data-scroll-root className="flex-1 overflow-y-auto overflow-x-hidden pb-16 md:pb-0">
                 {children}
               </main>
             </div>

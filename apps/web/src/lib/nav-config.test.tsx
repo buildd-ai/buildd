@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { NAV_ITEMS, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
+import { NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
 
 describe('NAV_ITEMS', () => {
   it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
@@ -101,23 +101,31 @@ describe('mobilePageTitle', () => {
 });
 
 describe('showsWorkspaceFilter', () => {
-  // Pages whose server component reads `?workspace=` (grep `workspace: wsFilter`).
-  const READS_PARAM = ['/app/home', '/app/missions', '/app/releases', '/app/tasks', '/app/health'];
+  // Paths with no page.tsx: next.config.mjs redirects them before any page renders.
+  const REDIRECT_ONLY = new Set(['/app/dashboard']);
   // Top-level pages with a mobile header that ignore the param — a filter there is a no-op control.
   const IGNORES_PARAM = ['/app/you', '/app/settings', '/app/connections', '/app/artifacts', '/app/initiatives', '/app/workspaces', '/app/team'];
 
-  it.each(READS_PARAM)('shows on %s', (path) => {
-    expect(showsWorkspaceFilter(path)).toBe(true);
+  it('shows on every allowlisted path', () => {
+    for (const path of WORKSPACE_FILTERED_PAGES) expect(showsWorkspaceFilter(path)).toBe(true);
   });
 
   it.each(IGNORES_PARAM)('hides on %s', (path) => {
     expect(showsWorkspaceFilter(path)).toBe(false);
+    expect(WORKSPACE_FILTERED_PAGES.has(path)).toBe(false);
   });
 
-  it('every allowlisted page actually reads ?workspace= in its page.tsx', () => {
-    for (const path of READS_PARAM) {
+  it('every allowlisted page actually reads ?workspace= in its page.tsx (the real set, not a copy)', () => {
+    const checked: string[] = [];
+    for (const path of WORKSPACE_FILTERED_PAGES) {
+      if (REDIRECT_ONLY.has(path)) continue;
       const file = resolve(import.meta.dir, `../app/app/(protected)${path.replace('/app', '')}/page.tsx`);
       expect(readFileSync(file, 'utf8')).toMatch(/workspace\??:\s*(wsFilter|string)/);
+      checked.push(path);
     }
+    // Guard: the loop must have checked something, and every skip must be a real redirect.
+    expect(checked.length).toBeGreaterThan(0);
+    const nextConfig = readFileSync(resolve(import.meta.dir, '../../next.config.mjs'), 'utf8');
+    for (const path of REDIRECT_ONLY) expect(nextConfig).toContain(`source: '${path}'`);
   });
 });
