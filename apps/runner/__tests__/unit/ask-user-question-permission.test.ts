@@ -87,6 +87,45 @@ const QUESTION_INPUT = {
 };
 
 describe('AskUserQuestion permission gates', () => {
+  // An AskUserQuestion that asks nothing (empty `questions`, or only blank
+  // question text) has been observed as an agent's way to "wait" on its own
+  // background work. Allowing it parks the task on a blank question and kills
+  // that work, so it is denied with a reason that tells the agent how to wait.
+  describe('PreToolUse hook — AskUserQuestion that asks nothing', () => {
+    for (const [label, input] of [
+      ['empty questions array', { questions: [] }],
+      ['missing questions field', {}],
+      ['only blank question text', { questions: [{ question: '  ' }] }],
+    ] as const) {
+      for (const inputPolicy of ['allow', 'important-only', 'autonomous']) {
+        test(`${label} (inputPolicy=${inputPolicy}) is DENIED with wait guidance`, async () => {
+          const worker = makeWorker();
+          const hook = makeFactory().createPermissionHook(worker, { inputPolicy });
+
+          const result: any = await hook({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'AskUserQuestion',
+            tool_input: input,
+          } as any);
+
+          expect(result.hookSpecificOutput?.permissionDecision).toBe('deny');
+          expect(result.hookSpecificOutput?.permissionDecisionReason).toMatch(/background/i);
+        });
+      }
+    }
+
+    test('a real question is still allowed', async () => {
+      const worker = makeWorker();
+      const hook = makeFactory().createPermissionHook(worker, { inputPolicy: 'allow' });
+      const result: any = await hook({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'AskUserQuestion',
+        tool_input: QUESTION_INPUT,
+      } as any);
+      expect(result.hookSpecificOutput?.permissionDecision).toBe('allow');
+    });
+  });
+
   describe('PreToolUse hook (createPermissionHook)', () => {
     test('non-autonomous (inputPolicy=allow): AskUserQuestion is ALLOWED, not denied', async () => {
       const worker = makeWorker();
