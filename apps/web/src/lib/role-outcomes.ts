@@ -70,7 +70,7 @@ export interface HeartbeatVersionRow {
   lastHeartbeatAt: Date;
 }
 
-const BOOKKEEPING_EXITS = new Set(['needs_input', 'condition_unmet', 'reassigned']);
+const BOOKKEEPING_EXITS = new Set(['needs_input', 'condition_unmet', 'reassigned', 'task_cancelled']);
 
 function isFailed(status: string): boolean {
   return (FAILED_WORKER_STATUSES as readonly string[]).includes(status);
