@@ -328,6 +328,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [overrideList, setOverrideList] = useState<Role[]>(overrides);
@@ -367,6 +368,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
   async function handleSave() {
     setSaving(true);
+    setSaved(false);
     setError(null);
     try {
       const body: Record<string, unknown> = {
@@ -403,6 +405,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         return;
       }
 
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -864,7 +868,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           )}
         </div>
 
-        <MobileSaveBar onSave={handleSave} saving={saving} />
+        {/* Sits below Workspace Overrides but saves the team role above, so it
+            says so; overrides keep their own "Save override" buttons. */}
+        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} label="Save role" />
       </div>
       {confirmDialog}
     </main>

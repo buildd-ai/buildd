@@ -6,7 +6,13 @@
 
 export function parseActiveTeamCookie(cookie: string): string | null {
   const match = cookie.match(/(?:^|;\s*)buildd-team=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // Malformed percent-encoding (hand-edited or truncated cookie): treat as unset.
+    return null;
+  }
 }
 
 export function readActiveTeamCookie(): string | null {

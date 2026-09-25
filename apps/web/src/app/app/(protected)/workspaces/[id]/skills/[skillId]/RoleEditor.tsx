@@ -311,6 +311,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflictInfo, setConflictInfo] = useState<{
@@ -455,6 +456,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
 
   async function handleSave() {
     setSaving(true);
+    setSaved(false);
     setError(null);
     setConflictInfo(null);
     try {
@@ -509,6 +511,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         return;
       }
 
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -957,7 +961,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           </div>
         </div>
 
-        <MobileSaveBar onSave={handleSave} saving={saving} />
+        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} label="Save role" />
       </div>
       {confirmDialog}
     </main>

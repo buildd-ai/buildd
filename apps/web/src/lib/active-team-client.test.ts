@@ -32,6 +32,11 @@ describe('parseActiveTeamCookie', () => {
     expect(parseActiveTeamCookie('buildd-team=team%2Dwork')).toBe('team-work');
   });
 
+  it('returns null for a malformed percent-encoding instead of throwing', () => {
+    expect(() => parseActiveTeamCookie('buildd-team=%E0%A4%A')).not.toThrow();
+    expect(parseActiveTeamCookie('buildd-team=%E0%A4%A')).toBeNull();
+  });
+
   it('returns null when absent, and does not match a longer cookie name', () => {
     expect(parseActiveTeamCookie('')).toBeNull();
     expect(parseActiveTeamCookie('not-buildd-team=x')).toBeNull();

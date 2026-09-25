@@ -89,6 +89,15 @@ describe('WorkspaceList move-to-team', () => {
     expect(document.body.textContent).toContain('Move workspace to Team B?');
   });
 
+  it('re-picking the current team neither prompts nor calls the API', async () => {
+    await act(async () => root.render(<WorkspaceList {...props} />));
+    await click(document.querySelector('button[aria-haspopup="listbox"]'));
+    const same = [...document.querySelectorAll('[role="option"]')].find(o => o.textContent?.includes('Team A'));
+    await click(same);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('Move workspace to');
+  });
+
   it('cancelling leaves the workspace where it is', async () => {
     await pickTeamB();
     await click(buttonByText('Cancel'));
