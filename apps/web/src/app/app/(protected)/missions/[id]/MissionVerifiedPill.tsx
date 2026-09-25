@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, Suspense } from 'react';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
 import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import BottomSheet from '@/components/BottomSheet';
@@ -40,8 +41,12 @@ interface Props {
  * point into goal criteria on this page. Wraps the existing, unmodified
  * `MissionGoalCriteria` panel in a bottom sheet rather than rendering it
  * always-visible below the fold.
+ *
+ * Syncs open state with ?criteria=open URL parameter so the panel persists
+ * across client-side navigation (e.g. after tapping the chip and navigating
+ * within the app, the panel stays open on return).
  */
-export default function MissionVerifiedPill({
+function MissionVerifiedPillInner({
   missionId,
   criteria,
   criteriaState,
@@ -50,9 +55,34 @@ export default function MissionVerifiedPill({
   failingCiPrNumbers,
   overall,
 }: Props) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const criteriaCount = criteria.length;
-  const openSheet = useCallback(() => setOpen(true), []);
+
+  // Sync with URL parameter on mount and when searchParams change
+  useEffect(() => {
+    const showCriteria = searchParams.get('criteria') === 'open';
+    setOpen(showCriteria);
+  }, [searchParams]);
+
+  const handleOpen = useCallback(() => {
+    setOpen(true);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('criteria', 'open');
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [router, pathname, searchParams]);
+
+  const handleClose = useCallback(() => {
+    setOpen(false);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('criteria');
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [router, pathname, searchParams]);
+
+  const openSheet = useCallback(() => handleOpen(), [handleOpen]);
   useOpenOnCriteriaLink(openSheet);
 
   // No criteria and nothing to add (terminal/readonly mission): no chrome at
@@ -65,12 +95,12 @@ export default function MissionVerifiedPill({
         <button
           type="button"
           id={MISSION_CRITERIA_ANCHOR}
-          onClick={() => setOpen(true)}
+          onClick={handleOpen}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted font-mono text-[10px] rounded-sm hover:text-text-secondary transition-colors"
         >
           + Criteria
         </button>
-        <BottomSheet open={open} onClose={() => setOpen(false)} title="Goal criteria">
+        <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
           <MissionGoalCriteria
             missionId={missionId}
             criteria={criteria}
@@ -114,13 +144,13 @@ export default function MissionVerifiedPill({
       <button
         type="button"
         id={MISSION_CRITERIA_ANCHOR}
-        onClick={() => setOpen(true)}
+        onClick={handleOpen}
         title={title}
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] rounded-sm transition-opacity hover:opacity-80 ${toneClass}`}
       >
         {icon} {text}
       </button>
-      <BottomSheet open={open} onClose={() => setOpen(false)} title="Goal criteria">
+      <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
         <MissionGoalCriteria
           missionId={missionId}
           criteria={criteria}
@@ -131,5 +161,13 @@ export default function MissionVerifiedPill({
         />
       </BottomSheet>
     </>
+  );
+}
+
+export default function MissionVerifiedPill(props: Props) {
+  return (
+    <Suspense>
+      <MissionVerifiedPillInner {...props} />
+    </Suspense>
   );
 }
