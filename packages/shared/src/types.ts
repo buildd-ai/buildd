@@ -1610,10 +1610,11 @@ export type GoalCriterion =
     }
   | {
       /**
-       * Free-form natural-language criterion, graded by an LLM against mission
-       * evidence. The escape hatch of last resort: its verdict depends on a model
-       * being reachable at the moment it is needed, so it is the one criterion
-       * form that can silently degrade to NOT_EVALUATED.
+       * Free-form natural-language criterion, graded by an inference call
+       * (`api`) or a read-only runner task (`runner`) — see {@link CriteriaGrader}.
+       * The escape hatch of last resort: its verdict is a model's judgment, so it
+       * is the one criterion form that can land NOT_EVALUATED (no key, no runner,
+       * an `unsure` answer).
        *
        * Because of that, writing one requires stating why no mechanical form
        * (`command` / `all_prs_merged` / `no_open_tasks` / `artifact_exists`)
@@ -1627,8 +1628,33 @@ export type GoalCriterion =
        * read back unchanged.
        */
       notMechanizableReason?: string;
+      /**
+       * Who grades this criterion. Overrides the workspace's
+       * `gitConfig.criteriaGrader`; absent falls through to it, then to `auto`.
+       * See {@link CriteriaGrader}.
+       */
+      grader?: CriteriaGrader;
       label?: string;
     };
+
+/**
+ * How a `description` (prose) criterion is graded.
+ *
+ * - `api`    — one inference call against the team's API-key credential (or the
+ *              server env fallback). Seconds, billed per token. With no key the
+ *              criterion reads NOT_EVALUATED saying so; it never switches to a
+ *              runner behind the caller's back.
+ * - `runner` — a read-only verification task per criterion, claimed by one of the
+ *              team's runners on whatever agent credential it has (an OAuth seat
+ *              included). Asynchronous; no per-token call from the web app.
+ * - `auto`   — `api` when the inference client resolves a key for the team,
+ *              otherwise `runner`. The default.
+ *
+ * Resolution: criterion `grader` > workspace `gitConfig.criteriaGrader` > `auto`.
+ */
+export type CriteriaGrader = 'auto' | 'api' | 'runner';
+
+export const CRITERIA_GRADERS: readonly CriteriaGrader[] = ['auto', 'api', 'runner'];
 
 export interface GoalCriteriaEvidenceRef {
   type: 'artifact' | 'task';
@@ -1653,6 +1679,17 @@ export interface GoalCriteriaState {
      * the provenance of a pass/fail.
      */
     workerTaskId?: string;
+    /**
+     * When this criterion's own verdict was produced (a runner-graded prose
+     * criterion lands asynchronously, after the state-level `evaluatedAt`).
+     */
+    evaluatedAt?: string;
+    /**
+     * Set while a runner-graded criterion's verification task has sat unclaimed
+     * past the wait bound: no runner has picked it up, so the verdict is not
+     * merely slow — it is waiting on capacity someone may need to provide.
+     */
+    awaitingRunner?: boolean;
     /**
      * Identity of the criterion this verdict was produced for, from
      * `criterionFingerprint()`. Array index alone is NOT identity: deleting one

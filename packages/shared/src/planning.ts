@@ -218,7 +218,7 @@ export const planningOutputSchema = {
           operator: { type: 'string', enum: ['gt', 'gte', 'lt', 'lte', 'eq', 'neq'], description: 'Used with type "metric".' },
           threshold: { type: 'number', description: 'Used with type "metric".' },
           unit: { type: 'string', description: 'Used with type "metric".' },
-          description: { type: 'string', description: 'Required when type is "description": free-form criterion graded by an LLM.' },
+          description: { type: 'string', description: 'Required when type is "description": free-form criterion, graded by an API call or a runner agent.' },
           notMechanizableReason: {
             type: 'string',
             description: 'Required when type is "description": why no mechanical form could express this.',

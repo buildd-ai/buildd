@@ -135,6 +135,36 @@ describe('deriveMissionStateView — blocked by a failing criterion', () => {
   });
 });
 
+describe('deriveMissionStateView — a runner verification task nobody claims', () => {
+  const items = [
+    { verdict: 'PENDING', type: 'description', label: 'Contract applied', awaitingRunner: true },
+    { verdict: 'pass', type: 'no_open_tasks' },
+  ];
+
+  it('names the criterion it is waiting for a runner to verify, instead of hanging silently', () => {
+    const gate = deriveCriteriaGatePresentation({ criteriaCount: 2, overall: 'UNVERIFIED', items: items as never });
+    const view = deriveMissionStateView({ ...base, criteriaGate: gate, criteriaItems: items });
+
+    expect(view.kind).toBe('awaiting_verification');
+    const waiting = gated(view);
+    if (waiting.kind !== 'criterion_unverified') throw new Error('unreachable');
+    expect(waiting.awaitingRunner).toEqual(['Contract applied']);
+    expect(waiting.tone).toBe('warning');
+    expect(view.situation.headline.toLowerCase()).toContain('waiting for a runner to verify "contract applied"');
+    expect(view.nextAction).toMatch(/runner/);
+  });
+
+  it('stays the quiet "not yet verified" line while the task is merely in flight', () => {
+    const inFlight = [{ verdict: 'PENDING', type: 'description', label: 'Contract applied' }];
+    const gate = deriveCriteriaGatePresentation({ criteriaCount: 1, overall: 'UNVERIFIED', items: inFlight as never });
+    const view = deriveMissionStateView({ ...base, criteriaGate: gate, criteriaItems: inFlight });
+    const waiting = gated(view);
+    if (waiting.kind !== 'criterion_unverified') throw new Error('unreachable');
+    expect(waiting.awaitingRunner).toBeUndefined();
+    expect(waiting.tone).toBe('neutral');
+  });
+});
+
 describe('deriveMissionStateView — blocked by an unverified criterion', () => {
   const items = [{ verdict: 'UNVERIFIED', label: 'design doc exists' }];
 
