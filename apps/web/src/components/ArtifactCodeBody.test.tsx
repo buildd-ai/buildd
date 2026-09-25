@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ArtifactCodeBody, isRawUnifiedDiff } from './artifact-code-body';
+import { ArtifactCodeBody, isRawUnifiedDiff } from './ArtifactCodeBody';
 
 const RAW = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -34,6 +34,29 @@ describe('isRawUnifiedDiff', () => {
     expect(isRawUnifiedDiff('\n\n@@ -1 +1 @@\n-a\n+b\n')).toBe(true);
   });
 
+  const SHA40 = 'a'.repeat(8) + '0123456789abcdef0123456789abcdef';
+  for (const [name, first] of [
+    ['git diff', 'diff --git a/x b/x'],
+    ['merge diff --cc', 'diff --cc src/x.ts'],
+    ['merge diff --combined', 'diff --combined src/x.ts'],
+    ['format-patch', `From ${SHA40} Mon Sep 17 00:00:00 2001`],
+    ['git show / log -p', 'commit 1a2b3c4'],
+    ['git show, full sha', `commit ${SHA40}`],
+    ['svn', 'Index: src/x.ts'],
+    ['unified old-file header', '--- a/x'],
+    ['unified new-file header', '+++ b/x'],
+    ['bare hunk', '@@ -1 +1 @@'],
+  ] as const) {
+    it(`recognises ${name}`, () => {
+      expect(isRawUnifiedDiff(`${first}\n-a\n+b\n`)).toBe(true);
+    });
+  }
+
+  it('does not mistake markdown front matter or a rule for a diff', () => {
+    expect(isRawUnifiedDiff('---\ntitle: Notes\n---\n# Heading\n')).toBe(false);
+    expect(isRawUnifiedDiff('commit message tidy-ups\n\n- one\n')).toBe(false);
+  });
+
   it('treats a markdown write-up as not a raw diff, even with a fenced diff inside', () => {
     expect(isRawUnifiedDiff(MD)).toBe(false);
   });
@@ -58,5 +81,14 @@ describe('ArtifactCodeBody', () => {
     const html = renderToStaticMarkup(<ArtifactCodeBody type="data" content='{"a":1}' />);
     expect(html).toContain('&quot;a&quot;: 1');
     expect(html.match(/<pre\b[^>]*>/)![0]).toContain('whitespace-pre-wrap');
+  });
+});
+
+describe('ArtifactCodeBody text colour', () => {
+  it('defaults to the app token and accepts the share page palette', () => {
+    expect(renderToStaticMarkup(<ArtifactCodeBody type="data" content="{}" />)).toContain('text-text-secondary');
+    const shared = renderToStaticMarkup(<ArtifactCodeBody type="data" content="{}" textClassName="text-[#ccc]" />);
+    expect(shared).toContain('text-[#ccc]');
+    expect(shared).not.toContain('text-text-secondary');
   });
 });

@@ -115,4 +115,13 @@ describe('SchedulesUnified — mobile row', () => {
     expect(tokens).toContain('overflow-x-auto');
     expect(tokens).toContain('min-w-0');
   });
+
+  // Desktop regression from the scroller: the active tab's underline must sit
+  // on the bar's rule, which a clipped -mb-px overlap can no longer reach.
+  it('draws the bar rule as an inset shadow the active underline paints over', () => {
+    const html = render([item({ id: 'w-1' })]);
+    const tokens = classOf(html, 'schedule-filter-tabs')!.split(/\s+/);
+    expect(tokens).not.toContain('border-b');
+    expect(tokens).toContain('shadow-[inset_0_-1px_0_var(--border)]');
+  });
 });

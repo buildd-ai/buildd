@@ -325,6 +325,23 @@ function LegendSwatch({ children, label }: { children: React.ReactNode; label: s
   );
 }
 
+/** Dispatched on the sheet's dialog element to ask it to close. */
+const FLIGHT_DETAIL_CLOSE_EVENT = 'flightdetail:close';
+
+/**
+ * Close the flight detail sheet `target` sits in, if any. The mission page's
+ * task-sheet owner calls this when a bar tap opens a task, so the flight sheet
+ * can never stay stacked over (or under) the task sheet. Returns whether a
+ * sheet was asked to close.
+ */
+export function closeEnclosingFlightDetailSheet(target: EventTarget | null): boolean {
+  const el = target as { closest?: (sel: string) => Element | null } | null;
+  const dialog = el?.closest?.('[data-flight-detail-sheet]');
+  if (!dialog) return false;
+  dialog.dispatchEvent(new CustomEvent(FLIGHT_DETAIL_CLOSE_EVENT));
+  return true;
+}
+
 export interface FlightDetailSheetProps {
   open: boolean;
   onClose: () => void;
@@ -355,6 +372,7 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
   }
   const headingId = useId();
   const closeRef = useRef<HTMLAnchorElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<Element | null>(null);
 
   useEffect(() => {
@@ -371,8 +389,12 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
       }
     }
     document.addEventListener('keydown', handleKeyDown);
+    const dialog = dialogRef.current;
+    const handleCloseRequest = () => onClose();
+    dialog?.addEventListener(FLIGHT_DETAIL_CLOSE_EVENT, handleCloseRequest);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
+      dialog?.removeEventListener(FLIGHT_DETAIL_CLOSE_EVENT, handleCloseRequest);
       document.body.style.overflow = previousOverflow;
       if (restoreFocusRef.current instanceof HTMLElement) restoreFocusRef.current.focus();
     };
@@ -387,7 +409,7 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
   const summary = describeSteeringPattern(data);
 
   const sheet = (
-    <div className="fixed inset-0 z-50" aria-modal="true" role="dialog" aria-labelledby={headingId} onClick={onClose}>
+    <div ref={dialogRef} data-flight-detail-sheet="" className="fixed inset-0 z-50" aria-modal="true" role="dialog" aria-labelledby={headingId} onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       {/* Block layout, not a flex column: with max-h + overflow a flex column
           shrinks its children to fit (the chart squashed, the title clipped)

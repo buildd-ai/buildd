@@ -9,7 +9,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import AiFeedback from '@/components/AiFeedback';
 import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
-import { ArtifactCodeBody } from './artifact-code-body';
+import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 
 export const dynamic = 'force-dynamic';

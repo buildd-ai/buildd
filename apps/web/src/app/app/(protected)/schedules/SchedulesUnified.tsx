@@ -555,10 +555,14 @@ export default function SchedulesUnified({
 
       {/* Filter bar */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {/* Scrolls in place on a phone rather than pushing the page sideways. */}
+        {/* Scrolls in place on a phone rather than pushing the page sideways.
+            The bar's rule is an inset shadow, not a border: inside an
+            overflow container a child's -mb-px overlap is clipped, so the
+            active tab's underline could no longer cover a real border. The
+            tab's own border paints over the shadow instead. */}
         <div
           data-testid="schedule-filter-tabs"
-          className="flex gap-1 border-b border-border-default min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="flex gap-1 shadow-[inset_0_-1px_0_var(--border)] min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {filterTabs.map(tab => (
             <button
