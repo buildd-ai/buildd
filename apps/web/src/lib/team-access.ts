@@ -337,6 +337,37 @@ export const resolveActiveTeamId = cache(async (
   return teamIds[0];
 });
 
+export type ActiveTeamScope = {
+  /** The resolved active team, or null when the user belongs to no team. */
+  teamId: string | null;
+  /** Every workspace of that team (id + name), in no particular order. */
+  workspaces: { id: string; name: string }[];
+};
+
+/**
+ * The active team plus its workspaces — what the app shell (team switcher,
+ * workspace picker) and Home both scope to. One resolver for both, so the
+ * header can never name a team whose workspaces Home is not showing.
+ *
+ * Resolution is resolveActiveTeamId's (valid cookie → personal team → first
+ * team). Errors propagate: a caller that shows "no workspaces" on failure
+ * would turn an outage into a false empty state.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
+ */
+export const resolveActiveTeamScope = cache(async (
+  userId: string,
+  cookieValue: string | null | undefined,
+): Promise<ActiveTeamScope> => {
+  const teamId = await resolveActiveTeamId(userId, cookieValue);
+  if (!teamId) return { teamId: null, workspaces: [] };
+  const ws = await db.query.workspaces.findMany({
+    where: eq(workspaces.teamId, teamId),
+    columns: { id: true, name: true },
+  });
+  return { teamId, workspaces: ws.map((w) => ({ id: w.id, name: w.name })) };
+});
+
 export type UserTeam = {
   id: string;
   name: string;

@@ -179,6 +179,37 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     expect(html).toContain('Doc fix merged');
   });
 
+  it('the merged-fix link says where it goes; the decision lives on the Accept button below it', () => {
+    // It used to read "Accept, or correct the assertion →" while opening the
+    // task, with the real Accept button right under it.
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard
+        item={item({ chip: 'DISCREPANCY', direction: 'code_ahead', mergedDocFixTaskId: 'task-merged' })}
+      />,
+    );
+    expect(html).toContain('Open the doc-fix task →');
+    expect(html).not.toContain('Accept, or correct the assertion');
+  });
+
+  it('a long spec path wraps at any point without break-all, and the age separator is not a text glyph', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard item={item({ specPath: 'docs/design/a-very-long-spec-document-name-that-overflows-a-phone.md' })} />,
+    );
+    expect(html).toContain('[overflow-wrap:anywhere]');
+    expect(html).not.toContain('break-all');
+    // A literal leading "·" wrapped onto its own line on a narrow card.
+    expect(html).not.toMatch(/>· \d/);
+  });
+
+  it('orange action text uses the contrast-safe accent-text token, not text-primary', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard item={item({ docFixTaskId: 'task-1', docFixTaskStatus: 'in_progress' })} />,
+    );
+    expect(html).toContain('Fix in flight');
+    expect(html).not.toMatch(/(?<![-\w])text-primary(?![-\w])/);
+    expect(html).toContain('text-accent-text');
+  });
+
   it('renders nothing when the item carries no discrepancyId', () => {
     const html = renderToStaticMarkup(<WaitingOnYouDiscrepancyCard item={item({ discrepancyId: undefined })} />);
     expect(html).toBe('');

@@ -1,7 +1,4 @@
 import { cookies } from 'next/headers';
-import { eq } from 'drizzle-orm';
-import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
 import { AuthGuard } from '@/components/AuthGuard';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
@@ -14,7 +11,7 @@ import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvi
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 
 export default async function ProtectedLayout({
@@ -36,38 +33,29 @@ export default async function ProtectedLayout({
     // round-trip chains before anything painted. Each keeps its own catch so a
     // failure degrades exactly the surface it used to — Promise.all would
     // otherwise reject the whole group on the first error.
-    const [userTeamsResult, workspaceIdsResult, cookieStore] = await Promise.all([
+    const [userTeamsResult, workspaceIdsResult, scopeResult] = await Promise.all([
       // Teams empty on failure, page still renders
       getUserTeamsWithDetails(user.id).catch(() => [] as typeof userTeams),
       // Workspace IDs empty on failure, notifications won't load
       getUserWorkspaceIds(user.id).catch(() => [] as string[]),
-      cookies(),
+      // Active team + its workspaces, from the same resolver Home uses so the
+      // header never names a team Home isn't showing. The team zone chains off
+      // it inside this group rather than as a second serial wait.
+      cookies()
+        .then((cookieStore) => resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value))
+        .then(async (scope) => ({
+          scope,
+          // Never throws; null means "no team zone" → timestamps use the browser's
+          timezone: scope.teamId ? await getTeamTimezoneSetting(scope.teamId) : null,
+        }))
+        // No team on failure; WorkspaceFilter renders nothing
+        .catch(() => ({ scope: { teamId: null, workspaces: [] } as ActiveTeamScope, timezone: null })),
     ]);
     userTeams = userTeamsResult;
     workspaceIds = workspaceIdsResult;
-
-    const teamCookie = cookieStore.get('buildd-team')?.value;
-
-    // Use cookie value if it matches a valid team, otherwise default to first team
-    if (teamCookie && userTeams.some(t => t.id === teamCookie)) {
-      currentTeamId = teamCookie;
-    } else if (userTeams.length > 0) {
-      currentTeamId = userTeams[0].id;
-    }
-
-    if (currentTeamId) {
-      const teamId = currentTeamId;
-      [teamWorkspaces, teamTimezone] = await Promise.all([
-        db
-          .select({ id: workspaces.id, name: workspaces.name })
-          .from(workspaces)
-          .where(eq(workspaces.teamId, teamId))
-          // teamWorkspaces stays empty; WorkspaceFilter renders nothing
-          .catch(() => [] as typeof teamWorkspaces),
-        // Never throws; null means "no team zone" → timestamps use the browser's
-        getTeamTimezoneSetting(teamId),
-      ]);
-    }
+    currentTeamId = scopeResult.scope.teamId;
+    teamWorkspaces = scopeResult.scope.workspaces;
+    teamTimezone = scopeResult.timezone;
   }
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';

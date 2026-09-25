@@ -25,7 +25,9 @@ const {
   getUserTeamIds,
   resolveAccountTeamIds,
   getUserTeamRole,
+  resolveActiveTeamScope,
 } = await import('./team-access');
+const { PgDialect } = await import('drizzle-orm/pg-core');
 
 describe('getUserTeamIds', () => {
   beforeEach(() => {
@@ -153,6 +155,59 @@ describe('resolveActiveTeamId', () => {
     mockTeamMembersFindMany.mockResolvedValue([]);
     mockTeamsFindFirst.mockResolvedValue({ id: 'personal-team-id' });
     expect(await resolveActiveTeamId('user-1', null)).toBe('personal-team-id');
+  });
+});
+
+describe('resolveActiveTeamScope — the one active-team resolver the shell and Home share', () => {
+  // Team T is the user's personal team; team U is another membership. The
+  // shell used to default to "first team" and Home to "every workspace, no
+  // team", so a user without a valid cookie saw one team named in the header
+  // and a "no workspace yet" empty state on Home.
+  const wsByTeam: Record<string, { id: string; name: string }[]> = {
+    T: [{ id: 'ws-t1', name: 'Alpha' }, { id: 'ws-t2', name: 'Beta' }],
+    U: [{ id: 'ws-u1', name: 'Gamma' }],
+  };
+  const dialect = new PgDialect();
+
+  beforeEach(() => {
+    mockTeamMembersFindMany.mockReset();
+    mockTeamsFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'U' }, { teamId: 'T' }]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'T' });
+    // Answer from the teamId actually bound into the WHERE clause, so a
+    // resolver that queried the wrong team returns the wrong workspaces.
+    mockWorkspacesFindMany.mockImplementation(((args: any) => {
+      const { params } = dialect.sqlToQuery(args.where);
+      const team = params.find((p) => typeof p === 'string' && p in wsByTeam) as string | undefined;
+      return Promise.resolve(team ? wsByTeam[team] : []);
+    }) as any);
+  });
+
+  it('no cookie → personal team and its workspaces', async () => {
+    expect(await resolveActiveTeamScope('user-1', undefined)).toEqual({ teamId: 'T', workspaces: wsByTeam.T });
+  });
+
+  it('stale cookie (a team the user left) → personal team, never an empty workspace set', async () => {
+    const scope = await resolveActiveTeamScope('user-1', 'team-the-user-left');
+    expect(scope.teamId).toBe('T');
+    expect(scope.workspaces).toEqual(wsByTeam.T);
+  });
+
+  it('valid cookie → that team and its workspaces', async () => {
+    expect(await resolveActiveTeamScope('user-1', 'U')).toEqual({ teamId: 'U', workspaces: wsByTeam.U });
+  });
+
+  it('no team at all → null team, no workspaces, no workspace query', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockResolvedValue(null);
+    expect(await resolveActiveTeamScope('user-1', 'U')).toEqual({ teamId: null, workspaces: [] });
+    expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('propagates a workspace-query failure instead of reporting "no workspaces"', async () => {
+    mockWorkspacesFindMany.mockImplementation((() => Promise.reject(new Error('db down'))) as any);
+    await expect(resolveActiveTeamScope('user-1', 'U')).rejects.toThrow('db down');
   });
 });
 

@@ -8,7 +8,8 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/team-access';
+import { resolveActiveTeamScope } from '@/lib/team-access';
+import { splitWaitingOnYou, waitingOnYouSummary, rightNowState, stripLeadingPrRef, stageChipShowsPrNumber, recordBestEffort } from './home-view';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
@@ -22,7 +23,6 @@ import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/l
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
-import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
@@ -191,6 +191,9 @@ export default async function HomePage({
   }[] = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
+  // Every workspace of the active team — the empty-state input. Not the
+  // filter list's length alone, and not narrowed by ?workspace=.
+  let workspaceCount = 0;
   // Workspace channels HomeAutoRefresh subscribes to, so an open tab never
   // holds a stale action queue (e.g. a Merge card for an already-merged PR).
   let refreshWorkspaceIds: string[] = [];
@@ -293,39 +296,16 @@ export default async function HomePage({
 
     try {
       const cookieStore = await cookies();
-      const cookieTeamId = cookieStore.get('buildd-team')?.value;
-
-      // Only scope to a specific team when the cookie is explicitly set and the
-      // user is a member of that team. Without a valid cookie, show cross-team
-      // data for all the user's workspaces (same as pre-#1009 behaviour) so
-      // the Home screen is never empty or stale on first load / after clearing cookies.
-      let activeTeamId: string | null = null;
-      if (cookieTeamId) {
-        const userTeamIds = await getUserTeamIds(user.id);
-        if (userTeamIds.includes(cookieTeamId)) {
-          activeTeamId = cookieTeamId;
-        }
-      }
-
-      // Workspace IDs for worker/task queries
-      let wsIds: string[];
-      if (activeTeamId) {
-        const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
-
-        // Load team workspaces for filter dropdown
-        if (teamWsIds.length > 0) {
-          teamWorkspaces = await db
-            .select({ id: workspacesTable.id, name: workspacesTable.name })
-            .from(workspacesTable)
-            .where(inArray(workspacesTable.id, teamWsIds));
-        }
-
-        // Narrow to selected workspace if filter is set (must belong to team)
-        wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
-      } else {
-        // No valid team cookie → show all user workspaces cross-team
-        wsIds = await getUserWorkspaceIds(user.id);
-      }
+      // Same resolver as the app shell (layout.tsx), so the team the header
+      // names is the team whose workspaces Home shows: valid cookie → personal
+      // team → first team. No cookie is no longer a cross-team view.
+      const scope = await resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value);
+      const activeTeamId = scope.teamId;
+      teamWorkspaces = scope.workspaces;
+      const teamWsIds = scope.workspaces.map((w) => w.id);
+      // Narrow to selected workspace if filter is set (must belong to team)
+      const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
+      workspaceCount = teamWsIds.length;
       refreshWorkspaceIds = wsIds;
 
       // Initiative list — team-scoped (matching the cookie/team logic above),
@@ -333,7 +313,7 @@ export default async function HomePage({
       // task/worker wsIds queries below so it survives an empty workspace set.
       // Feeds the arc headline and the queue scoping chips; the 160px card rail
       // it used to feed is MUST NOT on Home (surface-IA spec §1, §2.1, AC-6).
-      const initiativeTeamIds = activeTeamId ? [activeTeamId] : await getUserTeamIds(user.id);
+      const initiativeTeamIds = activeTeamId ? [activeTeamId] : [];
       const sortedInitiatives = sortInitiatives(
         await loadInitiativeList({
           teamIds: initiativeTeamIds,
@@ -371,13 +351,17 @@ export default async function HomePage({
         }
         if (best) arcHeadline = `${best.title} crossed ${best.milestone}%`;
 
-        await db
+        // Bookkeeping, not rendering: runs after the response via after(), and
+        // a failure only costs the next visit its headline. Awaited here it
+        // could throw and skip every query below, blanking Home.
+        const seenValues = sortedInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress }));
+        recordBestEffort('initiative-progress-seen', () => db
           .insert(initiativeProgressSeen)
-          .values(sortedInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress })))
+          .values(seenValues)
           .onConflictDoUpdate({
             target: [initiativeProgressSeen.userId, initiativeProgressSeen.initiativeId],
             set: { lastProgress: sql`excluded.last_progress`, updatedAt: sql`now()` },
-          });
+          }));
       }
 
       // Initiative pulse line (§2.2): one verdict per arc, from the shared
@@ -631,11 +615,9 @@ export default async function HomePage({
           }));
 
         // Missions with task progress + health
-        // Scope: active team (cookie set) or all user teams (no cookie).
+        // Scope: the active team (wsIds is non-empty, so there is one).
         {
-          const missionTeamIds = activeTeamId
-            ? [activeTeamId]
-            : await getUserTeamIds(user.id);
+          const missionTeamIds = activeTeamId ? [activeTeamId] : [];
 
           const missionsWhere = missionTeamIds.length > 0
             ? (wsFilter && activeTeamId
@@ -1851,7 +1833,7 @@ export default async function HomePage({
     : null;
   // RESOLVING / FIXING_CI / CI_RUNNING are informational — an agent is handling
   // it, so they stay visible but never inflate the human's count.
-  const actionableCount = actionQueue.filter(i => isActionableChip(i.chip)).length;
+  const actionableCount = splitWaitingOnYou(actionQueue).needsYou.length;
   const waitClause = actionableCount > 0 ? `${actionableCount} waiting on you` : null;
   const subParts = [shipClause, waitClause].filter(Boolean) as string[];
   const subheading = subParts.length > 0 ? subParts.join(' · ') : 'Your agents are standing by';
@@ -1862,6 +1844,15 @@ export default async function HomePage({
   const filteredActionQueue = initFilter
     ? actionQueue.filter((i) => i.initiativeId === initFilter)
     : actionQueue;
+  // Human work first, then what an agent is already finishing — rendered as
+  // two groups so the count in the header matches the cards under it.
+  const { needsYou: needsYouItems, inFlight: inFlightItems } = splitWaitingOnYou(filteredActionQueue);
+  const waitingSummary = waitingOnYouSummary(needsYouItems.length, inFlightItems.length);
+  const rightNow = rightNowState({
+    inFlightCount: activeItems.length + agentReviewingPrs.length + reviewQueuedPrs.length,
+    workspaceCount,
+    totalTaskCount,
+  });
 
   return (
     <SwipeProvider>
@@ -1900,12 +1891,19 @@ export default async function HomePage({
             {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE · RESOLVING) */}
             {actionQueue.length > 0 && (
               <div className="mb-8">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between gap-3 mb-4">
                   <div className="section-label">Waiting on You</div>
-                  {/* Badge counts human work only — agent-handled cards excluded */}
-                  {filteredActionQueue.filter(i => isActionableChip(i.chip)).length > 0 && (
-                    <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
-                      {filteredActionQueue.filter(i => isActionableChip(i.chip)).length}
+                  {/* Names both halves: "1 needs you · 4 in flight". A bare
+                      "1" over five cards read as a miscount. */}
+                  {waitingSummary && (
+                    <span className="text-[12px] font-mono text-text-muted text-right" data-testid="waiting-on-you-summary">
+                      {needsYouItems.length > 0 && (
+                        <span className="font-semibold text-accent-text">
+                          {waitingOnYouSummary(needsYouItems.length, 0)}
+                        </span>
+                      )}
+                      {needsYouItems.length > 0 && inFlightItems.length > 0 && ' · '}
+                      {inFlightItems.length > 0 && waitingOnYouSummary(0, inFlightItems.length)}
                     </span>
                   )}
                 </div>
@@ -1918,8 +1916,19 @@ export default async function HomePage({
                 {filteredActionQueue.length === 0 && (
                   <p className="text-[13px] text-text-muted mb-2">Nothing waiting for this initiative.</p>
                 )}
+                {filteredActionQueue.length > 0 && needsYouItems.length === 0 && (
+                  <p className="text-[13px] text-text-muted mb-3">Nothing needs you right now.</p>
+                )}
+                {[needsYouItems, inFlightItems].map((group, groupIndex) => group.length === 0 ? null : (
+                <div key={groupIndex === 0 ? 'needs-you' : 'in-flight'} data-testid={groupIndex === 0 ? 'waiting-needs-you' : 'waiting-in-flight'} className={groupIndex === 1 && needsYouItems.length > 0 ? 'mt-5' : undefined}>
+                {groupIndex === 1 && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="section-label-missions text-[11px] text-text-muted">In flight</span>
+                    <span className="text-[11px] text-text-muted font-mono">{group.length}</span>
+                  </div>
+                )}
                 <div className="space-y-2">
-                  {filteredActionQueue.map((item) => {
+                  {group.map((item) => {
                     const arc = resolveActionCardContext(item);
                     if (item.chip === 'MERGE') {
                       return (
@@ -1955,14 +1964,14 @@ export default async function HomePage({
                           className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
+                            <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">
                               Question
                             </span>
                             {arc && arc.kind !== 'workspace' && (
                               <span className="text-[11px] text-text-muted">{arc.label}</span>
                             )}
                           </div>
-                          <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
+                          <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mb-0.5">
                             {item.taskTitle}
                           </div>
                           <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
@@ -1987,7 +1996,7 @@ export default async function HomePage({
                           className="block border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3 hover:bg-status-error/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[10px] font-mono font-medium tracking-wide uppercase text-status-error">
+                            <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
                               Reconnect
                             </span>
                             <span className="text-[11px] text-text-muted">Connection</span>
@@ -2007,14 +2016,14 @@ export default async function HomePage({
                           className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[10px] font-mono font-medium text-accent-text tracking-wide uppercase">
+                            <span className="text-[11px] font-mono font-medium text-accent-text tracking-wide uppercase">
                               Approve Plan
                             </span>
                             {arc && arc.kind !== 'workspace' && (
                               <span className="text-[11px] text-text-muted">{arc.label}</span>
                             )}
                           </div>
-                          <div className="text-[13px] font-medium text-text-primary truncate">
+                          <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
                             {item.taskTitle}
                           </div>
                         </Link>
@@ -2029,14 +2038,14 @@ export default async function HomePage({
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                                <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
                                   <Spinner size="xs" aria-label="Resolving conflicts" />
                                   Resolving Conflicts
                                   {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
                                 </span>
                               </div>
                               {item.taskTitle && (
-                                <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
+                                <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
                                   {item.conflictRetryTaskId ? (
                                     <Link href={actionCardTaskLink(item, { taskId: item.conflictRetryTaskId, page: true })} className="hover:underline">
                                       {item.taskTitle}
@@ -2053,7 +2062,7 @@ export default async function HomePage({
                                   href={item.prUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-[11px] text-text-muted hover:underline mt-0.5 inline-block"
+                                  className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
                                 >
                                   PR #{item.prNumber} ↗
                                 </a>
@@ -2075,7 +2084,7 @@ export default async function HomePage({
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+                                <span className="text-[11px] font-mono font-medium text-status-error tracking-wide uppercase">
                                   Blocked
                                 </span>
                                 {arc && (
@@ -2083,7 +2092,7 @@ export default async function HomePage({
                                 )}
                               </div>
                               {item.taskTitle && (
-                                <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
+                                <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
                                   {item.taskId ? (
                                     <Link href={actionCardTaskLink(item)} className="hover:underline">
                                       {item.taskTitle}
@@ -2107,7 +2116,7 @@ export default async function HomePage({
                                   href={item.prUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-[11px] text-text-muted hover:underline mt-0.5 inline-block"
+                                  className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
                                 >
                                   PR #{item.prNumber} ↗
                                 </a>
@@ -2116,7 +2125,7 @@ export default async function HomePage({
                             {item.deadZoneLastRetryTaskId && (
                               <Link
                                 href={actionCardTaskLink(item, { taskId: item.deadZoneLastRetryTaskId, page: true })}
-                                className="shrink-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
+                                className="shrink-0 inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
                               >
                                 Last attempt
                               </Link>
@@ -2148,7 +2157,7 @@ export default async function HomePage({
                           className="border-l-2 border-border bg-surface-raised/40 rounded-r-[10px] px-4 py-3"
                         >
                           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                            <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
                               Stale
                             </span>
                             {ageLabel && (
@@ -2159,7 +2168,7 @@ export default async function HomePage({
                             )}
                           </div>
                           {item.taskTitle && (
-                            <div className="text-[13px] font-medium text-text-secondary truncate mt-0.5">
+                            <div className="text-[13px] font-medium text-text-secondary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
                               {item.taskId ? (
                                 <Link href={actionCardTaskLink(item)} className="hover:underline">
                                   {item.taskTitle}
@@ -2175,7 +2184,7 @@ export default async function HomePage({
                               href={item.prUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-[11px] text-text-muted hover:underline mt-0.5 inline-block"
+                              className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
                             >
                               Check PR #{item.prNumber} on GitHub ↗
                             </a>
@@ -2186,6 +2195,8 @@ export default async function HomePage({
                     return null;
                   })}
                 </div>
+                </div>
+                ))}
                 {/* §12: overflow past the top-10-per-workspace cap is never
                     silently dropped — a clean-looking queue must not be able
                     to hide a growing backlog the way the Schedules page did. */}
@@ -2212,7 +2223,7 @@ export default async function HomePage({
             {/* Right Now */}
             <div className="mb-8">
               <div className="section-label mb-4">Right Now</div>
-              {activeItems.length === 0 && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0 && teamWorkspaces.length === 0 ? (
+              {rightNow === 'create-workspace' ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
@@ -2225,13 +2236,13 @@ export default async function HomePage({
                     Connect a repo
                   </Link>
                 </div>
-              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0 && totalTaskCount === 0 ? (
+              ) : rightNow === 'get-started' ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
                   <div className="space-y-3">
                     <div className="flex items-start gap-3">
                       <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <span className="text-[10px] font-mono text-text-muted">1</span>
+                        <span className="text-[11px] font-mono text-text-muted">1</span>
                       </div>
                       <div className="min-w-0">
                         <div className="text-[13px] text-text-primary">Install the CLI</div>
@@ -2242,7 +2253,7 @@ export default async function HomePage({
                     </div>
                     <div className="flex items-start gap-3">
                       <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <span className="text-[10px] font-mono text-text-muted">2</span>
+                        <span className="text-[11px] font-mono text-text-muted">2</span>
                       </div>
                       <div className="min-w-0">
                         <div className="text-[13px] text-text-primary">Log in &amp; connect</div>
@@ -2253,11 +2264,11 @@ export default async function HomePage({
                     </div>
                     <div className="flex items-start gap-3">
                       <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <span className="text-[10px] font-mono text-text-muted">3</span>
+                        <span className="text-[11px] font-mono text-text-muted">3</span>
                       </div>
                       <div className="min-w-0">
                         <div className="text-[13px] text-text-primary">
-                          <Link href="/app/tasks/new" className="text-primary hover:underline">Create a task</Link>
+                          <Link href="/app/tasks/new" className="text-accent-text hover:underline">Create a task</Link>
                           {' '}or start the runner
                         </div>
                         <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
@@ -2267,29 +2278,10 @@ export default async function HomePage({
                     </div>
                   </div>
                 </div>
-              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0 ? (
-                <div>
-                  <div className="text-[14px] text-text-secondary mb-3">No agents running.</div>
-                  {teamRoles.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {teamRoles.map((role) => (
-                        <Link
-                          key={role.id}
-                          href="/app/team"
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-2 border border-border-default"
-                        >
-                          <div
-                            className="w-4 h-4 flex items-center justify-center flex-shrink-0 border border-border-strong"
-                          >
-                            <span className="text-text-primary text-[8px] font-bold">{role.name[0]?.toUpperCase()}</span>
-                          </div>
-                          <span className="text-[11px] text-text-muted">{role.name}</span>
-                          <span className="text-[10px] text-text-muted/60">idle</span>
-                        </Link>
-                      ))}
-                    </div>
-                  )}
-                </div>
+              ) : rightNow === 'idle' ? (
+                // The idle roles already render as chips in Team, right beside
+                // this — repeating them here just doubled the list.
+                <div className="text-[14px] text-text-secondary">No agents running.</div>
               ) : (
                 <div className="space-y-2">
                   {/* Agent-reviewing PR cards — ambient presence, not actionable */}
@@ -2301,26 +2293,26 @@ export default async function HomePage({
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                            <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
                               Agent Reviewing
                             </span>
                             {item.reviewerRoleSlug && (
-                              <span className="text-[10px] text-text-muted">· {item.reviewerRoleSlug}</span>
+                              <span className="text-[11px] text-text-muted">· {item.reviewerRoleSlug}</span>
                             )}
                             {item.reviewerStartedAt && (
-                              <span className="text-[10px] text-text-muted">
+                              <span className="text-[11px] text-text-muted">
                                 {timeAgo(item.reviewerStartedAt)}
                               </span>
                             )}
                             {!!item.unblockCount && item.unblockCount > 0 && (
-                              <span className="text-[10px] text-text-muted">
+                              <span className="text-[11px] text-text-muted">
                                 · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
                               </span>
                             )}
                           </div>
                           <Link
                             href={actionCardTaskLink(item)}
-                            className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                            className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
                           >
                             {item.taskTitle}
                           </Link>
@@ -2329,7 +2321,7 @@ export default async function HomePage({
                               <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
                             )}
                             {item.prUrl && (
-                              <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
+                              <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
                                 PR #{item.prNumber} ↗
                               </ExternalLink>
                             )}
@@ -2348,18 +2340,18 @@ export default async function HomePage({
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                          <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                          <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
                             Review Queued
                           </span>
                           {!!item.unblockCount && item.unblockCount > 0 && (
-                            <span className="text-[10px] text-text-muted">
+                            <span className="text-[11px] text-text-muted">
                               · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
                             </span>
                           )}
                         </div>
                         <Link
                           href={actionCardTaskLink(item)}
-                          className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                          className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
                         >
                           {item.taskTitle}
                         </Link>
@@ -2368,7 +2360,7 @@ export default async function HomePage({
                             <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
                           )}
                           {item.prUrl && (
-                            <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
+                            <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
                               PR #{item.prNumber} ↗
                             </ExternalLink>
                           )}
@@ -2453,7 +2445,7 @@ export default async function HomePage({
               <div className="mb-6 pb-6 border-b border-border-default">
                 <div className="flex items-center justify-between mb-4">
                   <div className="section-label">Team</div>
-                  <Link href="/app/team" className="text-xs text-text-muted hover:text-text-secondary">
+                  <Link href="/app/team" className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-text-secondary">
                     {teamRoles.filter(r => r.isActive).length} active &middot; {teamRoles.length} total
                   </Link>
                 </div>
@@ -2462,12 +2454,12 @@ export default async function HomePage({
                     <Link
                       key={role.id}
                       href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-[var(--card)] border border-border-strong hover:bg-surface-3 transition-colors"
+                      className="flex items-center gap-2 min-h-11 md:min-h-0 px-3 py-1.5 bg-[var(--card)] border border-border-strong hover:bg-surface-3 transition-colors"
                     >
                       <div
                         className={`w-5 h-5 flex items-center justify-center flex-shrink-0 border border-border-strong ${role.isActive ? 'ring-2 ring-accent/50' : ''}`}
                       >
-                        <span className="text-text-primary text-[9px] font-bold">{role.name[0]?.toUpperCase()}</span>
+                        <span className="text-text-primary text-[11px] font-bold">{role.name[0]?.toUpperCase()}</span>
                       </div>
                       <span className="text-[12px] font-medium text-text-primary">{role.name}</span>
                       {role.isActive && (
@@ -2498,10 +2490,10 @@ export default async function HomePage({
                   const row = (
                     <>
                       <div className="flex-1 min-w-0">
-                        <div className="text-[13px] text-text-primary truncate">
-                          {event.title}
+                        <div className="text-[13px] text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
+                          {stageChipShowsPrNumber(stage) ? stripLeadingPrRef(event.title, event.prNumber) : event.title}
                         </div>
-                        <div className="text-[10px] text-text-muted mt-0.5 truncate">
+                        <div className="text-[11px] text-text-muted mt-0.5 truncate">
                           via {event.workerName}
                           {event.missionTitle && ` \u00B7 ${event.missionTitle}`}
                           {' \u00B7 '}

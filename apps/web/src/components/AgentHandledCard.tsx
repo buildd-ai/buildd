@@ -18,14 +18,14 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   return (
     <div className="border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3">
       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+        <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
           {spinning && <Spinner size="xs" aria-label="In progress" />}
           {label}
         </span>
       </div>
 
       {item.taskTitle && (
-        <div className="text-[13px] font-medium text-text-primary truncate">
+        <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
           {item.taskId ? (
             <Link href={actionCardTaskLink(item)} className="hover:underline">
               {item.taskTitle}
@@ -34,9 +34,9 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
         </div>
       )}
 
-      <div className="flex items-center gap-3 mt-0.5">
+      <div className="flex items-center gap-3 mt-0.5 flex-wrap">
         {fixTaskId && (
-          <Link href={actionCardTaskLink(item, { taskId: fixTaskId, page: true })} className="text-[11px] font-medium text-primary hover:underline">
+          <Link href={actionCardTaskLink(item, { taskId: fixTaskId, page: true })} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] font-medium text-accent-text hover:underline">
             View fix attempt
           </Link>
         )}
@@ -45,7 +45,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
             href={item.prUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[11px] text-text-muted hover:underline"
+            className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline"
           >
             PR #{item.prNumber} ↗
           </a>
