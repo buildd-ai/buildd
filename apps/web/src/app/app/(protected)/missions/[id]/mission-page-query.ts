@@ -20,8 +20,9 @@
  *
  * Pure: no `db` import. The page runs the queries.
  */
-import { sql, eq, type SQL } from 'drizzle-orm';
-import { tasks } from '@buildd/core/db/schema';
+import { sql, eq, and, type SQL } from 'drizzle-orm';
+import { artifacts, tasks } from '@buildd/core/db/schema';
+import { ArtifactType } from '@buildd/shared';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -121,6 +122,31 @@ export const MISSION_DETAIL_WITH = {
   tasks: MISSION_TASKS_WITH,
   schedule: true,
 } as const;
+
+// ── The visual review shots ─────────────────────────────────────────────────
+
+/**
+ * Audit screenshots for the Visual review step (docs/design/visual-qa-auditor.md,
+ * "Where the screenshots show"). A dedicated query, because the with-tree above
+ * keeps five artifacts per worker and would cut a 40-shot run to five. Keyed on
+ * `artifacts.mission_id`, which upload-url sets for an auditor's uploads.
+ */
+export const MISSION_VISUAL_SHOT_COLUMNS = {
+  id: true,
+  type: true,
+  metadata: true,
+  createdAt: true,
+} as const;
+
+/** Newest first: 40 shots a run (20 routes × 2 viewports) × up to three runs. */
+export const MISSION_VISUAL_SHOTS_LIMIT = 120;
+
+export const missionVisualShotsWhere = (missionId: string): SQL =>
+  and(
+    eq(artifacts.missionId, missionId),
+    eq(artifacts.type, ArtifactType.SCREENSHOT),
+    sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
+  )!;
 
 // ── The digest query ─────────────────────────────────────────────────────────
 

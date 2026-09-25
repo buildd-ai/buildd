@@ -3,7 +3,8 @@
  * W2 "Delivery", addendum D5). Pure.
  *
  * One line, directly under the situation, that answers "what is left before
- * this mission is delivered": Integrated → Verified → Shipped → Budget. It
+ * this mission is delivered": Integrated → Verified → Visual review → Shipped
+ * → Budget. It
  * replaces the progress card, the mission PR card, the release card, the two
  * budget cards and the four completion stat tiles, each of which used to be its
  * own block between the outcome and the task list. A step with nothing to say
@@ -12,7 +13,7 @@
 import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './mission-integration-pr';
 import type { ReleaseState } from './release-state';
 
-export type DeliveryStepKey = 'integrated' | 'verified' | 'shipped' | 'budget';
+export type DeliveryStepKey = 'integrated' | 'verified' | 'visual' | 'shipped' | 'budget';
 export type DeliveryStepState = 'done' | 'partial' | 'todo' | 'blocked';
 
 export const DELIVERY_STATE_GLYPH: Record<DeliveryStepState, string> = {
@@ -33,6 +34,7 @@ export const DELIVERY_STATE_TEXT: Record<DeliveryStepState, string> = {
 export const DELIVERY_STEP_LABEL: Record<DeliveryStepKey, string> = {
   integrated: 'Integrated',
   verified: 'Verified',
+  visual: 'Visual review',
   shipped: 'Shipped',
   budget: 'Budget',
 };
@@ -61,6 +63,12 @@ export interface DeliveryInput {
     overall: string | null;
   };
   /**
+   * The latest visual-audit run (`summarizeVisualRun`,
+   * docs/design/visual-qa-auditor.md). `null`/absent when the mission has no
+   * `[surface audit]` and no audit screenshots, which hides the step.
+   */
+  visual?: DeliveryVisual | null;
+  /**
    * When THIS mission's work reached trunk (`missionTrunkMergedAt`): one entry
    * per merge. Empty when nothing of the mission is on trunk yet.
    */
@@ -74,6 +82,18 @@ export interface DeliveryInput {
   /** Completion stats, carried on the Integrated detail instead of stat tiles. */
   prCount?: number;
   durationLabel?: string | null;
+}
+
+/** Verdict counts for one visual-audit run. */
+export interface DeliveryVisual {
+  shots: number;
+  ok: number;
+  issues: number;
+  unsure: number;
+  /** Shots the evidence check requires (routes × viewports), when known. */
+  required?: number;
+  /** The auditor reported that the app did not boot. */
+  bootFailed?: boolean;
 }
 
 /**
@@ -144,6 +164,8 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
     });
   }
 
+  if (input.visual) steps.push(visualStep(input.visual));
+
   // D6: the Shipped step is this mission's fact. The workspace queue depth
   // never decides it: only this mission's merges, read against the release
   // baseline, do. Nothing merged, or no claimable baseline, hides the step.
@@ -161,6 +183,36 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
   }
 
   return steps;
+}
+
+/**
+ * Verdicts are advisory (docs/design/visual-qa-auditor.md, "The gate"): an
+ * issue or an unsure shot is `partial`, never `blocked`. The filed fix task or
+ * the open question is what holds the mission. Only a boot failure blocks,
+ * because then nobody looked at anything, and that must be loud.
+ */
+function visualStep(v: DeliveryVisual): DeliveryStep {
+  const base = { key: 'visual' as const, label: DELIVERY_STEP_LABEL.visual };
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (v.bootFailed) {
+    return { ...base, state: 'blocked', value: 'boot', detail: 'the app did not boot for the visual audit' };
+  }
+  if (v.shots === 0) {
+    return { ...base, state: 'todo', value: '–', detail: 'waiting for the visual audit' };
+  }
+  if (v.issues > 0 || v.unsure > 0) {
+    const value = [v.issues > 0 ? `${v.issues}✕` : null, v.unsure > 0 ? `${v.unsure}?` : null].filter(Boolean).join(' ');
+    const detail = [
+      plural(v.shots, 'shot'),
+      v.issues > 0 ? plural(v.issues, 'issue') : null,
+      v.unsure > 0 ? `${v.unsure} unsure` : null,
+    ].filter(Boolean).join(' · ');
+    return { ...base, state: 'partial', value, detail };
+  }
+  if (v.required != null && v.shots < v.required) {
+    return { ...base, state: 'partial', value: `${v.shots}/${v.required}`, detail: `${v.shots} of ${v.required} required shots, all ok` };
+  }
+  return { ...base, state: 'done', value: plural(v.shots, 'shot'), detail: `${plural(v.shots, 'shot')}, all ok` };
 }
 
 function shippedStep(input: DeliveryInput, workLanded: boolean): DeliveryStep | null {

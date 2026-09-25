@@ -23,6 +23,9 @@ import {
   digestTaskContext,
   digestTaskResult,
   indexTaskDigests,
+  MISSION_VISUAL_SHOT_COLUMNS,
+  MISSION_VISUAL_SHOTS_LIMIT,
+  missionVisualShotsWhere,
 } from './mission-page-query';
 
 const PAGE = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
@@ -72,6 +75,32 @@ describe('AC-18: mission page query shape', () => {
     expect(c.params).toContain('errorType');
     expect(c.params).toContain('driftDiagnosis');
     expect(Object.keys(TASK_DIGEST_SELECTION).sort()).toEqual(['context', 'id', 'result']);
+  });
+});
+
+// docs/design/visual-qa-auditor.md, "Where the screenshots show": audit
+// shots need their own query. The nested with-tree keeps five artifacts per
+// worker, which would silently cut a 40-shot run to five.
+describe('visual review shots query', () => {
+  it('is scoped to this mission, to screenshots, and to rows carrying metadata.qa', () => {
+    const q = dialect.sqlToQuery(missionVisualShotsWhere('mission-1'));
+    const text = q.sql.replace(/\s+/g, ' ');
+    expect(text).toMatch(/"artifacts"\."mission_id" = \$\d+/);
+    expect(text).toMatch(/"artifacts"\."type" = \$\d+/);
+    expect(text).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
+    expect(q.params).toEqual(['mission-1', 'screenshot']);
+    // AND, not OR: every clause must hold.
+    expect(text).not.toContain(' or ');
+  });
+
+  it('selects no content and holds up to three 40-shot runs', () => {
+    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'type']);
+    expect(MISSION_VISUAL_SHOTS_LIMIT).toBeGreaterThanOrEqual(120);
+  });
+
+  it('page.tsx reads the shots through the dedicated query', () => {
+    expect(PAGE).toContain('missionVisualShotsWhere(');
+    expect(PAGE).toContain('limit: MISSION_VISUAL_SHOTS_LIMIT');
   });
 });
 

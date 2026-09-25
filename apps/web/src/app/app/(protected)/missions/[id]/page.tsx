@@ -1,5 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -35,7 +36,7 @@ import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
-import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
+import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests, MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, missionVisualShotsWhere } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -50,6 +51,8 @@ import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionDelivery from './MissionDelivery';
+import VisualReviewStrip from './VisualReviewStrip';
+import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/mission-visual-review';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionFlightStripInline, MissionStripExpand } from './MissionStripControls';
 import { buildDeliverySteps, deliveryReleaseInput, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -103,12 +106,20 @@ export default async function MissionDetailPage({
   // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
   // or task `context`; the few fields the page reads from those two JSON
   // columns arrive as a projected digest, read alongside (mission-page-query.ts).
-  const [missionRow, digestRows] = await Promise.all([
+  const [missionRow, digestRows, visualShotRows] = await Promise.all([
     db.query.missions.findFirst({
       where: eq(missions.id, id),
       with: MISSION_DETAIL_WITH,
     }),
     db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
+    // Visual review: its own query, since the with-tree keeps five artifacts
+    // per worker. Rendered only after the team check below.
+    db.query.artifacts.findMany({
+      where: missionVisualShotsWhere(id),
+      columns: MISSION_VISUAL_SHOT_COLUMNS,
+      orderBy: (a, { desc }) => [desc(a.createdAt)],
+      limit: MISSION_VISUAL_SHOTS_LIMIT,
+    }),
   ]);
   let mission = missionRow;
   const taskDigests = indexTaskDigests(digestRows);
@@ -888,6 +899,14 @@ export default async function MissionDetailPage({
   const durationLabel = mission.status === 'completed'
     ? (flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null)
     : null;
+  // Visual review (docs/design/visual-qa-auditor.md): the latest audit run.
+  // Shown once there are shots, or while a `[surface audit]` is still open;
+  // a finished audit with no shots predates the auditor and says nothing.
+  const visualRun = selectLatestRun(toVisualShots(visualShotRows));
+  const openSurfaceAudit = (mission.tasks ?? []).some(
+    t => isSurfaceAuditTask(t.title) && !['completed', 'failed', 'cancelled'].includes(t.status),
+  );
+  const visualReview = visualRun.length > 0 || openSurfaceAudit ? summarizeVisualRun(visualRun) : null;
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
     // F3: Integrated counts what the header pulse counts (`pulseDoneCounts`).
@@ -896,6 +915,7 @@ export default async function MissionDetailPage({
     awaitingMerge,
     integrationPr: missionIntegrationPr,
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
+    visual: visualReview,
     // D6: this mission's own trunk merges, read against the release baseline.
     mergedAt: missionTrunkMergedAt(
       (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
@@ -1117,6 +1137,7 @@ export default async function MissionDetailPage({
             <span aria-hidden="true">›</span>
           </a>
         ) : undefined,
+        visual: visualReview ? <VisualReviewStrip shots={visualRun} missionId={mission.id} /> : undefined,
         budget: budgetDetail ?? undefined,
       }}
       rows={{

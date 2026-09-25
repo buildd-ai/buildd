@@ -2,8 +2,8 @@
  * The mission Delivery block (docs/design/mission-feed-mobile-continuity.md,
  * W2 "Delivery", addendum D5): one line under the situation —
  * `Integrated ◐ 4/6 · Verified 2/3 · Shipped –` — that expands into the steps
- * and whatever each step owns (the mission PR, the review summary, the budget
- * banner). Shipped renders its own one-line row (`MissionReleaseSection`,
+ * and whatever each step owns (the mission PR, the review summary, the visual
+ * review strip, the budget banner). Shipped renders its own one-line row (`MissionReleaseSection`,
  * via `rows`). It replaces the stack of cards that used to sit
  * between the outcome and the task list.
  *
