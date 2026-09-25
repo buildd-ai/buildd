@@ -42,7 +42,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 // Import AFTER mocks
-import { degradeRelease, autoFileDegradationTask, probeAndDegrade, healSupersededRelease } from './release-health-watcher';
+import { degradeRelease, autoFileDegradationTask, probeAndDegrade, healSupersededRelease, healHttpErrorRelease } from './release-health-watcher';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -398,6 +398,109 @@ describe('healSupersededRelease', () => {
     const release = makeRelease({ headSha: 'sha-old' });
 
     const result = await healSupersededRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+});
+
+describe('healHttpErrorRelease', () => {
+  beforeEach(resetAll);
+
+  const repoIdentity = { installationId: 42, fullName: 'org/repo' };
+
+  it('stays unresolved when the re-probe still fails (non-2xx)', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 502 } as any)) as any;
+    const release = makeRelease({ headSha: 'sha-current' });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('stays unresolved when the re-probe throws (still a network error)', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED'))) as any;
+    const release = makeRelease({ headSha: 'sha-current' });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('heals on the probe alone when the release has no recorded head sha', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true, status: 200 } as any)) as any;
+    const release = makeRelease({ headSha: null });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('healed');
+    expect(db._updateCalls).toHaveLength(1);
+    expect(db._updateCalls[0].setValues.state).toBe('healthy');
+    expect(db._updateCalls[0].setValues.failureReason).toBeNull();
+    // No headSha to sha-verify, so this must not have gone on to call the
+    // deploy-identity endpoint — the probe succeeding is the whole signal.
+    expect((globalThis.fetch as any).mock.calls).toHaveLength(1);
+  });
+
+  it('heals when the probe succeeds and the deployed sha matches the head sha', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 }, // re-probe
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-current' }) }, // deploy-identity
+    ]);
+    const release = makeRelease({ headSha: 'sha-current' });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('healed');
+    expect(db._updateCalls).toHaveLength(1);
+    expect(db._updateCalls[0].setValues.state).toBe('healthy');
+  });
+
+  it('heals when the probe succeeds and GitHub compare confirms the deployed sha is a descendant', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-newer' }) },
+    ]);
+    mockGithubApi.mockResolvedValue({ status: 'ahead' } as any);
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('healed');
+    expect(db._updateCalls).toHaveLength(1);
+  });
+
+  it('stays unresolved when the probe succeeds but the deployed sha genuinely diverges', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-unrelated' }) },
+    ]);
+    mockGithubApi.mockResolvedValue({ status: 'diverged' } as any);
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('stays unresolved when the probe succeeds but the deploy-identity endpoint is unreachable', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      new Error('ECONNREFUSED'),
+    ]);
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healHttpErrorRelease(release, 'https://example.com/health', db, repoIdentity);
 
     expect(result).toBe('unresolved');
     expect(db._updateCalls).toHaveLength(0);
