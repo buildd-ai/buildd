@@ -44,9 +44,11 @@ export async function GET(
         if (apiAccount) {
             const ws = await db.query.workspaces.findFirst({
                 where: eq(workspaces.id, id),
-                columns: { teamId: true, accessMode: true },
+                columns: { teamId: true },
             });
-            if (!ws || (ws.teamId !== apiAccount.teamId && ws.accessMode !== 'open')) {
+            // Same check as PATCH /api/workspaces/[id]: the key's own team only;
+            // `accessMode: 'open'` does not widen it.
+            if (!ws || ws.teamId !== apiAccount.teamId) {
                 return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
             }
         }
