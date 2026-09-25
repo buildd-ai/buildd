@@ -66,7 +66,7 @@ describe('OAuth tokens', () => {
   it('looksLikeJwt distinguishes JWT bearer from bld_ key', async () => {
     const { looksLikeJwt } = await import('./tokens');
     expect(looksLikeJwt('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature')).toBe(true);
-    expect(looksLikeJwt('bld_535e8f83ca46ff20cdd7f90755da30b32ceb69eeb938904cb5fc1c3447889fa2')).toBe(false);
+    expect(looksLikeJwt('bld_0000000000000000000000000000000000000000000000000000000000000000')).toBe(false);
     expect(looksLikeJwt('')).toBe(false);
     expect(looksLikeJwt('not.a.valid.jwt.shape')).toBe(false);
   });
