@@ -7,13 +7,10 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
+import { normalizeBackend } from '@/lib/normalize-backend';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
-}
-
-function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
-  return raw === 'claude' || raw === 'codex' ? raw : null;
 }
 
 /** Find a role the user can access (team-level or workspace-scoped). */
