@@ -89,13 +89,17 @@ type Token = { kind: 'word'; word: Word } | { kind: 'op'; op: string };
 /**
  * Split a shell command into words and control operators, honouring quotes and
  * backslash escapes. A word that contains unquoted/double-quoted `$` or a
- * backtick is marked dynamic — its value is not knowable statically.
+ * backtick is marked dynamic — its value is not knowable statically. Heredoc
+ * bodies are skipped: they are data (a script being written, a message), and
+ * simulating their lines as commands denied ordinary work like writing a
+ * script that contains `cd ..`.
  */
 function tokenize(command: string): Token[] {
   const out: Token[] = [];
   let buf = '';
   let dynamic = false;
   let inWord = false;
+  const heredocs: Array<{ delim: string; stripTabs: boolean }> = [];
   const flush = () => {
     if (inWord) out.push({ kind: 'word', word: { text: buf, dynamic } });
     buf = ''; dynamic = false; inWord = false;
@@ -121,7 +125,44 @@ function tokenize(command: string): Token[] {
       inWord = true; i = j; continue;
     }
     if (ch === '$' || ch === '`') { dynamic = true; buf += ch; inWord = true; continue; }
+    if (ch === '<' && command.startsWith('<<<', i)) { buf += '<<<'; inWord = true; i += 2; continue; }
+    if (ch === '<' && command[i + 1] === '<') {
+      // Heredoc: remember the terminator; the body (after the next newline) is data.
+      flush();
+      let j = i + 2;
+      const stripTabs = command[j] === '-';
+      if (stripTabs) j++;
+      while (command[j] === ' ' || command[j] === '\t') j++;
+      let delim = '';
+      while (j < command.length && !/[\s;&|()<>]/.test(command[j])) {
+        const q = command[j];
+        if (q === "'" || q === '"') {
+          const end = command.indexOf(q, j + 1);
+          const stop = end === -1 ? command.length : end;
+          delim += command.slice(j + 1, stop); j = stop + 1; continue;
+        }
+        if (q === '\\' && j + 1 < command.length) { delim += command[j + 1]; j += 2; continue; }
+        delim += q; j++;
+      }
+      if (delim) heredocs.push({ delim, stripTabs });
+      i = j - 1; continue;
+    }
     if (ch === ' ' || ch === '\t') { flush(); continue; }
+    if (ch === '\n' && heredocs.length) {
+      flush(); out.push({ kind: 'op', op: ch });
+      let pos = i + 1;
+      for (const h of heredocs) {
+        while (pos < command.length) {
+          const nl = command.indexOf('\n', pos);
+          const end = nl === -1 ? command.length : nl;
+          const line = command.slice(pos, end);
+          pos = end + 1;
+          if ((h.stripTabs ? line.replace(/^\t+/, '') : line) === h.delim) break;
+        }
+      }
+      heredocs.length = 0;
+      i = pos - 1; continue;
+    }
     if (ch === '\n' || ch === ';' || ch === '(' || ch === ')') { flush(); out.push({ kind: 'op', op: ch }); continue; }
     if (ch === '&' || ch === '|') {
       flush();

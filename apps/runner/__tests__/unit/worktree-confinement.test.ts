@@ -126,6 +126,19 @@ describe('findWorktreeEscape — Bash', () => {
     expect(deny(`echo "cd ${PRIMARY}" && git status`)).toBeNull();
     expect(deny(`git commit -m 'do not cd ${PRIMARY}'`)).toBeNull();
   });
+
+  test('a heredoc body is data, not commands', () => {
+    // Writing a script whose body climbs out of ITS directory is ordinary work;
+    // the body lines never run in this shell.
+    expect(deny("cat > scripts/run.sh <<'EOF'\n#!/bin/sh\ncd ..\nbun run test\nEOF\nchmod +x scripts/run.sh")).toBeNull();
+    expect(deny(`cat > notes.md <<EOF\ncd ${PRIMARY}\nEOF`)).toBeNull();
+    expect(deny(`cat <<-"END" > x.txt\n\tgit -C ${PRIMARY} status\n\tEND`)).toBeNull();
+    // Parsing resumes after the terminator.
+    expect(deny(`cat > a.txt <<EOF\nhello\nEOF\ncd ${PRIMARY} && ls`)).not.toBeNull();
+    expect(deny(`cat <<EOF | tee a.txt && cd ${PRIMARY}\nbody\nEOF`)).not.toBeNull();
+    // A here-string is not a heredoc.
+    expect(deny(`grep x <<< "y" && cd ${PRIMARY}`)).not.toBeNull();
+  });
 });
 
 describe('findWriteEscape — Edit/Write', () => {
