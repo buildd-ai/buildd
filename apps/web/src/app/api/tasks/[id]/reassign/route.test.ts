@@ -25,6 +25,7 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 const mockHeartbeatsSelect = mock(() => Promise.resolve([{ count: 0, totalCapacity: 0, totalActive: 0 }]));
+const mockReleaseAndNotify = mock(() => Promise.resolve());
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -45,6 +46,10 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+}));
+
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mockReleaseAndNotify,
 }));
 
 // Mock pusher
@@ -158,6 +163,8 @@ describe('POST /api/tasks/[id]/reassign', () => {
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockHeartbeatsSelect.mockReset();
     mockHeartbeatsSelect.mockResolvedValue([{ count: 0, totalCapacity: 0, totalActive: 0 }]);
+    mockReleaseAndNotify.mockReset();
+    mockReleaseAndNotify.mockResolvedValue(undefined);
 
     // Default: grant access (workspace owner)
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -353,6 +360,60 @@ describe('POST /api/tasks/[id]/reassign', () => {
     // Should update workers and trigger WORKER_FAILED for each
     // triggerEvent should be called 3 times: 2 for WORKER_FAILED + 1 for TASK_ASSIGNED
     expect(mockTriggerEvent).toHaveBeenCalledTimes(3);
+  });
+
+  // Path-claims leak regression: these workers are terminated here, outside
+  // PATCH /api/workers/[id], so this route must release their path claims
+  // itself — otherwise a sibling task overlapping the same files is deferred
+  // forever by a claim nothing will ever release.
+  it('releases path claims when failing active workers of a reassigned task', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'assigned',
+      workspaceId: 'ws-1',
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    const activeWorkers = [
+      { id: 'worker-1', taskId: 'task-123', status: 'running' },
+    ];
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(mockTask)
+      .mockResolvedValueOnce({ ...mockTask, status: 'pending' });
+    mockWorkersFindMany.mockResolvedValue(activeWorkers);
+
+    const request = createMockRequest({ searchParams: { force: 'true' } });
+    const response = await callHandler(request, 'task-123');
+
+    expect(response.status).toBe(200);
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-123', 'abandoned');
+  });
+
+  it('does not release path claims when the reassigned task has no active workers', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'assigned',
+      workspaceId: 'ws-1',
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(mockTask)
+      .mockResolvedValueOnce({ ...mockTask, status: 'pending' });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const request = createMockRequest({ searchParams: { force: 'true' } });
+    const response = await callHandler(request, 'task-123');
+
+    expect(response.status).toBe(200);
+    expect(mockReleaseAndNotify).not.toHaveBeenCalled();
   });
 
   it('triggers WORKER_FAILED event for each active worker', async () => {

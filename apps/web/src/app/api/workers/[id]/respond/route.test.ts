@@ -97,6 +97,11 @@ mock.module('@/lib/answer-credential-preflight', () => ({
   CREDENTIAL_PREFLIGHT_MARGIN_MS: 300000,
 }));
 
+const mockReleaseAndNotify = mock((_taskId: string, _reason: string) => Promise.resolve());
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mockReleaseAndNotify,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(body?: any): NextRequest {
@@ -192,6 +197,7 @@ describe('POST /api/workers/[id]/respond', () => {
     mockTasksUpdateSet.mockClear();
     mockNotesInsertValues.mockClear();
     mockTriggerEvent.mockClear();
+    mockReleaseAndNotify.mockClear();
     mockPreflight.mockClear();
     mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
     tasksUpdated.length = 0;
@@ -806,6 +812,9 @@ describe('POST /api/workers/[id]/respond', () => {
         workerId: 'worker-1',
       });
       expect(tasksUpdated[0].context.answerDelivery.ackDeadlineAt).toBeTruthy();
+      // Warm resume path: the SAME worker/task continue, so nothing was
+      // superseded and no claim should be released.
+      expect(mockReleaseAndNotify).not.toHaveBeenCalled();
     });
 
     it('posts one feed note naming the resumed path', async () => {
@@ -852,6 +861,13 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(tasksUpdated[0].context.answerDelivery.reasonCode).toBe(reasonCode);
       expect(notesInserted).toHaveLength(1);
       expect(notesInserted[0].body).toContain('continuation');
+
+      // Path-claims leak regression: the OLD task's worker was just superseded
+      // outside PATCH /api/workers/[id], and the old task's own status is
+      // never flipped to terminal by this path — work continues under the
+      // new continuation task's id, so the old task's claims must be released
+      // here or they strand every sibling task overlapping those paths.
+      expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
     });
 
     // AC-AQR-23 — the answer is still recorded; the owner is warned separately.

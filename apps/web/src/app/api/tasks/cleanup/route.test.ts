@@ -54,6 +54,11 @@ mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
 
+const mockReleaseAndNotify = mock((_taskId: string, _reason: string) => Promise.resolve());
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mockReleaseAndNotify,
+}));
+
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
 const mockAccountsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
@@ -146,6 +151,8 @@ describe('POST /api/tasks/cleanup', () => {
     mockCleanupStaleWorkers.mockResolvedValue(undefined);
     mockCleanupStuckWaitingInput.mockReset();
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
+    mockReleaseAndNotify.mockReset();
+    mockReleaseAndNotify.mockResolvedValue(undefined);
     mockGetWorkerArtifactCount.mockReset();
     mockGetWorkerArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReset();
@@ -266,6 +273,32 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cleaned.stalledWorkers).toBe(2);
+  });
+
+  // Path-claims leak regression: these workers are terminated here, outside
+  // PATCH /api/workers/[id], so this sweep must release their path claims
+  // itself — otherwise a stale claim blocks any sibling task overlapping the
+  // same files forever.
+  it('releases path claims for stalled workers with a task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', status: 'running', updatedAt: new Date(0) },
+        { id: 'w2', taskId: 'task-2', status: 'starting', updatedAt: new Date(0) },
+      ])
+      .mockResolvedValueOnce([]); // active account IDs
+
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(mockReleaseAndNotify).toHaveBeenCalledTimes(2);
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-2', 'abandoned');
   });
 
   it('includes stuck waiting_input counts in response', async () => {
@@ -543,6 +576,41 @@ describe('POST /api/tasks/cleanup', () => {
     expect(data.cleaned.heartbeatOrphans).toBe(2);
     // Both in-scope tasks were reset to pending.
     expect(mockTasksUpdate).toHaveBeenCalledTimes(2);
+    // Path-claims leak regression: these workers are terminated here, outside
+    // PATCH /api/workers/[id], so this sweep must release their path claims
+    // itself.
+    expect(mockReleaseAndNotify).toHaveBeenCalledTimes(2);
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-2', 'abandoned');
+  });
+
+  it('releases path claims with pending_merge when a heartbeat-orphaned worker had an open PR', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // stalled running
+      .mockResolvedValueOnce([])  // active account IDs
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', prNumber: 42 },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([]) // No orphaned assigned tasks
+      .mockResolvedValueOnce([{ id: 'task-1' }]);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'pr',
+    });
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      { id: 'hb-1', accountId: 'account-offline' },
+    ]);
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'pending_merge');
   });
 });
 

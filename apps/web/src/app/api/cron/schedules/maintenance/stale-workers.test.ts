@@ -53,6 +53,11 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mockReportOps }));
 
+const mockReleaseAndNotify = mock((_taskId: string, _reason: string) => Promise.resolve());
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: mockReleaseAndNotify,
+}));
+
 import { runStaleWorkerCleanup } from './stale-workers';
 
 const NOW = new Date('2026-03-01T12:00:00Z');
@@ -73,6 +78,8 @@ describe('runStaleWorkerCleanup', () => {
     mockWorkersFindMany.mockReset();
     mockWorkersFindMany.mockResolvedValue([] as any);
     mockReportOps.mockReset();
+    mockReleaseAndNotify.mockReset();
+    mockReleaseAndNotify.mockResolvedValue(undefined);
     updateCalls = [];
     deleteCalls = 0;
     findError = null;
@@ -109,6 +116,14 @@ describe('runStaleWorkerCleanup', () => {
     expect(taskUpdate.where.values).toEqual(['t-1', 't-2']);
 
     expect(deleteCalls).toBe(1);
+
+    // Path-claims leak regression: these workers are terminated here, outside
+    // PATCH /api/workers/[id], so this cleanup must release their path claims
+    // itself — otherwise a stale claim can block the very retry this cleanup
+    // just requeued (or any sibling task overlapping the same files) forever.
+    expect(mockReleaseAndNotify).toHaveBeenCalledTimes(2);
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-1', 'abandoned');
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-2', 'abandoned');
   });
 
   it('skips the task requeue when the orphaned workers hold no task', async () => {
@@ -118,6 +133,7 @@ describe('runStaleWorkerCleanup', () => {
     expect(await runStaleWorkerCleanup(NOW)).toBe(1);
     expect(updateCalls.find(c => c.table === 'workers')).toBeDefined();
     expect(updateCalls.find(c => c.table === 'tasks')).toBeUndefined();
+    expect(mockReleaseAndNotify).not.toHaveBeenCalled();
   });
 
   it('alerts even when the stale runner had no live workers', async () => {

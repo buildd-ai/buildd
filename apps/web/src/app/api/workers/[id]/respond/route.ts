@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
@@ -369,6 +370,15 @@ async function respondByContinuation(args: {
 
   if (task?.id) {
     await recordAnswerDelivery(task.id, task.context, deliveryRecord);
+
+    // The worker on the OLD task was just superseded outside
+    // PATCH /api/workers/[id], and the old task's own status is never flipped
+    // to a terminal one here (recordAnswerDelivery only touches context) — it
+    // stays whatever it was. Any path claims it held must still be released
+    // now: the work continues under `newTask`'s id, not this one, so a claim
+    // left here would strand every other task overlapping those paths
+    // indefinitely.
+    await releaseAndNotify(task.id, 'abandoned');
   }
 
   // Best-effort back-reference from the answered worker to its continuation, so

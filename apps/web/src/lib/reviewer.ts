@@ -30,6 +30,7 @@ import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
 import { appendPrActivity } from './pr-activity-comment';
 import { triggerEvent, channels, events } from './pusher';
+import { releaseAndNotify } from './path-claim-release';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import {
@@ -1430,6 +1431,14 @@ export async function supersedeReviewerTaskOnMerge(
       .returning({ id: tasks.id });
 
     if (!cancelled) return { superseded: false, reviewerTaskId: null };
+
+    // This cancellation happens here, not through PATCH /api/tasks/[id], so it
+    // must release the reviewer task's own path claims itself — nothing landed
+    // from a cancelled review, so 'abandoned' is always correct. Without this,
+    // a reviewer that had claimed paths (e.g. via an observed-touch lease while
+    // applying a recommendation) strands them forever once its PR merges out
+    // from under it.
+    await releaseAndNotify(reviewerTask.id, 'abandoned');
 
     // Marking the worker failed does not stop a session that is already
     // running — it keeps spending budget until its next API call. Push the

@@ -17,6 +17,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 export const dynamic = 'force-dynamic';
 
@@ -121,6 +122,11 @@ export async function POST(
     .set({ status: 'failed', updatedAt: new Date() })
     .where(eq(tasks.id, worker.taskId));
   await resolveCompletedTask(worker.taskId, worker.workspaceId);
+
+  // This terminal transition happens outside PATCH /api/workers/[id], so it
+  // must release the reviewer's path claims itself — the human takeover means
+  // nothing this worker was doing landed.
+  await releaseAndNotify(worker.taskId, 'abandoned');
 
   // Post a reviewer_escalated note on the original task so the PR surfaces in
   // the human queue with a clear reason ("Agent review interrupted").

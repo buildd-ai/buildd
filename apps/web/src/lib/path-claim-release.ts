@@ -6,8 +6,15 @@
  *   - PATCH /api/workers/[id] on terminal status
  *   - GitHub webhook on PR merged / PR closed
  *   - stale-workers reaper on orphaned worker cleanup
+ *   - direct task cancellation (PATCH /api/tasks/[id])
+ *   - reviewer supersession on PR merge, human review interrupt, task
+ *     reassignment, and the answered-question continuation path
+ *   - the path-claims maintenance sweep, for whatever the above missed
  */
 
+import { db } from '@buildd/core/db';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { releaseClaims, rearmWaiter } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
 import { triggerEvent, channels } from '@/lib/pusher';
@@ -97,4 +104,34 @@ export async function releaseAndNotify(taskId: string, reason: PathReleaseReason
   } catch (err) {
     console.error(`[path-claim] releaseAndNotify failed for task ${taskId}:`, err);
   }
+}
+
+/**
+ * Work out which `PathReleaseReason` applies to a task whose own terminal
+ * write didn't already know the answer (the maintenance sweep, mainly — it
+ * finds a stale claim after the fact and has no request context to read).
+ *
+ * Mirrors the PATCH /api/workers/[id] logic: a merged PR always means
+ * `merged`; a completed task with a still-open PR means `pending_merge`
+ * (the work landed, just not into the base branch yet); everything else is
+ * `abandoned`.
+ */
+export async function resolveReleaseReasonForTask(taskId: string): Promise<PathReleaseReason> {
+  const taskWorkers = await db.query.workers.findMany({
+    where: eq(workers.taskId, taskId),
+    columns: { mergedAt: true, prLifecycleStatus: true, prNumber: true },
+  });
+  const merged = taskWorkers.some(w => w.mergedAt || w.prLifecycleStatus === 'merged');
+  if (merged) return 'merged';
+
+  const hasOpenPr = taskWorkers.some(w => w.prNumber);
+  if (hasOpenPr) {
+    const task = await db.query.tasks.findFirst({
+      where: eq(tasks.id, taskId),
+      columns: { status: true },
+    });
+    if (task?.status === 'completed') return 'pending_merge';
+  }
+
+  return 'abandoned';
 }
