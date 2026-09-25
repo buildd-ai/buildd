@@ -133,9 +133,10 @@ describe('MissionDetailView — sticky masthead (AC-5)', () => {
   });
 });
 
-function renderWithSecondary(tasks: MissionFeedTaskInput[]) {
+function renderWithSecondary(tasks: MissionFeedTaskInput[], desktopListOpen?: boolean) {
   return renderToStaticMarkup(
     <MissionDetailView
+      desktopListOpen={desktopListOpen}
       missionId="mission-1"
       title="Example mission"
       chip={{ label: 'NEEDS YOU', cls: 'border-accent text-accent-text' }}
@@ -172,6 +173,13 @@ describe('MissionDetailView — one feed at every width (desktop F4)', () => {
     const lastRow = html.lastIndexOf('data-testid="mission-task-row"');
     expect(html.indexOf('data-testid="mission-secondary-views"')).toBeGreaterThan(lastRow);
     expect(html.indexOf('data-testid="timeline-marker"')).toBeGreaterThan(html.indexOf('data-testid="mission-secondary-views"'));
+  });
+
+  it('opens the disclosure when the URL names a view in it (?view=structure)', () => {
+    const html = renderWithSecondary(fixtureMission(3), true);
+    const views = html.match(/<details data-testid="mission-secondary-views"([^>]*)>/);
+    expect(views).not.toBeNull();
+    expect(views![1]).toMatch(/\bopen=""/);
   });
 
   it('gives the disclosure summary a 44px tap target', () => {

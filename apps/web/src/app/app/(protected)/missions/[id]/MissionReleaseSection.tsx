@@ -12,14 +12,8 @@
  * nothing — the Delivery model already hides the step.
  */
 import Link from 'next/link';
-import { DELIVERY_STATE_GLYPH, type DeliveryStep, type DeliveryStepState } from '@/lib/mission-delivery';
+import { DELIVERY_STATE_GLYPH, DELIVERY_STATE_TEXT, type DeliveryStep } from '@/lib/mission-delivery';
 
-const STATE_TEXT: Record<DeliveryStepState, string> = {
-  done: 'text-status-success',
-  partial: 'text-status-info',
-  todo: 'text-text-muted',
-  blocked: 'text-status-error',
-};
 
 /** The model's "waits for a later release" detail. */
 const AFTER_NEXT_RELEASE = 'after next release';
@@ -57,7 +51,7 @@ export function MissionReleaseSection({
   workspaceId,
 }: {
   step: DeliveryStep | null | undefined;
-  /** The workspace's latest release (`loadReleaseFooterData`). */
+  /** The release that carries this mission's work (`loadMissionCarryingReleaseId`). */
   releaseId: string | null;
   workspaceId: string;
 }) {
@@ -69,7 +63,7 @@ export function MissionReleaseSection({
       data-state={step.state}
       className="flex min-h-11 items-center gap-2 font-mono text-[12px] hover:bg-surface-2"
     >
-      <span aria-hidden="true" className={`w-3 shrink-0 text-center ${STATE_TEXT[step.state]}`}>
+      <span aria-hidden="true" className={`w-3 shrink-0 text-center ${DELIVERY_STATE_TEXT[step.state]}`}>
         {DELIVERY_STATE_GLYPH[step.state]}
       </span>
       <span className="w-20 shrink-0 font-semibold text-text-primary">{step.label}</span>

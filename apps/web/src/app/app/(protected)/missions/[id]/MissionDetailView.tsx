@@ -68,6 +68,8 @@ export interface MissionDetailViewProps {
   feed: Omit<MissionFeedListProps, 'missionId'>;
   /** md+ only: the Timeline / Structure toggle, folded under the feed. */
   desktopList?: ReactNode;
+  /** Open the Timeline / Structure disclosure (the URL names a view in it). */
+  desktopListOpen?: boolean;
   /** The Orchestrator row (plans and ticks), at every width. */
   orchestratorRow?: ReactNode;
   footer?: ReactNode;
@@ -90,6 +92,7 @@ export default function MissionDetailView({
   delivery,
   feed,
   desktopList,
+  desktopListOpen = false,
   orchestratorRow,
   footer,
 }: MissionDetailViewProps) {
@@ -127,7 +130,7 @@ export default function MissionDetailView({
       </div>
 
       {desktopList && (
-        <details data-testid="mission-secondary-views" className="group mx-10 mt-2 hidden border-t border-border-default md:block">
+        <details data-testid="mission-secondary-views" open={desktopListOpen} className="group mx-10 mt-2 hidden border-t border-border-default md:block">
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
             <span aria-hidden="true" className="text-text-muted">─</span>
             <span className="flex-1">Timeline · Structure</span>

@@ -13,18 +13,12 @@
 import type { ReactNode } from 'react';
 import {
   DELIVERY_STATE_GLYPH,
+  DELIVERY_STATE_TEXT,
   formatDeliverySummary,
   type DeliveryStep,
   type DeliveryStepKey,
-  type DeliveryStepState,
 } from '@/lib/mission-delivery';
 
-const STATE_TEXT: Record<DeliveryStepState, string> = {
-  done: 'text-status-success',
-  partial: 'text-status-info',
-  todo: 'text-text-muted',
-  blocked: 'text-status-error',
-};
 
 export interface MissionDeliveryProps {
   steps: readonly DeliveryStep[];
@@ -53,7 +47,7 @@ export default function MissionDelivery({ steps, details = {}, rows = {} }: Miss
             <span key={s.key} data-testid="mission-delivery-summary-step" data-step={s.key} className="whitespace-nowrap" aria-hidden="true">
               {i > 0 && <span className="text-text-muted">{'· '}</span>}
               {`${s.label} `}
-              <span className={STATE_TEXT[s.state]}>{DELIVERY_STATE_GLYPH[s.state]}</span>
+              <span className={DELIVERY_STATE_TEXT[s.state]}>{DELIVERY_STATE_GLYPH[s.state]}</span>
               {` ${s.value}`}
             </span>
           ))}
@@ -66,7 +60,7 @@ export default function MissionDelivery({ steps, details = {}, rows = {} }: Miss
           <div key={step.key} data-testid="mission-delivery-step" data-step={step.key} data-state={step.state} className="py-1.5">
             {rows[step.key] ?? (
               <div className="flex min-h-9 items-center gap-2 font-mono text-[12px]">
-                <span aria-hidden="true" className={`w-3 shrink-0 text-center ${STATE_TEXT[step.state]}`}>
+                <span aria-hidden="true" className={`w-3 shrink-0 text-center ${DELIVERY_STATE_TEXT[step.state]}`}>
                   {DELIVERY_STATE_GLYPH[step.state]}
                 </span>
                 <span className="w-20 shrink-0 font-semibold text-text-primary">{step.label}</span>

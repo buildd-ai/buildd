@@ -44,7 +44,7 @@ import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
-import { parseMissionListView } from '@/lib/mission-list-view';
+import { parseMissionListView, missionListViewOpensDisclosure } from '@/lib/mission-list-view';
 import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
@@ -65,6 +65,7 @@ import { SwipeProvider } from '@/components/SwipeableRow';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { MissionReleaseSection } from './MissionReleaseSection';
+import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
 import { shouldQueryRelease } from '@/lib/release-state';
@@ -813,7 +814,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -852,6 +853,9 @@ export default async function MissionDetailPage({
           orderBy: desc(missionNotes.createdAt),
         }).then(row => row ?? null)
       : Promise.resolve(null),
+    // F6: the Shipped link opens the release carrying THIS mission's work
+    // (release_tasks attribution), not the workspace's latest release.
+    shouldQueryRelease(releaseArchetype) ? loadMissionCarryingReleaseId(id) : Promise.resolve(null),
   ]);
 
   const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
@@ -1113,7 +1117,7 @@ export default async function MissionDetailPage({
         shipped: mission.workspaceId ? (
           <MissionReleaseSection
             step={deliverySteps.find(s => s.key === 'shipped')}
-            releaseId={releaseFooterData?.releaseId ?? null}
+            releaseId={carryingReleaseId}
             workspaceId={mission.workspaceId}
           />
         ) : undefined,
@@ -1322,6 +1326,7 @@ export default async function MissionDetailPage({
           recordsCountByTask,
           liveLines,
         }}
+        desktopListOpen={missionListViewOpensDisclosure(listViewParam)}
         desktopList={(
           <MissionTabs
             initialView={parseMissionListView(listViewParam)}

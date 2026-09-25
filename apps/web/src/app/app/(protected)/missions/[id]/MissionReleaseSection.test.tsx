@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildDeliverySteps, type DeliveryInput, type DeliveryStep } from '@/lib/mission-delivery';
+import { buildDeliverySteps, DELIVERY_STATE_TEXT, type DeliveryInput, type DeliveryStep } from '@/lib/mission-delivery';
 import { MissionReleaseSection, missionShippedStatus, missionShippedHref } from './MissionReleaseSection';
 
 function shippedOf(overrides: Partial<DeliveryInput>): DeliveryStep | null {
@@ -96,6 +96,13 @@ describe('MissionReleaseSection', () => {
       expect(html).not.toContain('unshipped');
       expect(html).not.toContain('Release now');
       expect(html).not.toContain('<button');
+    }
+  });
+
+  it('colours the glyph from the shared Delivery state map, like every other step row', () => {
+    for (const step of [released, waiting, partlyWaiting]) {
+      const html = renderToStaticMarkup(<MissionReleaseSection step={step} releaseId="rel-1" workspaceId="ws-1" />);
+      expect(html).toContain(DELIVERY_STATE_TEXT[step.state]);
     }
   });
 

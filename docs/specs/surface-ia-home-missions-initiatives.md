@@ -829,8 +829,10 @@ merged yet, renders nothing (§9.1).
   release; GIVEN the mission's archetype is `none`, THEN no Shipped line is
   present in the DOM.
 - **AC-41**: GIVEN the same mission on both the missions-list card and its own
-  detail page in one request cycle, THEN both show the same queue depth and
-  age, because both read the same loader.
+  detail page in one request cycle, THEN both read the same release loader:
+  the card shows the workspace queue depth and age, and mission detail shows
+  only this mission's Shipped line (no queue depth), so the two cannot
+  disagree about the release baseline.
 
 ---
 
