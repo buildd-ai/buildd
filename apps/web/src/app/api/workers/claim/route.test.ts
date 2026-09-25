@@ -245,9 +245,10 @@ mock.module('@buildd/core/path-claim', () => ({
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
 const mockFireDeferralEvent = mock((_input: any) => {});
+const mockFireGateEvent = mock((_input: any) => 'sig');
 mock.module('@/lib/gate-ledger', () => ({
   fireDeferralEvent: mockFireDeferralEvent,
-  fireGateEvent: mock(() => 'sig'),
+  fireGateEvent: mockFireGateEvent,
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
@@ -370,6 +371,66 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe('runner is required');
+  });
+
+  describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
+    const gateReasons = () => mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason);
+    const userAccount = { id: 'account-1', maxConcurrentWorkers: 3, type: 'user' };
+
+    beforeEach(() => mockFireGateEvent.mockClear());
+
+    it('probe with invalid API key: 401, no gate event', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      const res = await POST(createMockRequest({ headers: { 'X-Probe': 'true' }, body: {} }));
+      expect(res.status).toBe(401);
+      expect(gateReasons()).not.toContain('invalid_api_key');
+    });
+
+    it('non-probe with invalid API key still records invalid_api_key', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      const res = await POST(createMockRequest({ body: {} }));
+      expect(res.status).toBe(401);
+      expect(gateReasons()).toContain('invalid_api_key');
+    });
+
+    it('probe with trigger token: 403, no gate event', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...userAccount, level: 'trigger' });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'X-Probe': 'true' },
+        body: {},
+      }));
+      expect(res.status).toBe(403);
+      expect(gateReasons()).not.toContain('trigger_token_cannot_claim');
+    });
+
+    it('probe missing runner: 400, no gate event', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'X-Probe': 'true' },
+        body: {},
+      }));
+      expect(res.status).toBe(400);
+      expect(gateReasons()).not.toContain('runner_field_missing');
+    });
+
+    it('non-probe missing runner still records runner_field_missing', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {},
+      }));
+      expect(res.status).toBe(400);
+      expect(gateReasons()).toContain('runner_field_missing');
+    });
+
+    it('X-Probe with a value other than "true" is not treated as a probe', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'X-Probe': 'false' },
+        body: {},
+      }));
+      expect(gateReasons()).toContain('runner_field_missing');
+    });
   });
 
   it('returns 429 when max concurrent workers limit reached', async () => {

@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-24
+last_verified: 2026-09-25
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -41,6 +41,13 @@ assertions:
   - id: "pr-supersession-tests"
     type: "test_file"
     path: "apps/web/src/lib/pr-supersession.test.ts"
+  - id: "pr-shipped-predicate"
+    type: "symbol"
+    name: "prShipState"
+    path: "packages/core/pr-shipped.ts"
+  - id: "pr-shipped-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/pr-shipped.test.ts"
 ---
 # Mission and Task Lifecycle
 
@@ -831,6 +838,22 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   reports a completed deliverable whose PR closed unmerged with no
   supersession recorded past 24h, so an unaddressed instance surfaces instead
   of sitting silently.
+  "Did this PR ship?" has ONE implementation, `prShipState`/`isPrShipped` in
+  `packages/core/pr-shipped.ts`: merged, or superseded, is shipped; open and
+  closed-unsuperseded are not. `canCompleteMission`, `computeMissionProgress`
+  and the `all_prs_merged` goal criterion all call it, so the gate and the
+  criterion cannot disagree about a superseded PR. The criterion judges per
+  PR (a PR several worker rows carry is one PR), and its failure evidence
+  lists the offending PR numbers split into `open: …` and `closed, no
+  supersession recorded: …`, naming `record_pr_supersession` as the remedy.
+  Supersession is also DERIVED, never asserted, in one mechanical case
+  (`deriveLineageSupersession`): a PR that closed unmerged is superseded by a
+  merged PR with a higher number from the SAME attempt lineage (the
+  `parentTaskId` chain through `taskClass = 'attempt'` rows — CI retry,
+  after-review builder, conflict retry), because the platform opened that
+  replacement itself. It never applies to an open PR, to an earlier merged
+  PR, or across independent deliverables; a derived edge carries a
+  `supersededReason` starting "derived:" and is not written back to the row.
 - A mission with no deliverable rows at all MAY be completed only by an explicit
   proposal (`proposed: true`), never by dormancy: a monitoring mission's output
   is its heartbeat cycles, which are housekeeping rows.
@@ -1027,6 +1050,13 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   (`computeMissionProgress`) THEN its segment state is `solid` (counted in
   `completedTasks`, not `awaitingMerge`), and `CondensedTimeline`'s task row
   names the successor PR rather than rendering "closed — not merged".
+- AC-11qs-6: GIVEN a mission with an `all_prs_merged` criterion WHEN every
+  unmerged PR is closed and carries a supersession edge to a merged PR
+  (recorded, or derived from its own attempt lineage) THEN the criterion
+  passes, and `canCompleteMission` does not report `awaiting_merge` — the two
+  agree on the same fixture. A closed PR with no edge fails the criterion with
+  evidence naming it under "closed, no supersession recorded"; an open PR
+  (the M4 shape) still fails, listed under "open".
 - AC-11qs-5: GIVEN a completed deliverable whose PR has been closed-unmerged
   with no supersession edge for more than 24h WHEN the hourly mission-invariant
   sweep runs THEN `unresolved_pr_supersession` reports it (report-only, not

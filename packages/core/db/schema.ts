@@ -56,8 +56,11 @@ export const teams = pgTable('teams', {
   // default in it. See packages/core/backend-policy.ts.
   enabledBackends: agentBackendEnum('enabled_backends').array(),
 
-  // Team-wide default for which evaluator runs mission criteria. Overridden per
-  // workspace by workspaces.criteriaEvaluationStrategy; code default is 'inline'.
+  // DEPRECATED — nothing reads or writes this. The 'worker' batched-evaluator
+  // branch it selected was removed; prose criteria pick a grader per criterion
+  // (criterion > gitConfig.criteriaGrader > auto). Drop in a follow-up release,
+  // after the code that stopped selecting it is live: db:migrate runs before the
+  // new build serves, so dropping it in the same release breaks the old build.
   criteriaEvaluationStrategy: text('criteria_evaluation_strategy').$type<'inline' | 'worker' | null>(),
 
   // Which actions may spend a metered inference call instead of dispatching an
@@ -754,11 +757,8 @@ export const workspaces = pgTable('workspaces', {
   // connectors for the role unavailable) still holds the task regardless of this flag.
   connectorAdvisoryMode: boolean('connector_advisory_mode').default(false).notNull(),
 
-  // Which evaluator runs LLM-graded and command criteria for missions in this workspace.
-  // 'inline': direct Anthropic API call (ANTHROPIC_API_KEY) for prose; individual command
-  // verification tasks for command criteria. 'worker': one batched task per evaluation round
-  // with a repo worktree — evaluates all LLM-eligible + command criteria in a single run.
-  // null inherits from the team row, then falls back to 'inline'.
+  // DEPRECATED — nothing reads or writes this; see teams.criteriaEvaluationStrategy.
+  // The workspace grader lives in gitConfig.criteriaGrader. Drop in a follow-up release.
   criteriaEvaluationStrategy: text('criteria_evaluation_strategy').$type<'inline' | 'worker' | null>(),
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import Spinner from '@/components/Spinner';
+import { ZonedTime } from '@/components/DisplayTimezone';
 
 interface SessionSummary {
   sessionId: string;
@@ -188,9 +189,7 @@ export default function SessionHistoryPanel({ localUiUrl, viewerToken, workerId 
               >
                 <div className="flex items-center justify-between">
                   <span className="text-text-primary font-medium">
-                    {new Date(session.startedAt).toLocaleDateString(undefined, {
-                      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-                    })}
+                    <ZonedTime value={session.startedAt} format="datetime-short" />
                   </span>
                   <span className="text-text-muted">
                     {session.numTurns} turn{session.numTurns !== 1 ? 's' : ''}
@@ -264,9 +263,7 @@ function MessageBlock({ message }: { message: SessionMessage }) {
         </span>
         {message.timestamp && (
           <span className="text-text-muted text-[9px]">
-            {new Date(message.timestamp).toLocaleTimeString(undefined, {
-              hour: '2-digit', minute: '2-digit', second: '2-digit',
-            })}
+            <ZonedTime value={message.timestamp} format="time-seconds" />
           </span>
         )}
       </div>

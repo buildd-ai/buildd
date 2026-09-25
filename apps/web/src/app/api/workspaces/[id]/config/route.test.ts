@@ -595,6 +595,43 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.debug).toBeUndefined();
       expect(written.agentInstructions).toBeUndefined();
     });
+
+    describe('criteriaGrader', () => {
+      it('persists api and runner', async () => {
+        for (const value of ['api', 'runner']) {
+          setArgs.length = 0;
+          mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+          const res = await post({ ...formBody, criteriaGrader: value });
+          expect(res.status).toBe(200);
+          expect(setArgs[0].gitConfig.criteriaGrader).toBe(value);
+        }
+      });
+
+      it("stores 'auto' and null as absent — missing means auto", async () => {
+        for (const value of ['auto', null]) {
+          setArgs.length = 0;
+          mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { criteriaGrader: 'runner' } });
+          const res = await post({ ...formBody, criteriaGrader: value });
+          expect(res.status).toBe(200);
+          expect(setArgs[0].gitConfig.criteriaGrader).toBeUndefined();
+        }
+      });
+
+      it('keeps the existing grader when the body omits the field', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { criteriaGrader: 'api' } });
+        const res = await post(formBody);
+        expect(res.status).toBe(200);
+        expect(setArgs[0].gitConfig.criteriaGrader).toBe('api');
+      });
+
+      it('rejects an unknown grader with 400 and writes nothing', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+        const res = await post({ ...formBody, criteriaGrader: 'llm' });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/Invalid criteriaGrader/);
+        expect(setArgs).toHaveLength(0);
+      });
+    });
   });
 
 });
@@ -839,5 +876,99 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     });
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('PATCH /api/workspaces/[id]/config — policyConfig (apply proposed policy)', () => {
+  let setArgs: any[];
+  const policyConfig = {
+    preset: 'balanced',
+    riskClasses: [{ name: 'destructive_schema_change', detectedPaths: ['db/migrations/'] }],
+    reviewerRole: 'reviewer',
+  };
+
+  beforeEach(() => {
+    setArgs = [];
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+    mockWorkspacesUpdate.mockReset();
+    mockWorkspacesUpdate.mockReturnValue({
+      set: mock((arg: any) => {
+        setArgs.push(arg);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  const patch = (body: unknown, headers: Record<string, string> = {}) =>
+    PATCH(
+      new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+        method: 'PATCH',
+        headers: new Headers({ 'content-type': 'application/json', ...headers }),
+        body: JSON.stringify(body),
+      }),
+      { params: mockParams },
+    );
+
+  it('writes gitConfig.policyConfig and confirms the config in one update', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', autoMergeMaxLines: 400 } });
+
+    const res = await patch({ policyConfig });
+    expect(res.status).toBe(200);
+    expect(setArgs).toHaveLength(1);
+    expect(setArgs[0].configStatus).toBe('admin_confirmed');
+    expect(setArgs[0].gitConfig.policyConfig).toEqual(policyConfig);
+    // merge, not rebuild
+    expect(setArgs[0].gitConfig.defaultBranch).toBe('dev');
+    expect(setArgs[0].gitConfig.autoMergeMaxLines).toBe(400);
+  });
+
+  it('refuses a member with 403 and writes nothing', async () => {
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    const res = await patch({ policyConfig });
+    expect(res.status).toBe(403);
+    expect(setArgs).toHaveLength(0);
+  });
+
+  it('refuses a non-admin API key with 403', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'restricted', gitConfig: {} });
+    const res = await patch({ policyConfig }, { authorization: 'Bearer bld_worker' });
+    expect(res.status).toBe(403);
+    expect(setArgs).toHaveLength(0);
+  });
+
+  it('admits an admin API key', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'restricted', gitConfig: {} });
+    const res = await patch({ policyConfig }, { authorization: 'Bearer bld_admin' });
+    expect(res.status).toBe(200);
+    expect(setArgs[0].configStatus).toBe('admin_confirmed');
+  });
+
+  it('rejects a malformed policyConfig with 400', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+    for (const bad of [
+      null,
+      'balanced',
+      { preset: 'reckless', riskClasses: [] },
+      { preset: 'balanced' },
+      { preset: 'balanced', riskClasses: [{ name: 'not_a_class', detectedPaths: [] }] },
+      { preset: 'balanced', riskClasses: [{ name: 'dependency_bump', detectedPaths: 'x' }] },
+    ]) {
+      const res = await patch({ policyConfig: bad });
+      expect(res.status).toBe(400);
+    }
+    expect(setArgs).toHaveLength(0);
   });
 });

@@ -7,6 +7,7 @@ import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
 import TimezoneSync from '@/components/TimezoneSync';
+import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
 import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvider';
@@ -14,6 +15,7 @@ import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
+import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 
 export default async function ProtectedLayout({
   children,
@@ -25,6 +27,7 @@ export default async function ProtectedLayout({
   let currentTeamId: string | null = null;
   let workspaceIds: string[] = [];
   let teamWorkspaces: { id: string; name: string }[] = [];
+  let teamTimezone: string | null = null;
 
   if (user) {
     // These three have no dependency on each other, and this layout re-runs on
@@ -53,14 +56,17 @@ export default async function ProtectedLayout({
     }
 
     if (currentTeamId) {
-      try {
-        teamWorkspaces = await db
+      const teamId = currentTeamId;
+      [teamWorkspaces, teamTimezone] = await Promise.all([
+        db
           .select({ id: workspaces.id, name: workspaces.name })
           .from(workspaces)
-          .where(eq(workspaces.teamId, currentTeamId));
-      } catch {
-        // teamWorkspaces stays empty; WorkspaceFilter renders nothing
-      }
+          .where(eq(workspaces.teamId, teamId))
+          // teamWorkspaces stays empty; WorkspaceFilter renders nothing
+          .catch(() => [] as typeof teamWorkspaces),
+        // Never throws; null means "no team zone" → timestamps use the browser's
+        getTeamTimezoneSetting(teamId),
+      ]);
     }
   }
 
@@ -68,6 +74,7 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
+      <DisplayTimezoneProvider teamTimezone={teamTimezone}>
       <EscalationProvider workspaceIds={workspaceIds}>
       <NeedsInputProvider workspaceIds={workspaceIds}>
         <ConnectorReconnectProvider workspaceIds={workspaceIds}>
@@ -97,6 +104,7 @@ export default async function ProtectedLayout({
         </ConnectorReconnectProvider>
       </NeedsInputProvider>
       </EscalationProvider>
+      </DisplayTimezoneProvider>
     </AuthGuard>
   );
 }

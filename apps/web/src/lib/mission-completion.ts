@@ -4,6 +4,7 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { deriveLineageSupersession, isPrUnshipped, prShipState } from '@buildd/core/pr-shipped';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -271,6 +272,8 @@ export async function canCompleteMission(
     columns: {
       id: true, status: true, title: true, mode: true, kind: true,
       taskClass: true, creationSource: true, category: true, result: true,
+      // Attempt lineage for derived supersession (pr-shipped.ts).
+      parentTaskId: true,
     },
     with: {
       // Latest worker only — enough to answer "did this deliverable's PR merge?"
@@ -359,7 +362,21 @@ export async function canCompleteMission(
     supersededByPrUrl: string | null;
     supersededReason: string | null;
   };
-  const latestWorker = (t: { workers?: WorkerRow[] }) => t.workers?.[0];
+  // The shipped predicate is shared with the `all_prs_merged` criterion
+  // (`@buildd/core/pr-shipped`), and so is lineage-derived supersession: a
+  // closed PR followed by a merged PR from its own retry attempt is shipped
+  // without a manual record. Derived over every task's latest worker, attempts
+  // included, since the successor PR usually sits on the attempt row.
+  const derivedByTask = new Map(
+    deriveLineageSupersession(
+      allTasks,
+      allTasks.flatMap(t => {
+        const w = (t as unknown as { workers?: WorkerRow[] }).workers?.[0];
+        return w ? [{ ...w, taskId: t.id }] : [];
+      }),
+    ).map(w => [w.taskId, w as WorkerRow]),
+  );
+  const latestWorker = (t: { id: string }) => derivedByTask.get(t.id);
 
   // A task's status is not its terminal state — its PR's state is (task facae217).
   // `pending` above only catches non-terminal rows, so a deliverable that reached
@@ -374,13 +391,12 @@ export async function canCompleteMission(
   // GitHub round-trip — a merge is permanent, so the claim cannot go stale.
   const superseded = deliverables.filter(t => {
     if (t.status !== 'completed') return false;
-    const w = latestWorker(t as unknown as { workers?: WorkerRow[] });
-    return !!w?.prUrl && !w.mergedAt && !!w.supersededByPrNumber;
+    return prShipState(latestWorker(t)) === 'superseded';
   });
   if (superseded.length > 0) {
     base.supersededCount = superseded.length;
     base.supersededDetails = superseded.map(t => {
-      const w = latestWorker(t as unknown as { workers?: WorkerRow[] })!;
+      const w = latestWorker(t)!;
       return {
         taskId: t.id,
         title: t.title,
@@ -394,18 +410,17 @@ export async function canCompleteMission(
 
   const awaitingMerge = deliverables.filter(t => {
     if (t.status !== 'completed') return false;
-    const w = latestWorker(t as unknown as { workers?: WorkerRow[] });
-    return !!w?.prUrl && !w.mergedAt && !w.supersededByPrNumber;
+    return isPrUnshipped(latestWorker(t));
   });
   if (awaitingMerge.length > 0) {
     base.awaitingMerge = awaitingMerge.length;
     base.awaitingMergeDetails = awaitingMerge.map(t => {
-      const w = latestWorker(t as unknown as { workers?: WorkerRow[] });
+      const w = latestWorker(t);
       // Distinguishes the two remedies (the task's own doctrine): an open PR
       // just needs merging, a closed one needs either a merge (impossible —
       // GitHub won't reopen it) or a supersession claim naming where the work
       // actually landed.
-      const closedUnsuperseded = w?.prLifecycleStatus === 'closed';
+      const closedUnsuperseded = prShipState(w) === 'closed_unsuperseded';
       return {
         taskId: t.id,
         title: t.title,

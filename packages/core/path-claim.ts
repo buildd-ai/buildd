@@ -15,7 +15,7 @@
  */
 
 import { db } from './db/client';
-import { pathClaims, pathClaimWaiters, missionNotes, workers } from './db/schema';
+import { pathClaims, pathClaimWaiters, missionNotes, workers, tasks } from './db/schema';
 import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
 import {
   pathsOverlap,
@@ -96,6 +96,98 @@ async function dropExpiredParkedHolders(byTask: Map<string, string[]>): Promise<
   }
 }
 
+// ── Terminal-holder backstop ─────────────────────────────────────────────────
+
+const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
+
+/**
+ * Classify each of `taskIds` as a stale claim holder: the task itself is
+ * terminal, or it has at least one known worker and every one of them is
+ * terminal (no live worker left to finish the job). Either shape means the
+ * terminal-transition write that was supposed to call `releaseAndNotify` did
+ * not run — a leaked row, not a real lock.
+ *
+ * A taskId with NO worker rows at all is left alone rather than treated as
+ * "all terminal" — that shape means the lookup missed it, not that it is
+ * safe to drop; the safe default on missing data is to keep blocking.
+ */
+async function findTerminalHolders(taskIds: string[]): Promise<Set<string>> {
+  const [holderTasks, holderWorkers] = await Promise.all([
+    db.query.tasks.findMany({
+      where: inArray(tasks.id, taskIds),
+      columns: { id: true, status: true },
+    }),
+    db.query.workers.findMany({
+      where: inArray(workers.taskId, taskIds),
+      columns: { taskId: true, status: true },
+    }),
+  ]);
+  const statusByTask = new Map(holderTasks.map(t => [t.id, t.status]));
+  const workerStatusesByTask = new Map<string, string[]>();
+  for (const w of holderWorkers) {
+    if (!w.taskId) continue;
+    const existing = workerStatusesByTask.get(w.taskId) ?? [];
+    existing.push(w.status);
+    workerStatusesByTask.set(w.taskId, existing);
+  }
+
+  const terminal = new Set<string>();
+  for (const taskId of taskIds) {
+    const status = statusByTask.get(taskId);
+    const terminalTask = status ? TERMINAL_TASK_STATUSES.includes(status) : false;
+    const workerStatuses = workerStatusesByTask.get(taskId);
+    const allWorkersTerminal = Boolean(workerStatuses?.length)
+      && workerStatuses!.every(s => !LIVE_WORKER_STATUSES.includes(s));
+    if (terminalTask || allWorkersTerminal) terminal.add(taskId);
+  }
+  return terminal;
+}
+
+/**
+ * Drop, in place, the holders in `byTask` identified by `findTerminalHolders`
+ * as stale.
+ *
+ * This is defense in depth, not the fix: it only hides a stale row from THIS
+ * read, it does not clear `released_at`. The reaper (path-claims maintenance
+ * sweep) clears the underlying rows so a leak does not have to be rediscovered
+ * by every caller forever. Logged so a leak stays visible instead of quietly
+ * self-healing at the read layer while the root cause goes unnoticed.
+ */
+async function dropTerminalHolders(byTask: Map<string, string[]>): Promise<void> {
+  if (byTask.size === 0) return;
+  try {
+    const taskIds = [...byTask.keys()];
+    const terminal = await findTerminalHolders(taskIds);
+    for (const taskId of terminal) {
+      console.warn(
+        `[path-claim] dropping stale claim(s) held by task ${taskId} — ` +
+        `should have been released on its terminal transition`,
+      );
+      byTask.delete(taskId);
+    }
+  } catch (err) {
+    console.warn('[path-claim] terminal-holder lookup failed; keeping all claims:', err);
+  }
+}
+
+/**
+ * Find every taskId currently holding an active path_claims row whose claim
+ * should already have been released (see `dropTerminalHolders`), across every
+ * workspace. Used by the maintenance sweep to actually clear the rows —
+ * `dropTerminalHolders` only hides them from a single read.
+ */
+export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
+  const activeClaims = await db.query.pathClaims.findMany({
+    where: isNull(pathClaims.releasedAt),
+    columns: { taskId: true },
+  });
+  if (activeClaims.length === 0) return [];
+
+  const taskIds = [...new Set(activeClaims.map(c => c.taskId))];
+  const terminal = await findTerminalHolders(taskIds);
+  return [...terminal];
+}
+
 // ── Conflict detection ───────────────────────────────────────────────────────
 
 /**
@@ -130,6 +222,7 @@ export async function checkPathClaimConflict(
     claimsByTask.set(row.taskId, existing);
   }
   await dropExpiredParkedHolders(claimsByTask);
+  await dropTerminalHolders(claimsByTask);
 
   for (const [taskId, claimedPaths] of claimsByTask) {
     if (pathsOverlap(paths, claimedPaths)) {
@@ -170,6 +263,7 @@ export async function getActiveClaimsByWorkspace(
     byTask.set(row.taskId, existing);
   }
   await dropExpiredParkedHolders(byTask);
+  await dropTerminalHolders(byTask);
   return byTask;
 }
 

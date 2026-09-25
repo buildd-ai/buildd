@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { REASSIGNED_WORKER_ERROR } from '@/lib/worker-termination';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -149,6 +150,11 @@ export async function POST(
             }
           );
         }
+
+        // These workers were just terminated outside PATCH /api/workers/[id],
+        // so this route must release their path claims itself — a reassign
+        // means nothing they were mid-edit on will be finished by them.
+        await releaseAndNotify(taskId, 'abandoned');
       }
     } else if (task.status === 'pending') {
       // For pending tasks with force flag, require workspace ownership
