@@ -101,6 +101,34 @@ cd apps/web && bun run build:only   # next build only, no migration, no DATABASE
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 
+## Visual Review
+
+Screenshot any UI change at phone and desktop width before calling it done. Full
+checklist and gotchas: [`.claude/skills/visual-review/SKILL.md`](../.claude/skills/visual-review/SKILL.md).
+
+**Local** (needs a `DATABASE_URL` for a dev DB or Neon dev branch, never prod):
+
+```bash
+QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
+  scripts/qa/shoot.sh /app/missions
+# → /tmp/qa/screenshots/*.png   (macOS: sips -Z 1800 to downscale)
+```
+
+**Workers** (no DB): dispatch Visual QA on your pushed branch. It runs on a
+PII-scrubbed Neon clone and uploads a `qa-screenshots` artifact:
+
+```bash
+gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
+gh run list --workflow visual-qa.yml --branch <branch> --limit 1   # get the run id
+gh run watch <id> --exit-status && gh run download <id> -n qa-screenshots
+```
+
+Inputs: `routes`, `viewport` (`mobile` | `WxH`, default desktop), `mission_id`,
+`task_id`, `judge` (default `false`). By default a dispatch only captures and
+uploads, and the agent reads the PNGs and judges them itself. `judge=true` (and the
+label-gated release-PR path) adds a CI verdict from `anthropics/claude-code-action`
+on the team OAuth seat. `scripts/visual-qa-workflow.test.ts` pins this.
+
 ## UI Fixtures
 
 ### Purpose

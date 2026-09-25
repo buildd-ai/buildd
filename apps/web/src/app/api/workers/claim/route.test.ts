@@ -4216,6 +4216,86 @@ describe('path-overlap claim guard', () => {
     expect(data.workers[0].taskId).toBe('conflict-retry-task');
   });
 
+  // Review-fix and CI-fix attempts are the same shape as conflict retries: they
+  // copy the original's pathManifest and resume on the same branch, so their own
+  // open PR always overlaps. Exempting only conflictRetryPrNumber stranded every
+  // "[builder · after review]" fix behind the PR it was dispatched to fix.
+  for (const [column, label] of [
+    ['reviewerRetryPrNumber', 'after review'],
+    ['ciRetryPrNumber', 'after CI'],
+  ] as const) {
+    it(`claims a ${label} fix task despite its own PR being open with the same pathManifest`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([  // open PR pre-fetch: the PR this attempt fixes
+          { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['.github/workflows/integration.yml']),
+        id: 'fix-task',
+        title: `[builder · ${label} #1] Fix`,
+        priority: 8,
+        [column]: 2659,
+        context: null,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['.github/workflows/integration.yml'] }]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('fix-task');
+    });
+
+    it(`still defers a ${label} fix task whose manifest overlaps a DIFFERENT open PR`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['.github/workflows/integration.yml']),
+        id: 'fix-task',
+        [column]: 2659,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'original-task', pathManifest: ['.github/workflows/integration.yml'] },
+          { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+        ]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+  }
+
   it('still defers a conflict-retry task whose manifest overlaps a DIFFERENT open PR', async () => {
     // The exemption covers only the PR being retried. Another task's open PR
     // touching the same files is a genuine concurrent-edit risk and must block.
