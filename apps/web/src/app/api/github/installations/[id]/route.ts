@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 
 // DELETE /api/github/installations/[id] - Disconnect an installation
@@ -16,8 +16,8 @@ export async function DELETE(
     return NextResponse.json({ ok: true });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -33,7 +33,7 @@ export async function DELETE(
     // Disconnecting requires managing the installation (its installer, or an
     // admin/owner of a team it belongs to) and is refused while workspaces in
     // teams the caller does not administer still use it.
-    const access = await getInstallationAccessForUser(session.user.id!, installation);
+    const access = await getInstallationAccessForUser(user.id, installation);
     if (!access.canManage) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }

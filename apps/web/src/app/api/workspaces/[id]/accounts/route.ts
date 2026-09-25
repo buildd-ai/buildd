@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 
@@ -12,17 +12,17 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({ accounts: [] });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   // Verify workspace access
-  const access = await verifyWorkspaceAccess(session.user.id!, id);
+  const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
@@ -60,13 +60,13 @@ export async function POST(
     return NextResponse.json({ success: true });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   // Verify workspace access
-  const postAccess = await verifyWorkspaceAccess(session.user.id!, workspaceId);
+  const postAccess = await verifyWorkspaceAccess(user.id, workspaceId);
   if (!postAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
@@ -151,13 +151,13 @@ export async function DELETE(
     return NextResponse.json({ success: true });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   // Verify workspace access
-  const deleteAccess = await verifyWorkspaceAccess(session.user.id!, workspaceId);
+  const deleteAccess = await verifyWorkspaceAccess(user.id, workspaceId);
   if (!deleteAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }

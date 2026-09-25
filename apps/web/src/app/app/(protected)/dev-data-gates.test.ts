@@ -34,17 +34,16 @@ const REQUIRES_DB = /!process\.env\.DATABASE_URL/;
 const REQUIRES_DEV_USER = /!process\.env\.DEV_USER_EMAIL/;
 
 /**
- * GET routes that stay gated: they authenticate with next-auth `auth()`
- * directly, and local dev has no session under DEV_USER_EMAIL, so un-gating
- * would turn an empty response into a 401 rather than real data. The fix is
- * moving them to getCurrentUser. Shrink this list only.
+ * GET routes that stay gated on NODE_ENV alone because the read itself writes.
+ * Each entry names the call that writes; the scan below checks it is still
+ * there, so an exemption dies when its reason does. Shrink this list only.
  */
-const AUTH_SESSION_ONLY = new Set([
-  'workspaces/[id]/accounts/route.ts',
-  'github/installations/route.ts',
-  'github/installations/[id]/route.ts',
-  'github/installations/[id]/repos/route.ts',
-]);
+const WRITES_ON_READ: Record<string, string> = {
+  // listInstallationRepos → getInstallationToken mints a GitHub installation
+  // token and persists it to github_installations when the cached one is near
+  // expiry.
+  'github/installations/[id]/repos/route.ts': 'listInstallationRepos(',
+};
 
 interface Gate {
   file: string;
@@ -91,7 +90,7 @@ describe('dev data gates: pages (reads)', () => {
 
 describe('dev data gates: API', () => {
   const gates = apiGates();
-  const reads = gates.filter((g) => g.handler === 'GET' && !AUTH_SESSION_ONLY.has(g.file));
+  const reads = gates.filter((g) => g.handler === 'GET' && !(g.file in WRITES_ON_READ));
   const writes = gates.filter((g) => g.handler !== 'GET');
 
   it('finds GET and mutation gates (guards against matching nothing)', () => {
@@ -115,11 +114,29 @@ describe('dev data gates: API', () => {
     expect(unGated).toEqual([]);
   });
 
-  it('the auth()-only GET exemptions are still real (drop one once its route moves to getCurrentUser)', () => {
-    for (const f of AUTH_SESSION_ONLY) {
-      const src = readFileSync(join(API_ROOT, f), 'utf8');
-      expect(src).toContain('await auth()');
-      expect(src).not.toContain('getCurrentUser');
+  it('GET exemptions are still real: the writing call is present and the gate is NODE_ENV-only', () => {
+    for (const [f, call] of Object.entries(WRITES_ON_READ)) {
+      expect(readFileSync(join(API_ROOT, f), 'utf8')).toContain(call);
+      const gate = gates.find((g) => g.file === f && g.handler === 'GET');
+      expect(gate).toBeDefined();
+      expect(REQUIRES_DB.test(gate!.line)).toBe(false);
     }
+  });
+
+  it('un-gated GET routes do not authenticate with next-auth auth() directly', () => {
+    // Local dev has no next-auth session under DEV_USER_EMAIL; only
+    // getCurrentUser honours it. An un-gated GET calling auth() would 401 in
+    // dev instead of serving data.
+    const bad = [...new Set(reads.map((g) => g.file))].filter((f) =>
+      /await\s+auth\(\)/.test(readFileSync(join(API_ROOT, f), 'utf8')),
+    );
+    expect(bad).toEqual([]);
+  });
+
+  it.each([
+    'workspaces/[id]/accounts/route.ts',
+    'github/installations/route.ts',
+  ])('%s GET is un-gated for dev with a DATABASE_URL and DEV_USER_EMAIL', (f) => {
+    expect(reads.map((g) => g.file)).toContain(f);
   });
 });
