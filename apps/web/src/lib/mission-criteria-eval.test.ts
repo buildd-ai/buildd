@@ -105,12 +105,9 @@ mock.module('./mission-criteria-prose', () => ({
   resolveProseCriterion: mockResolveProseCriteria,
 }));
 
-// Strategy resolver defaults to 'inline' unless overridden per-test; the
-// workspace grader defaults to unset (→ auto).
-let mockStrategyResult: 'inline' | 'worker' = 'inline';
+// The workspace grader defaults to unset (→ auto).
 let mockWorkspaceGrader: 'auto' | 'api' | 'runner' | null = null;
 mock.module('./mission-criteria-strategy', () => ({
-  resolveEvaluationStrategy: async () => mockStrategyResult,
   resolveWorkspaceCriteriaGrader: async () => mockWorkspaceGrader,
 }));
 
@@ -183,7 +180,6 @@ function reset() {
   insertedRows.length = 0;
   missionFindArgs.length = 0;
   workerFindArgs.length = 0;
-  mockStrategyResult = 'inline';
   mockWorkspaceGrader = null;
   mockResolveCommandCriterion.mockReset();
   mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
@@ -731,31 +727,14 @@ describe('evaluateCriteriaNow — feed notes', () => {
   });
 });
 
-// ── evaluationStrategy routing ────────────────────────────────────────────────
+// ── Worker evaluator routing ─────────────────────────────────────────────────
 
-describe('evaluationStrategy: worker path', () => {
+describe('worker evaluator: command criteria only', () => {
   beforeEach(reset);
 
-  it('routes all LLM-eligible criteria to worker eval when strategy=worker and allowWorkerDispatch=true', async () => {
-    mockStrategyResult = 'worker';
-    mission({
-      goalCriteria: [{ type: 'description', description: 'Tests all pass', notMechanizableReason: 'r' }],
-    });
-
-    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
-
-    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
-    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
-
-    const saved = updateCalls[updateCalls.length - 1]?.goalCriteriaState;
-    expect(saved.criteria[0].verdict).toBe('PENDING');
-    expect(saved.criteria[0].workerTaskId).toBe('worker-eval-task-1');
-  });
-
   it('does NOT dispatch worker eval when allowWorkerDispatch is false (heartbeat guard)', async () => {
-    mockStrategyResult = 'worker';
     mission({
-      goalCriteria: [{ type: 'description', description: 'Tests all pass', notMechanizableReason: 'r' }],
+      goalCriteria: [{ type: 'command', command: 'bun test' }],
     });
 
     // allowWorkerDispatch defaults to false — simulates heartbeat prepass call
@@ -765,9 +744,8 @@ describe('evaluationStrategy: worker path', () => {
   });
 
   it('does NOT dispatch worker eval when dispatchCommands=false (read-only pass)', async () => {
-    mockStrategyResult = 'worker';
     mission({
-      goalCriteria: [{ type: 'description', description: 'Tests all pass', notMechanizableReason: 'r' }],
+      goalCriteria: [{ type: 'command', command: 'bun test' }],
     });
 
     await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', dispatchCommands: false, allowWorkerDispatch: true });
@@ -775,15 +753,14 @@ describe('evaluationStrategy: worker path', () => {
     expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
   });
 
-  it('command criteria route to worker eval even when strategy=inline', async () => {
-    mockStrategyResult = 'inline';
+  it('command criteria route to the worker evaluator', async () => {
     mission({
       goalCriteria: [{ type: 'command', command: 'bun test', label: 'unit tests' }],
     });
 
     await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
 
-    // Under inline strategy, command criteria go to worker eval (not resolveCommandCriterion)
+    // Command criteria go to worker eval (not resolveCommandCriterion)
     expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
     expect(mockResolveCommandCriterion).not.toHaveBeenCalled();
 
@@ -792,8 +769,7 @@ describe('evaluationStrategy: worker path', () => {
     expect(saved.criteria[0].workerTaskId).toBe('worker-eval-task-1');
   });
 
-  it('under inline strategy, prose criteria still use prose dispatch (not worker eval)', async () => {
-    mockStrategyResult = 'inline';
+  it('prose criteria use prose dispatch, never the batched worker evaluator', async () => {
     mission({
       goalCriteria: [{ type: 'description', description: 'Tests pass', notMechanizableReason: 'r' }],
     });
@@ -806,7 +782,6 @@ describe('evaluationStrategy: worker path', () => {
   });
 
   it('command criteria are not dispatched when another criterion has already failed', async () => {
-    mockStrategyResult = 'inline';
     mission({
       goalCriteria: [
         { type: 'no_open_tasks' },
@@ -827,37 +802,17 @@ describe('evaluationStrategy: worker path', () => {
     expect(commandCs.evidence).toMatch(/another criterion has already failed/i);
   });
 
-  it('worker eval batches both command and prose criteria under worker strategy', async () => {
-    mockStrategyResult = 'worker';
-    mission({
-      goalCriteria: [
-        { type: 'description', description: 'Tests pass', notMechanizableReason: 'r' },
-        { type: 'command', command: 'bun test' },
-      ],
-    });
-
-    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
-
-    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
-    // Both criteria should be in a single call (batched)
-    const callArg = mockResolveCriteriaWorkerEval.mock.calls[0][0];
-    expect(callArg.criteria).toHaveLength(2);
-    expect(callArg.criteria.some((c: any) => c.type === 'description')).toBe(true);
-    expect(callArg.criteria.some((c: any) => c.type === 'command')).toBe(true);
-  });
-
   it('ensureCriteriaVerdict passes allowWorkerDispatch=true to evaluateCriteriaNow', async () => {
-    // When ensureCriteriaVerdict calls evaluateCriteriaNow, the worker strategy
+    // When ensureCriteriaVerdict calls evaluateCriteriaNow, the worker evaluator
     // should dispatch — this covers the completion gate path.
-    mockStrategyResult = 'worker';
     const stale = {
       evaluatedAt: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
       evaluatedBy: 'auto' as const,
       overall: 'PENDING' as const,
-      criteria: [{ index: 0, type: 'description', verdict: 'PENDING' as const }],
+      criteria: [{ index: 0, type: 'command', verdict: 'PENDING' as const }],
     };
     mission({
-      goalCriteria: [{ type: 'description', description: 'Tests pass', notMechanizableReason: 'r' }],
+      goalCriteria: [{ type: 'command', command: 'bun test' }],
       goalCriteriaState: stale,
     });
 
@@ -1275,7 +1230,6 @@ describe('evaluateCriteriaNow — prose grader selection', () => {
   });
 
   it('mixed command + runner prose criteria evaluate independently', async () => {
-    mockStrategyResult = 'inline';
     mission({
       goalCriteria: [
         { type: 'command', command: 'bun test' },

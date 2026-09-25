@@ -84,7 +84,6 @@ export async function GET(
         monthlyCostMonth: true,
         budgetAlertsSent: true,
         enabledBackends: true,
-        criteriaEvaluationStrategy: true,
         enabledInferenceCapabilities: true,
       },
     });

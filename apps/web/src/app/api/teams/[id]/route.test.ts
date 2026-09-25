@@ -4,18 +4,20 @@ import { NextRequest } from 'next/server';
 const mockRequireSessionUser = mock(() => Promise.resolve(null as any));
 mock.module('@/lib/auth-helpers', () => ({
   requireSessionUser: mockRequireSessionUser,
-  getRequestPrincipal: async () => null,
+  getRequestPrincipal: async () => principal,
 }));
+let principal: any = null;
 
 let membership: any = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
 let teamRow: any = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
 const capturedUpdates: any[] = [];
+const teamQueries: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findFirst: () => Promise.resolve(membership), findMany: () => Promise.resolve([]) },
-      teams: { findFirst: () => Promise.resolve(teamRow) },
+      teams: { findFirst: (q: any) => { teamQueries.push(q); return Promise.resolve(teamRow); } },
     },
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
@@ -34,7 +36,7 @@ mock.module('@buildd/core/db/schema', () => ({
   users: 'users',
 }));
 
-import { PATCH } from './route';
+import { GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: 'team-1' }) };
 
@@ -84,5 +86,18 @@ describe('PATCH /api/teams/[id] — timezone', () => {
     const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(403);
     expect(capturedUpdates).toHaveLength(0);
+  });
+});
+
+describe('GET /api/teams/[id] — response columns', () => {
+  it('no longer reads the deprecated criteriaEvaluationStrategy column', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    const res = await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(res.status).toBe(200);
+    const columns = teamQueries[0]?.columns ?? {};
+    expect(Object.keys(columns).length).toBeGreaterThan(0);
+    expect(columns).not.toHaveProperty('criteriaEvaluationStrategy');
+    principal = null;
   });
 });
