@@ -528,6 +528,15 @@ mock.module('@/lib/terminal-record-ledger', () => ({
   TERMINAL_OUTCOMES: ['completed', 'failed', 'refused', 'crashed'],
 }));
 
+// Visual-auditor evidence check. Its own queries/predicates are covered in
+// lib/visual-audit-evidence.test.ts; here only the gate's wiring is under test.
+const okEvidence = { ok: true, requiredRoutes: [], missing: [], emptyFindings: [], notUploaded: [], unlinkedIssues: [] };
+const mockLoadVisualAuditEvidence = mock((_opts: any) => Promise.resolve(okEvidence as any));
+mock.module('@/lib/visual-audit-evidence', () => ({
+  loadVisualAuditEvidence: mockLoadVisualAuditEvidence,
+  formatVisualEvidenceRejection: (v: any) => `Visual audit evidence incomplete. Missing: ${v.missing.join(', ')}`,
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -4029,6 +4038,89 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).hint).toBe('create_pr or create_artifact');
+    });
+
+    describe('visual-auditor evidence check (replaces hasDeliverableArtifact)', () => {
+      const failing = {
+        ok: false, requiredRoutes: ['/app/missions'], missing: ['/app/missions @ desktop'],
+        emptyFindings: [], notUploaded: [], unlinkedIssues: [],
+      };
+
+      function auditWorker(overrides: Record<string, unknown> = {}) {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+          branch: 'buildd/audit', commitCount: 0, prUrl: null, prNumber: null,
+          startedAt: new Date('2026-08-01T10:00:00.000Z'), pendingInstructions: null, milestones: null, waitingFor: null,
+          ...overrides,
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1', roleSlug: 'visual-auditor',
+        });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+      }
+      const complete = () => PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Audited.', summarySource: 'agent' },
+      }), { params: mockParams });
+
+      beforeEach(() => {
+        mockLoadVisualAuditEvidence.mockReset();
+        mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+      });
+
+      it('refuses with a message naming what is missing, and records the refusal', async () => {
+        auditWorker();
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        let capturedSet: any = null;
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((vals: any) => { capturedSet = vals; return { where: mock(() => ({ returning: mock(() => []) })) }; }),
+        });
+
+        const res = await complete();
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('/app/missions @ desktop');
+        expect(data.hint).toBe('visual_evidence');
+        expect(data.gate).toBeTruthy();
+        expect(capturedSet?.rejectedCompletionPayload?.reason).toBe('visual_evidence');
+        expect(mockLoadVisualAuditEvidence).toHaveBeenCalledWith({
+          workerId: WORKER_ID, taskId: 'task-1', missionId: 'mission-1', workspaceId: 'ws-1',
+        });
+      });
+
+      it('a sibling mission artifact does not satisfy it (the generic artifact check is replaced)', async () => {
+        auditWorker();
+        mockArtifactsFindMany.mockResolvedValue([{ id: 'sibling-art' }] as any);
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        expect((await complete()).status).toBe(400);
+      });
+
+      it('a PR on the worker does not bypass it', async () => {
+        auditWorker({ prUrl: 'https://github.com/o/r/pull/7', prNumber: 7 });
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        expect((await complete()).status).toBe(400);
+      });
+
+      it('completes when the evidence is complete, with no artifact row of the generic kind', async () => {
+        auditWorker();
+        mockArtifactsFindMany.mockResolvedValue([]);
+        const res = await complete();
+        expect(res.status).toBe(200);
+        expect(mockLoadVisualAuditEvidence).toHaveBeenCalledTimes(1);
+      });
+
+      it('is not consulted for any other role', async () => {
+        auditWorker();
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1', roleSlug: 'builder',
+        });
+        mockArtifactsFindMany.mockResolvedValue([{ id: 'art-1' }] as any);
+        const res = await complete();
+        expect(res.status).toBe(200);
+        expect(mockLoadVisualAuditEvidence).not.toHaveBeenCalled();
+      });
     });
 
     // Regression for the 54-turn-run-lost incident: a research task declares

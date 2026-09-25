@@ -58,6 +58,8 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
@@ -1153,7 +1155,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1524,8 +1526,36 @@ export async function PATCH(
         return frictionSignature;
       };
 
+      // A visual-auditor task (the mission's [surface audit]) is gated on its
+      // own evidence, which REPLACES hasDeliverableArtifact: a summary, a PR or
+      // a sibling's mission artifact must not pass an audit that never looked.
+      // Every required route × {mobile, desktop} needs a screenshot from this
+      // worker with a finding and a stored object, and every issue a fix task.
+      // Checked ahead of every outputRequirement arm so no `hasPR` shortcut
+      // can satisfy it. See lib/visual-audit-evidence.ts.
+      const isVisualAuditorTask = terminalTaskRow[0]?.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+      if (isVisualAuditorTask && worker.taskId) {
+        const evidence = await loadVisualAuditEvidence({
+          workerId: id,
+          taskId: worker.taskId,
+          missionId: taskMissionId,
+          workspaceId: worker.workspaceId,
+        });
+        if (!evidence.ok) {
+          const frictionSignature = await persistRejectedCompletionPayload('visual_evidence');
+          return NextResponse.json({
+            error: formatVisualEvidenceRejection(evidence),
+            hint: 'visual_evidence',
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        // Screenshots are the deliverable; the auditor ships nothing to merge.
+        skipRelease = true;
+      }
+
       // pr_required: always require a PR (regardless of commits)
-      if (outputReq === 'pr_required' && !hasPR) {
+      if (outputReq === 'pr_required' && !hasPR && !isVisualAuditorTask) {
         const frictionSignature = await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
@@ -1540,7 +1570,7 @@ export async function PATCH(
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
-      if (outputReq === 'artifact_required' && !hasPR) {
+      if (outputReq === 'artifact_required' && !hasPR && !isVisualAuditorTask) {
         if (!(await hasDeliverableArtifact())) {
           const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
