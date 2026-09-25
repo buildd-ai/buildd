@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { computeMissionFlightStrip } from '@buildd/core/mission-helpers';
-import { FlightDetailSheet } from './FlightDetailSheet';
+import { FlightDetailSheet, visiblePhaseLabels } from './FlightDetailSheet';
+import { axisLabelWidth } from './FlightStrip';
 
 const date = (ms: number) => new Date(ms);
 const worker = (id: string, taskId: string, start: number, end: number, extra: Record<string, unknown> = {}) => ({
@@ -134,3 +135,63 @@ describe('FlightDetailSheet', () => {
     expect(html).toContain('WORK');
   });
 });
+
+// QA: a many-phase mission drew P8, P9, P10 and the "16m" duration on top of
+// each other ("P8P9P1016m"). Labels are thinned so no two overlap.
+describe('visiblePhaseLabels', () => {
+  const W = 358;
+  const phases = (n: number, from = 0, to = 1) =>
+    Array.from({ length: n }, (_, i) => ({ label: `P${i + 1}`, position: n === 1 ? 0 : from + ((to - from) * i) / (n - 1) }));
+
+  it('keeps every label when they are well spread', () => {
+    expect(visiblePhaseLabels(phases(3, 0, 0.6), W, '16m')).toEqual([0, 1, 2]);
+  });
+
+  it('always keeps the first phase label', () => {
+    expect(visiblePhaseLabels(phases(40), W, '16m')[0]).toBe(0);
+  });
+
+  it('drops labels that would collide with each other or with the duration', () => {
+    const ps = [
+      { label: 'P1', position: 0 },
+      { label: 'P7', position: 0.5 },
+      { label: 'P8', position: 0.9 },
+      { label: 'P9', position: 0.92 },
+      { label: 'P10', position: 0.95 },
+    ];
+    const shown = visiblePhaseLabels(ps, W, '16m');
+    expect(shown).toContain(0);
+    expect(shown).toContain(1);
+    // At most one of the three crowded labels survives, and none under the duration.
+    expect(shown.filter(i => i >= 2).length).toBeLessThanOrEqual(1);
+  });
+
+  it('never returns two labels whose boxes overlap', () => {
+    const ps = phases(25, 0, 0.98);
+    const shown = visiblePhaseLabels(ps, W, '1h 4m');
+    const est = (t: string) => axisLabelWidth(t, 9);
+    for (let k = 1; k < shown.length; k++) {
+      const a = ps[shown[k - 1]];
+      const b = ps[shown[k]];
+      const ax = shown[k - 1] === 0 ? 0 : a.position * W;
+      expect(b.position * W).toBeGreaterThanOrEqual(ax + est(a.label));
+    }
+    const last = ps[shown[shown.length - 1]];
+    expect(last.position * W + est(last.label)).toBeLessThanOrEqual(W - est('1h 4m'));
+  });
+
+  it('renders only the thinned labels in the chart', () => {
+    const tasks = Array.from({ length: 12 }, (_, i) => ({ id: `t${i}`, status: 'completed', roleSlug: 'builder' }));
+    // Twelve short spans separated by long idle gaps → twelve phases.
+    const workers = tasks.map((t, i) => worker(`w${i}`, t.id, i * 10_000_000, i * 10_000_000 + 1_000));
+    const data = computeMissionFlightStrip(tasks, workers);
+    expect(data.phases.length).toBeGreaterThan(8);
+    const html = renderToStaticMarkup(
+      <FlightDetailSheet open={true} onClose={() => {}} data={data} missionId="m1" missionTitle="Ship the thing" />,
+    );
+    const rendered = [...html.matchAll(/>(P\d+)<\/text>/g)].map(m => m[1]);
+    expect(rendered.length).toBeLessThan(data.phases.length);
+    expect(rendered[0]).toBe('P1');
+  });
+});
+

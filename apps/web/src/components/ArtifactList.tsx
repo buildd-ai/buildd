@@ -213,7 +213,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
             aria-describedby={serverScope?.partial ? 'artifact-search-partial' : undefined}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 px-3 py-2 border border-border-default rounded-lg bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
+            className="flex-1 min-w-0 px-3 py-2 border border-border-default rounded-lg bg-surface-1 text-base md:text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
           />
         )}
       </div>

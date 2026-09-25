@@ -30,6 +30,7 @@ import MissionFocusProvider from './MissionFocusProvider';
 import TaskSheet, { type TaskSheetMission } from './TaskSheet';
 import { buildTaskSheetNav } from './task-sheet-nav';
 import { createTaskSheetHistory, resolveTaskOpen, type TaskSheetHistory } from './task-sheet-history';
+import { closeEnclosingFlightDetailSheet } from '@/components/FlightDetailSheet';
 
 export interface TaskPanelWrapperProps {
   children: React.ReactNode;
@@ -158,6 +159,9 @@ function TaskPanelInner({
     e.preventDefault();
     e.stopPropagation();
     openTask(id);
+    // A bar in the (portalled) flight detail sheet reaches here too: close it,
+    // so it can never stay stacked against the task sheet.
+    closeEnclosingFlightDetailSheet(e.target);
   }, [openTask]);
 
   const model = useMemo(() => (feedTasks && feedTasks.length > 0 ? buildMissionFeedGroups(feedTasks) : null), [feedTasks]);

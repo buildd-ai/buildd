@@ -96,6 +96,17 @@ export interface MissionMastheadProps {
   className?: string;
 }
 
+/**
+ * A caller-supplied node (`verified`, `actions`, `expand`) as a single child.
+ * On mission detail these arrive from the server page, and an outlined Flight
+ * chunk is a lazy node around an unvalidated element: left bare in a JSX
+ * children array it trips React's missing-key warning. As a fragment's only
+ * child it is not a list item.
+ */
+function Slot({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
 function StateChip({ chip }: { chip: MastheadChip }) {
   return (
     <span
@@ -203,8 +214,8 @@ export default function MissionMasthead(props: MissionMastheadProps) {
           {/* Controls sit above the stretched card link, never inside it. */}
           {(expand || actions) && (
             <span className="relative z-10 flex shrink-0 items-center gap-1">
-              {actions}
-              {expand}
+              <Slot>{actions}</Slot>
+              <Slot>{expand}</Slot>
             </span>
           )}
         </div>
@@ -244,18 +255,18 @@ export default function MissionMasthead(props: MissionMastheadProps) {
           )}
           <h1 className="min-w-0 flex-1 truncate font-mono text-[16px] font-semibold text-text-primary">{title}</h1>
           {folded && <StateChip chip={chip} />}
-          {actions}
+          <Slot>{actions}</Slot>
         </div>
         {!folded && (
           <div className="flex min-h-[28px] flex-wrap items-center gap-2">
             <StateChip chip={chip} />
-            {verified}
+            <Slot>{verified}</Slot>
           </div>
         )}
         <div className="flex items-center gap-2">
           <MissionPulse variant="header" segments={segments} connected segmentLabels={segmentLabels} className={`flex-1 ${pulseClassName}`} />
           {caption && <span className="ml-auto shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
-          {expand}
+          <Slot>{expand}</Slot>
         </div>
       </header>
     );

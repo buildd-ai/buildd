@@ -262,3 +262,38 @@ describe('TaskPanelWrapper mounted — closing lands on the row (W5)', () => {
     expect(document.activeElement).toBe(container.querySelector('[data-testid="row-b-link"]'));
   });
 });
+
+// A bar in the flight detail sheet carries data-task-id, so a tap on it opens
+// the task sheet through this wrapper's capture handler (React events follow
+// the component tree through the sheet's portal). The flight sheet must close
+// then, so stacking order can never leave it over the task sheet.
+describe('TaskPanelWrapper mounted — a flight-sheet bar tap', () => {
+  it('opens the task sheet and closes the flight detail sheet', async () => {
+    const { useState } = await import('react');
+    const { computeMissionFlightStrip } = await import('@buildd/core/mission-helpers');
+    const { FlightDetailSheet } = await import('@/components/FlightDetailSheet');
+    const data = computeMissionFlightStrip(
+      [{ id: A, status: 'completed', roleSlug: 'builder' }],
+      [{ id: 'w1', taskId: A, status: 'completed', startedAt: new Date(0), completedAt: new Date(60_000) }],
+    );
+    function Expand() {
+      const [open, setOpen] = useState(true);
+      return <FlightDetailSheet open={open} onClose={() => setOpen(false)} data={data} missionId="m1" missionTitle="Ship it" />;
+    }
+    const { store } = fakeStore();
+    act(() => {
+      root.render(
+        <MissionFocusContext.Provider value={store}>
+          {createElement(TaskPanelWrapper, { missionId: 'm1', children: <Expand /> })}
+        </MissionFocusContext.Provider>,
+      );
+    });
+    const bar = document.body.querySelector(`[data-testid="flight-detail-bar"][data-task-id="${A}"]`)!;
+    expect(bar).not.toBeNull();
+
+    click(bar);
+
+    expect(sheet()?.getAttribute('data-sheet-task')).toBe(A);
+    expect(document.body.querySelector('[data-testid="flight-detail-panel"]')).toBeNull();
+  });
+});

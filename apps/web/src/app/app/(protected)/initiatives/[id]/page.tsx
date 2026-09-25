@@ -249,7 +249,7 @@ export default async function InitiativeDetailPage({
   }));
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
+    <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8 max-w-5xl">
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
         <Link href="/app/initiatives" className="hover:text-text-secondary transition-colors">

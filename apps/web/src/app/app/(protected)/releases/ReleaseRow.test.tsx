@@ -83,3 +83,13 @@ describe('ReleaseRow layout', () => {
   });
 
 });
+
+// Mobile QA: "Run →" was a 41x17 text link.
+describe('ReleaseRow touch targets', () => {
+  it('the Run link is a 44px target below md', () => {
+    const link = render().match(/<a\b[^>]*href="https:\/\/github.com\/o\/r\/actions\/runs\/1"[^>]*>/)![0];
+    const cls = (link.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/);
+    expect(cls).toContain('min-h-11');
+    expect(cls).toContain('min-w-11');
+  });
+});
