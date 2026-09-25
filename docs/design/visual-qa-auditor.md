@@ -1,6 +1,6 @@
 # Visual QA Auditor for Missions
 
-**Status:** Proposed — PR 1 (teeth) in progress
+**Status:** Proposed — PR 1 (teeth) and PR 3 (loop) in progress
 **Related:** `packages/core/surface-audit.ts`, `apps/web/src/lib/mission-surface-audit.ts`,
 `apps/web/src/lib/mission-completion.ts`, `apps/web/src/app/api/workers/claim/route.ts`,
 `apps/runner/src/env-scan.ts`, `apps/web/src/lib/default-roles.ts`, `apps/web/src/lib/storage-keys.ts`,
@@ -167,12 +167,24 @@ The model decides what it saw. Code decides whether it looked, and at what.
   refuses a completion with no screenshots in any case. (A worker cannot report
   `infra_stalled` itself: only the server sets it, after repeated infra retries, so it
   is not a boot-failure path.)
-- **Re-check, defined:** today, `ensureMissionSurfaceAudit` appends each new work task,
-  fix tasks included, to the existing audit's `dependsOn`. That is inert once the audit
-  is done. Change it so that when an audit is already `completed` and a `[surface fix]`
-  task is created, it creates **one** new `[surface audit] round 2` scoped to the
-  issue routes. **Bound:** at most 2 rounds. A third set of issues goes to a human
-  question instead of looping.
+- **Errors before it can ask:** a visual-auditor mission task that fails for good (its
+  ordinary retry spent, or the stale reaper's attempt cap reached) is recorded
+  `errorType: 'infra_stalled'` by the server, not as a plain failure, so
+  `canCompleteMission` refuses with `infra_stalled` instead of releasing the mission.
+  The reaper also never auto-completes an audit from its artifacts: only the evidence
+  check can pass one. (The worker still cannot report `infra_stalled` itself.)
+- **Re-check, defined:** `ensureMissionSurfaceAudit` reads the mission's newest audit.
+  A `[surface fix]` task filed while that audit is still `pending` just joins its
+  `dependsOn`. Filed once it has started (the auditor files fixes while `in_progress`,
+  so waiting for `completed` would never fire) or finished, it opens **one**
+  `[surface audit] round 2: <mission>` task that depends on the fix and lists the route
+  from the fix title (`[surface fix] <route>: <finding>`) in
+  `context.visualQa.requiredRoutes`; later fixes from the same round extend that pending
+  audit and add their routes. `context.surfaceAuditRound` records the round. A round
+  skips the UI-path check, since a fix task's manifest often names no UI file.
+  **Bound:** at most 2 rounds (`MAX_SURFACE_AUDIT_ROUNDS`). A fix filed after round 2
+  has looked posts one open mission question instead of a round 3; the fix task itself
+  stays open and holds the mission until a human lets it run or cancels it to waive.
 
 ### 5. Where the screenshots show
 
