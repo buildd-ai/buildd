@@ -507,7 +507,8 @@ describe('preflightEscalationCheck', () => {
     expect(result.shouldEscalate).toBe(true);
   });
 
-  it('escalates when a file matches escalateToPaths', () => {
+  // Read-only fallback release: a legacy STORED escalateToPaths still escalates.
+  it('escalates when a file matches a legacy stored escalateToPaths (fallback release)', () => {
     const files = [
       { filename: 'apps/web/src/lib/auth/session.ts' },
       { filename: 'apps/web/src/components/Button.tsx' },

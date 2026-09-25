@@ -1,7 +1,7 @@
 /**
  * Schema-drift CI failures are diagnose-only — never auto-fixed.
  *
- * `packages/core/db/schema.ts` and `drizzle/` sit behind `escalateToPaths`
+ * `packages/core/db/schema.ts` and `drizzle/` sit behind the migration gate
  * because an agent reconciling a schema against production papers over
  * whatever actually caused the divergence, and that gate exists because of a
  * real prior outage. The same rule applies here, one level earlier: when the

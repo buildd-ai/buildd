@@ -2,8 +2,11 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import type { MergePolicy, MergePolicyTier } from '@buildd/shared';
+import { useRouter } from 'next/navigation';
+import type { MergePolicy, MergePolicyTier, WorkspacePolicyConfig } from '@buildd/shared';
 import MissionPolicyDrawer from '@/components/MissionPolicyDrawer';
+import { PolicyRescanSheet } from '@/components/PolicyRescanSheet';
+import { describePolicyConfig } from '@/lib/workspace-health';
 
 interface Role {
   slug: string;
@@ -20,6 +23,8 @@ interface Props {
   workspaceId: string;
   workspaceName: string;
   initial: MergePolicy;
+  /** The applied risk-class policy — its detected paths are what gate merges. */
+  policyConfig: WorkspacePolicyConfig | null;
   roles: Role[];
   missionOverrides: MissionOverride[];
 }
@@ -28,7 +33,7 @@ const TIER_OPTIONS: { value: MergePolicyTier; label: string; hint: string }[] = 
   {
     value: 'auto-threshold',
     label: 'Auto-Threshold',
-    hint: 'Merge automatically when CI passes and PR is within size/path limits.',
+    hint: 'Merge automatically when CI passes and PR is within the size limit.',
   },
   {
     value: 'agent-review',
@@ -58,22 +63,21 @@ export default function MergePolicyEditor({
   workspaceId,
   workspaceName,
   initial,
+  policyConfig,
   roles,
   missionOverrides: initialOverrides,
 }: Props) {
+  const router = useRouter();
+  const [rescanOpen, setRescanOpen] = useState(false);
   const [policy, setPolicy] = useState<MergePolicy>(initial);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Tier 1 fields
   const [maxLines, setMaxLines] = useState(String(policy.threshold?.maxLines ?? 800));
-  const [denyPaths, setDenyPaths] = useState<string[]>(policy.threshold?.denyPaths ?? []);
-  const [denyPathDraft, setDenyPathDraft] = useState('');
 
   // Tier 2 fields
   const [reviewerRole, setReviewerRole] = useState(policy.agentReview?.reviewerRole ?? '');
-  const [escalatePaths, setEscalatePaths] = useState<string[]>(policy.agentReview?.escalateToPaths ?? []);
-  const [escalatePathDraft, setEscalatePathDraft] = useState('');
   const [maxConfidence, setMaxConfidence] = useState(String(policy.agentReview?.maxConfidenceThreshold ?? 0.6));
   const [gateCondition, setGateCondition] = useState<'approve-and-merge' | 'approve-only'>(
     policy.agentReview?.gateCondition ?? 'approve-and-merge',
@@ -93,14 +97,12 @@ export default function MergePolicyEditor({
     if (policy.tier === 'auto-threshold') {
       p.threshold = {
         maxLines: parseInt(maxLines) || 800,
-        denyPaths,
       };
     }
 
     if (policy.tier === 'agent-review') {
       p.agentReview = {
         reviewerRole,
-        escalateToPaths: escalatePaths,
         maxConfidenceThreshold: parseFloat(maxConfidence) || 0.6,
         gateCondition,
       };
@@ -216,36 +218,6 @@ export default function MergePolicyEditor({
             />
             <p className="text-xs text-text-muted">PRs exceeding this size won&apos;t auto-merge.</p>
           </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Deny paths</label>
-            <div className="space-y-1">
-              {denyPaths.map((p, i) => (
-                <div key={i} className="flex items-center gap-2 min-h-[44px]">
-                  <span className="flex-1 text-sm font-mono text-text-secondary px-2 py-1 bg-input rounded border border-border-default truncate">{p}</span>
-                  <button
-                    onClick={() => setDenyPaths(prev => prev.filter((_, j) => j !== i))}
-                    aria-label={`Remove ${p}`}
-                    className="shrink-0 w-9 h-9 flex items-center justify-center text-status-error hover:opacity-75 transition-opacity rounded"
-                  >✕</button>
-                </div>
-              ))}
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={denyPathDraft}
-                  onChange={e => setDenyPathDraft(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); const v = denyPathDraft.trim(); if (v) { setDenyPaths(prev => [...prev, v]); setDenyPathDraft(''); } } }}
-                  placeholder="e.g. drizzle/"
-                  className="flex-1 min-h-[44px] px-3 py-2 text-sm font-mono bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-                />
-                <button
-                  onClick={() => { const v = denyPathDraft.trim(); if (v) { setDenyPaths(prev => [...prev, v]); setDenyPathDraft(''); } }}
-                  className="shrink-0 px-3 min-h-[44px] text-sm border border-border-default rounded hover:bg-accent-soft transition-colors"
-                >Add</button>
-              </div>
-            </div>
-            <p className="text-xs text-text-muted">PRs touching any of these path prefixes are blocked from auto-merge.</p>
-          </div>
         </section>
       )}
 
@@ -273,37 +245,6 @@ export default function MergePolicyEditor({
                 <Link href="/app/team" className="underline text-accent-text">Create a role</Link> first.
               </p>
             )}
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Escalate to human for paths</label>
-            <div className="space-y-1">
-              {escalatePaths.map((p, i) => (
-                <div key={i} className="flex items-center gap-2 min-h-[44px]">
-                  <span className="flex-1 text-sm font-mono text-text-secondary px-2 py-1 bg-input rounded border border-border-default truncate">{p}</span>
-                  <button
-                    onClick={() => setEscalatePaths(prev => prev.filter((_, j) => j !== i))}
-                    aria-label={`Remove ${p}`}
-                    className="shrink-0 w-9 h-9 flex items-center justify-center text-status-error hover:opacity-75 transition-opacity rounded"
-                  >✕</button>
-                </div>
-              ))}
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={escalatePathDraft}
-                  onChange={e => setEscalatePathDraft(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); const v = escalatePathDraft.trim(); if (v) { setEscalatePaths(prev => [...prev, v]); setEscalatePathDraft(''); } } }}
-                  placeholder="e.g. packages/core/db/"
-                  className="flex-1 min-h-[44px] px-3 py-2 text-sm font-mono bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-                />
-                <button
-                  onClick={() => { const v = escalatePathDraft.trim(); if (v) { setEscalatePaths(prev => [...prev, v]); setEscalatePathDraft(''); } }}
-                  className="shrink-0 px-3 min-h-[44px] text-sm border border-border-default rounded hover:bg-accent-soft transition-colors"
-                >Add</button>
-              </div>
-            </div>
-            <p className="text-xs text-text-muted">PRs touching these paths always escalate to human review.</p>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -335,6 +276,19 @@ export default function MergePolicyEditor({
           </div>
         </section>
       )}
+
+      {/* Protected paths — detected from the repo, never typed */}
+      <DetectedPathsSection policyConfig={policyConfig} onRescan={() => setRescanOpen(true)} />
+
+      <PolicyRescanSheet
+        workspaceId={workspaceId}
+        open={rescanOpen}
+        onClose={() => setRescanOpen(false)}
+        onApplied={() => {
+          setRescanOpen(false);
+          router.refresh();
+        }}
+      />
 
       {/* Stall notify */}
       <section className="space-y-2">
@@ -437,3 +391,63 @@ export default function MergePolicyEditor({
   );
 }
 
+
+/**
+ * The risk-class paths currently gating merges, read-only. The only way to
+ * change them is "Re-scan repo", which re-runs detection and shows the diff
+ * before applying — the hand-typed path lists this replaced are refused by the API.
+ */
+export function DetectedPathsSection({
+  policyConfig,
+  onRescan,
+}: {
+  policyConfig: WorkspacePolicyConfig | null;
+  onRescan: () => void;
+}) {
+  const rows = policyConfig ? describePolicyConfig(policyConfig).filter(r => r.paths.length > 0) : [];
+  return (
+    <section className="space-y-3" data-testid="merge-policy-detected-paths">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="text-sm font-medium text-text-primary">Protected paths</h2>
+          <p className="mt-1 text-xs text-text-muted">
+            Detected from the repo per risk class
+            {policyConfig ? <> (preset <span className="text-text-secondary">{policyConfig.preset}</span>)</> : null}.
+            PRs touching them are escalated as the preset says.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRescan}
+          className="btn min-h-11 shrink-0 self-start"
+          data-testid="merge-policy-rescan"
+        >
+          Re-scan repo
+        </button>
+      </div>
+      {rows.length > 0 ? (
+        <ul className="divide-y divide-border-default border border-border-default rounded-lg bg-card">
+          {rows.map(row => (
+            <li key={row.name} className="px-4 py-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[13px] text-text-primary">{row.label}</span>
+                <span className="text-[11px] uppercase tracking-wide text-text-secondary">{row.actionLabel}</span>
+              </div>
+              <ul className="mt-1 space-y-0.5">
+                {row.paths.map(p => (
+                  <li key={p} className="font-mono text-xs text-text-secondary break-all">{p}</li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-text-muted">
+          {policyConfig
+            ? 'No risk-class paths detected in this repo.'
+            : 'No risk-class policy applied yet. Re-scan the repo to detect protected paths.'}
+        </p>
+      )}
+    </section>
+  );
+}

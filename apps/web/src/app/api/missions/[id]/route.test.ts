@@ -781,6 +781,23 @@ describe('PATCH /api/missions/[id]', () => {
     expect(body.error).toMatch(/mergePolicy/);
   });
 
+  it('rejects hand-written mergePolicy paths with a 400 that points to Re-scan repo', async () => {
+    for (const [mergePolicy, field] of [
+      [{ tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } }, 'mergePolicy.agentReview.escalateToPaths'],
+      [{ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } }, 'mergePolicy.threshold.denyPaths'],
+    ] as const) {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ mergePolicy }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.field).toBe(field);
+      expect(body.error).toContain('Re-scan repo');
+    }
+  });
+
   it('accepts agent-review mergePolicy with required fields', async () => {
     const policy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
     const req = new NextRequest('http://localhost/api/missions/obj-1', {

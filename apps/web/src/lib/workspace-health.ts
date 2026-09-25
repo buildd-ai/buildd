@@ -8,7 +8,7 @@
  */
 
 import { isSystemWorkspace } from '@buildd/shared';
-import type { WorkspacePolicyConfig, RiskClassName, RiskClassAction } from '@buildd/shared';
+import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName, RiskClassAction } from '@buildd/shared';
 import { PRESET_ACTIONS, effectivePathsForClass } from './workspace-policy';
 
 /** `warning` = legacy, should be fixed. `action` = an offer, not a problem. */
@@ -36,17 +36,15 @@ export interface WorkspaceHealthInput {
 }
 
 /**
- * Pre-`policyConfig` merge settings: the `autoMerge*` rails and hand-typed
- * `escalateToPaths`. `autoMergeOnGreenCI` is the current field and does not count.
+ * Pre-`policyConfig` merge settings: the `autoMerge*` rails. `autoMergeOnGreenCI`
+ * is the current field and does not count. The hand-written path fields
+ * (`autoMergeDenyPaths`, `escalateToPaths`) are no longer part of this rule: the
+ * API refuses them and the merge gate only keeps a one-release read fallback.
  */
 export function hasLegacyMergeFields(gitConfig: Record<string, unknown> | null | undefined): boolean {
   if (!gitConfig) return false;
   if (typeof gitConfig.autoMergePR === 'boolean') return true;
-  if (typeof gitConfig.autoMergeMaxLines === 'number') return true;
-  if (Array.isArray(gitConfig.autoMergeDenyPaths) && gitConfig.autoMergeDenyPaths.length > 0) return true;
-  const escalate = (gitConfig.mergePolicy as { agentReview?: { escalateToPaths?: unknown } } | undefined)
-    ?.agentReview?.escalateToPaths;
-  return Array.isArray(escalate) && escalate.length > 0;
+  return typeof gitConfig.autoMergeMaxLines === 'number';
 }
 
 /**
@@ -143,4 +141,64 @@ export function describePolicyConfig(config: WorkspacePolicyConfig): PolicyClass
       paths: effectivePathsForClass(entry),
     };
   });
+}
+
+// ── Re-scan diff ─────────────────────────────────────────────────────────────
+
+export interface PolicyClassDiff extends PolicyClassRow {
+  added: string[];
+  removed: string[];
+  unchanged: string[];
+}
+
+export interface PolicyConfigDiff {
+  /** Classes in the proposal first (proposal order), then classes only the current policy had. */
+  classes: PolicyClassDiff[];
+  presetChange: { from: WorkspacePolicyPreset; to: WorkspacePolicyPreset } | null;
+  hasChanges: boolean;
+}
+
+/**
+ * What applying a re-scan would change, per risk class. `current` paths are
+ * everything stored (a legacy `userPaths` entry included), because applying
+ * replaces the whole policyConfig — a stored path the proposal lacks is removed.
+ * With no current policy every proposed path reads as added.
+ */
+export function diffPolicyConfig(
+  current: WorkspacePolicyConfig | null | undefined,
+  proposed: WorkspacePolicyConfig,
+): PolicyConfigDiff {
+  const storedPaths = new Map<RiskClassName, string[]>();
+  for (const entry of current?.riskClasses ?? []) {
+    storedPaths.set(entry.name, [...new Set([...(entry.detectedPaths ?? []), ...(entry.userPaths ?? [])])]);
+  }
+
+  const proposedRows = describePolicyConfig(proposed);
+  const onlyCurrent = (current?.riskClasses ?? []).filter(
+    (e) => !proposed.riskClasses.some((p) => p.name === e.name),
+  );
+  // Classes that disappear are rendered with the proposal's preset action — that
+  // is the policy that will be in force after applying.
+  const currentOnlyRows = describePolicyConfig({ ...proposed, riskClasses: onlyCurrent }).map((row) => ({ ...row, paths: [] }));
+
+  const classes = [...proposedRows, ...currentOnlyRows].map((row) => {
+    const before = storedPaths.get(row.name) ?? [];
+    const after = row.paths;
+    return {
+      ...row,
+      added: after.filter((p) => !before.includes(p)),
+      removed: before.filter((p) => !after.includes(p)),
+      unchanged: after.filter((p) => before.includes(p)),
+    };
+  });
+
+  const presetChange = current && current.preset !== proposed.preset
+    ? { from: current.preset, to: proposed.preset }
+    : null;
+
+  return {
+    classes,
+    presetChange,
+    hasChanges: !current || !!presetChange || classes.some((c) => c.added.length > 0 || c.removed.length > 0),
+  };
 }

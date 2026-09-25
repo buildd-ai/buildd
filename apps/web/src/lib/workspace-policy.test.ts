@@ -8,7 +8,6 @@ import {
   buildPolicyClassPaths,
   guessRiskClass,
   findUncoveredRiskPaths,
-  inferPolicyConfigFromLegacy,
   applyPolicyConfigToMergePolicy,
   getClassAction,
   PRESET_ACTIONS,
@@ -226,7 +225,8 @@ describe('resolveEffectivePolicyForPR', () => {
     expect(match).toBeNull();
   });
 
-  it('respects userPaths additions', () => {
+  // Hand-written userPaths are no longer read: paths come from the repo scan.
+  it('ignores a stored userPaths entry', () => {
     const policy: WorkspacePolicyConfig = {
       ...BALANCED_POLICY,
       riskClasses: [
@@ -238,7 +238,7 @@ describe('resolveEffectivePolicyForPR', () => {
       ],
     };
     const match = resolveEffectivePolicyForPR(policy, ['deploy/custom-script.sh']);
-    expect(match?.action).toBe('agent-review');
+    expect(match).toBeNull();
   });
 });
 
@@ -329,34 +329,6 @@ describe('findUncoveredRiskPaths', () => {
   });
 });
 
-// ── inferPolicyConfigFromLegacy ───────────────────────────────────────────────
-
-describe('inferPolicyConfigFromLegacy', () => {
-  // AC-6: existing config migrates with no loss of coverage
-  it('classifies legacy escalateToPaths into classes', () => {
-    const legacy = ['.github/workflows/', 'packages/core/drizzle/', 'packages/core/db/schema.ts'];
-    const config = inferPolicyConfigFromLegacy(legacy, 'reviewer');
-    expect(config.preset).toBe('balanced');
-    const classNames = config.riskClasses.map((c) => c.name);
-    expect(classNames).toContain('destructive_schema_change');
-    expect(classNames).toContain('ci_deploy_config');
-  });
-
-  it('preserves all paths in userPaths', () => {
-    const legacy = ['.github/workflows/', 'packages/core/drizzle/'];
-    const config = inferPolicyConfigFromLegacy(legacy, 'reviewer');
-    const ci = config.riskClasses.find((c) => c.name === 'ci_deploy_config');
-    expect(ci?.userPaths).toContain('.github/workflows/');
-    const schema = config.riskClasses.find((c) => c.name === 'destructive_schema_change');
-    expect(schema?.userPaths).toContain('packages/core/drizzle/');
-  });
-
-  it('accepts a custom preset', () => {
-    const config = inferPolicyConfigFromLegacy(['.github/workflows/'], 'reviewer', 'cautious');
-    expect(config.preset).toBe('cautious');
-  });
-});
-
 // ── applyPolicyConfigToMergePolicy ───────────────────────────────────────────
 
 describe('applyPolicyConfigToMergePolicy', () => {
@@ -434,7 +406,8 @@ describe('effectivePathsForClass — malformed stored config', () => {
     const entry = { name: 'auth_and_secrets', userPaths: ['lib/auth.ts'] } as never;
 
     expect(() => effectivePathsForClass(entry)).not.toThrow();
-    expect(effectivePathsForClass(entry)).toEqual(['lib/auth.ts']);
+    // userPaths is no longer an effective path source.
+    expect(effectivePathsForClass(entry)).toEqual([]);
   });
 
   it('does not throw when both path lists are absent', () => {
@@ -548,10 +521,9 @@ describe('resolveEffectivePolicyForPR — exact vs prefix entries', () => {
     expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/env/server.ts'])).toBeNull();
   });
 
-  it('a hand-authored userPath without a trailing slash still covers the directory', () => {
+  it('a stored hand-authored userPath no longer covers anything', () => {
     const policy = policyWith([], ['apps/web/src/lib/auth']);
-    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/lib/auth/session.ts'])?.matchedClass).toBe(
-      'auth_and_secrets',
-    );
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/lib/auth/session.ts'])).toBeNull();
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/lib/auth'])).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess, getUserTeamRole } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
+import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 
 export async function GET(
@@ -218,6 +219,14 @@ export async function PATCH(
     // gitConfig and shallow-merges the provided keys, so a one-flag update can't
     // clobber the rest of the config — unlike the form's full-rebuild POST.
     if (gitConfig !== undefined && gitConfig !== null && typeof gitConfig === 'object' && !Array.isArray(gitConfig)) {
+      // Hand-written merge-policy paths are refused; paths come from the repo scan.
+      const removedField = findRemovedPathFieldInGitConfig(gitConfig, 'gitConfig');
+      if (removedField) {
+        return NextResponse.json(
+          { error: removedPolicyPathFieldError(removedField), field: removedField },
+          { status: 400 },
+        );
+      }
       if ('mergePolicy' in gitConfig && gitConfig.mergePolicy != null) {
         const result = mergePolicySchema.safeParse(gitConfig.mergePolicy);
         if (!result.success) {

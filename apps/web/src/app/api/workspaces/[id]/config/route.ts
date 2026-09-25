@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { parseMergePolicy } from '@buildd/shared';
+import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
@@ -34,7 +34,7 @@ function parsePolicyConfig(pc: unknown): { ok: true; config: WorkspacePolicyConf
         if (!entry || typeof entry !== 'object' || !VALID_RISK_CLASSES.includes(entry.name as RiskClassName)) {
             return { ok: false, error: `policyConfig.riskClasses: unknown class '${String(entry?.name)}'` };
         }
-        if (!isStringArray(entry.detectedPaths) || (entry.userPaths !== undefined && !isStringArray(entry.userPaths))) {
+        if (!isStringArray(entry.detectedPaths)) {
             return { ok: false, error: `policyConfig.riskClasses.${entry.name}: paths must be string arrays` };
         }
     }
@@ -274,6 +274,13 @@ export async function POST(
         }
 
         const body = await req.json();
+
+        // Hand-written merge-policy paths are gone: paths come from the repo scan.
+        // Stored legacy values survive the merge below untouched (read-only fallback).
+        const removedField = findRemovedPathFieldInGitConfig(body);
+        if (removedField) {
+            return NextResponse.json({ error: removedPolicyPathFieldError(removedField), field: removedField }, { status: 400 });
+        }
 
         if (
             body.defaultBackend !== undefined && body.defaultBackend !== null &&
@@ -525,6 +532,11 @@ export async function PATCH(
         const hasPolicyConfig = !!body && typeof body === 'object' && 'policyConfig' in body;
         if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig) {
             return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy or policyConfig' }, { status: 400 });
+        }
+
+        const removedField = findRemovedPathFieldInGitConfig(body);
+        if (removedField) {
+            return NextResponse.json({ error: removedPolicyPathFieldError(removedField), field: removedField }, { status: 400 });
         }
 
         let responseBody: Record<string, unknown> = { success: true };

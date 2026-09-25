@@ -59,6 +59,7 @@ export default async function WorkspaceMergePolicyPage({
           workspaceId={workspaceId}
           workspaceName={workspace.name}
           initial={effectivePolicy}
+          policyConfig={workspace.gitConfig?.policyConfig ?? null}
           roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
           missionOverrides={missionOverrides}
         />
