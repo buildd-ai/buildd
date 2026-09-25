@@ -120,13 +120,23 @@ export function buildArtifactKey(
  * workspace and upload id (one trailing name segment, nothing deeper)?
  */
 export function isArtifactKeyForUpload(key: unknown, workspaceId: unknown, uploadId: unknown): boolean {
+  return isTenantKeyForUpload('artifacts', key, workspaceId, uploadId);
+}
+
+function isTenantKeyForUpload(
+  prefix: (typeof TENANT_KEY_PREFIXES)[number],
+  key: unknown,
+  workspaceId: unknown,
+  uploadId: unknown,
+): boolean {
   if (typeof key !== 'string' || typeof workspaceId !== 'string' || typeof uploadId !== 'string') return false;
   const parts = key.split('/');
   return parts.length === 4
-    && parts[0] === 'artifacts'
+    && parts[0] === prefix
     && parts[1] === workspaceId
     && parts[2] === uploadId
-    && SAFE_SEGMENT.test(parts[3]);
+    && SAFE_SEGMENT.test(parts[3])
+    && !parts[3].includes('..');
 }
 
 /** `attachments/<workspaceId>/<uploadId>/<name>` */
@@ -154,6 +164,14 @@ export function buildAuditScreenshotKey(
   filename: unknown,
 ): string {
   return buildTenantKey(AUDIT_SCREENSHOT_KEY_PREFIX, workspaceId, uploadId, filename);
+}
+
+/**
+ * Is `key` exactly the audit key `buildAuditScreenshotKey` mints for this
+ * workspace and upload id? The qa-area twin of `isArtifactKeyForUpload`.
+ */
+export function isAuditScreenshotKeyForUpload(key: unknown, workspaceId: unknown, uploadId: unknown): boolean {
+  return isTenantKeyForUpload(AUDIT_SCREENSHOT_KEY_PREFIX, key, workspaceId, uploadId);
 }
 
 /** True for a well-formed key in the visual-audit area. Pure; safe on the client. */

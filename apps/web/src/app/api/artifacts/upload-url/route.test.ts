@@ -339,6 +339,53 @@ describe('POST /api/artifacts/upload-url', () => {
       expect((mockTasksFindFirst.mock.calls[0] as any)[0].where).toEqual({ field: 'tasks.id', value: 'task-1', type: 'eq' });
     });
 
+    // docs/design/visual-qa-auditor.md, "Decay": an auditor's screenshots land in
+    // the qa/ area, the marker the lifecycle rule, share refusal and prominence
+    // read. The role comes from the worker's own task, never from the body.
+    describe('audit screenshot key', () => {
+      it("mints qa/<ws>/<id>/<name> for a visual-auditor task's screenshot", async () => {
+        workerOnTask(MISSION, 'visual-auditor');
+        const res = await POST(req(validBody({ type: 'screenshot', filename: 'tasks-mobile.png', mimeType: 'image/png' })));
+        expect(res.status).toBe(200);
+        const vals = mockInsertValues.mock.calls[0][0];
+        expect(vals.storageKey).toBe(`qa/ws-1/${UUID}/tasks-mobile.png`);
+        expect(vals.id).toBe(UUID);
+        expect((await res.json()).storageKey).toBe(vals.storageKey);
+        expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(vals.storageKey);
+      });
+
+      it('reads the role from the task lookup', async () => {
+        workerOnTask(MISSION, 'visual-auditor');
+        await POST(req(validBody({ type: 'screenshot' })));
+        expect((mockTasksFindFirst.mock.calls[0] as any)[0].columns).toMatchObject({ missionId: true, roleSlug: true });
+      });
+
+      it("keeps a visual-auditor's non-screenshot upload in the artifacts area", async () => {
+        workerOnTask(MISSION, 'visual-auditor');
+        await POST(req(validBody({ type: 'report' })));
+        expect(mockInsertValues.mock.calls[0][0].storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+        mockInsertValues.mockClear();
+        await POST(req(validBody()));
+        expect(mockInsertValues.mock.calls[0][0].storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+      });
+
+      it('keeps any other role\'s screenshot in the artifacts area', async () => {
+        workerOnTask(MISSION, 'builder');
+        await POST(req(validBody({ type: 'screenshot' })));
+        expect(mockInsertValues.mock.calls[0][0].storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+        mockInsertValues.mockClear();
+        workerOnTask(MISSION, null);
+        await POST(req(validBody({ type: 'screenshot' })));
+        expect(mockInsertValues.mock.calls[0][0].storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+      });
+
+      it('ignores a roleSlug or storageKey sent in the body', async () => {
+        workerOnTask(MISSION, 'builder');
+        await POST(req(validBody({ type: 'screenshot', roleSlug: 'visual-auditor', storageKey: `qa/ws-1/${UUID}/x.png` })));
+        expect(mockInsertValues.mock.calls[0][0].storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+      });
+    });
+
     it('stores null when neither the body nor the task has a mission', async () => {
       const res = await POST(req(validBody()));
       expect(res.status).toBe(200);

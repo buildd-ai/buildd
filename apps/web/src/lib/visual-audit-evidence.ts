@@ -25,7 +25,7 @@ import { db } from '@buildd/core/db';
 import { artifacts, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
-import { isArtifactKeyForUpload } from '@/lib/storage-keys';
+import { isArtifactKeyForUpload, isAuditScreenshotKeyForUpload } from '@/lib/storage-keys';
 import { isSurfaceFixTask } from '@buildd/core/surface-audit';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 
@@ -109,15 +109,18 @@ function routeSatisfies(required: string, recorded: string): boolean {
  * Was this row's object minted for this row by POST /api/artifacts/upload-url?
  *
  * upload-url inserts the row with id = the key's upload id, so its key is
- * exactly buildArtifactKey(workspaceId, row id, name). Nothing else produces
- * that shape: create_artifact takes a caller-chosen storageKey but its row id is a
+ * exactly buildArtifactKey(workspaceId, row id, name), or, for a
+ * visual-auditor's screenshot, buildAuditScreenshotKey(workspaceId, row id,
+ * name). Both shapes are accepted; any other key is not. Nothing else produces
+ * either shape: create_artifact takes a caller-chosen storageKey but its row id is a
  * fresh default the caller can't predict, and PATCH /api/artifacts/[id] can't
  * change storageKey. So one uploaded image (a sibling's, an old run's, or one
  * of this worker's own) can't back many route × viewport rows. Row ids are
  * unique, so the counting keys are distinct by construction.
  */
 export function mintedByUploadUrl(shot: { id: string; storageKey: string | null }, workspaceId: string): boolean {
-  return isArtifactKeyForUpload(shot.storageKey, workspaceId, shot.id);
+  return isArtifactKeyForUpload(shot.storageKey, workspaceId, shot.id)
+    || isAuditScreenshotKeyForUpload(shot.storageKey, workspaceId, shot.id);
 }
 
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);

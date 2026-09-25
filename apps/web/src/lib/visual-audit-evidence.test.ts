@@ -293,6 +293,19 @@ describe('loadVisualAuditEvidence', () => {
 });
 
 describe('mintedByUploadUrl', () => {
+  it('accepts exactly qa/<workspace>/<row id>/<name>, the key upload-url mints for an auditor screenshot', () => {
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-1/a/s.png' }, 'ws-1')).toBe(true);
+  });
+  it('rejects a qa key naming another row, another workspace, extra depth, no name, or qa not leading', () => {
+    expect(mintedByUploadUrl({ id: 'b', storageKey: 'qa/ws-1/a/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-2/a/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-1/a/x/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-1/a/' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-1/a' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-1/a/..' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'artifacts/ws-1/qa/a/s.png' }, 'ws-1')).toBe(false);
+    expect(mintedByUploadUrl({ id: 'a', storageKey: 'sessions/ws-1/a/s.png' }, 'ws-1')).toBe(false);
+  });
   it('accepts exactly artifacts/<workspace>/<row id>/<name>', () => {
     expect(mintedByUploadUrl({ id: 'a', storageKey: 'artifacts/ws-1/a/s.png' }, 'ws-1')).toBe(true);
   });
