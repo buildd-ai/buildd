@@ -121,7 +121,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
           const delegateCount = skill.canDelegateTo?.length || 0;
 
           return (
-            <div key={skill.id} className="flex items-center gap-3 p-4 hover:bg-surface-2/50 transition-colors">
+            <div key={skill.id} className="flex items-center gap-2 sm:gap-3 p-3 sm:p-4 hover:bg-surface-2/50 transition-colors">
               {/* Color dot */}
               <div
                 className="w-3 h-3 rounded-full flex-shrink-0"

@@ -262,7 +262,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             placeholder={defaultBranch || 'main'}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Where agent PRs are opened against. For example, set to <code>dev</code> if you merge features into dev before releasing to main.
+                            Where agent PRs are opened against. For example, set to <code>dev</code>{' '}if you merge features into dev before releasing to main.
                             Falls back to Default Branch above if empty, then the GitHub repo&apos;s default branch.
                         </p>
                         {!targetBranch && (

@@ -183,8 +183,8 @@ export default function TeamDetailClient({
       )}
 
       {/* Team Header */}
-      <div className="flex justify-between items-start mb-8">
-        <div>
+      <div className="flex flex-wrap justify-between items-start gap-3 mb-8">
+        <div className="min-w-0">
           {editing ? (
             <div className="space-y-3">
               <div>
@@ -228,7 +228,7 @@ export default function TeamDetailClient({
           ) : (
             <>
               <div className="flex items-center gap-2">
-                <h1 className="text-3xl font-bold">{team.name}</h1>
+                <h1 className="text-2xl md:text-3xl font-bold [overflow-wrap:anywhere]">{team.name}</h1>
                 {isPersonal && (
                   <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded">
                     Personal
@@ -243,10 +243,10 @@ export default function TeamDetailClient({
           )}
         </div>
         {canManage && !editing && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             <button
               onClick={() => setEditing(true)}
-              className="px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
+              className="min-h-11 md:min-h-0 px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
             >
               Edit
             </button>
@@ -254,7 +254,7 @@ export default function TeamDetailClient({
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50"
+                className="min-h-11 md:min-h-0 whitespace-nowrap px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50"
               >
                 {deleting ? 'Deleting…' : 'Delete Team'}
               </button>

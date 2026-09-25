@@ -177,7 +177,7 @@ export default function WorkspaceList({
 
                                         {teams.length > 1 && (
                                             <div className="flex w-full md:justify-end items-center gap-2 text-xs">
-                                                <span className="text-text-muted">Move to:</span>
+                                                <span className="text-text-muted whitespace-nowrap">Move to:</span>
                                                 <Select
                                                     value={workspace.teamId || ''}
                                                     disabled={movingWorkspaceId === workspace.id}

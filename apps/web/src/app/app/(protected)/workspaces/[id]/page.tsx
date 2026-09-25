@@ -154,7 +154,7 @@ export default async function WorkspaceDetailPage({
         <div className="relative mb-8">
         <div
           data-testid="workspace-tab-bar"
-          className="flex gap-1 border-b border-border-default pb-0 overflow-x-auto whitespace-nowrap scrollbar-hide pr-8 md:pr-0"
+          className="flex gap-1 border-b border-border-default pb-0 overflow-x-auto whitespace-nowrap scrollbar-hide pr-12 md:pr-0"
         >
           <Link
             href={`/app/missions?workspaceId=${workspace.id}`}
@@ -201,7 +201,7 @@ export default async function WorkspaceDetailPage({
         </div>
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute right-0 top-0 bottom-px w-8 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
+          className="pointer-events-none absolute right-0 top-0 bottom-px w-12 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
         />
         </div>
 
