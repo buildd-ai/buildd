@@ -28,6 +28,7 @@ import { reapSession } from './session-teardown';
 import { hostUserMemoryExcludes } from './host-memory-excludes';
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
+import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -2559,6 +2560,8 @@ export class WorkerManager {
     let cbmRuntimeDir: string | undefined;
     // Shared cache is host-wide and seeded — it must survive this worker's cleanup.
     let cbmSharedCache = false;
+    // Per-worker throwaway BUILDD_HOME for the agent env; removed in finally.
+    let agentRunnerHome: string | undefined;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
     // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
@@ -2770,6 +2773,10 @@ export class WorkerManager {
         const val = process.env[key];
         if (val !== undefined) cleanEnv[key] = val;
       }
+      // Any runner code the agent runs (its tests, from any checkout on this
+      // host, including ones that predate the in-repo test-home guard) would
+      // otherwise fall back to ~/.buildd, which is THIS runner's live store.
+      agentRunnerHome = isolateAgentRunnerHome(cleanEnv, worker.id);
 
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
@@ -4871,6 +4878,10 @@ export class WorkerManager {
         // Clean up per-worker Claude config dir (access_token isolation).
         if (claudeConfigDir) {
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
+        }
+
+        if (agentRunnerHome) {
+          cleanupAgentRunnerHome(agentRunnerHome);
         }
 
         // End an index build that was handed off at startup and is still running.
