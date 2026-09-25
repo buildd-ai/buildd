@@ -5,7 +5,7 @@
  * tiles. Empty steps are hidden.
  */
 import { describe, expect, it } from 'bun:test';
-import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
+import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionPrCount, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
 
 const base: DeliveryInput = {
   missionStatus: 'active',
@@ -205,5 +205,28 @@ describe('formatDeliverySummary', () => {
 
   it('is empty for no steps', () => {
     expect(formatDeliverySummary([])).toBe('');
+  });
+});
+
+// Regression: a completed mission's Integrated step read one more PR than the
+// all_prs_merged evidence — a CI-retry task pushes to its parent's PR, and the
+// step counted worker rows instead of PRs.
+describe('missionPrCount', () => {
+  const url = (n: number) => `https://github.example/org/repo/pull/${n}`;
+
+  it('counts a PR a parent and its CI retry both carry once', () => {
+    const tasks = [
+      { id: 'parent', workers: [{ prUrl: url(1), mergedAt: '2026-03-01T00:00:00Z' }] },
+      { id: 'retry', workers: [{ prUrl: url(1), mergedAt: null }] },
+      { id: 'other', workers: [{ prUrl: url(2), mergedAt: '2026-03-02T00:00:00Z' }] },
+      { id: 'no-pr', workers: [{ prUrl: null }] },
+    ];
+    expect(missionPrCount(tasks)).toBe(2);
+    const integrated = buildDeliverySteps({ ...base, missionStatus: 'completed', prCount: missionPrCount(tasks) })[0];
+    expect(integrated.detail).toContain('2 PRs');
+  });
+
+  it('is zero for a mission with no PRs', () => {
+    expect(missionPrCount([{ id: 'a', workers: [] }, { id: 'b', workers: null }])).toBe(0);
   });
 });

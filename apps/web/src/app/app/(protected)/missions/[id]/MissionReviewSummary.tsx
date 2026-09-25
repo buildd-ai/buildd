@@ -15,11 +15,31 @@ interface MissionReviewSummaryProps {
   missionId: string;
 }
 
+/**
+ * One row per PR, keyed by `prUrl`. A CI-retry task pushes to its parent's
+ * PR, so two task rows can name one PR; the first row (the parent, in task
+ * order) keeps the title, and the PR reads merged when any row saw the merge —
+ * only one worker row gets `mergedAt`.
+ */
+function distinctByPr(rows: ReviewSummaryTask[]): ReviewSummaryTask[] {
+  const byUrl = new Map<string, ReviewSummaryTask>();
+  for (const r of rows) {
+    const prev = byUrl.get(r.prUrl!);
+    if (!prev) {
+      byUrl.set(r.prUrl!, r);
+      continue;
+    }
+    const prMerged = prev.prMerged || r.prMerged;
+    byUrl.set(r.prUrl!, { ...prev, prNumber: prev.prNumber ?? r.prNumber, prMerged, prClosed: !prMerged && (prev.prClosed || r.prClosed) });
+  }
+  return [...byUrl.values()];
+}
+
 export default function MissionReviewSummary({ tasks, missionId }: MissionReviewSummaryProps) {
   const deliverable = tasks.filter(t => t.status !== 'cancelled');
   if (deliverable.length === 0) return null;
 
-  const completedWithPr = deliverable.filter(t => t.status === 'completed' && t.prUrl);
+  const completedWithPr = distinctByPr(deliverable.filter(t => t.status === 'completed' && t.prUrl));
   const completedNoPr = deliverable.filter(t => t.status === 'completed' && !t.prUrl);
   const failed = deliverable.filter(t => t.status === 'failed');
   const inProgress = deliverable.filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status));

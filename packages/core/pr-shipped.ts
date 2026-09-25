@@ -180,3 +180,27 @@ export function summarizePrShipStates(workers: ReadonlyArray<LineageWorker>): Pr
   }
   return [...byUrl.values()];
 }
+
+// ─── Distinct-PR count ───────────────────────────────────────────────────────
+
+/**
+ * How many PRs these rows carry — by PR identity (`prUrl`, which names repo
+ * and number), never by row. A CI-retry task pushes to its parent's PR, so a
+ * mission routinely has two worker rows for one PR; counting rows is how a
+ * completed mission read one PR more than its own `all_prs_merged` evidence.
+ *
+ * `mergedOnly` counts a PR when ANY of its rows saw the merge, matching
+ * `summarizePrShipStates` (only one row gets `mergedAt`).
+ */
+export function countDistinctPrs(
+  rows: ReadonlyArray<{ prUrl?: string | null; mergedAt?: string | Date | null }>,
+  opts: { mergedOnly?: boolean } = {},
+): number {
+  const urls = new Set<string>();
+  for (const r of rows) {
+    if (!r.prUrl) continue;
+    if (opts.mergedOnly && !r.mergedAt) continue;
+    urls.add(r.prUrl);
+  }
+  return urls.size;
+}

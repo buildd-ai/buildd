@@ -4,6 +4,7 @@ import {
   isPrShipped,
   deriveLineageSupersession,
   summarizePrShipStates,
+  countDistinctPrs,
 } from '../pr-shipped';
 
 const pr = (n: number) => `https://github.com/org/repo/pull/${n}`;
@@ -109,5 +110,43 @@ describe('summarizePrShipStates — one verdict per PR', () => {
       { taskId: 't', prUrl: pr(5), prNumber: 5, mergedAt: '2026-01-01' },
     ]);
     expect(out).toEqual([{ prUrl: pr(5), prNumber: 5, state: 'merged', supersededByPrNumber: null }]);
+  });
+});
+
+// A CI-retry task (`[builder · after CI #1] …`) pushes to its parent's PR, so
+// the mission has two worker rows carrying one PR. Every display count is of
+// PRs, not of rows.
+describe('countDistinctPrs — PRs by identity, not by worker row', () => {
+  it('a parent and its CI retry sharing one PR count once', () => {
+    expect(countDistinctPrs([
+      { prUrl: pr(7), prNumber: 7, mergedAt: '2026-01-01' },
+      { prUrl: pr(7), prNumber: 7, mergedAt: null },
+    ])).toBe(1);
+  });
+
+  it('distinct PRs count separately and rows without a PR count as nothing', () => {
+    expect(countDistinctPrs([
+      { prUrl: pr(1) },
+      { prUrl: pr(2) },
+      { prUrl: null },
+      { prUrl: undefined },
+      { prUrl: '' },
+    ])).toBe(2);
+  });
+
+  it('same number in different repos is two PRs', () => {
+    expect(countDistinctPrs([
+      { prUrl: 'https://github.com/org/a/pull/3' },
+      { prUrl: 'https://github.com/org/b/pull/3' },
+    ])).toBe(2);
+  });
+
+  it('merged filter counts a PR once when any row saw the merge', () => {
+    const rows = [
+      { prUrl: pr(7), mergedAt: null },
+      { prUrl: pr(7), mergedAt: '2026-01-01' },
+      { prUrl: pr(8), mergedAt: null },
+    ];
+    expect(countDistinctPrs(rows, { mergedOnly: true })).toBe(1);
   });
 });

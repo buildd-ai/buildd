@@ -82,6 +82,33 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     expect(html).toContain('max-width:80px');
   });
 
+  // Regression: a CI-retry task pushes to its parent's PR. When both land in
+  // the same band as separate rows, the band must count one PR, not two.
+  it('counts a PR carried by a parent and its CI retry once on the band row', () => {
+    const merged = (id: string) => ({
+      id,
+      status: 'completed',
+      prUrl: 'https://github.example/org/repo/pull/7',
+      prNumber: 7,
+      prLifecycleStatus: 'merged',
+      mergedAt: '2025-01-01T00:00:00Z',
+      completedAt: null,
+      startedAt: null,
+      currentAction: null,
+      branch: 'b',
+      waitingFor: null,
+    });
+    const doneTasks = [
+      makeTask('parent', { status: 'completed', latestWorker: merged('w-parent') }),
+      makeTask('retry', { status: 'completed', title: '[builder · after CI #1] Task parent', latestWorker: merged('w-retry') }),
+    ];
+    const html = renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: doneTasks.map(toChain) }} allTasksCount={2} />,
+    );
+    expect(html).toContain('· 1 PR<');
+    expect(html).not.toContain('2 PRs');
+  });
+
   it('strip on done/failed row uses only done+failed task segments (not all segments)', () => {
     const doneTasks = [makeTask('done1', { status: 'completed' })];
     const failedTasks = [makeTask('fail1', { status: 'failed' })];

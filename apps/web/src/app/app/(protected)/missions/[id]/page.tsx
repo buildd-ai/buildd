@@ -52,7 +52,7 @@ import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDe
 import MissionDelivery from './MissionDelivery';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionFlightStripInline, MissionStripExpand } from './MissionStripControls';
-import { buildDeliverySteps, deliveryReleaseInput, missionTrunkMergedAt } from '@/lib/mission-delivery';
+import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
 import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
@@ -301,7 +301,7 @@ export default async function MissionDetailPage({
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
   // filter is still overcollapsing or the PR counter is double-counting.
   if (process.env.NODE_ENV === 'development' && totalTasks > 0) {
-    const prCount = (mission.tasks ?? []).flatMap(t => (t.workers as any[] ?? [])).filter(w => w.prUrl).length;
+    const prCount = missionPrCount((mission.tasks ?? []) as Array<{ workers?: Array<{ prUrl?: string | null }> | null }>);
     if (prCount > totalTasks) {
       console.error(`[mission-invariant] mission ${id}: PRS (${prCount}) > TASKS (${totalTasks}) — check attempt-filter logic in computeMissionProgress.`);
     }
@@ -884,7 +884,8 @@ export default async function MissionDetailPage({
     ? classifyReleaseState({ archetype: releaseArchetype, data: releaseFooterData })
     : ({ state: 'none' } as const);
   const budgetUsd = costBudgetUsd != null ? parseFloat(costBudgetUsd) : null;
-  const prCount = allWorkers.filter(w => w.prUrl).length;
+  // Distinct PRs, not worker rows — a CI retry pushes to its parent's PR.
+  const prCount = missionPrCount(allTasks as Array<{ workers?: Array<{ prUrl?: string | null }> | null }>);
   const durationLabel = mission.status === 'completed'
     ? (flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null)
     : null;
