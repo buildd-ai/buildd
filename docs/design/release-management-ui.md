@@ -521,8 +521,7 @@ DEV_USER_EMAIL=your@email.com bun dev
    Data source: `tasks.releaseResult` on the workspace's most recent completed release task.
 2. Poll every 10s while building; stop at terminal state.
 3. Add `skipRelease` badge to task detail page (separate small change).
-4. **Note:** The `Release now` button no longer lives here — it has been relocated to mission detail
-   and Home per `surface-ia-home-missions-initiatives.md §10.2`.
+4. **Note:** The `Release now` button no longer lives here — it has been relocated to Home per `surface-ia-home-missions-initiatives.md §10.2`.
 
 **Dependencies:** Task 4
 

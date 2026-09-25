@@ -46,4 +46,16 @@ describe('MissionDelivery', () => {
     expect(html).toMatch(/<details[^>]*open=""/);
     expect(html).toContain('href="#mission-criteria"');
   });
+
+  it('lets a step own its whole row, replacing the default detail line', () => {
+    const html = renderToStaticMarkup(
+      <MissionDelivery steps={allFour} rows={{ shipped: <span data-testid="shipped-row">Released</span> }} />,
+    );
+    const step = html.match(/data-testid="mission-delivery-step" data-step="shipped"[^>]*>([\s\S]*?)<\/div><div data-testid="mission-delivery-step"/)!;
+    expect(step[1]).toContain('data-testid="shipped-row"');
+    // The default line (label + model detail) is not rendered next to it.
+    expect(step[1]).not.toContain('font-semibold text-text-primary">Shipped');
+    // Other steps keep their default line.
+    expect(html).toMatch(/data-step="verified"[\s\S]*?Verified/);
+  });
 });

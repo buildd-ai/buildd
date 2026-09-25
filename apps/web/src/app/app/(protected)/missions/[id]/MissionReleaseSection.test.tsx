@@ -1,153 +1,114 @@
+/**
+ * MissionReleaseSection: the Delivery "Shipped" row, a one-line status for
+ * THIS mission (released / waiting for next release) linking to the release.
+ * The workspace-level queue ("N unshipped · Release now") is not a mission
+ * fact and does not render here.
+ */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { MissionReleaseSection, deriveReleaseNowState } from './MissionReleaseSection';
-import type { GatedReleaseFooter, ContinuousReleaseFooter } from '@/components/MissionReleaseFooter';
+import { buildDeliverySteps, DELIVERY_STATE_TEXT, type DeliveryInput, type DeliveryStep } from '@/lib/mission-delivery';
+import { MissionReleaseSection, missionShippedStatus, missionShippedHref } from './MissionReleaseSection';
 
-const val = (n: number) => ({ kind: 'value' as const, value: n });
-const unavailable = { kind: 'unavailable' as const, reason: 'no_baseline' as const };
-
-function gated(overrides: Partial<GatedReleaseFooter>): GatedReleaseFooter {
-  return {
-    archetype: 'gated',
-    queueDepth: val(4),
-    oldestMergedAt: { kind: 'value', value: '2026-08-01T00:00:00.000Z' },
-    baselineSource: 'healthy',
-    releaseId: 'rel-1',
+function shippedOf(overrides: Partial<DeliveryInput>): DeliveryStep | null {
+  const steps = buildDeliverySteps({
+    missionStatus: 'active',
+    totalTasks: 3,
+    completedTasks: 3,
+    awaitingMerge: 0,
+    integrationPr: null,
+    criteria: { total: 0, passed: null, overall: null },
+    mergedAt: ['2026-03-11T08:00:00.000Z'],
+    release: { releasedThrough: '2026-03-12T00:00:00.000Z' },
+    budget: null,
     ...overrides,
-  };
+  });
+  return steps.find(s => s.key === 'shipped') ?? null;
 }
 
-function continuous(overrides: Partial<ContinuousReleaseFooter>): ContinuousReleaseFooter {
-  return {
-    archetype: 'continuous',
-    state: 'healthy',
-    deployedAt: '2026-08-01T00:00:00.000Z',
-    healthyAt: '2026-08-01T01:00:00.000Z',
-    releaseId: 'rel-1',
-    ...overrides,
-  };
-}
+const released = shippedOf({})!;
+const waiting = shippedOf({ release: { releasedThrough: '2026-03-10T00:00:00.000Z' } })!;
+const partlyWaiting = shippedOf({
+  mergedAt: ['2026-03-09T08:00:00.000Z', '2026-03-11T08:00:00.000Z'],
+  release: { releasedThrough: '2026-03-10T00:00:00.000Z' },
+})!;
 
-const releaseNowEnabled = deriveReleaseNowState({ strategy: 'workflow_dispatch', hasVercelToken: true });
-
-describe('MissionReleaseSection — none archetype (AC-40)', () => {
-  it('renders nothing when data is null', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="none" data={null} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toBe('');
+describe('missionShippedStatus', () => {
+  it('reads "Released" once every merge of this mission is in a release', () => {
+    expect(released.state).toBe('done');
+    expect(missionShippedStatus(released)).toBe('Released');
   });
 
-  // AC-40 second half: no release section anywhere in the DOM for `none`.
-  // Decided on the archetype alone, so a stale payload cannot resurrect it.
-  it('renders no release element at all for archetype none, even with release data in hand', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection
-        archetype="none"
-        data={gated({ queueDepth: val(4) })}
-        workspaceId="ws-1"
-        releaseNowState={releaseNowEnabled}
-      />,
-    );
-    expect(html).toBe('');
-    expect(html).not.toContain('Release');
-    expect(html).not.toContain('unshipped');
+  it('reads "Waiting for next release" when none of it has shipped', () => {
+    expect(missionShippedStatus(waiting)).toBe('Waiting for next release');
   });
 
-  // §9.1: `none` and `clean` render identically but must not be computed the
-  // same way — a release-capable workspace with no data is `clean`, not `none`.
-  it('renders nothing for a release-capable archetype whose loader returned no data', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="continuous" data={null} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toBe('');
+  it('says part of it shipped when some merges are released and some wait', () => {
+    expect(partlyWaiting.state).toBe('partial');
+    expect(missionShippedStatus(partlyWaiting)).toBe('Partly released');
+  });
+
+  it('says "Partly released" when landed work shipped and more is still to merge', () => {
+    const landedSome = shippedOf({ completedTasks: 2 })!;
+    expect(landedSome.state).toBe('partial');
+    expect(missionShippedStatus(landedSome)).toBe('Partly released');
+  });
+
+  it('stays short enough for one line at 390px', () => {
+    for (const step of [released, waiting, partlyWaiting]) {
+      expect(missionShippedStatus(step).length).toBeLessThanOrEqual(24);
+    }
   });
 });
 
-describe('MissionReleaseSection — gated archetype (AC-40, AC-46)', () => {
-  it('renders nothing when the queue is genuinely clean (zero unshipped)', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="gated" data={gated({ queueDepth: val(0) })} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toBe('');
+describe('missionShippedHref', () => {
+  it('links a released mission to the release', () => {
+    expect(missionShippedHref({ step: released, releaseId: 'rel-1', workspaceId: 'ws-1' })).toBe('/app/releases/rel-1');
   });
 
-  it('renders nothing when queueDepth is unavailable (no baseline at all)', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="gated" data={gated({ queueDepth: unavailable as any })} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toBe('');
+  it('links a waiting mission to the workspace releases list, since its release does not exist yet', () => {
+    expect(missionShippedHref({ step: waiting, releaseId: 'rel-1', workspaceId: 'ws-1' })).toBe('/app/releases?workspace=ws-1');
   });
 
-  it('4 merged tasks, no release yet → shows queue depth 4, oldest age, and a link to the release', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection
-        archetype="gated" data={gated({ queueDepth: val(4), baselineSource: 'prod_head', releaseId: 'rel-9' })}
-        workspaceId="ws-1"
-        releaseNowState={releaseNowEnabled}
-      />,
-    );
-    expect(html).toContain('4 unshipped');
-    expect(html).toContain('no releases yet');
-    expect(html).toContain('/app/releases/rel-9');
-  });
-
-  it('carries the Release now trigger action, enabled when release strategy is not branch_merge and Vercel token present', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="gated" data={gated({})} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toContain('Release now');
-    expect(html).not.toContain('disabled=""');
-  });
-
-  it('Release now is present but disabled with a tooltip when the Vercel token is missing (AC-46)', () => {
-    const state = deriveReleaseNowState({ strategy: 'branch_merge', hasVercelToken: false });
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="gated" data={gated({})} workspaceId="ws-1" releaseNowState={state} />,
-    );
-    expect(html).toContain('Release now');
-    expect(html).toContain('disabled=""');
-    expect(html).toContain('Add Vercel token');
+  it('falls back to the workspace releases list when no release id is known', () => {
+    expect(missionShippedHref({ step: released, releaseId: null, workspaceId: 'ws-1' })).toBe('/app/releases?workspace=ws-1');
   });
 });
 
-describe('MissionReleaseSection — continuous archetype', () => {
-  it('renders nothing when there is no deploy state yet', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="continuous" data={continuous({ state: null })} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toBe('');
+describe('MissionReleaseSection', () => {
+  it('renders nothing when the Delivery model has no Shipped step', () => {
+    expect(renderToStaticMarkup(<MissionReleaseSection step={null} releaseId="rel-1" workspaceId="ws-1" />)).toBe('');
   });
 
-  it('shows last deploy state and healthy-since, and the trigger', () => {
-    const html = renderToStaticMarkup(
-      <MissionReleaseSection archetype="continuous" data={continuous({ state: 'healthy' })} workspaceId="ws-1" releaseNowState={releaseNowEnabled} />,
-    );
-    expect(html).toContain('Healthy');
-    expect(html).toContain('Release now');
-  });
-});
-
-describe('deriveReleaseNowState', () => {
-  it('enabled when strategy is workflow_dispatch regardless of Vercel token', () => {
-    expect(deriveReleaseNowState({ strategy: 'workflow_dispatch', hasVercelToken: false })).toMatchObject({ disabled: false });
+  it('renders one line: the step, this mission\'s status, and a link to the release', () => {
+    const html = renderToStaticMarkup(<MissionReleaseSection step={released} releaseId="rel-1" workspaceId="ws-1" />);
+    expect(html).toContain('data-testid="mission-shipped-status"');
+    expect(html).toContain('Shipped');
+    expect(html).toContain('Released');
+    expect(html).toContain('href="/app/releases/rel-1"');
+    // One link, one row, a 44px tap target.
+    expect(html.split('<a ').length - 1).toBe(1);
+    expect(html).toMatch(/<a [^>]*class="[^"]*\bmin-h-11\b/);
   });
 
-  it('disabled with Vercel tooltip when branch_merge and Vercel token missing', () => {
-    const state = deriveReleaseNowState({ strategy: 'branch_merge', hasVercelToken: false });
-    expect(state.disabled).toBe(true);
-    expect(state.tooltip).toContain('Vercel');
+  it('never renders the workspace queue or the Release now trigger', () => {
+    for (const step of [released, waiting, partlyWaiting]) {
+      const html = renderToStaticMarkup(<MissionReleaseSection step={step} releaseId="rel-1" workspaceId="ws-1" />);
+      expect(html).not.toContain('unshipped');
+      expect(html).not.toContain('Release now');
+      expect(html).not.toContain('<button');
+    }
   });
 
-  it('disabled (auto-releases) when strategy is branch_merge, even with a Vercel token', () => {
-    const state = deriveReleaseNowState({ strategy: 'branch_merge', hasVercelToken: true });
-    expect(state.disabled).toBe(true);
-    expect(state.branchMergeBlocked).toBe(true);
+  it('colours the glyph from the shared Delivery state map, like every other step row', () => {
+    for (const step of [released, waiting, partlyWaiting]) {
+      const html = renderToStaticMarkup(<MissionReleaseSection step={step} releaseId="rel-1" workspaceId="ws-1" />);
+      expect(html).toContain(DELIVERY_STATE_TEXT[step.state]);
+    }
   });
 
-  it('enabled when strategy is workflow_dispatch and Vercel token is present', () => {
-    const state = deriveReleaseNowState({ strategy: 'workflow_dispatch', hasVercelToken: true });
-    expect(state.disabled).toBe(false);
-    expect(state.branchMergeBlocked).toBe(false);
+  it('carries the step state for the glyph colour', () => {
+    const html = renderToStaticMarkup(<MissionReleaseSection step={waiting} releaseId={null} workspaceId="ws-1" />);
+    expect(html).toContain(`data-state="${waiting.state}"`);
+    expect(html).toContain('Waiting for next release');
   });
 });
