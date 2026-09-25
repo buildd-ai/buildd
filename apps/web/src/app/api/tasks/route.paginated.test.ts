@@ -189,6 +189,8 @@ mock.module('@buildd/core/db/schema', () => ({
   // dynamic import chain even though the runtime value is never dereferenced by
   // the paginated GET tests.
   taskSubjectReports: {},
+  // Same reason: @/lib/mission-surface-audit posts the round-cap question.
+  missionNotes: {},
 }));
 
 // Re-export real implementations of pure @buildd/core packages so that mocks
