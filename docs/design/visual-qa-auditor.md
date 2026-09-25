@@ -1,6 +1,6 @@
 # Visual QA Auditor for Missions
 
-**Status:** Proposed
+**Status:** Proposed — PR 1 (teeth) in progress
 **Related:** `packages/core/surface-audit.ts`, `apps/web/src/lib/mission-surface-audit.ts`,
 `apps/web/src/lib/mission-completion.ts`, `apps/web/src/app/api/workers/claim/route.ts`,
 `apps/runner/src/env-scan.ts`, `apps/web/src/lib/default-roles.ts`, `apps/web/src/lib/storage-keys.ts`,
@@ -85,10 +85,14 @@ failure" below: it must never become a silent pass.
 - **Runner-side gate:** the runner lists `visual-auditor` in `availableSkills` only when
   env-scan reports `browser`. This is capability routing through the role gate that
   already exists. It does not reverse the removal of `requiredCapabilities` in PR #1864.
-- **Hole to close:** a runner that sends empty `availableSkills` can still claim
-  role-routed tasks. Make role-routed tasks require an explicit match, so an empty list
-  no longer matches a task that has a `roleSlug`. This one-line change is the
-  load-bearing piece of PR 1.
+- **Hole to close, scoped:** a runner that sends empty `availableSkills` can still claim
+  role-routed tasks. Only slugs in a new constant `EXPLICIT_ROLE_SLUGS`
+  (`['visual-auditor']`, in `packages/shared`) now need an explicit match; every other
+  `roleSlug` keeps today's behaviour, so no existing runner or client changes. The gate
+  (`claim/role-gate.ts`) also reads explicit slugs apart from the rest: a browser runner
+  advertising only `['visual-auditor']` keeps claiming builder, organizer and other
+  role-routed tasks. Folding the slug into the old `IS NULL OR IN (list)` clause would
+  have stranded them. This is the load-bearing piece of PR 1.
 
 ### 2. The run
 
@@ -96,13 +100,20 @@ failure" below: it must never become a silent pass.
    completed *and merged*. The audit therefore always runs against trunk after the UI
    has landed. It gates **mission completion, not merge**. Pre-merge review is a
    non-goal for v1.
-2. **Boot.** `shoot.sh` starts the app from trunk with the dev auth bypass,
-   `DISABLE_WRITES=true`, and a data URL from a non-prod secret. It never reads a
+2. **Boot.** The capture recipe is the existing `visual-review` skill. With no
+   `DATABASE_URL` (the buildd worker case) the auditor dispatches `visual-qa.yml` on trunk
+   and downloads the screenshots. With one, `shoot.sh` starts the app from trunk with
+   the dev auth bypass, `DISABLE_WRITES=true`, and a data URL from a non-prod secret. It never reads a
    checked-in or local `.env`, because locally that can be prod. It waits up to 5 minutes
    for readiness.
 3. **Required routes, set by code.** Map the mission's merged diffs to routes with
    Next's file-system rule: a changed `app/**/page.tsx` or `layout.tsx` gives its route,
-   plus any matching entry in `apps/web/src/qa/visual-qa-routes.json`. The auditor may
+   plus any matching entry in `apps/web/src/qa/visual-qa-routes.json`. The mapping is a
+   pure function in `packages/core/visual-qa-routes.ts`: it drops `(group)` and `@slot`
+   segments, maps `[id]` to `:id`, and ignores `app/api/**`. A layout also requires every
+   manifest route under it. In PR 1 the changed files are the builder tasks'
+   `pathManifest` entries (via the audit's `dependsOn`), recomputed at completion;
+   merged-PR file lists are a later refinement. The auditor may
    **add** routes, for example ones that use a changed shared component. It cannot drop
    a required one.
 4. **Capture.** Navigate read-only with GETs and no form submits. Capture every
@@ -138,9 +149,10 @@ The model decides what it saw. Code decides whether it looked, and at what.
   criteria reviewer was built to escape.
 - **Boot failure:** the auditor does not mark the task `failed`. `failed` is terminal in
   `mission-completion.ts` and would *release* the gate. It asks a question instead
-  ("app did not boot: …"), and the open task holds the mission. If the task errors
-  before it can ask, it completes with `errorType: 'infra_stalled'`, which
-  `mission-completion.ts` already treats as blocking.
+  ("app did not boot: …"), and the open task holds the mission. The evidence check
+  refuses a completion with no screenshots in any case. (A worker cannot report
+  `infra_stalled` itself: only the server sets it, after repeated infra retries, so it
+  is not a boot-failure path.)
 - **Re-check, defined:** today, `ensureMissionSurfaceAudit` appends each new work task,
   fix tasks included, to the existing audit's `dependsOn`. That is inert once the audit
   is done. Change it so that when an audit is already `completed` and a `[surface fix]`
@@ -173,9 +185,14 @@ The model decides what it saw. Code decides whether it looked, and at what.
 ## Implementation sketch
 
 1. **PR 1, buildd only: teeth.**
-   - Require an explicit role match for role-routed tasks.
+   - Require an explicit role match for `EXPLICIT_ROLE_SLUGS` (`visual-auditor` only).
    - Add the `visual-auditor` role, and have the runner advertise it only when browser
-     is present.
+     is present. Default roles are seeded only when a team is created, so existing teams
+     don't get the row. Claiming doesn't need it, but prompt and tool injection do:
+     register it for the buildd team through the UI or `register_skill`, not a migration
+     that lists teams.
+   - Keep `roleSlug` on the stale-`waiting_input` retry clone, so a retried audit stays
+     routed and gated.
    - Route the audit to it.
    - Required routes from code, and the evidence check.
    - `missionId` on upload.
@@ -193,9 +210,10 @@ tried on a second, non-Next app before it's called generic.
 
 ## Open questions
 
-- **Is an empty `availableSkills` list relied on anywhere?** *Lean:* tightening it
-  affects only tasks that set a `roleSlug`, and their authors asked for routing. Before
-  shipping, check which runners send empty lists today.
+- **Is an empty `availableSkills` list relied on anywhere?** *Resolved:* yes (today's
+  runner never sends one), so the tightening is scoped to `EXPLICIT_ROLE_SLUGS` and every
+  other role keeps the empty-list behaviour. Any claimer that sends no skills (MCP,
+  external clients) can no longer claim a `visual-auditor` task, which is intended.
 - **Critical PRs outside missions?** *Lean:* later, as a label that creates an audit task
   on the PR's branch before merge. That is the only pre-merge path, and it is not in v1.
 - **Is "read-only" enforceable?** Bash can write files. *Lean:* yes, enough. The role
