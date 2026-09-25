@@ -2560,7 +2560,7 @@ export class WorkerManager {
     let cbmRuntimeDir: string | undefined;
     // Shared cache is host-wide and seeded — it must survive this worker's cleanup.
     let cbmSharedCache = false;
-    // Per-worker throwaway BUILDD_HOME for the agent env; removed in finally.
+    // Per-session throwaway BUILDD_HOME for the agent env; removed in finally.
     let agentRunnerHome: string | undefined;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
@@ -4819,6 +4819,12 @@ export class WorkerManager {
       }
     } finally {
       if (isSensitive) deactivateRedaction();
+      // This invocation's own throwaway BUILDD_HOME. First and unconditional:
+      // it is unique to this call, so neither the closing-turn early return
+      // below nor a superseded/deregistered session may skip it.
+      if (agentRunnerHome) {
+        cleanupAgentRunnerHome(agentRunnerHome);
+      }
       if (delegatedToClosingTurn) {
         // The nested closing-turn call above already ran ITS OWN full
         // try/catch/finally to completion — including this exact cleanup
@@ -4878,10 +4884,6 @@ export class WorkerManager {
         // Clean up per-worker Claude config dir (access_token isolation).
         if (claudeConfigDir) {
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
-        }
-
-        if (agentRunnerHome) {
-          cleanupAgentRunnerHome(agentRunnerHome);
         }
 
         // End an index build that was handed off at startup and is still running.

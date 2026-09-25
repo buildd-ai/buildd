@@ -11,7 +11,7 @@
  * every checkout's code honours.
  */
 import { describe, test, expect, afterAll } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, statSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve, sep } from 'path';
 import {
@@ -90,6 +90,26 @@ describe('cleanupAgentRunnerHome', () => {
     expect(existsSync(dir)).toBe(false);
   });
 
+  test('a superseded session of the same worker cannot delete its successor\'s home', () => {
+    // Plan approval (and any restart of a live worker) starts a new session for
+    // the same worker id while the old one is still draining; the old one's
+    // teardown runs afterwards. A per-worker-id path would be shared, so that
+    // teardown would delete the directory the live successor is using.
+    const first = isolateAgentRunnerHome({}, 'w-same', { tmp: scratch });
+    const second = isolateAgentRunnerHome({}, 'w-same', { tmp: scratch });
+    expect(second).not.toBe(first);
+    cleanupAgentRunnerHome(first, { tmp: scratch });
+    expect(existsSync(second)).toBe(true);
+  });
+
+  test('a directory planted at a predictable path is never adopted', () => {
+    const planted = agentRunnerHomeFor('w-planted', scratch);
+    mkdirSync(planted, { mode: 0o777 });
+    const dir = isolateAgentRunnerHome({}, 'w-planted', { tmp: scratch });
+    expect(dir).not.toBe(planted);
+    expect(under(dir, scratch)).toBe(true);
+  });
+
   test('refuses anything that is not an agent home under tmp', () => {
     const victim = mkdtempSync(join(scratch, 'not-an-agent-home-'));
     cleanupAgentRunnerHome(victim, { tmp: scratch });
@@ -110,7 +130,15 @@ describe('WorkerManager wiring', () => {
     expect(isolate).toBeGreaterThan(copy);
   });
 
-  test('the session teardown removes it', () => {
-    expect(src).toMatch(/cleanupAgentRunnerHome\(agentRunnerHome/);
+  test('the session teardown removes it on every exit path', () => {
+    const cleanup = src.indexOf('cleanupAgentRunnerHome(agentRunnerHome');
+    expect(cleanup).toBeGreaterThan(-1);
+    // Must run before the closing-turn early return and outside the
+    // `if (session)` block: a superseded or already-deregistered session
+    // otherwise leaks its home, and a delegated parent never reaches it.
+    const finallyAt = src.lastIndexOf('} finally {', cleanup);
+    const between = src.slice(finallyAt, cleanup);
+    expect(between).not.toContain('if (delegatedToClosingTurn)');
+    expect(between).not.toContain('if (session)');
   });
 });
