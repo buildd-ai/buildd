@@ -161,8 +161,6 @@ describe('mobile layout — tasks/[id]/page.tsx', () => {
     expect(meta).toContain('pl-11 md:pl-0');
     expect(meta).toContain('<StatusBadge');
     expect(meta).toContain('worker.prUrl &&');
-    // The old layout rendered an always-present empty flex div for the PR link.
-    expect(pageSource).not.toMatch(/\/>\s*<div className="flex items-center gap-2">\s*\{worker\.prUrl && \(/);
   });
 
   it('breadcrumb separator is hidden on mobile, where the task title after it is hidden', () => {

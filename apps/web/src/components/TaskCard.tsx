@@ -388,7 +388,7 @@ export function TaskCard({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 pointer-events-auto text-accent-text hover:underline after:absolute after:-inset-x-2 after:-inset-y-3.5 after:content-['']"
+              className="relative z-10 pointer-events-auto text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-2 max-md:after:-inset-y-1.5 max-md:after:content-['']"
             >
               #{prNumber}
             </a>
@@ -478,8 +478,10 @@ export function TaskCard({
             )}
           </div>
 
-          {/* T4 — PR link. The ::after pads the hit area to 44px without
-              growing the row; the chip above already names #N when it can. */}
+          {/* T4 — PR link. Below md the ::after widens the hit area without
+              growing the row. It stops at the gap above (the elapsed line
+              stays the task's) and at the row's bottom padding (so it never
+              reaches the next row's overlay). The chip names #N when it can. */}
           {prUrl && (
             <a
               href={prUrl}
@@ -487,9 +489,9 @@ export function TaskCard({
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
               aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
-              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline after:absolute after:-inset-x-3 after:-inset-y-3.5 after:content-['']"
+              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
             >
-              {chipShowsPr ? 'PR ↗' : `PR #${prNumber}↗`}
+              {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
             </a>
           )}
         </div>
@@ -577,9 +579,9 @@ export function TaskCard({
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
             aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
-            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0 after:absolute after:-inset-x-3 after:-inset-y-3.5 after:content-['']"
+            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0 max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-3 max-md:after:content-['']"
           >
-            {chipShowsPr ? 'PR ↗' : `PR #${prNumber}↗`}
+            {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
           </a>
         )}
       </div>

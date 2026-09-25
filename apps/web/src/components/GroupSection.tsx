@@ -32,9 +32,10 @@ export interface GroupSectionProps {
  */
 export function GroupSection({ title, missionId, stageCounts, failedCount = 0, verified, taskCount, belowMobileHeader = false }: GroupSectionProps) {
   const hasMission = !!missionId;
-  // 53px = MobilePageHeader's rendered height (py-2.5 + 32px controls + 1px
-  // border). A layout that changes it can set --mobile-header-h instead.
-  const stickyTop = belowMobileHeader ? 'top-[var(--mobile-header-h,53px)] md:top-0' : 'top-0';
+  // MobilePageHeader publishes its measured height as --mobile-header-h. The
+  // fallback only covers the first paint before it does, sized to that header
+  // (py-1 + 32px controls + 1px border).
+  const stickyTop = belowMobileHeader ? 'top-[var(--mobile-header-h,41px)] md:top-0' : 'top-0';
 
   return (
     <div className={`sticky ${stickyTop} z-10 w-full bg-surface-1 border-b border-border-default px-4 py-2`}>

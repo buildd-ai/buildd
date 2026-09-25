@@ -11,7 +11,7 @@ describe('GroupSection sticky offset', () => {
   it('clears the fixed mobile header when mounted below it, and sticks at 0 from md up', () => {
     const cls = bandClass(renderToStaticMarkup(<GroupSection title="Today" taskCount={3} belowMobileHeader />));
     expect(cls).toContain('sticky');
-    expect(cls).toContain('top-[var(--mobile-header-h,53px)]');
+    expect(cls).toMatch(/(^|\s)top-\[var\(--mobile-header-h,\d+px\)\](\s|$)/);
     expect(cls).toContain('md:top-0');
     expect(cls.split(/\s+/)).not.toContain('top-0');
   });

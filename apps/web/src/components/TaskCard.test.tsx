@@ -184,3 +184,31 @@ describe('TaskCard — PR number shown once', () => {
     expect(html).toContain('PR #42');
   });
 });
+
+describe('TaskCard — PR link edge cases', () => {
+  it('never renders "PR #null" when there is a PR URL but no number', () => {
+    for (const density of ['row', 'full'] as const) {
+      const html = renderToStaticMarkup(
+        <TaskCard {...baseProps({ density, prUrl: 'https://github.com/example-org/example-repo/pull/1', prNumber: null })} />,
+      );
+      expect(html).not.toContain('#null');
+      expect(html).toContain('PR ↗');
+      expect(html).toContain('aria-label="Open PR"');
+    }
+  });
+
+  // The enlarged hit area is a touch affordance. On desktop it covered the
+  // elapsed line and reached into the next row, opening the wrong PR.
+  it('scopes the enlarged PR hit area to below md', () => {
+    const pr = { prUrl: 'https://github.com/example-org/example-repo/pull/42', prNumber: 42, prLifecycleStatus: 'merged' };
+    for (const density of ['row', 'full', 'inline'] as const) {
+      const html = renderToStaticMarkup(<TaskCard {...baseProps({ density, ...pr })} />);
+      const cls = html.match(new RegExp(`href="${pr.prUrl}"[^>]*class="([^"]*)"`))?.[1].split(/\s+/) ?? [];
+      const afterClasses = cls.filter(c => c.includes('after:'));
+      expect(afterClasses.length).toBeGreaterThan(0);
+      expect(afterClasses.every(c => c.startsWith('max-md:after:'))).toBe(true);
+      // Never the old 14px vertical spill.
+      expect(afterClasses.some(c => c.includes('inset-y-3.5'))).toBe(false);
+    }
+  });
+});

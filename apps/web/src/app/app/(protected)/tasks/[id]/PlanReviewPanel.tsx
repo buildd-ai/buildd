@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Spinner from '@/components/Spinner';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -16,11 +16,27 @@ export const PLAN_STEP_PREVIEW_CHARS = 280;
  */
 export function PlanStepDescription({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
-  const isLong = content.length > PLAN_STEP_PREVIEW_CHARS;
-  const clamped = isLong && !expanded;
+  // The char count only seeds the server render. Whether four lines actually
+  // overflow depends on the width, so once mounted the clamped box is measured
+  // (and re-measured on resize) and the toggle drops out where it would do
+  // nothing, e.g. a 300-char step on a wide desktop column.
+  const [overflows, setOverflows] = useState(content.length > PLAN_STEP_PREVIEW_CHARS);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el || expanded) return;
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [expanded, content]);
+  const isLong = overflows;
+  const clamped = !expanded;
   return (
     <div className="mt-1 min-w-0">
-      <div className={clamped ? 'line-clamp-4 overflow-hidden' : undefined}>
+      <div ref={boxRef} className={clamped ? 'line-clamp-4 overflow-hidden' : undefined}>
         <MarkdownContent
           content={content}
           variant="compact"

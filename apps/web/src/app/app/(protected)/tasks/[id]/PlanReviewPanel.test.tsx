@@ -61,7 +61,6 @@ describe('PlanStepDescription', () => {
   it('shows short descriptions in full with no toggle', () => {
     const html = renderToStaticMarkup(<PlanStepDescription content="Add the column." />);
     expect(html).not.toContain('Show more');
-    expect(html).not.toContain('line-clamp');
   });
 
   it('clamps long descriptions behind a "Show more" toggle', () => {
