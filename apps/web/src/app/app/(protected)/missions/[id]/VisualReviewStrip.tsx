@@ -60,9 +60,11 @@ export default function VisualReviewStrip({ shots, missionId }: VisualReviewStri
       </div>
 
       {shots.length > 0 && (
-        <ul className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-3">
+        // One row that scrolls sideways on phones; wraps from sm up. Wrapping at
+        // 390px stacked one thumbnail per row and made the strip a page tall.
+        <ul className="mt-3 flex snap-x items-end gap-x-4 gap-y-3 overflow-x-auto pb-2 sm:flex-wrap sm:overflow-visible sm:pb-0">
           {shots.map((shot, i) => (
-            <li key={shot.id}>
+            <li key={shot.id} className="shrink-0 snap-start">
               <button
                 type="button"
                 data-testid="visual-review-thumb"

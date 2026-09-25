@@ -86,7 +86,8 @@ export default function VisualReviewLightbox({
             src={shot.src}
             alt={`${qa.route} at ${qa.viewport}`}
             onError={() => onExpired(shot.id)}
-            className="block max-h-[66vh] max-w-full border-2 border-border-strong shadow-lg"
+            // Capped lower on phones so the finding and its fix-task link stay above the fold.
+            className="block max-h-[42vh] max-w-full border-2 border-border-strong shadow-lg md:max-h-[66vh]"
           />
         )}
       </div>
