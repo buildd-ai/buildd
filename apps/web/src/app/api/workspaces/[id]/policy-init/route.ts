@@ -48,6 +48,18 @@ export async function POST(
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
   }
+  // For API key auth, the workspace must belong to the API key's own team
+  // (same check as PATCH /api/workspaces/[id]). `accessMode: 'open'` does not
+  // widen this: open means open within the owning team.
+  if (apiAccount) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, id),
+      columns: { teamId: true },
+    });
+    if (!ws || ws.teamId !== apiAccount.teamId) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+  }
 
   let body: { preset?: WorkspacePolicyPreset; reviewerRole?: string } = {};
   try {
