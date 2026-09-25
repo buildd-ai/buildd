@@ -327,7 +327,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     {
                       value: 'manual' as ReleaseTrigger,
                       label: 'Manual only',
-                      help: "Nothing releases automatically. Use the 'Release now' action on mission detail or Home, or trigger_release via MCP.",
+                      help: "Nothing releases automatically. Use the 'Release now' action on Home, or trigger_release via MCP.",
                     },
                     {
                       value: 'scheduled' as ReleaseTrigger,

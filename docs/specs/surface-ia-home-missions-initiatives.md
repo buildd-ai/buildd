@@ -106,8 +106,8 @@ is `—` there.
 | 14-day effort sparkline | MUST NOT | MUST NOT | MUST (84×24) | MUST (≥168×32) | — | — |
 | Pending-action counts as links | MUST NOT | MUST NOT | MUST (subline) | MUST (strip) | — | — |
 | KPI panel, artifacts | MUST NOT | MUST NOT | MUST NOT | MUST | — | — |
-| Release ledger status (§8.1) | MUST (exception only, §8.2) | MUST (card footer, §8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | MUST (§8.5) | — |
-| Release trigger action (`Release now`, §10.1) | MUST (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST (§10.2) | MUST NOT (§10.2) |
+| Release ledger status (§8.1) | MUST (exception only, §8.2) | MUST (card footer, §8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | this mission's Shipped line only (§8.5) | — |
+| Release trigger action (`Release now`, §10.1) | MUST (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) |
 | Task-level ship badge (§10.3) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST (per task row, §10.3) | MUST (§10.3) |
 | Fifth task-rail segment for release (§10.4) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT |
 
@@ -801,12 +801,16 @@ mounted only on the list-card grid (`MissionGrid.tsx`), never on
 page whose entire subject is "is this mission done," and it currently cannot
 answer whether the mission's merged work has shipped.
 
-Mission detail gains a release section — same data source as the card footer
-(`releases` + `release_tasks`, no denormalization, consistent with §6.2's
-single-loader discipline), rendered richer: gated shows queue depth, oldest
-age, and a link to the release detail page; continuous shows last deploy
-state and healthy-since. It carries the trigger action (§10.1-10.2). `none`
-archetype renders nothing, permanently (§9.1).
+Mission detail answers the question for **this mission only**: the Delivery
+stepper's Shipped step (`buildDeliverySteps`, which reads the mission's own
+trunk merges against the release baseline from the same loader as the card
+footer) renders as one line — `Released`, `Partly released` or `Waiting for next release` —
+linking to the release detail page, or to the workspace's releases while the
+release that will carry it does not exist yet
+(`missions/[id]/MissionReleaseSection.tsx`). The workspace queue ("N
+unshipped") and the trigger action are workspace facts, not this mission's,
+and do not render here (§10.1). `none` archetype, or nothing of the mission
+merged yet, renders nothing (§9.1).
 
 ### 8.6 Acceptance criteria
 
@@ -818,13 +822,17 @@ archetype renders nothing, permanently (§9.1).
   this week, WHEN `/app/initiatives` and the initiative detail page render,
   THEN neither page renders a release-ledger row — only the existing
   `shippedThisWeek` clause/chip carries the count.
-- **AC-40**: GIVEN a gated mission with 4 merged tasks and no release yet,
-  WHEN `/app/missions/[id]` renders, THEN a release section is present
-  showing queue depth 4 and the oldest merge's age; GIVEN the mission's
-  archetype is `none`, THEN no release section is present in the DOM.
+- **AC-40**: GIVEN a gated mission whose merged work is after the last
+  release, WHEN `/app/missions/[id]` renders, THEN its Delivery Shipped line
+  reads `Waiting for next release` and shows no workspace queue depth; GIVEN
+  all of it is in a release, THEN it reads `Released` and links to the
+  release; GIVEN the mission's archetype is `none`, THEN no Shipped line is
+  present in the DOM.
 - **AC-41**: GIVEN the same mission on both the missions-list card and its own
-  detail page in one request cycle, THEN both show the same queue depth and
-  age, because both read the same loader.
+  detail page in one request cycle, THEN both read the same release loader:
+  the card shows the workspace queue depth and age, and mission detail shows
+  only this mission's Shipped line (no queue depth), so the two cannot
+  disagree about the release baseline.
 
 ---
 
@@ -889,7 +897,7 @@ the fix generalized here.
 
 ### 10.1 Where the `Release now` action lives
 
-**Decision: Mission detail and the Home readiness widget. Not workspace
+**Decision: the Home readiness widget. Not mission detail, not workspace
 config, not the missions list, not task detail.**
 
 ### 10.2 Reasoning
@@ -905,10 +913,11 @@ state is visible.
 
 Concretely:
 
-- **Mission detail — MUST.** This is where §8.5 already puts the release
-  ledger status for the mission whose "done" claim is in question. The
-  trigger sits next to the read it acts on — press the button, watch the
-  section's own state advance from `unseeded`/queued to `dispatched`.
+- **Mission detail — MUST NOT.** A release ships the whole workspace queue,
+  not one mission, so a mission page offering it — next to a workspace-wide
+  "N unshipped" count — read as a claim about the mission that it was not.
+  Mission detail keeps only its own Shipped line (§8.5), which links to the
+  release.
 - **Home — MUST.** The readiness widget already computes "queue depth over
   threshold AND CI green" (§8.2) — the exact precondition for a safe release.
   Surfacing the action where that precondition is already evaluated avoids a
@@ -923,8 +932,7 @@ Concretely:
   `/app/workspaces/[id]/config` keeps the strategy selector, branch pickers,
   trigger-policy selector, and read-only Vercel-token status — everything
   that decides *how* a release runs. The `Release now` button that currently
-  lives there is **removed from that surface** and relocated to mission
-  detail and Home. Configuration and action were conflated in one card;
+  lives there is **removed from that surface** and relocated to Home. Configuration and action were conflated in one card;
   §5.2's own AC-13 ("Release now fires the release") never specified *where*
   the button must live, so this is a relocation, not a spec violation of the
   original design doc.
@@ -976,11 +984,10 @@ detail get the same component, not two implementations to keep in sync.
 
 ### 10.4 Acceptance criteria
 
-- **AC-46**: GIVEN a mission with unshipped merges and CI green, WHEN mission
-  detail renders, THEN a `Release now` button is present and enabled; GIVEN
-  the mission's Vercel token is missing, THEN the button is present but
-  disabled with a tooltip explaining why (mirrors release-management-ui.md
-  AC-16/AC-23, relocated).
+- **AC-46**: GIVEN a mission with unshipped merges, WHEN mission detail
+  renders, THEN no `Release now` button (or other trigger control) and no
+  workspace queue depth is present; the Home readiness widget carries the
+  trigger (§10.2).
 - **AC-47**: WHEN `/app/workspaces/[id]/config` renders the release section,
   THEN no `Release now` button (or equivalent trigger control) is present in
   the DOM — only strategy, branch, trigger-policy, and read-only token-status
@@ -1072,7 +1079,7 @@ detail get the same component, not two implementations to keep in sync.
 - ~~`apps/web/src/app/app/(protected)/initiatives/InitiativeTriage.tsx`~~ — done
   (#1710); moved, not copied.
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionReleaseSection.tsx`
-  — new (§8.5); mission detail's release ledger status + trigger action.
+  — new (§8.5); mission detail's one-line Shipped status for this mission.
   Reads the same loader as `MissionReleaseFooter`, does not fork the query.
 - `apps/web/src/lib/release-baseline.ts` — new (§9.2); the shared
   `none` / `unseeded` / `clean` baseline-ladder helper. One implementation

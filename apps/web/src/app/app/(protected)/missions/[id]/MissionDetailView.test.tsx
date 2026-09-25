@@ -133,11 +133,73 @@ describe('MissionDetailView — sticky masthead (AC-5)', () => {
   });
 });
 
+function renderWithSecondary(tasks: MissionFeedTaskInput[], desktopListOpen?: boolean) {
+  return renderToStaticMarkup(
+    <MissionDetailView
+      desktopListOpen={desktopListOpen}
+      missionId="mission-1"
+      title="Example mission"
+      chip={{ label: 'NEEDS YOU', cls: 'border-accent text-accent-text' }}
+      segments={buildPulseSegments(tasks)}
+      feed={{ tasks, now: FIXTURE_NOW }}
+      desktopList={<div data-testid="timeline-marker" />}
+      orchestratorRow={<div data-testid="orchestrator-marker" />}
+      footer={<div data-testid="footer-marker" />}
+    />,
+  );
+}
+
+describe('MissionDetailView — one feed at every width (desktop F4)', () => {
+  it('renders the task feed with no responsive hiding, so md+ shows the same rows as mobile', () => {
+    const html = renderWithSecondary(fixtureMission(15));
+    const region = html.match(/<div data-testid="mission-feed-region"[^>]*class="([^"]*)"/);
+    expect(region).not.toBeNull();
+    expect(region![1]).not.toMatch(/(^|\s)(md:)?hidden(\s|$)/);
+    const regionAt = html.indexOf('data-testid="mission-feed-region"');
+    expect(html.indexOf('data-testid="mission-task-row"')).toBeGreaterThan(regionAt);
+  });
+
+  it('caps the column at a readable width', () => {
+    const html = renderWithSecondary(fixtureMission(3));
+    expect(html).toMatch(/data-testid="mission-detail" class="[^"]*\bmax-w-3xl\b/);
+  });
+
+  it('puts Timeline / Structure below the feed in a closed md+ disclosure', () => {
+    const html = renderWithSecondary(fixtureMission(15));
+    const views = html.match(/<details data-testid="mission-secondary-views"([^>]*)>/);
+    expect(views).not.toBeNull();
+    expect(views![1]).not.toContain('open');
+    expect(views![1]).toMatch(/class="[^"]*\bhidden\b[^"]*\bmd:block\b/);
+    const lastRow = html.lastIndexOf('data-testid="mission-task-row"');
+    expect(html.indexOf('data-testid="mission-secondary-views"')).toBeGreaterThan(lastRow);
+    expect(html.indexOf('data-testid="timeline-marker"')).toBeGreaterThan(html.indexOf('data-testid="mission-secondary-views"'));
+  });
+
+  it('opens the disclosure when the URL names a view in it (?view=structure)', () => {
+    const html = renderWithSecondary(fixtureMission(3), true);
+    const views = html.match(/<details data-testid="mission-secondary-views"([^>]*)>/);
+    expect(views).not.toBeNull();
+    expect(views![1]).toMatch(/\bopen=""/);
+  });
+
+  it('gives the disclosure summary a 44px tap target', () => {
+    const html = renderWithSecondary(fixtureMission(3));
+    expect(html).toMatch(/data-testid="mission-secondary-views"[^>]*>\s*<summary[^>]*class="[^"]*\bmin-h-11\b/);
+  });
+
+  it('shows the Orchestrator row at every width, now that the Timeline is folded away', () => {
+    const html = renderWithSecondary(fixtureMission(3));
+    const at = html.indexOf('data-testid="orchestrator-marker"');
+    expect(at).toBeGreaterThan(-1);
+    const before = html.slice(0, at);
+    expect(before.slice(before.lastIndexOf('<div')).includes('md:hidden')).toBe(false);
+  });
+});
+
 describe('MissionDetailView — md+ navigator', () => {
   // At md+ the time-axis strip replaces the header pulse ("Desktop
-  // adaptation"). The rows the pulse focuses live only in the mobile list, so a
-  // header pulse left visible at md+ would outline a display:none row on its
-  // first click and do nothing visible.
+  // adaptation"): its bars are wide enough for a mouse and it opens the task
+  // sheet, so a second navigator in the header would only repeat it.
   it('hides the header pulse at md and up, keeping it on mobile', () => {
     const html = renderMission(fixtureMission(15));
     expect(html).toMatch(/data-testid="mission-pulse" data-variant="header"[^>]*class="[^"]*\bmd:hidden\b/);

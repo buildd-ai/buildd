@@ -9,8 +9,11 @@
  *    long (its one place on the page; Settings no longer carries it);
  * 3. the situation — the one sentence and its one action;
  * 4. Delivery — the one-line stepper;
- * 5. the task list — `MissionFeedList` below md, the Timeline/Structure toggle at md+;
- * 6. the footer rows — Orchestrator, Records, Notes, Settings.
+ * 5. the task list — `MissionFeedList` (NEEDS YOU / MOVING NOW / phases) at
+ *    every width, so desktop reads the same rows as mobile;
+ * 6. md+ only: Timeline / Structure, folded into a disclosure under the feed —
+ *    alternative views of the same tasks, not the task list;
+ * 7. the footer rows — Orchestrator, Records, Notes, Settings.
  *
  * The task list is evidence for the answer, so it comes after it (AC-1).
  * Server component: every client piece arrives as a component or a slot, and
@@ -63,10 +66,12 @@ export interface MissionDetailViewProps {
   situation?: ReactNode;
   delivery?: ReactNode;
   feed: Omit<MissionFeedListProps, 'missionId'>;
-  /** md+ only: the Timeline / Structure toggle. */
+  /** md+ only: the Timeline / Structure toggle, folded under the feed. */
   desktopList?: ReactNode;
-  /** Mobile-only footer rows (the md+ Timeline carries its own bookkeeping footer). */
-  mobileFooter?: ReactNode;
+  /** Open the Timeline / Structure disclosure (the URL names a view in it). */
+  desktopListOpen?: boolean;
+  /** The Orchestrator row (plans and ticks), at every width. */
+  orchestratorRow?: ReactNode;
   footer?: ReactNode;
 }
 
@@ -87,7 +92,8 @@ export default function MissionDetailView({
   delivery,
   feed,
   desktopList,
-  mobileFooter,
+  desktopListOpen = false,
+  orchestratorRow,
   footer,
 }: MissionDetailViewProps) {
   return (
@@ -104,8 +110,8 @@ export default function MissionDetailView({
           verified={verified}
           actions={actions}
           expand={expand ? <span className="md:hidden">{expand}</span> : undefined}
-          // At md+ the time-axis strip is the navigator; the rows this pulse
-          // focuses exist only in the mobile list.
+          // At md+ the time-axis strip is the navigator (its bars open the
+          // task sheet); a header pulse would only repeat it.
           pulseClassName="md:hidden"
           className="px-4 md:px-10"
         />
@@ -119,13 +125,23 @@ export default function MissionDetailView({
         {delivery}
       </div>
 
-      <div className="md:hidden">
+      <div data-testid="mission-feed-region" className="md:px-10">
         <MissionFeedList missionId={missionId} {...feed} />
       </div>
-      {desktopList && <div className="hidden px-10 pt-2 md:block">{desktopList}</div>}
+
+      {desktopList && (
+        <details data-testid="mission-secondary-views" open={desktopListOpen} className="group mx-10 mt-2 hidden border-t border-border-default md:block">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
+            <span aria-hidden="true" className="text-text-muted">─</span>
+            <span className="flex-1">Timeline · Structure</span>
+            <span aria-hidden="true" className="group-open:rotate-90">›</span>
+          </summary>
+          <div className="pb-4 pt-1">{desktopList}</div>
+        </details>
+      )}
 
       <div className="px-4 md:px-10">
-        {mobileFooter && <div className="md:hidden">{mobileFooter}</div>}
+        {orchestratorRow}
         {footer}
       </div>
     </div>

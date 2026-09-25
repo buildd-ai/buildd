@@ -53,6 +53,28 @@ describe('S3 retirements', () => {
     expect(src).toContain('MissionDelivery');
   });
 
+  it('F6: the mission page carries no workspace release queue and no Release now trigger', () => {
+    const src = readFileSync(PAGE, 'utf8');
+    expect(grep(['-w', 'ReleaseNowButton'])).toEqual([]);
+    expect(src).not.toContain('deriveReleaseNowState');
+    expect(src).not.toContain('vercel_token');
+    expect(src).toMatch(/rows=\{\{[\s\S]*?shipped:[\s\S]*?<MissionReleaseSection/);
+  });
+
+  it('F6: the Shipped link opens the release that carries this mission, not the workspace\'s latest', () => {
+    const src = readFileSync(PAGE, 'utf8');
+    expect(src).toContain('loadMissionCarryingReleaseId(');
+    expect(src).not.toMatch(/releaseId=\{releaseFooterData/);
+  });
+
+  it('the Delivery glyph colours have one definition, shared by every step row', () => {
+    for (const file of ['MissionDelivery.tsx', 'MissionReleaseSection.tsx']) {
+      const src = readFileSync(join(import.meta.dir, file), 'utf8');
+      expect(src).not.toMatch(/const STATE_TEXT\b/);
+      expect(src).toContain('DELIVERY_STATE_TEXT');
+    }
+  });
+
   it('the page no longer carries the Summary tab or its density switch', () => {
     const src = readFileSync(PAGE, 'utf8');
     expect(src).not.toContain('N_SMALL');
