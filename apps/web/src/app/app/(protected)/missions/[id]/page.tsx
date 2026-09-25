@@ -34,6 +34,7 @@ import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/conden
 import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
+import { pulseDoneCounts } from '@/lib/mission-pulse';
 import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
@@ -276,7 +277,7 @@ export default async function MissionDetailPage({
   const allTasksCount = (mission.tasks || []).filter(t => t.taskClass !== 'attempt').length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
-  const { totalTasks, completedTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
+  const { totalTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
   // Option A′: the mission integration PR is a different object from the task
   // PRs, and no progress counter sees it — `computeMissionProgress` counts
   // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
@@ -781,6 +782,7 @@ export default async function MissionDetailPage({
   const {
     feedTasks, pulseSegments, segmentLabels, pulseCaption, recordsCountByTask, liveLines,
   } = buildMissionFeedView(allTasks as unknown as MissionFeedViewTask[], { activeAgents, liveStatuses });
+  const feedCounts = pulseDoneCounts(pulseSegments);
   const renderedAt = Date.now();
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
@@ -883,8 +885,9 @@ export default async function MissionDetailPage({
     : null;
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
-    totalTasks,
-    completedTasks,
+    // F3: Integrated counts what the header pulse counts (`pulseDoneCounts`).
+    totalTasks: feedCounts.total,
+    completedTasks: feedCounts.done,
     awaitingMerge,
     integrationPr: missionIntegrationPr,
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
@@ -901,7 +904,7 @@ export default async function MissionDetailPage({
     durationLabel: durationLabel ? `${durationLabel} agent time` : null,
   });
 
-  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: totalTasks > 0 && completedTasks >= totalTasks }) && missionIntegrationPr ? (
+  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′) — the mission's review gate, and a
     // different object from the task PRs that fed the branch.
     <div className={`card p-3 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>

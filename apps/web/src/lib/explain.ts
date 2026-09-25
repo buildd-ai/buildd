@@ -32,6 +32,7 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
+import { missionCardProgress, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import {
   buildStateBecause,
@@ -289,10 +290,11 @@ async function viewForMission(missionId: string): Promise<{
     loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
   );
 
-  const completedDeliverables = deliverables.filter(t => t.status === 'completed').length;
-  const progress = deliverables.length > 0
-    ? Math.round((completedDeliverables / deliverables.length) * 100)
-    : undefined;
+  // The card's n/N (`missionCardProgress`): rows folded (D1), cancelled out of
+  // N, a completed task with an open PR not done. One definition, so the
+  // criteria gate below presents the same on the card and on this page.
+  const counted = missionCardProgress(loaded as unknown as MissionCardTaskRow[]);
+  const progress = counted.total > 0 ? counted.progress : undefined;
 
   const criteria = Array.isArray(m.goalCriteria) ? (m.goalCriteria as unknown[]) : [];
   const criteriaState = (m.goalCriteriaState ?? null) as
