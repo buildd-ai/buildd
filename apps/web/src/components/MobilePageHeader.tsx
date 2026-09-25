@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
 import UserAvatarMenu from './UserAvatarMenu';
@@ -36,14 +36,24 @@ export default function MobilePageHeader({
   const title = mobilePageTitle(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
   const bannersRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
   const bannerHeight = useElementHeight(bannersRef, title !== null);
+  const headerHeight = useElementHeight(headerRef, title !== null);
+
+  // Sticky bands inside <main> offset themselves by `--mobile-header-h` (e.g.
+  // GroupSection's `top-[var(--mobile-header-h,53px)]`). Banners don't count:
+  // the spacer already pushes <main> below them. 0 on desktop (header hidden)
+  // and on detail pages (no header).
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty('--mobile-header-h', `${headerHeight}px`);
+  }, [headerHeight]);
 
   // Only render the header on top-level pages (where the title resolves). Detail
   // pages (e.g. /app/missions/[id]) render their own headers; banners stay in flow.
   if (!title) return <>{banners}</>;
 
   const headerRow = (
-    <div data-testid="mobile-page-header" className="md:hidden flex items-center justify-between gap-2 px-4 py-1 bg-surface-2 border-b border-border-default">
+    <div ref={headerRef} data-testid="mobile-page-header" className="md:hidden flex items-center justify-between gap-2 px-4 py-1 bg-surface-2 border-b border-border-default">
       {/* Breadcrumb cluster: `Page · Team ⌄`, where the team segment is itself the
           switcher (turbopuffer/Vercel pattern) rather than a separate glyph in the
           right-hand cluster. Anchoring the menu here also keeps it on-screen. */}
@@ -93,7 +103,9 @@ export default function MobilePageHeader({
 /** Live offsetHeight of `ref` (0 until measured, or while `enabled` is false). */
 function useElementHeight(ref: RefObject<HTMLElement | null>, enabled: boolean): number {
   const [height, setHeight] = useState(0);
-  useEffect(() => {
+  // Layout effect: measured before paint, so the spacer and --mobile-header-h
+  // never show a frame at 0.
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!enabled || !el) {
       setHeight(0);
