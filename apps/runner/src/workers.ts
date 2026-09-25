@@ -2212,13 +2212,42 @@ export class WorkerManager {
    * race on the failure side.
    */
   private async isAlreadyTerminalOnServer(worker: LocalWorker): Promise<boolean> {
-    if (worker.status === 'done') return true;
+    return (await this.remoteSessionState(worker)).workerTerminal;
+  }
+
+  /**
+   * Same read as isAlreadyTerminalOnServer, plus whether the worker's TASK has
+   * been cancelled server-side. A cancel's abort push is best-effort, so a
+   * session can outlive its task; the MCP write fence then refuses the
+   * agent's complete_task, which makes a closing turn pointless.
+   */
+  private async remoteSessionState(worker: LocalWorker): Promise<{ workerTerminal: boolean; taskCancelled: boolean }> {
+    if (worker.status === 'done') return { workerTerminal: true, taskCancelled: false };
     try {
       const remote = await this.buildd.getWorkerRemote(worker.id);
-      return remote?.status === 'completed' || remote?.status === 'failed';
+      return {
+        workerTerminal: remote?.status === 'completed' || remote?.status === 'failed',
+        taskCancelled: remote?.task?.status === 'cancelled',
+      };
     } catch {
-      return false;
+      return { workerTerminal: false, taskCancelled: false };
     }
+  }
+
+  /**
+   * End a worker whose task was cancelled under its running session. Not an
+   * error: nothing about the work failed, the task simply stopped being
+   * wanted. Local status is `done` (the runner has no `cancelled` state);
+   * the server records it as exitCause `task_cancelled`.
+   */
+  private markCancelledUnderSession(worker: LocalWorker, detail: string): void {
+    console.log(`[Worker ${worker.id}] Task was cancelled while the session was running — ${detail}`);
+    sessionLog(worker.id, 'info', 'task_cancelled', detail, worker.taskId);
+    this.addMilestone(worker, { type: 'status', label: 'Task cancelled on server', ts: Date.now() });
+    worker.status = 'done';
+    worker.currentAction = 'Cancelled';
+    worker.hasNewActivity = true;
+    worker.completedAt = worker.completedAt || Date.now();
   }
 
   /**
@@ -4405,6 +4434,7 @@ export class WorkerManager {
         // authored or not — recursing a second time would turn a bounded
         // one-shot into an unbounded chain.
         let closingTurnOutcome: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}` | undefined;
+        let remoteState: { workerTerminal: boolean; taskCancelled: boolean } | undefined;
         if (isClosingTurn) {
           // Server state is the authority on whether complete_task landed —
           // so a closing turn that made the call and THEN ran out of turns
@@ -4422,9 +4452,15 @@ export class WorkerManager {
           // carries no structuredOutput — terminalising the worker without
           // the verdict and refusing this payload, which has it.
           closingTurnOutcome = 'skipped:structured_output';
-        } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
+        } else if (!(remoteState = await this.remoteSessionState(worker)).workerTerminal) {
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
-          if (!resumeId) {
+          if (remoteState.taskCancelled) {
+            // The task was cancelled under this session. A closing turn
+            // would only ask the agent to call complete_task, which the MCP
+            // write fence refuses for a cancelled task — a whole extra turn
+            // spent to be told TASK CANCELLED again.
+            closingTurnOutcome = 'skipped:task_cancelled';
+          } else if (!resumeId) {
             closingTurnOutcome = 'skipped:not_resumable';
           } else {
             sessionLog(worker.id, 'info', 'closing_turn_attempt', `resume=${resumeId}`, worker.taskId);
@@ -4627,7 +4663,7 @@ export class WorkerManager {
           backgroundAgentMs,
         };
         const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
-          { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
+          { abort?: boolean; actualStatus?: string; reason?: string; exitCause?: string | null } | null | undefined;
 
         // The server refused the status write because the row is ALREADY
         // terminal — the normal outcome when the agent called the buildd MCP
@@ -4642,6 +4678,12 @@ export class WorkerManager {
         // IT expired (stale cleanup / reassign / takeover).
         if (completionResult?.abort === true) {
           await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
+        }
+        // The task was cancelled under this session and the server recorded
+        // the completion as a cancellation rather than gating it — say so
+        // locally instead of reading as an ordinary completion.
+        if (completionResult?.exitCause === 'task_cancelled') {
+          this.markCancelledUnderSession(worker, 'completion recorded as task_cancelled');
         }
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
@@ -4687,8 +4729,10 @@ export class WorkerManager {
 
       // Before marking as failed, check if server already has this as completed.
       // This handles the race where complete_task succeeded but sync abort threw.
+      let remoteTaskCancelled = false;
       try {
         const remote = await this.buildd.getWorkerRemote(worker.id);
+        remoteTaskCancelled = remote?.task?.status === 'cancelled';
         if (remote?.status === 'completed') {
           console.log(`[Worker ${worker.id}] Server shows completed despite local error — honoring server state`);
           sessionLog(worker.id, 'info', 'session_reconciled', 'Server confirms completed, local error ignored', worker.taskId);
@@ -4722,6 +4766,25 @@ export class WorkerManager {
       // we already reported its terminal outcome, and re-running it would
       // spend a whole second session arguing with a decision the server has
       // already made. Same shape as the needs_input park above.
+      // A refusal of a session whose task was cancelled under it (e.g. the
+      // output gate asking for a PR the task no longer wants) is not a
+      // refusal of the work — report the cancellation, without the refusal
+      // flags that would book it as output_unmet / server_refused. The server
+      // classifies it task_cancelled from the task's own status.
+      if (refusal && remoteTaskCancelled) {
+        this.markCancelledUnderSession(worker, `server refused ${refusal.method} ${refusal.endpoint} (${refusal.gate ?? `HTTP ${refusal.status}`}) after the task was cancelled`);
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: 'Task was cancelled while the session was running',
+          ...this.terminalAttributionPayload(worker),
+        }).catch(err => {
+          console.error(`[Worker ${worker.id}] Failed to report cancellation:`, err);
+        });
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+        return;
+      }
+
       if (refusal) {
         await this.reportServerRefusal(worker, refusal);
         return;
