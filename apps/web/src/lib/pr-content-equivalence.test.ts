@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { normalizePatch, contentDiffSignature, isContentEquivalentHead } from './pr-content-equivalence';
+import { normalizePatch, isContentEquivalentHead } from './pr-content-equivalence';
 
 const file = (filename: string, patch: string | undefined, status = 'modified') => ({ filename, status, patch });
 
@@ -10,23 +10,6 @@ describe('normalizePatch', () => {
 
   it('keeps the changed lines themselves', () => {
     expect(normalizePatch('@@ -1 +1 @@\n-a\n+b')).not.toBe(normalizePatch('@@ -1 +1 @@\n-a\n+c'));
-  });
-});
-
-describe('contentDiffSignature', () => {
-  it('is order-independent across files', () => {
-    const a = [file('x.ts', '@@ -1 +1 @@\n+x'), file('y.ts', '@@ -1 +1 @@\n+y')];
-    expect(contentDiffSignature(a)).toBe(contentDiffSignature([...a].reverse()));
-  });
-
-  it('returns null when any file has no patch (binary or too large to verify)', () => {
-    expect(contentDiffSignature([file('logo.png', undefined, 'added')])).toBeNull();
-  });
-
-  it('distinguishes a file status change', () => {
-    expect(contentDiffSignature([file('x.ts', '@@ -1 +1 @@\n+x', 'added')])).not.toBe(
-      contentDiffSignature([file('x.ts', '@@ -1 +1 @@\n+x', 'modified')]),
-    );
   });
 });
 
@@ -71,6 +54,39 @@ describe('isContentEquivalentHead', () => {
   it('fails closed when the compare file list may be truncated', async () => {
     const many = Array.from({ length: 300 }, (_, i) => file(`f${i}.ts`, '@@ -1 +1 @@\n+x'));
     const { api } = apiReturning({ [BASE.fromSha]: { files: many }, [BASE.toSha]: { files: many } });
+    expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(false);
+  });
+
+  it('accepts a file with no patch when its blob is identical at both heads (large generated JSON)', async () => {
+    const snapshot = { filename: 'packages/core/drizzle/meta/0179_snapshot.json', status: 'added', sha: 'blob-1' };
+    const { api } = apiReturning({
+      [BASE.fromSha]: { files: [file('x.ts', '@@ -10,2 +10,3 @@\n a\n+b'), snapshot] },
+      [BASE.toSha]: { files: [file('x.ts', '@@ -14,2 +14,3 @@\n a\n+b'), snapshot] },
+    });
+    expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(true);
+  });
+
+  it('accepts a file whose blob is identical even if the patch text differs in context', async () => {
+    const { api } = apiReturning({
+      [BASE.fromSha]: { files: [{ ...file('x.ts', '@@ -1 +1 @@\n ctx-old\n+b'), sha: 'same' }] },
+      [BASE.toSha]: { files: [{ ...file('x.ts', '@@ -1 +1 @@\n ctx-new\n+b'), sha: 'same' }] },
+    });
+    expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(true);
+  });
+
+  it('rejects a patchless file whose blob changed', async () => {
+    const { api } = apiReturning({
+      [BASE.fromSha]: { files: [{ filename: 'big.json', status: 'added', sha: 'blob-1' }] },
+      [BASE.toSha]: { files: [{ filename: 'big.json', status: 'added', sha: 'blob-2' }] },
+    });
+    expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(false);
+  });
+
+  it('rejects when the set of files changed', async () => {
+    const { api } = apiReturning({
+      [BASE.fromSha]: { files: [file('x.ts', '@@ -1 +1 @@\n+b')] },
+      [BASE.toSha]: { files: [file('x.ts', '@@ -1 +1 @@\n+b'), file('y.ts', '@@ -1 +1 @@\n+y')] },
+    });
     expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(false);
   });
 
