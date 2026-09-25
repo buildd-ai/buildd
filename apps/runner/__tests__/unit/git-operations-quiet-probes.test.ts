@@ -93,6 +93,33 @@ describe('setupWorktree quiets expected-negative/positive git probes', () => {
     expect(stdio).toEqual(['pipe', 'pipe', 'pipe']);
   });
 
+  // A resume/base branch that was never pushed (or was deleted after merge)
+  // makes the existence probe throw `fatal: ambiguous argument
+  // 'origin/<default>..origin/<candidate>'` — an expected negative the
+  // resolver already handles (falls back and logs its own line). Inherited
+  // stderr put that fatal in the runner log on every such worker start.
+  test('the resume-branch existence probe (rev-list range) has stdio fully piped', async () => {
+    __setGitOpsDeps({
+      execSync: ((cmd: string, opts: Record<string, unknown>) => {
+        syncCalls.push({ cmd, opts });
+        if (cmd.includes('rev-list --count "origin/main..origin/')) {
+          const err: any = new Error("fatal: ambiguous argument 'origin/main..origin/buildd/gone'");
+          throw err;
+        }
+        return mockExecSync(cmd, opts);
+      }) as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+    await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1', { resumeBranch: 'buildd/gone' });
+    const stdio = stdioOf('rev-list --count "origin/main..origin/buildd/gone"');
+    expect(stdio).toEqual(['pipe', 'pipe', 'pipe']);
+  });
+
   test('a real worktree-add failure still carries its stderr text in the thrown error message', async () => {
     worktreeListOutput = '';
     __setGitOpsDeps({
