@@ -95,6 +95,10 @@ label-gated release-PR path.
 - **The app scrolls inside `<main>`, not the window.** A plain full-page screenshot
   stops at one viewport. `capture.ts` un-clips inner scroll containers first. Keep
   that behaviour if you take screenshots some other way.
+- **Fixed and sticky elements land mid-image in full-height shots.** The mobile
+  bottom nav is drawn where the first viewport ended, over whatever content is
+  there. That's how the shot was taken, not an overlap bug. Judge the first 844
+  CSS px (2532 image px at 3x) as the real first screen.
 - **The Next dev overlay is hidden by default**, so a build error doesn't cover the
   page. Set `QA_KEEP_DEV_OVERLAY=1` to see it. `captures.json` flags `devOverlay`
   either way.
