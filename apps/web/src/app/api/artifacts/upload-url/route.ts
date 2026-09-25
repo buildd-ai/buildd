@@ -5,8 +5,8 @@ import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
-import { buildArtifactKey } from '@/lib/storage-keys';
-import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
+import { buildArtifactKey, buildAuditScreenshotKey } from '@/lib/storage-keys';
+import { ARTIFACT_TYPES, ArtifactType, isArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 
 /**
@@ -127,7 +127,7 @@ export async function POST(req: NextRequest) {
   const linkedTask = worker.taskId
     ? await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        columns: { missionId: true },
+        columns: { missionId: true, roleSlug: true },
       })
     : null;
   const taskMissionId = linkedTask?.missionId ?? null;
@@ -141,10 +141,19 @@ export async function POST(req: NextRequest) {
   }
   const artifactMissionId = taskMissionId;
 
+  // A visual-auditor's screenshot goes to the qa/ area
+  // (docs/design/visual-qa-auditor.md, "Decay"): the prefix the lifecycle rule
+  // expires, and the marker share refusal and prominence read. The role is the
+  // worker's own task's, never the body's. The evidence check accepts this key
+  // shape exactly as it accepts the artifacts/ one (mintedByUploadUrl).
+  const isAuditShot = type === ArtifactType.SCREENSHOT && linkedTask?.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+
   const uuid = randomUUID();
   let storageKey: string;
   try {
-    storageKey = buildArtifactKey(worker.workspaceId, uuid, filename);
+    storageKey = isAuditShot
+      ? buildAuditScreenshotKey(worker.workspaceId, uuid, filename)
+      : buildArtifactKey(worker.workspaceId, uuid, filename);
   } catch {
     return NextResponse.json({ error: 'Unable to derive a storage key' }, { status: 400 });
   }
@@ -160,7 +169,7 @@ export async function POST(req: NextRequest) {
   const [artifact] = await db
     .insert(artifacts)
     .values({
-      // The row id IS the key's upload id (artifacts/<ws>/<id>/<name>). That
+      // The row id IS the key's upload id (artifacts|qa/<ws>/<id>/<name>). That
       // binds this row to the object only this route minted: a row written
       // elsewhere with a caller-chosen storageKey can't carry a matching id,
       // which is what the visual-audit evidence check relies on.

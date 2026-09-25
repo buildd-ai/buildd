@@ -6,6 +6,8 @@ import {
   buildArtifactKey,
   buildAttachmentKey,
   buildRoleConfigKey,
+  buildAuditScreenshotKey,
+  isAuditStorageKey,
   isOwnedStorageKey,
   assertNormalizedObjectKey,
 } from './storage-keys';
@@ -125,6 +127,25 @@ describe('key builders', () => {
     expect(() => buildRoleConfigKey('builder', '../escape')).toThrow();
   });
 
+  it('builds a fixed-depth audit screenshot key whose qa/ segment LEADS the key', () => {
+    // An R2 lifecycle rule matches a bucket-wide prefix, so the decay segment
+    // has to be the first one: `artifacts/<ws>/qa/...` could not be matched
+    // across workspaces.
+    const key = buildAuditScreenshotKey(ws, uploadId, 'tasks-mobile.png');
+    expect(key).toBe(`qa/${ws}/${uploadId}/tasks-mobile.png`);
+    expect(key.split('/')).toHaveLength(4);
+  });
+
+  it('keeps a traversal filename from escaping the qa prefix', () => {
+    for (const name of ['../../probe.png', 'a/b/c.png', '..']) {
+      const key = buildAuditScreenshotKey(ws, uploadId, name);
+      expect(key.split('/')).toHaveLength(4);
+      expect(key).not.toContain('..');
+      expect(key.startsWith(`qa/${ws}/`)).toBe(true);
+    }
+    expect(() => buildAuditScreenshotKey('../other', uploadId, 'a.png')).toThrow();
+  });
+
   it('builds a role config key from a validated slug and content hash', () => {
     const hash = 'a'.repeat(64);
     expect(buildRoleConfigKey('builder', hash)).toBe(`roles/builder/${hash}.json`);
@@ -174,6 +195,11 @@ describe('isOwnedStorageKey', () => {
   it('accepts keys this workspace owns', () => {
     expect(isOwnedStorageKey(`attachments/${ws}/u1/a.png`, ws)).toBe(true);
     expect(isOwnedStorageKey(`artifacts/${ws}/u1/a.png`, ws)).toBe(true);
+  });
+
+  it('accepts an audit screenshot key for its own workspace only', () => {
+    expect(isOwnedStorageKey(`qa/${ws}/u1/a.png`, ws)).toBe(true);
+    expect(isOwnedStorageKey('qa/ws-2/u1/a.png', ws)).toBe(false);
   });
 
   it('rejects keys belonging to another workspace', () => {
@@ -230,5 +256,47 @@ describe('isArtifactKeyForUpload', () => {
     expect(isArtifactKeyForUpload('artifacts/ws-1/up-1/x/s.png', 'ws-1', 'up-1')).toBe(false);
     expect(isArtifactKeyForUpload('artifacts/ws-1/up-1/', 'ws-1', 'up-1')).toBe(false);
     expect(isArtifactKeyForUpload(null, 'ws-1', 'up-1')).toBe(false);
+  });
+});
+
+describe('isAuditStorageKey', () => {
+  it('is true for a key the audit builder produced', () => {
+    expect(isAuditStorageKey(buildAuditScreenshotKey('ws-1', 'u1', 'a.png'))).toBe(true);
+  });
+
+  it('is false for other tenant areas, including a qa segment that does not lead', () => {
+    expect(isAuditStorageKey(buildArtifactKey('ws-1', 'u1', 'a.png'))).toBe(false);
+    expect(isAuditStorageKey('artifacts/ws-1/qa/a.png')).toBe(false);
+    expect(isAuditStorageKey('qa')).toBe(false);
+  });
+
+  it('is false for a malformed key and for non-strings', () => {
+    expect(isAuditStorageKey('qa/../artifacts/ws-1/a.png')).toBe(false);
+    expect(isAuditStorageKey('/qa/ws-1/u1/a.png')).toBe(false);
+    expect(isAuditStorageKey(null)).toBe(false);
+    expect(isAuditStorageKey(undefined)).toBe(false);
+    expect(isAuditStorageKey(42)).toBe(false);
+  });
+});
+
+describe('isAuditScreenshotKeyForUpload', () => {
+  it('matches the key buildAuditScreenshotKey mints for that workspace and upload id', async () => {
+    const { isAuditScreenshotKeyForUpload } = await import('./storage-keys');
+    expect(isAuditScreenshotKeyForUpload(buildAuditScreenshotKey('ws-1', 'up-1', 'shot.png'), 'ws-1', 'up-1')).toBe(true);
+  });
+  it('rejects another upload id, another workspace, the artifacts area, extra depth, an empty or dot name and non-strings', async () => {
+    const { isAuditScreenshotKeyForUpload } = await import('./storage-keys');
+    expect(isAuditScreenshotKeyForUpload('qa/ws-1/up-1/s.png', 'ws-1', 'up-2')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload('qa/ws-1/up-1/s.png', 'ws-2', 'up-1')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload('artifacts/ws-1/up-1/s.png', 'ws-1', 'up-1')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload('qa/ws-1/up-1/x/s.png', 'ws-1', 'up-1')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload('qa/ws-1/up-1/', 'ws-1', 'up-1')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload('qa/ws-1/up-1/..', 'ws-1', 'up-1')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload(null, 'ws-1', 'up-1')).toBe(false);
+    expect(isAuditScreenshotKeyForUpload('qa/ws-1/up-1/s.png', null, 'up-1')).toBe(false);
+  });
+  it('keeps isArtifactKeyForUpload to the artifacts area', async () => {
+    const { isArtifactKeyForUpload } = await import('./storage-keys');
+    expect(isArtifactKeyForUpload('qa/ws-1/up-1/s.png', 'ws-1', 'up-1')).toBe(false);
   });
 });

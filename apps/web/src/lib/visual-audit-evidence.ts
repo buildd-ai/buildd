@@ -25,22 +25,32 @@ import { db } from '@buildd/core/db';
 import { artifacts, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
-import { isArtifactKeyForUpload } from '@/lib/storage-keys';
+import { isArtifactKeyForUpload, isAuditScreenshotKeyForUpload } from '@/lib/storage-keys';
 import { isSurfaceFixTask } from '@buildd/core/surface-audit';
-import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import {
+  QA_VIEWPORTS,
+  QA_VERDICTS,
+  qaRouteSatisfies,
+  type QaViewport,
+  type QaVerdict,
+} from '@/lib/mission-visual-review';
 
-export const VISUAL_QA_VIEWPORTS = ['mobile', 'desktop'] as const;
-export type VisualQaViewport = (typeof VISUAL_QA_VIEWPORTS)[number];
-export const VISUAL_QA_VERDICTS = ['ok', 'issue', 'unsure'] as const;
-export type VisualQaVerdict = (typeof VISUAL_QA_VERDICTS)[number];
+// One vocabulary with the mission page's Visual review strip (pure, client-safe).
+export {
+  QA_VIEWPORTS as VISUAL_QA_VIEWPORTS,
+  QA_VERDICTS as VISUAL_QA_VERDICTS,
+  type QaViewport as VisualQaViewport,
+  type QaVerdict as VisualQaVerdict,
+};
 
 export interface QaMeta {
   runKey: string | null;
   route: string;
-  viewport: VisualQaViewport;
+  viewport: QaViewport;
   /** Trimmed; may be empty, which the check reports rather than drops. */
   finding: string;
-  verdict: VisualQaVerdict;
+  verdict: QaVerdict;
   fixTaskId: string | null;
 }
 
@@ -76,48 +86,34 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
   if (!isRecord(metadata) || !isRecord(metadata.qa)) return null;
   const qa = metadata.qa;
   if (typeof qa.route !== 'string' || !qa.route.startsWith('/')) return null;
-  if (!VISUAL_QA_VIEWPORTS.includes(qa.viewport as VisualQaViewport)) return null;
-  if (!VISUAL_QA_VERDICTS.includes(qa.verdict as VisualQaVerdict)) return null;
+  if (!QA_VIEWPORTS.includes(qa.viewport as QaViewport)) return null;
+  if (!QA_VERDICTS.includes(qa.verdict as QaVerdict)) return null;
   return {
     runKey: typeof qa.runKey === 'string' ? qa.runKey : null,
     route: qa.route,
-    viewport: qa.viewport as VisualQaViewport,
+    viewport: qa.viewport as QaViewport,
     finding: typeof qa.finding === 'string' ? qa.finding.trim() : '',
-    verdict: qa.verdict as VisualQaVerdict,
+    verdict: qa.verdict as QaVerdict,
     fixTaskId: typeof qa.fixTaskId === 'string' ? qa.fixTaskId : null,
   };
-}
-
-/**
- * Does a recorded route satisfy a required one? Exact match, or a concrete
- * URL matching the pattern (`:x` = one segment, `:x*` = the rest).
- */
-function routeSatisfies(required: string, recorded: string): boolean {
-  if (required === recorded) return true;
-  const pattern = required
-    .split('/')
-    .map((seg) => {
-      if (/^:[^/]+\*$/.test(seg)) return '.+';
-      if (seg.startsWith(':')) return '[^/]+';
-      return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    })
-    .join('/');
-  return new RegExp(`^${pattern}$`).test(recorded);
 }
 
 /**
  * Was this row's object minted for this row by POST /api/artifacts/upload-url?
  *
  * upload-url inserts the row with id = the key's upload id, so its key is
- * exactly buildArtifactKey(workspaceId, row id, name). Nothing else produces
- * that shape: create_artifact takes a caller-chosen storageKey but its row id is a
+ * exactly buildArtifactKey(workspaceId, row id, name), or, for a
+ * visual-auditor's screenshot, buildAuditScreenshotKey(workspaceId, row id,
+ * name). Both shapes are accepted; any other key is not. Nothing else produces
+ * either shape: create_artifact takes a caller-chosen storageKey but its row id is a
  * fresh default the caller can't predict, and PATCH /api/artifacts/[id] can't
  * change storageKey. So one uploaded image (a sibling's, an old run's, or one
  * of this worker's own) can't back many route × viewport rows. Row ids are
  * unique, so the counting keys are distinct by construction.
  */
 export function mintedByUploadUrl(shot: { id: string; storageKey: string | null }, workspaceId: string): boolean {
-  return isArtifactKeyForUpload(shot.storageKey, workspaceId, shot.id);
+  return isArtifactKeyForUpload(shot.storageKey, workspaceId, shot.id)
+    || isAuditScreenshotKeyForUpload(shot.storageKey, workspaceId, shot.id);
 }
 
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -190,8 +186,8 @@ export function evaluateVisualAuditEvidence(input: {
     missing.push('(no screenshots) any route @ mobile', '(no screenshots) any route @ desktop');
   }
   for (const route of routes) {
-    for (const viewport of VISUAL_QA_VIEWPORTS) {
-      if (!counting.some((q) => q.viewport === viewport && routeSatisfies(route, q.route))) {
+    for (const viewport of QA_VIEWPORTS) {
+      if (!counting.some((q) => q.viewport === viewport && qaRouteSatisfies(route, q.route))) {
         missing.push(`${route} @ ${viewport}`);
       }
     }
@@ -268,14 +264,7 @@ export async function loadVisualAuditEvidence(opts: {
   const depRows = deps.length > 0
     ? await db.query.tasks.findMany({ where: inArray(tasks.id, deps), columns: { pathManifest: true } })
     : [];
-  const paths = depRows
-    .flatMap((t) => (Array.isArray(t.pathManifest) ? t.pathManifest : []))
-    .filter((p): p is string => typeof p === 'string' && p !== '**');
-  const ctx = isRecord(task?.context) ? task!.context : {};
-  const frozen = isRecord(ctx.visualQa) && Array.isArray(ctx.visualQa.requiredRoutes)
-    ? (ctx.visualQa.requiredRoutes as unknown[]).filter((r): r is string => typeof r === 'string' && r.startsWith('/'))
-    : [];
-  const requiredRoutes = [...new Set([...visualQaRequiredRoutes(paths), ...frozen])].sort();
+  const requiredRoutes = auditRequiredRoutes({ context: task?.context }, depRows.map((t) => t.pathManifest));
 
   // THIS worker's screenshots only. Unlike hasDeliverableArtifact there is no
   // mission-artifact arm: a sibling's shot must never satisfy the audit.

@@ -66,6 +66,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  like: (field: any, value: any) => ({ field, value, type: 'like' }),
   sql: (strings: TemplateStringsArray) => ({ strings, type: 'sql' }),
 }));
 
@@ -82,6 +83,8 @@ mock.module('@buildd/core/db/schema', () => ({
     visibility: 'visibility',
     missionId: 'missionId',
     initiativeId: 'initiativeId',
+    storageKey: 'storageKey',
+    metadata: 'metadata',
   },
   workers: { id: 'id', workspaceId: 'workspaceId' },
 }));

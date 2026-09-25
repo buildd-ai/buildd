@@ -88,6 +88,14 @@ describe('DEFAULT_ROLES', () => {
       expect(boot).toMatch(/do not (mark|fail|complete)/i);
       expect(boot).toMatch(/do not use\s+`post_note`/i);
     });
+
+    // The mission page's Visual review turns "blocked" by matching this
+    // question prefix on the parked worker (auditBootFailed).
+    it('prompt asks the exact boot-failure question the Visual review step detects', async () => {
+      const { BOOT_FAILURE_QUESTION_PREFIX } = await import('./mission-visual-review');
+      const c = role().content.replace(/\s+/g, ' ');
+      expect(c).toContain(`question "${BOOT_FAILURE_QUESTION_PREFIX}:`);
+    });
   });
 
   it('Organizer defaults to Sonnet (router upshifts to Opus for complex coordination)', () => {

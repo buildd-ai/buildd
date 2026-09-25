@@ -20,8 +20,10 @@
  *
  * Pure: no `db` import. The page runs the queries.
  */
-import { sql, eq, type SQL } from 'drizzle-orm';
-import { tasks } from '@buildd/core/db/schema';
+import { sql, eq, and, type SQL } from 'drizzle-orm';
+import { artifacts, tasks, workers } from '@buildd/core/db/schema';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
+import { ArtifactType } from '@buildd/shared';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -122,6 +124,44 @@ export const MISSION_DETAIL_WITH = {
   schedule: true,
 } as const;
 
+// ── The visual review shots ─────────────────────────────────────────────────
+
+/**
+ * Audit screenshots for the Visual review step (docs/design/visual-qa-auditor.md,
+ * "Where the screenshots show"). A dedicated query, because the with-tree above
+ * keeps five artifacts per worker and would cut a 40-shot run to five. Keyed on
+ * `artifacts.mission_id`, which upload-url sets for an auditor's uploads.
+ */
+export const MISSION_VISUAL_SHOT_COLUMNS = {
+  id: true,
+  workerId: true,
+  type: true,
+  metadata: true,
+  createdAt: true,
+} as const;
+
+/** Newest first: 40 shots a run (20 routes × 2 viewports) × up to three runs. */
+export const MISSION_VISUAL_SHOTS_LIMIT = 120;
+
+/** Newest first. With the limit above, ascending would keep the oldest runs and cut the newest. */
+export const MISSION_VISUAL_SHOTS_ORDER = (
+  a: { createdAt: typeof artifacts.createdAt },
+  { desc }: { desc: (c: typeof artifacts.createdAt) => SQL },
+) => [desc(a.createdAt)];
+
+/**
+ * Only the auditor's shots are evidence. Any worker on the mission can upload
+ * a screenshot with a hand-made `metadata.qa`, so the rows are limited to
+ * workers of this mission's `visual-auditor` tasks.
+ */
+export const missionVisualShotsWhere = (missionId: string): SQL =>
+  and(
+    eq(artifacts.missionId, missionId),
+    eq(artifacts.type, ArtifactType.SCREENSHOT),
+    sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
+    sql`${artifacts.workerId} in (select ${workers.id} from ${workers} inner join ${tasks} on ${tasks.id} = ${workers.taskId} where ${tasks.missionId} = ${missionId} and ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG})`,
+  )!;
+
 // ── The digest query ─────────────────────────────────────────────────────────
 
 /**
@@ -135,7 +175,8 @@ export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary'] as const;
 /**
  * `tasks.context` keys the attempt strip reads (`attemptKind`,
  * `deriveTaskOrigin`, the iteration counters in `attempt-strip.ts`), plus
- * `failureContext.errorType` for the failure reason.
+ * `failureContext.errorType` for the failure reason, plus `visualQa` for the
+ * Visual review's required routes.
  */
 export const CONTEXT_DIGEST_KEYS = [
   'driftDiagnosis',
@@ -148,6 +189,9 @@ export const CONTEXT_DIGEST_KEYS = [
   'prNumber',
   'prUrl',
   'ciRunUrl',
+  // Visual review n/m coverage: the round-2 planner's frozen
+  // visualQa.requiredRoutes (auditRequiredRoutes). Small: a route list.
+  'visualQa',
 ] as const;
 export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
 
