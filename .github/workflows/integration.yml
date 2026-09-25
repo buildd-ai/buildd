@@ -105,12 +105,21 @@ jobs:
             if [ -n "$ENDPOINT_ID" ]; then
               # Get connection URI from the endpoint's connection_uri API. The endpoint can
               # still be provisioning right after branch creation, so a non-2xx response here
-              # is expected — `|| true` keeps it from aborting the step (bash -e) and falls
-              # through to the manual-construction fallback below instead.
-              CONN_RESPONSE=$(curl -sf \
+              # is expected — log the status for diagnostics, then fall through to the
+              # manual-construction fallback below instead.
+              # Note: role_name is required by the endpoint to resolve the connection URI.
+              CONN_RESPONSE=$(curl -s -w "\n%{http_code}" \
                 -H "Authorization: Bearer $NEON_API_KEY" \
-                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb" || true)
-              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty' 2>/dev/null || true)
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb&role_name=$NEON_DB_USER" || true)
+              HTTP_CODE=$(echo "$CONN_RESPONSE" | tail -1)
+              CONN_BODY=$(echo "$CONN_RESPONSE" | head -n -1)
+              if [ "$HTTP_CODE" != "200" ] && [ -n "$HTTP_CODE" ]; then
+                echo "::warning::connection_uri request failed with HTTP status $HTTP_CODE"
+                MSG=$(echo "$CONN_BODY" | jq -r '.message // empty' 2>/dev/null)
+                [ -n "$MSG" ] && echo "  Error details: $MSG"
+              else
+                CONNECTION_URI=$(echo "$CONN_BODY" | jq -r '.uri // empty' 2>/dev/null || true)
+              fi
             fi
           fi
 
