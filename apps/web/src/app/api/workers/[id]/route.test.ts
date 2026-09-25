@@ -9858,6 +9858,74 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  // ── Visual auditor: an audit that errors must hold its mission ──────────────
+  // A failed task is terminal in mission-completion and RELEASES the mission.
+  // A visual-auditor task that died before it could park a question has seen
+  // nothing, so once its retries are spent it is recorded infra_stalled, which
+  // canCompleteMission blocks on (docs/design/visual-qa-auditor.md).
+  describe('visual-auditor failure holds the mission', () => {
+    function setupAuditFailure(task: Record<string, unknown>) {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: 'mission-1',
+        outputRequirement: 'artifact_required', roleSlug: 'visual-auditor', context: {}, ...task,
+      });
+      return { taskSetCalls };
+    }
+    const fail = () => PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'failed', error: 'playwright: browser closed unexpectedly' },
+    }), { params: mockParams });
+
+    it('first failure still takes the ordinary mission retry', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: {} });
+      await fail();
+      expect(taskSetCalls.find((c: any) => c.status === 'pending')?.context?.retryCount).toBe(1);
+      expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+    });
+
+    it('once retries are spent, the audit fails as infra_stalled, not as a plain failure', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: { retryCount: 1 } });
+      const res = await fail();
+      expect(res.status).toBe(200);
+      const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+      expect(failing).toBeDefined();
+      expect(failing.result.errorType).toBe('infra_stalled');
+      expect(failing.result.error).toContain('Visual audit');
+      expect(failing.result.error).toContain('browser closed unexpectedly');
+    });
+
+    it('a builder task failing the same way stays a plain failure', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: { retryCount: 1 }, roleSlug: 'builder' });
+      await fail();
+      const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+      expect(failing).toBeDefined();
+      expect(failing.result?.errorType).toBeUndefined();
+    });
+
+    it('an audit outside a mission has nothing to hold and stays a plain failure', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: {}, missionId: null });
+      await fail();
+      const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+      expect(failing?.result?.errorType).toBeUndefined();
+    });
+  });
+
   // ── Cancelled-task protection ────────────────────────────────────────────────
   // Regression: a cancelled task's in-flight worker can send a final PATCH after
   // the cancel, which previously reset the task to 'pending' via auto-retry,

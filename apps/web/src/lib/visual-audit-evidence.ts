@@ -26,6 +26,7 @@ import { artifacts, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
 import { isArtifactKeyForUpload } from '@/lib/storage-keys';
+import { isSurfaceFixTask } from '@buildd/core/surface-audit';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 
 export const VISUAL_QA_VIEWPORTS = ['mobile', 'desktop'] as const;
@@ -119,7 +120,6 @@ export function mintedByUploadUrl(shot: { id: string; storageKey: string | null 
   return isArtifactKeyForUpload(shot.storageKey, workspaceId, shot.id);
 }
 
-export const SURFACE_FIX_TITLE_PREFIX = '[surface fix]';
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 /**
@@ -145,7 +145,7 @@ export function eligibleFixTaskIds(
   const ok = new Set<string>();
   for (const r of rows) {
     if (excluded.has(r.id)) continue;
-    if (!(r.title ?? '').trimStart().toLowerCase().startsWith(SURFACE_FIX_TITLE_PREFIX)) continue;
+    if (!isSurfaceFixTask(r.title)) continue;
     const open = !TERMINAL_TASK_STATUSES.has(r.status ?? '');
     const createdThisRun = started !== null && r.createdAt !== null && new Date(r.createdAt).getTime() >= started;
     if (open || createdThisRun) ok.add(r.id);
