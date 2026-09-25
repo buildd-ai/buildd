@@ -133,7 +133,7 @@ export default async function ReleaseDetailPage({
   });
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-3xl">
+    <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8 max-w-3xl">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-[11px] font-mono text-text-muted mb-4">
         <Link href="/app/missions" className="hover:text-text-secondary transition-colors">Missions</Link>

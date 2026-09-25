@@ -114,8 +114,12 @@ describe('board encoding consistency across FlightStrip and FlightDetailSheet', 
     expect(cardHtml).toContain(`>${data.phases[0].label}<`);
     for (const [i, phase] of data.phases.entries()) {
       if (i > 0 && cardHtml.includes(`>${phase.label}<`)) throw new Error(`phase ${phase.label} lost its idle prefix`);
-      expect(sheetHtml).toContain(`>${phase.label}`);
     }
+    // The sheet culls colliding axis labels the same way (D4), so it too is
+    // judged by dividers; its first phase label always survives.
+    const sheetDividers = sheetHtml.match(/stroke-dasharray="2 2"/g) ?? [];
+    expect(sheetDividers).toHaveLength(data.phases.length - 1);
+    expect(sheetHtml).toContain(`>${data.phases[0].label}<`);
   });
 
   it('the now-line is absent on both surfaces once the mission has completed', () => {

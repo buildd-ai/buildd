@@ -54,24 +54,24 @@ function render(open: boolean) {
   });
 }
 
-const openLink = () => container.querySelector('[data-testid="flight-detail-open-mission"]') as HTMLAnchorElement;
+const openLink = () => document.body.querySelector('[data-testid="flight-detail-open-mission"]') as HTMLAnchorElement;
 
 describe('FlightDetailSheet (mounted)', () => {
   it('a selection does not survive closing and reopening the sheet', () => {
     render(true);
-    const bar = container.querySelector('[data-testid="flight-detail-bar"][data-task-id="a"]') as Element;
+    const bar = document.body.querySelector('[data-testid="flight-detail-bar"][data-task-id="a"]') as Element;
     act(() => { bar.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     expect(openLink().getAttribute('href')).toBe('/app/missions/m1?from=home&task=a');
 
     render(false);
     render(true);
     expect(openLink().getAttribute('href')).toBe('/app/missions/m1?from=home');
-    expect(container.querySelector('[aria-pressed="true"]')).toBeNull();
+    expect(document.body.querySelector('[aria-pressed="true"]')).toBeNull();
   });
 
   it('every bar target hit-tests its whole band, including hollow queued bars', () => {
     render(true);
-    const targets = [...container.querySelectorAll('[data-testid="flight-detail-bar"]')];
+    const targets = [...document.body.querySelectorAll('[data-testid="flight-detail-bar"]')];
     expect(targets.length).toBeGreaterThanOrEqual(2);
     for (const t of targets) {
       expect(t.getAttribute('pointer-events')).toBe('all');
@@ -82,7 +82,36 @@ describe('FlightDetailSheet (mounted)', () => {
 
   it('a bar is labelled with its task title', () => {
     render(true);
-    const bar = container.querySelector('[data-testid="flight-detail-bar"][data-task-id="b"]') as Element;
+    const bar = document.body.querySelector('[data-testid="flight-detail-bar"][data-task-id="b"]') as Element;
     expect(bar.getAttribute('aria-label')).toContain('Check the lease');
+  });
+
+  // The sheet is opened from inside the sticky mission masthead (its own z-20
+  // stacking context), so a fixed z-50 sheet rendered in place still paints
+  // under the fixed bottom nav. It must escape to <body>.
+  it('portals the dialog to document.body, outside the trigger subtree', () => {
+    render(true);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const dialog = document.body.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog).not.toBeNull();
+    expect(dialog.parentElement).toBe(document.body);
+  });
+
+  it('removes the portalled dialog when closed', () => {
+    render(true);
+    render(false);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // A flex column with max-h + overflow shrinks its children to fit instead of
+  // scrolling: the chart squashed and the two-line title clipped on a phone.
+  it('the scrolling panel does not shrink its children to fit', () => {
+    render(true);
+    const panel = document.body.querySelector('[data-testid="flight-detail-panel"]') as HTMLElement;
+    expect(panel).not.toBeNull();
+    const cls = panel.className.split(/\s+/);
+    expect(cls).toContain('overflow-y-auto');
+    const shrinkingFlexColumn = cls.includes('flex-col') && ![...panel.children].every(c => c.classList.contains('shrink-0'));
+    expect(shrinkingFlexColumn).toBe(false);
   });
 });

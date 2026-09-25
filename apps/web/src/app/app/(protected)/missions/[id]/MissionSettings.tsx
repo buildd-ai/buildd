@@ -365,7 +365,7 @@ export default function MissionSettings({
           question. */}
       {!isTerminal && (
         <details data-testid="mission-capability-menu" className="group">
-          <summary className="cursor-pointer list-none text-[11px] text-text-muted hover:text-text-secondary transition-colors select-none">
+          <summary className="inline-flex min-h-11 items-center gap-1 md:min-h-0 cursor-pointer list-none text-[11px] text-text-muted hover:text-text-secondary transition-colors select-none">
             <span className="inline-block transition-transform group-open:rotate-90">›</span> More actions
           </summary>
           <div className="mt-2 flex items-center gap-2 flex-wrap">
@@ -376,7 +376,7 @@ export default function MissionSettings({
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
                   title="Tick the orchestrator now instead of waiting for the schedule"
-                  className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
                 >
                   {manualRunLoading ? '…' : 'Plan now'}
                 </button>
@@ -391,7 +391,7 @@ export default function MissionSettings({
                 <button
                   onClick={handleToggleOrchestrationMode}
                   disabled={modeLoading}
-                  className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
                   title="Stop the orchestrator from ticking itself; you drive it with Plan now"
                 >
                   {modeLoading ? '…' : 'Disarm'}
@@ -404,7 +404,7 @@ export default function MissionSettings({
             {!editingCron && (
               <button
                 onClick={() => setEditingCron(true)}
-                className="text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+                className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
               >
                 {cronExpression ? 'Edit schedule' : 'Add schedule'}
               </button>
@@ -418,7 +418,7 @@ export default function MissionSettings({
                 <button
                   onClick={() => handleStatusChange('completed')}
                   disabled={statusLoading}
-                  className="text-[11px] text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
                 >
                   Complete
                 </button>
@@ -430,7 +430,7 @@ export default function MissionSettings({
             {!deleteConfirm ? (
               <button
                 onClick={() => setDeleteConfirm(true)}
-                className="text-[11px] text-status-error/50 hover:text-status-error transition-colors"
+                className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-error/50 hover:text-status-error transition-colors"
               >
                 Delete
               </button>
@@ -440,13 +440,13 @@ export default function MissionSettings({
                 <button
                   onClick={handleDelete}
                   disabled={deleteLoading}
-                  className="px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
                 >
                   {deleteLoading ? '…' : 'Delete'}
                 </button>
                 <button
                   onClick={() => setDeleteConfirm(false)}
-                  className="text-[10px] text-text-secondary hover:text-text-primary"
+                  className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[10px] text-text-secondary hover:text-text-primary"
                 >
                   No
                 </button>
@@ -461,15 +461,15 @@ export default function MissionSettings({
         <div className="flex items-center gap-3">
           <span className="text-[12px] text-text-muted">Archived</span>
           {!deleteConfirm ? (
-            <button onClick={() => setDeleteConfirm(true)} className="text-[11px] text-status-error/60 hover:text-status-error transition-colors">
+            <button onClick={() => setDeleteConfirm(true)} className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-error/60 hover:text-status-error transition-colors">
               Delete
             </button>
           ) : (
             <span className="flex items-center gap-1">
-              <button onClick={handleDelete} disabled={deleteLoading} className="px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
+              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
                 {deleteLoading ? '…' : 'Delete'}
               </button>
-              <button onClick={() => setDeleteConfirm(false)} className="text-[10px] text-text-secondary">No</button>
+              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[10px] text-text-secondary">No</button>
             </span>
           )}
         </div>
@@ -481,20 +481,20 @@ export default function MissionSettings({
           <button
             onClick={() => handleStatusChange('archived')}
             disabled={statusLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 min-h-11 md:min-h-0 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
           >
             Archive
           </button>
           {!deleteConfirm ? (
-            <button onClick={() => setDeleteConfirm(true)} className="text-[11px] text-status-error/60 hover:text-status-error transition-colors">
+            <button onClick={() => setDeleteConfirm(true)} className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-status-error/60 hover:text-status-error transition-colors">
               Delete
             </button>
           ) : (
             <span className="flex items-center gap-1">
-              <button onClick={handleDelete} disabled={deleteLoading} className="px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
+              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
                 {deleteLoading ? '…' : 'Delete'}
               </button>
-              <button onClick={() => setDeleteConfirm(false)} className="text-[10px] text-text-secondary">No</button>
+              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[10px] text-text-secondary">No</button>
             </span>
           )}
         </div>
@@ -547,7 +547,7 @@ export default function MissionSettings({
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
                 placeholder="Add a task to this mission…"
-                className="flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
+                className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
               <button
                 type="submit"

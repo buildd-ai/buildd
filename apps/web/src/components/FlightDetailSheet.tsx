@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import type { MissionFlightStripData, FlightStripBar, WorkLane } from '@buildd/core/mission-helpers';
 import {
@@ -13,6 +14,7 @@ import {
   FLIGHT_STRIP_TRACK_BG,
   FLIGHT_STRIP_LABEL_COLOR,
   FLIGHT_STRIP_NOW_COLOR,
+  cullAxisLabels,
 } from './FlightStrip';
 import { computeFlightDetailStats, describeSteeringPattern, formatFlightDuration } from '@/lib/flight-detail-stats';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
@@ -34,6 +36,35 @@ const MIN_BAR_W = 2;
 /** A bar's hit target: its whole row band plus most of the gap, and never thinner than this. */
 const HIT_MIN_W = 12;
 const HIT_PAD_Y = 6;
+const AXIS_FONT = 9;
+
+/**
+ * Indexes of the phase labels that fit on the x-axis without touching each
+ * other or the right-aligned duration label — the same collision cull the
+ * card strip uses (addendum D4: labels never overlap; an unlabelled gap is
+ * fine). A many-phase mission used to print "P8P9P1016m" in a heap. The
+ * duration always wins, then the first phase; dividers are unaffected.
+ */
+export function visiblePhaseLabels(
+  phases: ReadonlyArray<{ label: string; position: number }>,
+  width: number,
+  durationLabel: string,
+): number[] {
+  const kept = cullAxisLabels(
+    [
+      ...phases.map((phase, i) => ({
+        id: String(i),
+        x: i === 0 ? 0 : phase.position * width,
+        text: phase.label,
+        priority: i === 0 ? 2 : 1,
+        anchor: 'start' as const,
+      })),
+      { id: 'duration', x: width, text: durationLabel, priority: 3, anchor: 'end' as const },
+    ],
+    { minX: 0, maxX: width, fontSize: AXIS_FONT },
+  );
+  return kept.filter(l => l.id !== 'duration').map(l => Number(l.id));
+}
 
 type LaneKey = WorkLane | 'unclassified' | 'unlabelled';
 
@@ -109,6 +140,9 @@ function ExpandedFlightStrip({
     if (!barsByLane.has(key)) barsByLane.set(key, []);
     barsByLane.get(key)!.push(bar);
   }
+
+  const durationLabel = formatFlightDuration(agentTimeMs);
+  const shownPhaseLabels = new Set(visiblePhaseLabels(data.phases, workW, durationLabel));
 
   const activeBarCount = data.bars.filter(b => !b.dashed).length;
   const ariaLabel = [
@@ -249,19 +283,19 @@ function ExpandedFlightStrip({
       ))}
 
       <line x1={0} y1={baseline} x2={workW} y2={baseline} stroke={FLIGHT_STRIP_DIVIDER_STROKE} strokeWidth={1} />
-      {data.phases.map((phase, i) => (
+      {data.phases.map((phase, i) => shownPhaseLabels.has(i) && (
         <text
           key={phase.label}
           x={i === 0 ? 0 : position(phase.position)}
           y={baseline + PHASE_LABEL_H - 2}
-          fontSize={9}
+          fontSize={AXIS_FONT}
           fill={FLIGHT_STRIP_LABEL_COLOR}
         >
           {phase.label}
         </text>
       ))}
-      <text x={workW} y={baseline + PHASE_LABEL_H - 2} fontSize={9} fill={FLIGHT_STRIP_LABEL_COLOR} textAnchor="end">
-        {formatFlightDuration(agentTimeMs)}
+      <text x={workW} y={baseline + PHASE_LABEL_H - 2} fontSize={AXIS_FONT} fill={FLIGHT_STRIP_LABEL_COLOR} textAnchor="end">
+        {durationLabel}
       </text>
     </svg>
   );
@@ -352,11 +386,15 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
     : `/app/missions/${encodeURIComponent(missionId)}${from ? `?from=${encodeURIComponent(from)}` : ''}`;
   const summary = describeSteeringPattern(data);
 
-  return (
+  const sheet = (
     <div className="fixed inset-0 z-50" aria-modal="true" role="dialog" aria-labelledby={headingId} onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
+      {/* Block layout, not a flex column: with max-h + overflow a flex column
+          shrinks its children to fit (the chart squashed, the title clipped)
+          instead of scrolling. */}
       <div
-        className="absolute bottom-0 left-0 right-0 bg-surface-2 border-t-2 border-border-strong px-4 pt-3 pb-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto"
+        data-testid="flight-detail-panel"
+        className="absolute bottom-0 left-0 right-0 bg-surface-2 border-t-2 border-border-strong px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] space-y-4 max-h-[90dvh] overflow-y-auto overscroll-contain"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -429,4 +467,9 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
       </div>
     </div>
   );
+
+  // Portal to <body>: the ⤢ trigger lives inside the sticky mission masthead,
+  // whose z-20 stacking context would otherwise trap this z-50 sheet under the
+  // fixed bottom nav. Server render (never open there in practice) stays inline.
+  return typeof document === 'undefined' ? sheet : createPortal(sheet, document.body);
 }
