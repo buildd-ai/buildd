@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import RepoPicker from './RepoPicker';
+import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
 
 interface Installation {
   id: string;
@@ -27,13 +28,6 @@ interface Repo {
 }
 
 type NameMode = 'repo' | 'full' | 'custom';
-
-// The team switcher persists the active team in the `buildd-team` cookie.
-function readActiveTeamCookie(): string | null {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(/(?:^|;\s*)buildd-team=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
 
 function NameModal({
   repo,
@@ -138,7 +132,7 @@ function NameModal({
                   onChange={(e) => setCustomName(e.target.value)}
                   placeholder="Enter custom name"
                   autoFocus
-                  className="mt-2 w-full px-3 py-1.5 text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                  className="mt-2 w-full px-3 py-1.5 text-base md:text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 />
               )}
             </div>
@@ -262,16 +256,8 @@ export default function NewWorkspacePage() {
           const teams: { id: string; slug: string }[] = data.teams || [];
           setUserTeams(data.teams || []);
           // Prefer the team the user is currently viewing (set by the team switcher)
-          const activeId = readActiveTeamCookie();
-          const active = activeId ? teams.find((t) => t.id === activeId) : undefined;
-          const personal = teams.find((t) => t.slug.startsWith('personal-'));
-          if (active) {
-            setSelectedTeamId(active.id);
-          } else if (personal) {
-            setSelectedTeamId(personal.id);
-          } else if (teams.length > 0) {
-            setSelectedTeamId(teams[0].id);
-          }
+          const initial = defaultTeamId(teams, readActiveTeamCookie());
+          if (initial) setSelectedTeamId(initial);
         }
       } catch {
         // Teams not available
@@ -650,7 +636,7 @@ export default function NewWorkspacePage() {
                     }
                   }}
                   placeholder="org/repo or https://github.com/org/repo"
-                  className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                  className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-base md:text-sm"
                 />
                 <p className="text-xs text-text-muted mt-1">Optional - agents will clone this repo</p>
               </div>
@@ -745,7 +731,7 @@ export default function NewWorkspacePage() {
                       value={newRepoName}
                       onChange={(e) => setNewRepoName(e.target.value)}
                       placeholder="my-new-project"
-                      className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 font-mono focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                      className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 font-mono focus:ring-2 focus:ring-primary-ring focus:border-primary text-base md:text-sm"
                     />
                     <p className="text-xs text-text-muted mt-1">
                       {selectedInstallation
@@ -764,7 +750,7 @@ export default function NewWorkspacePage() {
                       value={newRepoDescription}
                       onChange={(e) => setNewRepoDescription(e.target.value)}
                       placeholder="What is this repo for?"
-                      className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                      className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-base md:text-sm"
                     />
                   </div>
 

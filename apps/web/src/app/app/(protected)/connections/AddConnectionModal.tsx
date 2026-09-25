@@ -231,7 +231,7 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="My MCP Server"
-                  className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                  className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
                 />
               </div>
               <div>
@@ -243,7 +243,7 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://mcp.example.com"
-                  className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                  className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
                 />
               </div>
               {workspaces.length > 0 && (
@@ -360,7 +360,7 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
                       onChange={(e) => setHeaderValue(e.target.value)}
                       placeholder="Enter your API key"
                       autoFocus
-                      className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                      className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
                     />
                   </div>
                   {error && (

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
+import { useConfirm } from '@/components/useConfirm';
 
 export interface WorkspaceWithRunners {
     id: string;
@@ -52,6 +53,7 @@ export default function WorkspaceList({
     teams: UserTeam[];
 }) {
     const router = useRouter();
+    const { confirm, confirmDialog } = useConfirm();
     const [movingWorkspaceId, setMovingWorkspaceId] = useState<string | null>(null);
     const [moveError, setMoveError] = useState<{ workspaceId: string; message: string } | null>(null);
 
@@ -74,6 +76,20 @@ export default function WorkspaceList({
         } finally {
             setMovingWorkspaceId(null);
         }
+    };
+
+    // Moving a workspace changes who can see it and which team's credentials,
+    // roles and connectors it runs with — never do it on a bare select change.
+    const requestMove = async (workspace: WorkspaceWithRunners, newTeamId: string) => {
+        const target = teams.find(t => t.id === newTeamId);
+        const targetName = target?.name ?? 'another team';
+        const ok = await confirm({
+            title: `Move workspace to ${targetName}?`,
+            message: `"${workspace.name}" will leave ${workspace.teamName ?? 'its current team'}. Members of ${targetName} get access, and its tasks will run with ${targetName}'s credentials, roles and connectors.\n\nFor a dry run of what moves, use Move to team… on the workspace's config page.`,
+            confirmLabel: 'Move workspace',
+            variant: 'warning',
+        });
+        if (ok) await handleMoveWorkspace(workspace.id, newTeamId);
     };
 
     // Group workspaces by team
@@ -161,13 +177,13 @@ export default function WorkspaceList({
 
                                         {teams.length > 1 && (
                                             <div className="flex w-full md:justify-end items-center gap-2 text-xs">
-                                                <span className="text-text-muted">Move to:</span>
+                                                <span className="text-text-muted whitespace-nowrap">Move to:</span>
                                                 <Select
                                                     value={workspace.teamId || ''}
                                                     disabled={movingWorkspaceId === workspace.id}
                                                     onChange={(v) => {
                                                         if (v && v !== workspace.teamId) {
-                                                            handleMoveWorkspace(workspace.id, v);
+                                                            void requestMove(workspace, v);
                                                         }
                                                     }}
                                                     options={[
@@ -194,6 +210,7 @@ export default function WorkspaceList({
                     </div>
                 );
             })}
+            {confirmDialog}
         </div>
     );
 }

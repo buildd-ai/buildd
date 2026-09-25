@@ -118,7 +118,8 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
   return (
     <div className="space-y-1.5">
       {/* Primary: Tier selector */}
-      <div className="flex gap-1" data-testid="model-tier-selector">
+      {/* A grid, not flex: four equal cells that shrink with the column instead of overflowing at 320px. */}
+      <div className="grid grid-cols-4 gap-1" data-testid="model-tier-selector">
         {TIER_OPTIONS.map(tier => {
           const isSelected = normalized === tier.value;
           return (
@@ -129,7 +130,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
               data-tier={tier.value}
               data-selected={isSelected}
               onClick={() => onChange(tier.value)}
-              className={`flex-1 px-2 py-1.5 text-[12px] font-medium rounded border transition-colors ${
+              className={`min-w-0 min-h-11 md:min-h-0 px-1 sm:px-2 py-1.5 text-[12px] font-medium rounded border transition-colors truncate ${
                 isSelected
                   ? 'bg-text-primary text-surface-1 border-text-primary'
                   : 'bg-surface-1 text-text-secondary border-border-default hover:text-text-primary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed'
@@ -178,7 +179,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
         type="button"
         disabled={disabled}
         onClick={() => setShowAdvanced(!showAdvanced)}
-        className="flex items-center gap-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+        className="flex items-center gap-1 min-h-11 md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
         data-testid="advanced-toggle"
       >
         <svg

@@ -1802,7 +1802,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Documented exception: pinned to the provider's own session window and
             the calendar month. It cannot obey `?window=`, so it says what it
             does obey instead of quietly ignoring the control. */}
-        <span className="text-[11px] text-text-muted">provider session window · not {'?window='}</span>
+        <span className="text-[11px] text-text-muted text-right">provider session window · ignores the page window</span>
       </div>
       <div className="card divide-y divide-border-default">
 
@@ -2085,7 +2085,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
         <a
           href="/app/team"
           data-testid="per-role-link"
-          className="inline-block text-xs text-accent hover:underline"
+          className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-accent-text hover:underline"
         >
           per role →
         </a>
@@ -2168,7 +2168,7 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
           type="button"
           onClick={() => select(o.value)}
           aria-pressed={current === o.value}
-          className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
+          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
             current === o.value
               ? 'bg-surface-3 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'

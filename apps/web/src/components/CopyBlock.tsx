@@ -21,8 +21,9 @@ export default function CopyBlock({ text, label }: { text: string; label?: strin
       </pre>
       <button
         onClick={handleCopy}
-        className="absolute top-1.5 right-1.5 p-1.5 rounded bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+        className="absolute top-1.5 right-1.5 p-1.5 rounded bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors before:absolute before:content-[''] before:-inset-2.5 md:before:hidden opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-visible:opacity-100"
         title="Copy to clipboard"
+        aria-label="Copy to clipboard"
       >
         {copied ? (
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

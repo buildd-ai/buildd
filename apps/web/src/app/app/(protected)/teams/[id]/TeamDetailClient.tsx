@@ -183,8 +183,8 @@ export default function TeamDetailClient({
       )}
 
       {/* Team Header */}
-      <div className="flex justify-between items-start mb-8">
-        <div>
+      <div className="flex flex-wrap justify-between items-start gap-3 mb-8">
+        <div className="min-w-0">
           {editing ? (
             <div className="space-y-3">
               <div>
@@ -193,7 +193,7 @@ export default function TeamDetailClient({
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                  className="px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                 />
               </div>
               <div>
@@ -202,7 +202,7 @@ export default function TeamDetailClient({
                   type="text"
                   value={editSlug}
                   onChange={(e) => setEditSlug(e.target.value)}
-                  className="px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                  className="px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
                 />
               </div>
               <div className="flex gap-2">
@@ -228,7 +228,7 @@ export default function TeamDetailClient({
           ) : (
             <>
               <div className="flex items-center gap-2">
-                <h1 className="text-3xl font-bold">{team.name}</h1>
+                <h1 className="text-2xl md:text-3xl font-bold [overflow-wrap:anywhere]">{team.name}</h1>
                 {isPersonal && (
                   <span className="px-1.5 py-0.5 text-xs bg-surface-3 text-text-secondary rounded">
                     Personal
@@ -243,10 +243,10 @@ export default function TeamDetailClient({
           )}
         </div>
         {canManage && !editing && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             <button
               onClick={() => setEditing(true)}
-              className="px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
+              className="min-h-11 md:min-h-0 px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
             >
               Edit
             </button>
@@ -254,7 +254,7 @@ export default function TeamDetailClient({
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50"
+                className="min-h-11 md:min-h-0 whitespace-nowrap px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50"
               >
                 {deleting ? 'Deleting…' : 'Delete Team'}
               </button>
@@ -270,30 +270,30 @@ export default function TeamDetailClient({
         </h2>
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
-            <div key={member.userId} className="p-4 flex justify-between items-center">
-              <div className="flex items-center gap-3">
+            <div key={member.userId} className="p-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-2">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
                 {member.image ? (
                   <img
                     src={member.image}
                     alt=""
-                    className="w-8 h-8 rounded-full"
+                    className="w-8 h-8 rounded-full flex-shrink-0"
                   />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-surface-4 flex items-center justify-center text-sm font-medium text-text-secondary">
+                  <div className="w-8 h-8 flex-shrink-0 rounded-full bg-surface-4 flex items-center justify-center text-sm font-medium text-text-secondary">
                     {(member.name || member.email)[0]?.toUpperCase()}
                   </div>
                 )}
-                <div>
-                  <div className="font-medium">
+                <div className="min-w-0">
+                  <div className="font-medium [overflow-wrap:anywhere]">
                     {member.name || member.email}
                     {member.userId === currentUserId && (
                       <span className="text-xs text-text-muted ml-1">(you)</span>
                     )}
                   </div>
-                  <div className="text-sm text-text-secondary">{member.email}</div>
+                  <div className="text-sm text-text-secondary [overflow-wrap:anywhere]">{member.email}</div>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
                 {canManage && currentUserRole === 'owner' && member.userId !== currentUserId ? (
                   <Select
                     value={member.role}
@@ -313,7 +313,7 @@ export default function TeamDetailClient({
                 {canManage && member.userId !== currentUserId && (
                   <button
                     onClick={() => handleRemoveMember(member.userId, member.name)}
-                    className="text-xs text-status-error hover:text-status-error/80"
+                    className="min-h-11 md:min-h-0 px-1 text-xs text-status-error hover:text-status-error/80"
                   >
                     Remove
                   </button>
@@ -329,20 +329,20 @@ export default function TeamDetailClient({
             {!showInvite ? (
               <button
                 onClick={() => setShowInvite(true)}
-                className="text-sm text-primary hover:underline"
+                className="min-h-11 md:min-h-0 text-sm text-primary hover:underline"
               >
                 + Invite someone
               </button>
             ) : (
               <div className="card p-4 space-y-3">
                 <h3 className="text-sm font-medium">Invite a team member</h3>
-                <div className="flex gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row">
                   <input
                     type="email"
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
                     placeholder="Email address"
-                    className="flex-1 px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm"
+                    className="w-full sm:w-auto sm:flex-1 min-w-0 px-3 py-2 bg-surface-1 border border-border-default rounded-md text-base md:text-sm"
                     autoFocus
                   />
                   <Select
@@ -357,7 +357,7 @@ export default function TeamDetailClient({
                   <button
                     onClick={handleInvite}
                     disabled={inviting || !inviteEmail}
-                    className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
+                    className="w-full sm:w-auto min-h-11 md:min-h-0 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
                   >
                     {inviting ? 'Sending…' : 'Invite'}
                   </button>

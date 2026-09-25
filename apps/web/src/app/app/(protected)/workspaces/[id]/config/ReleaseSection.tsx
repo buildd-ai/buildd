@@ -242,7 +242,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
             <select
               value={strategy}
               onChange={(e) => setStrategy(e.target.value as StrategyOption)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             >
               <option value="none">None — releases not configured</option>
               <option value="branch_merge">Branch merge (merge source → production)</option>
@@ -264,7 +264,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={ref}
                   onChange={(e) => setRef(e.target.value)}
                   placeholder="dev"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
               <div>
@@ -274,7 +274,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={prodBranch}
                   onChange={(e) => setProdBranch(e.target.value)}
                   placeholder="main"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
             </div>
@@ -290,7 +290,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={workflowFile}
                   onChange={(e) => setWorkflowFile(e.target.value)}
                   placeholder="release.yml"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
               <div>
@@ -300,7 +300,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={ref}
                   onChange={(e) => setRef(e.target.value)}
                   placeholder="dev"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
             </div>
@@ -460,14 +460,14 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
             {recentReleases.length > 0 && (
               <div>
                 <div className="text-xs font-medium text-text-secondary mb-2">Recent releases</div>
-                <div className="rounded-md border border-border-default overflow-hidden">
-                  <table className="w-full text-xs">
+                <div className="rounded-md border border-border-default overflow-x-auto">
+                  <table className="w-full table-fixed text-xs">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left font-medium text-text-secondary">When</th>
+                        <th className="w-[88px] sm:w-[96px] px-3 py-2 text-left font-medium text-text-secondary">When</th>
                         <th className="px-3 py-2 text-left font-medium text-text-secondary">Task</th>
-                        <th className="px-3 py-2 text-left font-medium text-text-secondary">Commit</th>
-                        <th className="px-3 py-2 text-left font-medium text-text-secondary">Status</th>
+                        <th className="hidden sm:table-cell w-[80px] px-3 py-2 text-left font-medium text-text-secondary">Commit</th>
+                        <th className="w-[104px] px-3 py-2 text-left font-medium text-text-secondary">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-default">
@@ -476,7 +476,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                           <td className="px-3 py-2 text-text-secondary whitespace-nowrap" title={r.completedAt}>
                             {relativeTime(r.completedAt)}
                           </td>
-                          <td className="px-3 py-2 max-w-[180px] truncate">
+                          <td className="px-3 py-2 truncate">
                             <Link
                               href={`/app/tasks/${r.taskId}`}
                               className="text-primary hover:underline truncate block"
@@ -484,7 +484,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                               {r.taskTitle || r.taskId.slice(0, 8)}
                             </Link>
                           </td>
-                          <td className="px-3 py-2 font-mono text-text-secondary">
+                          <td className="hidden sm:table-cell px-3 py-2 font-mono text-text-secondary">
                             {r.sha ? r.sha.slice(0, 7) : '—'}
                           </td>
                           <td className="px-3 py-2">

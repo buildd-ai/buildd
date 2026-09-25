@@ -16,6 +16,14 @@ export type SwitchProps = SwitchName & {
 };
 
 /**
+ * Opt-in className that grows the switch's touch target to 44px tall below
+ * `md` without changing its visual size or the row's layout (a transparent
+ * pseudo-element extends the button's hit box).
+ */
+export const SWITCH_HIT_AREA =
+  "before:absolute before:content-[''] before:-inset-x-1 before:-inset-y-3 md:before:hidden";
+
+/**
  * The one on/off toggle. A name is a required prop so a switch can never be
  * announced as just "switch, on".
  */

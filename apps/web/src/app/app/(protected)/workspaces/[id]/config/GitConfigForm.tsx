@@ -168,7 +168,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             type="text"
                             value={defaultBranch}
                             onChange={(e) => setDefaultBranch(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                             placeholder="main"
                         />
                         <p className="text-xs text-text-muted mt-1">The base branch for worktrees and new feature branches (e.g. <code>dev</code> or <code>main</code>).</p>
@@ -195,7 +195,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             type="text"
                             value={branchPrefix}
                             onChange={(e) => setBranchPrefix(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                             placeholder="feature/"
                         />
                         <p className="text-xs text-text-muted mt-1">Leave empty to let agent follow project conventions</p>
@@ -258,11 +258,11 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             type="text"
                             value={targetBranch}
                             onChange={(e) => setTargetBranch(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                             placeholder={defaultBranch || 'main'}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Where agent PRs are opened against. For example, set to <code>dev</code> if you merge features into dev before releasing to main.
+                            Where agent PRs are opened against. For example, set to <code>dev</code>{' '}if you merge features into dev before releasing to main.
                             Falls back to Default Branch above if empty, then the GitHub repo&apos;s default branch.
                         </p>
                         {!targetBranch && (
@@ -335,7 +335,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         <textarea
                             value={agentInstructions}
                             onChange={(e) => setAgentInstructions(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[120px] font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[120px] font-mono text-base md:text-sm"
                             placeholder="Always run tests before committing.&#10;Use npm run lint to check code style."
                         />
                     </div>
@@ -372,7 +372,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             type="text"
                             value={fallbackModel}
                             onChange={(e) => setFallbackModel(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
                             placeholder="premium-plus · premium · standard · budget · or an exact model id"
                         />
                         <p className="text-xs text-text-muted mt-1">
@@ -429,7 +429,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 <textarea
                                     value={sandboxAllowedDomains}
                                     onChange={(e) => setSandboxAllowedDomains(e.target.value)}
-                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-sm"
+                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-base md:text-sm"
                                     placeholder={"api.github.com\nnpm.pkg.github.com\nregistry.npmjs.org"}
                                 />
                                 <p className="text-xs text-text-muted mt-1">
@@ -461,7 +461,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 <textarea
                                     value={sandboxExcludedCommands}
                                     onChange={(e) => setSandboxExcludedCommands(e.target.value)}
-                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-sm"
+                                    className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 min-h-[80px] font-mono text-base md:text-sm"
                                     placeholder={"docker\nkubectl\nssh"}
                                 />
                                 <p className="text-xs text-text-muted mt-1">
@@ -503,7 +503,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             type="text"
                             value={debugFile}
                             onChange={(e) => setDebugFile(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
                             placeholder="/tmp/buildd-debug.log"
                         />
                         <p className="text-xs text-text-muted mt-1">
@@ -548,7 +548,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 type="number"
                                 value={thinkingBudgetTokens}
                                 onChange={(e) => setThinkingBudgetTokens(Math.max(1, parseInt(e.target.value) || 1))}
-                                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+                                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
                                 min={1}
                                 step={1000}
                                 placeholder="10000"
