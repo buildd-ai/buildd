@@ -567,6 +567,25 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(body.error).toMatch(/gitConfig\.mergePolicy/);
   });
 
+  it('rejects each removed hand-written path field with a 400 that points to Re-scan repo', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ autoMergeDenyPaths: ['drizzle/'] }, 'gitConfig.autoMergeDenyPaths'],
+      [{ escalateToPaths: ['infra/'] }, 'gitConfig.escalateToPaths'],
+      [{ mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } } }, 'gitConfig.mergePolicy.agentReview.escalateToPaths'],
+      [{ mergePolicy: { tier: 'auto-threshold', threshold: { denyPaths: ['x/'] } } }, 'gitConfig.mergePolicy.threshold.denyPaths'],
+      [{ policyConfig: { preset: 'balanced', riskClasses: [{ name: 'auth_and_secrets', detectedPaths: [], userPaths: ['x'] }] } }, 'gitConfig.policyConfig.riskClasses[0].userPaths'],
+    ];
+    for (const [gitConfig, field] of cases) {
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig } }), { params: mockParams });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.field).toBe(field);
+      expect(body.error).toContain('Re-scan repo');
+    }
+  });
+
   it('rejects gitConfig.mergePolicy with invalid tier (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

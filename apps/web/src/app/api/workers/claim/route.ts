@@ -964,6 +964,7 @@ export async function POST(req: NextRequest) {
   // Used by the path-overlap claim guard below. Fetched once outside the loop
   // so we don't repeat the query for every candidate task.
   const openPrTasksByWorkspace = new Map<string, Array<{
+    taskId: string | null;
     pathManifest: string[] | null;
     prNumber: number | null;
     prUrl: string | null;
@@ -1000,7 +1001,7 @@ export async function POST(req: NextRequest) {
 
       for (const w of activeOpenPrWorkers) {
         const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
-        const entry = { pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
+        const entry = { taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
         const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];
         list.push(entry);
         openPrTasksByWorkspace.set(w.workspaceId, list);
@@ -1173,15 +1174,17 @@ export async function POST(req: NextRequest) {
     // and resume on the PR's branch, so that PR always overlaps — it is the
     // thing being fixed, not a concurrent edit. Exempting only conflict retries
     // stranded every review/CI fix behind the PR it was dispatched to fix.
+    // Likewise a task never blocks on a PR its own earlier worker opened: a
+    // loopUntilMerged parent re-queues while that PR is open and carries no
+    // *RetryPrNumber, so it deferred behind itself forever.
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
       const ownRetryPrNumber = ((task as any).conflictRetryPrNumber
         ?? (task as any).reviewerRetryPrNumber
         ?? (task as any).ciRetryPrNumber) as number | null | undefined;
-      const filterOpenPrTasks = ownRetryPrNumber
-        ? openPrTasks.filter(pr => pr.prNumber !== ownRetryPrNumber)
-        : openPrTasks;
+      const filterOpenPrTasks = openPrTasks.filter(pr =>
+        pr.taskId !== task.id && (!ownRetryPrNumber || pr.prNumber !== ownRetryPrNumber));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);

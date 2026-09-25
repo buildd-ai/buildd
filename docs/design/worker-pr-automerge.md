@@ -46,6 +46,8 @@ This is the general mechanism. It is NOT scoped to release PRs. The release PR p
 
 ### (b) autoMergePR / autoMergeMaxLines / autoMergeDenyPaths — current values and semantics
 
+> **Superseded (2026-09):** hand-written deny/escalate path lists are refused on write; paths are auto-detected per risk class. See `docs/design/merge-policy.md` §1.6.
+
 These live in `workspaces.gitConfig` (JSONB, `WorkspaceGitConfig` interface). The actual buildd workspace values require a DB query, but the defaults and resolution logic are:
 
 | Field | Default | Precedence logic |

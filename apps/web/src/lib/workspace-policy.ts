@@ -1,7 +1,7 @@
 /**
  * Workspace policy — semantic risk class detection and resolution.
  *
- * Replaces hand-authored path globs (`escalateToPaths`) with:
+ * Replaces hand-authored path lists (`escalateToPaths`, `userPaths`, deny paths) with:
  *   1. A preset tier (cautious / balanced / autonomous) chosen by the user.
  *   2. Auto-detected paths per semantic class (never user-typed).
  *   3. Intent-readable prompts for the reviewer agent.
@@ -182,43 +182,34 @@ export function detectAllRiskClasses(files: string[]): RiskClassEntry[] {
 // ── Policy resolution (per-PR) ────────────────────────────────────────────────
 
 /**
- * Get all effective paths for a risk class (detected + user overrides).
+ * Get all effective paths for a risk class — the detected paths only.
+ * Hand-written `userPaths` are no longer read: paths come from the repo scan.
  *
- * `detectedPaths` is required by the type but this config is jsonb, and
- * `PATCH /api/workspaces/[id]` accepts a hand-authored `gitConfig.policyConfig`
- * that TypeScript never sees. An unguarded spread over a missing array threw
+ * `detectedPaths` is required by the type but this config is jsonb, so a
+ * stored entry may lack it. An unguarded spread over a missing array threw
  * inside `preflightEscalationCheck`, whose caller catches and returns "no
  * reviewer dispatched" — which the webhook then follows into the auto-merge
  * path. A crashing escalation gate must not read as an absent one.
  */
 export function effectivePathsForClass(entry: RiskClassEntry): string[] {
-  return [...(entry.detectedPaths ?? []), ...(entry.userPaths ?? [])];
+  return [...(entry.detectedPaths ?? [])];
 }
 
 /**
- * Whether a stored path entry covers a PR file.
+ * Whether a detected path entry covers a PR file.
  *
  * An entry ending in `/` is a directory prefix; anything else is an exact
- * file path. Detected entries follow that rule strictly — detection emits a
- * trailing `/` for every directory it stores, and a file entry must not
- * cover a same-named directory.
- *
- * `userPaths` are hand-authored or migrated from legacy `escalateToPaths`,
- * which were matched as prefixes and were often written without the slash
- * (`src/auth`). They keep the old reading: exact, or a directory prefix.
+ * file path. Detection emits a trailing `/` for every directory it stores, and
+ * a file entry must not cover a same-named directory.
  */
-function pathEntryCovers(entry: string, filePath: string, lenientDir: boolean): boolean {
+function pathEntryCovers(entry: string, filePath: string): boolean {
   if (entry.endsWith('/')) return filePath.startsWith(entry);
-  if (filePath === entry) return true;
-  return lenientDir && filePath.startsWith(entry + '/');
+  return filePath === entry;
 }
 
 /** Check whether a file path is covered by a risk class entry. */
 function fileCoveredByClass(filePath: string, entry: RiskClassEntry): boolean {
-  return (
-    (entry.detectedPaths ?? []).some((p) => pathEntryCovers(p, filePath, false)) ||
-    (entry.userPaths ?? []).some((p) => pathEntryCovers(p, filePath, true))
-  );
+  return (entry.detectedPaths ?? []).some((p) => pathEntryCovers(p, filePath));
 }
 
 export interface PRPolicyMatch {
@@ -429,46 +420,6 @@ export function findUncoveredRiskPaths(
   return proposals;
 }
 
-// ── Legacy migration helper ───────────────────────────────────────────────────
-
-/**
- * Infer a WorkspacePolicyConfig from legacy hand-authored paths.
- *
- * Existing workspaces with escalateToPaths or denyPaths keep full coverage — we
- * classify their paths into risk classes and show the inferred tier for confirmation.
- * Never called on the write path; used only to propose a migration to the user.
- */
-export function inferPolicyConfigFromLegacy(
-  escalateToPaths: string[],
-  reviewerRole: string,
-  suggestedPreset: WorkspacePolicyPreset = 'balanced',
-): WorkspacePolicyConfig {
-  const classMap: Partial<Record<RiskClassName, Set<string>>> = {};
-
-  for (const p of escalateToPaths) {
-    const guessed = guessRiskClass(p);
-    if (guessed) {
-      if (!classMap[guessed]) classMap[guessed] = new Set();
-      classMap[guessed]!.add(p);
-    }
-  }
-
-  const riskClasses: RiskClassEntry[] = [];
-  for (const [name, paths] of Object.entries(classMap) as [RiskClassName, Set<string>][]) {
-    riskClasses.push({
-      name,
-      detectedPaths: [],
-      userPaths: [...paths],
-    });
-  }
-
-  return {
-    preset: suggestedPreset,
-    riskClasses,
-    reviewerRole,
-  };
-}
-
 // ── Policy integration: resolve MergePolicy for a PR ─────────────────────────
 
 /**
@@ -517,8 +468,9 @@ export function applyPolicyConfigToMergePolicy(
       effectiveTier === 'agent-review'
         ? {
             reviewerRole,
-            // escalateToPaths is empty — we use policyConfig instead
-            escalateToPaths: base.agentReview?.escalateToPaths ?? [],
+            // Legacy stored escalateToPaths carried through (read-only
+            // fallback, LEGACY_PATH_FALLBACK_NOTE — remove next release).
+            ...(base.agentReview?.escalateToPaths ? { escalateToPaths: base.agentReview.escalateToPaths } : {}),
             maxConfidenceThreshold: base.agentReview?.maxConfidenceThreshold,
             gateCondition: base.agentReview?.gateCondition,
           }

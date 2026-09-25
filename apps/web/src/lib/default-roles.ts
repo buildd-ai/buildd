@@ -437,7 +437,6 @@ ESCALATION IS REQUIRED when:
   That discriminator is mechanical and already resolved for you — do NOT independently decide
   a schema change "looks risky" from the diff alone, and do NOT escalate a schema.ts edit just
   because it is present; a change with no generated migration is not a schema change.
-- The diff touches paths in the workspace's escalateToPaths list
 - Your confidence is below the workspace's maxConfidenceThreshold
 - The PR is a release PR (base branch is main or the workspace's prodBranch)
 - You find a security-shaped defect where the right fix is itself the open question: an

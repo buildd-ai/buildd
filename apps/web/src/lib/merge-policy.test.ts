@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import { resolvePolicy, mergePolicySchema, DEFAULT_MERGE_POLICY, isMissionIntegrationBase } from './merge-policy';
-import { parseMergePolicy } from '@buildd/shared';
+import {
+  parseMergePolicy,
+  findRemovedPathFieldInGitConfig,
+  findRemovedPathFieldInMergePolicy,
+  removedPolicyPathFieldError,
+} from '@buildd/shared';
 
 describe('DEFAULT_MERGE_POLICY', () => {
   it('is auto-threshold with 800 line limit and no deny paths', () => {
@@ -84,8 +89,10 @@ describe('resolvePolicy precedence', () => {
   });
 });
 
-describe('parseMergePolicy (write-path validation)', () => {
-  it('accepts valid auto-threshold policy', () => {
+describe('parseMergePolicy (shape validation; read-tolerant of legacy paths)', () => {
+  // Still accepts a stored denyPaths: this parser also backs parseMergePolicyRead,
+  // and rejecting here would drop a legacy policy to the default on read.
+  it('accepts valid auto-threshold policy (including a legacy stored denyPaths)', () => {
     const result = parseMergePolicy({ tier: 'auto-threshold', threshold: { maxLines: 500, denyPaths: ['src/'] } });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.policy.tier).toBe('auto-threshold');
@@ -161,69 +168,39 @@ describe('parseMergePolicyRead (fail-soft)', () => {
   });
 });
 
-describe('mergePolicySchema', () => {
-  it('accepts a valid auto-threshold policy', () => {
-    const result = mergePolicySchema.safeParse({
-      tier: 'auto-threshold',
-      threshold: { maxLines: 500, denyPaths: ['drizzle/'] },
-    });
-    expect(result.success).toBe(true);
+describe('removed hand-written path fields', () => {
+  it('finds each removed field by its dotted path', () => {
+    expect(findRemovedPathFieldInGitConfig({ autoMergeDenyPaths: [] })).toBe('autoMergeDenyPaths');
+    expect(findRemovedPathFieldInGitConfig({ escalateToPaths: ['x/'] })).toBe('escalateToPaths');
+    expect(findRemovedPathFieldInGitConfig({ mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: [] } } }))
+      .toBe('mergePolicy.agentReview.escalateToPaths');
+    expect(findRemovedPathFieldInGitConfig({ mergePolicy: { tier: 'auto-threshold', threshold: { denyPaths: ['x/'] } } }))
+      .toBe('mergePolicy.threshold.denyPaths');
+    expect(findRemovedPathFieldInGitConfig({
+      policyConfig: { preset: 'balanced', riskClasses: [{ name: 'ci_deploy_config', detectedPaths: [] }, { name: 'auth_and_secrets', detectedPaths: [], userPaths: ['a'] }] },
+    })).toBe('policyConfig.riskClasses[1].userPaths');
+    expect(findRemovedPathFieldInGitConfig({ autoMergeDenyPaths: [] }, 'gitConfig')).toBe('gitConfig.autoMergeDenyPaths');
   });
 
-  it('accepts a valid agent-review policy', () => {
-    const result = mergePolicySchema.safeParse({
-      tier: 'agent-review',
-      agentReview: {
-        reviewerRole: 'reviewer',
-        maxConfidenceThreshold: 0.6,
-        gateCondition: 'approve-and-merge',
-      },
-    });
-    expect(result.success).toBe(true);
+  it('passes configs without them', () => {
+    expect(findRemovedPathFieldInGitConfig({
+      defaultBranch: 'main',
+      autoMergeMaxLines: 400,
+      mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r' }, threshold: { maxLines: 800 } },
+      policyConfig: { preset: 'balanced', riskClasses: [{ name: 'ci_deploy_config', detectedPaths: ['.github/workflows/'] }] },
+    })).toBeNull();
+    expect(findRemovedPathFieldInMergePolicy(null)).toBeNull();
+    expect(findRemovedPathFieldInGitConfig(undefined)).toBeNull();
   });
 
-  it('accepts a valid human policy with stallNotifyMinutes', () => {
-    const result = mergePolicySchema.safeParse({ tier: 'human', stallNotifyMinutes: 30 });
-    expect(result.success).toBe(true);
+  it('error text points at the re-scan action', () => {
+    expect(removedPolicyPathFieldError('autoMergeDenyPaths')).toMatch(/autoMergeDenyPaths.*Re-scan repo/s);
   });
 
-  it('rejects unknown top-level keys', () => {
-    const result = mergePolicySchema.safeParse({ tier: 'human', unknownKey: 'bad' });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects unknown keys inside threshold', () => {
-    const result = mergePolicySchema.safeParse({
-      tier: 'auto-threshold',
-      threshold: { maxLines: 100, bogus: true },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects unknown keys inside agentReview', () => {
-    const result = mergePolicySchema.safeParse({
-      tier: 'agent-review',
-      agentReview: { reviewerRole: 'reviewer', extra: 'bad' },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects invalid tier value', () => {
-    const result = mergePolicySchema.safeParse({ tier: 'invalid-tier' });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects missing tier', () => {
-    const result = mergePolicySchema.safeParse({ threshold: { maxLines: 100 } });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects invalid gateCondition', () => {
-    const result = mergePolicySchema.safeParse({
-      tier: 'agent-review',
-      agentReview: { reviewerRole: 'reviewer', gateCondition: 'invalid' },
-    });
-    expect(result.success).toBe(false);
+  it('parseMergePolicyRead keeps a legacy stored escalateToPaths (fallback release)', async () => {
+    const { parseMergePolicyRead } = await import('./merge-policy');
+    const result = parseMergePolicyRead({ tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } });
+    expect(result.agentReview?.escalateToPaths).toEqual(['infra/']);
   });
 });
 
@@ -231,9 +208,27 @@ describe('mergePolicySchema', () => {
   it('accepts a valid auto-threshold policy', () => {
     const result = mergePolicySchema.safeParse({
       tier: 'auto-threshold',
-      threshold: { maxLines: 500, denyPaths: ['drizzle/'] },
+      threshold: { maxLines: 500 },
     });
     expect(result.success).toBe(true);
+  });
+
+  // Hand-written paths are gone from the write schema. Stored values are
+  // still read (parseMergePolicy stays tolerant) for one fallback release.
+  it('rejects hand-written threshold.denyPaths', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'auto-threshold',
+      threshold: { maxLines: 500, denyPaths: ['drizzle/'] },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects hand-written agentReview.escalateToPaths', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['infra/'] },
+    });
+    expect(result.success).toBe(false);
   });
 
   it('accepts a valid agent-review policy', () => {

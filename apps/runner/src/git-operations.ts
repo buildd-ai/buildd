@@ -18,6 +18,7 @@ import { sessionLog as realSessionLog } from './session-logger';
 import { isGeneratedPath } from '@buildd/shared';
 import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
+import { describePrimaryCloneDrift } from './worktree-confinement';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -366,6 +367,37 @@ export interface SetupWorktreeResult {
   };
 }
 
+/**
+ * Probe the primary clone and log a loud warning when it is dirty, holds
+ * stashes, or is off `expectedBranch`. Warning only — never resets: a dirty
+ * primary may hold the only copy of someone's work. Every probe failure is
+ * swallowed; this must never block worktree setup.
+ */
+export function warnOnPrimaryCloneDrift(repoPath: string, expectedBranch: string, workerId: string): string | null {
+  const opts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'] };
+  const run = (cmd: string): string | undefined => {
+    try {
+      const out = execSync(cmd, opts);
+      return typeof out === 'string' ? out : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const lines = (s: string | undefined) => (s ?? '').split('\n').filter(l => l.trim().length > 0).length;
+  const branch = run('git rev-parse --abbrev-ref HEAD')?.trim() || undefined;
+  const warning = describePrimaryCloneDrift({
+    branch,
+    expectedBranch,
+    dirtyEntries: lines(run('git status --porcelain')),
+    stashes: lines(run('git stash list')),
+  });
+  if (warning) {
+    console.warn(`[Worker ${workerId}] ${warning} (${repoPath})`);
+    try { sessionLog(workerId, 'warn', 'primary_clone_drift', warning); } catch { /* best effort */ }
+  }
+  return warning;
+}
+
 /** Branch name → directory name. The only place this mapping is spelled. */
 function safeWorktreeDirName(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -417,6 +449,11 @@ export async function setupWorktree(
     } catch (err) {
       console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
     }
+
+    // The primary clone should be a pristine base that nobody works in. If it
+    // is dirty or off its branch, something has been working in the shared
+    // checkout — say so loudly. Never reset it: it may hold unpushed work.
+    warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
 
     // Clean up stale worktree at this path if it exists.
     //

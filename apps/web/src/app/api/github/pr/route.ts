@@ -1203,7 +1203,7 @@ export async function PUT(req: NextRequest) {
         // recourse: consult the stored verdict rather than refusing on tier
         // alone. A terminal approve whose confidence clears the workspace
         // threshold makes the PR self-mergeable, subject to the SAME safety
-        // rails auto-threshold uses below (CI, escalateToPaths as deny paths,
+        // rails auto-threshold uses below (CI, legacy stored deny paths,
         // the migration operation-class inspector).
         const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber });
         const selfMergeable =

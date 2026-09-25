@@ -4357,6 +4357,68 @@ describe('path-overlap claim guard', () => {
     });
   }
 
+  // A loopUntilMerged parent re-queues as pending while its own earlier worker's
+  // PR is still open. It carries no *RetryPrNumber, so without a task-id check
+  // its own PR deferred it on every claim and the fleet sat idle.
+  it('claims a task despite an open PR from its OWN earlier worker with the same pathManifest', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: this task's own earlier worker
+        { workspaceId: 'ws-1', taskId: 'loop-task', prNumber: 2729, prUrl: 'https://github.com/org/repo/pull/2729', status: 'completed', prLifecycleStatus: 'open' },
+      ]);
+
+    const loopTask = {
+      ...taskWithManifest(['.github/workflows/integration.yml']),
+      id: 'loop-task',
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([loopTask])
+      .mockResolvedValueOnce([{ id: 'loop-task', pathManifest: ['.github/workflows/integration.yml'] }]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('loop-task');
+  });
+
+  it('still defers a task behind ANOTHER task\'s open PR even when it has its own open PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'loop-task', prNumber: 2729, prUrl: 'https://github.com/org/repo/pull/2729', status: 'completed', prLifecycleStatus: 'open' },
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ ...taskWithManifest(['.github/workflows/integration.yml']), id: 'loop-task' }])
+      .mockResolvedValueOnce([
+        { id: 'loop-task', pathManifest: ['.github/workflows/integration.yml'] },
+        { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+      ]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
   it('still defers a conflict-retry task whose manifest overlaps a DIFFERENT open PR', async () => {
     // The exemption covers only the PR being retried. Another task's open PR
     // touching the same files is a genuine concurrent-edit risk and must block.

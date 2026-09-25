@@ -38,6 +38,21 @@ export async function POST(
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
   }
+  // For API key auth, the workspace must belong to the API key's own team
+  // (same check as PATCH /api/workspaces/[id]), and creating a repo under the
+  // workspace's GitHub installation needs an admin-level key.
+  if (apiAccount) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, id),
+      columns: { teamId: true },
+    });
+    if (!ws || ws.teamId !== apiAccount.teamId) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+    if (apiAccount.level !== 'admin') {
+      return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
+    }
+  }
 
   try {
     const body = await req.json();
