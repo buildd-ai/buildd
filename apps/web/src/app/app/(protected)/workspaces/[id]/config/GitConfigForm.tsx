@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
+import { CriteriaGraderControl, normalizeCriteriaGrader, type CriteriaGraderValue } from './CriteriaGraderControl';
 
 interface GitConfig {
     defaultBranch: string;
@@ -35,16 +36,16 @@ interface GitConfig {
     autoMergePR?: boolean;
     autoMergeOnGreenCI?: boolean;
     defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
+    criteriaGrader?: 'auto' | 'api' | 'runner';
 }
 
 interface Props {
     workspaceId: string;
     workspaceName: string;
     initialConfig?: GitConfig | null;
-    configStatus: 'unconfigured' | 'admin_confirmed';
 }
 
-export function GitConfigForm({ workspaceId, workspaceName, initialConfig, configStatus }: Props) {
+export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Props) {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -89,6 +90,9 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
     const [defaultBackend, setDefaultBackend] = useState<'default' | 'claude' | 'codex'>(
         initialConfig?.defaultBackend || 'default'
     );
+    const [criteriaGrader, setCriteriaGrader] = useState<CriteriaGraderValue>(
+        normalizeCriteriaGrader(initialConfig?.criteriaGrader)
+    );
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -131,6 +135,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     effort: effort === 'none' ? undefined : effort,
                     defaultRunnerPreference: defaultRunnerPreference !== 'any' ? defaultRunnerPreference : undefined,
                     defaultBackend: defaultBackend === 'default' ? undefined : defaultBackend,
+                    criteriaGrader,
                 }),
             });
 
@@ -150,14 +155,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Status Banner */}
-            {configStatus === 'unconfigured' && (
-                <div className="bg-status-warning/10 border border-status-warning/30 rounded-lg p-4">
-                    <p className="text-sm text-status-warning">
-                        This workspace hasn't been configured yet. Set up your git workflow below.
-                    </p>
-                </div>
-            )}
+            {/* Unconfigured status is reported by the Workspace health card above the form. */}
 
             {/* Branching Section */}
             <div className="border border-border-default rounded-lg p-4">
@@ -619,6 +617,12 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                         </p>
                     </div>
                 </div>
+            </div>
+
+            {/* Advanced Section */}
+            <div className="border border-border-default rounded-lg p-4">
+                <h3 className="font-medium mb-4">Advanced</h3>
+                <CriteriaGraderControl value={criteriaGrader} onChange={setCriteriaGrader} />
             </div>
 
             {/* Actions */}

@@ -7,7 +7,8 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
-import { TeamTransferSection } from './TeamTransferSection';
+import { WorkspaceHealthCard } from './WorkspaceHealthCard';
+import { checkWorkspaceHealth } from '@/lib/workspace-health';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
 import BranchStrategySection from './BranchStrategySection';
@@ -41,6 +42,7 @@ export default async function WorkspaceConfigPage({
             teamId: true,
             gitConfig: true,
             configStatus: true,
+            accessMode: true,
             releaseConfig: true,
             workTrackerConfig: true,
         },
@@ -75,20 +77,27 @@ export default async function WorkspaceConfigPage({
                     </p>
                 </div>
 
+                {/* Every health action is an admin write, so members do not see the card. */}
+                {(access.role === 'owner' || access.role === 'admin') && (
+                    <WorkspaceHealthCard
+                        workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
+                        teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
+                        items={checkWorkspaceHealth({
+                            name: workspace.name,
+                            repo: workspace.repo,
+                            configStatus: workspace.configStatus,
+                            accessMode: workspace.accessMode,
+                            gitConfig: workspace.gitConfig as Record<string, unknown> | null,
+                            userTeamCount: userTeams.length,
+                        })}
+                    />
+                )}
+
                 <GitConfigForm
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
                     initialConfig={workspace.gitConfig as WorkspaceGitConfig | null}
-                    configStatus={workspace.configStatus as 'unconfigured' | 'admin_confirmed'}
                 />
-
-                {userTeams.length > 1 && (
-                    <TeamTransferSection
-                        workspaceId={workspace.id}
-                        currentTeamId={workspace.teamId}
-                        teams={userTeams}
-                    />
-                )}
 
                 <ConnectClaudeSection
                     workspaceId={workspace.id}
