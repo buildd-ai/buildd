@@ -22,6 +22,8 @@ const mockWorkspacesFindFirst = mock(() => ({ dataClass: 'standard' }) as any);
 const mockInsertValues = mock((vals: any) => ({
   returning: mock(() => [{ id: 'artifact-1', ...vals }]),
 }));
+const mockTasksFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => null as any);
 const mockGenerateSizedUploadUrl = mock(() => Promise.resolve('https://r2.example/signed'));
 
 mock.module('@/lib/api-auth', () => ({
@@ -38,6 +40,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findFirst: mockWorkersFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
+      missions: { findFirst: mockMissionsFindFirst },
     },
     insert: () => ({ values: mockInsertValues }),
   },
@@ -53,6 +57,9 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   artifacts: 'artifacts',
   workspaces: 'workspaces',
+  // Column stubs (not bare strings) so the lookups' predicates are observable.
+  tasks: { id: 'tasks.id' },
+  missions: { id: 'missions.id' },
 }));
 
 mock.module('crypto', () => ({
@@ -92,6 +99,10 @@ describe('POST /api/artifacts/upload-url', () => {
     mockWorkspacesFindFirst.mockReset();
     mockInsertValues.mockClear();
     mockGenerateSizedUploadUrl.mockClear();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
 
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' } as any);
     mockWorkersFindFirst.mockResolvedValue({
@@ -258,5 +269,74 @@ describe('POST /api/artifacts/upload-url', () => {
     const res = await POST(req(validBody()));
     expect(res.status).toBe(400);
     expect(mockGenerateSizedUploadUrl).not.toHaveBeenCalled();
+  });
+  describe('missionId', () => {
+    const MISSION = '11111111-2222-4333-8444-555555555555';
+    const OTHER_MISSION = '99999999-2222-4333-8444-555555555555';
+
+    function workerOnTask(missionId: string | null, roleSlug: string | null = null) {
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+      } as any);
+      mockTasksFindFirst.mockResolvedValue({ missionId, roleSlug } as any);
+    }
+
+    it('persists an explicit missionId from the same workspace', async () => {
+      workerOnTask(null);
+      mockMissionsFindFirst.mockResolvedValue({ id: MISSION, workspaceId: 'ws-1' } as any);
+      const res = await POST(req(validBody({ missionId: MISSION })));
+      expect(res.status).toBe(200);
+      expect(mockInsertValues.mock.calls[0][0].missionId).toBe(MISSION);
+      // The lookup is by the id the caller sent; the workspace check is in JS.
+      expect((mockMissionsFindFirst.mock.calls[0] as any)[0].where).toEqual({ field: 'missions.id', value: MISSION, type: 'eq' });
+    });
+
+    it('refuses a mission from another workspace (403) and inserts nothing', async () => {
+      workerOnTask(null);
+      mockMissionsFindFirst.mockResolvedValue({ id: MISSION, workspaceId: 'ws-other' } as any);
+      const res = await POST(req(validBody({ missionId: MISSION })));
+      expect(res.status).toBe(403);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockGenerateSizedUploadUrl).not.toHaveBeenCalled();
+    });
+
+    it('404s an unknown mission', async () => {
+      workerOnTask(null);
+      mockMissionsFindFirst.mockResolvedValue(null);
+      const res = await POST(req(validBody({ missionId: MISSION })));
+      expect(res.status).toBe(404);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it('rejects a missionId that is not a uuid before querying', async () => {
+      workerOnTask(null);
+      const res = await POST(req(validBody({ missionId: 'not-a-uuid' })));
+      expect(res.status).toBe(400);
+      expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+    });
+
+    it("refuses a missionId that differs from the worker's own task mission", async () => {
+      workerOnTask(MISSION);
+      mockMissionsFindFirst.mockResolvedValue({ id: OTHER_MISSION, workspaceId: 'ws-1' } as any);
+      const res = await POST(req(validBody({ missionId: OTHER_MISSION })));
+      expect(res.status).toBe(400);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it("inherits the worker's task mission when none is sent", async () => {
+      workerOnTask(MISSION);
+      const res = await POST(req(validBody()));
+      expect(res.status).toBe(200);
+      expect(mockInsertValues.mock.calls[0][0].missionId).toBe(MISSION);
+      expect((mockTasksFindFirst.mock.calls[0] as any)[0].where).toEqual({ field: 'tasks.id', value: 'task-1', type: 'eq' });
+    });
+
+    it('stores null when neither the body nor the task has a mission', async () => {
+      const res = await POST(req(validBody()));
+      expect(res.status).toBe(200);
+      expect(mockInsertValues.mock.calls[0][0].missionId).toBeNull();
+      // No task on the worker → no task lookup.
+      expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    });
   });
 });
