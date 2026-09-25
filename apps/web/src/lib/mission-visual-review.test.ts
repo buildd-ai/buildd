@@ -4,6 +4,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  VISUAL_AUDITOR_ROLE_SLUG,
+  missionVisualReview,
   parseQaMeta,
   selectLatestRun,
   summarizeVisualRun,
@@ -99,6 +101,54 @@ describe('selectLatestRun', () => {
 
   it('is empty for no shots', () => {
     expect(selectLatestRun([])).toEqual([]);
+  });
+
+  // A run is (worker, runKey): another worker reusing the auditor's runKey
+  // must not merge into, or displace, the auditor's run.
+  it('groups a run by worker as well as runKey', () => {
+    const shots = toVisualShots([
+      { ...row('w1a', '2026-03-10T10:00:00.000Z', { qa: qa({ runKey: 'run-1', verdict: 'issue' }) }), workerId: 'w1' },
+      { ...row('w1b', '2026-03-10T10:01:00.000Z', { qa: qa({ runKey: 'run-1', viewport: 'desktop' }) }), workerId: 'w1' },
+      { ...row('w2a', '2026-03-10T10:00:30.000Z', { qa: qa({ runKey: 'run-1' }) }), workerId: 'w2' },
+    ]);
+    expect(selectLatestRun(shots).map(s => s.id)).toEqual(['w1a', 'w1b']);
+  });
+});
+
+describe('missionVisualReview', () => {
+  const auditor = (status: string) => ({ title: '[surface audit] Mission', status, roleSlug: VISUAL_AUDITOR_ROLE_SLUG });
+  const shotRow = (id: string, verdict = 'ok') =>
+    ({ ...row(id, '2026-03-10T10:00:00.000Z', { qa: qa({ verdict }) }), workerId: 'w1' });
+
+  it('shows todo (no shots) while an auditor task is still open', () => {
+    for (const status of ['pending', 'assigned', 'in_progress', 'waiting_input']) {
+      const r = missionVisualReview([], [auditor(status)]);
+      expect(r).not.toBeNull();
+      expect(r!.run).toEqual([]);
+      expect(r!.summary).toEqual({ shots: 0, ok: 0, issues: 0, unsure: 0 });
+    }
+  });
+
+  it('is hidden for a finished, failed or cancelled auditor task with no shots', () => {
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      expect(missionVisualReview([], [auditor(status)])).toBeNull();
+    }
+  });
+
+  it('is hidden when there are no shots and no auditor task', () => {
+    expect(missionVisualReview([], [])).toBeNull();
+  });
+
+  // Pre-auditor `[surface audit]` tasks run as builders and never write
+  // accepted shots, so they must not hold the step open waiting forever.
+  it('ignores an open [surface audit] that is not a visual-auditor task', () => {
+    expect(missionVisualReview([], [{ title: '[surface audit] Mission', status: 'pending', roleSlug: 'builder' }])).toBeNull();
+  });
+
+  it('shows the latest run once there are shots, whatever the task state', () => {
+    const r = missionVisualReview([shotRow('a'), shotRow('b', 'issue')], []);
+    expect(r!.run.map(s => s.id)).toEqual(['a', 'b']);
+    expect(r!.summary).toEqual({ shots: 2, ok: 1, issues: 1, unsure: 0 });
   });
 });
 

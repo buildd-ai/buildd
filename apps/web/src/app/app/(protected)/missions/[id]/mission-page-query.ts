@@ -21,7 +21,8 @@
  * Pure: no `db` import. The page runs the queries.
  */
 import { sql, eq, and, type SQL } from 'drizzle-orm';
-import { artifacts, tasks } from '@buildd/core/db/schema';
+import { artifacts, tasks, workers } from '@buildd/core/db/schema';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { ArtifactType } from '@buildd/shared';
 
 // ── The relational query ─────────────────────────────────────────────────────
@@ -133,6 +134,7 @@ export const MISSION_DETAIL_WITH = {
  */
 export const MISSION_VISUAL_SHOT_COLUMNS = {
   id: true,
+  workerId: true,
   type: true,
   metadata: true,
   createdAt: true,
@@ -141,11 +143,23 @@ export const MISSION_VISUAL_SHOT_COLUMNS = {
 /** Newest first: 40 shots a run (20 routes × 2 viewports) × up to three runs. */
 export const MISSION_VISUAL_SHOTS_LIMIT = 120;
 
+/** Newest first. With the limit above, ascending would keep the oldest runs and cut the newest. */
+export const MISSION_VISUAL_SHOTS_ORDER = (
+  a: { createdAt: typeof artifacts.createdAt },
+  { desc }: { desc: (c: typeof artifacts.createdAt) => SQL },
+) => [desc(a.createdAt)];
+
+/**
+ * Only the auditor's shots are evidence. Any worker on the mission can upload
+ * a screenshot with a hand-made `metadata.qa`, so the rows are limited to
+ * workers of this mission's `visual-auditor` tasks.
+ */
 export const missionVisualShotsWhere = (missionId: string): SQL =>
   and(
     eq(artifacts.missionId, missionId),
     eq(artifacts.type, ArtifactType.SCREENSHOT),
     sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
+    sql`${artifacts.workerId} in (select ${workers.id} from ${workers} inner join ${tasks} on ${tasks.id} = ${workers.taskId} where ${tasks.missionId} = ${missionId} and ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG})`,
   )!;
 
 // ── The digest query ─────────────────────────────────────────────────────────

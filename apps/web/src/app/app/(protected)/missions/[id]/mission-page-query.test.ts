@@ -9,6 +9,8 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { asc, desc, type SQL } from 'drizzle-orm';
+import { artifacts } from '@buildd/core/db/schema';
 import { selectMissionCompletionSummary } from '@/lib/mission-helpers';
 import { getHeartbeatStatus } from '@/lib/heartbeat-helpers';
 import { buildAttemptStrips } from '@/lib/attempt-strip';
@@ -26,6 +28,7 @@ import {
   MISSION_VISUAL_SHOT_COLUMNS,
   MISSION_VISUAL_SHOTS_LIMIT,
   missionVisualShotsWhere,
+  MISSION_VISUAL_SHOTS_ORDER,
 } from './mission-page-query';
 
 const PAGE = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
@@ -88,19 +91,40 @@ describe('visual review shots query', () => {
     expect(text).toMatch(/"artifacts"\."mission_id" = \$\d+/);
     expect(text).toMatch(/"artifacts"\."type" = \$\d+/);
     expect(text).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
-    expect(q.params).toEqual(['mission-1', 'screenshot']);
+    expect(q.params).toEqual(['mission-1', 'screenshot', 'mission-1', 'visual-auditor']);
     // AND, not OR: every clause must hold.
     expect(text).not.toContain(' or ');
   });
 
-  it('selects no content and holds up to three 40-shot runs', () => {
-    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'type']);
+  // Evidence is the auditor's alone: a screenshot another worker on the
+  // mission writes with a hand-made metadata.qa must not become the run.
+  it('counts only shots written by a visual-auditor worker on this mission', () => {
+    const q = dialect.sqlToQuery(missionVisualShotsWhere('mission-1'));
+    const text = q.sql.replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /"artifacts"\."worker_id" in \(select "workers"\."id" from "workers" inner join "tasks" on "tasks"\."id" = "workers"\."task_id" where "tasks"\."mission_id" = \$3 and "tasks"\."role_slug" = \$4\)/,
+    );
+    expect(q.params[3]).toBe('visual-auditor');
+  });
+
+  it('selects no content, carries the worker, and holds up to three 40-shot runs', () => {
+    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'type', 'workerId']);
     expect(MISSION_VISUAL_SHOTS_LIMIT).toBeGreaterThanOrEqual(120);
   });
 
-  it('page.tsx reads the shots through the dedicated query', () => {
+  // With a limit, the order decides which runs survive: ascending would keep
+  // the OLDEST 120 and silently cut the newest run.
+  it('orders newest first', () => {
+    const [order] = MISSION_VISUAL_SHOTS_ORDER(artifacts, { desc, asc });
+    const text = dialect.sqlToQuery(order as SQL).sql;
+    expect(text).toBe('"artifacts"."created_at" desc');
+  });
+
+  it('page.tsx reads the shots through the dedicated query and helper', () => {
     expect(PAGE).toContain('missionVisualShotsWhere(');
     expect(PAGE).toContain('limit: MISSION_VISUAL_SHOTS_LIMIT');
+    expect(PAGE).toContain('orderBy: MISSION_VISUAL_SHOTS_ORDER');
+    expect(PAGE).toContain('missionVisualReview(');
   });
 });
 
