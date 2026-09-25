@@ -704,6 +704,15 @@ describe('HealthClient — budget forecast labels', () => {
   };
   const farFuture = '2099-01-01T00:00:00.000Z';
 
+  it('captions the window exception in words, not a raw query-string token', () => {
+    const html = render({
+      budgetForecast: { oauthSessions: [], codex: null, claudeTenant: null, missions: [], monthly },
+    });
+    expect(html).toContain('health-section-budget-forecast');
+    expect(html).not.toContain('?window=');
+    expect(html).toContain('ignores the page window');
+  });
+
   it('labels monthly and mission spend as an estimate', () => {
     const html = render({
       budgetForecast: {

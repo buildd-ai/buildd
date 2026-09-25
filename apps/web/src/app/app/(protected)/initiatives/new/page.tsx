@@ -41,7 +41,7 @@ export default async function NewInitiativePage() {
   }
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
+    <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8">
       <NewInitiativeForm teamId={activeTeamId} workspaces={teamWorkspaces} />
     </div>
   );

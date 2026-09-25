@@ -362,7 +362,7 @@ function ActionRow({
         $
       </span>
       <span className={`flex-1 min-w-0 font-mono text-[11px] bg-surface-3/50 rounded px-1 ${
-        rowExpanded ? 'text-text-secondary whitespace-pre-wrap break-all' : 'text-text-muted'
+        rowExpanded ? 'text-text-secondary whitespace-pre-wrap break-all' : 'text-text-muted truncate'
       }`}>
         {rowExpanded ? milestone.label : truncated}
       </span>

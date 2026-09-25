@@ -3,6 +3,7 @@ import { artifacts } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import MarkdownContent from '@/components/MarkdownContent';
+import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
 
 export default async function SharePage({
   params,
@@ -100,17 +101,9 @@ export default async function SharePage({
           </div>
         )}
 
-        {artifact.type === 'data' && artifact.content && (
-          <div className="mb-8">
-            <pre className="p-6 bg-[#111] border border-[#222] rounded-lg overflow-x-auto text-sm font-mono text-[#ccc]">
-              {(() => {
-                try {
-                  return JSON.stringify(JSON.parse(artifact.content), null, 2);
-                } catch {
-                  return artifact.content;
-                }
-              })()}
-            </pre>
+        {(artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
+          <div className="min-w-0 p-4 md:p-6 bg-[#111] border border-[#222] rounded-lg mb-8">
+            <ArtifactCodeBody type={artifact.type} content={artifact.content} textClassName="text-[#ccc]" />
           </div>
         )}
 

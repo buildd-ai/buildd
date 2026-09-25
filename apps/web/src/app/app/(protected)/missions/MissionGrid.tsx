@@ -297,12 +297,18 @@ function FilterTabBar({
   onSelect: (f: FilterTab) => void;
 }) {
   return (
-    <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+    // Below md the pills can outrun a phone's width: fade the trailing edge so
+    // it reads as "scrolls", and pad the end so the last pill clears the fade
+    // once scrolled fully.
+    <div
+      data-testid="mission-filter-bar"
+      className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 pr-6 md:pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)] md:[mask-image:none]"
+    >
       {FILTER_TABS.map(({ key, label }) => (
         <button
           key={key}
           onClick={() => onSelect(key)}
-          className={`filter-pill ${filter === key ? 'filter-pill-active' : ''}`}
+          className={`filter-pill shrink-0 ${filter === key ? 'filter-pill-active' : ''}`}
         >
           {label}{counts[key] > 0 && <span className="ml-1 opacity-60">{counts[key]}</span>}
         </button>

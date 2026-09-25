@@ -16,6 +16,7 @@ import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
+import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -54,14 +55,14 @@ export default async function WorkspaceConfigPage({
     }
 
     return (
-        <main className="min-h-screen p-8">
+        <main className="min-h-screen p-4 md:p-8">
             <div className="max-w-2xl mx-auto">
                 <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
                     &larr; Back to {workspace.name}
                 </Link>
 
                 <div className="mb-8">
-                    <h1 className="text-3xl font-bold">Git Workflow Configuration</h1>
+                    <h1 className="text-2xl md:text-3xl font-bold">Git Workflow Configuration</h1>
                     <p className="text-text-muted mt-1">
                         Configure how agents should work with git in this workspace.
                     </p>
@@ -119,6 +120,20 @@ export default async function WorkspaceConfigPage({
                     workspaceId={workspace.id}
                     initialPolicy={(workspace.gitConfig as any)?.subjectPolicy ?? null}
                 />
+
+                {/* Destructive action lives here, away from the workspace header's primary actions. */}
+                <section
+                    data-testid="workspace-danger-zone"
+                    className="mt-10 border border-status-error/30 rounded-lg p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                    <div className="min-w-0">
+                        <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
+                        <p className="text-xs text-text-muted mt-1">
+                            Deletes the workspace with all of its tasks and workers. This cannot be undone.
+                        </p>
+                    </div>
+                    <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
+                </section>
             </div>
         </main>
     );

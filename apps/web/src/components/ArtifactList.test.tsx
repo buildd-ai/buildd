@@ -120,3 +120,13 @@ describe('ArtifactList server-driven scope (paged callers)', () => {
     expect(html).toContain('data-testid="artifact-search-partial"');
   });
 });
+
+// Mobile QA: a 14px search field makes iOS zoom the page on focus.
+describe('ArtifactList search field', () => {
+  it('is 16px below md', () => {
+    const input = render().match(/<input\b[^>]*placeholder="Search[^"]*"[^>]*>/)![0];
+    const cls = (input.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/);
+    expect(cls).toContain('text-base');
+    expect(cls).toContain('md:text-sm');
+  });
+});

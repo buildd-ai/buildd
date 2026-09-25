@@ -31,7 +31,18 @@ const html = renderToStaticMarkup(<MissionContextBarView bar={buildMissionContex
 describe('MissionContextBarView', () => {
   it('renders the bar, sticky at the top of the page scroller', () => {
     expect(html).toContain('data-testid="mission-context-bar"');
-    expect(html).toMatch(/data-testid="mission-context-bar"[^>]*class="[^"]*\bsticky\b[^"]*\btop-0\b/);
+    expect(html).toMatch(/data-testid="mission-context-bar"[^>]*class="[^"]*\bsticky\b/);
+  });
+
+  // The page scroller is `p-4 md:p-8`, and a sticky box stops at the
+  // scroller's padding edge — at top-0 it left a 16px (32px on md) strip of
+  // scrolled content showing above it. The negative top must cancel the
+  // padding exactly, at every breakpoint the padding changes.
+  it('sticks flush with the scroller edge, cancelling the page padding', () => {
+    const cls = html.match(/data-testid="mission-context-bar"[^>]*class="([^"]*)"/)?.[1].split(/\s+/) ?? [];
+    expect(cls).toContain('-top-4');
+    expect(cls).toContain('md:-top-8');
+    expect(cls).not.toContain('top-0');
   });
 
   it('shows n / N and the phase label', () => {

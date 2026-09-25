@@ -62,6 +62,14 @@ function timeUntil(dateStr: string): string {
   return `in ${days}d`;
 }
 
+function nextRunMobileLabel(item: UnifiedScheduleItem): string {
+  if (!item.isEnabled) return 'paused';
+  const runs = item.totalRuns > 0 ? `${item.totalRuns} run${item.totalRuns !== 1 ? 's' : ''}` : 'never run';
+  if (!item.nextRunAt) return runs;
+  const next = timeUntil(item.nextRunAt);
+  return `${next === 'overdue' ? 'overdue' : `next ${next}`} · ${runs}`;
+}
+
 function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
   if (type === 'heartbeat') {
     return (
@@ -107,6 +115,8 @@ function ToggleSwitch({
       checked={item.isEnabled}
       disabled={loading}
       label={`Enable ${item.name}`}
+      // The 36x20 track is the visual; the tap target extends to 44px+ around it.
+      className="before:absolute before:-inset-x-2 before:-inset-y-3 before:content-['']"
       onChange={(_next, e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -201,17 +211,17 @@ function ScheduleRow({
   const hasFailures = item.consecutiveFailures > 0;
 
   return (
-    <div className={`group p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
+    <div className={`group p-3 sm:p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
       !item.isEnabled ? 'opacity-60' : ''
     } ${item.pendingSuggestion ? 'border-status-warning/30' : isOverdue ? 'border-status-warning/30' : 'border-border-default'}`}>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
         {/* Toggle */}
-        <div className="shrink-0">
+        <div className="shrink-0 flex">
           <ToggleSwitch item={item} onToggle={onToggle} loading={toggling} />
         </div>
 
         {/* Main content — click to navigate */}
-        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-3 min-w-0">
+        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-2 sm:gap-3">
           {/* Name + type badge */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
@@ -232,6 +242,14 @@ function ScheduleRow({
             </div>
             <div className="text-sm font-medium text-text-primary truncate">{item.name}</div>
             <code className="text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
+            {/* Phone: the stats column is hidden, so the one fact a row owes —
+                when it runs next — rides under the cron instead. */}
+            <div
+              data-testid="schedule-next-run-mobile"
+              className={`sm:hidden text-[11px] mt-0.5 ${isOverdue ? 'text-status-warning' : 'text-text-secondary'}`}
+            >
+              {nextRunMobileLabel(item)}
+            </div>
             {isScheduleErrorLive({ enabled: item.isEnabled, lastError: item.lastError }) && (
               <p className="text-xs text-status-error mt-1 truncate">⚠ {item.lastError}</p>
             )}
@@ -257,7 +275,7 @@ function ScheduleRow({
           </div>
 
           {/* Chevron */}
-          <svg className="w-4 h-4 text-text-muted shrink-0 group-hover:text-text-secondary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="hidden sm:block w-4 h-4 text-text-muted shrink-0 group-hover:text-text-secondary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
         </Link>
@@ -267,7 +285,9 @@ function ScheduleRow({
           <button
             data-testid="schedule-delete-btn"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(item); }}
-            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+            // Hover-reveal only where hover exists (fine pointer, md+). A phone
+            // or tablet always shows it, at a 44px target.
+            className="shrink-0 h-11 w-11 md:h-8 md:w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors md:pointer-fine:opacity-0 md:pointer-fine:group-hover:opacity-100 md:pointer-fine:focus-visible:opacity-100"
             title="Delete schedule"
             aria-label={`Delete ${item.name}`}
           >
@@ -535,12 +555,20 @@ export default function SchedulesUnified({
 
       {/* Filter bar */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        <div className="flex gap-1 border-b border-border-default">
+        {/* Scrolls in place on a phone rather than pushing the page sideways.
+            The bar's rule is an inset shadow, not a border: inside an
+            overflow container a child's -mb-px overlap is clipped, so the
+            active tab's underline could no longer cover a real border. The
+            tab's own border paints over the shadow instead. */}
+        <div
+          data-testid="schedule-filter-tabs"
+          className="flex gap-1 shadow-[inset_0_-1px_0_var(--border)] min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           {filterTabs.map(tab => (
             <button
               key={tab.key}
               onClick={() => setFilter(tab.key)}
-              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+              className={`shrink-0 whitespace-nowrap min-h-11 md:min-h-0 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                 filter === tab.key
                   ? 'border-primary text-primary'
                   : 'border-transparent text-text-secondary hover:text-text-primary'

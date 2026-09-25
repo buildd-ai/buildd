@@ -223,11 +223,11 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+            <span className="text-[11px] font-mono font-medium text-status-error tracking-wide uppercase">
               Review
             </span>
             {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-              <span className="text-[10px] text-text-muted">
+              <span className="text-[11px] text-text-muted">
                 {item.waitingMinutes < 60
                   ? `${item.waitingMinutes}m`
                   : `${Math.floor(item.waitingMinutes / 60)}h`}
@@ -393,7 +393,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 Fix task dispatched
               </div>
               {appliedTaskId && (
-                <Link href={actionCardTaskLink(item, { taskId: appliedTaskId, page: true })} className="text-[12px] font-medium text-primary hover:underline">
+                <Link href={actionCardTaskLink(item, { taskId: appliedTaskId, page: true })} className="text-[12px] font-medium text-accent-text hover:underline">
                   View task
                 </Link>
               )}
@@ -481,7 +481,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                       href={item.prUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[11px] font-medium text-primary hover:underline"
+                      className="text-[11px] font-medium text-accent-text hover:underline"
                     >
                       Check PR
                     </a>
@@ -543,7 +543,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 {conflictRetryTaskId && (
                   <Link
                     href={actionCardTaskLink(item, { taskId: conflictRetryTaskId, page: true })}
-                    className="text-[12px] font-medium text-primary hover:underline"
+                    className="text-[12px] font-medium text-accent-text hover:underline"
                   >
                     View task
                   </Link>
@@ -573,7 +573,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                     href={item.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[12px] font-medium text-primary hover:underline"
+                    className="text-[12px] font-medium text-accent-text hover:underline"
                   >
                     Resolve conflicts on GitHub
                   </a>

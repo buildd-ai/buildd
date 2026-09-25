@@ -7,12 +7,13 @@ import {
   deriveTimestampLabel,
   deriveWorkKind,
   isStaleWorker,
+  stripPrTitlePrefix,
   type ChainPositionResult,
   type IntensityResult,
   type IntensityTier,
   type WorkKind,
 } from '@/lib/task-presentation';
-import { StageChip } from '@/components/StageChip';
+import { StageChip, stageChipShowsPrNumber } from '@/components/StageChip';
 import { deriveStage, type Stage } from '@/lib/stage';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
@@ -307,6 +308,13 @@ export function TaskCard({
   // A mission task opens as the sheet over its mission (mission-task-href.ts).
   const href = missionTaskHref({ missionId, taskId: id, mode: 'sheet' });
   const showAttempt = (attemptCurrent ?? 0) >= 2;
+  // Row/full densities pass prNumber to the chip. When it shows `#N`, the
+  // title and the PR link must not say it again.
+  const chipShowsPr = stageChipShowsPrNumber({ stage, prNumber, loopMaxLoops, loopState });
+  const displayTitle = (() => {
+    const t = taskType ? stripTaskTypePrefix(title) : title;
+    return chipShowsPr ? stripPrTitlePrefix(t, prNumber) : t;
+  })();
   const tierColor = intensity ? TIER_COLOR[intensity.tier] : 'text-text-secondary';
 
   // ─── INLINE density — mission timeline row ────────────────────────────────
@@ -380,7 +388,7 @@ export function TaskCard({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 pointer-events-auto text-accent-text hover:underline"
+              className="relative z-10 pointer-events-auto text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-2 max-md:after:-inset-y-1.5 max-md:after:content-['']"
             >
               #{prNumber}
             </a>
@@ -416,7 +424,7 @@ export function TaskCard({
           {/* T1 — title (with optional type badge) */}
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-text-primary group-hover:text-accent-text transition-colors">
             <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
-            <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
+            <span className="truncate">{displayTitle}</span>
             <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
           </div>
 
@@ -470,16 +478,20 @@ export function TaskCard({
             )}
           </div>
 
-          {/* T4 — PR link */}
+          {/* T4 — PR link. Below md the ::after widens the hit area without
+              growing the row. It stops at the gap above (the elapsed line
+              stays the task's) and at the row's bottom padding (so it never
+              reaches the next row's overlay). The chip names #N when it can. */}
           {prUrl && (
             <a
               href={prUrl}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline"
+              aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
+              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
             >
-              PR #{prNumber}↗
+              {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
             </a>
           )}
         </div>
@@ -498,7 +510,7 @@ export function TaskCard({
       <div className="flex items-start justify-between gap-3 mb-0.5 pointer-events-none">
         <div className="flex items-center gap-1.5 text-[15px] font-medium text-text-primary group-hover:text-accent-text transition-colors flex-1 min-w-0">
           <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
-          <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
+          <span className="truncate">{displayTitle}</span>
           <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
         </div>
         <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
@@ -566,9 +578,10 @@ export function TaskCard({
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0"
+            aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
+            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0 max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-3 max-md:after:content-['']"
           >
-            PR #{prNumber}↗
+            {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
           </a>
         )}
       </div>

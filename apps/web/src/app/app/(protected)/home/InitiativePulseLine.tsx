@@ -24,7 +24,7 @@ export function InitiativePulseLine({ items }: { items: PulseLineItem[] }) {
     <Link
       href={line.href}
       data-testid={PULSE_LINE_TESTID}
-      className="group inline-flex items-baseline gap-1.5 mb-8 md:mb-10 text-[13px] text-text-secondary hover:text-text-primary transition-colors"
+      className="group inline-flex items-center min-h-11 md:min-h-0 gap-1.5 mb-8 md:mb-10 text-[13px] text-text-secondary hover:text-text-primary transition-colors"
     >
       {/* One string, so the clause set can never be split by a wrapper. */}
       <span>{line.text}</span>

@@ -35,7 +35,7 @@ export default function NeedsInputAnswerBox({ onSubmit, sending }: Props) {
             onChange={(e) => setFreeText(e.target.value)}
             placeholder="Your response…"
             rows={3}
-            className="px-3 py-2 text-sm bg-surface-2 text-text-primary rounded-md border border-border-default focus:border-text-muted focus:outline-none resize-y"
+            className="px-3 py-2 text-base md:text-sm bg-surface-2 text-text-primary rounded-md border border-border-default focus:border-text-muted focus:outline-none resize-y"
           />
           <button
             type="button"

@@ -237,7 +237,7 @@ export default function ObservationList({
               type="text"
               value={editForm.title}
               onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm"
               placeholder="Title"
             />
 
@@ -246,7 +246,7 @@ export default function ObservationList({
               value={editForm.content}
               onChange={(e) => setEditForm({ ...editForm, content: e.target.value })}
               rows={4}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm resize-y"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm resize-y"
               placeholder="Content"
             />
 
@@ -255,7 +255,7 @@ export default function ObservationList({
               type="text"
               value={editForm.filesInput}
               onChange={(e) => setEditForm({ ...editForm, filesInput: e.target.value })}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm"
               placeholder="Files (comma-separated)"
             />
 
@@ -264,7 +264,7 @@ export default function ObservationList({
               type="text"
               value={editForm.conceptsInput}
               onChange={(e) => setEditForm({ ...editForm, conceptsInput: e.target.value })}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm"
               placeholder="Concepts (comma-separated)"
             />
 
@@ -294,29 +294,33 @@ export default function ObservationList({
 
     return (
       <div key={obs.id} className="border border-border-default rounded-lg p-4">
-        <div className="flex justify-between items-start mb-2">
-          <div className="flex items-center gap-2">
-            <span className={`px-2 py-0.5 text-xs rounded-full ${TYPE_COLORS[obs.type] || TYPE_COLORS.summary}`}>
+        {/* Meta + actions on one line, title on its own full-width line so a
+            long title wraps normally instead of one word per line. */}
+        <div className="flex justify-between items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={`px-2 py-0.5 text-xs rounded-full flex-shrink-0 ${TYPE_COLORS[obs.type] || TYPE_COLORS.summary}`}>
               {obs.type}
             </span>
-            <h3 className="font-medium">{obs.title}</h3>
+            <span className="text-xs text-text-muted truncate">{timeAgo(obs.createdAt)}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-text-muted">{timeAgo(obs.createdAt)}</span>
+          <div className="flex items-center gap-1 flex-shrink-0 -mr-2 md:mr-0 md:gap-2">
             <button
               onClick={() => startEditing(obs)}
-              className="text-xs text-primary hover:text-primary-hover"
+              className="inline-flex items-center justify-center min-h-11 min-w-11 px-2 md:min-h-0 md:min-w-0 md:px-0 text-xs text-primary hover:text-primary-hover"
+              aria-label={`Edit ${obs.title}`}
             >
               Edit
             </button>
             <button
               onClick={() => handleDelete(obs.id)}
-              className="text-xs text-status-error hover:opacity-80"
+              className="inline-flex items-center justify-center min-h-11 min-w-11 px-2 md:min-h-0 md:min-w-0 md:px-0 text-xs text-status-error hover:opacity-80"
+              aria-label={`Delete ${obs.title}`}
             >
               Delete
             </button>
           </div>
         </div>
+        <h3 className="font-medium mb-2 [overflow-wrap:anywhere]">{obs.title}</h3>
         <div
           className="text-sm text-text-secondary whitespace-pre-wrap cursor-pointer"
           onClick={() => setExpandedId(isExpanded ? null : obs.id)}
@@ -374,7 +378,7 @@ export default function ObservationList({
           placeholder="Search observations…"
           value={search}
           onChange={(e) => handleSearch(e.target.value)}
-          className="flex-1 min-w-[200px] px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+          className="flex-1 min-w-[200px] px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
         />
         <div className="flex rounded-lg border border-border-default overflow-hidden">
           <button

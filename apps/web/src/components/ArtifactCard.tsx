@@ -135,27 +135,28 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
     >
       {/* Mobile collapsed layout (<640px) */}
       <div className="sm:hidden p-4">
-        {/* Title row: badge + title + date */}
-        <div className="flex items-center gap-2 mb-1.5">
+        {/* Title row: badge + title. The date sits on the meta line below, so
+            a phone-width title is not squeezed to a few characters. */}
+        <div data-testid="artifact-card-title-row" className="flex items-start gap-2 mb-1.5">
           <span
-            className={`shrink-0 px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wider rounded ${style.bg} ${style.text}`}
+            className={`shrink-0 mt-px px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wider rounded ${style.bg} ${style.text}`}
           >
             {artifact.type}
           </span>
           <span
-            className="flex-1 text-[13px] font-mono font-semibold text-text-primary truncate"
+            className="flex-1 min-w-0 text-[13px] font-mono font-semibold text-text-primary line-clamp-2 [overflow-wrap:anywhere]"
             aria-label={artifact.title || 'Untitled'}
           >
             {artifact.title || 'Untitled'}
           </span>
-          <span className="shrink-0 text-[11px] font-mono text-text-muted">{dateShort}</span>
         </div>
 
         {/* 2-line stripped preview */}
         {mobilePreview && <div className="mb-3">{mobilePreview}</div>}
 
-        {/* EXPAND affordance */}
-        <div className="flex justify-end">
+        {/* Meta line: date + EXPAND affordance */}
+        <div data-testid="artifact-card-meta" className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-mono text-text-muted">{dateShort}</span>
           <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-accent">
             Expand
           </span>

@@ -117,7 +117,7 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
               type="number"
               min={1}
               max={90}
-              className="w-24 border border-border-subtle rounded px-3 py-1.5 bg-surface-1 text-sm"
+              className="w-24 border border-border-subtle rounded px-3 py-1.5 bg-surface-1 text-base md:text-sm"
               value={conflictDays}
               onChange={e => setConflictDays(e.target.value)}
             />

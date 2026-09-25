@@ -21,8 +21,11 @@ import { describe, it, expect } from 'bun:test';
  */
 const CEILINGS: Record<string, number> = {
   // Shared shell for every /app route. force-dynamic, so it re-runs on every
-  // navigation: user -> { teams, workspace scope, cookies } -> team workspaces.
-  'layout.tsx': 3,
+  // navigation: user -> { teams, workspace ids, active-team scope }. The scope
+  // resolver's own depth (two rounds, timezone included) is pinned in
+  // lib/team-access.test.ts; the guard below keeps the layout from chaining a
+  // third lookup onto it.
+  'layout.tsx': 2,
   'missions/page.tsx': 11,
   'missions/[id]/page.tsx': 15,
   'tasks/[id]/page.tsx': 19,
@@ -59,6 +62,15 @@ describe('dashboard render waterfalls stay collapsed', () => {
     expect(countSerialWaits('const [a, b] = await Promise.all([f(), g()]);')).toBe(1);
     expect(countSerialWaits('const a = await f(); const b = await g();')).toBe(2);
     expect(countSerialWaits('// await f()\n/* await g() */')).toBe(0);
+  });
+});
+
+describe('the shell takes the team timezone from the scope, not a chained lookup', () => {
+  it('layout.tsx does not call getTeamTimezoneSetting after resolving the team', () => {
+    // Chaining it off the resolved scope put a third serial round trip on
+    // every /app request; resolveActiveTeamScope already fetches it in
+    // parallel with the workspace query.
+    expect(sources.get('layout.tsx')!).not.toContain('getTeamTimezoneSetting(');
   });
 });
 

@@ -74,7 +74,7 @@ export default function RepoPicker({ repos, selectedRepos, onToggle, loading }: 
           placeholder="Search repositories…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 px-3 py-2 text-sm border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+          className="flex-1 px-3 py-2 text-base md:text-sm border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
         />
         {selectedRepos.length > 0 && (
           <span className="text-sm text-primary font-medium whitespace-nowrap">

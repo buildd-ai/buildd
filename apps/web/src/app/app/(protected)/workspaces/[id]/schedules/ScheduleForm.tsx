@@ -157,7 +157,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Nightly test suite"
               required
             />
@@ -189,14 +189,14 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                   type="date"
                   value={runAtDate}
                   onChange={(e) => setRunAtDate(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                   required
                 />
                 <input
                   type="time"
                   value={runAtTime}
                   onChange={(e) => setRunAtTime(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                   required
                 />
               </div>
@@ -261,7 +261,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Run nightly tests"
               required
             />
@@ -273,7 +273,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Run the full test suite and report any failures…"
             />
           </div>
@@ -299,7 +299,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={10}
                 value={priority}
                 onChange={(e) => setPriority(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               />
             </div>
           </div>
@@ -326,7 +326,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={10}
                 value={maxConcurrent}
                 onChange={(e) => setMaxConcurrent(parseInt(e.target.value) || 1)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               />
               <p className="text-xs text-text-muted mt-1">
                 Skip creating new tasks if this many are already active. 0 = no limit.
@@ -341,7 +341,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={100}
                 value={pauseAfterFailures}
                 onChange={(e) => setPauseAfterFailures(parseInt(e.target.value) || 5)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               />
               <p className="text-xs text-text-muted mt-1">
                 Auto-disable schedule after this many consecutive failures. 0 = never pause.

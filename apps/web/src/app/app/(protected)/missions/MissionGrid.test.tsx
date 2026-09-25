@@ -115,3 +115,17 @@ describe('MissionGrid — the Active count includes the missions waiting on you 
     expect(html).not.toContain('data-group="paused"');
   });
 });
+
+// Mobile QA: on a 320px phone the filter pills scroll with no sign there is
+// more to the right. The bar fades its trailing edge below md.
+describe('MissionGrid filter bar', () => {
+  it('fades its trailing edge below md and keeps pills from shrinking', () => {
+    const html = renderToStaticMarkup(<MissionGrid missions={[running, waiting, done]} />);
+    const bar = html.match(/<div\b[^>]*data-testid="mission-filter-bar"[^>]*>/)![0];
+    expect(bar).toContain('overflow-x-auto');
+    expect(bar).toMatch(/\[mask-image:linear-gradient\(to_right[^\]]*transparent\)\]/);
+    expect(bar).toContain('md:[mask-image:none]');
+    const pill = html.match(/<button\b[^>]*class="[^"]*filter-pill[^"]*"[^>]*>/)![0];
+    expect(pill).toContain('shrink-0');
+  });
+});

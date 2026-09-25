@@ -122,7 +122,7 @@ export function ReleaseRow({
             href={release.runUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="relative shrink-0 text-[11px] font-mono text-primary hover:underline"
+            className="relative shrink-0 inline-flex min-h-11 min-w-11 items-center justify-end md:min-h-0 md:min-w-0 text-[11px] font-mono text-primary hover:underline"
           >
             Run →
           </a>

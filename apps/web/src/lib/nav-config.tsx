@@ -112,3 +112,21 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/connections') return 'Connections';
   return null;
 }
+
+/**
+ * Top-level pages whose server component reads `?workspace=`. The header
+ * WorkspaceFilter only renders here — anywhere else it would be a control that
+ * changes the URL and nothing else. nav-config.test.tsx checks each page.tsx.
+ */
+export const WORKSPACE_FILTERED_PAGES: ReadonlySet<string> = new Set([
+  '/app/home',
+  '/app/dashboard', // redirect-only (next.config.mjs → /app/home); the header still renders mid-redirect
+  '/app/missions',
+  '/app/releases',
+  '/app/tasks',
+  '/app/health',
+]);
+
+export function showsWorkspaceFilter(pathname: string): boolean {
+  return WORKSPACE_FILTERED_PAGES.has(pathname);
+}

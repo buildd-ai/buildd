@@ -141,7 +141,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Short descriptive title"
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
           />
         </div>
 
@@ -154,7 +154,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             onChange={(e) => setContent(e.target.value)}
             placeholder="Detailed observation content…"
             rows={4}
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm resize-y"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm resize-y"
           />
         </div>
 
@@ -169,7 +169,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={filesInput}
             onChange={(e) => setFilesInput(e.target.value)}
             placeholder="src/api/auth.ts, lib/utils.ts (comma-separated)"
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
           />
         </div>
 
@@ -184,7 +184,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={conceptsInput}
             onChange={(e) => setConceptsInput(e.target.value)}
             placeholder="authentication, caching, performance (comma-separated)"
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
           />
         </div>
 

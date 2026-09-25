@@ -101,7 +101,7 @@ export default function AiFeedback({
 
   const btnBase = compact
     ? 'p-0.5 rounded transition-colors disabled:opacity-40'
-    : 'p-1 rounded transition-colors disabled:opacity-40';
+    : 'inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 p-1 rounded transition-colors disabled:opacity-40';
 
   const iconSize = compact ? 'w-3 h-3' : 'w-3.5 h-3.5';
 

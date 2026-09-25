@@ -502,7 +502,7 @@ export default function ConnectionsClient({
               onChange={(e) => setHeaderKeyValue(e.target.value)}
               placeholder="Enter API key"
               autoFocus
-              className="w-full px-3 py-2 mb-4 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+              className="w-full px-3 py-2 mb-4 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
               onKeyDown={(e) => e.key === 'Enter' && handleSaveHeaderKey()}
             />
             <div className="flex gap-3">
@@ -586,7 +586,7 @@ export default function ConnectionsClient({
               <select
                 value={shareTeamId}
                 onChange={(e) => setShareTeamId(e.target.value)}
-                className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary focus:outline-none focus:border-primary"
+                className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary focus:outline-none focus:border-primary"
               >
                 <option value="">Select a team…</option>
                 {shareableTeams.map(team => (
@@ -610,7 +610,7 @@ export default function ConnectionsClient({
                 <select
                   value={transferTeamId}
                   onChange={(e) => setTransferTeamId(e.target.value)}
-                  className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary focus:outline-none focus:border-primary"
+                  className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary focus:outline-none focus:border-primary"
                 >
                   <option value="">Select a team…</option>
                   {transferableTeams.map(team => (

@@ -1,7 +1,4 @@
 import { cookies } from 'next/headers';
-import { eq } from 'drizzle-orm';
-import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
 import { AuthGuard } from '@/components/AuthGuard';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
@@ -14,8 +11,7 @@ import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvi
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
-import { getTeamTimezoneSetting } from '@/lib/team-timezone';
+import { getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
 
 export default async function ProtectedLayout({
   children,
@@ -36,38 +32,25 @@ export default async function ProtectedLayout({
     // round-trip chains before anything painted. Each keeps its own catch so a
     // failure degrades exactly the surface it used to — Promise.all would
     // otherwise reject the whole group on the first error.
-    const [userTeamsResult, workspaceIdsResult, cookieStore] = await Promise.all([
+    const [userTeamsResult, workspaceIdsResult, scopeResult] = await Promise.all([
       // Teams empty on failure, page still renders
       getUserTeamsWithDetails(user.id).catch(() => [] as typeof userTeams),
       // Workspace IDs empty on failure, notifications won't load
       getUserWorkspaceIds(user.id).catch(() => [] as string[]),
-      cookies(),
+      // Active team + its workspaces + its timezone, from the same resolver
+      // Home uses so the header never names a team Home isn't showing. The
+      // zone comes back in the resolver's own parallel round, never chained
+      // after it (dashboard-waterfall.test.ts).
+      cookies()
+        .then((cookieStore) => resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value))
+        // No team on failure; WorkspaceFilter renders nothing, timestamps use the browser zone
+        .catch((): ActiveTeamScope => ({ teamId: null, workspaces: [], timezone: null })),
     ]);
     userTeams = userTeamsResult;
     workspaceIds = workspaceIdsResult;
-
-    const teamCookie = cookieStore.get('buildd-team')?.value;
-
-    // Use cookie value if it matches a valid team, otherwise default to first team
-    if (teamCookie && userTeams.some(t => t.id === teamCookie)) {
-      currentTeamId = teamCookie;
-    } else if (userTeams.length > 0) {
-      currentTeamId = userTeams[0].id;
-    }
-
-    if (currentTeamId) {
-      const teamId = currentTeamId;
-      [teamWorkspaces, teamTimezone] = await Promise.all([
-        db
-          .select({ id: workspaces.id, name: workspaces.name })
-          .from(workspaces)
-          .where(eq(workspaces.teamId, teamId))
-          // teamWorkspaces stays empty; WorkspaceFilter renders nothing
-          .catch(() => [] as typeof teamWorkspaces),
-        // Never throws; null means "no team zone" → timestamps use the browser's
-        getTeamTimezoneSetting(teamId),
-      ]);
-    }
+    currentTeamId = scopeResult.teamId;
+    teamWorkspaces = scopeResult.workspaces;
+    teamTimezone = scopeResult.timezone;
   }
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
@@ -84,13 +67,33 @@ export default async function ProtectedLayout({
 
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-              {/* Global notification banner for tasks needing input */}
-              <NeedsInputBanner />
-              {/* Banner shown when a connector's auth expires mid-task */}
-              <ConnectorReconnectBanner />
-              {/* Mobile page header for non-tasks pages */}
-              <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} workspaces={teamWorkspaces} />
-              <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
+              {/* Mobile page header (top-level pages) + the global banners, as one
+                  stack: fixed on mobile so a banner is never hidden under the header. */}
+              <MobilePageHeader
+                teams={userTeams}
+                currentTeamId={currentTeamId}
+                userInitial={userInitial}
+                workspaces={teamWorkspaces}
+                banners={
+                  <>
+                    {/* Tasks needing input */}
+                    <NeedsInputBanner />
+                    {/* A connector's auth expired mid-task */}
+                    <ConnectorReconnectBanner />
+                  </>
+                }
+              />
+              {/* data-scroll-root: overlays lock this, not body (lib/scroll-root.ts).
+                  overflow-x-hidden: with overflow-y auto, x would otherwise
+                  compute to auto and stray overflow became a sideways touch pan.
+                  (overflow-x-clip would compute to hidden here too — clip is only
+                  kept when the other axis is visible/clip.) <main> is still an x
+                  scroll container, so focus()/scrollIntoView() on content past
+                  the right edge can shift it; the fix for that is not
+                  overflowing — real horizontal scrollers own an overflow-x-auto
+                  box. An inner clip wrapper would avoid it, but page roots rely
+                  on <main> as their h-full containing block. */}
+              <main data-scroll-root className="flex-1 overflow-y-auto overflow-x-hidden pb-16 md:pb-0">
                 {children}
               </main>
             </div>

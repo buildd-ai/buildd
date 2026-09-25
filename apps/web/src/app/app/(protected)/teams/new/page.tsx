@@ -80,7 +80,7 @@ export default function NewTeamPage() {
                   setSlug(slugify(e.target.value));
                 }
               }}
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             />
           </div>
 
@@ -99,7 +99,7 @@ export default function NewTeamPage() {
                 setSlug(e.target.value);
                 setSlugEdited(true);
               }}
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
             />
             <p className="text-xs text-text-secondary mt-1">
               Lowercase letters, numbers, and hyphens only. Used in URLs.

@@ -38,4 +38,15 @@ describe('AgentHandledCard', () => {
     expect(html).toContain('CI running');
     expect(html).not.toContain('View fix attempt');
   });
+
+  it('a long title gets two lines, not a one-line ellipsis, and the PR link is a real tap target on a phone', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'CI_RUNNING', ciGate: { kind: 'running', label: 'CI running' } })} />,
+    );
+    const title = html.slice(0, html.indexOf('[WU-2] Health tab'));
+    expect(title.slice(title.lastIndexOf('<div'))).toContain('line-clamp-2');
+    expect(title.slice(title.lastIndexOf('<div'))).not.toContain('truncate');
+    const pr = html.slice(0, html.indexOf('PR #2054'));
+    expect(pr.slice(pr.lastIndexOf('<a'))).toContain('min-h-11');
+  });
 });

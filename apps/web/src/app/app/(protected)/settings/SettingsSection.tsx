@@ -22,8 +22,10 @@ export default function SettingsSection({
   return (
     <section>
       <div className="flex items-center justify-between gap-3 mb-3 min-h-8">
-        <h2 className={`section-label ${tone === 'danger' ? 'text-status-error' : ''}`}>{title}</h2>
-        {action}
+        <h2 className={`section-label shrink-0 ${tone === 'danger' ? 'text-status-error' : ''}`}>{title}</h2>
+        {/* min-w-0 lets a wide action (a team <select> sized to its longest
+            option) shrink instead of pushing the page wider than a phone. */}
+        {action && <div className="min-w-0 flex justify-end">{action}</div>}
       </div>
       {bare ? children : (
         <div className={`card p-4 space-y-4 ${tone === 'danger' ? 'border-status-error/40' : ''}`}>

@@ -60,9 +60,22 @@ export interface StageChipProps {
  * filled = active/urgent (pre-PR). soft = informational (has PR artifact). muted = terminal/quiet.
  * No border treatment on any variant — badges, not buttons.
  */
+function loopChipOverrides(loopMaxLoops: number | null | undefined, loopState: LoopState | null | undefined): boolean {
+  return !!loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted';
+}
+
+/**
+ * True when <StageChip> with these props renders `#N`. Callers use it to avoid
+ * repeating the PR number next to the chip (TaskCard's PR link and title).
+ */
+export function stageChipShowsPrNumber({ stage, prNumber, loopMaxLoops, loopState }: Pick<StageChipProps, 'stage' | 'prNumber' | 'loopMaxLoops' | 'loopState'>): boolean {
+  if (!prNumber || loopChipOverrides(loopMaxLoops, loopState)) return false;
+  return STAGE_CONFIG[stage].variant === 'soft';
+}
+
 export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops, loopExitConditionType }: StageChipProps) {
   // Loop chip overrides stage chip when the loop is in flight
-  if (loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted') {
+  if (loopMaxLoops && loopChipOverrides(loopMaxLoops, loopState)) {
     return (
       <LoopStatusChip
         loopIteration={loopIteration ?? 0}

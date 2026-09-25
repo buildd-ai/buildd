@@ -3,7 +3,7 @@ title: Team Namespace Scoping
 status: active
 owner: max
 last_verified: 2026-07-18
-summary: Home MUST aggregate across every team the user belongs to, while the missions and workspaces views MUST show only the single active team resolved server-side from the buildd-team cookie.
+summary: Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
 domain: surfaces
 surfaces: [apps/web/src/lib/team-access.ts, apps/web/src/app/app/(protected)/layout.tsx, apps/web/src/components/TeamSwitcher.tsx, apps/web/src/app/api/missions/route.ts]
 related: [team-workspace-mission-onboarding, surface-ia-home-missions-initiatives]
@@ -32,11 +32,10 @@ page list everything across every team the user belongs to and merely *label*
 rows with a team name (see `layout.tsx` reads the cookie but never filters;
 `GET /api/workspaces` and `GET /api/missions` return all of the user's teams).
 
-This spec defines a **global Home + namespaced working views** model:
+This spec defines a **namespaced views** model (Home included since the revision below):
 
-- **Home is cross-team.** It aggregates across every team the user belongs to.
-  It is the landing and find surface, and it MUST NOT be filtered by the active
-  team.
+- **Home follows the active team**, like every other working view (revised; see
+  "Home follows the active team" below).
 - **Missions and Workspaces are namespaced** to a single active team.
 - The **active team** is the `buildd-team` cookie. It scopes the working views
   and seeds creation defaults. Navigating into an item from Home re-scopes the
@@ -62,7 +61,7 @@ truth for scoped views.
 - The active team MUST be a team the current user is a member of.
 - If the cookie is missing, points to a team the user is not a member of, or
   references a deleted team, resolution MUST fall back to the user's default
-  team (personal team first, else first team by stable order).
+  team: the first team with workspaces, personal preferred (see AC-2).
 - Active-team resolution MUST be performed server-side (not trusted from client
   state alone).
 
@@ -70,7 +69,11 @@ truth for scoped views.
 - AC-1: GIVEN a `buildd-team` cookie naming a team the user belongs to, WHEN any
   scoped page or scoped API route loads, THEN that team is the active team.
 - AC-2: GIVEN no `buildd-team` cookie, WHEN a scoped view loads, THEN the active
-  team resolves to the user's personal team if one exists, else the first team.
+  team resolves to the personal team if it has workspaces, else the first team
+  (stable id order) that has workspaces; only when no team has any, the
+  personal team, else the first team. `resolveActiveTeamId` and
+  `resolveActiveTeamScope` share this rule, so every scoped view agrees with
+  the shell.
 - AC-3 (error): GIVEN a `buildd-team` cookie naming a team the user is NOT a
   member of, WHEN a scoped view loads, THEN the cookie value is ignored and the
   default team is used (no 500, no leak of the other team's data).
@@ -87,32 +90,46 @@ truth for scoped views.
 
 ---
 
-## Home is cross-team ✅ (must stay cross-team)
+## Home follows the active team ✅
 
-**Capability statement**: The home view MUST aggregate missions, active workers,
-and recent activity across ALL teams the user belongs to, independent of the
-active team, with each item attributed to its owning team.
+> Revised: this section used to require a cross-team Home. The code has scoped
+> Home to the active team since #1009 whenever the cookie was valid, and fell
+> back to a cross-team view only when it was missing or stale (#1032), which
+> left the header naming one team while Home showed another. Home now resolves
+> its team exactly as the shell does, and #1032's intent (first load is never
+> empty while the user has workspaces) moves into the default-team rule.
+
+**Capability statement**: Home follows the active team: it MUST show the same
+single active team the app shell (team switcher, workspace picker) names,
+resolved by the same helper. The default active team is the first one with
+workspaces, personal preferred.
 
 **Invariants**:
-- Home queries MUST scope by the union of the user's team IDs, never by the
-  single active team.
-- Every mission/workspace/worker row on Home MUST carry a team label.
+- Home and `layout.tsx` MUST both resolve the team via
+  `resolveActiveTeamScope`. Neither may keep its own fallback.
+- A valid cookie wins, even for a team with no workspaces.
+- Without a valid cookie, the default is the personal team if it has
+  workspaces, else the first team (stable id order) that has workspaces; only
+  when no team has any, the personal team, else the first team.
+- Home's "create a workspace" empty state MUST be decided by the active team's
+  workspace set, not by any derived list.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a user in teams A and B with missions in both, WHEN Home loads,
-  THEN missions from both A and B are listed.
-- AC-2: GIVEN the active team is A, WHEN Home loads, THEN changing the active
-  team to B does NOT change which items Home shows (Home is team-agnostic).
-- AC-3: WHEN Home renders a mission/worker row, THEN the row displays the name of
-  its owning team.
+- AC-1: GIVEN no `buildd-team` cookie, WHEN Home loads, THEN it shows the
+  default team's workspaces, and the header names that same team.
+- AC-1b: GIVEN no cookie, an empty personal team and another team with
+  workspaces, WHEN Home loads, THEN that other team is active (no "create a
+  workspace" state).
+- AC-2: GIVEN a cookie naming a team the user left, WHEN Home loads, THEN it
+  behaves as AC-1 (no empty state for a team that has workspaces).
+- AC-3: GIVEN a valid cookie, WHEN Home loads, THEN only that team's items show.
 - AC-4 (error): GIVEN a user in zero teams, WHEN Home loads, THEN it renders an
   empty state (no crash, no query against an empty team-id list that returns
   another user's data).
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/home/page.tsx` (queries
-  `inArray(missions.teamId, teamIds)` across all teams — keep)
-- `apps/web/src/lib/team-access.ts` (`getUserTeamIds`)
+- `apps/web/src/app/app/(protected)/home/page.tsx`
+- `apps/web/src/lib/team-access.ts` (`resolveActiveTeamScope`)
 
 **Out of scope**: Home layout/visual grouping.
 
@@ -251,8 +268,8 @@ beyond mission creation.
 ## Team switch re-scopes the app ✅
 
 **Capability statement**: A persistent team switcher MUST let the user change the
-active team in one action; doing so MUST re-scope all namespaced views and MUST
-leave Home cross-team.
+active team in one action; doing so MUST re-scope all namespaced views,
+Home included.
 
 **Invariants**:
 - The switcher MUST be reachable from primary navigation (not only Settings),
