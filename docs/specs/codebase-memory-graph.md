@@ -63,8 +63,9 @@ of files:
   encoded the bare-positional form, so **it passed for four weeks while every real
   bootstrap failed**. The `--repo-path` assertion (CBM-6) is that regression.
 - Once bootstrapping worked, the first cohort of enforced workers made **zero**
-  `mcp__codebase-memory__*` calls while `/api/cbm/metrics` reported a ~80% input
-  token reduction — a cohort artifact with no mechanism behind it.
+  `mcp__codebase-memory__*` calls while `/api/cbm/metrics` reported a large input
+  token reduction (figure: knowledge base artifact `cbm-repo-readouts-2026-09-24`)
+  — a cohort artifact with no mechanism behind it.
   `mechanismObserved` and `detectCbmEnforcedUnused` exist because of that.
 
 Every invariant below is falsifiable for the same reason: a silent capability
@@ -394,7 +395,7 @@ admin-scoped.
   and `deltasSuppressedBecause` names the reason
   (`no_graph_tool_calls_observed` | `insufficient_cohort`). Reporting a delta with
   no mechanism behind it is worse than reporting nothing — that is precisely the
-  ~80% figure this endpoint once published.
+  token-reduction figure this endpoint once published.
 - **CBM-25**: `binary_absent` workers are EXCLUDED from the comparison baseline
   (`comparableCount`). They come from a different infrastructure regime, not from
   a control group that could have used CBM and didn't. They remain in

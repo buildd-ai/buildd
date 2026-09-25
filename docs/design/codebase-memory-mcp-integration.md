@@ -28,8 +28,7 @@ assertions:
 - `apps/web/src/lib/default-roles.ts` — role/skill config and `allowedTools`
 - `apps/runner/src/workers.ts` — `buildWorkerMountAllowlist`, `buildWorkerBwrapArgv`
 - `packages/core/mcp-tools.ts` — `extractImplementationAnchors`, `spec_compare` two-hop bridge (PR #1429)
-- Prior task `a61de0b5` — spec_compare vocabulary gap fix
-- Prior task `a51c5358` — knowledge layer recon
+- Prior tasks: the spec_compare vocabulary gap fix (PR #1429) and a knowledge layer recon (task ids: knowledge base artifact `cbm-repo-readouts-2026-09-24`)
 
 ---
 
@@ -278,7 +277,7 @@ stopped being a cheap safety property and became the dominant startup cost.
 across workers. Per-task indexing is skipped entirely, not shortened.
 
 **Why seeding a per-worker cache does not work.** CBM keys a project by the absolute
-path it was indexed at — `/Users/max/buildd` → project `Users-max-buildd`, db at
+path it was indexed at — `/home/me/buildd` → project `home-me-buildd`, db at
 `<cache>/<project>.db`. Copying a cache preserves warmth *only* for that same path
 (measured: copied cache + same path = 11 s, same as warm; copied cache + a different
 path = ~21 s, i.e. full cold cost, and it silently indexes a **second** project).
@@ -324,7 +323,7 @@ it on the live fleet:
 
 1. **The base clone tracks a stale branch.** The runner only ever *adds worktrees* to
    it, so its checkout sits on whatever leftover `buildd/<uuid>-…` worker branch was
-   used last — measured **98 commits behind origin/main** — and its HEAD never moves,
+   used last — far behind origin/main when measured — and its HEAD never moves,
    so a HEAD-stamped refresh could never re-fire. The seeder now maintains its own
    `git worktree` under `~/.buildd-cbm-seed/<repo>-<hash>`, detached at
    `origin/<default branch>`, and stamps *that* sha, which does move.
@@ -339,9 +338,10 @@ it on the live fleet:
 **The path handed to the seeder must be a repo ROOT.** "Is it a git repo" is the wrong
 question — git answers from the nearest enclosing repo, so any subdirectory passes. The
 per-claim refresh handed it `/home/coder/.buildd/roles/builder` (a role config dir inside
-the runner's own checkout): the first version indexed the directory itself for **821 MB**
-of cache, and a plain repo check then resolved `origin/main` from `~/.buildd` and seeded a
-whole duplicate graph. Two junk projects had reached 1.6 GB before this was caught.
+the runner's own checkout): the first version indexed the directory itself, producing a
+large junk cache, and a plain repo check then resolved `origin/main` from `~/.buildd` and seeded a
+whole duplicate graph. Both junk projects had grown to gigabyte scale before this was caught
+(sizes: knowledge base artifact `cbm-repo-readouts-2026-09-24`).
 
 Verified live after the fix: the seed checkout sits at `origin/main`, a query returns
 current line numbers rather than the stale seed's, and both a role dir and `/tmp` are
@@ -430,8 +430,8 @@ Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache 
 
 | Repository | Source files | Wall-clock | Peak RSS | Graph nodes | Graph edges |
 |-----------|-------------|-----------|---------|-------------|-------------|
-| dispatch | 351 | **0.69s** | **101 MB** | 2,368 | 4,254 |
-| dispatch-family | 738 | **1.76s** | **197 MB** | 9,310 | 14,540 |
+| small-app | 351 | **0.69s** | **101 MB** | 2,368 | 4,254 |
+| medium-app | 738 | **1.76s** | **197 MB** | 9,310 | 14,540 |
 | sibling-app | 3,642 | **5.19s** | **498 MB** | 18,937 | 38,381 |
 | buildd (repo root) | 6,158 | **6.9s** (avg 2 runs) | **650 MB** (avg) | 44,297 | 66,618 |
 | buildd (git worktree) | 1,042 src + bun node_modules | **9.35s** | **800 MB** | 58,078 | 84,106 |
@@ -459,8 +459,8 @@ Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=1024`, cold cache
 
 | Workspace tier | Characteristic | Recommended `CBM_MEM_BUDGET_MB` |
 |---------------|---------------|--------------------------------|
-| Small (dispatch, ≤500 src files) | < 200 MB observed | 256 MB |
-| Medium (dispatch-family, ≤1K src files) | < 250 MB observed | 512 MB |
+| Small (small-app, ≤500 src files) | < 200 MB observed | 256 MB |
+| Medium (medium-app, ≤1K src files) | < 250 MB observed | 512 MB |
 | Large (sibling-app, ≤4K src files) | ~500 MB observed | 640 MB |
 | XLarge (buildd, ≤7K src files + worktree) | ~1,116 MB observed | 1024 MB |
 
@@ -502,7 +502,7 @@ The fallback is silent-to-the-user (no hard failure). Workers without CBM fall b
 
 ### 6.1 Current vocabulary gap and the two-hop fix
 
-The current spec_compare vocabulary gap (task `a61de0b5`, PR #1429) arose because prose queries ("auto-merge approval gate") produce near-zero code evidence against identifier-heavy embeddings. The two-hop fix extracts implementation anchors (file paths, camelCase symbols, PascalCase types) from spec chunks via regex, then runs a second lexical query against the code corpus using those anchors.
+The current spec_compare vocabulary gap (PR #1429) arose because prose queries ("auto-merge approval gate") produce near-zero code evidence against identifier-heavy embeddings. The two-hop fix extracts implementation anchors (file paths, camelCase symbols, PascalCase types) from spec chunks via regex, then runs a second lexical query against the code corpus using those anchors.
 
 This works well when specs contain traceability rows (`BT-N → apps/web/src/...`) or explicit symbol names. It degrades when specs use only prose and the symbol names have changed since the spec was written.
 
@@ -554,6 +554,10 @@ No changes to spec_compare are in scope for this spec. Implementation of the gra
 | Index fallback rate | n/a | < 5% | `graph_index_timeout` events / total CBM tasks |
 
 Baselines are established in the first week of pilot using tasks WITHOUT CBM enabled (control group).
+
+**Results:** production readouts against these metrics are not kept in this repo. Latest:
+knowledge base artifact `cbm-remeasure-2026-09-24`. As of that readout the control group had
+never enrolled a worker, so no row of this table has a measured baseline.
 
 ### Phase 1: Role-level opt-in
 
