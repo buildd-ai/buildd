@@ -5,7 +5,7 @@ import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
 import { hostname } from 'os';
 import { resolveBuilddHome } from './buildd-home';
-import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
+import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
@@ -18,6 +18,8 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
   reapChild, withTimeout, TRACKED_BRANCH } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
+import { initUpdateDrain } from './update-drain';
+import { saveWorker } from './worker-store';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -95,9 +97,6 @@ const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
 // interface (e.g. a Tailscale address for remote viewing).
 const BIND_HOST = resolveBindHost(process.env as Record<string, string | undefined>);
 const BIND_IS_LOOPBACK = isLoopbackAddress(BIND_HOST) || BIND_HOST === 'localhost';
-
-// Auto-update idle threshold: update automatically when 0 workers for this long
-const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
 
 // Non-blocking git command helper using Bun.spawn
 async function gitAsync(args: string[], cwd = BUILDD_DIR, timeout = 10_000): Promise<string> {
@@ -2755,17 +2754,29 @@ function markBrowserOpened() {
 })();
 
 // =============================================================================
-// IDLE AUTO-UPDATE
+// AUTO-UPDATE (drain-before-restart — see update-drain.ts)
 // =============================================================================
-// Checks every 60s. If an update is available and all workers have been idle
-// for IDLE_UPDATE_DELAY_MS, automatically triggers a safe update.
+// Checks every 60s. Once an update is eligible the runner stops claiming; it
+// applies immediately if idle, otherwise after running workers finish or the
+// drain window expires, whichever comes first.
 // =============================================================================
+
+const updateDrain = initUpdateDrain();
 
 function getActiveWorkerCount(): number {
   if (!workerManager) return 0;
   return Array.from(workerManager.getWorkers()).filter(
     (w: any) => w.status === 'working' || w.status === 'waiting' || w.status === 'stale'
   ).length;
+}
+
+// Workers whose session dies on restart. `waiting` is excluded on purpose: a
+// parked worker keeps its status across a restart and resumes on its answer.
+function getDrainBlockingWorkers(): LocalWorker[] {
+  if (!workerManager) return [];
+  return Array.from(workerManager.getWorkers()).filter(
+    (w: LocalWorker) => w.status === 'working' || w.status === 'stale'
+  );
 }
 
 if (isAutoUpdateDisabled()) {
@@ -2819,29 +2830,47 @@ setInterval(async () => {
     pendingTreeSyncRestart = false;
   }
 
-  // Auto-update when: the operator has not disabled it, an update is available,
-  // we are not already updating, the runner has been idle long enough, and this
-  // target still has attempts left AND has not already been abandoned.
+  // An update is eligible when: the operator has not disabled auto-update, an
+  // update is available, we are not already updating, and this target still
+  // has attempts left AND has not already been abandoned. Idleness is NOT part
+  // of eligibility any more — requiring it meant a busy runner never updated.
+  // The drain decides WHEN: it halts claims at once and applies when idle,
+  // drained, or out of time.
   //
   // The skip latch is the part that makes the retry cap real. It used to be
   // reachable only through a throwing failure: a no-op reset counted as a
   // success, restarted the process, and re-initialised the per-process counter
-  // — so the loop had no bound at all beyond the idle delay.
-  if (
-    updateState.updateAvailable &&
-    !updateState.updating &&
-    !canaryRollbackInFlight &&
-    !isAutoUpdateDisabled() &&
-    canAttemptAutoUpdate({
-      target: updateState.latestCommit,
-      skipped: skippedUpdateTargets,
-      retriesSpent: updateState.autoUpdateRetries,
-      spentAgainstCommit: updateState.autoUpdateRetriesCommit,
-      lastIdleAt: updateState.lastIdleAt,
-      now: Date.now(),
-      idleDelayMs: IDLE_UPDATE_DELAY_MS,
-    })
-  ) {
+  // — so the loop had no bound at all.
+  const now = Date.now();
+  const drainBlocking = getDrainBlockingWorkers();
+  const decision = updateDrain.tick({
+    eligible:
+      updateState.updateAvailable &&
+      !updateState.updating &&
+      !canaryRollbackInFlight &&
+      !isAutoUpdateDisabled() &&
+      canAttemptAutoUpdate({
+        target: updateState.latestCommit,
+        skipped: skippedUpdateTargets,
+        retriesSpent: updateState.autoUpdateRetries,
+        spentAgainstCommit: updateState.autoUpdateRetriesCommit,
+        lastIdleAt: now,
+        now,
+        idleDelayMs: 0,
+      }),
+    busy: drainBlocking.length,
+    now,
+  });
+  if (decision.action === 'apply') {
+    if (decision.reason === 'timeout') {
+      // These sessions die with the process. Persist their latest state now so
+      // the next boot reports each one to the server as "Process restarted"
+      // (retryable, worktree kept) with everything it had accumulated.
+      for (const w of drainBlocking) {
+        console.warn(`[update-drain] restarting over in-flight worker ${w.id} (task ${w.taskId}: ${w.taskTitle})`);
+        try { saveWorker(w); } catch { /* best effort — the last periodic save still stands */ }
+      }
+    }
     const target = updateState.latestCommit;
     // A new target gets a fresh budget. Previously the counter was only reset
     // on the updateAvailable false -> true edge, which a runner that is already
@@ -2851,7 +2880,7 @@ setInterval(async () => {
       updateState.autoUpdateRetries = 0;
       updateState.autoUpdateRetriesCommit = target;
     }
-    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/${AUTO_UPDATE_RETRY_LIMIT})`);
+    console.log(`Auto-updating (drain: ${decision.reason})... (attempt ${updateState.autoUpdateRetries + 1}/${AUTO_UPDATE_RETRY_LIMIT})`);
     setUpdating(true);
     updateState.autoUpdateRetries++;
     const prevCommit = updateState.currentCommit;
@@ -2950,8 +2979,12 @@ setInterval(async () => {
       broadcast({ type: 'update_failed', error: err.message });
     } finally {
       // scheduleGracefulRestart sets `updating` itself and exits the process;
-      // clearing it here would race that. Every other path clears it.
-      if (!restartScheduled) setUpdating(false);
+      // clearing it here would race that. Every other path clears it — and
+      // releases the drain's claim halt, since no restart is coming.
+      if (!restartScheduled) {
+        setUpdating(false);
+        updateDrain.applyFailed('see the auto-update log line above');
+      }
     }
   }
 }, 60_000); // Check every 60 seconds
