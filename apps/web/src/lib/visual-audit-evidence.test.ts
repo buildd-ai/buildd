@@ -292,6 +292,41 @@ describe('loadVisualAuditEvidence', () => {
   });
 });
 
+// PR2's strip parser (mission-visual-review.ts) reads the same metadata.qa the
+// role prompt writes and this check counts. They must agree on which shots are
+// real: a counted shot missing from the strip, or a shown shot the gate ignores,
+// makes the page and the gate tell different stories.
+describe('parseQaMeta parity with the Visual review strip', () => {
+  it('the strip shows exactly the shots whose qa block this check counts', async () => {
+    const strip = await import('./mission-visual-review');
+    const samples: unknown[] = [
+      { qa: qa('/app/missions', 'mobile') },
+      { qa: qa('/app/missions/:id', 'desktop', { verdict: 'issue', fixTaskId: FIX }) },
+      { qa: qa('/app/missions', 'mobile', { verdict: 'unsure' }) },
+      { qa: qa('/app/missions', 'mobile', { runKey: undefined }) },
+      { qa: qa('/app/missions', 'tablet') },
+      { qa: qa('app/missions', 'mobile') },
+      { qa: qa('/app/missions', 'mobile', { verdict: 'pass' }) },
+      { qa: qa('/app/missions', 'mobile', { finding: '  ' }) },
+      { qa: qa('/app/missions', 'mobile', { finding: undefined }) },
+      { qa: 'x' },
+      null,
+    ];
+    for (const m of samples) {
+      const counted = parseQaMeta(m);
+      const countable = counted !== null && counted.finding.length > 0;
+      expect({ m, shown: strip.parseQaMeta(m) !== null }).toEqual({ m, shown: countable });
+    }
+  });
+
+  it('shares one verdict and viewport vocabulary with the strip', async () => {
+    const strip = await import('./mission-visual-review');
+    const { VISUAL_QA_VERDICTS, VISUAL_QA_VIEWPORTS } = await import('./visual-audit-evidence');
+    expect([...VISUAL_QA_VERDICTS]).toEqual([...strip.QA_VERDICTS]);
+    expect([...VISUAL_QA_VIEWPORTS]).toEqual([...strip.QA_VIEWPORTS]);
+  });
+});
+
 describe('mintedByUploadUrl', () => {
   it('accepts exactly qa/<workspace>/<row id>/<name>, the key upload-url mints for an auditor screenshot', () => {
     expect(mintedByUploadUrl({ id: 'a', storageKey: 'qa/ws-1/a/s.png' }, 'ws-1')).toBe(true);

@@ -45,7 +45,6 @@ describe('parseQaMeta', () => {
 
   it('drops a shot with a missing field, an empty string or an unknown verdict', () => {
     for (const bad of [
-      qa({ runKey: undefined }),
       qa({ route: '' }),
       qa({ viewport: 7 }),
       qa({ finding: '   ' }),
@@ -53,6 +52,19 @@ describe('parseQaMeta', () => {
     ]) {
       expect(parseQaMeta({ qa: bad })).toBeNull();
     }
+  });
+
+  // The evidence check (visual-audit-evidence.ts) is the contract: a shot it
+  // counts must show here, and one it can never count must not.
+  it('drops what the evidence check can never count: a route without a leading slash, a viewport outside mobile/desktop', () => {
+    expect(parseQaMeta({ qa: qa({ route: 'app/tasks' }) })).toBeNull();
+    expect(parseQaMeta({ qa: qa({ viewport: 'tablet' }) })).toBeNull();
+    expect(parseQaMeta({ qa: qa({ viewport: 'desktop' }) })).toMatchObject({ viewport: 'desktop' });
+  });
+
+  it('keeps a shot with no runKey, as the evidence check counts it: it groups as that worker\'s un-keyed run', () => {
+    expect(parseQaMeta({ qa: qa({ runKey: undefined }) })).toMatchObject({ runKey: '', route: '/app/tasks' });
+    expect(parseQaMeta({ qa: qa({ runKey: '  ' }) })).toMatchObject({ runKey: '' });
   });
 
   it('is null for metadata that is not an object or has no qa object', () => {

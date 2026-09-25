@@ -28,19 +28,28 @@ import { objectExists } from '@/lib/storage';
 import { isArtifactKeyForUpload, isAuditScreenshotKeyForUpload } from '@/lib/storage-keys';
 import { isSurfaceFixTask } from '@buildd/core/surface-audit';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import {
+  QA_VIEWPORTS,
+  QA_VERDICTS,
+  type QaViewport,
+  type QaVerdict,
+} from '@/lib/mission-visual-review';
 
-export const VISUAL_QA_VIEWPORTS = ['mobile', 'desktop'] as const;
-export type VisualQaViewport = (typeof VISUAL_QA_VIEWPORTS)[number];
-export const VISUAL_QA_VERDICTS = ['ok', 'issue', 'unsure'] as const;
-export type VisualQaVerdict = (typeof VISUAL_QA_VERDICTS)[number];
+// One vocabulary with the mission page's Visual review strip (pure, client-safe).
+export {
+  QA_VIEWPORTS as VISUAL_QA_VIEWPORTS,
+  QA_VERDICTS as VISUAL_QA_VERDICTS,
+  type QaViewport as VisualQaViewport,
+  type QaVerdict as VisualQaVerdict,
+};
 
 export interface QaMeta {
   runKey: string | null;
   route: string;
-  viewport: VisualQaViewport;
+  viewport: QaViewport;
   /** Trimmed; may be empty, which the check reports rather than drops. */
   finding: string;
-  verdict: VisualQaVerdict;
+  verdict: QaVerdict;
   fixTaskId: string | null;
 }
 
@@ -76,14 +85,14 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
   if (!isRecord(metadata) || !isRecord(metadata.qa)) return null;
   const qa = metadata.qa;
   if (typeof qa.route !== 'string' || !qa.route.startsWith('/')) return null;
-  if (!VISUAL_QA_VIEWPORTS.includes(qa.viewport as VisualQaViewport)) return null;
-  if (!VISUAL_QA_VERDICTS.includes(qa.verdict as VisualQaVerdict)) return null;
+  if (!QA_VIEWPORTS.includes(qa.viewport as QaViewport)) return null;
+  if (!QA_VERDICTS.includes(qa.verdict as QaVerdict)) return null;
   return {
     runKey: typeof qa.runKey === 'string' ? qa.runKey : null,
     route: qa.route,
-    viewport: qa.viewport as VisualQaViewport,
+    viewport: qa.viewport as QaViewport,
     finding: typeof qa.finding === 'string' ? qa.finding.trim() : '',
-    verdict: qa.verdict as VisualQaVerdict,
+    verdict: qa.verdict as QaVerdict,
     fixTaskId: typeof qa.fixTaskId === 'string' ? qa.fixTaskId : null,
   };
 }
@@ -193,7 +202,7 @@ export function evaluateVisualAuditEvidence(input: {
     missing.push('(no screenshots) any route @ mobile', '(no screenshots) any route @ desktop');
   }
   for (const route of routes) {
-    for (const viewport of VISUAL_QA_VIEWPORTS) {
+    for (const viewport of QA_VIEWPORTS) {
       if (!counting.some((q) => q.viewport === viewport && routeSatisfies(route, q.route))) {
         missing.push(`${route} @ ${viewport}`);
       }

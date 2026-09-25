@@ -8,28 +8,37 @@
  * agent, so every field is validated here and a malformed shot is dropped
  * rather than rendered half-empty.
  */
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import type { DeliveryVisual } from './mission-delivery';
 
 /**
  * The role an auditor task runs as. Only screenshots written by a worker on a
  * task with this role count as visual evidence; any other worker on the
  * mission could otherwise upload one hand-made "ok" shot and become the
- * latest run. Kept here (pure, client-safe) so the page query and the
- * visibility rule below read one value.
+ * latest run. Re-exported from `@buildd/shared` so the page query, the
+ * visibility rule below, the role seed and the evidence check read one value.
  */
-export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
+export { VISUAL_AUDITOR_ROLE_SLUG };
 
 /** Task states after which an auditor will write no more shots. */
 const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
+/**
+ * The `metadata.qa` vocabulary. The completion evidence check
+ * (`visual-audit-evidence.ts`) imports these, so the gate and the strip cannot
+ * disagree on what a verdict or a viewport is.
+ */
 export const QA_VERDICTS = ['ok', 'issue', 'unsure'] as const;
 export type QaVerdict = (typeof QA_VERDICTS)[number];
+export const QA_VIEWPORTS = ['mobile', 'desktop'] as const;
+export type QaViewport = (typeof QA_VIEWPORTS)[number];
 
 export interface QaMeta {
+  /** `''` when the auditor sent none: the evidence check still counts the shot. */
   runKey: string;
   /** The route pattern (`/app/tasks/:id`), not a concrete URL. */
   route: string;
-  viewport: string;
+  viewport: QaViewport;
   finding: string;
   verdict: QaVerdict;
   theme?: string;
@@ -48,18 +57,25 @@ export interface VisualShot {
 
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-/** `metadata.qa` when every required field is present and well-typed, else null. */
+/**
+ * `metadata.qa` when the evidence check would count the shot, else null: a
+ * route starting with `/`, a known viewport and verdict, and a non-empty
+ * finding. `runKey` is optional there, so it is here too (the run groups by
+ * worker as well, see `runOf`). Pinned by the parity test in
+ * `visual-audit-evidence.test.ts`.
+ */
 export function parseQaMeta(metadata: unknown): QaMeta | null {
   if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return null;
   const qa = (metadata as Record<string, unknown>).qa;
   if (typeof qa !== 'object' || qa === null || Array.isArray(qa)) return null;
   const q = qa as Record<string, unknown>;
-  if (!nonEmpty(q.runKey) || !nonEmpty(q.route) || !nonEmpty(q.viewport) || !nonEmpty(q.finding)) return null;
+  if (typeof q.route !== 'string' || !q.route.startsWith('/') || !nonEmpty(q.finding)) return null;
+  if (!(QA_VIEWPORTS as readonly unknown[]).includes(q.viewport)) return null;
   if (!(QA_VERDICTS as readonly unknown[]).includes(q.verdict)) return null;
   const meta: QaMeta = {
-    runKey: q.runKey,
+    runKey: nonEmpty(q.runKey) ? q.runKey : '',
     route: q.route,
-    viewport: q.viewport,
+    viewport: q.viewport as QaViewport,
     finding: q.finding,
     verdict: q.verdict as QaVerdict,
   };
