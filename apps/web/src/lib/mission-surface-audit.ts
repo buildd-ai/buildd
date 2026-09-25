@@ -29,6 +29,8 @@ export interface EnsureSurfaceAuditParams {
   };
   targetWorkspace: {
     id?: string;
+    /** The filing workspace's team. A mission outside it is never written to. */
+    teamId?: string | null;
     name?: string;
     repo?: string | null;
     webhookConfig?: WorkspaceWebhookConfig | null;
@@ -65,9 +67,13 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, title: true, autoSurfaceAudit: true },
+    columns: { id: true, title: true, autoSurfaceAudit: true, teamId: true },
   });
   if (!mission || mission.autoSurfaceAudit === false) return;
+  // missionId comes from the request body. Every write below (audit insert,
+  // dependsOn/route extension, round-cap question) lands in this mission, so
+  // it must belong to the filing workspace's team. Fail closed when unknown.
+  if (!targetWorkspace.teamId || mission.teamId !== targetWorkspace.teamId) return;
 
   // Newest first: after a waiting-input retry clone or a later round there is
   // more than one audit, and the one that matters is the latest.

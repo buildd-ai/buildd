@@ -2224,6 +2224,40 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     expect(taskUpdateSet.result.error).toContain('silent-start');
   });
 
+  it('a visual-auditor mission task at the silent-start cap fails as infra_stalled, so the mission stays blocked', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'silent-4', taskId: 'task-1', status: 'running', startedAt: new Date(), turns: 1, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'silent_start' },
+        { id: 'f2', exitCause: 'silent_start' },
+        { id: 'f3', exitCause: 'silent_start' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', parentTaskId: null, status: 'in_progress',
+      missionId: 'mission-1', roleSlug: 'visual-auditor', context: {},
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result.error).toContain('silent-start');
+    expect(taskUpdateSet.result.errorType).toBe('infra_stalled');
+  });
+
   // Regression: costUsd is never populated on the reaper's own kill path, so
   // "$0 spend" was true for every worker regardless of real activity. A worker
   // that already burned input/output tokens (live-synced by the runner every
