@@ -229,6 +229,68 @@ describe('evaluateGoalCriteria — all_prs_merged', () => {
   });
 });
 
+// PR supersession was taught to `canCompleteMission` and never to this
+// criterion, so a mission whose closed PRs all carried recorded edges to merged
+// PRs still read "N PR(s) not yet merged" forever. Both now share
+// `@buildd/core/pr-shipped`.
+describe('evaluateGoalCriteria — all_prs_merged honours PR supersession', () => {
+  const criterion: GoalCriterion = { type: 'all_prs_merged' };
+  const pr = (n: number) => `https://github.com/org/repo/pull/${n}`;
+
+  it('passes when a closed PR carries an edge to a merged PR', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(10), prNumber: 10, prLifecycleStatus: 'closed', supersededByPrNumber: 12 },
+      { taskId: 't2', mergedAt: new Date('2026-01-01'), prUrl: pr(12), prNumber: 12, prLifecycleStatus: 'merged' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain('superseded');
+  });
+
+  it('fails a closed PR with no edge, naming it and saying no supersession is recorded', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(10), prNumber: 10, prLifecycleStatus: 'closed' },
+      { taskId: 't2', mergedAt: new Date('2026-01-01'), prUrl: pr(12), prNumber: 12 },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('fail');
+    expect(state.criteria[0].evidence).toContain('closed, no supersession recorded: #10');
+    expect(state.criteria[0].evidence).not.toContain('open:');
+  });
+
+  it('regression (M4): an open PR with changes requested still fails, listed as open', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(20), prNumber: 20, prLifecycleStatus: 'pr_open' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('fail');
+    expect(state.criteria[0].evidence).toContain('open: #20');
+  });
+
+  it('derives supersession from the attempt lineage: closed PR, then a merged retry PR', () => {
+    const tasks = [
+      { id: 'root', status: 'completed', title: 'Build', taskClass: 'work', parentTaskId: null },
+      { id: 'retry', status: 'completed', title: 'Build (after review)', taskClass: 'attempt', parentTaskId: 'root' },
+    ];
+    const workers = [
+      { taskId: 'root', mergedAt: null, prUrl: pr(30), prNumber: 30, prLifecycleStatus: 'closed' },
+      { taskId: 'retry', mergedAt: new Date('2026-01-01'), prUrl: pr(31), prNumber: 31 },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks, workers }));
+    expect(state.criteria[0].verdict).toBe('pass');
+  });
+
+  it('counts a PR once when two worker rows carry it and only one saw the merge', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(40), prNumber: 40 },
+      { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: pr(40), prNumber: 40 },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain('All 1 PR(s) merged');
+  });
+});
+
 // ─── Option A': all_prs_merged is base-ref aware ──────────────────────────────
 //
 // The inherited false green this closes: with task PRs based on the mission's

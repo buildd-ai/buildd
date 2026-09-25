@@ -7,6 +7,7 @@ import {
   missionIntegrationBase,
 } from './mission-integration';
 import { isSurfaceAuditTask } from './surface-audit';
+import { deriveLineageSupersession, prShipState, summarizePrShipStates } from './pr-shipped';
 export type { DerivedMetric } from './derived-metric';
 
 // ─── Task type detection ───────────────────────────────────────────────────────
@@ -282,11 +283,18 @@ export function evaluateGoalCriteria(
       taskClass?: string | null;
       creationSource?: string | null;
       category?: string | null;
+      /** Attempt lineage — lets a closed PR be superseded by its own retry's merged PR. */
+      parentTaskId?: string | null;
     }>;
     workers: Array<{
       taskId?: string | null;
       mergedAt?: string | Date | null;
       prUrl?: string | null;
+      prNumber?: number | null;
+      /** 'closed' separates a dead PR from an open one in the failure detail. */
+      prLifecycleStatus?: string | null;
+      /** Recorded supersession edge (record_pr_supersession) — counts as shipped. */
+      supersededByPrNumber?: number | null;
       branchName?: string | null;
       /**
        * The PR's base ref as GitHub reports it. Null means **unknown**, never
@@ -350,21 +358,41 @@ export function evaluateGoalCriteria(
           break;
         }
 
-        const unmerged = prWorkers.filter(w => !w.mergedAt);
+        // "Shipped" is the predicate `canCompleteMission` uses (pr-shipped.ts):
+        // merged, or closed with a supersession edge naming a merged PR —
+        // recorded, or derived from the task's own attempt lineage. Judged per
+        // PR, not per worker row, so a PR two sessions pushed to is one PR.
+        const prs = summarizePrShipStates(deriveLineageSupersession(context.tasks, prWorkers));
+        const unmerged = prs.filter(p => p.state === 'open' || p.state === 'closed_unsuperseded');
         if (unmerged.length > 0) {
           // Covers the mission PR too: while it is open this reads `fail`, the
           // same way an open task PR always has, and it clears when the PR
           // merges rather than needing anything to re-evaluate it.
           verdict = 'fail';
-          evidence = `${unmerged.length} PR(s) not yet merged${branchNote}`;
+          const name = (p: (typeof prs)[number]) => (p.prNumber ? `#${p.prNumber}` : p.prUrl);
+          const open = unmerged.filter(p => p.state === 'open');
+          const closed = unmerged.filter(p => p.state === 'closed_unsuperseded');
+          const parts: string[] = [];
+          if (open.length > 0) parts.push(`open: ${open.map(name).join(', ')}`);
+          if (closed.length > 0) {
+            parts.push(
+              `closed, no supersession recorded: ${closed.map(name).join(', ')}`
+                + ' (record_pr_supersession if the work landed under another merged PR)',
+            );
+          }
+          evidence = `${unmerged.length} PR(s) not yet merged — ${parts.join('; ')}${branchNote}`;
           break;
         }
+        const supersededCount = prs.filter(p => p.state === 'superseded').length;
+        const supersededNote = supersededCount > 0
+          ? ` (${supersededCount} closed PR(s) superseded by a merged PR)`
+          : '';
 
         if (!integrationBase) {
           // Not opted in — exactly the pre-A' answer, including for a mission
           // whose base refs happen to name a `mission/…` branch.
           verdict = 'pass';
-          evidence = `All ${prWorkers.length} PR(s) merged${branchNote}`;
+          evidence = `All ${prs.length} PR(s) merged${supersededNote}${branchNote}`;
           break;
         }
 
@@ -391,9 +419,9 @@ export function evaluateGoalCriteria(
           verdict = 'UNVERIFIED';
           const anyMissionPr = prWorkers.some(isMissionPrWorker);
           evidence = anyMissionPr
-            ? `All ${prWorkers.length} PR(s) merged, but the mission PR's base ref does not show it `
+            ? `All ${prs.length} PR(s) merged, but the mission PR's base ref does not show it `
               + `landing outside \`${integrationBase}\``
-            : `All ${prWorkers.length} PR(s) merged into \`${integrationBase}\`, but the mission has `
+            : `All ${prs.length} PR(s) merged into \`${integrationBase}\`, but the mission has `
               + `no PR into trunk yet — nothing has reached the default branch`;
           evidence += branchNote;
           break;
@@ -883,18 +911,15 @@ function deriveMissionSegmentState(task: {
   if (workers.some(w => LIVE_SET.has(w.status as any))) return 'ghost';
 
   if (task.status === 'completed') {
-    const prWorker = workers.find(w => w.prUrl);
-    if (!prWorker || prWorker.mergedAt) return 'solid';
-    // Recorded as superseded (task fcaf83d5) — the diff landed anyway, under a
-    // different, already-merged PR. Shipped, same as a direct merge, even
-    // though this PR itself never merged.
-    if (prWorker.supersededByPrNumber) return 'solid';
-    // A PR closed without merging, with no supersession recorded, is not "in
-    // progress toward merge" — the deliverable never shipped. Fold it in with
-    // 'notch' (didn't land cleanly) rather than 'half' (actively awaiting
-    // merge), so it doesn't inflate the awaiting-merge count with dead PRs
-    // nobody is about to merge.
-    if (prWorker.prLifecycleStatus === 'closed') return 'notch';
+    // Shared shipped predicate (pr-shipped.ts): merged, or superseded by an
+    // already-merged PR (task fcaf83d5), is shipped. A PR closed without
+    // merging and with no supersession is not "in progress toward merge" —
+    // fold it in with 'notch' (didn't land cleanly) rather than 'half'
+    // (actively awaiting merge), so it doesn't inflate the awaiting-merge
+    // count with dead PRs nobody is about to merge.
+    const state = prShipState(workers.find(w => w.prUrl));
+    if (state === 'no_pr' || state === 'merged' || state === 'superseded') return 'solid';
+    if (state === 'closed_unsuperseded') return 'notch';
     return 'half';
   }
 

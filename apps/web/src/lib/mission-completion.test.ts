@@ -119,6 +119,7 @@ import {
   CRITERIA_BLOCK_CODES,
   AWAITING_VERIFICATION_NOTE_TITLE,
 } from './mission-completion';
+import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -555,6 +556,84 @@ describe('canCompleteMission — PR supersession (task fcaf83d5: a closed-unmerg
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(true);
     expect(d.supersededCount).toBe(2);
+  });
+});
+
+/**
+ * The awaiting-merge gate and the `all_prs_merged` criterion used to answer
+ * "did this PR ship?" separately, and only the gate knew about supersession —
+ * so a mission could clear the gate and still read FAIL on the criterion
+ * forever. Both now call `@buildd/core/pr-shipped`; these fixtures run through
+ * BOTH and assert the same answer.
+ */
+describe('canCompleteMission and the all_prs_merged criterion agree', () => {
+  beforeEach(reset);
+
+  const pr = (n: number) => `https://github.com/org/repo/pull/${n}`;
+  /** Feed the same task rows (with their latest worker) to the criterion. */
+  function criterionVerdict(rows: any[]) {
+    const state = evaluateGoalCriteria(
+      { id: 'm1' },
+      [{ type: 'all_prs_merged' }],
+      {
+        tasks: rows,
+        workers: rows.flatMap(t => (t.workers ?? []).slice(0, 1).map((w: any) => ({ ...w, taskId: t.id }))),
+        artifacts: [],
+        evaluatedBy: 'manual',
+      },
+    );
+    return state.criteria[0];
+  }
+
+  const cases: Array<{ name: string; rows: () => any[]; shipped: boolean }> = [
+    {
+      name: 'closed PR + recorded edge to a merged PR',
+      shipped: true,
+      rows: () => [
+        work('completed', 'A', { workers: [{ prUrl: pr(10), prNumber: 10, mergedAt: null, prLifecycleStatus: 'closed', supersededByPrNumber: 12 }] }),
+        work('completed', 'B', { workers: [{ prUrl: pr(12), prNumber: 12, mergedAt: '2026-01-01', prLifecycleStatus: 'merged' }] }),
+      ],
+    },
+    {
+      name: 'closed PR, no edge',
+      shipped: false,
+      rows: () => [work('completed', 'A', { workers: [{ prUrl: pr(10), prNumber: 10, mergedAt: null, prLifecycleStatus: 'closed' }] })],
+    },
+    {
+      name: 'open PR with changes requested (M4)',
+      shipped: false,
+      rows: () => [work('completed', 'A', { workers: [{ prUrl: pr(20), prNumber: 20, mergedAt: null, prLifecycleStatus: 'pr_open' }] })],
+    },
+    {
+      name: 'closed PR followed by a merged PR from its own after-review attempt',
+      shipped: true,
+      rows: () => [
+        { ...work('completed', 'A', { workers: [{ prUrl: pr(30), prNumber: 30, mergedAt: null, prLifecycleStatus: 'closed' }] }), id: 'root' },
+        { id: 'retry', status: 'completed', title: 'A (after review)', taskClass: 'attempt', mode: 'execution', parentTaskId: 'root', result: null,
+          workers: [{ prUrl: pr(31), prNumber: 31, mergedAt: '2026-01-01', prLifecycleStatus: 'merged' }] },
+      ],
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: both say ${c.shipped ? 'shipped' : 'not shipped'}`, async () => {
+      activeMission({ goalCriteria: null });
+      taskRows = c.rows();
+      const d = await canCompleteMission('m1');
+      const crit = criterionVerdict(c.rows());
+      expect(d.code === 'awaiting_merge').toBe(!c.shipped);
+      expect(crit.verdict === 'pass').toBe(c.shipped);
+    });
+  }
+
+  it('the lineage-derived supersession is reported, with a reason saying it was derived', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = cases[3].rows();
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.supersededCount).toBe(1);
+    expect(d.supersededDetails[0].supersededByPrNumber).toBe(31);
+    expect(d.supersededDetails[0].supersededReason).toContain('derived');
   });
 });
 
