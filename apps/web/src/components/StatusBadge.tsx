@@ -52,7 +52,7 @@ export default function StatusBadge({ status }: { status: string }) {
   const style = STATUS_STYLES[status] || DEFAULT_STYLE;
 
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-medium ${style.bg} ${style.text}`}>
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-medium ${style.bg} ${style.text}`}>
       <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
       {STATUS_LABELS[status] || status}
     </span>

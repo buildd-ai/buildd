@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   LIVE_WORKER_STATUSES,
+  stripPrTitlePrefix,
   LIVENESS_THRESHOLD_MS,
   STALENESS_THRESHOLD_MS,
   PROGRESS_THRESHOLD_MS,
@@ -989,5 +990,24 @@ describe('deriveWorkKind', () => {
     expect(deriveWorkKind({ kind: 'refactoring', roleSlug: 'builder' })).toEqual({
       glyph: '◆', label: 'Engineering', source: 'role',
     });
+  });
+});
+
+describe('stripPrTitlePrefix', () => {
+  it('drops a leading "PR #N:" matching the number a chip already shows', () => {
+    expect(stripPrTitlePrefix('PR #42: fix(ui): tighten spacing', 42)).toBe('fix(ui): tighten spacing');
+    expect(stripPrTitlePrefix('pr #42 - fix it', 42)).toBe('fix it');
+    expect(stripPrTitlePrefix('PR #42 — fix it', 42)).toBe('fix it');
+  });
+
+  it('keeps the title when the number differs, is missing, or the prefix is not leading', () => {
+    expect(stripPrTitlePrefix('PR #7: other', 42)).toBe('PR #7: other');
+    expect(stripPrTitlePrefix('PR #42: x', null)).toBe('PR #42: x');
+    expect(stripPrTitlePrefix('Review PR #42: x', 42)).toBe('Review PR #42: x');
+    expect(stripPrTitlePrefix('PR #420: x', 42)).toBe('PR #420: x');
+  });
+
+  it('never strips the title down to nothing', () => {
+    expect(stripPrTitlePrefix('PR #42:', 42)).toBe('PR #42:');
   });
 });

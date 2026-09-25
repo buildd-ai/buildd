@@ -2,6 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TaskShipBadge } from './TaskShipBadge';
 
+const badgeSource = await Bun.file(new URL('./TaskShipBadge.tsx', import.meta.url)).text();
+
 describe('TaskShipBadge', () => {
   it('renders "Skip release" (muted) when release=false', () => {
     const html = renderToStaticMarkup(<TaskShipBadge release="false" />);
@@ -47,5 +49,13 @@ describe('TaskShipBadge', () => {
     const html = renderToStaticMarkup(<TaskShipBadge release="false" shippedReleaseId="rel-9" />);
     expect(html).toContain('Skip release');
     expect(html).toContain('Shipped');
+  });
+
+  // Regression: the task detail page (a server component) mounts this badge,
+  // and with a shipped release it renders <Link onClick={...}>. Without the
+  // directive that handler crossed the RSC boundary and the whole page failed
+  // to render ("Event handlers cannot be passed to Client Component props").
+  it('declares itself a client component (it is mounted from the server task detail page)', () => {
+    expect(badgeSource).toMatch(/^\s*['"]use client['"]/);
   });
 });

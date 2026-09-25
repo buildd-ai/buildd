@@ -529,15 +529,24 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           </div>
           <h2 className="text-xl font-semibold text-text-primary mb-2">No activity yet</h2>
           <p className="text-text-secondary mb-4">Tasks from your missions will appear here.</p>
-          <Link
-            href="/app/missions/new"
-            className="inline-flex items-center px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
-          >
-            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            New Mission
-          </Link>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Link
+              href="/app/missions/new"
+              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+            >
+              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Mission
+            </Link>
+            <Link
+              href="/app/tasks/new"
+              data-testid="activity-empty-new-task"
+              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
+            >
+              New task
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -605,8 +614,11 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           {!missionFilter && (
             <div className="flex items-center gap-2 mb-2">
               {/* Chips scroll area — wrapper pattern ensures right-side padding isn't clipped */}
-              <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex-1">
-                <div className="flex items-center gap-1.5 pl-4 pr-2 min-w-max">
+              {/* Right-edge fade says "more chips this way"; pr-8 lets the last
+                  chip scroll clear of it. py-[9px] gives the chips' ::after
+                  hit areas room inside the scroller's clip. */}
+              <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex-1 [mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)]">
+                <div className="flex items-center gap-1.5 pl-4 pr-8 py-[9px] min-w-max">
                   {/* Type chips */}
                   {([
                     { key: 'all' as ContentFilter, label: 'All' },
@@ -618,7 +630,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     <button
                       key={key}
                       onClick={() => setContentFilter(key)}
-                      className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                      className={`relative shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap after:absolute after:inset-x-0 after:-inset-y-[9px] after:content-[''] ${
                         contentFilter === key
                           ? 'bg-surface-3 text-text-primary'
                           : 'text-text-muted'
@@ -632,7 +644,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   {/* Group lens chip */}
                   <button
                     onClick={() => setGroupLens(g => g === 'time' ? 'mission' : 'time')}
-                    className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                    className={`relative shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap after:absolute after:inset-x-0 after:-inset-y-[9px] after:content-[''] ${
                       groupLens === 'mission'
                         ? 'bg-surface-3 text-text-primary'
                         : 'text-text-muted'
@@ -647,7 +659,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     <button
                       key={f.key}
                       onClick={() => updateFilter(filter === f.key ? 'all' : f.key)}
-                      className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                      className={`relative shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap after:absolute after:inset-x-0 after:-inset-y-[9px] after:content-[''] ${
                         filter === f.key
                           ? 'bg-text-primary text-surface-1'
                           : f.count === 0
@@ -669,7 +681,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               <button
                 onClick={toggleSearch}
                 aria-label={searchOpen ? 'Close search' : 'Search tasks'}
-                className={`shrink-0 mr-4 p-1.5 rounded-md transition-colors ${
+                className={`shrink-0 mr-2 w-11 h-11 flex items-center justify-center rounded-md transition-colors ${
                   searchOpen
                     ? 'bg-surface-3 text-text-primary'
                     : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
@@ -696,7 +708,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 placeholder="Search tasks…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
+                className="w-full px-3 py-2 text-base rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
               />
             </div>
           )}
@@ -827,6 +839,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           {effectiveGroupBy === 'time' && timeBandGroups.map((band) => (
             <div key={band.label}>
               <GroupSection
+                belowMobileHeader
                 title={band.label}
                 taskCount={band.items.length}
               />
@@ -844,6 +857,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             return (
               <div key={groupId}>
                 <GroupSection
+                  belowMobileHeader
                   title={group.title}
                   missionId={isNoMission ? null : group.id}
                   stageCounts={isNoMission ? null : counts}
@@ -860,7 +874,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           {/* Grouped by Status */}
           {effectiveGroupBy === 'status' && statusGroups.map((group) => (
             <div key={`status_${group.label}`}>
-              <GroupSection title={group.label} taskCount={group.tasks.length} />
+              <GroupSection belowMobileHeader title={group.label} taskCount={group.tasks.length} />
               {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
             </div>
           ))}
@@ -868,7 +882,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           {/* Grouped by Workspace */}
           {effectiveGroupBy === 'workspace' && workspaceGroups.map((group) => (
             <div key={`ws_${group.id}`}>
-              <GroupSection title={group.title} taskCount={group.tasks.length} />
+              <GroupSection belowMobileHeader title={group.title} taskCount={group.tasks.length} />
               {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
             </div>
           ))}

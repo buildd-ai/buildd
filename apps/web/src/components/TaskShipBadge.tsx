@@ -1,3 +1,9 @@
+'use client';
+
+// Client component: the "Shipped" link stops propagation so a click inside a
+// clickable TaskCard row does not also trigger the row. The task detail page
+// (a server component) mounts it too, and a server module cannot hand an
+// onClick to next/link — that failed the whole page render.
 import Link from 'next/link';
 
 // Spec: docs/specs/surface-ia-home-missions-initiatives.md §10.3 — task-level
