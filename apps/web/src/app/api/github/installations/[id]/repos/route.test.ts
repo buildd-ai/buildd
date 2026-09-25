@@ -132,8 +132,25 @@ describe('GET /api/github/installations/[id]/repos', () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
     mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
-    await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
     expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
+    // Denied: canView false → 404, and GitHub is never called (no token minted).
+    expect(response.status).toBe(404);
+    expect(mockListInstallationRepos).not.toHaveBeenCalled();
+    expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('POST denied for the session user: canView false → 404, nothing synced', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
+    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
+    const response = await POST(
+      new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', { method: 'POST' }),
+      { params: Promise.resolve({ id: 'inst-1' }) },
+    );
+    expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
+    expect(response.status).toBe(404);
+    expect(mockSyncInstallationRepos).not.toHaveBeenCalled();
   });
 
   it('returns 401 when not authenticated', async () => {

@@ -130,6 +130,13 @@ describe('GET — production', () => {
     const res = await GET(get(), params());
     expect(res.status).toBe(200);
     expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-a', 'ws-a');
+    // The connection query is filtered to THIS workspace, not merely run after an access check.
+    expect(mockConnectionsFindMany).toHaveBeenCalledTimes(1);
+    expect((mockConnectionsFindMany.mock.calls[0] as any[])[0].where).toEqual({
+      field: 'workspaceId',
+      value: 'ws-a',
+      type: 'eq',
+    });
     expect((await res.json()).accounts).toEqual([
       { accountId: 'acct-1', accountName: 'Runner', accountType: 'user', canClaim: true, canCreate: false },
     ]);

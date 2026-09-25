@@ -136,6 +136,27 @@ describe('DELETE /api/github/installations/[id]', () => {
     expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
   });
 
+  it('denied for the session user: canManage false → 404, nothing deleted', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    // canView alone is not enough to disconnect.
+    mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: false, otherTeamsUsingIt: [] }));
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
+    expect(response.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+  });
+
+  it('denied for the session user: neither view nor manage → 404, nothing deleted', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
   it('returns 401 when not authenticated', async () => {
     mockAuth.mockResolvedValue(null);
 
