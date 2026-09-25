@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, artifacts, workspaces, tasks, missions } from '@buildd/core/db/schema';
+import { workers, artifacts, workspaces, tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -115,38 +115,31 @@ export async function POST(req: NextRequest) {
   }
 
   // Mission scoping, so a mission page can find the artifact (e.g. a visual
-  // audit's screenshots). Default: the worker's own task's mission, decided
-  // here rather than trusted from the client. An explicit value must be a
-  // mission in the worker's workspace and, when the task has a mission, that
-  // same one: a worker can't file artifacts into someone else's mission.
+  // audit's screenshots). The mission is always the worker's own task's,
+  // decided here, never trusted from the client: the same rule as
+  // create_artifact (workers/[id]/artifacts). An explicit `missionId` is only
+  // accepted when it names that same mission. Comparing ids (not
+  // missions.workspaceId) is deliberate: team-level missions have a NULL
+  // workspaceId, and a task's own mission is authorized by the task.
   if (missionId !== undefined && missionId !== null && (typeof missionId !== 'string' || !UUID_RE.test(missionId))) {
     return NextResponse.json({ error: 'missionId must be a uuid' }, { status: 400 });
   }
   const linkedTask = worker.taskId
     ? await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        columns: { missionId: true, roleSlug: true },
+        columns: { missionId: true },
       })
     : null;
-  if (missionId) {
-    const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
-      columns: { id: true, workspaceId: true },
-    });
-    if (!mission) {
-      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
-    }
-    if (mission.workspaceId !== worker.workspaceId) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-    if (linkedTask?.missionId && linkedTask.missionId !== missionId) {
-      return NextResponse.json(
-        { error: "missionId does not match the worker's task mission" },
-        { status: 400 }
-      );
-    }
+  const taskMissionId = linkedTask?.missionId ?? null;
+  if (missionId && missionId !== taskMissionId) {
+    return NextResponse.json(
+      { error: taskMissionId
+          ? "missionId does not match the worker's task mission"
+          : "missionId was sent but the worker's task has no mission" },
+      { status: 400 }
+    );
   }
-  const artifactMissionId = missionId || linkedTask?.missionId || null;
+  const artifactMissionId = taskMissionId;
 
   const uuid = randomUUID();
   let storageKey: string;
@@ -167,6 +160,11 @@ export async function POST(req: NextRequest) {
   const [artifact] = await db
     .insert(artifacts)
     .values({
+      // The row id IS the key's upload id (artifacts/<ws>/<id>/<name>). That
+      // binds this row to the object only this route minted: a row written
+      // elsewhere with a caller-chosen storageKey can't carry a matching id,
+      // which is what the visual-audit evidence check relies on.
+      id: uuid,
       workerId,
       workspaceId: worker.workspaceId || null,
       missionId: artifactMissionId,

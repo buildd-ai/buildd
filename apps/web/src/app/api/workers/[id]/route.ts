@@ -1172,7 +1172,7 @@ export async function PATCH(
    * had not, and 400'd on completion.
    *
    * `artifacts` has no taskId column, so mission-level rows are attributed by
-   * (missionId, touched since this worker started). The time bound is what stops
+   * (missionId, no owning worker, touched since this worker started). The time bound is what stops
    * a sibling task's pre-existing mission artifact from satisfying the gate.
    */
   // Captured outside the closure: narrowing of `worker` does not survive into a
@@ -1185,7 +1185,11 @@ export async function PATCH(
     const where = taskMissionId
       ? or(
           eq(artifacts.workerId, id),
-          and(eq(artifacts.missionId, taskMissionId), gte(artifacts.updatedAt, workStart)),
+          // workerId NULL only: a mission-level row (api/missions/[id]/artifacts).
+          // A row another worker owns is ITS deliverable, and every mission
+          // upload now carries missionId (upload-url, create_artifact), so a
+          // sibling's screenshot must not satisfy this task's gate.
+          and(eq(artifacts.missionId, taskMissionId), isNull(artifacts.workerId), gte(artifacts.updatedAt, workStart)),
         )
       : eq(artifacts.workerId, id);
     const rows = await db.query.artifacts.findMany({ where, limit: 1 });
