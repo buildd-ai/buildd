@@ -91,6 +91,7 @@ mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateM
 
 // Imported AFTER the mocks.
 import { explainMission, explainTask, explainPr, explainWorkspace } from './explain';
+import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -221,6 +222,28 @@ describe('explainMission', () => {
     expect(history).toHaveLength(1);
     expect(history[0].taskId).toBe('parent');
     expect(history[0].attempts.map(a => a.taskId)).toEqual(['retry-1', 'retry-2']);
+  });
+
+  it('reads the criteria gate from the same n/N the card does (one progress definition)', async () => {
+    // A cancelled task re-created under the same title folds into its survivor
+    // (D1): the card counts 1/1 — completion attempted, the gate is refused.
+    // The detail page must not count 1/2 and call the same gate merely failing.
+    missionRow = {
+      id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', isHeld: false, schedule: null,
+      goalCriteria: [{ type: 'custom', label: 'login works' }],
+      goalCriteriaState: { overall: 'fail', criteria: [{ verdict: 'fail', type: 'custom', label: 'login works' }] },
+    };
+    taskRows = [
+      task({ id: 'first', status: 'cancelled', title: 'Wire the route', createdAt: new Date('2026-01-01T00:00:00.000Z') }),
+      task({ id: 'again', status: 'completed', title: 'Wire the route', createdAt: new Date('2026-01-02T00:00:00.000Z') }),
+    ];
+
+    const answer = (await explainMission('mission-1'))!.subjects[0];
+    const card = summarizeMissionForCard({ ...missionRow, tasks: taskRows } as MissionCardRow);
+    const criterionTone = (w: { kind: string; tone?: string } | null | undefined) =>
+      w && w.kind === 'criterion_failing' ? w.tone : null;
+    expect(criterionTone(card.state.waitingOn)).toBe('error');
+    expect(criterionTone(answer.waitingOn as any)).toBe(criterionTone(card.state.waitingOn)); // eslint-disable-line @typescript-eslint/no-explicit-any
   });
 
   it('returns null for a mission that does not exist', async () => {

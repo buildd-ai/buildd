@@ -28,7 +28,7 @@
  */
 import Link from 'next/link';
 import type { CausalLink } from '@/lib/explain-types';
-import type { MissionSituation, WaitingOnDescriptor, WaitingOnTone } from '@/lib/mission-state-view';
+import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type WaitingOnTone } from '@/lib/mission-state-view';
 import { missionTaskHref } from '@/lib/mission-task-href';
 
 /**
@@ -164,7 +164,8 @@ export interface MissionSituationBlockProps {
 
 export default function MissionSituationBlock({ missionId, situation, because, criteriaReachable }: MissionSituationBlockProps) {
   const affordance = affordanceFor(situation.focus, { missionId, criteriaReachable });
-  const why = because[0] ?? null;
+  // One explanatory line (F2): the blockers, the next action, or the why.
+  const detail = situationDetail(situation, because);
 
   return (
     <div
@@ -181,10 +182,30 @@ export default function MissionSituationBlock({ missionId, situation, because, c
         {situation.headline}
       </p>
 
-      {why && (
+      {detail?.kind === 'why' && (
         <p className="mt-1 text-[12px] text-text-secondary leading-snug">
-          {why.claim} <RefLink refs={why.refs} missionId={missionId} />
+          {detail.link.claim} <RefLink refs={detail.link.refs} missionId={missionId} />
         </p>
+      )}
+      {detail?.kind === 'text' && (
+        <p className="mt-1 text-[12px] text-text-secondary leading-snug">{detail.text}</p>
+      )}
+      {detail?.kind === 'blockers' && (
+        <ul data-testid="mission-situation-blockers" className="mt-1 text-[12px] leading-snug">
+          {detail.items.map(b => (
+            <li key={b.taskId}>
+              <Link
+                href={missionTaskHref({ missionId, taskId: b.taskId, mode: 'sheet' })}
+                data-task-id={b.taskId}
+                className="inline-flex min-h-11 md:min-h-0 items-center gap-1.5 text-accent-text hover:underline"
+              >
+                <span className="truncate">{b.title}</span>
+                <span className="shrink-0 font-mono text-text-muted">· {b.status}</span>
+              </Link>
+            </li>
+          ))}
+          {detail.more > 0 && <li className="text-text-muted">+{detail.more} more</li>}
+        </ul>
       )}
 
       {affordance && (

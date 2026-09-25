@@ -96,6 +96,7 @@ import type { CompletionDecisionCode } from '@buildd/core/mission-completion-cod
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
 import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
@@ -186,8 +187,26 @@ export type WaitingOnDescriptor =
       /** True when the unmerged PR is the mission's own integration PR, not a task PR. */
       missionPr: boolean;
     }
-  /** The completion gate is holding on a criterion that failed. */
-  | { kind: 'criterion_failing'; tone: WaitingOnTone; label: string; count: number; criteria: string[]; refused: boolean }
+  /**
+   * The completion gate is holding on a criterion that failed.
+   *
+   * `blockers` names what holds a structural criterion (`no_open_tasks`: the
+   * open deliverables; `all_prs_merged`: the unmerged PRs), all of them — a
+   * surface shows `CRITERION_BLOCKERS_VISIBLE` and "+N more". `stale` is set
+   * when the stored verdict is contradicted by the rows loaded now: it failed
+   * on open tasks, and none is open any more. The completion gate still reads
+   * the stored verdict, so the next step is to re-run verification.
+   */
+  | {
+      kind: 'criterion_failing';
+      tone: WaitingOnTone;
+      label: string;
+      count: number;
+      criteria: string[];
+      refused: boolean;
+      blockers?: CriterionBlocker[];
+      stale?: boolean;
+    }
   /** The completion gate has no verdict yet. Quiet by construction — see the module note. */
   | { kind: 'criterion_unverified'; tone: WaitingOnTone; label: string; count: number; criteria: string[] }
   /** A human owes an answer; nothing automated will move this. */
@@ -220,6 +239,16 @@ export type WaitingOnDescriptor =
       blockedByPr?: number | null;
       taskIds: string[];
     };
+
+/** A task holding a structural criterion at fail. `status` is display text (`queued`, `PR #12 open`). */
+export interface CriterionBlocker {
+  taskId: string;
+  title: string;
+  status: string;
+}
+
+/** How many blockers a surface names before "+N more". */
+export const CRITERION_BLOCKERS_VISIBLE = 3;
 
 // ─── The view ─────────────────────────────────────────────────────────────────
 
@@ -892,6 +921,61 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   };
 }
 
+const OPEN_STATUS_LABEL: Record<string, string> = {
+  pending: 'queued',
+  assigned: 'claimed',
+  in_progress: 'running',
+};
+
+/**
+ * What holds each failing structural criterion, read from the rows this view
+ * was given — never from the stored evidence, which is as old as the run.
+ *
+ * - `no_open_tasks`: the open deliverables, minus the `[surface audit]` check
+ *   (the evaluator's own rule, `isNoOpenTasksCandidate`; `openTasks` are
+ *   already deliverables).
+ * - `all_prs_merged`: the unmerged task PRs.
+ *
+ * `stale`: every failing criterion is `no_open_tasks`, the caller loaded the
+ * open rows, and there are none. The verdict predates the task state.
+ */
+function criterionBlockers(
+  input: MissionStateInput,
+  failingItems: ReadonlyArray<{ type?: string }>,
+): { blockers: CriterionBlocker[]; stale: boolean } {
+  const types = new Set(failingItems.map(c => c.type));
+  const out: CriterionBlocker[] = [];
+  const seen = new Set<string>();
+  const push = (b: CriterionBlocker) => {
+    if (seen.has(b.taskId)) return;
+    seen.add(b.taskId);
+    out.push(b);
+  };
+
+  let openBlockers = 0;
+  if (types.has('no_open_tasks')) {
+    for (const t of input.openTasks ?? []) {
+      if (isSurfaceAuditTask(t.title ?? '')) continue;
+      openBlockers++;
+      push({ taskId: t.id, title: t.title ?? t.id, status: OPEN_STATUS_LABEL[t.status] ?? t.status.replace(/_/g, ' ') });
+    }
+  }
+  if (types.has('all_prs_merged')) {
+    const prs = input.completion?.awaitingMergeDetails?.length
+      ? input.completion.awaitingMergeDetails
+      : input.unmergedPrs ?? [];
+    for (const p of prs) {
+      push({ taskId: p.taskId, title: p.title ?? p.taskId, status: p.prNumber != null ? `PR #${p.prNumber} open` : 'PR open' });
+    }
+  }
+
+  const stale = failingItems.length > 0
+    && failingItems.every(c => c.type === 'no_open_tasks')
+    && input.openTasks !== undefined
+    && openBlockers === 0;
+  return { blockers: out, stale };
+}
+
 /** Rule 10 — the completion gate has not cleared. Never `blocked`. */
 function criteriaFact(input: MissionStateInput): Resolution | null {
   const { criteriaGate, completion } = input;
@@ -903,6 +987,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
 
     if (criteriaGate.state === 'failing' || failing.length > 0 || (refused && completion?.code === 'criteria_failed')) {
       const count = failing.length || 1;
+      const { blockers, stale } = criterionBlockers(input, items.filter(c => c.verdict === 'fail'));
       return {
         kind: 'awaiting_verification',
         waitingOn: {
@@ -914,6 +999,8 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
           count,
           criteria: failing,
           refused,
+          ...(blockers.length > 0 ? { blockers } : {}),
+          ...(stale ? { stale } : {}),
         },
         displayState: 'awaiting_verification',
         source: 'deriveCriteriaGatePresentation',
@@ -1056,7 +1143,7 @@ function fromResolution(r: Resolution | null): OutstandingEntry | null {
  * "waiting on you to …" when the owner is the only one who can clear it,
  * a statement of fact when they are not.
  */
-function situationPhrase(d: WaitingOnDescriptor): string {
+function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {}): string {
   switch (d.kind) {
     case 'dependency':
       return 'waiting on an upstream mission to meet its gate condition';
@@ -1082,10 +1169,22 @@ function situationPhrase(d: WaitingOnDescriptor): string {
           ? `waiting on you to merge 1 open PR${ref}`
           : `waiting on you to merge ${d.count} open PRs`;
     }
-    case 'criterion_failing':
+    case 'criterion_failing': {
+      const named = d.count === 1 && d.criteria[0] ? `"${d.criteria[0]}"` : `${d.count} goal criteria`;
+      if (d.stale) {
+        return `waiting on you to re-run verification — ${named} failed when last checked, but no task is open now`;
+      }
+      // While work is in flight a failing criterion is the work not being
+      // finished yet, not an ask (`missionNeedsYou`), so it is stated as fact.
+      const ask = opts.running ? '' : 'waiting on you — ';
+      const n = d.blockers?.length ?? 0;
+      if (n > 0) {
+        return `${ask}${named} ${d.count === 1 ? 'is' : 'are'} failing on ${n === 1 ? '1 task' : `${n} tasks`}`;
+      }
       return d.count === 1 && d.criteria[0]
-        ? `waiting on you — the goal criterion "${d.criteria[0]}" is failing`
-        : `waiting on you — ${d.count} goal criteria are failing`;
+        ? `${ask}the goal criterion "${d.criteria[0]}" is failing`
+        : `${ask}${d.count} goal criteria are failing`;
+    }
     case 'criterion_unverified':
       return d.count === 1
         ? 'waiting on goal-criteria verification — 1 criterion has no verdict yet'
@@ -1154,7 +1253,7 @@ function deriveSituation(
     };
   }
 
-  const phrase = situationPhrase(focus);
+  const phrase = situationPhrase(focus, { running: resolved.kind === 'running' });
   const headline = resolved.kind === 'running'
     ? `Running (${countAgents(input.activeAgents)}) — but ${phrase}.`
     : `${capitalize(phrase)}.`;
@@ -1198,6 +1297,12 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         ? 'Land the mission PR — the work is on the integration branch, not on trunk.'
         : 'Resolve and merge the open PR(s); a completed task with an unmerged PR has not shipped.';
     case 'criterion_failing':
+      if (waitingOn.stale) {
+        return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';
+      }
+      if (waitingOn.blockers && waitingOn.blockers.length > 0) {
+        return 'Finish, cancel or merge the tasks holding it, then re-run verification.';
+      }
       return 'File work against the failing criterion, or correct the criterion if it no longer describes the goal.';
     case 'criterion_unverified':
       return 'Run goal-criteria verification to produce a verdict.';
@@ -1210,6 +1315,83 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'claim_deferral':
       return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}) — clear that gate, or cancel the task if the work is no longer wanted.`;
   }
+}
+
+// ─── Whose move is it? ────────────────────────────────────────────────────────
+
+/** Verdicts whose next step is the owner's, whatever the mission's health says. */
+const NEEDS_YOU_KINDS: ReadonlySet<MissionStateKind> = new Set([
+  'awaiting_merge',
+  'awaiting_verification',
+  'awaiting_decision',
+  'failing',
+]);
+
+/**
+ * Facts that are the owner's to clear even when they did not win precedence
+ * (a live worker, a hold). A criterion fact is NOT one of them: while work is
+ * still moving, a failing "no open tasks" is the work not being finished yet,
+ * not an ask. With nothing moving, `missionNeedsYou` reads it off the
+ * situation's focus instead.
+ */
+const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
+  'merge',
+  'task_failed',
+  'human_decision',
+]);
+
+/**
+ * True when the mission's next step is the owner's (F1). The one input the
+ * mission grouping reads to put a mission under "active" — list header, list
+ * groups and Home — so a card whose chip asks you for something is never filed
+ * under PAUSED / HELD or SCHEDULED.
+ *
+ * A held mission's own ask ("arm it") does not count: arming is a start, not an
+ * answer (§1.1). Anything else it is waiting on you for does.
+ */
+export function missionNeedsYou(view: MissionStateView): boolean {
+  if (view.kind === 'complete') return false;
+  if (NEEDS_YOU_KINDS.has(view.kind)) return true;
+  const holdAsk = view.kind === 'held' ? view.waitingOn : null;
+  if (view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind))) return true;
+  // needsYou follows the situation. With no work in flight (not `running`) and
+  // no hold, a failing criterion the headline leads with is the owner's to
+  // clear, even when it did not win precedence: a paused mission whose open
+  // tasks stalled resolves to `blocked` (STALLED) yet reads "Waiting on you —
+  // "no open tasks" is failing on 2 tasks". Nothing automated moves it.
+  return view.kind !== 'running' && view.kind !== 'held' && view.situation.focus?.kind === 'criterion_failing';
+}
+
+// ─── The situation's one explanatory line ─────────────────────────────────────
+
+/**
+ * What the situation block prints under its headline — exactly one line, so
+ * the same fact is not said three times (headline, causal claim, criterion ref).
+ *
+ * - The focus names blockers → the blockers (the first
+ *   `CRITERION_BLOCKERS_VISIBLE`, then "+N more").
+ * - The focus is a criterion → its next action. The causal claim ("criterion X
+ *   returned a failing verdict") only restates the headline.
+ * - Anything else → the first causal link, whose hard ref is the evidence.
+ */
+export type SituationDetail<L> =
+  | { kind: 'blockers'; items: CriterionBlocker[]; more: number }
+  | { kind: 'text'; text: string }
+  | { kind: 'why'; link: L };
+
+export function situationDetail<L>(situation: MissionSituation, because: readonly L[]): SituationDetail<L> | null {
+  const focus = situation.focus;
+  if (focus?.kind === 'criterion_failing' && focus.blockers && focus.blockers.length > 0) {
+    return {
+      kind: 'blockers',
+      items: focus.blockers.slice(0, CRITERION_BLOCKERS_VISIBLE),
+      more: Math.max(0, focus.blockers.length - CRITERION_BLOCKERS_VISIBLE),
+    };
+  }
+  if (focus?.kind === 'criterion_failing' || focus?.kind === 'criterion_unverified') {
+    return situation.nextAction ? { kind: 'text', text: situation.nextAction } : null;
+  }
+  return because[0] !== undefined ? { kind: 'why', link: because[0] } : null;
 }
 
 /** Exported for the threshold's own regression test and for surfaces that explain it. */

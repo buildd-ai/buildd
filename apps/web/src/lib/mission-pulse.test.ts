@@ -8,7 +8,11 @@ import {
   orderDeliverables,
   PULSE_FOLD_THRESHOLD,
   PULSE_STATE_TOKEN,
+  PULSE_STATE_GLYPH,
   PR_STATE_TOKEN,
+  buildPulseCaption,
+  missionDeliverableCounts,
+  pulseDoneCounts,
   type FeedPrState,
   type MissionFeedTaskInput,
 } from './mission-pulse';
@@ -225,5 +229,41 @@ describe('buildPulseSegments', () => {
     expect(over[0]).toMatchObject({ kind: 'phase', phaseLabel: 'THINK', fill: 1, state: 'done' });
     expect(over[1]).toMatchObject({ phaseLabel: 'BUILD', fill: 0, state: 'queued' });
     expect(over.map(s => s.gapBefore)).toEqual([false, true, true]);
+  });
+});
+
+// ─── F3: one count definition ────────────────────────────────────────────────
+
+describe('F3: n/N excludes cancelled rows', () => {
+  it('pulseDoneCounts: cancelled is neither done nor in N', () => {
+    const segs = buildPulseSegments([
+      t('a', { status: 'completed' }), t('b', { status: 'cancelled' }), t('c'), t('d', { status: 'failed' }),
+    ]);
+    expect(segs.map(s => s.state)).toEqual(['done', 'skipped', 'queued', 'needs_you']);
+    expect(pulseDoneCounts(segs)).toEqual({ done: 1, total: 3 });
+    expect(buildPulseCaption(segs)).toBe('1/3');
+  });
+
+  it('a folded phase counts the same way', () => {
+    const many = Array.from({ length: PULSE_FOLD_THRESHOLD + 2 }, (_, i) =>
+      t(`x${i}`, { ...phase(0, 'BUILD'), status: i === 0 ? 'cancelled' : i < 11 ? 'completed' : 'pending' }));
+    const segs = buildPulseSegments(many);
+    expect(segs).toHaveLength(1);
+    expect(pulseDoneCounts(segs)).toEqual({ done: 10, total: PULSE_FOLD_THRESHOLD + 1 });
+  });
+
+  it('the caption is empty with no countable rows (F7a: never "0/0")', () => {
+    expect(buildPulseCaption([])).toBe('');
+    expect(buildPulseCaption(buildPulseSegments([t('a', { status: 'cancelled' })]))).toBe('');
+    expect(buildPulseCaption([], { liveWorkers: 2 })).toBe('2 live');
+  });
+
+  it('missionDeliverableCounts is the same definition, from tasks', () => {
+    const tasks = [t('a', { status: 'completed' }), t('b', { status: 'cancelled' }), t('c')];
+    expect(missionDeliverableCounts(tasks)).toEqual({ done: 1, total: 2, cancelled: 1 });
+  });
+
+  it('cancelled has its own glyph, never the queued one', () => {
+    expect(PULSE_STATE_GLYPH.skipped).not.toBe(PULSE_STATE_GLYPH.queued);
   });
 });

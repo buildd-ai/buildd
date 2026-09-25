@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { evaluateGoalCriteria, evaluateInitiativeKPIs, type GoalCriterion } from '../mission-helpers';
+import { evaluateGoalCriteria, evaluateInitiativeKPIs, isNoOpenTasksCandidate, type GoalCriterion } from '../mission-helpers';
 
 // ─── evaluateGoalCriteria ──────────────────────────────────────────────────────
 
@@ -73,6 +73,35 @@ describe('evaluateGoalCriteria — no_open_tasks', () => {
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
     expect(state.criteria[0].verdict).toBe('fail');
     expect(state.criteria[0].evidence).toContain('1 task(s) still open');
+  });
+
+  // Orchestrator ticks, planning passes and retry/reviewer attempts are
+  // bookkeeping: an open one must never hold "no open tasks" at FAIL.
+  it('does not count open bookkeeping rows or attempts', () => {
+    const tasks = [
+      { id: 't1', title: 'Build the thing', status: 'completed', taskClass: 'work' },
+      { id: 't2', title: 'Mission: Claim loop', status: 'in_progress', taskClass: 'bookkeeping' },
+      { id: 't3', title: 'Evaluate goal criteria: Claim loop', status: 'pending', taskClass: 'bookkeeping' },
+      { id: 't4', title: '[reviewer] PR #7: Build the thing', status: 'pending', taskClass: 'attempt' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
+    expect(state.criteria[0].verdict).toBe('pass');
+  });
+
+  it('names the open deliverables in its evidence (title and status)', () => {
+    const tasks = [
+      { id: 't1', title: 'Build the thing', status: 'in_progress', taskClass: 'work' },
+      { id: 't2', title: 'Write the doc', status: 'pending', taskClass: 'work' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
+    expect(state.criteria[0].evidence).toBe('2 task(s) still open: Build the thing (in_progress), Write the doc (pending)');
+  });
+
+  it('isNoOpenTasksCandidate is the predicate the evaluator counts with', () => {
+    expect(isNoOpenTasksCandidate({ title: 'Build', taskClass: 'work' })).toBe(true);
+    expect(isNoOpenTasksCandidate({ title: '[surface audit] M', taskClass: 'work' })).toBe(false);
+    expect(isNoOpenTasksCandidate({ title: 'Mission: M', taskClass: 'bookkeeping' })).toBe(false);
+    expect(isNoOpenTasksCandidate({ title: 'Retry', taskClass: 'attempt' })).toBe(false);
   });
 
   it('passes when the only tasks are coordination (non-deliverable) tasks', () => {
