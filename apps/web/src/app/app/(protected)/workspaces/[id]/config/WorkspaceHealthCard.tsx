@@ -29,36 +29,15 @@ const DOT: Record<HealthItem['severity'], string> = {
  *                     (the scan behind MCP manage_workspaces action=init), shown
  *                     as a diff, then on Apply PATCH /api/workspaces/[id]/config
  *                     { policyConfig }
- *   restrict-access → PATCH /api/workspaces/[id] { accessMode: 'restricted' }
  *   move-team       → WorkspaceMigrationModal (/migrate/precheck → /migrate/execute)
  */
 export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
     const router = useRouter();
-    const [busy, setBusy] = useState<string | null>(null);
-    const [error, setError] = useState<string | null>(null);
     const [policyOpen, setPolicyOpen] = useState(false);
 
     if (items.length === 0) return null;
 
     const onlyOffers = items.every(i => i.severity !== 'warning');
-
-    async function restrictAccess() {
-        setBusy('access-open');
-        setError(null);
-        try {
-            const res = await fetch(`/api/workspaces/${workspace.id}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessMode: 'restricted' }),
-            });
-            if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to restrict access');
-            router.refresh();
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to restrict access');
-        } finally {
-            setBusy(null);
-        }
-    }
 
     function actionButton(item: HealthItem) {
         if (!item.action) return null;
@@ -67,12 +46,6 @@ export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
                 return (
                     <button type="button" className={BUTTON} onClick={() => setPolicyOpen(true)}>
                         {item.action.label}
-                    </button>
-                );
-            case 'restrict-access':
-                return (
-                    <button type="button" className={BUTTON} disabled={busy === item.id} onClick={restrictAccess}>
-                        {busy === item.id ? 'Restricting…' : item.action.label}
                     </button>
                 );
             case 'move-team':
@@ -104,7 +77,6 @@ export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
                     </li>
                 ))}
             </ul>
-            {error && <p className="mt-3 text-sm text-status-error">{error}</p>}
 
             <PolicyRescanSheet
                 workspaceId={workspace.id}

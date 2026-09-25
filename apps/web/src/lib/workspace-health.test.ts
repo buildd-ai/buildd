@@ -64,13 +64,17 @@ describe('checkWorkspaceHealth', () => {
     });
   });
 
-  describe('access rule', () => {
-    it('flags open access with the restrict action', () => {
-      const items = checkWorkspaceHealth({ ...healthy, accessMode: 'open' });
-      expect(items.map(i => i.id)).toEqual(['access-open']);
-      expect(items[0].action?.kind).toBe('restrict-access');
-      expect(items[0].action?.label).toBe('Restrict to team members');
-      expect(items[0].note).toBeTruthy();
+  describe('access mode', () => {
+    // 'open' means open within the owning team (lib/team-access.ts), and
+    // 'restricted' drops same-team API-key accounts that lack an explicit
+    // account_workspaces link — so open access is never a health problem.
+    it('raises no item for an open workspace', () => {
+      expect(ids({ ...healthy, accessMode: 'open' })).toEqual([]);
+    });
+
+    it('never offers a restrict-access action', () => {
+      const items = checkWorkspaceHealth({ ...healthy, configStatus: 'unconfigured', accessMode: 'open', userTeamCount: 3 });
+      expect(items.some(i => (i.action?.kind as string) === 'restrict-access')).toBe(false);
     });
   });
 
@@ -93,7 +97,7 @@ describe('checkWorkspaceHealth', () => {
       configStatus: 'unconfigured',
       accessMode: 'open',
       userTeamCount: 3,
-    })).toEqual(['policy', 'access-open', 'team-placement']);
+    })).toEqual(['policy', 'team-placement']);
   });
 
   describe('system workspace exemption', () => {
@@ -121,12 +125,12 @@ describe('checkWorkspaceHealth', () => {
 
     it('does not exempt a __-prefixed workspace that has a repo', () => {
       expect(ids({ ...coordination, repo: 'https://github.com/example/app' }))
-        .toEqual(['policy', 'access-open', 'team-placement']);
+        .toEqual(['policy', 'team-placement']);
     });
 
     it('does not exempt a repo-less workspace without the system prefix', () => {
       expect(ids({ ...coordination, name: 'notes' }))
-        .toEqual(['policy', 'access-open', 'team-placement']);
+        .toEqual(['policy', 'team-placement']);
     });
   });
 });
