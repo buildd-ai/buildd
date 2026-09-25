@@ -279,6 +279,9 @@ export async function evaluateCriteriaNow(
     columns: {
       id: true, status: true, kind: true, title: true, mode: true,
       taskClass: true, creationSource: true, category: true, result: true, createdAt: true,
+      // Attempt lineage: a closed PR followed by a merged retry PR in the same
+      // chain is superseded without a manual record (pr-shipped.ts).
+      parentTaskId: true,
     },
   });
 
@@ -289,6 +292,8 @@ export async function evaluateCriteriaNow(
     branch: string;
     prBaseRef: string | null;
     prNumber: number | null;
+    prLifecycleStatus: string | null;
+    supersededByPrNumber: number | null;
   }> = [];
   if (missionTasks.length > 0) {
     const taskIds = missionTasks.map(t => t.id);
@@ -297,7 +302,12 @@ export async function evaluateCriteriaNow(
       // `prBaseRef` is what separates "merged into the mission's integration
       // branch" from "merged into trunk". Null is unknown, never trunk.
       // `prNumber` joins a stored reviewer finding to the PR it was made on.
-      columns: { taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true, prNumber: true },
+      // `prLifecycleStatus` + `supersededByPrNumber` feed the shared shipped
+      // predicate `canCompleteMission` uses, so the two cannot disagree.
+      columns: {
+        taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true, prNumber: true,
+        prLifecycleStatus: true, supersededByPrNumber: true,
+      },
     });
   }
 
@@ -320,6 +330,9 @@ export async function evaluateCriteriaNow(
         taskId: w.taskId,
         mergedAt: w.mergedAt,
         prUrl: w.prUrl,
+        prNumber: w.prNumber,
+        prLifecycleStatus: w.prLifecycleStatus,
+        supersededByPrNumber: w.supersededByPrNumber,
         branchName: w.branch,
         prBaseRef: w.prBaseRef,
       })),
