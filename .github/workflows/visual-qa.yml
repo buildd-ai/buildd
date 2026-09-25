@@ -222,15 +222,23 @@ jobs:
       # Credentials, tokens and telemetry are deleted. Ids, statuses,
       # timestamps and enums are kept so every state still renders.
       # One team owner becomes the CI QA user (ci-qa@buildd.dev) for DEV_USER_EMAIL.
+      # Anything matching NO_PROD_DATA_IDENTIFIERS is also redacted wherever it
+      # would otherwise survive (kept tokens, jsonb keys, tool names). The
+      # pattern goes in via env → psql -v and is never echoed.
       # -q: command tags carry row counts, and these logs are public.
       - name: Scrub prod clone to placeholders
         id: scrub
         run: |
-          psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -f scripts/qa/scrub-pii.sql
+          if [ -z "${NO_PROD_DATA_IDENTIFIERS// /}" ]; then
+            echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to scrub without it"
+            exit 1
+          fi
+          psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f scripts/qa/scrub-pii.sql
           echo "ci_user_email=ci-qa@buildd.dev" >> "$GITHUB_OUTPUT"
           echo "::notice::Scrub complete — prod clone rewritten to placeholders"
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          NO_PROD_DATA_IDENTIFIERS: ${{ secrets.NO_PROD_DATA_IDENTIFIERS }}
           PGPASSWORD: ""
 
       # --- Scrub guard: fail closed before anything renders ---

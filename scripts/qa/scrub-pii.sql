@@ -25,9 +25,42 @@
 -- Command tags carry row counts, and CI logs on this repo are public.
 \set QUIET on
 
+-- Known identifiers (NO_PROD_DATA_IDENTIFIERS, via `psql -v ids=…`). Anything
+-- matching is redacted wherever it survives the shape rules below: kept enum-
+-- like tokens, jsonb object keys, tool names. An unset -v ids leaves `:'ids'`
+-- literal, a syntax error (fail closed). Never SELECT this setting.
+SET qa.ids = :'ids';
+
 -- ---------------------------------------------------------------------------
 -- Helpers (session-local; vanish when psql exits)
 -- ---------------------------------------------------------------------------
+
+-- The secret is written for Python's re; Postgres AREs spell word boundaries
+-- \y / \Y (\b is a backspace there and would silently match nothing).
+CREATE OR REPLACE FUNCTION pg_temp.qa_ids() RETURNS text
+LANGUAGE sql STABLE AS $f$
+  SELECT nullif(replace(replace(btrim(coalesce(current_setting('qa.ids', true), '')), '\b', '\y'), '\B', '\Y'), '')
+$f$;
+
+DO $check$
+BEGIN
+  IF pg_temp.qa_ids() IS NULL THEN
+    RAISE EXCEPTION 'scrub: identifier pattern (-v ids) is empty';
+  END IF;
+  PERFORM 'probe' ~* pg_temp.qa_ids();  -- an invalid pattern raises here
+END
+$check$;
+
+CREATE OR REPLACE FUNCTION pg_temp.qa_is_ident(s text) RETURNS boolean
+LANGUAGE sql STABLE AS $f$
+  SELECT s IS NOT NULL AND s ~* pg_temp.qa_ids()
+$f$;
+
+-- Same-length hex-ish token for a value that must not survive.
+CREATE OR REPLACE FUNCTION pg_temp.qa_token(s text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $f$
+  SELECT CASE WHEN s IS NULL THEN NULL ELSE left('x' || md5(s) || md5(s || '.'), greatest(least(length(s), 64), 4)) END
+$f$;
 
 -- Lorem of length n, [a-z ] only. The guard's "lorem" pattern is ^[a-z ]*$.
 CREATE OR REPLACE FUNCTION pg_temp.qa_lorem(n integer) RETURNS text
@@ -93,10 +126,12 @@ $f$;
 -- Keeps what is structural (uuids, shas, timestamps, numbers, snake_case enum
 -- tokens, model ids); everything else becomes a placeholder of similar length.
 CREATE OR REPLACE FUNCTION pg_temp.qa_str(s text) RETURNS text
-LANGUAGE sql IMMUTABLE AS $f$
+LANGUAGE sql STABLE AS $f$
   SELECT CASE
     WHEN s IS NULL THEN NULL
     WHEN s = '' THEN ''
+    WHEN pg_temp.qa_is_ident(s) THEN
+      CASE WHEN s ~ '\s' THEN pg_temp.qa_lorem(length(s)) ELSE pg_temp.qa_token(s) END
     WHEN s ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN s
     WHEN s ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9:.]+(Z|[+-][0-9:]+)?)?$' THEN s
     WHEN s ~ '^[0-9a-f]{7,40}$' THEN s
@@ -104,25 +139,42 @@ LANGUAGE sql IMMUTABLE AS $f$
     WHEN s ~ '^[a-z][a-z0-9_]{0,31}$' THEN s
     WHEN s ~ '^(claude|gpt|o[0-9])[a-z0-9.-]*$' THEN s
     WHEN s ~* '^https?://' THEN pg_temp.qa_url(s)
-    WHEN s !~ '\s' THEN left('x' || md5(s) || md5(s || '.'), least(length(s), 64))
+    WHEN s !~ '\s' THEN pg_temp.qa_token(s)
     ELSE pg_temp.qa_lorem(length(s))
   END
 $f$;
 
--- Recursive jsonb scrub: keys, numbers, booleans and shape kept; strings via qa_str.
-CREATE OR REPLACE FUNCTION pg_temp.qa_json(j jsonb) RETURNS jsonb
-LANGUAGE plpgsql IMMUTABLE AS $f$
+-- Object keys stay (they are structure) unless they match a known identifier:
+-- map-shaped columns key by server, connector or env-var name.
+CREATE OR REPLACE FUNCTION pg_temp.qa_key(k text) RETURNS text
+LANGUAGE sql STABLE AS $f$
+  SELECT CASE WHEN pg_temp.qa_is_ident(k) THEN 'k' || left(md5(k), 8) ELSE k END
+$f$;
+
+-- Recursive jsonb scrub: numbers, booleans and shape kept; keys via qa_key,
+-- strings via qa_str. redact_only = true replaces identifier matches only
+-- (for lists whose other values are structural, e.g. tool names).
+CREATE OR REPLACE FUNCTION pg_temp.qa_json(j jsonb, redact_only boolean DEFAULT false) RETURNS jsonb
+LANGUAGE plpgsql STABLE AS $f$
 DECLARE
   out jsonb;
+  s text;
 BEGIN
   IF j IS NULL THEN RETURN NULL; END IF;
   CASE jsonb_typeof(j)
     WHEN 'object' THEN
-      SELECT coalesce(jsonb_object_agg(k, pg_temp.qa_json(v)), '{}'::jsonb) INTO out FROM jsonb_each(j) AS e(k, v);
+      SELECT coalesce(jsonb_object_agg(pg_temp.qa_key(k), pg_temp.qa_json(v, redact_only)), '{}'::jsonb)
+        INTO out FROM jsonb_each(j) AS e(k, v);
     WHEN 'array' THEN
-      SELECT coalesce(jsonb_agg(pg_temp.qa_json(v) ORDER BY i), '[]'::jsonb) INTO out FROM jsonb_array_elements(j) WITH ORDINALITY AS a(v, i);
+      SELECT coalesce(jsonb_agg(pg_temp.qa_json(v, redact_only) ORDER BY i), '[]'::jsonb)
+        INTO out FROM jsonb_array_elements(j) WITH ORDINALITY AS a(v, i);
     WHEN 'string' THEN
-      out := to_jsonb(pg_temp.qa_str(j #>> '{}'));
+      s := j #>> '{}';
+      IF redact_only THEN
+        out := CASE WHEN pg_temp.qa_is_ident(s) THEN to_jsonb(pg_temp.qa_token(s)) ELSE j END;
+      ELSE
+        out := to_jsonb(pg_temp.qa_str(s));
+      END IF;
     ELSE
       out := j;
   END CASE;
@@ -389,6 +441,7 @@ UPDATE workspace_skills k SET
   content = pg_temp.qa_text(k.content),
   source = pg_temp.qa_str(k.source),
   metadata = pg_temp.qa_json(k.metadata),
+  allowed_tools = pg_temp.qa_json(k.allowed_tools, true),
   can_delegate_to = pg_temp.qa_slug_array(k.can_delegate_to),
   mcp_servers = pg_temp.qa_json(k.mcp_servers),
   required_env_vars = pg_temp.qa_json(k.required_env_vars),
@@ -449,3 +502,5 @@ UPDATE backend_pauses SET
 UPDATE migration_log SET
   error = pg_temp.qa_text(error),
   detail = pg_temp.qa_json(detail);
+
+RESET qa.ids;

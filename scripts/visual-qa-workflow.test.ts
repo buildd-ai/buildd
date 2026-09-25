@@ -169,17 +169,19 @@ describe('visual-qa.yml scrub + guard', () => {
     expect(g).toBeLessThan(idx(/^Upload/));
   });
 
-  test('the guard reads the identifier secret via env and never echoes it', () => {
-    const guard = step(/^Guard/);
-    expect(guard.env.NO_PROD_DATA_IDENTIFIERS).toBe('${{ secrets.NO_PROD_DATA_IDENTIFIERS }}');
-    const run: string = guard.run;
-    expect(run).not.toContain('secrets.');
-    expect(run).toContain('-v ids="$NO_PROD_DATA_IDENTIFIERS"');
-    for (const line of run.split('\n')) {
-      if (/^\s*(echo|printf)\b/.test(line)) expect(line).not.toContain('$NO_PROD_DATA_IDENTIFIERS');
+  test('scrub and guard read the identifier secret via env and never echo it', () => {
+    for (const name of [/^Scrub/, /^Guard/]) {
+      const s = step(name);
+      expect(s.env.NO_PROD_DATA_IDENTIFIERS).toBe('${{ secrets.NO_PROD_DATA_IDENTIFIERS }}');
+      const run: string = s.run;
+      expect(run).not.toContain('secrets.');
+      expect(run).toContain('-v ids="$NO_PROD_DATA_IDENTIFIERS"');
+      for (const line of run.split('\n')) {
+        if (/^\s*(echo|printf)\b/.test(line)) expect(line).not.toContain('$NO_PROD_DATA_IDENTIFIERS');
+      }
+      // Absent secret fails the run instead of using an empty pattern.
+      expect(run).toMatch(/-z "\$\{NO_PROD_DATA_IDENTIFIERS[^"]*\}"[\s\S]*exit 1/);
     }
-    // Absent secret fails the run instead of scanning an empty pattern.
-    expect(run).toMatch(/-z "\$\{NO_PROD_DATA_IDENTIFIERS[^"]*\}"[\s\S]*exit 1/);
     expect(JSON.stringify(wf)).not.toContain('vars.NO_PROD_DATA_IDENTIFIERS');
   });
 

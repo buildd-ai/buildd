@@ -107,7 +107,7 @@ const SAFE: Record<string, string[]> = {
   task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash'],
   github_installations: ['permissions'],
   github_repos: ['default_branch'],
-  workspace_skills: ['content_hash', 'model', 'allowed_tools', 'color', 'config_hash', 'config_storage_key'],
+  workspace_skills: ['content_hash', 'model', 'color', 'config_hash', 'config_storage_key'],
   task_outcomes: ['kind', 'complexity', 'classified_by', 'predicted_model', 'actual_model', 'total_cost_usd', 'exit_cause'],
   experiment_assignments: ['default_model', 'assigned_model', 'runner_cli_version'],
   tenant_budgets: ['tenant_id'],
@@ -188,6 +188,19 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(cov.top).not.toMatch(/\bBEGIN\s*;|\bCOMMIT\b|\bROLLBACK\b/i);
     expect(sqlSrc).toContain('\\set ON_ERROR_STOP on');
     expect(sqlSrc).toContain('\\set QUIET on');
+  });
+
+  test('known identifiers are redacted from kept tokens, jsonb keys and tool lists', () => {
+    expect(sqlSrc).toContain("SET qa.ids = :'ids';");
+    // Fails closed on an empty pattern, and speaks Postgres word boundaries.
+    expect(sqlSrc).toMatch(/IF pg_temp\.qa_ids\(\) IS NULL THEN\s+RAISE EXCEPTION/);
+    expect(sqlSrc).toContain("'\\b', '\\y'");
+    // Checked before any keep-as-is rule in qa_str, and on object keys.
+    const qaStr = /FUNCTION pg_temp\.qa_str[\s\S]*?\$f\$;/.exec(sqlSrc)![0];
+    expect(qaStr.indexOf('qa_is_ident')).toBeGreaterThan(-1);
+    expect(qaStr.indexOf('qa_is_ident')).toBeLessThan(qaStr.indexOf('THEN s'));
+    expect(sqlSrc).toMatch(/jsonb_object_agg\(pg_temp\.qa_key\(k\)/);
+    expect(cov.assigned.get('workspace_skills')?.has('allowed_tools')).toBe(true);
   });
 
   test('the CI QA user is designated before the general user scrub', () => {
