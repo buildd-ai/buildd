@@ -34,8 +34,8 @@ export function GroupSection({ title, missionId, stageCounts, failedCount = 0, v
   const hasMission = !!missionId;
   // MobilePageHeader publishes its measured height as --mobile-header-h. The
   // fallback only covers the first paint before it does, sized to that header
-  // (py-1 + 32px controls + 1px border).
-  const stickyTop = belowMobileHeader ? 'top-[var(--mobile-header-h,41px)] md:top-0' : 'top-0';
+  // (py-1 + 44px min-h-11 controls + 1px border = 53px).
+  const stickyTop = belowMobileHeader ? 'top-[var(--mobile-header-h,53px)] md:top-0' : 'top-0';
 
   return (
     <div className={`sticky ${stickyTop} z-10 w-full bg-surface-1 border-b border-border-default px-4 py-2`}>
