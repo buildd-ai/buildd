@@ -212,6 +212,9 @@ export function validateGoalCriteria(
             `Prefer a command criterion: a script that exits 0 needs no model to grade it.`
           );
         }
+        if (raw.grader !== undefined && !(['auto', 'api', 'runner'] as unknown[]).includes(raw.grader)) {
+          return `${at}.grader must be one of "auto", "api", "runner" (got ${JSON.stringify(raw.grader)})`;
+        }
         break;
       }
     }
@@ -461,7 +464,8 @@ export function evaluateGoalCriteria(
       }
 
       case 'description': {
-        // Free-form criteria are evaluated by LLM in the evaluate route.
+        // Free-form criteria are graded by `mission-criteria-eval` (an inference
+        // call or a runner task, per the criterion's grader).
         // The pure evaluator marks NOT_EVALUATED so the route can distinguish
         // "never checked" from UNVERIFIED ("checked, ambiguous evidence").
         verdict = 'NOT_EVALUATED';

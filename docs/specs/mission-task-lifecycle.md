@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-21
+last_verified: 2026-09-24
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -856,27 +856,51 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `loopConfig.exitCondition = { type: 'command', command }`, and the runner's
   evidence — not an agent's summary — decides. A `command` criterion MUST NOT be
   graded by the LLM evaluator.
-- `description` (prose) criteria MUST NOT depend on `ANTHROPIC_API_KEY` being
-  present in the web app's environment. That variable is unset in production and
-  is unsettable for a team whose Claude access is an OAuth subscription, so a
-  grader keyed on it reported `NOT_EVALUATED` forever and named a fix no operator
-  could apply. When the key is absent the evaluator MUST dispatch a
-  `taskClass = 'bookkeeping'` grading task instead, which a runner claims with
-  whatever backend credential the team has connected, and mark the criteria
-  `PENDING`. When the key IS present the inline call is used and no task is
-  dispatched — never both.
-- A prose grading task is deduplicated on its `context.criteriaProseEval` marker,
-  matched in SQL. Mechanical evaluation re-runs on every completion attempt, so an
-  undeduplicated dispatch would create one grading task per round.
-- A prose verdict MUST be written back only onto the criterion it graded, matched
-  on `criterionFingerprint`, and only for indices named in the dispatching
-  marker: an agent MUST NOT be able to overwrite a mechanically-derived verdict
-  with prose. Every criterion in the marker leaves the write-back non-`PENDING`,
-  including ones the evaluator ignored — a criterion left `PENDING` with no task
-  in flight holds the mission open with nothing that could resolve it.
-- No prose criterion is dispatched while another criterion already reads `fail`,
-  and a finished grading run that returned no verdicts is not retried until it
-  ages past `PROSE_VERDICT_TTL_MS` — the same economics as the command path.
+- `description` (prose) criteria have two graders, chosen per criterion by
+  `grader` on the criterion, else the workspace's `gitConfig.criteriaGrader`,
+  else `auto`:
+  - `api` — one batched `inferenceCall` on the team's API-key credential,
+    billed per token. When the inference client finds no path (no key, a
+    provider that cannot serve inference, capability switched off) the
+    criterion reads `NOT_EVALUATED` naming the cause; it MUST NOT switch to a
+    runner behind the owner's back.
+  - `runner` — one read-only `kind = 'analysis'`, `taskClass = 'bookkeeping'`,
+    `outputRequirement = 'none'` verification task per criterion, claimed by a
+    runner on whatever backend credential the team connected (an OAuth seat
+    included). No inference call is made. The task's `outputSchema` is
+    `{ verdict: 'pass'|'fail'|'unsure', reason ≤ 400 chars, evidence?: string[] }`
+    and its prompt carries the criterion, the mission title and goal, the
+    deliverable tasks with status / PR link / merged state, and artifacts as
+    ids and titles only.
+  - `auto` (default) — `api` when the inference client resolves a key for the
+    team, `runner` otherwise. The check is the inference client's own credential
+    resolution, not a second lookup.
+  A prose criterion MUST NOT depend on `ANTHROPIC_API_KEY` being present in the
+  web app's environment for a team without one: under `auto` it goes to a runner.
+- While a runner task is open the criterion reads `PENDING` ("Verifying on
+  runner…") with its `workerTaskId`; the completion gate reports
+  `criteria_pending`, and neither counts as a pass. Other criteria are evaluated
+  independently. A task still unclaimed after `RUNNER_WAIT_BOUND_MS` sets
+  `awaitingRunner` on the criterion, and the mission situation reads "waiting for
+  a runner to verify ‹criterion›" instead of the quiet "not yet verified".
+- Runner verdict mapping: `pass`/`fail` land as-is; `unsure` lands
+  `NOT_EVALUATED` with the reason; a `failed`/`cancelled` task, or one that
+  completed without well-formed structured output, lands `NOT_EVALUATED` with an
+  infra reason — never a silent pass or fail. The criterion records
+  `evaluatedAt` and `workerTaskId` (the link to the task).
+- A runner task is deduplicated per (mission, criterion index) on its
+  `context.criteriaProseEval` marker, matched in SQL, and reused while open; a
+  mission completing while one is in flight reuses it. A terminal task for the
+  same criterion fingerprint younger than `PROSE_VERDICT_TTL_MS` is reused as the
+  verdict (including an empty one — the loop guard); past it, the next
+  evaluation round dispatches a fresh task. The on-demand route's
+  6-per-mission-per-hour limit applies to every grader.
+- A runner verdict MUST be written back only onto the criterion it graded,
+  matched on `criterionFingerprint` of the criterion as it is now: an agent MUST
+  NOT be able to overwrite a mechanically-derived verdict with prose, and a
+  criterion edited while its task ran MUST NOT receive the old answer.
+- No prose criterion is dispatched while another criterion already reads `fail`
+  — the same economics as the command path.
 - A prose criterion is graded at PR review time wherever it can be, BEFORE the
   standalone evaluator is chosen. A reviewer task dispatched for a PR whose task
   belongs to a mission with `description` criteria carries those criteria in its
@@ -932,12 +956,17 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   completion is attempted THEN `missions.status` becomes `completed`, the linked
   schedule is disabled, and the `on_mission_complete` release trigger also
   passes its own check.
-- AC-11d: GIVEN a mission with a `description` criterion, no `ANTHROPIC_API_KEY`
-  in the environment, and a connected agent backend credential WHEN criteria are
-  evaluated THEN one `bookkeeping` grading task is dispatched, the criterion reads
-  `PENDING` with that task id, and `overall` is `UNVERIFIED` — and WHEN that task
-  completes with `criteriaVerdicts` THEN the verdicts land on the criteria,
-  `overall` is re-folded, and completion is re-attempted in the same request.
+- AC-11d: GIVEN a mission with a `description` criterion whose grader resolves
+  to `runner` (explicitly, or `auto` with no API key) and a connected agent
+  backend credential WHEN criteria are evaluated THEN one `analysis` verification
+  task is dispatched for that criterion, no inference call is made, the
+  criterion reads `PENDING` with that task id, and `overall` is `UNVERIFIED` —
+  and WHEN that task completes with `{ verdict: 'pass', reason }` THEN the
+  verdict lands on the criterion, `overall` is re-folded, and completion is
+  re-attempted in the same request.
+- AC-11d2: GIVEN a `description` criterion with `grader: 'api'` and no API key
+  WHEN criteria are evaluated THEN no task is dispatched and the criterion reads
+  `NOT_EVALUATED` with evidence naming the missing key.
 - AC-11e: GIVEN the same mission with NO agent backend credential connected WHEN
   criteria are evaluated THEN no task is dispatched and the criterion reads
   `NOT_EVALUATED` with evidence naming Settings → Agent Backends.
@@ -1229,8 +1258,11 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `ensureCriteriaVerdict()`, `evaluateCriteriaNow()`
 - Command criteria: `apps/web/src/lib/mission-criteria-verify.ts` —
   `resolveCommandCriterion()`, `handleCriteriaVerificationOutcome()`
-- Prose criteria: `apps/web/src/lib/mission-criteria-prose.ts` —
-  `resolveProseCriteria()`, `handleProseEvalOutcome()`
+- Prose criteria, runner grader: `apps/web/src/lib/mission-criteria-prose.ts` —
+  `resolveProseCriterion()`, `mapProseOutcome()`, `handleProseEvalOutcome()`;
+  grader choice: `apps/web/src/lib/mission-criteria-grader.ts` —
+  `pickCriteriaGrader()`, and `resolveWorkspaceCriteriaGrader()` in
+  `apps/web/src/lib/mission-criteria-strategy.ts`
 - Prose criteria graded at review time:
   `apps/web/src/lib/criteria-reviewer-findings.ts` —
   `loadMissionProseCriteria()`, `renderMissionCriteriaGuidance()`,

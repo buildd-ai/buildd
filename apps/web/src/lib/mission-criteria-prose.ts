@@ -1,165 +1,173 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, secrets } from '@buildd/core/db/schema';
 import { eq, and, or, desc, sql } from 'drizzle-orm';
-import { recalculateOverall } from '@buildd/core/mission-helpers';
-import type { GoalCriteriaState, CriterionVerdict } from '@buildd/shared';
+import { recalculateOverall, criterionFingerprint } from '@buildd/core/mission-helpers';
+import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 
 /**
- * `description` (prose) goal criteria: graded by a dispatched agent.
+ * `description` (prose) goal criteria under the `runner` grader: one read-only
+ * verification task per criterion, claimed by one of the team's runners.
  *
- * The original prose evaluator called the Anthropic Messages API inline from the
- * web app, keyed on `process.env.ANTHROPIC_API_KEY`. That key is not set in
- * production and — for a team whose Claude access is an OAuth subscription
- * rather than a metered API key — cannot be. The result was that every prose
- * criterion reported `NOT_EVALUATED: LLM evaluator not configured (no
- * ANTHROPIC_API_KEY)`, naming an env var no operator could usefully set, and no
- * mission with a prose criterion could ever reach a verdict.
+ * The `api` grader (`mission-criteria-eval.ts` → `inferenceCall`) needs an API
+ * key and bills per token. A team that runs on OAuth subscription seats has no
+ * such key, and an inference call structurally cannot use a seat (see
+ * `inference-client.ts`). A dispatched agent run can: the claim route resolves
+ * whatever backend credential the team connected, OAuth included. So the runner
+ * grader is the same machinery `command` criteria use
+ * (`mission-criteria-verify.ts`), with a structured verdict instead of an exit
+ * code.
  *
- * This module removes the env-var dependency the same way
- * `mission-criteria-verify.ts` removed it for `command` criteria: dispatch a
- * task. A runner claims it with whatever backend credential the team has
- * connected (OAuth token, API key, Codex — the claim route already resolves and
- * fails over between them), grades the criteria against the embedded evidence,
- * and returns verdicts as structured output.
+ * Shape, mirroring command criteria:
+ *   1. `resolveProseCriterion` — per (mission, criterion): reuse an open task
+ *      (`pending`), reuse a fresh terminal result (`verdict`), or dispatch one.
+ *      One task per criterion, not a batch: each verdict lands on its own and a
+ *      slow or stuck grading run holds up only the criterion it is about.
+ *   2. `handleProseEvalOutcome` — from the worker-completion hook: map the
+ *      task's `structuredOutput` onto its criterion, re-fold, re-attempt
+ *      completion.
  *
- * Flow:
- *   1. `resolveProseCriteria` finds an in-flight evaluator task or dispatches
- *      one, and reports `pending`. The caller marks those criteria PENDING.
- *   2. `handleProseEvalOutcome` — called from the worker-completion hooks — reads
- *      `criteriaVerdicts` off the structured output, writes them onto the
- *      criteria, re-folds `overall`, and re-attempts completion.
- *
- * What this does NOT change: a prose verdict is still a model's judgment, which
- * is why `command` remains the criterion type to prefer. The difference is only
- * that the judgment now happens where the credentials are.
+ * Verdict mapping ({@link mapProseOutcome}): `pass`/`fail` land as-is; `unsure`,
+ * a failed/cancelled task, and missing or malformed output all land as
+ * NOT_EVALUATED with the reason — never a silent pass, never a silent fail.
  */
 
-/** Context marker on a prose-eval task, read back on completion. */
+/** Context marker on a prose verification task, read back on completion. */
 export interface ProseEvalContext {
   missionId: string;
-  /** Criterion indices this task was asked to grade. */
-  criterionIndices: number[];
+  criterionIndex: number;
   /**
-   * Criterion fingerprints, parallel to `criterionIndices`. Checked on write-back:
-   * an index alone is a position, and positions get reused when criteria are edited.
+   * `criterionFingerprint()` of the criterion as asked. An index alone is a
+   * position, and positions get reused when criteria are edited.
    */
-  fingerprints: string[];
+  fingerprint: string;
 }
 
 /**
- * How long a prose grading run stays authoritative.
- *
- * Also the loop guard: a run that finished without usable verdicts is not retried
- * until this elapses, so a mission whose evaluator keeps coming back empty costs
- * one agent run per TTL rather than one per evaluation round.
+ * How long a finished grading run stays authoritative. Also the loop guard: a
+ * run that ended without a usable verdict is not retried until this elapses,
+ * so a criterion whose runner keeps coming back empty costs one agent run per
+ * TTL rather than one per evaluation round.
  */
 export const PROSE_VERDICT_TTL_MS = 30 * 60 * 1000;
 
-const EVAL_TASK_TITLE_PREFIX = 'Grade goal criteria:';
+/**
+ * How long a verification task may sit unclaimed before the criterion says it
+ * is waiting for a runner. Past this, "verifying" is no longer the honest
+ * description: nothing is verifying it, and the completion gate would otherwise
+ * hold on a criterion that reads as in-progress indefinitely.
+ */
+export const RUNNER_WAIT_BOUND_MS = 15 * 60 * 1000;
+
+const REASON_MAX = 400;
+const VERIFY_TASK_TITLE_PREFIX = 'Verify goal criterion:';
 
 /** Backend credentials a runner can actually grade with. */
 const AGENT_BACKEND_PURPOSES = ['oauth_token', 'anthropic_api_key', 'claude_credential', 'codex_credential'] as const;
 
-/** JSON Schema handed to the SDK's outputFormat so verdicts return machine-readable. */
+/** JSON Schema handed to the SDK's outputFormat. */
 export const PROSE_EVAL_OUTPUT_SCHEMA = {
   type: 'object',
-  required: ['criteriaVerdicts'],
+  required: ['verdict', 'reason'],
   properties: {
-    criteriaVerdicts: {
+    verdict: {
+      type: 'string',
+      enum: ['pass', 'fail', 'unsure'],
+      description: 'pass = you confirmed it holds, fail = you confirmed it does not, unsure = you could not tell',
+    },
+    reason: {
+      type: 'string',
+      maxLength: REASON_MAX,
+      description: 'One or two sentences a reviewer can check: what you looked at and what it showed',
+    },
+    evidence: {
       type: 'array',
-      description: 'One entry per criterion you were asked to grade',
-      items: {
-        type: 'object',
-        required: ['index', 'verdict', 'evidence'],
-        properties: {
-          index: {
-            type: 'number',
-            description: 'The criterion index exactly as given in the task description',
-          },
-          verdict: {
-            type: 'string',
-            enum: ['pass', 'fail', 'UNVERIFIED'],
-            description: 'pass = evidence supports it, fail = evidence contradicts it, UNVERIFIED = evidence insufficient',
-          },
-          evidence: {
-            type: 'string',
-            description: 'One sentence citing the specific [task:…] or [artifact:…] ref that justifies the verdict',
-          },
-        },
-        additionalProperties: false,
-      },
+      items: { type: 'string' },
+      description: 'Optional pointers you relied on: PR URLs, file paths, task or artifact ids',
     },
   },
   additionalProperties: false,
 } as const;
 
+export interface ProseRunnerEvidence {
+  /** Deliverable tasks of the mission, with PR state. */
+  deliverables: Array<{
+    id: string;
+    title: string | null;
+    status: string;
+    prUrl: string | null;
+    prNumber: number | null;
+    merged: boolean;
+  }>;
+  /** Artifacts as pointers — id, title, type, key. Content is never embedded. */
+  artifacts: Array<{ id: string; title: string | null; type: string; key?: string | null }>;
+}
+
 export interface ProseCriterionInput {
-  index: number;
+  missionId: string;
+  criterionIndex: number;
   text: string;
-  fingerprint?: string;
+  fingerprint: string;
+  evidence: ProseRunnerEvidence;
+  now?: number;
 }
 
-export interface ProseEvidence {
-  tasks: Array<{ id: string; title: string | null; summary: string | undefined; at?: Date | null }>;
-  artifacts: Array<{ id: string; title: string | null; type: string; contentSnippet: string | null; at?: Date | null }>;
-}
-
-export type ProseCriteriaResolution =
-  | { kind: 'pending'; taskId: string; evidence: string }
+export type ProseCriterionResolution =
+  | { kind: 'pending'; taskId: string; evidence: string; awaitingRunner: boolean }
+  | { kind: 'verdict'; verdict: 'pass' | 'fail' | 'NOT_EVALUATED'; taskId: string; evidence: string; evaluatedAt: string }
   | { kind: 'unavailable'; evidence: string };
 
-/**
- * In-flight or recently-terminal prose-eval task for this mission, if any.
- *
- * Matched on the marker in SQL rather than by scanning recent bookkeeping rows: a
- * heartbeat mission writes a bookkeeping planning row every cycle, so any fixed
- * window eventually contains nothing but heartbeat rows and the dedupe goes dead
- * — which would dispatch a duplicate evaluator on every evaluation round.
- */
-async function findProseEvalTask(missionId: string) {
-  const rows = await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.missionId, missionId),
-      sql`${tasks.context} -> 'criteriaProseEval' ->> 'missionId' = ${missionId}`,
-    ),
-    columns: { id: true, status: true, context: true, result: true, updatedAt: true },
-    orderBy: [desc(tasks.createdAt)],
-    limit: 5,
-  });
-  // Re-check in JS so a mocked or loose `where` can never widen the match.
-  return rows.find(r => readMarker(r.context)?.missionId === missionId) ?? null;
-}
+const TERMINAL = ['completed', 'failed', 'cancelled'];
 
 function readMarker(context: unknown): ProseEvalContext | null {
-  const marker = (context as Record<string, unknown> | null)?.criteriaProseEval as ProseEvalContext | undefined;
-  if (!marker || typeof marker.missionId !== 'string' || !Array.isArray(marker.criterionIndices)) return null;
-  return marker;
+  const m = (context as Record<string, unknown> | null)?.criteriaProseEval as ProseEvalContext | undefined;
+  if (!m || typeof m.missionId !== 'string' || typeof m.criterionIndex !== 'number') return null;
+  return m;
 }
 
-/** True when this task is a prose criteria evaluator task (cheap context check). */
+/** True when this task is a prose criterion verification task (cheap context check). */
 export function isProseEvalTask(context: unknown): boolean {
   return readMarker(context) !== null;
 }
 
-function sameQuestion(marker: ProseEvalContext, criteria: ProseCriterionInput[]): boolean {
-  if (marker.criterionIndices.length !== criteria.length) return false;
-  const asked = marker.criterionIndices.map((idx, i) => `${idx}:${marker.fingerprints?.[i] ?? ''}`).sort();
-  const want = criteria.map(c => `${c.index}:${c.fingerprint ?? ''}`).sort();
-  return asked.every((v, i) => v === want[i]);
+function short(id: string): string {
+  return id.slice(0, 8);
 }
 
-function returnedVerdicts(result: unknown): boolean {
-  const structured = (result as Record<string, unknown> | null)?.structuredOutput;
-  return parseVerdicts(structured).length > 0;
+function quote(text: string): string {
+  const t = text.trim();
+  return `“${t.length > 80 ? t.slice(0, 80) + '…' : t}”`;
 }
 
 /**
- * True when the team has a credential a runner could grade with.
+ * The newest verification task for one criterion, open or finished.
  *
- * Cheap pre-check with one purpose: when the answer is no, the criterion says so
- * and names the screen that fixes it, instead of dispatching a task that no
- * runner can ever claim and reporting a stall thirty minutes later.
+ * Matched on the marker in SQL, not by scanning recent bookkeeping rows: a
+ * heartbeat mission writes a bookkeeping row every cycle, so any fixed window
+ * eventually holds nothing but heartbeat rows and the dedupe goes dead.
+ */
+async function findProseEvalTask(missionId: string, criterionIndex: number) {
+  const rows = await db.query.tasks.findMany({
+    where: and(
+      eq(tasks.missionId, missionId),
+      sql`${tasks.context} -> 'criteriaProseEval' ->> 'missionId' = ${missionId}`,
+      sql`${tasks.context} -> 'criteriaProseEval' ->> 'criterionIndex' = ${String(criterionIndex)}`,
+    ),
+    columns: { id: true, status: true, context: true, result: true, createdAt: true, updatedAt: true },
+    orderBy: [desc(tasks.createdAt)],
+    limit: 5,
+  });
+  // Re-check in JS so a mocked or loose `where` can never widen the match.
+  return rows.find(r => {
+    const m = readMarker(r.context);
+    return m?.missionId === missionId && m.criterionIndex === criterionIndex;
+  }) ?? null;
+}
+
+/**
+ * True when the team has a credential a runner could grade with. When it has
+ * none, the criterion names the screen that fixes it instead of dispatching a
+ * task no runner can ever claim.
  */
 async function hasAgentBackendCredential(teamId: string | null): Promise<boolean> {
   if (!teamId) return false;
@@ -174,24 +182,55 @@ async function hasAgentBackendCredential(teamId: string | null): Promise<boolean
 }
 
 /**
- * Ensure a mission's prose criteria have, or are about to have, a real verdict.
+ * Map a finished verification task onto a criterion verdict.
  *
- * Returns `pending` when a grading run is in flight or has just been dispatched,
- * and `unavailable` when there is nowhere to run one — which correctly leaves the
- * criteria unevaluated rather than passing them by default.
+ * Only an explicit, well-formed `pass` or `fail` from a task that completed is a
+ * verdict. Everything else is NOT_EVALUATED with the reason, so the completion
+ * gate keeps holding and the operator can see why.
  */
-export async function resolveProseCriteria(opts: {
-  missionId: string;
-  criteria: ProseCriterionInput[];
-  evidence: ProseEvidence;
-  now?: number;
-}): Promise<ProseCriteriaResolution> {
-  const { missionId, criteria, evidence } = opts;
-  const now = opts.now ?? Date.now();
-
-  if (criteria.length === 0) {
-    return { kind: 'unavailable', evidence: 'No prose criteria to grade' };
+export function mapProseOutcome(
+  status: string,
+  structuredOutput: unknown,
+  taskId: string,
+): { verdict: 'pass' | 'fail' | 'NOT_EVALUATED'; evidence: string } {
+  if (status !== 'completed') {
+    return {
+      verdict: 'NOT_EVALUATED',
+      evidence: `Verification task ${short(taskId)} ${status} on the runner before returning a verdict (infra, not a judgment) — re-graded on a later round`,
+    };
   }
+  const out = structuredOutput && typeof structuredOutput === 'object' ? structuredOutput as Record<string, unknown> : null;
+  const verdict = out?.verdict;
+  const reason = typeof out?.reason === 'string' ? out.reason.trim().slice(0, REASON_MAX) : '';
+  if (!out || !['pass', 'fail', 'unsure'].includes(verdict as string) || !reason) {
+    return {
+      verdict: 'NOT_EVALUATED',
+      evidence: `Verification task ${short(taskId)} finished with no usable structured verdict — re-graded on a later round`,
+    };
+  }
+  const pointers = Array.isArray(out.evidence)
+    ? (out.evidence as unknown[]).filter((e): e is string => typeof e === 'string' && e.trim() !== '').slice(0, 3)
+    : [];
+  const cite = pointers.length > 0 ? ` [${pointers.join('; ').slice(0, 200)}]` : '';
+
+  if (verdict === 'unsure') {
+    return { verdict: 'NOT_EVALUATED', evidence: `Runner was unsure: ${reason}${cite}` };
+  }
+  return { verdict: verdict as 'pass' | 'fail', evidence: `${reason}${cite}` };
+}
+
+/**
+ * Ensure one prose criterion has, or is about to have, a runner verdict.
+ *
+ * - `pending`     — a task is open (reused) or was just dispatched.
+ * - `verdict`     — a task for this exact criterion finished within the TTL; its
+ *                   result is the answer (which may be NOT_EVALUATED — the loop
+ *                   guard against re-dispatching an empty run every round).
+ * - `unavailable` — nowhere to run one.
+ */
+export async function resolveProseCriterion(opts: ProseCriterionInput): Promise<ProseCriterionResolution> {
+  const { missionId, criterionIndex, text, fingerprint, evidence } = opts;
+  const now = opts.now ?? Date.now();
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -202,145 +241,130 @@ export async function resolveProseCriteria(opts: {
   if (!mission.workspaceId) {
     return {
       kind: 'unavailable',
-      evidence: 'Prose criteria cannot be graded: mission has no workspace (nowhere to run an evaluator)',
+      evidence: 'Prose criterion cannot be verified on a runner: mission has no workspace',
     };
   }
 
   if (!(await hasAgentBackendCredential(mission.teamId))) {
     return {
       kind: 'unavailable',
-      evidence: 'Prose criteria cannot be graded: no agent backend credential is connected — connect one in Settings → Agent Backends',
+      evidence: 'Prose criterion cannot be verified on a runner: no agent backend credential is connected — connect one in Settings → Agent Backends',
     };
   }
 
-  const existing = await findProseEvalTask(missionId);
-  if (existing) {
-    const marker = readMarker(existing.context)!;
-    const terminal = ['completed', 'failed', 'cancelled'].includes(existing.status);
-
-    if (!terminal) {
-      const waitedMs = now - new Date(existing.updatedAt).getTime();
-      const stalled = waitedMs > 2 * PROSE_VERDICT_TTL_MS;
+  const existing = await findProseEvalTask(missionId, criterionIndex);
+  if (existing && readMarker(existing.context)!.fingerprint === fingerprint) {
+    if (!TERMINAL.includes(existing.status)) {
+      const queuedMs = now - new Date(existing.createdAt ?? existing.updatedAt).getTime();
+      const awaitingRunner = existing.status === 'pending' && queuedMs > RUNNER_WAIT_BOUND_MS;
       return {
         kind: 'pending',
         taskId: existing.id,
-        evidence: stalled
-          ? `Evaluator task ${existing.id.slice(0, 8)} has been ${existing.status} for ${Math.round(waitedMs / 60000)}m — no runner has claimed it`
-          : `Evaluator task ${existing.id.slice(0, 8)} is ${existing.status} — grading in progress`,
+        awaitingRunner,
+        evidence: awaitingRunner
+          ? `Waiting for a runner to verify ${quote(text)} — task ${short(existing.id)} unclaimed for ${Math.round(queuedMs / 60000)}m`
+          : `Verifying on runner… (task ${short(existing.id)}, ${existing.status})`,
       };
     }
 
     const age = now - new Date(existing.updatedAt).getTime();
-    if (sameQuestion(marker, criteria) && age < PROSE_VERDICT_TTL_MS && !returnedVerdicts(existing.result)) {
-      // The run finished and produced nothing usable. Re-dispatching now would
-      // spend a real agent run on the same empty answer every evaluation round.
+    if (age < PROSE_VERDICT_TTL_MS) {
+      const mapped = mapProseOutcome(
+        existing.status,
+        (existing.result as Record<string, unknown> | null)?.structuredOutput,
+        existing.id,
+      );
       return {
-        kind: 'unavailable',
-        evidence: `Evaluator task ${existing.id.slice(0, 8)} finished without returning verdicts — will retry after ${Math.round(PROSE_VERDICT_TTL_MS / 60000)}m`,
+        kind: 'verdict',
+        verdict: mapped.verdict,
+        taskId: existing.id,
+        evidence: mapped.evidence,
+        evaluatedAt: new Date(existing.updatedAt).toISOString(),
       };
     }
-    // Stale, the criteria changed, or the verdicts have since gone stale — grade again.
+    // Aged out — a verdict is about the code as it is now. Grade again.
   }
 
-  const dispatched = await dispatchProseEvalTask({ mission, criteria, evidence });
+  const dispatched = await dispatchProseEvalTask({ mission, criterionIndex, text, fingerprint, evidence });
   if (!dispatched.ok) return { kind: 'unavailable', evidence: dispatched.reason };
   return {
     kind: 'pending',
     taskId: dispatched.taskId,
-    evidence: `Evaluator task ${dispatched.taskId.slice(0, 8)} dispatched — grading ${criteria.length} criteri${criteria.length === 1 ? 'on' : 'a'}`,
+    awaitingRunner: false,
+    evidence: `Verifying on runner… (task ${short(dispatched.taskId)} dispatched)`,
   };
 }
 
-/** `3d ago` / `today` — cheap enough that evidence never needs a raw ISO timestamp in-prompt. */
-function relativeAge(at: Date | null | undefined): string {
-  if (!at) return 'age unknown';
-  const days = Math.floor((Date.now() - new Date(at).getTime()) / 86_400_000);
-  if (days <= 0) return 'today';
-  if (days === 1) return '1d ago';
-  return `${days}d ago`;
-}
-
-function buildEvaluatorPrompt(
+function buildVerifierPrompt(
   mission: { title: string; description: string | null },
-  criteria: ProseCriterionInput[],
-  evidence: ProseEvidence,
+  text: string,
+  evidence: ProseRunnerEvidence,
 ): string {
-  // Caller sorts newest-first; the age label reinforces what the ordering already implies.
-  const taskEvidence = evidence.tasks.map(t =>
-    `[task:${t.id.slice(0, 8)}] (${relativeAge(t.at)}) "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
-  ).join('\n\n');
+  const deliverables = evidence.deliverables.map(d => {
+    const pr = d.prUrl
+      ? ` — PR ${d.prNumber != null ? `#${d.prNumber} ` : ''}${d.prUrl} (${d.merged ? 'merged' : 'not merged'})`
+      : ' — no PR';
+    return `- [task:${d.id}] "${d.title ?? '(untitled)'}" — ${d.status}${pr}`;
+  }).join('\n');
 
-  const artifactEvidence = evidence.artifacts.map(a =>
-    `[artifact:${a.id.slice(0, 8)}] (${relativeAge(a.at)}) "${a.title ?? '(untitled)'}" (${a.type})${a.contentSnippet ? `\nContent:\n${a.contentSnippet}` : ''}`,
-  ).join('\n\n');
+  const artifacts = evidence.artifacts.map(a =>
+    `- [artifact:${a.id}] "${a.title ?? '(untitled)'}" (${a.type}${a.key ? `, key ${a.key}` : ''})`,
+  ).join('\n');
 
-  const hasEvidence = evidence.tasks.length > 0 || evidence.artifacts.length > 0;
-  const criteriaList = criteria.map(c => `- index=${c.index}: ${c.text}`).join('\n');
-
-  return `## Goal criteria grading
+  return `## Goal criterion verification (read-only)
 
 Mission: **${mission.title}**
-${mission.description ? `\n${mission.description}\n` : ''}
-You are grading this mission's prose criteria against the evidence below. This is
-a read-only judgment task: do NOT change code, do NOT open a PR, do NOT create
-tasks, do NOT fix anything you notice. Read the evidence, decide, return verdicts.
+${mission.description ? `\n### Mission goal\n${mission.description}\n` : ''}
+### Criterion to verify
+${text}
 
-### Criteria to grade (${criteria.length})
-${criteriaList}
+### Deliverable tasks (${evidence.deliverables.length})
+${deliverables || '(none)'}
 
-### Evidence — completed tasks, newest first (${evidence.tasks.length})
-${taskEvidence || '(none)'}
+### Artifacts and records — pointers only (${evidence.artifacts.length})
+${artifacts || '(none)'}
 
-### Evidence — artifacts, newest first (${evidence.artifacts.length})
-${artifactEvidence || '(none)'}
-${hasEvidence ? '' : '\n⚠️ There is no evidence to read. Return UNVERIFIED for every criterion.\n'}
-### How to grade
-- \`pass\` — the evidence directly supports the criterion being satisfied.
-- \`fail\` — the evidence directly contradicts it.
-- \`UNVERIFIED\` — the evidence is absent, ambiguous, or insufficient. This is the
-  honest answer far more often than \`pass\`; a criterion you cannot check from the
-  evidence above is not satisfied, and guessing \`pass\` completes a mission that
-  nobody verified.
-- Nothing marks an older item as superseded. When two items address the same claim
-  and disagree, trust the more recent one (age is shown next to each item) — an
-  audit or gap report written before a later item resolved it is not still true
-  just because it exists.
+Fetch any of these with the buildd tools (\`get_task\`, artifact reads) and inspect the
+repository and the PRs above as needed.
 
-You may read the repository to check a claim. You may not act on what you find.
+### Rules
+This is a read-only verification task. Do NOT change or modify any code, file, branch,
+task or artifact. Do NOT open a PR, do NOT commit, do NOT create tasks, do NOT fix
+anything you notice. Read, decide, report.
 
-### Output
-Return one entry per criterion via your outputSchema, using the SAME \`index\`
-values listed above, each citing the specific [task:…] or [artifact:…] ref that
-justifies it. Keep your turn short.`;
+### Verdict
+- \`pass\`   — you checked, and the criterion holds on the mission's current code/PRs.
+- \`fail\`   — you checked, and it does not hold.
+- \`unsure\` — you could not establish either. This is the honest answer whenever
+  the evidence is out of reach; a guessed \`pass\` completes a mission nobody verified.
+
+Return it via your outputSchema: \`verdict\`, a \`reason\` of at most ${REASON_MAX}
+characters saying what you looked at and what it showed, and optionally \`evidence\`
+(PR URLs, file paths, ids). Keep your turn short.`;
 }
 
 /**
- * Create + dispatch the prose grading task.
- *
- * Fails cleanly (never throws) rather than letting a dispatch problem surface as
- * a 500 on the operator's "Run verification" button.
+ * Create + dispatch the verification task for one prose criterion. Never throws:
+ * a dispatch problem must not 500 the operator's "Run verification" button.
  */
 async function dispatchProseEvalTask(opts: {
   mission: { id: string; title: string; description: string | null; workspaceId: string | null };
-  criteria: ProseCriterionInput[];
-  evidence: ProseEvidence;
+  criterionIndex: number;
+  text: string;
+  fingerprint: string;
+  evidence: ProseRunnerEvidence;
 }): Promise<{ ok: true; taskId: string } | { ok: false; reason: string }> {
-  const { mission, criteria, evidence } = opts;
-  if (!mission.workspaceId) return { ok: false, reason: 'Prose criteria cannot be graded: mission has no workspace' };
+  const { mission, criterionIndex, text, fingerprint, evidence } = opts;
+  if (!mission.workspaceId) return { ok: false, reason: 'Prose criterion cannot be verified: mission has no workspace' };
 
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, mission.workspaceId),
   });
-  if (!workspace) return { ok: false, reason: 'Prose criteria cannot be graded: workspace not found' };
+  if (!workspace) return { ok: false, reason: 'Prose criterion cannot be verified: workspace not found' };
 
-  const evalContext: ProseEvalContext = {
-    missionId: mission.id,
-    criterionIndices: criteria.map(c => c.index),
-    fingerprints: criteria.map(c => c.fingerprint ?? ''),
-  };
-
-  const title = `${EVAL_TASK_TITLE_PREFIX} ${mission.title}`.slice(0, 200);
-  const description = buildEvaluatorPrompt(mission, criteria, evidence);
+  const marker: ProseEvalContext = { missionId: mission.id, criterionIndex, fingerprint };
+  const title = `${VERIFY_TASK_TITLE_PREFIX} ${text.trim()}`.slice(0, 200);
+  const description = buildVerifierPrompt(mission, text, evidence);
 
   const [task] = await db
     .insert(tasks)
@@ -352,65 +376,42 @@ async function dispatchProseEvalTask(opts: {
       priority: 2,
       status: 'pending',
       mode: 'execution',
-      // Bookkeeping: an evaluator counted as a deliverable would keep the
-      // mission's pending count above zero and block the completion its own
-      // verdict gates — the criterion would block on itself.
+      kind: 'analysis',
+      complexity: 'normal',
+      // Bookkeeping: counted as a deliverable, it would keep the mission's
+      // pending count above zero and block the completion its verdict gates.
       taskClass: 'bookkeeping',
       creationSource: 'orchestrator',
+      // Same contract as a command verification task: a judgment, not a PR.
       outputRequirement: 'none',
-      tier: 'budget',
       outputSchema: PROSE_EVAL_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
       context: {
-        criteriaProseEval: evalContext,
-        // Opt out of the mission-task auto-retry: one honest grading run, and a
+        criteriaProseEval: marker,
+        // Opt out of the mission-task auto-retry: one honest grading run; a
         // silent second attempt would only delay the verdict.
         retryCount: 1,
       },
     } as any)
     .returning({ id: tasks.id });
 
-  if (!task) return { ok: false, reason: 'Prose evaluator task insert returned no row' };
+  if (!task) return { ok: false, reason: 'Prose verification task insert returned no row' };
 
   await dispatchNewTask(
     { id: task.id, title, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 2, missionId: mission.id },
     workspace as any,
   ).catch(e => console.error(`[criteria-prose] dispatch failed for task ${task.id}:`, e));
 
-  console.log(
-    `[criteria-prose] mission ${mission.id}: dispatched ${task.id} to grade criteria [${evalContext.criterionIndices.join(', ')}]`
-  );
+  console.log(`[criteria-prose] mission ${mission.id} criterion ${criterionIndex}: dispatched ${task.id}`);
   return { ok: true, taskId: task.id };
 }
 
-interface ParsedVerdict {
-  index: number;
-  verdict: CriterionVerdict;
-  evidence: string;
-}
-
-function parseVerdicts(structuredOutput: unknown): ParsedVerdict[] {
-  if (!structuredOutput || typeof structuredOutput !== 'object') return [];
-  const raw = (structuredOutput as Record<string, unknown>).criteriaVerdicts;
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((v: any) => {
-    if (!v || typeof v.index !== 'number') return [];
-    // An unrecognised verdict string is not a pass. Coerce, never trust.
-    const verdict = (['pass', 'fail', 'UNVERIFIED'].includes(v.verdict) ? v.verdict : 'UNVERIFIED') as CriterionVerdict;
-    return [{ index: v.index, verdict, evidence: typeof v.evidence === 'string' ? v.evidence : '' }];
-  });
-}
-
 /**
- * Hand a finished prose-eval task's verdicts back to the criteria they answer.
+ * Hand a finished prose verification task's verdict back to its criterion.
  *
- * Called from the worker-completion hooks for any task carrying a
- * `criteriaProseEval` marker. Writes the verdicts onto the mission's stored
- * criteria state, re-folds `overall`, then re-attempts completion — so a
- * criterion turning green is itself a completion trigger.
- *
- * Every criterion in the marker leaves this function with a non-PENDING verdict,
- * including the ones the evaluator ignored: a criterion left PENDING with no task
- * in flight holds the mission open with nothing remaining that could resolve it.
+ * Called from the worker-completion hook for any task carrying a
+ * `criteriaProseEval` marker. The criterion always leaves PENDING here — a
+ * criterion left PENDING with no task in flight would hold the mission open with
+ * nothing left that could resolve it.
  */
 export async function handleProseEvalOutcome(
   taskId: string,
@@ -424,9 +425,7 @@ export async function handleProseEvalOutcome(
 
   const marker = readMarker(task.context);
   if (!marker || !task.missionId) return { applied: false };
-
-  // Not terminal yet (e.g. requeued for another attempt) — the verdict is still owed.
-  if (!['completed', 'failed', 'cancelled'].includes(task.status)) return { applied: false };
+  if (!TERMINAL.includes(task.status)) return { applied: false };
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, task.missionId),
@@ -435,60 +434,42 @@ export async function handleProseEvalOutcome(
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;
   if (!state) return { applied: false };
 
-  // Structured output arrives on the completion request; fall back to whatever the
-  // completion route persisted onto the task result.
-  const fromRequest = parseVerdicts(structuredOutput);
-  const verdicts = fromRequest.length > 0
-    ? fromRequest
-    : parseVerdicts((task.result as Record<string, unknown> | null)?.structuredOutput);
+  const cs = state.criteria.find(c => c.index === marker.criterionIndex);
+  if (!cs) return { applied: false };
 
-  if (verdicts.length === 0) {
-    console.warn(`[criteria-prose] task ${task.id} finished (${task.status}) with no usable criteriaVerdicts`);
-  }
+  // Identity check against the criterion as it is NOW: edited while the task
+  // ran, index `n` points at a different claim and this verdict would be a
+  // transplant.
+  const current = Array.isArray(mission?.goalCriteria)
+    ? (mission!.goalCriteria as GoalCriterion[])[marker.criterionIndex]
+    : undefined;
+  const stillTheSame = current?.type === 'description' && criterionFingerprint(current) === marker.fingerprint;
 
-  const currentCriteria = Array.isArray(mission?.goalCriteria)
-    ? mission!.goalCriteria as Array<Record<string, unknown>>
-    : [];
-
-  let applied = false;
-
-  marker.criterionIndices.forEach((index, i) => {
-    const cs = state.criteria.find(c => c.index === index);
-    if (!cs) return;
-
-    // Identity check. The criteria array may have been edited while this task was
-    // in flight, in which case index `n` now points at a different claim and
-    // writing this verdict onto it would be a verdict transplant.
-    const askedFingerprint = marker.fingerprints?.[i] ?? '';
-    const stillTheSame =
-      currentCriteria[index]?.type === 'description' &&
-      (askedFingerprint === '' || cs.fingerprint === undefined || cs.fingerprint === askedFingerprint);
-
-    if (!stillTheSame) {
-      console.warn(
-        `[criteria-prose] mission ${task.missionId} criterion ${index} changed while task ${task.id} ran — discarding its verdict`
-      );
+  const nowIso = new Date().toISOString();
+  if (!stillTheSame) {
+    console.warn(
+      `[criteria-prose] mission ${task.missionId} criterion ${marker.criterionIndex} changed while task ${task.id} ran — discarding its verdict`,
+    );
+    if (cs.workerTaskId === task.id || cs.verdict === 'PENDING') {
       cs.verdict = 'NOT_EVALUATED';
-      cs.evidence = 'Criterion was edited while the evaluator ran — grading again on the next round';
-      return;
+      cs.evidence = 'Criterion was edited while it was being verified — re-graded on the next round';
+      delete cs.awaitingRunner;
     }
-
-    const v = verdicts.find(x => x.index === index);
-    if (!v) {
-      cs.verdict = 'NOT_EVALUATED';
-      cs.evidence = `Evaluator task ${task.id.slice(0, 8)} did not return a verdict for this criterion`;
-      return;
-    }
-
-    cs.verdict = v.verdict;
-    cs.evidence = v.evidence || `Graded ${v.verdict} by evaluator task ${task.id.slice(0, 8)}`;
+  } else {
+    // Structured output arrives on the completion request; fall back to whatever
+    // the completion route persisted onto the task result.
+    const output = structuredOutput ?? (task.result as Record<string, unknown> | null)?.structuredOutput;
+    const mapped = mapProseOutcome(task.status, output, task.id);
+    cs.verdict = mapped.verdict;
+    cs.evidence = mapped.evidence;
     cs.workerTaskId = task.id;
-    applied = true;
-  });
+    cs.evaluatedAt = nowIso;
+    delete cs.awaitingRunner;
+  }
 
   const next: GoalCriteriaState = {
     ...state,
-    evaluatedAt: new Date().toISOString(),
+    evaluatedAt: nowIso,
     overall: recalculateOverall(state.criteria),
     criteria: state.criteria,
   };
@@ -499,20 +480,17 @@ export async function handleProseEvalOutcome(
     .where(eq(missions.id, task.missionId));
 
   console.log(
-    `[criteria-prose] mission ${task.missionId}: applied ${verdicts.length} verdict(s) from ${task.id}; overall ${next.overall}`
+    `[criteria-prose] mission ${task.missionId} criterion ${marker.criterionIndex} → ${cs.verdict} (task ${task.id}); overall ${next.overall}`,
   );
 
   // A criterion turning green is a completion trigger in its own right. Reuse the
-  // verdict just written — re-evaluating here would re-dispatch the evaluator we
-  // are currently hearing back from.
+  // verdict just written — re-evaluating would re-dispatch.
   const { completeMissionIfVerified } = await import('@/lib/mission-completion');
   await completeMissionIfVerified(task.missionId, {
     path: 'criteria_eval',
-    predicate: `prose evaluator task ${task.id}`,
+    predicate: `prose verification task ${task.id}`,
     evaluateCriteria: false,
   }).catch(e => console.error(`[criteria-prose] completion attempt failed for ${task.missionId}:`, e));
 
-  // A failed evaluator that returned nothing still resolved the criteria — off
-  // PENDING and onto NOT_EVALUATED — which is a state change worth reporting.
-  return { applied: applied || marker.criterionIndices.length > 0 };
+  return { applied: true };
 }
