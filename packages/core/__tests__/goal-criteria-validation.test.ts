@@ -243,3 +243,24 @@ describe('recalculateOverall', () => {
     expect(recalculateOverall([crit('pass', 0), crit('UNVERIFIED', 1)])).toBe('UNVERIFIED');
   });
 });
+
+describe('validateGoalCriteria — description grader', () => {
+  const prose = (grader?: unknown) => ({
+    type: 'description',
+    description: 'The team feels good about the release',
+    notMechanizableReason: 'Sentiment is a human judgement; no mechanical check can assert it.',
+    ...(grader === undefined ? {} : { grader }),
+  });
+
+  it('accepts auto, api and runner, and an absent grader', () => {
+    for (const g of [undefined, 'auto', 'api', 'runner']) {
+      expect(validateGoalCriteria([prose(g), { type: 'all_prs_merged' }])).toBeNull();
+    }
+  });
+
+  it('rejects an unknown grader, naming the accepted values', () => {
+    const err = validateGoalCriteria([prose('llm'), { type: 'all_prs_merged' }]);
+    expect(err).toContain('grader');
+    expect(err).toContain('runner');
+  });
+});

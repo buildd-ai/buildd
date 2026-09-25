@@ -55,3 +55,16 @@ export function formatCompletionRecord(body: string): string {
     })
     .join('\n');
 }
+
+/**
+ * A complete mission that renders its completion summary already answers
+ * "is this done" — the situation block above it would only restate it
+ * ("Complete — nothing outstanding. State is complete: …"). Any other state,
+ * or a complete mission with no summary to show, keeps the situation block.
+ */
+export function situationRepeatsCompletion(
+  state: string | null | undefined,
+  hasCompletionSummary: boolean,
+): boolean {
+  return state === 'complete' && hasCompletionSummary;
+}

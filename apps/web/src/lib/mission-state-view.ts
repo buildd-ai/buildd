@@ -207,8 +207,13 @@ export type WaitingOnDescriptor =
       blockers?: CriterionBlocker[];
       stale?: boolean;
     }
-  /** The completion gate has no verdict yet. Quiet by construction — see the module note. */
-  | { kind: 'criterion_unverified'; tone: WaitingOnTone; label: string; count: number; criteria: string[] }
+  /**
+   * The completion gate has no verdict yet. Quiet by construction — see the
+   * module note — EXCEPT when `awaitingRunner` names criteria whose runner
+   * verification task has sat unclaimed past the wait bound: then nothing is
+   * verifying them, and saying "not yet verified" would hide that.
+   */
+  | { kind: 'criterion_unverified'; tone: WaitingOnTone; label: string; count: number; criteria: string[]; awaitingRunner?: string[] }
   /** A human owes an answer; nothing automated will move this. */
   | { kind: 'human_decision'; tone: WaitingOnTone; label: string; detail: string | null }
   /**
@@ -371,7 +376,7 @@ export interface MissionStateInput {
   /** From `deriveCriteriaGatePresentation`. Null when the mission states no criteria. */
   criteriaGate?: CriteriaGatePresentation | null;
   /** Per-criterion detail, for naming which one is holding. */
-  criteriaItems?: Array<{ verdict: string; label?: string; name?: string; type?: string }>;
+  criteriaItems?: Array<{ verdict: string; label?: string; name?: string; type?: string; awaitingRunner?: boolean }>;
   /** From `canCompleteMission`, when a caller ran it. */
   completion?: MissionCompletionSummary | null;
   /** From `classifyMissionWait`, when a caller ran it. */
@@ -1008,6 +1013,27 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
     }
 
     const count = nonPass.length || 1;
+    const awaitingRunner = items
+      .filter(c => c.verdict !== 'pass' && c.awaitingRunner === true)
+      .map(nameCriterion);
+    if (awaitingRunner.length > 0) {
+      return {
+        kind: 'awaiting_verification',
+        waitingOn: {
+          kind: 'criterion_unverified',
+          // Not quiet: a verification task nobody claims never resolves itself.
+          tone: 'warning',
+          label: awaitingRunner.length === 1
+            ? `Waiting for a runner to verify "${awaitingRunner[0]}"`
+            : `Waiting for a runner to verify ${awaitingRunner.length} criteria`,
+          count,
+          criteria: nonPass,
+          awaitingRunner,
+        },
+        displayState: 'awaiting_verification',
+        source: 'deriveCriteriaGatePresentation',
+      };
+    }
     return {
       kind: 'awaiting_verification',
       waitingOn: {
@@ -1186,6 +1212,11 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         : `${ask}${d.count} goal criteria are failing`;
     }
     case 'criterion_unverified':
+      if (d.awaitingRunner && d.awaitingRunner.length > 0) {
+        return d.awaitingRunner.length === 1
+          ? `waiting for a runner to verify "${d.awaitingRunner[0]}"`
+          : `waiting for a runner to verify ${d.awaitingRunner.length} goal criteria`;
+      }
       return d.count === 1
         ? 'waiting on goal-criteria verification — 1 criterion has no verdict yet'
         : `waiting on goal-criteria verification — ${d.count} criteria have no verdict yet`;
@@ -1305,6 +1336,9 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       }
       return 'File work against the failing criterion, or correct the criterion if it no longer describes the goal.';
     case 'criterion_unverified':
+      if (waitingOn.awaitingRunner && waitingOn.awaitingRunner.length > 0) {
+        return 'Start or free up a runner for this workspace — the verification task is queued with none to claim it.';
+      }
       return 'Run goal-criteria verification to produce a verdict.';
     case 'human_decision':
       return 'An owner decision is required; nothing automated will move this.';

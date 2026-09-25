@@ -214,6 +214,11 @@ export interface WorkspaceGitConfig {
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
   defaultBackend?: 'claude' | 'codex';
 
+  // Who grades prose (`description`) goal criteria in this workspace:
+  // 'api' (inference call, per-token), 'runner' (read-only task on a runner's
+  // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
+  // else runner). A criterion's own `grader` wins; absent here means 'auto'.
+  criteriaGrader?: 'auto' | 'api' | 'runner';
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached

@@ -471,7 +471,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                   </p>
                   {isExpanded && c.type === 'description' && c.notMechanizableReason && (
                     <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
-                      Prose (needs a model to grade) because: {c.notMechanizableReason}
+                      Prose (graded by {c.grader === 'api' ? 'an API call' : c.grader === 'runner' ? 'a runner agent' : 'an API call, or a runner agent when no key is set'}) because: {c.notMechanizableReason}
                     </p>
                   )}
                   {/* Inline CI-block annotation for all_prs_merged — derived from live worker state */}
@@ -490,6 +490,15 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                     <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
                       {cs.evidence}
                     </p>
+                  )}
+                  {cs?.workerTaskId && (
+                    <a
+                      href={`/app/tasks/${cs.workerTaskId}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-block text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
+                    >
+                      verification task {cs.workerTaskId.slice(0, 8)}{cs.evaluatedAt ? ` · ${formatRelativeTime(cs.evaluatedAt)}` : ''}
+                    </a>
                   )}
                   {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">

@@ -35,7 +35,7 @@ const mockResolveCommandCriterion = mock((_opts: any) => Promise.resolve({
 }) as any);
 
 const mockResolveProseCriteria = mock((_opts: any) => Promise.resolve({
-  kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
+  kind: 'pending', taskId: 'prose-task-1', evidence: 'Verifying on runner… (task prose-ta dispatched)', awaitingRunner: false,
 }) as any);
 
 const mockResolveCriteriaWorkerEval = mock((_opts: any) => Promise.resolve({
@@ -99,16 +99,19 @@ mock.module('./mission-criteria-verify', () => ({
   resolveCommandCriterion: mockResolveCommandCriterion,
 }));
 
-// Prose criteria are graded by a dispatched agent; that module is tested in
-// mission-criteria-prose.test.ts.
+// The runner grader dispatches one verification task per prose criterion; that
+// module is tested in mission-criteria-prose.test.ts.
 mock.module('./mission-criteria-prose', () => ({
-  resolveProseCriteria: mockResolveProseCriteria,
+  resolveProseCriterion: mockResolveProseCriteria,
 }));
 
-// Strategy resolver defaults to 'inline' unless overridden per-test.
+// Strategy resolver defaults to 'inline' unless overridden per-test; the
+// workspace grader defaults to unset (→ auto).
 let mockStrategyResult: 'inline' | 'worker' = 'inline';
+let mockWorkspaceGrader: 'auto' | 'api' | 'runner' | null = null;
 mock.module('./mission-criteria-strategy', () => ({
   resolveEvaluationStrategy: async () => mockStrategyResult,
+  resolveWorkspaceCriteriaGrader: async () => mockWorkspaceGrader,
 }));
 
 // Worker evaluator is tested in mission-criteria-worker-eval.test.ts.
@@ -181,13 +184,14 @@ function reset() {
   missionFindArgs.length = 0;
   workerFindArgs.length = 0;
   mockStrategyResult = 'inline';
+  mockWorkspaceGrader = null;
   mockResolveCommandCriterion.mockReset();
   mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
     kind: 'pending', taskId: 'verify-task-1', evidence: 'Verification task verify-t dispatched: bun test',
   }) as any);
   mockResolveProseCriteria.mockReset();
   mockResolveProseCriteria.mockImplementation(() => Promise.resolve({
-    kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
+    kind: 'pending', taskId: 'prose-task-1', evidence: 'Verifying on runner… (task prose-ta dispatched)', awaitingRunner: false,
   }) as any);
   mockResolveCriteriaWorkerEval.mockReset();
   mockResolveCriteriaWorkerEval.mockImplementation(() => Promise.resolve({
@@ -416,12 +420,11 @@ describe('evaluateCriteriaNow — prose criteria', () => {
 
     const opts = mockResolveProseCriteria.mock.calls[0]![0] as any;
     expect(opts.missionId).toBe('m1');
-    expect(opts.criteria).toHaveLength(1);
-    expect(opts.criteria[0].index).toBe(0);
-    expect(opts.criteria[0].text).toContain('Rows exist');
+    expect(opts.criterionIndex).toBe(0);
+    expect(opts.text).toContain('Rows exist');
     // The fingerprint is what makes the write-back safe against an edited criterion.
-    expect(opts.criteria[0].fingerprint).toBeTruthy();
-    expect(opts.evidence.tasks[0].id).toBe('t1');
+    expect(opts.fingerprint).toBeTruthy();
+    expect(opts.evidence.deliverables[0].id).toBe('t1');
   });
 
   it('reports the resolver reason when there is nowhere to grade', async () => {
@@ -1094,5 +1097,238 @@ describe('evaluateCriteriaNow — reviewer findings', () => {
     // claiming it does must not short-circuit the run that would find out.
     expect(state!.criteria[0].verdict).toBe('PENDING');
     expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Grader selection: api (inference call) vs runner (verification task) ──────
+
+describe('evaluateCriteriaNow — prose grader selection', () => {
+  beforeEach(reset);
+
+  const PROSE = { type: 'description', description: 'Rows exist', notMechanizableReason: 'stated reason' };
+
+  function withProse(extra: Record<string, unknown> = {}, more: any[] = [{ type: 'no_open_tasks' }]) {
+    mission({ goalCriteria: [{ ...PROSE, ...extra }, ...more] });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null }];
+  }
+
+  it('grader=runner on the criterion: dispatches, never calls inferenceCall — even with a key available', async () => {
+    withProse({ grader: 'runner' });
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'would have passed' }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockInferenceCall).not.toHaveBeenCalled();
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.criteria[0].evidence).toContain('Verifying on runner');
+    expect(state!.criteria[0].workerTaskId).toBe('prose-task-1');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('workspace gitConfig.criteriaGrader=runner applies when the criterion sets none', async () => {
+    withProse();
+    mockWorkspaceGrader = 'runner';
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'x' }]);
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockInferenceCall).not.toHaveBeenCalled();
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+  });
+
+  it('the criterion grader wins over the workspace grader', async () => {
+    withProse({ grader: 'api' });
+    mockWorkspaceGrader = 'runner';
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'graded inline' }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockInferenceCall).toHaveBeenCalledTimes(1);
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('pass');
+  });
+
+  it('grader=api with no key: NOT_EVALUATED with a clear reason, and no silent switch to a runner', async () => {
+    withProse({ grader: 'api' });
+    // default mock: missing_key
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockInferenceCall).toHaveBeenCalledTimes(1);
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.criteria[0].evidence).toMatch(/grader is "api"/);
+    expect(state!.criteria[0].evidence).toContain('no anthropic inference key');
+    expect(state!.criteria[0].evidence).toMatch(/runner/);
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('grader=api with the capability switched off: NOT_EVALUATED, no dispatch', async () => {
+    withProse({ grader: 'api' });
+    stubLLMError({ kind: 'capability_disabled', capability: 'criteria_grading' });
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+  });
+
+  it('auto with an API key resolves to api: graded inline, nothing dispatched', async () => {
+    withProse();
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'rows present' }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockInferenceCall).toHaveBeenCalledTimes(1);
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('pass');
+  });
+
+  it('auto with an OAuth-only team (no API key resolves) resolves to runner', async () => {
+    withProse();
+    // default mock: missing_key — the inference client found no API-key credential
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.criteria[0].evidence).not.toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('dispatches one verification task per prose criterion, each with its own index', async () => {
+    mission({
+      goalCriteria: [
+        { ...PROSE, grader: 'runner' },
+        { type: 'description', description: 'No double-fire', notMechanizableReason: 'stated reason', grader: 'runner' },
+      ],
+    });
+    let n = 0;
+    mockResolveProseCriteria.mockImplementation(((o: any) => Promise.resolve({
+      kind: 'pending', taskId: `prose-task-${o.criterionIndex}-${++n}`, evidence: 'Verifying on runner…', awaitingRunner: false,
+    })) as any);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(2);
+    const indices = mockResolveProseCriteria.mock.calls.map(c => (c[0] as any).criterionIndex).sort();
+    expect(indices).toEqual([0, 1]);
+    expect(state!.criteria[0].workerTaskId).not.toBe(state!.criteria[1].workerTaskId);
+  });
+
+  it('hands the runner deliverables with PR state and artifact pointers', async () => {
+    withProse({ grader: 'runner' });
+    taskRows = [
+      { id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null },
+      { id: 't2', status: 'completed', title: 'Planner', taskClass: 'bookkeeping', mode: 'planning', result: null },
+    ];
+    workerRows = [{ taskId: 't1', mergedAt: new Date(), prUrl: 'https://github.com/o/r/pull/7', branch: 'b', prBaseRef: 'main', prNumber: 7 }];
+    artifactRows = [{ id: 'a1', key: 'report', type: 'report', title: 'Report', content: 'BODY', updatedAt: new Date() }];
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    const ev = (mockResolveProseCriteria.mock.calls[0]![0] as any).evidence;
+    expect(ev.deliverables).toEqual([
+      { id: 't1', title: 'Done', status: 'completed', prUrl: 'https://github.com/o/r/pull/7', prNumber: 7, merged: true },
+    ]);
+    expect(ev.artifacts).toEqual([{ id: 'a1', title: 'Report', type: 'report', key: 'report' }]);
+  });
+
+  it('a runner verdict of pass lands as pass with the task link and evaluatedAt', async () => {
+    withProse({ grader: 'runner' });
+    mockResolveProseCriteria.mockImplementation((() => Promise.resolve({
+      kind: 'verdict', verdict: 'pass', taskId: 'prose-task-9', evidence: 'rows present', evaluatedAt: '2026-09-01T00:00:00.000Z',
+    })) as any);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(state!.criteria[0].verdict).toBe('pass');
+    expect(state!.criteria[0].workerTaskId).toBe('prose-task-9');
+    expect(state!.criteria[0].evaluatedAt).toBe('2026-09-01T00:00:00.000Z');
+    expect(state!.overall).toBe('pass');
+  });
+
+  it('a runner NOT_EVALUATED result (unsure / failed task) stays NOT_EVALUATED with its reason', async () => {
+    withProse({ grader: 'runner' });
+    mockResolveProseCriteria.mockImplementation((() => Promise.resolve({
+      kind: 'verdict', verdict: 'NOT_EVALUATED', taskId: 'prose-task-9', evidence: 'Runner was unsure: logs not visible', evaluatedAt: '2026-09-01T00:00:00.000Z',
+    })) as any);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.criteria[0].evidence).toContain('logs not visible');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('marks a criterion awaitingRunner when its task sits unclaimed', async () => {
+    withProse({ grader: 'runner' });
+    mockResolveProseCriteria.mockImplementation((() => Promise.resolve({
+      kind: 'pending', taskId: 'prose-task-q', evidence: 'Waiting for a runner to verify “Rows exist” — task prose-ta unclaimed for 20m', awaitingRunner: true,
+    })) as any);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.criteria[0].awaitingRunner).toBe(true);
+    expect(state!.criteria[0].evidence).toContain('Waiting for a runner');
+  });
+
+  it('mixed command + runner prose criteria evaluate independently', async () => {
+    mockStrategyResult = 'inline';
+    mission({
+      goalCriteria: [
+        { type: 'command', command: 'bun test' },
+        { ...PROSE, grader: 'runner' },
+      ],
+    });
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+    const workerIdx = (mockResolveCriteriaWorkerEval.mock.calls[0]![0] as any).criteria.map((c: any) => c.index);
+    expect(workerIdx).toEqual([0]);
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].workerTaskId).toBe('worker-eval-task-1');
+    expect(state!.criteria[1].workerTaskId).toBe('prose-task-1');
+  });
+
+  it('a prose criterion with no runner available does not disturb the command criterion', async () => {
+    mission({
+      goalCriteria: [
+        { type: 'command', command: 'bun test' },
+        { ...PROSE, grader: 'runner' },
+      ],
+    });
+    mockResolveProseCriteria.mockImplementation((() => Promise.resolve({
+      kind: 'unavailable', evidence: 'Prose criterion cannot be verified on a runner: mission has no workspace',
+    })) as any);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.criteria[1].verdict).toBe('NOT_EVALUATED');
+    expect(state!.criteria[1].evidence).toContain('no workspace');
+  });
+
+  it('mixed api + runner prose criteria: one graded inline, the other dispatched', async () => {
+    mission({
+      goalCriteria: [
+        { ...PROSE, grader: 'api' },
+        { type: 'description', description: 'No double-fire', notMechanizableReason: 'stated reason', grader: 'runner' },
+      ],
+    });
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'rows present' }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockInferenceCall).toHaveBeenCalledTimes(1);
+    const asked = (mockInferenceCall.mock.calls[0]![0] as any).user as string;
+    expect(asked).toContain('Rows exist');
+    expect(asked).not.toContain('No double-fire');
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect((mockResolveProseCriteria.mock.calls[0]![0] as any).criterionIndex).toBe(1);
+    expect(state!.criteria[0].verdict).toBe('pass');
+    expect(state!.criteria[1].verdict).toBe('PENDING');
   });
 });
