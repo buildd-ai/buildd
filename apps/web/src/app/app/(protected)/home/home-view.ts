@@ -29,6 +29,16 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+/**
+ * The line under the greeting. Its "needs you" clause uses the same count and
+ * wording as the Waiting-on-You header, over the same (initiative-filtered)
+ * queue, so the two can never disagree.
+ */
+export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
+  const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
+  return parts.length > 0 ? parts.join(' · ') : 'Your agents are standing by';
+}
+
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';
 
 /**

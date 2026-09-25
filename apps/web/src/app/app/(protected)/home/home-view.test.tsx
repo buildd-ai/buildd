@@ -14,6 +14,7 @@ import {
   stripLeadingPrRef,
   stageChipShowsPrNumber,
   recordBestEffort,
+  homeSubheading,
 } from './home-view';
 
 const item = (chip: ActionQueueItem['chip'], key: string) => ({ chip, subjectKey: key }) as ActionQueueItem;
@@ -48,6 +49,21 @@ describe('splitWaitingOnYou — the count and the cards agree', () => {
     expect(waitingOnYouSummary(2, 0)).toBe('2 need you');
     expect(waitingOnYouSummary(0, 3)).toBe('3 in flight');
     expect(waitingOnYouSummary(0, 0)).toBeNull();
+  });
+});
+
+describe('homeSubheading — the greeting and the Waiting-on-You header say the same thing', () => {
+  it('uses the header\'s "needs you" wording and count', () => {
+    expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 needs you');
+    expect(homeSubheading(null, 2)).toBe('2 need you');
+    expect(homeSubheading('1 ship overnight', 0)).toBe('1 ship overnight');
+    expect(homeSubheading(null, 0)).toBe('Your agents are standing by');
+  });
+
+  it('matches the header summary for the same (initiative-filtered) queue', () => {
+    const filtered = [item('MERGE', 'm1'), item('CI_RUNNING', 'c1')];
+    const { needsYou } = splitWaitingOnYou(filtered);
+    expect(homeSubheading(null, needsYou.length)).toBe(waitingOnYouSummary(needsYou.length, 0));
   });
 });
 

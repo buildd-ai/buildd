@@ -9,7 +9,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamScope } from '@/lib/team-access';
-import { splitWaitingOnYou, waitingOnYouSummary, rightNowState, stripLeadingPrRef, stageChipShowsPrNumber, recordBestEffort } from './home-view';
+import { splitWaitingOnYou, waitingOnYouSummary, rightNowState, stripLeadingPrRef, stageChipShowsPrNumber, recordBestEffort, homeSubheading } from './home-view';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
@@ -1831,13 +1831,6 @@ export default async function HomePage({
   const shipClause = completedLast12h > 0
     ? `${completedLast12h} ship${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
     : null;
-  // RESOLVING / FIXING_CI / CI_RUNNING are informational — an agent is handling
-  // it, so they stay visible but never inflate the human's count.
-  const actionableCount = splitWaitingOnYou(actionQueue).needsYou.length;
-  const waitClause = actionableCount > 0 ? `${actionableCount} waiting on you` : null;
-  const subParts = [shipClause, waitClause].filter(Boolean) as string[];
-  const subheading = subParts.length > 0 ? subParts.join(' · ') : 'Your agents are standing by';
-
   // Chips SCOPE the Waiting-on-you queue (never group it). The section still
   // gates on the unfiltered queue so a filter that empties it doesn't hide the
   // chips (leaving the user unable to clear the filter).
@@ -1846,8 +1839,12 @@ export default async function HomePage({
     : actionQueue;
   // Human work first, then what an agent is already finishing — rendered as
   // two groups so the count in the header matches the cards under it.
+  // RESOLVING / FIXING_CI / CI_RUNNING / FIXING_SPEC are informational: they
+  // stay visible but never count as needing the human.
   const { needsYou: needsYouItems, inFlight: inFlightItems } = splitWaitingOnYou(filteredActionQueue);
   const waitingSummary = waitingOnYouSummary(needsYouItems.length, inFlightItems.length);
+  // Same set and wording as the header above the cards.
+  const subheading = homeSubheading(shipClause, needsYouItems.length);
   const rightNow = rightNowState({
     inFlightCount: activeItems.length + agentReviewingPrs.length + reviewQueuedPrs.length,
     workspaceCount,

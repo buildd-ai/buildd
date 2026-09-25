@@ -37,6 +37,13 @@ describe('one active-team resolver for the shell and Home', () => {
   });
 });
 
+describe('the greeting counts the same set as the Waiting-on-You header', () => {
+  it('subheading is built from the initiative-filtered needs-you list', () => {
+    expect(home).toContain('homeSubheading(shipClause, needsYouItems.length)');
+    expect(home).not.toContain('waiting on you`');
+  });
+});
+
 describe('Home does not await bookkeeping writes during render', () => {
   it('the initiative-progress snapshot upsert goes through recordBestEffort', () => {
     const upsertAt = home.indexOf('.insert(initiativeProgressSeen)');
