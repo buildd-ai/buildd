@@ -110,7 +110,7 @@ jobs:
               # Note: role_name is required by the endpoint to resolve the connection URI.
               CONN_RESPONSE=$(curl -s -w "\n%{http_code}" \
                 -H "Authorization: Bearer $NEON_API_KEY" \
-                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb&role_name=$NEON_DB_USER")
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb&role_name=$NEON_DB_USER" || true)
               HTTP_CODE=$(echo "$CONN_RESPONSE" | tail -1)
               CONN_BODY=$(echo "$CONN_RESPONSE" | head -n -1)
               if [ "$HTTP_CODE" != "200" ] && [ -n "$HTTP_CODE" ]; then
