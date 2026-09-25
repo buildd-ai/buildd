@@ -23,7 +23,6 @@ export default async function WorkspaceConfigPage({
     params: Promise<{ id: string }>;
 }) {
     const { id } = await params;
-    const isDev = process.env.NODE_ENV === 'development';
     const user = await getCurrentUser();
 
     if (!user) {
@@ -52,15 +51,6 @@ export default async function WorkspaceConfigPage({
 
     if (!workspace) {
         notFound();
-    }
-    if (isDev) {
-        return (
-            <main className="min-h-screen p-8">
-                <div className="max-w-2xl mx-auto">
-                    <p className="text-text-muted">Development mode - no database</p>
-                </div>
-            </main>
-        );
     }
 
     return (
