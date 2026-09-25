@@ -22,7 +22,7 @@ export default function UserAvatarMenu({ userInitial, direction = 'up', active =
   const close = useCallback(() => setOpen(false), []);
 
   useClickOutside(ref, close);
-  useEscapeClose(open, close, triggerRef);
+  useEscapeClose(open, close, triggerRef, ref);
 
   return (
     <div ref={ref} className="relative">

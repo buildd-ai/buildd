@@ -70,9 +70,41 @@ function recordFailure(id: string): void {
   }
 }
 
-/** Test hook: the backoff is module state and would leak between cases. */
+/**
+ * Whole-path pause after GitHub says we are rate limited.
+ *
+ * A rate limit is not the row's fault, and every further call in the batch (and
+ * in the next renders) would hit the same wall while Home waits on it. So the
+ * batch stops and the fast path skips entirely — no SELECT, no GitHub call —
+ * until the cutoff. pr-reconcile keeps converging state on its own schedule.
+ *
+ * 429 always counts. 403 counts only when GitHub's body says rate limit (both
+ * the primary and secondary limit messages do); a plain permission 403 is one
+ * repo's problem and stays a per-row failure, so it cannot pause every
+ * workspace's refresh.
+ */
+// GitHub's guidance for secondary limits is to wait at least a minute. If the
+// primary limit is still exhausted after that, the next attempt costs one call
+// and pauses again, so the cost stays at about one call a minute.
+export const RATE_LIMIT_PAUSE_MS = 60 * 1000;
+let rateLimitedUntil = 0;
+
+export function isGithubRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = /GitHub API error: (\d{3})\b/.exec(msg);
+  if (!m) return false;
+  if (m[1] === '429') return true;
+  return m[1] === '403' && /rate limit/i.test(msg);
+}
+
+function rateLimited(now: number): boolean {
+  return now < rateLimitedUntil;
+}
+
+/** Test hook: the backoff and pause are module state and would leak between cases. */
 export function _resetFailureBackoffForTests(): void {
   failedAt.clear();
+  rateLimitedUntil = 0;
 }
 
 const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as ('pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null)[];
@@ -98,6 +130,7 @@ export interface StalePrCandidate {
  */
 export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): Promise<void> {
   if (workspaceIds.length === 0) return;
+  if (rateLimited(Date.now())) return;
 
   const staleCutoff = new Date(Date.now() - STALE_THRESHOLD_MS);
   // Excluded in SQL, not filtered after: filtering after the LIMIT would let
@@ -144,6 +177,7 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
  */
 export async function refreshStaleWorkers(candidates: StalePrCandidate[]): Promise<void> {
   const now = Date.now();
+  if (rateLimited(now)) return;
   const backedOff = new Set(backedOffIds(now));
   const stale = candidates
     .filter(w => {
@@ -285,6 +319,12 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           );
         }
       } catch (err) {
+        if (isGithubRateLimitError(err)) {
+          // Stop the whole batch: every remaining call would hit the same limit.
+          rateLimitedUntil = Date.now() + RATE_LIMIT_PAUSE_MS;
+          console.warn(`[pr-state-refresh] GitHub rate limited; pausing read-through refresh for ${RATE_LIMIT_PAUSE_MS / 1000}s`);
+          return;
+        }
         // Non-fatal: log, leave prLastCheckedAt alone (pr-reconcile owns the
         // attempt clock), and hold the row out of the fast path for a window.
         recordFailure(worker.id);

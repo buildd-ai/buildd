@@ -100,6 +100,42 @@ for (const c of cases) {
       expect(document.activeElement).toBe(trigger);
     });
 
+    it('ignores an Escape another handler already consumed', () => {
+      const trigger = mount();
+      act(() => trigger.click());
+      const item = document.getElementById(trigger.getAttribute('aria-controls')!)!.querySelector<HTMLElement>('a, button')!;
+      act(() => {
+        const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+        e.preventDefault();
+        item.dispatchEvent(e);
+      });
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    for (const [label, make] of [
+      ['a text input', () => document.createElement('input')],
+      ['a textarea', () => document.createElement('textarea')],
+      ['an element inside another dialog', () => {
+        const d = document.createElement('div');
+        d.setAttribute('role', 'dialog');
+        const b = document.createElement('button');
+        d.append(b);
+        return b;
+      }],
+    ] as const) {
+      it(`leaves Escape to ${label} outside the component`, () => {
+        const trigger = mount();
+        act(() => trigger.click());
+        const el = make();
+        document.body.append(el.closest('[role="dialog"]') ?? el);
+        (el as HTMLElement).focus();
+        pressEscape(el);
+        expect(trigger.getAttribute('aria-expanded')).toBe('true');
+        expect(document.activeElement).toBe(el);
+        (el.closest('[role="dialog"]') ?? el).remove();
+      });
+    }
+
     it('Escape does nothing while closed (does not steal focus)', () => {
       const trigger = mount();
       const other = document.createElement('button');

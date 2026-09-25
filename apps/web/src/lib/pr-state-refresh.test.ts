@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
@@ -85,6 +85,8 @@ import {
   refreshStaleWorkers,
   _resetFailureBackoffForTests,
   FAILURE_BACKOFF_MS,
+  RATE_LIMIT_PAUSE_MS,
+  isGithubRateLimitError,
 } from './pr-state-refresh';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -697,8 +699,16 @@ describe('pr-state-refresh repo resolution', () => {
 // apart, blocking the render. The backoff is in-process only — no DB clock
 // moves — and holds a failed row out for the same window a success does.
 
+const realNow = Date.now;
+/** Pins Date.now for the module under test; afterEach always restores it. */
+function setNow(ms: number) {
+  Date.now = () => ms;
+}
+
 describe('pr-state-refresh failure backoff', () => {
-  const realNow = Date.now;
+  afterEach(() => {
+    Date.now = realNow;
+  });
   beforeEach(() => {
     mockWorkersFindMany.mockReset();
     mockWorkspacesFindFirst.mockReset();
@@ -707,7 +717,6 @@ describe('pr-state-refresh failure backoff', () => {
     mockFetchCiLifecycleStatus.mockReset();
     mockTriggerEvent.mockReset();
     _resetFailureBackoffForTests();
-    Date.now = realNow;
     mockWorkspacesFindFirst.mockResolvedValue(ws);
     makeSetMock();
   });
@@ -751,9 +760,12 @@ describe('pr-state-refresh failure backoff', () => {
   it('retries the row once the backoff window has passed', async () => {
     mockGithubApi.mockRejectedValue(new Error('GitHub API error: 502'));
     const t0 = realNow();
-    Date.now = () => t0;
+    setNow(t0);
     await refreshStaleWorkers([stale('w-bad')]);
-    Date.now = () => t0 + FAILURE_BACKOFF_MS + 1;
+    setNow(t0 + FAILURE_BACKOFF_MS - 1);
+    await refreshStaleWorkers([stale('w-bad')]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    setNow(t0 + FAILURE_BACKOFF_MS + 1);
     await refreshStaleWorkers([stale('w-bad')]);
     expect(mockGithubApi).toHaveBeenCalledTimes(2);
   });
@@ -771,15 +783,23 @@ describe('pr-state-refresh failure backoff', () => {
     expect((mockGithubApi.mock.calls[0] as any[])[1]).toEndWith('/pulls/2');
   });
 
-  it('a later success clears the backoff', async () => {
-    mockGithubApi.mockRejectedValueOnce(new Error('GitHub API error: 502'));
+  it('a success inside the window clears the backoff (overlapping renders)', async () => {
+    // Two renders pick the same row before either finishes: the first call
+    // fails, the second succeeds a moment later. The success is newer truth,
+    // so the row must not stay held out for the rest of the window.
     const t0 = realNow();
-    Date.now = () => t0;
-    await refreshStaleWorkers([stale('w-flaky')]);
-    Date.now = () => t0 + FAILURE_BACKOFF_MS + 1;
-    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
-    await refreshStaleWorkers([stale('w-flaky')]);
-    Date.now = () => t0 + FAILURE_BACKOFF_MS + 2;
+    setNow(t0);
+    let call = 0;
+    mockGithubApi.mockImplementation(() => {
+      call++;
+      return call === 1
+        ? Promise.reject(new Error('GitHub API error: 502'))
+        : new Promise(res => setTimeout(() => res({ state: 'open', merged: false, merged_at: null }), 20));
+    });
+    await Promise.all([refreshStaleWorkers([stale('w-flaky')]), refreshStaleWorkers([stale('w-flaky')])]);
+    expect(call).toBe(2);
+
+    setNow(t0 + 1); // well inside FAILURE_BACKOFF_MS
     mockWorkersFindMany.mockResolvedValue([]);
     await refreshStaleWorkersForWorkspaces(['ws1']);
     const where = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
@@ -792,5 +812,85 @@ describe('pr-state-refresh failure backoff', () => {
     await refreshStaleWorkers([stale('w-bad')]);
     await refreshStaleWorkers([stale('w-bad')]);
     expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('pr-state-refresh GitHub rate limit', () => {
+  afterEach(() => {
+    Date.now = realNow;
+  });
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockGithubApi.mockReset();
+    mockFetchCiLifecycleStatus.mockReset();
+    mockTriggerEvent.mockReset();
+    _resetFailureBackoffForTests();
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    makeSetMock();
+  });
+
+  const row = (id: string, prNumber: number) => ({
+    id, prNumber, workspaceId: 'ws1', taskId: `t-${id}`, prLifecycleStatus: 'pr_open', prLastCheckedAt: null,
+  });
+
+  it('classifies 429 and rate-limit 403s, not permission 403s or other errors', () => {
+    expect(isGithubRateLimitError(new Error('GitHub API error: 429 Too Many Requests'))).toBe(true);
+    expect(isGithubRateLimitError(new Error('GitHub API error: 403 {"message":"API rate limit exceeded for installation"}'))).toBe(true);
+    expect(isGithubRateLimitError(new Error('GitHub API error: 403 {"message":"You have exceeded a secondary rate limit"}'))).toBe(true);
+    expect(isGithubRateLimitError(new Error('GitHub API error: 403 {"message":"Resource not accessible by integration"}'))).toBe(false);
+    expect(isGithubRateLimitError(new Error('GitHub API error: 404 Not Found'))).toBe(false);
+    expect(isGithubRateLimitError(new Error('fetch failed'))).toBe(false);
+  });
+
+  it('stops the batch at the first rate-limited call', async () => {
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 429 Too Many Requests'));
+    await refreshStaleWorkers([row('w1', 1), row('w2', 2), row('w3', 3)]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the whole fast path (no SELECT, no GitHub) until the cutoff, then resumes', async () => {
+    const t0 = realNow();
+    setNow(t0);
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 403 API rate limit exceeded'));
+    await refreshStaleWorkers([row('w1', 1)]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+
+    setNow(t0 + RATE_LIMIT_PAUSE_MS - 1);
+    mockWorkersFindMany.mockResolvedValue([row('w2', 2)]);
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+    await refreshStaleWorkers([row('w3', 3)]);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+
+    setNow(t0 + RATE_LIMIT_PAUSE_MS + 1);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+    expect(mockWorkersFindMany).toHaveBeenCalledTimes(1);
+    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('a permission 403 is a per-row failure: the batch continues', async () => {
+    mockGithubApi.mockImplementation((_i: number, path: string) =>
+      path.endsWith('/pulls/1')
+        ? Promise.reject(new Error('GitHub API error: 403 Resource not accessible by integration'))
+        : Promise.resolve({ state: 'open', merged: false, merged_at: null }),
+    );
+    await refreshStaleWorkers([row('w1', 1), row('w2', 2)]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('a rate limit does not put the row itself into per-row backoff', async () => {
+    const t0 = realNow();
+    setNow(t0);
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 429'));
+    await refreshStaleWorkers([row('w1', 1)]);
+    setNow(t0 + RATE_LIMIT_PAUSE_MS + 1);
+    mockWorkersFindMany.mockResolvedValue([]);
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+    const where = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    const flat = (n: any): any[] => (n && (n.op === 'and' || n.op === 'or') ? n.args.flatMap(flat) : n ? [n] : []);
+    expect(flat(where).some(l => l.op === 'notInArray' && l.a === 'id')).toBe(false);
   });
 });

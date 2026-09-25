@@ -91,7 +91,7 @@ export default function VisualReviewStrip({ shots, missionId }: VisualReviewStri
                   )}
                   <i aria-hidden="true" className={`absolute -right-1 -top-1 z-10 block h-2.5 w-2.5 ring-2 ring-surface-2 ${VERDICT_DOT[shot.qa.verdict]}`} />
                 </span>
-                <span className="font-mono text-[10px] text-text-muted">{`${shot.qa.route} · ${shot.qa.viewport}`}</span>
+                <span className="font-mono text-[11px] md:text-[10px] text-text-muted">{`${shot.qa.route} · ${shot.qa.viewport}`}</span>
               </button>
             </li>
           ))}

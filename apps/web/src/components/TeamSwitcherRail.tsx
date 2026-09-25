@@ -35,7 +35,7 @@ export default function TeamSwitcherRail({
   const panelId = useId();
   const close = useCallback(() => setOpen(false), []);
   useClickOutside(ref, close);
-  useEscapeClose(open, close, triggerRef);
+  useEscapeClose(open, close, triggerRef, ref);
 
   if (teams.length === 0) return null;
 

@@ -21,7 +21,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
   const currentTeam = teams.find(t => t.id === currentTeamId) || teams[0];
 
   useClickOutside(ref, close);
-  useEscapeClose(open, close, triggerRef);
+  useEscapeClose(open, close, triggerRef, ref);
 
   if (!currentTeam) return null;
 
