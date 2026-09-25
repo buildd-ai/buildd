@@ -52,6 +52,7 @@ import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDe
 import MissionDelivery from './MissionDelivery';
 import VisualReviewStrip from './VisualReviewStrip';
 import { missionVisualReview } from '@/lib/mission-visual-review';
+import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionFlightStripInline, MissionStripExpand } from './MissionStripControls';
 import { buildDeliverySteps, deliveryReleaseInput, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -900,7 +901,14 @@ export default async function MissionDetailPage({
     : null;
   // Visual review (docs/design/visual-qa-auditor.md): the latest audit run,
   // or null when there is nothing to show (rule in `missionVisualReview`).
-  const visualReviewState = missionVisualReview(visualShotRows, mission.tasks ?? []);
+  // Required routes come from the run's audit task, recomputed the way the
+  // completion gate does (auditRequiredRoutes), so the step can show n/m.
+  const visualReviewState = missionVisualReview(visualShotRows, mission.tasks ?? [], {
+    requiredRoutesOf: t => auditRequiredRoutes(
+      { context: digestOf(t.id).context },
+      ((t.dependsOn as string[] | null) ?? []).map(d => (taskMap.get(d) as { pathManifest?: unknown } | undefined)?.pathManifest ?? null),
+    ),
+  });
   const visualRun = visualReviewState?.run ?? [];
   const visualReview = visualReviewState?.summary ?? null;
   const deliverySteps = buildDeliverySteps({

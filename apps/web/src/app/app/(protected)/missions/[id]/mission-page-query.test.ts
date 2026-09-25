@@ -191,6 +191,19 @@ describe('digestTaskContext', () => {
   });
 });
 
+describe('digestTaskContext and the Visual review coverage', () => {
+  // The page shows n/m coverage from auditRequiredRoutes, which reads the
+  // round-2 planner's frozen context.visualQa.requiredRoutes.
+  it('keeps context.visualQa, so required routes read the same from the digest', async () => {
+    const { auditRequiredRoutes } = await import('@/lib/visual-qa-required-routes');
+    const context = { surfaceAuditRound: 2, visualQa: { requiredRoutes: ['/app/tasks'] }, prompt: bulky };
+    const deps = [['apps/web/src/app/app/(protected)/missions/[id]/page.tsx']];
+    expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps))
+      .toEqual(auditRequiredRoutes({ context }, deps));
+    expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps)).toContain('/app/tasks');
+  });
+});
+
 describe('indexTaskDigests', () => {
   it('maps id → digest with nulls preserved', () => {
     const m = indexTaskDigests([{ id: 'a', result: { summary: 's' }, context: null }]);

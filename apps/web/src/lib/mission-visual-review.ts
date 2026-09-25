@@ -135,10 +135,47 @@ export function selectLatestRun(shots: readonly VisualShot[]): VisualShot[] {
   return latest == null ? [] : shots.filter(s => runOf(s) === latest);
 }
 
+/**
+ * Does a recorded route satisfy a required one? Exact match, or a concrete
+ * URL matching the pattern (`:x` = one segment, `:x*` = the rest). The
+ * completion evidence check uses this too.
+ */
+export function qaRouteSatisfies(required: string, recorded: string): boolean {
+  if (required === recorded) return true;
+  const pattern = required
+    .split('/')
+    .map((seg) => {
+      if (/^:[^/]+\*$/.test(seg)) return '.+';
+      if (seg.startsWith(':')) return '[^/]+';
+      return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('/');
+  return new RegExp(`^${pattern}$`).test(recorded);
+}
+
+/**
+ * How many required route × viewport cells the run covers, the same way the
+ * evidence check counts them. Null when code named no route: the auditor then
+ * picks its own, so there is no denominator to show.
+ */
+export function requiredCoverage(
+  run: readonly VisualShot[],
+  requiredRoutes: readonly string[],
+): { required: number; covered: number } | null {
+  if (requiredRoutes.length === 0) return null;
+  let covered = 0;
+  for (const route of requiredRoutes) {
+    for (const viewport of QA_VIEWPORTS) {
+      if (run.some(s => s.qa.viewport === viewport && qaRouteSatisfies(route, s.qa.route))) covered++;
+    }
+  }
+  return { required: requiredRoutes.length * QA_VIEWPORTS.length, covered };
+}
+
 /** Verdict counts for the Delivery step (`buildDeliverySteps` → `visual`). */
 export function summarizeVisualRun(
   shots: readonly VisualShot[],
-  opts: { required?: number; bootFailed?: boolean } = {},
+  opts: { required?: number; covered?: number; bootFailed?: boolean } = {},
 ): DeliveryVisual {
   const count = (v: QaVerdict) => shots.filter(s => s.qa.verdict === v).length;
   return {
@@ -147,13 +184,59 @@ export function summarizeVisualRun(
     issues: count('issue'),
     unsure: count('unsure'),
     ...(opts.required != null ? { required: opts.required } : {}),
+    ...(opts.covered != null ? { covered: opts.covered } : {}),
     ...(opts.bootFailed ? { bootFailed: true } : {}),
   };
 }
 
+interface WorkerLike {
+  id: string;
+  status?: string | null;
+  startedAt?: string | Date | null;
+  waitingFor?: { type?: string; prompt?: string } | null;
+}
+
 interface TaskLike {
+  id?: string;
   status: string;
   roleSlug?: string | null;
+  workers?: ReadonlyArray<WorkerLike> | null;
+}
+
+/**
+ * The question the visual-auditor role asks when the app did not boot
+ * (default-roles.ts, "Boot failure"; pinned by default-roles.test.ts).
+ */
+export const BOOT_FAILURE_QUESTION_PREFIX = 'App did not boot';
+const BOOT_FAILURE_RE = /^\s*app did not boot\b/i;
+
+/** Task states in which a boot-failure question no longer holds anything. */
+const RESOLVED_TASK_STATUSES = ['completed', 'cancelled'];
+
+/**
+ * Did the current audit park on the boot-failure question? The newest worker
+ * (by `startedAt`) across the mission's unresolved visual-auditor tasks must
+ * be sitting on it: `waiting_input` normally, or `failed` in the runner's
+ * inputAsRetry mode, which keeps `waitingFor` on the failed worker. A newer
+ * auditor worker (the retry) clears it, as does a completed or cancelled
+ * audit. Reads `workers.waitingFor`, which the page already loads.
+ */
+export function auditBootFailed(tasks: readonly TaskLike[]): boolean {
+  let newest: WorkerLike | null = null;
+  let newestAt = -Infinity;
+  for (const t of tasks) {
+    if (t.roleSlug !== VISUAL_AUDITOR_ROLE_SLUG || RESOLVED_TASK_STATUSES.includes(t.status)) continue;
+    for (const w of t.workers ?? []) {
+      const at = w.startedAt ? new Date(w.startedAt).getTime() : -Infinity;
+      if (newest === null || at > newestAt) {
+        newest = w;
+        newestAt = at;
+      }
+    }
+  }
+  if (!newest || (newest.status !== 'waiting_input' && newest.status !== 'failed')) return false;
+  const wf = newest.waitingFor;
+  return wf?.type === 'question' && typeof wf.prompt === 'string' && BOOT_FAILURE_RE.test(wf.prompt);
 }
 
 /**
@@ -161,19 +244,34 @@ interface TaskLike {
  * or null when the step should not show. It shows once there are shots, or
  * while a visual-auditor task is still open (the `todo` / "–" state). A
  * finished auditor task with no shots, or a pre-auditor `[surface audit]`
- * running as a builder, holds nothing to wait for.
+ * running as a builder, holds nothing to wait for. A boot failure
+ * (`auditBootFailed`) always shows, as the step's one `blocked` state.
  *
  * `shotRows` are expected to be the auditor-scoped rows from
  * `missionVisualShotsWhere`.
  */
-export function missionVisualReview(
+export function missionVisualReview<T extends TaskLike>(
   shotRows: readonly ArtifactRowLike[],
-  tasks: readonly TaskLike[],
+  tasks: readonly T[],
+  opts: {
+    /**
+     * The audit task's required routes (`auditRequiredRoutes`), so the step
+     * can show n/m coverage. Called for the task whose worker wrote the run;
+     * absent, or no such task loaded, leaves coverage unknown.
+     */
+    requiredRoutesOf?: (task: T) => readonly string[];
+  } = {},
 ): { run: VisualShot[]; summary: DeliveryVisual } | null {
   const run = selectLatestRun(toVisualShots(shotRows));
   const openAudit = tasks.some(
     t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status),
   );
-  if (run.length === 0 && !openAudit) return null;
-  return { run, summary: summarizeVisualRun(run) };
+  const bootFailed = auditBootFailed(tasks);
+  if (run.length === 0 && !openAudit && !bootFailed) return null;
+  const runWorker = run[0]?.workerId ?? null;
+  const runTask = runWorker && opts.requiredRoutesOf
+    ? tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && (t.workers ?? []).some(w => w.id === runWorker))
+    : undefined;
+  const coverage = runTask ? requiredCoverage(run, opts.requiredRoutesOf!(runTask)) : null;
+  return { run, summary: summarizeVisualRun(run, { ...(coverage ?? {}), bootFailed }) };
 }

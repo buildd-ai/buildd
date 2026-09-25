@@ -177,6 +177,17 @@ describe('buildDeliverySteps', () => {
       expect(visual({ shots: 8, ok: 8, issues: 0, unsure: 0, required: 8 })!.state).toBe('done');
     });
 
+    // Coverage counts required route × viewport cells, not shots: a re-shoot or
+    // an extra route the auditor added must not make "8 shots" read as 8/8.
+    it('reads coverage from covered cells when known, not from the shot count', () => {
+      expect(visual({ shots: 10, ok: 10, issues: 0, unsure: 0, required: 8, covered: 6 })).toMatchObject({
+        state: 'partial', value: '6/8', detail: '6 of 8 required shots, all ok',
+      });
+      expect(visual({ shots: 9, ok: 9, issues: 0, unsure: 0, required: 8, covered: 8 })).toMatchObject({
+        state: 'done', value: '9 shots',
+      });
+    });
+
     it('is blocked only when the app did not boot', () => {
       expect(visual({ shots: 0, ok: 0, issues: 0, unsure: 0, bootFailed: true })).toMatchObject({
         state: 'blocked', value: 'boot', detail: 'the app did not boot for the visual audit',

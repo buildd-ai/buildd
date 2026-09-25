@@ -27,10 +27,11 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
 import { isArtifactKeyForUpload, isAuditScreenshotKeyForUpload } from '@/lib/storage-keys';
 import { isSurfaceFixTask } from '@buildd/core/surface-audit';
-import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import {
   QA_VIEWPORTS,
   QA_VERDICTS,
+  qaRouteSatisfies,
   type QaViewport,
   type QaVerdict,
 } from '@/lib/mission-visual-review';
@@ -95,23 +96,6 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
     verdict: qa.verdict as QaVerdict,
     fixTaskId: typeof qa.fixTaskId === 'string' ? qa.fixTaskId : null,
   };
-}
-
-/**
- * Does a recorded route satisfy a required one? Exact match, or a concrete
- * URL matching the pattern (`:x` = one segment, `:x*` = the rest).
- */
-function routeSatisfies(required: string, recorded: string): boolean {
-  if (required === recorded) return true;
-  const pattern = required
-    .split('/')
-    .map((seg) => {
-      if (/^:[^/]+\*$/.test(seg)) return '.+';
-      if (seg.startsWith(':')) return '[^/]+';
-      return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    })
-    .join('/');
-  return new RegExp(`^${pattern}$`).test(recorded);
 }
 
 /**
@@ -203,7 +187,7 @@ export function evaluateVisualAuditEvidence(input: {
   }
   for (const route of routes) {
     for (const viewport of QA_VIEWPORTS) {
-      if (!counting.some((q) => q.viewport === viewport && routeSatisfies(route, q.route))) {
+      if (!counting.some((q) => q.viewport === viewport && qaRouteSatisfies(route, q.route))) {
         missing.push(`${route} @ ${viewport}`);
       }
     }
@@ -280,14 +264,7 @@ export async function loadVisualAuditEvidence(opts: {
   const depRows = deps.length > 0
     ? await db.query.tasks.findMany({ where: inArray(tasks.id, deps), columns: { pathManifest: true } })
     : [];
-  const paths = depRows
-    .flatMap((t) => (Array.isArray(t.pathManifest) ? t.pathManifest : []))
-    .filter((p): p is string => typeof p === 'string' && p !== '**');
-  const ctx = isRecord(task?.context) ? task!.context : {};
-  const frozen = isRecord(ctx.visualQa) && Array.isArray(ctx.visualQa.requiredRoutes)
-    ? (ctx.visualQa.requiredRoutes as unknown[]).filter((r): r is string => typeof r === 'string' && r.startsWith('/'))
-    : [];
-  const requiredRoutes = [...new Set([...visualQaRequiredRoutes(paths), ...frozen])].sort();
+  const requiredRoutes = auditRequiredRoutes({ context: task?.context }, depRows.map((t) => t.pathManifest));
 
   // THIS worker's screenshots only. Unlike hasDeliverableArtifact there is no
   // mission-artifact arm: a sibling's shot must never satisfy the audit.

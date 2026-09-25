@@ -92,6 +92,11 @@ export interface DeliveryVisual {
   unsure: number;
   /** Shots the evidence check requires (routes × viewports), when known. */
   required?: number;
+  /**
+   * Required route × viewport cells the run covers (`requiredCoverage`). The
+   * n/m reads this, not `shots`: a re-shoot or an extra route is not coverage.
+   */
+  covered?: number;
   /** The auditor reported that the app did not boot. */
   bootFailed?: boolean;
 }
@@ -209,8 +214,9 @@ function visualStep(v: DeliveryVisual): DeliveryStep {
     ].filter(Boolean).join(' · ');
     return { ...base, state: 'partial', value, detail };
   }
-  if (v.required != null && v.shots < v.required) {
-    return { ...base, state: 'partial', value: `${v.shots}/${v.required}`, detail: `${v.shots} of ${v.required} required shots, all ok` };
+  const covered = v.covered ?? v.shots;
+  if (v.required != null && covered < v.required) {
+    return { ...base, state: 'partial', value: `${covered}/${v.required}`, detail: `${covered} of ${v.required} required shots, all ok` };
   }
   return { ...base, state: 'done', value: plural(v.shots, 'shot'), detail: `${plural(v.shots, 'shot')}, all ok` };
 }

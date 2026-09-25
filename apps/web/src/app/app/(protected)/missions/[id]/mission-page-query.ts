@@ -175,7 +175,8 @@ export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary'] as const;
 /**
  * `tasks.context` keys the attempt strip reads (`attemptKind`,
  * `deriveTaskOrigin`, the iteration counters in `attempt-strip.ts`), plus
- * `failureContext.errorType` for the failure reason.
+ * `failureContext.errorType` for the failure reason, plus `visualQa` for the
+ * Visual review's required routes.
  */
 export const CONTEXT_DIGEST_KEYS = [
   'driftDiagnosis',
@@ -188,6 +189,9 @@ export const CONTEXT_DIGEST_KEYS = [
   'prNumber',
   'prUrl',
   'ciRunUrl',
+  // Visual review n/m coverage: the round-2 planner's frozen
+  // visualQa.requiredRoutes (auditRequiredRoutes). Small: a route list.
+  'visualQa',
 ] as const;
 export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
 
