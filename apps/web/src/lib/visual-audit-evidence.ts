@@ -10,7 +10,7 @@
  *   - every required route × {mobile, desktop} has a screenshot artifact
  *     written by THIS worker,
  *   - whose storage object was minted for THAT row by upload-url
- *     (`artifacts/<workspaceId>/<artifactId>/<name>`, see mintedByUploadUrl)
+ *     (its artifact key names this row's id, see mintedByUploadUrl)
  *     and exists (a row with no upload, or pointing at someone else's object,
  *     doesn't count),
  *   - with a non-empty `metadata.qa.finding`,
@@ -25,6 +25,7 @@ import { db } from '@buildd/core/db';
 import { artifacts, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
+import { isArtifactKeyForUpload } from '@/lib/storage-keys';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 
 export const VISUAL_QA_VIEWPORTS = ['mobile', 'desktop'] as const;
@@ -107,21 +108,15 @@ function routeSatisfies(required: string, recorded: string): boolean {
  * Was this row's object minted for this row by POST /api/artifacts/upload-url?
  *
  * upload-url inserts the row with id = the key's upload id, so its key is
- * exactly `artifacts/<workspaceId>/<row id>/<name>`. Nothing else produces that
- * shape: create_artifact takes a caller-chosen storageKey but its row id is a
+ * exactly buildArtifactKey(workspaceId, row id, name). Nothing else produces
+ * that shape: create_artifact takes a caller-chosen storageKey but its row id is a
  * fresh default the caller can't predict, and PATCH /api/artifacts/[id] can't
  * change storageKey. So one uploaded image (a sibling's, an old run's, or one
  * of this worker's own) can't back many route × viewport rows. Row ids are
  * unique, so the counting keys are distinct by construction.
  */
 export function mintedByUploadUrl(shot: { id: string; storageKey: string | null }, workspaceId: string): boolean {
-  if (!shot.storageKey) return false;
-  const parts = shot.storageKey.split('/');
-  return parts.length === 4
-    && parts[0] === 'artifacts'
-    && parts[1] === workspaceId
-    && parts[2] === shot.id
-    && parts[3].length > 0;
+  return isArtifactKeyForUpload(shot.storageKey, workspaceId, shot.id);
 }
 
 export const SURFACE_FIX_TITLE_PREFIX = '[surface fix]';

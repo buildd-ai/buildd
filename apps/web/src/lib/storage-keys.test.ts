@@ -215,3 +215,20 @@ describe('isOwnedStorageKey', () => {
     expect(isOwnedStorageKey({ toString: () => `attachments/${ws}/u1/a.png` }, ws)).toBe(false);
   });
 });
+
+describe('isArtifactKeyForUpload', () => {
+  it('matches the key buildArtifactKey mints for that workspace and upload id', async () => {
+    const { buildArtifactKey, isArtifactKeyForUpload } = await import('./storage-keys');
+    const key = buildArtifactKey('ws-1', 'up-1', 'shot.png');
+    expect(isArtifactKeyForUpload(key, 'ws-1', 'up-1')).toBe(true);
+  });
+  it('rejects another upload id, another workspace, another area, extra depth, an empty name and non-strings', async () => {
+    const { isArtifactKeyForUpload } = await import('./storage-keys');
+    expect(isArtifactKeyForUpload('artifacts/ws-1/up-1/s.png', 'ws-1', 'up-2')).toBe(false);
+    expect(isArtifactKeyForUpload('artifacts/ws-1/up-1/s.png', 'ws-2', 'up-1')).toBe(false);
+    expect(isArtifactKeyForUpload('attachments/ws-1/up-1/s.png', 'ws-1', 'up-1')).toBe(false);
+    expect(isArtifactKeyForUpload('artifacts/ws-1/up-1/x/s.png', 'ws-1', 'up-1')).toBe(false);
+    expect(isArtifactKeyForUpload('artifacts/ws-1/up-1/', 'ws-1', 'up-1')).toBe(false);
+    expect(isArtifactKeyForUpload(null, 'ws-1', 'up-1')).toBe(false);
+  });
+});

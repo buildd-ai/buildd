@@ -108,6 +108,20 @@ export function buildArtifactKey(
   return buildTenantKey('artifacts', workspaceId, uploadId, filename);
 }
 
+/**
+ * Is `key` exactly the artifact key `buildArtifactKey` mints for this
+ * workspace and upload id (one trailing name segment, nothing deeper)?
+ */
+export function isArtifactKeyForUpload(key: unknown, workspaceId: unknown, uploadId: unknown): boolean {
+  if (typeof key !== 'string' || typeof workspaceId !== 'string' || typeof uploadId !== 'string') return false;
+  const parts = key.split('/');
+  return parts.length === 4
+    && parts[0] === 'artifacts'
+    && parts[1] === workspaceId
+    && parts[2] === uploadId
+    && SAFE_SEGMENT.test(parts[3]);
+}
+
 /** `attachments/<workspaceId>/<uploadId>/<name>` */
 export function buildAttachmentKey(
   workspaceId: unknown,
