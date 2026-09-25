@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { formatCompletionRecord } from '@/lib/mission-completion-record';
+import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
@@ -1013,7 +1013,7 @@ export default async function MissionDetailPage({
       {/* ── The situation — what this mission is waiting on, and the one
           action that advances it. Rendered from `explain`'s answer, the shared
           accessor; the mission card renders the same sentence. */}
-      {missionAnswer && (
+      {missionAnswer && !situationRepeatsCompletion(missionAnswer.state, completionPick != null) && (
         <MissionSituationBlock
           missionId={id}
           situation={missionAnswer.situation}
