@@ -24,12 +24,14 @@ const step = (name: RegExp) => {
 };
 
 describe('visual-qa.yml dispatch contract', () => {
-  test('workflow_dispatch exposes routes / viewport / mission_id / task_id', () => {
+  test('workflow_dispatch exposes routes / viewport / mission_id / task_id / judge', () => {
     const inputs = on.workflow_dispatch?.inputs ?? {};
     for (const k of ['routes', 'viewport', 'mission_id', 'task_id']) {
       expect(inputs[k]?.type).toBe('string');
       expect(inputs[k]?.required).toBe(false);
     }
+    expect(inputs.judge?.type).toBe('boolean');
+    expect(inputs.judge?.default).toBe(false);
   });
 
   test('capture maps the inputs to QA_* env (never interpolated into the script)', () => {
@@ -51,12 +53,39 @@ describe('visual-qa.yml dispatch contract', () => {
     expect(upload.with['retention-days']).toBeLessThanOrEqual(7);
   });
 
-  // /api/qa/judge bills per token. A dispatching agent is already on an OAuth
-  // seat and judges the PNGs itself, so dispatch must never reach the judge.
-  test('judge and its check run are release-PR only, never on dispatch', () => {
-    expect(on.workflow_dispatch?.inputs?.judge).toBeUndefined();
-    expect(step(/^Judge/).if).toBe("github.event_name == 'pull_request'");
-    expect(step(/^Post results/).if).toBe("always() && github.event_name == 'pull_request'");
+  const JUDGE_GATE = "github.event_name == 'pull_request' || inputs.judge";
+
+  test('judge steps run on the release-PR path, and on dispatch only with judge=true', () => {
+    const judgeSteps = steps.filter(s => /judge|Judge/.test(s.name ?? ''));
+    expect(judgeSteps.length).toBeGreaterThanOrEqual(3); // prepare, OAuth judge, report
+    for (const s of judgeSteps) expect(s.if).toBe(JUDGE_GATE);
+    expect(step(/^Post results/).if).toBe(`always() && (${JUDGE_GATE})`);
+  });
+
+  // /api/qa/judge bills a server API key per token. CI judges on the team's
+  // OAuth seat instead, via claude-code-action.
+  test('the judge runs on OAuth via claude-code-action, never the per-token endpoint', () => {
+    const all = JSON.stringify(wf);
+    expect(all).not.toContain('BUILDD_QA_KEY');
+    expect(all).not.toContain('BUILDD_QA_URL');
+    const oauth = steps.find(s => String(s.uses ?? '').startsWith('anthropics/claude-code-action@'));
+    expect(oauth).toBeDefined();
+    expect(oauth.uses).toBe('anthropics/claude-code-action@v1');
+    expect(oauth.with.claude_code_oauth_token).toBe('${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}');
+    expect(oauth.with.anthropic_api_key).toBeUndefined();
+  });
+
+  test('the OAuth judge can only read/write the QA output dir: no Bash, no network', () => {
+    const oauth = steps.find(s => String(s.uses ?? '').startsWith('anthropics/claude-code-action@'));
+    const args: string = oauth.with.claude_args;
+    const allowed = /--allowedTools\s+"([^"]+)"/.exec(args)?.[1].split(',') ?? [];
+    expect(allowed.length).toBeGreaterThan(0);
+    for (const t of allowed) expect(t).toMatch(/^(Read|Glob|Write|Edit)\(\/\/tmp\/qa\//);
+    const denied = /--disallowedTools\s+"([^"]+)"/.exec(args)?.[1].split(',') ?? [];
+    for (const t of ['Bash', 'WebFetch', 'WebSearch']) expect(denied).toContain(t);
+    const turns = Number(/--max-turns\s+(\d+)/.exec(args)?.[1]);
+    expect(turns).toBeGreaterThan(0);
+    expect(turns).toBeLessThanOrEqual(60);
   });
 
   test('release-PR label gate is unchanged', () => {

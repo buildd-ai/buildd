@@ -55,19 +55,30 @@ RUN=$(gh run list --workflow visual-qa.yml --branch <branch> --event workflow_di
 gh run watch "$RUN" --exit-status
 gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 # → /tmp/qa-ci/screenshots/*.png, /tmp/qa-ci/a11y/*.json, /tmp/qa-ci/captures.json
+# The repo is public, so any GitHub user can download this artifact, and the shots
+# show real workspace names and titles. Delete it once you have your copy:
+gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id' \
+  | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
 
-Then Read the PNGs. **You are the judge.** You're already on the team's OAuth
-seat and you know what you changed, so review the shots yourself against "What to
-check" below. Never call `/api/qa/judge` and never run `scripts/qa/judge.ts`. That
-endpoint bills per token on a server API key, and it's reserved for the
-label-gated release-PR path.
+Never paste screenshot contents (team names, mission or task titles) into PR
+bodies, commits or comments. Describe what you saw generically.
+
+Then Read the PNGs. **Normally you are the judge.** You know what you changed, so
+review the shots yourself against "What to check" below. That costs nothing extra.
+
+`-f judge=true` is for when you want a CI verdict on the PR: claude-code-action
+judges each shot on the team's OAuth seat, writes `verdicts.json` + `report.md`
+into the artifact, and posts a neutral `Visual QA` check. It spends seat usage, so
+don't turn it on by habit. Never call `/api/qa/judge` directly. It bills a server
+API key per token, and CI no longer uses it.
 
 | Input | Maps to | Notes |
 |---|---|---|
 | `routes` | `QA_ROUTES` | Comma-separated paths. Empty = full manifest (`apps/web/src/qa/visual-qa-routes.json`). |
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
 | `mission_id` / `task_id` | `QA_MISSION_ID` / `QA_TASK_ID` | Fill `:id` routes in manifest mode only. |
+| `judge` | (step gate) | Default `false`. `true` = CI verdict on the team OAuth seat (see above). |
 
 - The data is a scrubbed prod clone, so the ids in your routes must exist there.
   Take them from the dashboard, not from seed scripts. The CI user is one workspace

@@ -124,9 +124,10 @@ gh run watch <id> --exit-status && gh run download <id> -n qa-screenshots
 ```
 
 Inputs: `routes`, `viewport` (`mobile` | `WxH`, default desktop), `mission_id`,
-`task_id`. Dispatch only captures and uploads. The agent reads the PNGs and judges
-them itself; the per-token `/api/qa/judge` step runs only on the label-gated
-release-PR path. `scripts/visual-qa-workflow.test.ts` pins this.
+`task_id`, `judge` (default `false`). By default a dispatch only captures and
+uploads, and the agent reads the PNGs and judges them itself. `judge=true` (and the
+label-gated release-PR path) adds a CI verdict from `anthropics/claude-code-action`
+on the team OAuth seat. `scripts/visual-qa-workflow.test.ts` pins this.
 
 ## UI Fixtures
 
