@@ -114,4 +114,41 @@ describe('FlightDetailSheet (mounted)', () => {
     const shrinkingFlexColumn = cls.includes('flex-col') && ![...panel.children].every(c => c.classList.contains('shrink-0'));
     expect(shrinkingFlexColumn).toBe(false);
   });
+
+  // The app shell scrolls inside <main data-scroll-root>, not the document, so
+  // locking body.style.overflow left the page scrolling behind the sheet.
+  describe('scroll lock', () => {
+    let main: HTMLElement;
+    beforeEach(() => {
+      main = document.createElement('main');
+      main.setAttribute('data-scroll-root', '');
+      main.style.overflow = 'auto';
+      document.body.appendChild(main);
+    });
+    afterEach(() => main.remove());
+
+    it('locks the shell scroll root while open and restores it on close', () => {
+      render(true);
+      expect(main.style.overflow).toBe('hidden');
+      render(false);
+      expect(main.style.overflow).toBe('auto');
+    });
+
+    it('leaves body alone when the shell scroll root exists', () => {
+      document.body.style.overflow = '';
+      render(true);
+      expect(document.body.style.overflow).toBe('');
+      render(false);
+    });
+  });
+
+  it('falls back to locking body outside the app shell', () => {
+    document.body.style.overflow = 'scroll';
+    render(true);
+    expect(document.body.style.overflow).toBe('hidden');
+    render(false);
+    expect(document.body.style.overflow).toBe('scroll');
+    document.body.style.overflow = '';
+  });
 });
+
