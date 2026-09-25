@@ -217,14 +217,14 @@ function PhaseRow({
           <span className={`text-sm ${rowExpanded ? 'break-all' : 'truncate'} ${milestone.pending ? 'text-status-running font-medium' : 'text-text-primary'}`}>
             {milestone.label}
           </span>
-          <span className="font-mono text-[10px] bg-surface-3 px-1 py-0.5 rounded flex-shrink-0 text-text-muted">
+          <span className="font-mono text-[11px] md:text-[10px] bg-surface-3 px-1 py-0.5 rounded flex-shrink-0 text-text-muted">
             {milestone.toolCount}&nbsp;tool{milestone.toolCount !== 1 ? 's' : ''}
           </span>
           <span className="text-xs text-text-muted flex-shrink-0">
             {formatTime(milestone.ts)}
           </span>
           {isLong && (
-            <span className="text-text-muted text-[10px] flex-shrink-0">
+            <span className="text-text-muted text-[11px] md:text-[10px] flex-shrink-0">
               {rowExpanded ? '▾' : '▸'}
             </span>
           )}
@@ -288,7 +288,7 @@ function StatusRow({
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
         {isLong && (
-          <span className="text-text-muted text-[10px]">
+          <span className="text-text-muted text-[11px] md:text-[10px]">
             {rowExpanded ? '▾' : '▸'}
           </span>
         )}
@@ -329,7 +329,7 @@ function CheckpointRow({
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
         {isLong && (
-          <span className="text-text-muted text-[10px]">
+          <span className="text-text-muted text-[11px] md:text-[10px]">
             {rowExpanded ? '▾' : '▸'}
           </span>
         )}
@@ -368,11 +368,11 @@ function ActionRow({
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
         {isLong && (
-          <span className="text-text-muted text-[10px]">
+          <span className="text-text-muted text-[11px] md:text-[10px]">
             {rowExpanded ? '▾' : '▸'}
           </span>
         )}
-        <span className="text-[10px] text-text-muted/60">
+        <span className="text-[11px] md:text-[10px] text-text-muted/60">
           {formatTime(milestone.ts)}
         </span>
       </div>

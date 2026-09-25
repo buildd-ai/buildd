@@ -105,12 +105,12 @@ export default function InitiativeKPIPanel({ initiativeId, kpis, kpiState: initi
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">KPIs</h2>
           {overallVerdict && (
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
             </span>
           )}
           {hasUnmetKPIs && overallVerdict !== null && (
-            <span className="text-[10px] text-status-warning font-mono">
+            <span className="text-[11px] md:text-[10px] text-status-warning font-mono">
               blocking completion
             </span>
           )}
@@ -171,7 +171,7 @@ export default function InitiativeKPIPanel({ initiativeId, kpis, kpiState: initi
                       {kpi.name}
                     </span>
                     {kpi.blocking !== false && (
-                      <span className="text-[10px] font-mono text-text-muted">blocking</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted">blocking</span>
                     )}
                   </div>
                   {/* Threshold + observed value */}

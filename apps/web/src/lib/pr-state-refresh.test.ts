@@ -83,6 +83,8 @@ mock.module('@/lib/task-dependencies', () => ({
 import {
   refreshStaleWorkersForWorkspaces,
   refreshStaleWorkers,
+  _resetFailureBackoffForTests,
+  FAILURE_BACKOFF_MS,
 } from './pr-state-refresh';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -112,6 +114,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockFetchCiLifecycleStatus.mockReset();
     mockTriggerEvent.mockReset();
     mockCheckDependsOnResolved.mockClear();
+    _resetFailureBackoffForTests();
   });
 
   it('does nothing for empty workspace list', async () => {
@@ -300,6 +303,7 @@ describe('refreshStaleWorkers', () => {
     mockFetchCiLifecycleStatus.mockReset();
     mockTriggerEvent.mockReset();
     mockCheckDependsOnResolved.mockClear();
+    _resetFailureBackoffForTests();
   });
 
   it('skips workers without a prNumber', async () => {
@@ -579,6 +583,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockFetchCiLifecycleStatus.mockReset();
     mockTriggerEvent.mockReset();
     mockCheckDependsOnResolved.mockClear();
+    _resetFailureBackoffForTests();
     mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'abc' } });
   });
 
@@ -680,5 +685,112 @@ describe('pr-state-refresh repo resolution', () => {
     await refreshStaleWorkersForWorkspaces(['ws-coord']);
 
     expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Tests: failure backoff (render-path cost of a persistently failing PR) ──
+//
+// A GitHub error leaves prLastCheckedAt untouched (the attempt clock belongs to
+// pr-reconcile, which counts failures toward `unresolvable`). But the rows it
+// leaves behind are the OLDEST-checked, so they head every batch: before the
+// backoff, each Home render re-issued the same failing GitHub calls, 200 ms
+// apart, blocking the render. The backoff is in-process only — no DB clock
+// moves — and holds a failed row out for the same window a success does.
+
+describe('pr-state-refresh failure backoff', () => {
+  const realNow = Date.now;
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockGithubApi.mockReset();
+    mockFetchCiLifecycleStatus.mockReset();
+    mockTriggerEvent.mockReset();
+    _resetFailureBackoffForTests();
+    Date.now = realNow;
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    makeSetMock();
+  });
+
+  const stale = (id: string) => ({
+    id, prNumber: 7, workspaceId: 'ws1', taskId: `t-${id}`, prLifecycleStatus: 'pr_open', prLastCheckedAt: null,
+  });
+
+  /** Flattens the and/or tree the drizzle mock records into its leaf ops. */
+  function leaves(node: any): any[] {
+    if (!node || typeof node !== 'object') return [];
+    if (node.op === 'and' || node.op === 'or') return node.args.flatMap(leaves);
+    return [node];
+  }
+
+  it('does not re-call GitHub for a row that just failed (pre-fetched path)', async () => {
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 404 Not Found'));
+    await refreshStaleWorkers([stale('w-bad')]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+
+    await refreshStaleWorkers([stale('w-bad')]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('excludes backed-off rows in SQL so they cannot fill the batch cap (DB path)', async () => {
+    mockWorkersFindMany.mockResolvedValue([stale('w-bad')]);
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 500'));
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    const firstWhere = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    expect(leaves(firstWhere).some(l => l.op === 'notInArray' && l.a === 'id')).toBe(false);
+
+    mockWorkersFindMany.mockResolvedValue([]);
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+    const secondWhere = (mockWorkersFindMany.mock.calls[1] as any[])[0].where;
+    const exclusion = leaves(secondWhere).find(l => l.op === 'notInArray' && l.a === 'id');
+    expect(exclusion).toBeDefined();
+    expect(exclusion.b).toEqual(['w-bad']);
+  });
+
+  it('retries the row once the backoff window has passed', async () => {
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 502'));
+    const t0 = realNow();
+    Date.now = () => t0;
+    await refreshStaleWorkers([stale('w-bad')]);
+    Date.now = () => t0 + FAILURE_BACKOFF_MS + 1;
+    await refreshStaleWorkers([stale('w-bad')]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('only backs off the row that failed, not its neighbours', async () => {
+    mockGithubApi.mockImplementation((_inst: number, path: string) =>
+      path.endsWith('/pulls/1')
+        ? Promise.reject(new Error('GitHub API error: 404'))
+        : Promise.resolve({ state: 'open', merged: false, merged_at: null }),
+    );
+    await refreshStaleWorkers([{ ...stale('w-bad'), prNumber: 1 }, { ...stale('w-ok'), prNumber: 2 }]);
+    mockGithubApi.mockClear();
+    await refreshStaleWorkers([{ ...stale('w-bad'), prNumber: 1 }, { ...stale('w-ok'), prNumber: 2 }]);
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    expect((mockGithubApi.mock.calls[0] as any[])[1]).toEndWith('/pulls/2');
+  });
+
+  it('a later success clears the backoff', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub API error: 502'));
+    const t0 = realNow();
+    Date.now = () => t0;
+    await refreshStaleWorkers([stale('w-flaky')]);
+    Date.now = () => t0 + FAILURE_BACKOFF_MS + 1;
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+    await refreshStaleWorkers([stale('w-flaky')]);
+    Date.now = () => t0 + FAILURE_BACKOFF_MS + 2;
+    mockWorkersFindMany.mockResolvedValue([]);
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+    const where = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    expect(leaves(where).some(l => l.op === 'notInArray' && l.a === 'id')).toBe(false);
+  });
+
+  it('never writes a DB clock for a failed row (attempt clock stays with pr-reconcile)', async () => {
+    const setMock = makeSetMock();
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 404'));
+    await refreshStaleWorkers([stale('w-bad')]);
+    await refreshStaleWorkers([stale('w-bad')]);
+    expect(setMock).not.toHaveBeenCalled();
   });
 });

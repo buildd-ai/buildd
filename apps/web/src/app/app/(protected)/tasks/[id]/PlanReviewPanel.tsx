@@ -48,7 +48,7 @@ export function PlanStepDescription({ content }: { content: string }) {
           type="button"
           onClick={() => setExpanded(v => !v)}
           aria-expanded={expanded}
-          className="mt-1 min-h-11 md:min-h-0 font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary cursor-pointer"
+          className="mt-1 min-h-11 md:min-h-0 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary cursor-pointer"
         >
           {expanded ? 'Show less ↑' : 'Show more ↓'}
         </button>
@@ -194,7 +194,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
 
   return (
     <div className="mb-8">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Plan Review
       </div>
 
@@ -227,7 +227,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
                   </code>
                   <span className="text-sm font-medium text-text-primary min-w-0 [overflow-wrap:anywhere]">{step.title}</span>
                   {step.priority != null && step.priority > 0 && (
-                    <span className="px-1.5 py-0.5 text-[10px] font-mono bg-status-warning/10 text-status-warning rounded">
+                    <span className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono bg-status-warning/10 text-status-warning rounded">
                       P{step.priority}
                     </span>
                   )}
@@ -241,9 +241,9 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
                   {/* Dependencies */}
                   {step.dependsOn && step.dependsOn.length > 0 && (
                     <div className="flex items-center gap-1">
-                      <span className="text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Depends on:</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Depends on:</span>
                       {step.dependsOn.map((dep) => (
-                        <code key={dep} className="px-1.5 py-0.5 text-[10px] font-mono bg-surface-3 text-text-secondary rounded">
+                        <code key={dep} className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono bg-surface-3 text-text-secondary rounded">
                           {dep}
                         </code>
                       ))}
@@ -253,9 +253,9 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
                   {/* Capabilities */}
                   {step.requiredCapabilities && step.requiredCapabilities.length > 0 && (
                     <div className="flex items-center gap-1">
-                      <span className="text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Requires:</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Requires:</span>
                       {step.requiredCapabilities.map((cap) => (
-                        <span key={cap} className="px-1.5 py-0.5 text-[10px] font-medium bg-primary/10 text-primary rounded">
+                        <span key={cap} className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium bg-primary/10 text-primary rounded">
                           {cap}
                         </span>
                       ))}

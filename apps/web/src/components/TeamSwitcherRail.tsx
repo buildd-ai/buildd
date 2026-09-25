@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useId } from 'react';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { useEscapeClose } from '@/hooks/useEscapeClose';
 import { switchTeam } from '@/lib/switch-team';
 
 interface Team {
@@ -30,7 +31,11 @@ export default function TeamSwitcherRail({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useClickOutside(ref, useCallback(() => setOpen(false), []));
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+  const close = useCallback(() => setOpen(false), []);
+  useClickOutside(ref, close);
+  useEscapeClose(open, close, triggerRef);
 
   if (teams.length === 0) return null;
 
@@ -40,14 +45,18 @@ export default function TeamSwitcherRail({
   return (
     <div ref={ref} className="relative mb-1 flex flex-col items-center">
       {/* Active-team tile: accent border makes the current scope unambiguous */}
+      {/* Disclosure, not an ARIA menu: the team list is plain buttons reached
+          with Tab. Escape closes it and refocuses this tile. */}
       <button
+        ref={triggerRef}
+        type="button"
         onClick={() => multi && setOpen(!open)}
         className={`group relative w-10 h-10 flex items-center justify-center text-xs font-semibold bg-accent-soft text-accent-text border-2 border-accent transition-colors ${
           multi ? 'cursor-pointer hover:bg-accent' : 'cursor-default'
         }`}
         aria-label={multi ? `Team: ${currentTeam.name} — click to switch` : `Team: ${currentTeam.name}`}
-        aria-haspopup={multi ? 'menu' : undefined}
         aria-expanded={multi ? open : undefined}
+        aria-controls={multi && open ? panelId : undefined}
       >
         {teamInitial(currentTeam)}
         {/* Hover tooltip — same pattern as sidebar nav items */}
@@ -62,11 +71,13 @@ export default function TeamSwitcherRail({
       </span>
 
       {open && multi && (
-        <div className="absolute left-[52px] top-0 w-52 bg-card border border-border-strong shadow-[var(--card-shadow)] overflow-hidden z-50 py-1">
-          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-text-muted">Switch team</div>
+        <div id={panelId} className="absolute left-[52px] top-0 w-52 bg-card border border-border-strong shadow-[var(--card-shadow)] overflow-hidden z-50 py-1">
+          <div className="px-3 py-1.5 text-[11px] md:text-[10px] uppercase tracking-wide text-text-muted">Switch team</div>
           {teams.map((team) => (
             <button
               key={team.id}
+              type="button"
+              aria-current={team.id === currentTeam.id ? 'true' : undefined}
               onClick={() => switchTeam(team.id)}
               className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-surface-3 transition-colors ${
                 team.id === currentTeam.id ? 'text-text-primary font-medium' : 'text-text-secondary'

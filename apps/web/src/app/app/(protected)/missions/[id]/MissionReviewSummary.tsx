@@ -49,7 +49,7 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
 
   return (
     <div className="card p-4 mb-4 border-l-2 border-status-success/40">
-      <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-3">
+      <h3 className="text-[11px] md:text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-3">
         Outcome summary
       </h3>
 
@@ -57,14 +57,14 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
         <div className="mb-3">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="text-[11px] font-semibold text-text-secondary">Pull Requests</span>
-            <span className="text-[10px] font-mono text-text-muted">
+            <span className="text-[11px] md:text-[10px] font-mono text-text-muted">
               {mergedCount} merged{openPrCount > 0 ? ` · ${openPrCount} open` : ''}
             </span>
           </div>
           <div className="space-y-1.5">
             {completedWithPr.map(t => (
               <div key={t.id} className="flex items-center gap-2 min-w-0">
-                <span className={`shrink-0 w-3 text-center text-[10px] font-mono ${t.prMerged ? 'text-status-success' : t.prClosed ? 'text-text-muted' : 'text-status-warning'}`}>
+                <span className={`shrink-0 w-3 text-center text-[11px] md:text-[10px] font-mono ${t.prMerged ? 'text-status-success' : t.prClosed ? 'text-text-muted' : 'text-status-warning'}`}>
                   {t.prMerged ? '✓' : t.prClosed ? '×' : '○'}
                 </span>
                 <Link href={`/app/tasks/${t.id}`} className="min-w-0 truncate text-[12px] text-text-secondary hover:text-accent-text">
@@ -75,7 +75,7 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
                     href={t.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="shrink-0 text-[10px] font-mono text-text-muted hover:text-accent-text"
+                    className="shrink-0 text-[11px] md:text-[10px] font-mono text-text-muted hover:text-accent-text"
                   >
                     #{t.prNumber}{t.prMerged ? ' merged' : t.prClosed ? ' closed' : ' open'}
                   </a>

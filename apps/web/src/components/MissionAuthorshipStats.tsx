@@ -9,7 +9,7 @@ import { DerivedMetricDisplay } from './DerivedMetricDisplay';
  */
 export function MissionAuthorshipStats({ health }: { health: MissionAuthorshipHealth }) {
   return (
-    <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-text-muted">
+    <span className="inline-flex items-center gap-2 font-mono text-[11px] md:text-[10px] uppercase tracking-wide text-text-muted">
       <span title="Share of countable tasks (work + bookkeeping; CI/reviewer/conflict retries excluded) filed directly by a person rather than an agent">
         Human{' '}
         <DerivedMetricDisplay

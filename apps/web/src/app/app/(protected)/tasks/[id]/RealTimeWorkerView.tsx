@@ -355,7 +355,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
       {/* Subagent progress indicator — nested by parentAgentId into an agent tree */}
       {taskProgress.length > 0 && isActive && (
         <div className="mb-3 p-2.5 bg-surface-3 rounded-md border border-border-default/50">
-          <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Background Agents</div>
+          <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Background Agents</div>
           <div className="space-y-1">
             {flattenAgentTree(buildAgentTree(taskProgress)).map((tp) => (
               <div key={tp.taskId} className="flex items-center justify-between font-mono text-[11px]">
@@ -384,8 +384,8 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
       {interruptMode && (
         <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3">
           <div className="flex items-center gap-2 mb-2">
-            <span className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Interrupt</span>
-            <span className="text-[10px] text-text-muted">Sent over Pusher, then confirmed by the runner</span>
+            <span className="font-mono text-[11px] md:text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Interrupt</span>
+            <span className="text-[11px] md:text-[10px] text-text-muted">Sent over Pusher, then confirmed by the runner</span>
           </div>
           <form
             onSubmit={(e) => {
@@ -442,7 +442,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
             </span>
-            <span data-testid="worker-needs-input-label" className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Needs input</span>
+            <span data-testid="worker-needs-input-label" className="font-mono text-[11px] md:text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Needs input</span>
           </div>
           <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary [overflow-wrap:anywhere]">{worker.waitingFor.prompt}</p>
           {answerError && (
@@ -478,7 +478,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
                         <span className="flex items-center gap-2 min-w-0">
                           <span className="font-medium min-w-0 [overflow-wrap:anywhere]">{answerSending === label ? 'Sending…' : label}</span>
                           {recommended && (
-                            <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
+                            <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
                           )}
                         </span>
                         {description && (

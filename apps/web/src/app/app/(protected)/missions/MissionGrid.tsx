@@ -175,7 +175,7 @@ export function MissionGrid({
                 <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">
                   {bucket.workspaceName ?? 'Unassigned'}
                 </span>
-                <span className="text-[10px] text-text-muted font-mono">{bucket.missions.length} completed</span>
+                <span className="text-[11px] md:text-[10px] text-text-muted font-mono">{bucket.missions.length} completed</span>
                 <span className="ml-auto text-[11px] text-text-muted font-mono">Show {oldCompleted.length} older ↓</span>
               </button>
             ),
@@ -191,7 +191,7 @@ export function MissionGrid({
                 <span className={`section-label ${isAllOldCompleted ? 'text-text-muted/70' : ''}`}>
                   {bucket.workspaceName ?? 'Unassigned'}
                 </span>
-                <span className="text-[10px] text-text-muted font-mono">{bucket.missions.length}</span>
+                <span className="text-[11px] md:text-[10px] text-text-muted font-mono">{bucket.missions.length}</span>
                 {isAllOldCompleted && (
                   <button
                     onClick={() => toggleOldCompletions(wsKey)}
@@ -226,7 +226,7 @@ export function MissionGrid({
                       <span className="section-label-missions" style={{ color: section.color }}>
                         {section.label}
                       </span>
-                      <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
+                      <span className="text-[11px] md:text-[10px] text-text-muted font-mono">{items.length}</span>
                     </div>
                   )}
                   <div className={groupKey === 'completed' ? 'space-y-1.5' : 'space-y-2'}>
@@ -339,7 +339,7 @@ function ArmButton({ missionId }: { missionId: string }) {
     <button
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleArm(); }}
       disabled={isPending}
-      className="inline-flex min-h-[44px] items-center gap-1 px-2 text-[10px] font-mono font-medium bg-primary text-white border border-primary hover:bg-primary-hover transition-colors disabled:opacity-50"
+      className="inline-flex min-h-[44px] items-center gap-1 px-2 text-[11px] md:text-[10px] font-mono font-medium bg-primary text-white border border-primary hover:bg-primary-hover transition-colors disabled:opacity-50"
       title="Arm this mission — release all tasks for workers to claim"
     >
       {isPending ? 'Arming…' : 'Arm →'}

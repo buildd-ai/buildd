@@ -337,7 +337,7 @@ export default function MergePolicyEditor({
                 className={`flex items-center gap-3 px-4 min-h-[52px] ${i < missionOverrides.length - 1 ? 'border-b border-border-default' : ''}`}
               >
                 <span
-                  className={`shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded-full ${TIER_BADGE_CLASS[m.policy.tier]}`}
+                  className={`shrink-0 px-2 py-0.5 text-[11px] md:text-[10px] font-semibold rounded-full ${TIER_BADGE_CLASS[m.policy.tier]}`}
                 >
                   {TIER_LABEL[m.policy.tier]}
                 </span>

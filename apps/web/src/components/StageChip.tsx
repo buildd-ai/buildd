@@ -90,7 +90,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
   // Scheduled start overrides QUEUED label
   if (stage === 'QUEUED' && startAt && new Date(startAt).getTime() > Date.now()) {
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide bg-status-info/10 text-status-info shrink-0">
+      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide bg-status-info/10 text-status-info shrink-0">
         Starts <ZonedTime value={startAt} format="time" />
       </span>
     );
@@ -100,7 +100,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
 
   if (cfg.variant === 'filled') {
     return (
-      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
         {cfg.pulse && <span className="w-1.5 h-1.5 bg-current animate-status-pulse flex-shrink-0" />}
         {cfg.label}
       </span>
@@ -109,7 +109,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
 
   if (cfg.variant === 'soft') {
     return (
-      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
         {cfg.pulse && <span className="w-1.5 h-1.5 bg-current animate-status-pulse flex-shrink-0" />}
         {cfg.label}
         {prNumber && <span className="opacity-70">#{prNumber}</span>}
@@ -119,7 +119,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
 
   // muted — text only, no bg/border
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
       {cfg.label}
     </span>
   );

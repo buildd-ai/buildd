@@ -28,12 +28,12 @@ export function TaskShipBadge({ release, shippedReleaseId }: TaskShipBadgeProps)
   return (
     <span className="inline-flex items-center gap-1 shrink-0">
       {showSkip && (
-        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-text-muted/10 text-text-muted">
+        <span className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-text-muted/10 text-text-muted">
           Skip release
         </span>
       )}
       {showForce && (
-        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-status-warning/10 text-status-warning">
+        <span className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-status-warning/10 text-status-warning">
           Force release
         </span>
       )}
@@ -41,7 +41,7 @@ export function TaskShipBadge({ release, shippedReleaseId }: TaskShipBadgeProps)
         <Link
           href={`/app/releases/${shippedReleaseId}`}
           onClick={(e) => e.stopPropagation()}
-          className="relative z-10 pointer-events-auto px-1.5 py-0.5 text-[10px] font-medium rounded bg-status-success/10 text-status-success hover:bg-status-success/20 transition-colors"
+          className="relative z-10 pointer-events-auto px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-status-success/10 text-status-success hover:bg-status-success/20 transition-colors"
         >
           Shipped
         </Link>

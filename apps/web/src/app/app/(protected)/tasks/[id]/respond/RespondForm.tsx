@@ -62,7 +62,7 @@ export default function RespondForm({ workerId, missionId, options }: Props) {
             <span className="flex items-center gap-2">
               <span className="font-medium">{isSending ? 'Sending…' : label}</span>
               {recommended && (
-                <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">
+                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">
                   Recommended
                 </span>
               )}

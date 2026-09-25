@@ -66,7 +66,7 @@ export default function TaskArtifactsSection({
 
   return (
     <div className="mb-8">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Artifacts ({artifacts.length})
       </div>
       <div className="space-y-3">

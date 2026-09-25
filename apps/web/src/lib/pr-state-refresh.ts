@@ -13,8 +13,9 @@
  * Batch capped at 10 workers per render to bound GitHub API fan-out — and
  * ordered least-recently-checked first, so under a backlog the cap is a fair
  * queue rather than an arbitrary sample that can starve the same rows forever.
- * Non-fatal: GitHub errors are logged; prLastCheckedAt is left unset so the
- * next render retries.
+ * Non-fatal: GitHub errors are logged; prLastCheckedAt is left unset (the
+ * attempt clock and failure count belong to pr-reconcile). A failed row is held
+ * out of this fast path, in-process, for FAILURE_BACKOFF_MS — see below.
  */
 
 import { db } from '@buildd/core/db';
@@ -33,6 +34,46 @@ import { resolvePrRepo } from '@/lib/repo-scope';
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 const RATE_LIMIT_MS = 200;
+
+/**
+ * In-process backoff for rows whose GitHub check just failed.
+ *
+ * A failure leaves prLastCheckedAt as it was, so the failed row stays among the
+ * oldest-checked and heads the next batch. Without this, every render (Home is
+ * awaited on this call) re-issued the same failing requests, RATE_LIMIT_MS
+ * apart, until pr-reconcile eventually retired the row as `unresolvable`.
+ *
+ * Deliberately memory-only: no DB clock moves, so pr-reconcile's failure
+ * counting and TTL are untouched. Per serverless instance, so it is a cost
+ * bound, not a guarantee — the worst case is the old behaviour. The window
+ * matches STALE_THRESHOLD_MS: a failed row is retried no more often than a
+ * successful one is re-checked.
+ */
+export const FAILURE_BACKOFF_MS = STALE_THRESHOLD_MS;
+const FAILURE_BACKOFF_MAX = 500;
+const failedAt = new Map<string, number>();
+
+function backedOffIds(now: number): string[] {
+  const ids: string[] = [];
+  for (const [id, at] of failedAt) {
+    if (now - at < FAILURE_BACKOFF_MS) ids.push(id);
+    else failedAt.delete(id);
+  }
+  return ids;
+}
+
+function recordFailure(id: string): void {
+  failedAt.delete(id); // re-insert so Map order stays oldest-first for eviction
+  failedAt.set(id, Date.now());
+  if (failedAt.size > FAILURE_BACKOFF_MAX) {
+    failedAt.delete(failedAt.keys().next().value!);
+  }
+}
+
+/** Test hook: the backoff is module state and would leak between cases. */
+export function _resetFailureBackoffForTests(): void {
+  failedAt.clear();
+}
 
 const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as ('pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null)[];
 
@@ -59,10 +100,14 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
   if (workspaceIds.length === 0) return;
 
   const staleCutoff = new Date(Date.now() - STALE_THRESHOLD_MS);
+  // Excluded in SQL, not filtered after: filtering after the LIMIT would let
+  // backed-off rows fill the cap and starve every other stale row.
+  const backedOff = backedOffIds(Date.now());
 
   const candidates = await db.query.workers.findMany({
     where: and(
       inArray(workers.workspaceId, workspaceIds),
+      backedOff.length > 0 ? notInArray(workers.id, backedOff) : undefined,
       isNotNull(workers.prNumber),
       or(
         isNull(workers.prLifecycleStatus),
@@ -99,9 +144,11 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
  */
 export async function refreshStaleWorkers(candidates: StalePrCandidate[]): Promise<void> {
   const now = Date.now();
+  const backedOff = new Set(backedOffIds(now));
   const stale = candidates
     .filter(w => {
       if (!w.prNumber) return false;
+      if (backedOff.has(w.id)) return false;
       if (TERMINAL_STATUSES.includes(w.prLifecycleStatus as any)) return false;
       const lastChecked = w.prLastCheckedAt?.getTime() ?? 0;
       return now - lastChecked >= STALE_THRESHOLD_MS;
@@ -226,6 +273,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         }
 
         await db.update(workers).set(update).where(eq(workers.id, worker.id));
+        failedAt.delete(worker.id);
 
         await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
@@ -237,7 +285,9 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           );
         }
       } catch (err) {
-        // Non-fatal: log and leave prLastCheckedAt unset so next render retries.
+        // Non-fatal: log, leave prLastCheckedAt alone (pr-reconcile owns the
+        // attempt clock), and hold the row out of the fast path for a window.
+        recordFailure(worker.id);
         console.error(`[pr-state-refresh] worker ${worker.id} PR #${worker.prNumber}:`, err);
       }
     }
