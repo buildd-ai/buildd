@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -286,7 +287,13 @@ export async function PATCH(
     // GitHub webhook (maybePostWorkTrackerIssueUpdate reads task.externalIssueId).
     if (externalIssueId !== undefined) updateData.externalIssueId = externalIssueId || null;
     if (externalIssueUrl !== undefined) updateData.externalIssueUrl = externalIssueUrl || null;
-    if (missionId !== undefined) updateData.missionId = missionId || null;
+    if (missionId !== undefined) {
+      // A mission link must stay inside the task's team (see isMissionLinkable).
+      if (missionId && !(await isMissionLinkable(missionId, task.workspace?.teamId))) {
+        return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      }
+      updateData.missionId = missionId || null;
+    }
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });

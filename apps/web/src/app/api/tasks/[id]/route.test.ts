@@ -49,6 +49,11 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
+const mockIsMissionLinkable = mock(() => Promise.resolve(true));
+mock.module('@/lib/mission-link-scope', () => ({
+  isMissionLinkable: mockIsMissionLinkable,
+}));
+
 // Mock database
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -445,6 +450,53 @@ describe('PATCH /api/tasks/[id]', () => {
     mockDispatchUnblockedTask.mockResolvedValue(undefined);
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
+    mockIsMissionLinkable.mockReset();
+    mockIsMissionLinkable.mockResolvedValue(true);
+  });
+
+  describe('mission link scope', () => {
+    const task = {
+      id: TASK_ID,
+      title: 'Test Task',
+      status: 'pending',
+      mode: 'execution',
+      missionId: null,
+      dependsOn: [],
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+    };
+
+    function setup() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task);
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...task, missionId: 'm-1' }]) }));
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mockWhere })) });
+    }
+
+    it("refuses to link a mission outside the task's team with 404 and writes nothing", async () => {
+      setup();
+      mockIsMissionLinkable.mockResolvedValue(false);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Mission not found' });
+      expect(mockIsMissionLinkable).toHaveBeenCalledWith('m-1', 'team-1');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('links a mission in the same team', async () => {
+      setup();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(mockIsMissionLinkable).toHaveBeenCalledWith('m-1', 'team-1');
+      expect(mockTasksUpdate).toHaveBeenCalled();
+    });
+
+    it('unlinking (missionId null) needs no mission lookup', async () => {
+      setup();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: null } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(mockIsMissionLinkable).not.toHaveBeenCalled();
+    });
   });
 
   describe('status-change side effects', () => {

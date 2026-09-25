@@ -118,7 +118,7 @@ mock.module('@/lib/subject-intake-db', () => ({
 }));
 
 let workspaceRow: any = { id: WS, name: 'buildd', teamId: 'team-1', repo: 'owner/buildd', gitConfig: {} };
-let missionRow: any = { defaultOutputRequirement: null, defaultBackend: null, startAt: null, workingBranch: null, integrationBranchEnabled: false };
+let missionRow: any = { teamId: 'team-1', defaultOutputRequirement: null, defaultBackend: null, startAt: null, workingBranch: null, integrationBranchEnabled: false };
 let insertedTask: any = null;
 
 mock.module('@buildd/core/db', () => ({
@@ -169,7 +169,7 @@ beforeEach(() => {
   insertedTask = null;
   subjectObservation = { anchor: null, match: null, taskValues: {} };
   workspaceRow = { id: WS, name: 'buildd', teamId: 'team-1', repo: 'owner/buildd', gitConfig: {} };
-  missionRow = { defaultOutputRequirement: null, defaultBackend: null, startAt: null, workingBranch: null, integrationBranchEnabled: false };
+  missionRow = { teamId: 'team-1', defaultOutputRequirement: null, defaultBackend: null, startAt: null, workingBranch: null, integrationBranchEnabled: false };
   process.env.NODE_ENV = 'test';
 });
 
