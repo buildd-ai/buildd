@@ -2,12 +2,12 @@ name: Visual QA
 
 # Runs on labelled release PRs (dev→main) and on workflow_dispatch. Stands the
 # app up ephemerally on the runner (bun dev + Neon prod-clone branch,
-# PII-scrubbed), captures Playwright screenshots and a11y snapshots per route,
+# scrubbed to placeholders), captures Playwright screenshots and a11y snapshots per route,
 # and uploads them as the `qa-screenshots` artifact. On release PRs (or dispatch
 # with judge=true) it also judges them and posts a PR comment + a report-only
 # (neutral) check run. Never blocks merge.
 #
-# Neon branch: copy-on-write off NEON_PROD_PARENT_BRANCH_ID → PII scrubbed → auto-deleted.
+# Neon branch: copy-on-write off NEON_PROD_PARENT_BRANCH_ID → scrubbed to placeholders → guarded → auto-deleted.
 # Judge: anthropics/claude-code-action on CLAUDE_CODE_OAUTH_TOKEN (team OAuth
 # seat, no per-token API billing). Read/Glob/Write inside /tmp/qa only.
 #
@@ -81,6 +81,39 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # --- Self-heal: delete prod clones leaked by earlier runs ---
+      # The always-run cleanup below can still miss (runner lost, job cancelled
+      # mid-step). Any ci/visual-qa-* branch older than 2h is past every run's
+      # lifetime, so delete it here. Logs branch names and ages only.
+      - name: Delete stale Visual QA Neon branches
+        continue-on-error: true
+        run: |
+          API="https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches"
+          LIST=$(curl -sf -H "Authorization: Bearer $NEON_API_KEY" "$API?search=ci/visual-qa-" \
+            || curl -sf -H "Authorization: Bearer $NEON_API_KEY" "$API" || true)
+          if [ -z "$LIST" ]; then
+            echo "::warning::Could not list Neon branches; skipping stale-branch cleanup"
+            exit 0
+          fi
+          NOW=$(date -u +%s)
+          echo "$LIST" | jq -r --argjson now "$NOW" '
+            .branches[]?
+            | select(.name | startswith("ci/visual-qa-"))
+            | (.created_at | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
+            | select($now - $t > 7200)
+            | [.id, .name, (($now - $t) / 60 | floor)] | @tsv' |
+          while IFS=$'\t' read -r ID NAME AGE_MIN; do
+            if curl -sf -o /dev/null -X DELETE -H "Authorization: Bearer $NEON_API_KEY" "$API/$ID"; then
+              echo "Deleted stale branch $NAME (age ${AGE_MIN}m)"
+            else
+              echo "::warning::Could not delete stale branch $NAME (age ${AGE_MIN}m)"
+            fi
+          done
+          echo "Stale-branch sweep done"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
@@ -103,8 +136,13 @@ jobs:
           BRANCH_NAME="ci/visual-qa-${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || 'dispatch' }}-${{ github.run_id }}-${{ github.run_attempt }}"
 
           # Clone off PROD branch (copy-on-write — no data is moved or duplicated).
-          # Falls back to NEON_PARENT_BRANCH_ID if NEON_PROD_PARENT_BRANCH_ID is not yet configured.
-          PARENT_BRANCH_ID="${NEON_PROD_PARENT_BRANCH_ID:-$NEON_PARENT_BRANCH_ID}"
+          # No fallback: silently cloning some other branch would produce shots
+          # of the wrong data and hide a misconfigured secret.
+          if [ -z "$NEON_PROD_PARENT_BRANCH_ID" ]; then
+            echo "::error::NEON_PROD_PARENT_BRANCH_ID secret is not set — it must be the Neon production branch id"
+            exit 1
+          fi
+          PARENT_BRANCH_ID="$NEON_PROD_PARENT_BRANCH_ID"
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $NEON_API_KEY" \
             -H "Content-Type: application/json" \
@@ -156,15 +194,13 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
           NEON_PROD_PARENT_BRANCH_ID: ${{ secrets.NEON_PROD_PARENT_BRANCH_ID }}
-          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
       - name: Run migrations
-        # On a true prod clone the migration journal is current and bun db:migrate
-        # is a no-op. When using the fallback NEON_PARENT_BRANCH_ID (dev/test branch),
-        # the journal may be out of sync with direct schema changes; we treat "already
-        # exists" errors as success because the schema is already correct.
+        # On a prod clone the journal is usually current and bun db:migrate is a
+        # no-op, or applies this branch's pending migrations. "already exists" is
+        # treated as success: the schema is already correct.
         run: |
           OUTPUT=$(cd packages/core && bun db:migrate 2>&1) && echo "$OUTPUT" || {
             if echo "$OUTPUT" | grep -q "already exists"; then
@@ -178,55 +214,49 @@ jobs:
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
-      # --- PII scrub (required before app starts, before any data is rendered) ---
-      # Anonymizes user emails + names in-place on the cloned branch.
-      # Designates one team owner as the CI QA user (ci-qa@buildd.dev) so the
-      # app shows real workspace data when started with DEV_USER_EMAIL.
-      # Clears all secrets and device_codes — these must never leave prod.
-      # Row IDs and foreign keys are preserved; only PII text fields are changed.
-      - name: Scrub PII from prod clone
+      # --- Scrub (required before app starts, before any data is rendered) ---
+      # The artifact is downloadable by anyone on this public repo, so the clone
+      # is rewritten to placeholders: every tenant-authored or identifying text
+      # column (names, repos, titles, bodies, branches, PR titles/URLs, notes,
+      # artifacts, roles, schedules, memory) — see scripts/qa/scrub-pii.sql.
+      # Credentials, tokens and telemetry are deleted. Ids, statuses,
+      # timestamps and enums are kept so every state still renders.
+      # One team owner becomes the CI QA user (ci-qa@buildd.dev) for DEV_USER_EMAIL.
+      # -q: command tags carry row counts, and these logs are public.
+      - name: Scrub prod clone to placeholders
         id: scrub
         run: |
-          psql "$DATABASE_URL" <<'EOSQL'
-            -- Designate one workspace owner as the CI QA user (must run BEFORE general scrub)
-            UPDATE users
-            SET email = 'ci-qa@buildd.dev', name = 'CI QA User'
-            WHERE id = (
-              SELECT u.id
-              FROM users u
-              JOIN team_members tm ON tm.user_id = u.id
-              WHERE tm.role = 'owner'
-              ORDER BY u.created_at
-              LIMIT 1
-            );
-
-            -- Anonymize all remaining users
-            UPDATE users
-            SET
-              email = 'user-' || REPLACE(id::text, '-', '') || '@scrubbed.local',
-              name  = 'User ' || LEFT(id::text, 8),
-              image = NULL
-            WHERE email != 'ci-qa@buildd.dev';
-
-            -- Anonymize team invitations
-            UPDATE team_invitations
-            SET email = 'invite-' || REPLACE(id::text, '-', '') || '@scrubbed.local';
-
-            -- Wipe all encrypted secrets and device auth codes
-            DELETE FROM secrets;
-            DELETE FROM device_codes;
-          EOSQL
+          psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -f scripts/qa/scrub-pii.sql
           echo "ci_user_email=ci-qa@buildd.dev" >> "$GITHUB_OUTPUT"
-          echo "::notice::PII scrub complete — prod clone is now anonymized"
+          echo "::notice::Scrub complete — prod clone rewritten to placeholders"
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          PGPASSWORD: ""
+
+      # --- Scrub guard: fail closed before anything renders ---
+      # Sampled rendered columns must match their placeholder shape, and no
+      # text/json column anywhere may match NO_PROD_DATA_IDENTIFIERS (the same
+      # secret no-prod-data.yml uses). The pattern goes in via env → psql -v and
+      # is never echoed; errors name table.column only. If this fails, the app
+      # never boots, nothing is captured, and nothing is uploaded.
+      - name: Guard scrubbed clone
+        id: guard
+        run: |
+          if [ -z "${NO_PROD_DATA_IDENTIFIERS// /}" ]; then
+            echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to capture an unverified clone"
+            exit 1
+          fi
+          psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f scripts/qa/scrub-guard.sql
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          NO_PROD_DATA_IDENTIFIERS: ${{ secrets.NO_PROD_DATA_IDENTIFIERS }}
           PGPASSWORD: ""
 
       # --- Start app in dev mode (CI-seeded auth) ---
       # NODE_ENV=development enables the `dev-auto-login` credentials provider in
       # apps/web/src/auth.ts so Playwright can get a session without OAuth.
       # DEV_USER_EMAIL points to the CI QA user we designated in the scrub step,
-      # so getCurrentUser() resolves to their real workspace data (stale from prod).
+      # so getCurrentUser() resolves to their workspaces (real shape, placeholder text).
       - name: Start app
         run: |
           cd apps/web
@@ -336,9 +366,11 @@ jobs:
       # --- Upload screenshots + a11y as workflow artifacts ---
       # Stable name so callers can `gh run download <id> -n qa-screenshots`.
       # Layout: screenshots/<route-id>.png, a11y/<route-id>.json, *.json manifests.
+      # Only after the scrub guard passed: anyone can download artifacts on a
+      # public repo. 1-day retention on every path; callers copy what they need.
       - name: Upload screenshots
         id: screenshots
-        if: always()
+        if: always() && steps.guard.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: qa-screenshots
@@ -347,13 +379,14 @@ jobs:
             /tmp/qa/a11y/
             /tmp/qa/*.json
             /tmp/qa/report.md
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: warn
 
       # --- Post PR comment + create report-only check run ---
-      # Only when the judge ran — an unjudged dispatch has nothing to report.
+      # Only when the judge ran — an unjudged dispatch has nothing to report —
+      # and only over a clone the guard passed.
       - name: Post results
-        if: always() && (github.event_name == 'pull_request' || inputs.judge)
+        if: always() && steps.guard.outcome == 'success' && (github.event_name == 'pull_request' || inputs.judge)
         uses: actions/github-script@v9
         env:
           QA_OUTPUT: /tmp/qa

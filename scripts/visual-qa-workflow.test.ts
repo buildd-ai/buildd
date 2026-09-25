@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 /**
@@ -46,12 +46,13 @@ describe('visual-qa.yml dispatch contract', () => {
   test('screenshots + a11y upload under a stable artifact name with short retention', () => {
     const upload = step(/^Upload/);
     expect(upload.uses).toMatch(/^actions\/upload-artifact@/);
-    expect(upload.if).toBe('always()');
+    expect(upload.if).toBe("always() && steps.guard.outcome == 'success'");
     expect(upload.with.name).toBe('qa-screenshots');
     expect(upload.with.path).toContain('screenshots');
     expect(upload.with.path).toContain('a11y');
     expect(upload.with.path).toContain('report.md');
-    expect(upload.with['retention-days']).toBeLessThanOrEqual(7);
+    // Public repo: any signed-in user can download artifacts. 1 day on every path.
+    expect(upload.with['retention-days']).toBe(1);
   });
 
   const JUDGE_GATE = "github.event_name == 'pull_request' || inputs.judge";
@@ -60,7 +61,7 @@ describe('visual-qa.yml dispatch contract', () => {
     const judgeSteps = steps.filter(s => /judge|Judge/.test(s.name ?? ''));
     expect(judgeSteps.length).toBeGreaterThanOrEqual(3); // prepare, OAuth judge, report
     for (const s of judgeSteps) expect(s.if).toBe(JUDGE_GATE);
-    expect(step(/^Post results/).if).toBe(`always() && (${JUDGE_GATE})`);
+    expect(step(/^Post results/).if).toBe(`always() && steps.guard.outcome == 'success' && (${JUDGE_GATE})`);
   });
 
   // /api/qa/judge bills a server API key per token. CI judges on the team's
@@ -69,6 +70,10 @@ describe('visual-qa.yml dispatch contract', () => {
     const all = JSON.stringify(wf);
     expect(all).not.toContain('BUILDD_QA_KEY');
     expect(all).not.toContain('BUILDD_QA_URL');
+    const qaDir = join(__dirname, 'qa');
+    const withKey = readdirSync(qaDir).filter(f =>
+      /BUILDD_QA_(KEY|URL)/.test(readFileSync(join(qaDir, f), 'utf8')));
+    expect(withKey).toEqual([]);
     const oauth = steps.find(s => String(s.uses ?? '').startsWith('anthropics/claude-code-action@'));
     expect(oauth).toBeDefined();
     expect(oauth.uses).toBe('anthropics/claude-code-action@v1');
@@ -133,5 +138,83 @@ describe('visual-qa.yml dispatch contract', () => {
         }
       }
     }
+  });
+});
+
+// The artifact is downloadable by any signed-in GitHub user (public repo), so
+// the invariant is: CI QA screenshots contain no tenant-identifying text.
+describe('visual-qa.yml scrub + guard', () => {
+  const idx = (name: RegExp) => steps.findIndex(s => name.test(s.name ?? ''));
+
+  test('scrub runs the checked-in SQL quietly and stops on the first error', () => {
+    const scrub = step(/^Scrub/);
+    expect(scrub.id).toBe('scrub');
+    expect(scrub.run).toContain('-f scripts/qa/scrub-pii.sql');
+    expect(scrub.run).toContain('ON_ERROR_STOP=1');
+    // Command tags carry row counts; these logs are public.
+    expect(scrub.run).toMatch(/psql\s+"\$DATABASE_URL"\s+-q\s/);
+  });
+
+  test('the guard runs right after the scrub, before the app boots or anything is captured', () => {
+    const guard = step(/^Guard/);
+    expect(guard.id).toBe('guard');
+    expect(guard.if).toBeUndefined();
+    expect(guard['continue-on-error']).toBeUndefined();
+    expect(guard.run).toContain('-f scripts/qa/scrub-guard.sql');
+    expect(guard.run).toContain('ON_ERROR_STOP=1');
+    const g = idx(/^Guard/);
+    expect(g).toBe(idx(/^Scrub/) + 1);
+    expect(g).toBeLessThan(idx(/^Start app/));
+    expect(g).toBeLessThan(idx(/^Capture/));
+    expect(g).toBeLessThan(idx(/^Upload/));
+  });
+
+  test('the guard reads the identifier secret via env and never echoes it', () => {
+    const guard = step(/^Guard/);
+    expect(guard.env.NO_PROD_DATA_IDENTIFIERS).toBe('${{ secrets.NO_PROD_DATA_IDENTIFIERS }}');
+    const run: string = guard.run;
+    expect(run).not.toContain('secrets.');
+    expect(run).toContain('-v ids="$NO_PROD_DATA_IDENTIFIERS"');
+    for (const line of run.split('\n')) {
+      if (/^\s*(echo|printf)\b/.test(line)) expect(line).not.toContain('$NO_PROD_DATA_IDENTIFIERS');
+    }
+    // Absent secret fails the run instead of scanning an empty pattern.
+    expect(run).toMatch(/-z "\$\{NO_PROD_DATA_IDENTIFIERS[^"]*\}"[\s\S]*exit 1/);
+    expect(JSON.stringify(wf)).not.toContain('vars.NO_PROD_DATA_IDENTIFIERS');
+  });
+
+  test('everything that renders or publishes data is skipped when the guard fails', () => {
+    for (const name of [/^Start app/, /^Capture/, /^Prepare judge/, /^Judge pages/, /^Build judge/]) {
+      // Default success(): a failed guard skips them. No always()/failure() override.
+      expect(String(step(name).if ?? '')).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
+    }
+    for (const name of [/^Upload/, /^Post results/]) {
+      expect(step(name).if).toContain("steps.guard.outcome == 'success'");
+    }
+  });
+
+  test('stale ci/visual-qa-* Neon branches older than 2h are swept first', () => {
+    const sweep = step(/^Delete stale Visual QA Neon branches/);
+    expect(idx(/^Delete stale/)).toBe(1); // right after checkout
+    expect(idx(/^Delete stale/)).toBeLessThan(idx(/^Create Neon/));
+    expect(sweep['continue-on-error']).toBe(true);
+    const run: string = sweep.run;
+    expect(run).toContain('startswith("ci/visual-qa-")');
+    expect(run).toContain('> 7200');
+    expect(run).toContain('-X DELETE');
+    // Names and ages only: never the raw listing.
+    for (const line of run.split('\n')) {
+      if (/^\s*echo\b/.test(line) && !/\|\s*jq/.test(line)) expect(line).not.toMatch(/\$LIST|\$RESPONSE/);
+    }
+  });
+
+  test('no silent fallback off the prod parent branch', () => {
+    const neon = step(/^Create Neon/);
+    const run: string = neon.run;
+    expect(run).not.toMatch(/NEON_PROD_PARENT_BRANCH_ID:-/);
+    expect(run).not.toContain('NEON_PARENT_BRANCH_ID');
+    expect(neon.env.NEON_PARENT_BRANCH_ID).toBeUndefined();
+    expect(JSON.stringify(wf)).not.toContain('secrets.NEON_PARENT_BRANCH_ID');
+    expect(run).toMatch(/-z "\$NEON_PROD_PARENT_BRANCH_ID"[\s\S]*?::error::[\s\S]*?exit 1/);
   });
 });
