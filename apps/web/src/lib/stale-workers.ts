@@ -65,8 +65,14 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true },
+    columns: { status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true },
   });
+  // A visual-auditor mission task is settled only by its own evidence check
+  // (workers/[id]/route.ts): the reaper never completes it from artifacts, and
+  // a permanent failure is infra_stalled, because a plain `failed` releases the
+  // mission as if the audit had looked (docs/design/visual-qa-auditor.md).
+  const isMissionVisualAudit = !!currentTask?.missionId && currentTask.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+  const auditStall = isMissionVisualAudit ? { errorType: 'infra_stalled' } : {};
   if (currentTask?.status === 'cancelled') {
     await resolveCompletedTask(taskId, workspaceId);
     return;
@@ -202,7 +208,7 @@ async function resolveStaleTask(
     } catch { /* non-fatal — artifact count defaults to 0; prUrl still checked below */ }
     deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
   }
-  const hasDeliverables = !!deliverables?.hasAny;
+  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit;
 
   if (hasDeliverables && staleWorker) {
     // B.5: Outcome-first summaries — use structuredOutput.summary when present.
@@ -259,6 +265,7 @@ async function resolveStaleTask(
           status: 'failed',
           result: {
             error: `Task failed after ${silentStarts.length} silent-start sessions (worker started but produced no output) — check the runner log for the last worker id`,
+            ...auditStall,
           } as any,
           updatedAt: new Date(),
         })
@@ -269,7 +276,7 @@ async function resolveStaleTask(
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `Task failed after ${chargeableFailures.length} worker attempts` } as any,
+          result: { error: `Task failed after ${chargeableFailures.length} worker attempts`, ...auditStall } as any,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));

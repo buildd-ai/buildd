@@ -2590,13 +2590,15 @@ export async function PATCH(
 
       // Auto-retry: mission tasks get 1 automatic retry before permanently failing
       let infraStalledFail = false;
+      // A visual-auditor mission task that fails for good (see below).
+      let auditStalledFail = false;
       let infraRetryStartAt: Date | null = null;
       const MAX_INFRA_RETRIES_PATCH = 3;
       const INFRA_BACKOFF_MINUTES_PATCH = [5, 15, 30] as const;
       if (status === 'failed') {
         const taskForRetry = await db.query.tasks.findFirst({
           where: eq(tasks.id, worker.taskId),
-          columns: { missionId: true, context: true, status: true },
+          columns: { missionId: true, context: true, status: true, roleSlug: true },
         });
         taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
         const retryCount = (taskCtxForRetry.retryCount as number) || 0;
@@ -2668,6 +2670,20 @@ export async function PATCH(
             shouldAutoRetry = false;
             infraStalledFail = true;
           }
+        }
+
+        // Visual auditor (docs/design/visual-qa-auditor.md): an audit that
+        // errors before it can park a question has seen nothing. A plain
+        // `failed` is terminal in canCompleteMission and would RELEASE the
+        // mission, so once its retries are spent it is recorded infra_stalled,
+        // which holds the mission until a human looks. A cancel is a human's
+        // call and is left alone.
+        if (
+          !shouldAutoRetry && !infraStalledFail &&
+          taskForRetry?.missionId && taskForRetry.roleSlug === VISUAL_AUDITOR_ROLE_SLUG &&
+          taskForRetry.status !== 'cancelled'
+        ) {
+          auditStalledFail = true;
         }
 
         // Capture branch coordinates from the failing worker for retry continuity.
@@ -2996,6 +3012,13 @@ export async function PATCH(
               error: `Task stalled: infra errors prevented startup on ${MAX_INFRA_RETRIES_PATCH} consecutive attempts`,
               errorType: 'infra_stalled',
               infraRetryCount: MAX_INFRA_RETRIES_PATCH,
+            },
+          } : auditStalledFail ? {
+            result: {
+              error: isSensitive
+                ? 'Visual audit ended without evidence'
+                : `Visual audit ended without evidence: ${error ?? worker.error ?? 'worker failed without an error message'}`,
+              errorType: 'infra_stalled',
             },
           } : isSessionBudgetCap ? {
             result: {
