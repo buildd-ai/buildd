@@ -70,8 +70,7 @@ review the shots yourself against "What to check" below. That costs nothing extr
 `-f judge=true` is for when you want a CI verdict on the PR: claude-code-action
 judges each shot on the team's OAuth seat, writes `verdicts.json` + `report.md`
 into the artifact, and posts a neutral `Visual QA` check. It spends seat usage, so
-don't turn it on by habit. Never call `/api/qa/judge` directly. It bills a server
-API key per token, and CI no longer uses it.
+don't turn it on by habit.
 
 | Input | Maps to | Notes |
 |---|---|---|

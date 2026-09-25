@@ -7,24 +7,19 @@ assertions:
     name: "inferenceCall"
     path: "packages/core/inference-client.ts"
     skip_until: "2026-12-15"
-    skip_reason: "Shipped and stable (Step 1) — inferenceCall is exported and in production use by the judge. Kept suppressed rather than promoting the whole design to 'implemented': Step 4 (judgeCapture / visual-judge-uses-inference-client below) and Step 5 (retiring resolveTierEntrySync) are still unbuilt, so status is intentionally held at 'partially'."
+    skip_reason: "Shipped and stable (Step 1) — inferenceCall is exported and in production use by the judge. Kept suppressed rather than promoting the whole design to 'implemented': Step 5 (retiring resolveTierEntrySync) is still unbuilt, so status is intentionally held at 'partially'."
   - id: "criteria-use-inference-client"
     type: "symbol_reachable"
     symbol: "inferenceCall"
     entry: "apps/web/src/lib/mission-criteria-eval.ts"
     as: "read"
     skip_until: "2026-12-15"
-    skip_reason: "Shipped and stable (Step 3) — judgeWithLLM in mission-criteria-eval.ts reads inferenceCall directly. Same rationale as inference-client above: this design stays 'partially' until Step 4 and Step 5 land."
-  - id: "visual-judge-uses-inference-client"
-    type: "symbol_reachable"
-    symbol: "inferenceCall"
-    entry: "apps/web/src/app/api/qa/judge/route.ts"
-    as: "read"
+    skip_reason: "Shipped and stable (Step 3) — judgeWithLLM in mission-criteria-eval.ts reads inferenceCall directly. Same rationale as inference-client above: this design stays 'partially' until Step 5 lands."
 ---
 # Inference Calls as a First-Class Primitive
 
-**Status:** Partially implemented — Step 1 (the client), Step 2 (via deletion, not migration), and Step 3 (the judge) are done; see "Implementation status" below.
-**Related:** `apps/web/src/lib/mission-criteria-eval.ts:104-192`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts`, `apps/web/src/app/api/qa/judge/route.ts:75-203`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `packages/core/inference-policy.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
+**Status:** Partially implemented — Step 1 (the client), Step 2 (via deletion, not migration), Step 3 (the judge), and Step 4 (via deletion of `/api/qa/judge`) are done; see "Implementation status" below.
+**Related:** `apps/web/src/lib/mission-criteria-eval.ts:104-192`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `packages/core/inference-policy.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
 
 ---
 
@@ -37,7 +32,7 @@ Buildd has one execution primitive: an agent run (worktree, OAuth subscription s
 | 1 | `classifyTask` | `packages/core/task-classifier.ts` | 66–128 | `await resolveModelName('haiku')` (DB alias cache) |
 | 2 | `judgeWithLLM` (auto-eval) | `apps/web/src/lib/mission-criteria-eval.ts` | 42–146 | `resolveTierEntrySync('budget').model` (code defaults only, ignores DB registry) |
 | 3 | `judgeWithLLM` (on-demand route) | `apps/web/src/app/api/missions/[id]/evaluate/route.ts` | 67–174 | `const LLM_MODEL = 'claude-haiku-4-5-20251001'` (hardcoded) |
-| 4 | `judgeCapture` (QA judge) | `apps/web/src/app/api/qa/judge/route.ts` | 75–203 | `const MODEL = 'claude-haiku-4-5-20251001'` (hardcoded) |
+| 4 | `judgeCapture` (QA judge) | `apps/web/src/app/api/qa/judge/route.ts` (since deleted) | 75–203 | `const MODEL = 'claude-haiku-4-5-20251001'` (hardcoded) |
 
 The accumulated damage:
 
@@ -63,7 +58,7 @@ Two nearly-identical copies of the same function, one in `apps/web/src/lib/missi
 
 ### Site 4 — `judgeCapture`
 
-`apps/web/src/app/api/qa/judge/route.ts:75-203`. Called by the spec-drift visual QA workflow. Supports multimodal input (base64 PNG screenshots). Returns a structured `overallVerdict` field. The only call site that returns HTTP 503 when the key is absent rather than degrading. Hardcoded to `claude-haiku-4-5-20251001`.
+Deleted. It lived at `apps/web/src/app/api/qa/judge/route.ts` and was called by the spec-drift visual QA workflow, which now judges on the team OAuth seat via claude-code-action instead. Supports multimodal input (base64 PNG screenshots). Returns a structured `overallVerdict` field. The only call site that returns HTTP 503 when the key is absent rather than degrading. Hardcoded to `claude-haiku-4-5-20251001`.
 
 ---
 
@@ -259,6 +254,8 @@ Tests: both call sites have existing test coverage — update mocks.
 
 ### Step 4: Migrate `judgeCapture` — half day
 
+> Superseded: the route was deleted rather than migrated once CI stopped calling it.
+
 Replace inline `fetch` in `apps/web/src/app/api/qa/judge/route.ts`. The 503 behavior on missing key is preserved — the caller inspects the returned `InferenceError.kind === 'missing_key'` and returns 503. Multimodal support (base64 PNG) is passed through as an `imageB64` optional parameter on `inferenceCall`.
 
 Tests: existing `qa/judge` tests need fetch mock updated.
@@ -362,10 +359,11 @@ Also landed, beyond this doc's original scope:
   run cannot see a screenshot. Answers Open Question Q2's "product decision"
   half — the mechanism is per-capability opt-in; pricing stays separate.
 
+Step 4 is done by deletion: `/api/qa/judge` was removed once CI judged on the
+team OAuth seat and nothing called it.
+
 Remaining:
 
-- **Step 4 — `judgeCapture`** (`/api/qa/judge`) still holds its own `fetch` and
-  its hardcoded model. Migrating it is now mechanical.
 - **Step 5 — retire the dead resolvers, partially done.** `resolveModelName`
   (and its unused sync twin `resolveModelNameSync`) are retired — removed from
   `model-aliases.ts`'s exports entirely, pinned by
