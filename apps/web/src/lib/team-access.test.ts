@@ -163,24 +163,25 @@ describe('resolveActiveTeamScope — the one active-team resolver the shell and 
   // shell used to default to "first team" and Home to "every workspace, no
   // team", so a user without a valid cookie saw one team named in the header
   // and a "no workspace yet" empty state on Home.
-  const wsByTeam: Record<string, { id: string; name: string }[]> = {
-    T: [{ id: 'ws-t1', name: 'Alpha' }, { id: 'ws-t2', name: 'Beta' }],
-    U: [{ id: 'ws-u1', name: 'Gamma' }],
-  };
+  let wsByTeam: Record<string, { id: string; name: string }[]>;
   const dialect = new PgDialect();
 
   beforeEach(() => {
+    wsByTeam = {
+      T: [{ id: 'ws-t1', name: 'Alpha' }, { id: 'ws-t2', name: 'Beta' }],
+      U: [{ id: 'ws-u1', name: 'Gamma' }],
+    };
     mockTeamMembersFindMany.mockReset();
     mockTeamsFindFirst.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'U' }, { teamId: 'T' }]);
     mockTeamsFindFirst.mockResolvedValue({ id: 'T' });
-    // Answer from the teamId actually bound into the WHERE clause, so a
+    // Answer from the team ids actually bound into the WHERE clause, so a
     // resolver that queried the wrong team returns the wrong workspaces.
     mockWorkspacesFindMany.mockImplementation(((args: any) => {
       const { params } = dialect.sqlToQuery(args.where);
-      const team = params.find((p) => typeof p === 'string' && p in wsByTeam) as string | undefined;
-      return Promise.resolve(team ? wsByTeam[team] : []);
+      const teams = params.filter((p) => typeof p === 'string' && p in wsByTeam) as string[];
+      return Promise.resolve(teams.flatMap((t) => wsByTeam[t].map((w) => ({ ...w, teamId: t }))));
     }) as any);
   });
 
@@ -196,6 +197,46 @@ describe('resolveActiveTeamScope — the one active-team resolver the shell and 
 
   it('valid cookie → that team and its workspaces', async () => {
     expect(await resolveActiveTeamScope('user-1', 'U')).toEqual({ teamId: 'U', workspaces: wsByTeam.U });
+  });
+
+  // #1032: first load (no cookie) must never land on an empty team when the
+  // user has workspaces elsewhere. Personal is preferred only if it has any.
+  it('no cookie + empty personal team + another team with workspaces → that team', async () => {
+    wsByTeam.T = [];
+    expect(await resolveActiveTeamScope('user-1', undefined)).toEqual({ teamId: 'U', workspaces: wsByTeam.U });
+  });
+
+  it('stale cookie + empty personal team → the team that has workspaces', async () => {
+    wsByTeam.T = [];
+    expect((await resolveActiveTeamScope('user-1', 'team-the-user-left')).teamId).toBe('U');
+  });
+
+  it('several non-personal teams with workspaces → a stable pick, independent of membership row order', async () => {
+    wsByTeam.T = [];
+    wsByTeam.V = [{ id: 'ws-v1', name: 'Delta' }];
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'V' }, { teamId: 'U' }, { teamId: 'T' }]);
+    const first = (await resolveActiveTeamScope('user-1', undefined)).teamId;
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'T' }, { teamId: 'U' }, { teamId: 'V' }]);
+    expect((await resolveActiveTeamScope('user-1', undefined)).teamId).toBe(first);
+    expect(first).toBe('U');
+  });
+
+  it('no team has workspaces → personal team', async () => {
+    wsByTeam.T = [];
+    wsByTeam.U = [];
+    expect(await resolveActiveTeamScope('user-1', undefined)).toEqual({ teamId: 'T', workspaces: [] });
+  });
+
+  it('no team has workspaces and there is no personal team → first team', async () => {
+    mockTeamsFindFirst.mockResolvedValue(null);
+    wsByTeam.T = [];
+    wsByTeam.U = [];
+    expect((await resolveActiveTeamScope('user-1', undefined)).teamId).toBe('T');
+  });
+
+  it('a valid cookie wins even when that team has no workspaces', async () => {
+    wsByTeam.U = [];
+    expect(await resolveActiveTeamScope('user-1', 'U')).toEqual({ teamId: 'U', workspaces: [] });
   });
 
   it('no team at all → null team, no workspaces, no workspace query', async () => {

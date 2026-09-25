@@ -70,6 +70,9 @@ truth for scoped views.
   scoped page or scoped API route loads, THEN that team is the active team.
 - AC-2: GIVEN no `buildd-team` cookie, WHEN a scoped view loads, THEN the active
   team resolves to the user's personal team if one exists, else the first team.
+  (⚠️ The shell and Home use the workspace-aware default in "Home follows the
+  active team" below; the other scoped pages still call `resolveActiveTeamId`
+  and differ from it only when the personal team is empty.)
 - AC-3 (error): GIVEN a `buildd-team` cookie naming a team the user is NOT a
   member of, WHEN a scoped view loads, THEN the cookie value is ignored and the
   default team is used (no 500, no leak of the other team's data).
@@ -90,23 +93,32 @@ truth for scoped views.
 
 > Revised: this section used to require a cross-team Home. The code has scoped
 > Home to the active team since #1009 whenever the cookie was valid, and fell
-> back to a cross-team view only when it was missing or stale, which left the
-> header naming one team while Home showed another. Home now resolves its team
-> exactly as the shell does.
+> back to a cross-team view only when it was missing or stale (#1032), which
+> left the header naming one team while Home showed another. Home now resolves
+> its team exactly as the shell does, and #1032's intent (first load is never
+> empty while the user has workspaces) moves into the default-team rule.
 
-**Capability statement**: Home MUST show the same single active team the app
-shell (team switcher, workspace picker) names, resolved by the same helper.
+**Capability statement**: Home follows the active team: it MUST show the same
+single active team the app shell (team switcher, workspace picker) names,
+resolved by the same helper. The default active team is the first one with
+workspaces, personal preferred.
 
 **Invariants**:
 - Home and `layout.tsx` MUST both resolve the team via
-  `resolveActiveTeamScope` (cookie → personal team → first team, per "Active
-  team resolution" above). Neither may keep its own fallback.
+  `resolveActiveTeamScope`. Neither may keep its own fallback.
+- A valid cookie wins, even for a team with no workspaces.
+- Without a valid cookie, the default is the personal team if it has
+  workspaces, else the first team (stable id order) that has workspaces; only
+  when no team has any, the personal team, else the first team.
 - Home's "create a workspace" empty state MUST be decided by the active team's
   workspace set, not by any derived list.
 
 **Acceptance criteria**:
 - AC-1: GIVEN no `buildd-team` cookie, WHEN Home loads, THEN it shows the
   default team's workspaces, and the header names that same team.
+- AC-1b: GIVEN no cookie, an empty personal team and another team with
+  workspaces, WHEN Home loads, THEN that other team is active (no "create a
+  workspace" state).
 - AC-2: GIVEN a cookie naming a team the user left, WHEN Home loads, THEN it
   behaves as AC-1 (no empty state for a team that has workspaces).
 - AC-3: GIVEN a valid cookie, WHEN Home loads, THEN only that team's items show.

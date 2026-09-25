@@ -349,9 +349,16 @@ export type ActiveTeamScope = {
  * workspace picker) and Home both scope to. One resolver for both, so the
  * header can never name a team whose workspaces Home is not showing.
  *
- * Resolution is resolveActiveTeamId's (valid cookie → personal team → first
- * team). Errors propagate: a caller that shows "no workspaces" on failure
- * would turn an outage into a false empty state.
+ * A valid cookie wins, even for a team with no workspaces (the user chose it).
+ * Without one (absent, or a team the user left) the default is the first team
+ * that HAS workspaces, personal preferred; only when no team has any does it
+ * fall back to personal, then the first team. First load must never land on
+ * an empty team while the user has workspaces elsewhere (#1032). "First" is
+ * team id order: getUserTeamIds carries no ORDER BY, so row order is not
+ * stable across requests.
+ *
+ * Errors propagate: a caller that shows "no workspaces" on failure would turn
+ * an outage into a false empty state.
  *
  * Cached per-request via React cache() so layout + page share the same result.
  */
@@ -359,13 +366,32 @@ export const resolveActiveTeamScope = cache(async (
   userId: string,
   cookieValue: string | null | undefined,
 ): Promise<ActiveTeamScope> => {
-  const teamId = await resolveActiveTeamId(userId, cookieValue);
-  if (!teamId) return { teamId: null, workspaces: [] };
-  const ws = await db.query.workspaces.findMany({
-    where: eq(workspaces.teamId, teamId),
-    columns: { id: true, name: true },
-  });
-  return { teamId, workspaces: ws.map((w) => ({ id: w.id, name: w.name })) };
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return { teamId: null, workspaces: [] };
+
+  if (cookieValue && teamIds.includes(cookieValue)) {
+    const ws = await db.query.workspaces.findMany({
+      where: eq(workspaces.teamId, cookieValue),
+      columns: { id: true, name: true },
+    });
+    return { teamId: cookieValue, workspaces: ws.map((w) => ({ id: w.id, name: w.name })) };
+  }
+
+  // No usable cookie: one query for every candidate team's workspaces.
+  const [personalId, rows] = await Promise.all([
+    getUserDefaultTeamId(userId),
+    db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true, name: true, teamId: true },
+    }),
+  ]);
+  const others = teamIds.filter((id) => id !== personalId).sort();
+  const order = personalId && teamIds.includes(personalId) ? [personalId, ...others] : others;
+  const teamId = order.find((id) => rows.some((w) => w.teamId === id)) ?? order[0];
+  return {
+    teamId,
+    workspaces: rows.filter((w) => w.teamId === teamId).map((w) => ({ id: w.id, name: w.name })),
+  };
 });
 
 export type UserTeam = {
