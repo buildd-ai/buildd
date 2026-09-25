@@ -549,7 +549,52 @@ function createMockRequest(options: {
   return new NextRequest('http://localhost:3000/api/workers/worker-1', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+// workers.id is a uuid column, so the route rejects a non-UUID id before any
+// lookup. Fixture rows keep their readable 'worker-1' ids; only the route
+// param has to be UUID-shaped.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: WORKER_ID });
+
+// A non-UUID id can never name a worker, and handing one to Postgres raises
+// `invalid input syntax for type uuid` (22P02), which escaped the handler as a
+// 500. A runner holding a stale local record under a non-UUID id retried that
+// 500 on every reconcile pass; it must get a 404 it can act on, without the id
+// ever reaching the database.
+describe('/api/workers/[id] with a non-UUID id', () => {
+  const nonUuidParams = Promise.resolve({ id: 'worker-1' });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    // Behave like Postgres: comparing a uuid column to a non-UUID throws.
+    mockWorkersFindFirst.mockImplementation(() => {
+      throw new Error('invalid input syntax for type uuid: "worker-1"');
+    });
+  });
+
+  it('GET returns 404 without querying the database', async () => {
+    const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+    expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('PATCH returns 404 without querying the database', async () => {
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+    expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+  });
+});
 
 describe('GET /api/workers/[id]', () => {
   beforeEach(() => {
@@ -1486,7 +1531,7 @@ describe('PATCH /api/workers/[id]', () => {
       // The trace row is queryable via get_error_traces regardless of whether
       // this PATCH's own appendErrorTraces (none, here) carried anything.
       expect(lastInsertValues).toMatchObject({
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
         taskId: 'task-1',
         pattern: 'post_supersession_error',
         source: 'post_supersession',
@@ -6373,7 +6418,7 @@ describe('PATCH /api/workers/[id]', () => {
         body: { status: 'completed' },
       }), { params: mockParams });
       const arg = mockRecordTaskOutcome.mock.calls[0][0];
-      expect(arg.workerId).toBe('worker-1');
+      expect(arg.workerId).toBe(WORKER_ID);
       expect(arg.exitCause).toBe('infra_failure');
     });
 
@@ -8117,7 +8162,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(connectorAuthCall).toBeTruthy();
       expect(connectorAuthCall[0]).toBe('workspace-ws-1');
       expect(connectorAuthCall[2]).toMatchObject({
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
         connectorId: 'conn-1',
         connectorName: 'GitHub',
       });
@@ -8224,7 +8269,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(permCall).toBeTruthy();
       expect(permCall[0]).toBe('workspace-ws-1');
       expect(permCall[2]).toMatchObject({
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
         connectorId: 'conn-1',
         connectorName: 'GitHub',
       });
@@ -8668,7 +8713,7 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(req, { params: mockParams });
 
       const progress = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
-      expect(progress?.[2]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', currentAction: 'Reading main.ts' });
+      expect(progress?.[2]).toMatchObject({ workerId: WORKER_ID, taskId: 'task-1', currentAction: 'Reading main.ts' });
     });
 
     it('the progress event carries the masked action for a sensitive workspace, and nothing when none was sent', async () => {
@@ -9907,7 +9952,7 @@ describe('PATCH /api/workers/[id]', () => {
         headers: { Authorization: 'Bearer bld_test' },
         body: {
           status: 'completed',
-          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+          verificationEvidence: { workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
         },
       });
       const res = await PATCH(req, { params: mockParams });
@@ -9963,7 +10008,7 @@ describe('PATCH /api/workers/[id]', () => {
         set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
       });
       mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({
-        verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+        verificationEvidence: { workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
       }));
       mockTasksFindFirst.mockResolvedValue(makeLoopTask());
 
@@ -12274,7 +12319,7 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     const overlapCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'path_overlap_detected');
     expect(overlapCalls.length).toBe(1);
     const payload = overlapCalls[0][2];
-    expect(payload.detectedWorkerId).toBe('worker-1');
+    expect(payload.detectedWorkerId).toBe(WORKER_ID);
     expect(payload.detectedTaskId).toBe('task-1');
     expect(payload.siblingWorkerId).toBe('worker-2');
     expect(payload.siblingTaskId).toBe('task-2');

@@ -9,6 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -31,6 +32,11 @@ export async function POST(
   }
 
   const { id } = await params;
+  // workers.id is a uuid column: a non-UUID can never name a worker, and
+  // querying with one throws 22P02, which escaped as a 500.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
 
   // cancelQueued (SDK 0.3.219+): opt-in flag to clear the runner's message queue
   // alongside the interrupt, so queued messages do not execute after this call.

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
@@ -521,6 +522,11 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // A non-UUID can never name a worker; querying with one throws 22P02 (a 500).
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
+
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
     with: { task: true, workspace: true },
@@ -550,6 +556,10 @@ export async function PATCH(
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
   const worker = await db.query.workers.findFirst({

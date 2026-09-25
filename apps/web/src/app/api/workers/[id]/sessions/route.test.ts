@@ -51,7 +51,9 @@ function createMockRequest(apiKey?: string, queryParams?: Record<string, string>
   });
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 describe('GET /api/workers/[id]/sessions', () => {
   beforeEach(() => {
@@ -90,7 +92,7 @@ describe('GET /api/workers/[id]/sessions', () => {
     it('returns 403 when worker belongs to different account', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         accountId: 'account-2',
         localUiUrl: 'http://runner:3001',
         workspaceId: 'ws-1',
@@ -109,13 +111,13 @@ describe('GET /api/workers/[id]/sessions', () => {
       // First call: auth check, second call: localUiUrl lookup
       mockWorkersFindFirst
         .mockResolvedValueOnce({
-          id: 'worker-1',
+          id: WORKER_ID,
           accountId: 'account-1',
           localUiUrl: 'http://runner:3001',
           workspaceId: 'ws-1',
         })
         .mockResolvedValueOnce({
-          id: 'worker-1',
+          id: WORKER_ID,
           localUiUrl: null,
         });
 
@@ -147,7 +149,7 @@ describe('GET /api/workers/[id]/sessions', () => {
       mockAuthenticateApiKey.mockResolvedValue(null);
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         workspaceId: 'ws-1',
         localUiUrl: 'http://runner:3001',
       });
@@ -169,14 +171,14 @@ describe('GET /api/workers/[id]/sessions', () => {
       // First call: auth check
       mockWorkersFindFirst
         .mockResolvedValueOnce({
-          id: 'worker-1',
+          id: WORKER_ID,
           accountId: 'account-1',
           localUiUrl: 'http://unreachable:9999',
           workspaceId: 'ws-1',
         })
         // Second call: localUiUrl lookup for proxying
         .mockResolvedValueOnce({
-          id: 'worker-1',
+          id: WORKER_ID,
           localUiUrl: 'http://unreachable:9999',
         });
 
