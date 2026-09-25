@@ -281,7 +281,9 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <div>
           <button
             onClick={() => setShowClaudeAlt((v) => !v)}
-            className="btn btn-quiet"
+            // .btn is nowrap + fixed 32px; this label is too long for a phone,
+            // so let it wrap (it used to push /app/settings into a sideways pan).
+            className="btn btn-quiet h-auto min-h-11 md:min-h-8 py-1.5 whitespace-normal text-left justify-start leading-snug max-w-full"
           >
             {showClaudeAlt ? '▾' : '▸'} Other ways to connect Claude — setup token or API key
           </button>

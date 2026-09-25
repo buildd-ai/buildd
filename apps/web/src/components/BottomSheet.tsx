@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
+import { findScrollRoot } from '@/lib/scroll-root';
 
 interface BottomSheetProps {
   open: boolean;
@@ -8,10 +10,9 @@ interface BottomSheetProps {
   title: string;
   children: React.ReactNode;
   /**
-   * The element whose scroll is locked while the sheet is open. Defaults to
-   * `document.body`, so existing consumers see no change. The app shell scrolls
-   * inside `<main class="overflow-y-auto">` (`(protected)/layout.tsx`), where a
-   * body lock does nothing — the mission task sheet passes `<main>` here.
+   * The element whose scroll is locked while the sheet is open. Defaults to the
+   * shell's scroll root (`<main data-scroll-root>`, see lib/scroll-root.ts), or
+   * `document.body` outside the shell — a body lock does nothing inside the shell.
    */
   lockTarget?: () => HTMLElement | null;
   /**
@@ -50,12 +51,18 @@ export function nextTrappedFocus(
   return !inside || active === last ? first : null;
 }
 
-/** The element to lock: `lockTarget()` when it resolves, else `body`. */
+/** The element to lock: `lockTarget()` when it resolves, else `fallback` (the scroll root). */
 export function resolveLockTarget(
   lockTarget: (() => HTMLElement | null) | undefined,
-  body: HTMLElement,
+  fallback: HTMLElement,
 ): HTMLElement {
-  return lockTarget?.() ?? body;
+  return lockTarget?.() ?? fallback;
+}
+
+const noopSubscribe = () => () => {};
+/** False during SSR and hydration, true after — so the portal never causes a hydration mismatch. */
+function useCanPortal(): boolean {
+  return useSyncExternalStore(noopSubscribe, () => true, () => false);
 }
 
 /** Hide overflow on `el`; the returned function restores the previous value. */
@@ -92,6 +99,8 @@ export default function BottomSheet({
   const trapRef = useRef(trapFocus);
   trapRef.current = trapFocus;
 
+  const canPortal = useCanPortal();
+
   useEffect(() => {
     if (!open) return;
     const panel = panelRef.current;
@@ -112,7 +121,7 @@ export default function BottomSheet({
       }
     }
     document.addEventListener('keydown', handleKey);
-    const unlock = lockScroll(resolveLockTarget(lockTargetRef.current, document.body));
+    const unlock = lockScroll(resolveLockTarget(lockTargetRef.current, findScrollRoot(document)));
     return () => {
       document.removeEventListener('keydown', handleKey);
       unlock();
@@ -123,7 +132,7 @@ export default function BottomSheet({
 
   const tall = height === 'tall';
 
-  return (
+  const sheet = (
     <div className="fixed inset-0 z-50 flex items-end justify-center" role="presentation">
       <div
         className="absolute inset-0 bg-black/50"
@@ -159,4 +168,9 @@ export default function BottomSheet({
       </div>
     </div>
   );
+
+  // Portal to <body>: a fixed/sticky ancestor (the mobile header, a masthead)
+  // creates a stacking context, and inside it z-50 still paints under the
+  // bottom nav (z-20). React events still bubble through the component tree.
+  return canPortal ? createPortal(sheet, document.body) : sheet;
 }

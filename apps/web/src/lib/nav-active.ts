@@ -23,3 +23,16 @@ export function isNavActive(pathname: string, href: string): boolean {
   }
   return pathname === href;
 }
+
+/**
+ * Account/connection pages have no bottom-nav tab — they are reached from the
+ * header avatar menu, which shows the active state for them instead.
+ */
+export function isAccountRoute(pathname: string): boolean {
+  return (
+    pathname === '/app/you' ||
+    pathname === '/app/settings' ||
+    pathname.startsWith('/app/settings/') ||
+    pathname === '/app/connections'
+  );
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { NAV_ITEMS, mobilePageTitle } from './nav-config';
+import { NAV_ITEMS, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
 
 describe('NAV_ITEMS', () => {
   it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
@@ -97,5 +97,27 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/initiatives/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/tasks/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/workspaces/abc-123/config')).toBeNull();
+  });
+});
+
+describe('showsWorkspaceFilter', () => {
+  // Pages whose server component reads `?workspace=` (grep `workspace: wsFilter`).
+  const READS_PARAM = ['/app/home', '/app/missions', '/app/releases', '/app/tasks', '/app/health'];
+  // Top-level pages with a mobile header that ignore the param — a filter there is a no-op control.
+  const IGNORES_PARAM = ['/app/you', '/app/settings', '/app/connections', '/app/artifacts', '/app/initiatives', '/app/workspaces', '/app/team'];
+
+  it.each(READS_PARAM)('shows on %s', (path) => {
+    expect(showsWorkspaceFilter(path)).toBe(true);
+  });
+
+  it.each(IGNORES_PARAM)('hides on %s', (path) => {
+    expect(showsWorkspaceFilter(path)).toBe(false);
+  });
+
+  it('every allowlisted page actually reads ?workspace= in its page.tsx', () => {
+    for (const path of READS_PARAM) {
+      const file = resolve(import.meta.dir, `../app/app/(protected)${path.replace('/app', '')}/page.tsx`);
+      expect(readFileSync(file, 'utf8')).toMatch(/workspace\??:\s*(wsFilter|string)/);
+    }
   });
 });

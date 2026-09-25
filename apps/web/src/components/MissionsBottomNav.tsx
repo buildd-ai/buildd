@@ -28,8 +28,10 @@ export default function MissionsBottomNav() {
                 active ? 'text-accent-text' : 'text-text-muted'
               }`}
             >
-              <span className={`relative w-[22px] h-[22px] ${active ? 'opacity-100' : 'opacity-35'}`}>
-                {tab.icon}
+              <span className="relative w-[22px] h-[22px]">
+                {/* Only the glyph dims on inactive tabs; the badge sits outside the
+                    opacity wrapper so an alert count stays full-strength. */}
+                <span className={`block w-full h-full ${active ? 'opacity-100' : 'opacity-35'}`}>{tab.icon}</span>
                 {showBadge && (
                   <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-error text-white">
                     {badgeCount}

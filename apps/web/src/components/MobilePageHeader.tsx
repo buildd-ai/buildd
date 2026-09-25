@@ -1,10 +1,12 @@
 'use client';
 
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceFilter } from './WorkspaceFilter';
-import { mobilePageTitle } from '@/lib/nav-config';
+import { mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
+import { isAccountRoute } from '@/lib/nav-active';
 
 interface HeaderTeam {
   id: string;
@@ -17,22 +19,31 @@ export default function MobilePageHeader({
   currentTeamId = null,
   userInitial = 'U',
   workspaces = [],
+  banners,
 }: {
   teams?: HeaderTeam[];
   currentTeamId?: string | null;
   userInitial?: string;
   workspaces?: { id: string; name: string }[];
+  /**
+   * Shell-wide banners (needs-input, connector reconnect). On mobile top-level
+   * pages they ride in the same fixed stack as the header — rendered in flow they
+   * sat under the fixed header, invisible.
+   */
+  banners?: ReactNode;
 }) {
   const pathname = usePathname();
   const title = mobilePageTitle(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
+  const bannersRef = useRef<HTMLDivElement>(null);
+  const bannerHeight = useElementHeight(bannersRef, title !== null);
 
-  // Only render on top-level pages (where the title resolves). Detail pages
-  // (e.g. /app/missions/[id]) render their own headers.
-  if (!title) return null;
+  // Only render the header on top-level pages (where the title resolves). Detail
+  // pages (e.g. /app/missions/[id]) render their own headers; banners stay in flow.
+  if (!title) return <>{banners}</>;
 
-  return (
-    <div className="md:hidden fixed top-0 left-0 right-0 z-10 flex items-center justify-between gap-2 px-4 py-2.5 bg-surface-2 border-b border-border-default">
+  const headerRow = (
+    <div data-testid="mobile-page-header" className="md:hidden flex items-center justify-between gap-2 px-4 py-1 bg-surface-2 border-b border-border-default">
       {/* Breadcrumb cluster: `Page · Team ⌄`, where the team segment is itself the
           switcher (turbopuffer/Vercel pattern) rather than a separate glyph in the
           right-hand cluster. Anchoring the menu here also keeps it on-screen. */}
@@ -51,9 +62,49 @@ export default function MobilePageHeader({
         )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {workspaces.length > 0 && <WorkspaceFilter workspaces={workspaces} />}
-        <UserAvatarMenu userInitial={userInitial} direction="down" />
+        {workspaces.length > 0 && showsWorkspaceFilter(pathname) && <WorkspaceFilter workspaces={workspaces} />}
+        <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
       </div>
     </div>
   );
+
+  return (
+    <>
+      {/* Fixed on mobile, in flow on desktop (the header row is md:hidden there,
+          so desktop sees just the banners at the top of the column). */}
+      <div data-testid="mobile-top-stack" className="max-md:fixed max-md:top-0 max-md:inset-x-0 max-md:z-10">
+        {headerRow}
+        {/* Opaque base: the banners use translucent tints, and fixed over
+            scrolling content they would let the page show through. */}
+        <div ref={bannersRef} className="max-md:bg-surface-1">{banners}</div>
+      </div>
+      {/* Pages clear the header with their own pt-14; this pushes <main> down by
+          the banners' height so a banner never covers page content. */}
+      <div
+        data-testid="mobile-banner-spacer"
+        aria-hidden="true"
+        className="md:hidden shrink-0"
+        style={{ height: bannerHeight }}
+      />
+    </>
+  );
+}
+
+/** Live offsetHeight of `ref` (0 until measured, or while `enabled` is false). */
+function useElementHeight(ref: RefObject<HTMLElement | null>, enabled: boolean): number {
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!enabled || !el) {
+      setHeight(0);
+      return;
+    }
+    const measure = () => setHeight(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, enabled]);
+  return height;
 }

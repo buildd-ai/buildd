@@ -2,9 +2,12 @@
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useCallback, useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { displayWorkspaceName } from '@buildd/shared';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { lockScroll } from './BottomSheet';
+import { findScrollRoot } from '@/lib/scroll-root';
 
 export interface WorkspaceFilterProps {
   workspaces: { id: string; name: string }[];
@@ -77,7 +80,17 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     setHighlightedIndex(-1);
   }, []);
 
-  useClickOutside(containerRef, close);
+  // The mobile sheet is portaled out of containerRef and closes via its own
+  // backdrop, so outside-click only governs the desktop dropdown — otherwise the
+  // mousedown that starts every tap on an option would close the sheet first.
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+  useClickOutside(
+    containerRef,
+    useCallback(() => {
+      if (!isMobileRef.current) close();
+    }, [close]),
+  );
 
   const handleSelect = useCallback(
     (id: string | null) => {
@@ -112,12 +125,10 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Lock body scroll on mobile bottom sheet
+  // Lock scroll under the mobile sheet. The shell scrolls inside <main>, so
+  // locking body (the old behaviour) did nothing.
   useEffect(() => {
-    if (open && isMobile) {
-      document.body.style.overflow = 'hidden';
-      return () => { document.body.style.overflow = ''; };
-    }
+    if (open && isMobile) return lockScroll(findScrollRoot(document));
   }, [open, isMobile]);
 
   // Scroll highlighted option into view on keyboard nav
@@ -288,7 +299,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
         aria-label="Filter by workspace"
         onClick={() => setOpen((prev) => !prev)}
         onKeyDown={handleKeyDown}
-        className={`px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
+        className={`max-md:min-h-11 max-md:min-w-11 max-md:justify-center max-md:items-center px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
           open ? 'shadow-sm text-text-primary' : ''
         }`}
       >
@@ -324,12 +335,13 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
         </div>
       </button>
 
-      {/* Mobile: bottom sheet */}
-      {open && isMobile && (
+      {/* Mobile: bottom sheet, portaled to <body> — rendered inside the fixed
+          header it would inherit that stacking context and sit under the bottom nav. */}
+      {open && isMobile && createPortal(
         <div
           className="fixed inset-0 z-50 bg-black/60"
           onClick={close}
-          aria-hidden="true"
+          role="presentation"
         >
           <div
             className="absolute bottom-0 left-0 right-0 bg-surface-2 border-t-2 border-border-strong max-h-[70vh] flex flex-col animate-slide-up"
@@ -342,7 +354,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
               <button
                 type="button"
                 onClick={close}
-                className="text-text-muted hover:text-text-secondary p-1"
+                className="-mr-3 w-11 h-11 flex items-center justify-center text-text-muted hover:text-text-secondary"
                 aria-label="Close"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -353,7 +365,8 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
             {optionsList}
             {newWorkspaceFooter}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Desktop: anchored panel */}

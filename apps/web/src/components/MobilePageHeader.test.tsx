@@ -1,8 +1,9 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+let pathname = '/app/connections';
 mock.module('next/navigation', () => ({
-  usePathname: () => '/app/connections',
+  usePathname: () => pathname,
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -51,6 +52,7 @@ describe('MobilePageHeader', () => {
 
 
   it('keeps WorkspaceFilter label hidden on mobile to prevent breadcrumb crowding at 320pt', () => {
+    pathname = '/app/missions'; // a page that reads ?workspace=
     const html = render({
       teams: TEAMS,
       currentTeamId: 't1',
@@ -65,6 +67,20 @@ describe('MobilePageHeader', () => {
     expect(html).toContain('All workspaces</span>');
     // Ensure the icon and chevron structure is present for mobile
     expect(html).toContain('md:hidden');
+    pathname = '/app/connections';
+  });
+
+  it('omits the WorkspaceFilter on pages that ignore ?workspace=', () => {
+    const html = render({ teams: TEAMS, currentTeamId: 't1', workspaces: [{ id: 'ws-1', name: 'Example' }] });
+    expect(html).not.toContain('Filter by workspace');
+    pathname = '/app/missions';
+    try {
+      expect(render({ teams: TEAMS, currentTeamId: 't1', workspaces: [{ id: 'ws-1', name: 'Example' }] })).toContain(
+        'Filter by workspace',
+      );
+    } finally {
+      pathname = '/app/connections';
+    }
   });
 
   it('maintains layout hierarchy at 320pt: left cluster before right cluster', () => {
@@ -79,3 +95,36 @@ describe('MobilePageHeader', () => {
     // Left cluster (with flex-1) should come before right cluster (with shrink-0)
     expect(leftCluster).toBeLessThan(rightCluster);
   });
+
+describe('MobilePageHeader banner stack', () => {
+  const banner = <div data-testid="needs-input-banner-stub">A task needs your input</div>;
+
+  it('renders banners inside the same fixed stack as the header, below the header row', () => {
+    const html = render({ teams: TEAMS, currentTeamId: 't1', banners: banner });
+    const stack = html.match(/<div[^>]*data-testid="mobile-top-stack"[^>]*>/)?.[0] ?? '';
+    expect(stack).toContain('max-md:fixed');
+    expect(stack).toContain('max-md:top-0');
+    // The header row itself is no longer independently fixed (it would cover the banner).
+    const headerRow = html.match(/<div[^>]*data-testid="mobile-page-header"[^>]*>/)?.[0] ?? '';
+    expect(headerRow).not.toMatch(/(^|[\s"])fixed /);
+    expect(html.indexOf('mobile-page-header')).toBeLessThan(html.indexOf('needs-input-banner-stub'));
+    expect(html.indexOf('mobile-top-stack')).toBeLessThan(html.indexOf('needs-input-banner-stub'));
+  });
+
+  it('reserves in-flow space for the banners on mobile so they do not cover page content', () => {
+    const html = render({ teams: TEAMS, currentTeamId: 't1', banners: banner });
+    expect(html).toContain('data-testid="mobile-banner-spacer"');
+  });
+
+  it('still renders banners, in flow, on detail pages that have no mobile header', () => {
+    pathname = '/app/missions/some-mission';
+    try {
+      const html = render({ teams: TEAMS, currentTeamId: 't1', banners: banner });
+      expect(html).toContain('needs-input-banner-stub');
+      expect(html).not.toContain('mobile-page-header');
+      expect(html).not.toContain('fixed');
+    } finally {
+      pathname = '/app/connections';
+    }
+  });
+});

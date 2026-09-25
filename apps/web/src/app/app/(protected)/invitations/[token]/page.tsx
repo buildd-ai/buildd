@@ -20,7 +20,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (!invitation) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4 pt-14 pb-24 md:py-8">
         <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Not Found</h1>
           <p className="text-text-secondary mb-6">
@@ -53,7 +53,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (invitation.status === 'accepted') {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4 pt-14 pb-24 md:py-8">
         <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <h1 className="text-xl font-semibold text-text-primary mb-2">Already Accepted</h1>
           <p className="text-text-secondary mb-6">
@@ -71,7 +71,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (isExpired) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4 pt-14 pb-24 md:py-8">
         <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Expired</h1>
           <p className="text-text-secondary mb-6">
@@ -86,7 +86,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
+    <div className="min-h-screen flex items-center justify-center px-4 pt-14 pb-24 md:py-8">
       <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
         <h1 className="text-xl font-semibold text-text-primary mb-2">Team Invitation</h1>
         <p className="text-text-secondary mb-1">
