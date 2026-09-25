@@ -418,4 +418,25 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
       expect(notInArrayCalls.length).toBeGreaterThan(0);
     });
   });
+
+  describe('query failure', () => {
+    // Regression: a bare "Failed to get tasks" discarded the real Postgres error,
+    // so every prior investigation of this 500 had to start from a live repro
+    // instead of the response body. Audit mode is the path most likely to hit an
+    // unusual row shape or a slow scan (no 24h window), so this needs to surface
+    // the actual cause instead of hiding it again next time.
+    it('returns a detail field carrying the underlying error message instead of a bare 500', async () => {
+      mockDbSelect.mockImplementation(() => {
+        throw new Error('relation "tasks" does not exist');
+      });
+
+      const req = makeRequest({ limit: '5', status: 'failed' });
+      const res = await GET(req);
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe('Failed to get tasks');
+      expect(body.detail).toBe('relation "tasks" does not exist');
+    });
+  });
 });
