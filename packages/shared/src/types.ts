@@ -2270,7 +2270,12 @@ export interface LaneBar {
   start: number;
   /** Epoch ms; null while still running. */
   end: number | null;
+  /** The task's short label ("reconcile exports spec"). */
   label: string;
+  /** One-word scope chip ("exports"), or null. */
+  scope?: string | null;
+  /** Full task title, for the hover tooltip. */
+  title?: string | null;
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
@@ -2305,8 +2310,12 @@ export interface FleetSlotWorker {
 export interface FleetSlot {
   index: number;
   worker: FleetSlotWorker | null;
-  /** Last finished run on this slot, for an idle slot's "last …" line. */
-  last: { label: string; prNumber: number | null; fix: boolean } | null;
+  /**
+   * Last finished run on this slot, for an idle slot's "last …" line. `label`
+   * is the task's own short label (null when it has none worth showing);
+   * `scope` the one-word chip; `at` when it ended (epoch ms).
+   */
+  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null } | null;
   lane: Lane;
 }
 

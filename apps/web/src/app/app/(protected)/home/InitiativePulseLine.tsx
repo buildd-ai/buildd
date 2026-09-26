@@ -24,10 +24,12 @@ export function InitiativePulseLine({ items }: { items: PulseLineItem[] }) {
     <Link
       href={line.href}
       data-testid={PULSE_LINE_TESTID}
-      className="group inline-flex items-center min-h-11 md:min-h-0 gap-1.5 mb-8 md:mb-10 text-[13px] text-text-secondary hover:text-text-primary transition-colors"
+      data-variant="chip"
+      className="group inline-flex max-w-full items-center min-h-11 md:min-h-9 gap-2 border border-border-strong bg-surface-2 px-3 font-mono text-[12px] text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
     >
+      <i aria-hidden="true" className="inline-block h-2 w-2 shrink-0 bg-status-warning" />
       {/* One string, so the clause set can never be split by a wrapper. */}
-      <span>{line.text}</span>
+      <span className="min-w-0 truncate">{line.text}</span>
       <span aria-hidden="true" className="text-text-muted group-hover:text-text-primary transition-colors">
         →
       </span>

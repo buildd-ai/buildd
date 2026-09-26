@@ -43,7 +43,7 @@ const REF_FIELDS = new Set([
   'teamId', 'userId', 'workspaceId', 'missionId', 'taskId', 'workerId', 'accountId',
   'createdByUserId', 'createdByWorkerId', 'createdByAccountId', 'parentTaskId', 'scheduleId',
   'claimedBy', 'replyTo', 'lastTaskId', 'parentMissionId', 'dependsOnMissionId', 'githubRepoId',
-  'githubInstallationId', 'installationId',
+  'githubInstallationId', 'installationId', 'initiativeId', 'docFixTaskId', 'promotedMissionId',
 ]);
 
 export class IdMap {
@@ -86,6 +86,14 @@ export function relTime(anchorMs: number, rel: string | undefined, fallbackMs = 
   return new Date(anchorMs - Number(m[1]) * unit);
 }
 
+/** '90m' / '+2h' / '111d' AFTER `anchorMs` → Date. */
+export function relFuture(anchorMs: number, rel: string | undefined, fallbackMs = 0): Date {
+  const m = /^\+?(\d+(?:\.\d+)?)([smhd])$/.exec(rel ?? '');
+  if (!m) return new Date(anchorMs + fallbackMs);
+  const unit = { s: 1e3, m: 6e4, h: 3.6e6, d: 8.64e7 }[m[2] as 's' | 'm' | 'h' | 'd'];
+  return new Date(anchorMs + Number(m[1]) * unit);
+}
+
 export const SCHEDULE_INTERVAL_MS = 6 * 3_600_000;
 
 /**
@@ -95,6 +103,13 @@ export const SCHEDULE_INTERVAL_MS = 6 * 3_600_000;
  * whole story; the previous run is one interval earlier.
  */
 export function scheduleBaseline(story: Story, scheduleKey: string, anchorMs: number, intervalMs = SCHEDULE_INTERVAL_MS): { lastRunAt: Date; nextRunAt: Date } {
+  // A schedule can pin its own offsets (a quarterly job due in 111 days, say).
+  const sch = (story.taskSchedules ?? []).find((x: Entity) => x.key === scheduleKey);
+  if (sch?._nextRunIn) {
+    const nextRunAt = relFuture(anchorMs, sch._nextRunIn);
+    const lastRunAt = sch._lastRunAgo ? relTime(anchorMs, sch._lastRunAgo) : new Date(nextRunAt.getTime() - intervalMs);
+    return { lastRunAt, nextRunAt };
+  }
   const fire = (story.timeline ?? []).find((e) => e.op === 'schedule_fire' && e.schedule === scheduleKey);
   const nextMs = fire ? anchorMs + fire.t * 1000 : anchorMs;
   return { lastRunAt: new Date(nextMs - intervalMs), nextRunAt: new Date(nextMs) };
