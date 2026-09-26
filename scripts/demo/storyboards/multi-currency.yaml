@@ -15,9 +15,8 @@ steps:
 
   - id: 02-mission-fanout
     goto: /app/missions/{M1}
-    waitFor: mission-detail
-    scrollTo: mission-feed-region
-    highlight: [mission-task-row, mission-phase-header]
+    waitFor: mission-board
+    highlight: [mission-band, board-column, board-tile]
     caption: "Five agents, four machines, the same minute."
 
   - id: 03-missions-list
@@ -29,9 +28,8 @@ steps:
 
   - id: 04-mission-peak
     goto: /app/missions/{M1}
-    waitFor: mission-detail
-    scrollTo: mission-feed-region
-    highlight: [mission-task-row, mission-task-row-pr]
+    waitFor: mission-board
+    highlight: [fleet-band, board-tile]
     caption: "Six agents. Four machines. At the same time."
     # Live take: the page stays open while the timeline advances; updates arrive over soketi.
     record: { ms: 8000, advanceTo: "12:30", ticks: 8 }
@@ -60,6 +58,12 @@ steps:
     highlight: [worker-needs-input-banner, worker-needs-input-options]
     caption: "The other five keep working."
 
+  - id: 07b-mission-needs-you
+    goto: /app/missions/{M1}
+    waitFor: needs-you-band
+    highlight: [needs-you-band, needs-you-cell, board-answer-options]
+    caption: "The question and its answers, right on the mission."
+
   - id: 08-home-waiting-on-you
     goto: /app/home
     waitFor: home-waiting-on-you
@@ -68,10 +72,9 @@ steps:
 
   - id: 09-ci-failure
     advance: "18:40"
-    goto: /app/missions/{M1}
-    waitFor: mission-detail
-    scrollTo: mission-feed-region
-    highlight: [mission-task-row-pr, mission-task-row]
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    highlight: [mission-lanes-chart, lane-bar, lanes-in-review]
     caption: "CI broke. Nobody noticed."
 
   - id: 10-activity
@@ -84,18 +87,15 @@ steps:
   - id: 11-criteria-going-green
     advance: "34:05"
     goto: /app/missions/{M1}
-    waitFor: mission-detail
-    click: "text=Integrated"
-    scrollTo: mission-goal-criteria
-    highlight: [mission-goal-criteria, criterion-row]
+    waitFor: mission-board
+    highlight: [goal-band, goal-criterion]
     caption: "Done means done: your criteria, verified."
 
   - id: 12-mission-complete
     advance: end
     goto: /app/missions/{M1}
-    waitFor: mission-detail
-    click: "text=Integrated"
-    highlight: [mission-shipped-status, mission-delivery, mission-goal-criteria]
+    waitFor: mission-board
+    highlight: [mission-completion-record, goal-band, mission-concurrency]
     caption: "37 minutes."
 
   - id: 13-missions-list-complete

@@ -7,7 +7,7 @@
  *
  * - The model is `buildMissionFeedGroups`: NEEDS YOU and MOVING NOW pinned,
  *   then phases in pulse order. Every deliverable is a row exactly once; a
- *   pinned row leaves a slot marker in its phase (L-1, AC-2, AC-3).
+ *   pinned row draws nothing in its phase (L-1, AC-2, AC-3).
  * - Folded rows stay in the DOM, `hidden`. A `#t-` arrival or a pulse focus can
  *   then always find its row, and the focus store's reveal unfolds it.
  * - Rows are `MissionTaskRow`: a real link to `?task=`, intercepted by the
@@ -82,7 +82,6 @@ type PhaseGroup<T extends MissionFeedTaskInput> = Extract<FeedGroup<T>, { kind: 
 const groupKey = (g: FeedGroup, i: number) => (g.kind === 'phase' ? `phase:${g.index ?? 'none'}:${i}` : g.kind);
 
 const GROUP_LABEL = { needs_you: 'NEEDS YOU', moving: 'MOVING NOW' } as const;
-const SLOT_LABEL = { needs_you: 'Needs you', moving: 'Moving now' } as const;
 
 function GroupLabel({ children }: { children: string }) {
   return (
@@ -207,28 +206,14 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
     return rows.map(row => <MissionTaskRow key={row.taskId} {...rowProps(row)} />);
   };
 
-  // A slot is a 20px marker, not a tap target (44px rule): the pinned row above
-  // is the target. `pointer-events-none` keeps a tap on it from reaching the
-  // sheet's delegated [data-task-id] handler; aria-hidden keeps it out of the
-  // reading order, where the pinned row already announces the task.
+  // A pinned row's slot in its phase draws nothing: the old "↑ title · in
+  // Moving now" marker repeated the pinned row's title a second time. The model
+  // keeps the slot so phase counts and `n / N` are unchanged.
   const renderItems = (items: readonly FeedPhaseItem<T>[], hidden: boolean) =>
-    items.map(item => {
-      if (item.type === 'row') {
-        if (hidden) hiddenNow.add(item.row.taskId);
-        return <MissionTaskRow key={item.row.taskId} {...rowProps(item.row)} />;
-      }
-      return (
-        <div
-          key={`slot-${item.taskId}`}
-          data-testid="mission-task-slot"
-          data-task-id={item.taskId}
-          aria-hidden="true"
-          className="pointer-events-none flex h-5 items-center gap-1 truncate pl-[2.75rem] pr-3 font-mono text-[11px] text-text-muted"
-        >
-          <span>↑</span>
-          <span className="min-w-0 truncate">{`${item.title} · in ${SLOT_LABEL[item.pinnedIn]}`}</span>
-        </div>
-      );
+    items.flatMap(item => {
+      if (item.type !== 'row') return [];
+      if (hidden) hiddenNow.add(item.row.taskId);
+      return [<MissionTaskRow key={item.row.taskId} {...rowProps(item.row)} />];
     });
 
   return (

@@ -94,10 +94,10 @@ describe('MissionDetailView — one list (AC-2) and slot markers (AC-3)', () => 
     });
   }
 
-  it('gives each pinned task one slot marker and no second row', () => {
+  it('renders each pinned task once, with no echo line in its phase', () => {
     const html = renderMission(fixtureMission(45));
     for (const id of ['p1-0', 'p1-1', 'p1-2', 'p1-3', 'p1-4']) {
-      expect(count(html, `data-testid="mission-task-slot" data-task-id="${id}"`)).toBe(1);
+      expect(count(html, `data-testid="mission-task-slot" data-task-id="${id}"`)).toBe(0);
       expect(count(html, `data-testid="mission-task-row" data-task-id="${id}"`)).toBe(1);
     }
   });

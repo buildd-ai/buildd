@@ -59,6 +59,13 @@ export const MISSION_WORKER_COLUMNS = {
   currentAction: true,
   commitCount: true,
   filesChanged: true,
+  // Board and Lanes (MissionBoard / MissionLanes): the runner a worker ran on
+  // (lanes, fleet slots), its milestones (a tile's notches), and its diff size
+  // (landed rows, completion record).
+  runner: true,
+  milestones: true,
+  linesAdded: true,
+  linesRemoved: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {
@@ -95,6 +102,10 @@ export const MISSION_TASK_COLUMNS = {
   missionPhaseIndex: true,
   missionPhaseLabel: true,
   kind: true,
+  // Board: which tasks the "PRs merged" criterion counts before they open one.
+  outputRequirement: true,
+  // Board / Lanes: the short label a tile and a bar draw (taskDisplayLabel).
+  label: true,
 } as const;
 
 /** `mission.tasks` for the detail page: newest first, three workers each, five artifacts per worker. */

@@ -11,6 +11,7 @@ import {
   createMissionLiveStore,
   createMissionRefresher,
   mergeLiveLines,
+  LIVE_MILESTONES_MAX,
 } from './MissionLiveStore';
 
 function fakeClock(): Clock & { advance(ms: number): void } {
@@ -76,7 +77,7 @@ describe('AC-17: worker:progress patches, never renders', () => {
     s.clock.advance(10_000);
     expect(s.refreshes).toBe(0);
     expect(s.patches).toBe(20);
-    expect(s.store.getSnapshot()[T1]).toEqual({ workerId: W1, status: 'running', currentAction: 'step 19', updatedAt: 't19' });
+    expect(s.store.getSnapshot()[T1]).toMatchObject({ workerId: W1, status: 'running', currentAction: 'step 19', updatedAt: 't19' });
   });
 
   it('progress for a task outside the mission is ignored entirely', () => {
@@ -251,15 +252,49 @@ describe('store', () => {
   });
 });
 
+describe('live milestones (Board notches)', () => {
+  it('each new current action appends one milestone, stamped with the published updatedAt', () => {
+    const store = createMissionLiveStore();
+    store.patch(T1, { currentAction: 'reading', updatedAt: '2026-01-01T00:01:00.000Z' });
+    store.patch(T1, { currentAction: 'reading', updatedAt: '2026-01-01T00:01:10.000Z' });
+    store.patch(T1, { currentAction: 'editing', updatedAt: '2026-01-01T00:02:00.000Z' });
+    expect(store.getSnapshot()[T1].milestones).toEqual([
+      { label: 'reading', ts: Date.parse('2026-01-01T00:01:00.000Z') },
+      { label: 'editing', ts: Date.parse('2026-01-01T00:02:00.000Z') },
+    ]);
+  });
+
+  it('a status-only patch appends nothing', () => {
+    const store = createMissionLiveStore();
+    store.patch(T1, { status: 'running' });
+    expect(store.getSnapshot()[T1].milestones).toEqual([]);
+  });
+
+  it('a new worker on the task starts a fresh milestone list', () => {
+    const store = createMissionLiveStore();
+    store.patch(T1, { workerId: W1, currentAction: 'a', updatedAt: '2026-01-01T00:01:00.000Z' });
+    store.patch(T1, { workerId: 'worker-2', currentAction: 'b', updatedAt: '2026-01-01T00:02:00.000Z' });
+    expect(store.getSnapshot()[T1].milestones.map(m => m.label)).toEqual(['b']);
+  });
+
+  it('keeps the list bounded', () => {
+    const store = createMissionLiveStore();
+    for (let i = 0; i < 80; i++) store.patch(T1, { currentAction: `step ${i}`, updatedAt: new Date(i * 1000).toISOString() });
+    const ms = store.getSnapshot()[T1].milestones;
+    expect(ms.length).toBe(LIVE_MILESTONES_MAX);
+    expect(ms[ms.length - 1].label).toBe('step 79');
+  });
+});
+
 describe('mergeLiveLines', () => {
   const live = new Set(['running', 'waiting_input']);
   it('the store’s newer action wins over the server line', () => {
-    expect(mergeLiveLines({ [T1]: 'old', [T2]: 'kept' }, { [T1]: { workerId: W1, status: 'running', currentAction: 'new', updatedAt: null } }, live))
+    expect(mergeLiveLines({ [T1]: 'old', [T2]: 'kept' }, { [T1]: { workerId: W1, status: 'running', currentAction: 'new', updatedAt: null, milestones: [] } }, live))
       .toEqual({ [T1]: 'new', [T2]: 'kept' });
   });
 
   it('a non-live status drops the line', () => {
-    expect(mergeLiveLines({ [T1]: 'old' }, { [T1]: { workerId: W1, status: 'completed', currentAction: null, updatedAt: null } }, live))
+    expect(mergeLiveLines({ [T1]: 'old' }, { [T1]: { workerId: W1, status: 'completed', currentAction: null, updatedAt: null, milestones: [] } }, live))
       .toEqual({});
   });
 

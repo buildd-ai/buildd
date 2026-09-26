@@ -115,7 +115,9 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
   async worker_status(c, e) {
     const taskKey = taskKeyOfWorker(c, e.worker);
     const set: Record<string, unknown> = { status: e.status, updatedAt: c.at(e.t) };
-    if (e.status === 'running') set.startedAt = c.at(e.t);
+    // Like PATCH /api/workers/[id]: startedAt is stamped on the FIRST running
+    // report only, so a session resumed after an answer keeps its start.
+    if (e.status === 'running' && !(await workerRow(c, e.worker))?.startedAt) set.startedAt = c.at(e.t);
     await c.db.update(s.workers).set(set as any).where(eq(s.workers.id, c.ids.get(e.worker)));
     if (e.status === 'running') {
       await c.db.update(s.tasks).set({ status: 'in_progress', updatedAt: c.at(e.t) } as any).where(eq(s.tasks.id, c.ids.get(taskKey)));

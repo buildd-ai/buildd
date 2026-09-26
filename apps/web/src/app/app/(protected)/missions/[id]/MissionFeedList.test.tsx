@@ -36,7 +36,7 @@ describe('MissionFeedList — one list, every deliverable once (AC-2)', () => {
   });
 });
 
-describe('MissionFeedList — pinned groups and slot markers (AC-3)', () => {
+describe('MissionFeedList — pinned groups (AC-3)', () => {
   it('pins NEEDS YOU first and MOVING NOW second, before the phases', () => {
     const html = render(fixtureMission(15));
     const needs = html.indexOf('data-group="needs_you"');
@@ -47,15 +47,16 @@ describe('MissionFeedList — pinned groups and slot markers (AC-3)', () => {
     expect(moving).toBeLessThan(firstPhase);
   });
 
-  it('leaves exactly one slot marker in the phase of every pinned task, and no second row', () => {
+  it('renders a pinned task once, with no echo line left in its phase', () => {
+    // The "↑ title · in Moving now" marker repeated every pinned row's title
+    // a second time; the pinned row is the one place it reads.
     const html = render(fixtureMission(15));
-    for (const id of ['b2', 'b3', 'b4']) {
-      expect(slotCount(html, id)).toBe(1);
+    for (const id of ['b1', 'b2', 'b3', 'b4']) {
+      expect(slotCount(html, id)).toBe(0);
       expect(rowCount(html, id)).toBe(1);
     }
-    expect(slotCount(html, 'b1')).toBe(0);
-    expect(html).toContain('in Needs you');
-    expect(html).toContain('in Moving now');
+    expect(html).not.toContain('in Needs you');
+    expect(html).not.toContain('in Moving now');
   });
 
   it('shows at most three NEEDS YOU rows, then +N more', () => {
@@ -78,7 +79,7 @@ describe('MissionFeedList — pinned groups and slot markers (AC-3)', () => {
   });
 });
 
-describe('MissionFeedList — slot markers sit at their place (grouping rule 4)', () => {
+describe('MissionFeedList — phases around pinned rows (grouping rule 4)', () => {
   const BUILD = { missionPhaseIndex: 1, missionPhaseLabel: 'BUILD' };
   const at = (n: number) => new Date(FIXTURE_NOW - (20 - n) * 60_000).toISOString();
   const phaseTasks: MissionFeedTaskInput[] = [
@@ -89,20 +90,12 @@ describe('MissionFeedList — slot markers sit at their place (grouping rule 4)'
     { id: 'r3', title: 'Example ready three', status: 'pending', taskClass: 'work', createdAt: at(5), ...BUILD },
   ];
 
-  it('renders the slot between the rows it sorts between, not above the whole phase', () => {
+  it('keeps the phase\'s own rows in order and draws nothing where the pinned row sat', () => {
     const html = render(phaseTasks);
     const phase = html.slice(html.indexOf('data-group="phase"'));
     const order = [...phase.matchAll(/data-testid="mission-task-(row|slot)" data-task-id="([^"]+)"/g)]
       .map(m => (m[1] === 'slot' ? `slot:${m[2]}` : m[2]));
-    expect(order).toEqual(['r1', 'r2', 'slot:ask', 'r3', 'd']);
-  });
-
-  it('is a marker, not a tap target: non-interactive and hidden from assistive tech (the row itself is the target)', () => {
-    const html = render(phaseTasks);
-    const slot = html.match(/<([a-z]+)[^>]*data-testid="mission-task-slot"[^>]*>/)!;
-    expect(slot[1]).not.toBe('a');
-    expect(slot[0]).toContain('aria-hidden="true"');
-    expect(slot[0]).toContain('pointer-events-none');
+    expect(order).toEqual(['r1', 'r2', 'r3', 'd']);
   });
 
   it('never counts a slot toward the phase reveal, so focusing a pinned row leaves its home phase alone', () => {
@@ -124,7 +117,7 @@ describe('MissionFeedList — slot markers sit at their place (grouping rule 4)'
     const visible = check.slice(0, check.indexOf('data-testid="mission-feed-overflow"'));
     expect(count(visible, 'data-testid="mission-task-row"')).toBe(3);
     expect(html).toContain('+1 queued');
-    expect(slotCount(html, 'cask')).toBe(1);
+    expect(slotCount(html, 'cask')).toBe(0);
   });
 });
 
