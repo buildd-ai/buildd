@@ -105,3 +105,38 @@ describe('MissionBoard — complete', () => {
     expect(html).toContain('all answered');
   });
 });
+
+describe('MissionBoard — demo v5 polish', () => {
+  /** One tile's own markup, from its anchor to the next tile. */
+  const tileOf = (html: string, id: string) => html.split(`data-task-id="${id}"`)[1]?.split(' data-task-id="')[0] ?? '';
+  const runningWith = (patch: Record<string, unknown>) => {
+    const model = boardFixture('running');
+    const t = Object.values(model.tasks).find(x => x.status === 'running')!;
+    Object.assign(t, patch);
+    return { id: t.id, html: renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" />) };
+  };
+
+  it('a running tile with nothing to say has no second line (no empty gap under the title)', () => {
+    const { id, html } = runningWith({ startedAt: null, milestones: [], currentAction: null, pr: null });
+    expect(tileOf(html, id)).not.toBe('');
+    expect(tileOf(html, id)).not.toContain('data-testid="board-tile-body"');
+    expect(tileOf(html, id)).not.toContain('min-h-[18px]');
+  });
+
+  it('a running tile shows its current action and its elapsed time', () => {
+    const { id, html } = runningWith({ currentAction: 'Editing invoices.ts' });
+    const tile = tileOf(html, id);
+    expect(tile).toContain('data-testid="board-tile-body"');
+    expect(tile).toContain('data-testid="board-tile-action"');
+    expect(tile).toContain('Editing invoices.ts');
+  });
+
+  it('the completion record puts its four numbers in one compact 2x2 block, not four prose-tall columns', () => {
+    const html = render('complete', { completionText: 'Example outcome.' });
+    const stats = html.split('data-testid="record-stats"')[1] ?? '';
+    expect(stats).not.toBe('');
+    for (const id of ['record-prs', 'record-lines', 'record-ci-fixes', 'record-decisions']) expect(stats).toContain(`data-testid="${id}"`);
+    const section = html.match(/data-testid="mission-completion-record" class="([^"]*)"/)?.[1] ?? '';
+    expect(section).not.toContain('repeat(4,');
+  });
+});
