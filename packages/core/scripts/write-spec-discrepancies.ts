@@ -84,7 +84,12 @@ async function main() {
     process.exit(1);
   }
 
-  const summary = await writeLedgerFromEvaluations(workspaceId, evaluations);
+  // Only a run over the default roots sees every doc the ledger tracks, so only
+  // that run may resolve rows whose assertion is no longer declared anywhere.
+  const fullRun = !argValue('--specs-root') && !argValue('--design-root');
+  const summary = await writeLedgerFromEvaluations(workspaceId, evaluations, new Date(), {
+    resolveUnasserted: fullRun,
+  });
 
   console.log(`\nLedger writes:`);
   console.log(`  inserted:      ${summary.inserted}`);
@@ -92,8 +97,13 @@ async function main() {
   console.log(`  refreshed:     ${summary.refreshed}`);
   console.log(`  kept accepted: ${summary.keptAccepted}`);
   console.log(`  resolved:      ${summary.resolved}`);
+  console.log(`  (unasserted):  ${summary.unasserted}  (of resolved — assertion no longer declared)`);
+  console.log(`  rechecked:     ${summary.rechecked}  (existing row on an unrecognized status — left open)`);
   console.log(`  skipped:       ${summary.skipped}`);
   console.log(`By direction: spec_ahead=${summary.byDirection.spec_ahead} code_ahead=${summary.byDirection.code_ahead} contradicted=${summary.byDirection.contradicted}`);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

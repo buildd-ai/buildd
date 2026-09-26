@@ -31,23 +31,46 @@
 # eval workspace id, not user data).
 #
 # Delta gate (§4): scripts/spec-conformance-delta-gate.ts reads the last
-# fully-checked commit from the same keyed buildd artifact
-# (`spec-conformance-last-sha`) that spec-conformance-check.yml writes, and
-# skips the writer step when the diff against it touches nothing in the
-# watch set. `record` runs unconditionally after the writer (`if: always()`)
-# — this workflow only ever runs on push to dev, so every invocation is
-# eligible to advance the pointer, unlike the blocking checker which also
-# runs on PRs.
+# commit THIS workflow fully wrote from its own keyed buildd artifact
+# (`spec-discrepancy-ledger-last-sha`), and skips the writer step when the
+# diff against it touches nothing in the watch set.
+#
+# Two rules keep that pointer honest:
+#   - It is not shared with spec-conformance-check.yml. When it was, whichever
+#     workflow finished first advanced it, and the other could diff HEAD
+#     against HEAD and skip a commit it never evaluated.
+#   - `record` runs only when the job SUCCEEDED (writer ran, or the gate
+#     legitimately skipped). A cancelled or failed writer must not advance
+#     the pointer past a commit whose rows it never wrote — under the old
+#     `if: always()` a burst of dev pushes cancelled the writer mid-run and
+#     the record step still stamped that commit as checked.
+#
+# Concurrency queues rather than cancels: runs serialize (one writer at a
+# time, which is what lets the writer skip an optimistic-lock column), a
+# running forced re-run is never killed by the next push, and GitHub keeps at
+# most one pending run per group — the newest, whose gate diff still covers
+# every commit a dropped pending run would have looked at.
+#
+# Forced re-run: `workflow_dispatch` with `force: true` bypasses the gate.
+# buildd dispatches exactly that when a doc-fix PR merges, and its hourly
+# sweep does it again for any merged doc fix whose rows were never rechecked
+# (apps/web/src/lib/spec-recheck.ts; docs/design/spec-conformance.md §9).
+# Same job, same writer — there is no second path that writes the ledger.
 name: Spec Discrepancy Ledger
 
 on:
   push:
     branches: [dev]
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the delta gate and re-evaluate every doc'
+        type: boolean
+        default: false
 
 concurrency:
   group: spec-discrepancy-ledger-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ledger:
@@ -73,7 +96,8 @@ jobs:
 
       - name: Delta gate — decide whether anything watched changed
         id: gate
-        run: bun run scripts/spec-conformance-delta-gate.ts check
+        if: ${{ !inputs.force }}
+        run: bun run scripts/spec-conformance-delta-gate.ts check --key spec-discrepancy-ledger-last-sha
 
       - name: Write spec discrepancy ledger
         if: steps.gate.outputs.skip != 'true'
@@ -84,6 +108,6 @@ jobs:
           fi
           bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
 
-      - name: Delta gate — record HEAD as last-checked
-        if: always()
-        run: bun run scripts/spec-conformance-delta-gate.ts record
+      - name: Delta gate — record HEAD as last-written
+        if: success()
+        run: bun run scripts/spec-conformance-delta-gate.ts record --key spec-discrepancy-ledger-last-sha
