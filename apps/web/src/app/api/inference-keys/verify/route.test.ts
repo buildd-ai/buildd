@@ -9,6 +9,7 @@ mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessio
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: async () => ['t-1'],
   getUserAdminTeamIds: mockGetUserAdminTeamIds,
+  resolveActiveTeamId: async () => 't-1',
 }));
 mock.module('@/lib/provider-keys', () => ({ reverifyProviderKey: mockReverify }));
 

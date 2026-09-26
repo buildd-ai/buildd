@@ -14,7 +14,9 @@
 import { DEMO } from './lib/guard';
 import { createHash } from 'crypto';
 import { createLocalDb, schema, sql, type LocalDb } from '../../packages/core/db/local-client';
-import { IdMap, loadStory, relTime, runnerEnvironment, runnerUrl, saveState, scheduleBaseline, toRow, type Entity, type Story } from './lib/story';
+import { registerChatKeys, seedChat } from './lib/chat';
+import { artifactStorageKey, storyBlobs, writeBlobs } from './lib/blobs';
+import { IdMap, loadStory, relFuture, relTime, runnerEnvironment, runnerUrl, saveState, scheduleBaseline, toRow, type Entity, type Story } from './lib/story';
 
 const DEFAULT_STORY = new URL('./stories/placeholder.json', import.meta.url).pathname;
 
@@ -69,6 +71,7 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   (story.memories ?? []).forEach(reg);
   (story.artifacts ?? []).forEach(reg);
   for (const bm of story.backgroundMissions ?? []) (bm.tasks ?? []).forEach(reg);
+  registerChatKeys(story, ids);
   ids.register('__gh_install');
   ids.register('__gh_repo');
 
@@ -136,6 +139,8 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
       id: ids.get(ini.key), teamId: ids.get(team.key), workspaceId: ids.get(ws.key),
       createdByUserId: story.users?.[0]?.key ? ids.get(story.users[0].key) : null,
       createdAt: at(ini._createdAgo, 30 * 86_400_000), updatedAt: at(ini._updatedAgo, 86_400_000),
+      // `_targetIn: '+18d'` → a calendar date that many days from story now.
+      targetDate: ini._targetIn ? relFuture(anchorMs, ini._targetIn).toISOString().slice(0, 10) : null,
     }) as any);
   }
 
@@ -289,14 +294,29 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   checkColumns('missionNotes', s.missionNotes, story.missionNotes ?? []);
   checkColumns('artifacts', s.artifacts, (story.artifacts ?? []).map(({ key: _k, artifactKey: _a, ...rest }: Entity) => rest));
 
+  // Artifact bytes (the visual auditor's screenshots), keyed the way upload-url
+  // keys them, where blob-server.ts serves them. The rows land with the timeline.
+  const written = writeBlobs(storyBlobs(story, storyPath, ids), DEMO.s3.blobDir);
+  if (written) console.log(`[seed] ${written} artifact file(s) → ${DEMO.s3.blobDir}`);
+
+  // Agent chat: capability on, a synthetic key, and the conversation that files M1 (approval open).
+  await seedChat(db, story, ids, anchorMs);
+
   await saveState(db, { storyPath, storyName, ids: ids.ids, anchorMs, appliedT: -1, nextEvent: 0 });
   return ids;
 }
 
-/** artifacts.key is the dataset's `artifactKey`; the dataset `key` is only a ref. */
+/**
+ * artifacts.key is the dataset's `artifactKey`; the dataset `key` is only a ref.
+ * A `_file` artifact gets the storage key upload-url would mint for it (lib/blobs.ts).
+ */
 export function artifactRow(a: Entity, ids: IdMap, when: Date) {
   const { artifactKey, ...rest } = a;
-  return toRow(rest, ids, { id: ids.get(a.key!), key: artifactKey ?? null, createdAt: when, updatedAt: when });
+  const storageKey = artifactStorageKey(a, ids);
+  return toRow(rest, ids, {
+    id: ids.get(a.key!), key: artifactKey ?? null, createdAt: when, updatedAt: when,
+    ...(storageKey ? { storageKey } : {}),
+  });
 }
 
 if (import.meta.main) {

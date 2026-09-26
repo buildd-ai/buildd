@@ -29,6 +29,8 @@ import {
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
+import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
+import BoardVisualShots from './BoardVisualShots';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -36,6 +38,18 @@ export interface MissionBoardProps extends BoardLinkContext {
   completionText?: string | null;
   /** Anything the mission needs said that the band cannot (a decision gate). */
   notice?: ReactNode;
+  /**
+   * The narrow layout (the chat's docked pane and phone sheet): criteria are
+   * pips named on hover, phase headers wrap, tile titles wrap to two lines and
+   * the landed strip's captions drop the ordinal, instead of truncating.
+   */
+  compact?: boolean;
+  /**
+   * The latest visual-review run and the auditor task it belongs to. The
+   * shots show under that task's row (else under the columns), and the
+   * completion record counts the screens reviewed.
+   */
+  visual?: { shots: readonly VisualShot[]; taskId: string | null } | null;
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -46,7 +60,7 @@ const ORDER: Record<BoardStatus, number> = {
 /** The elapsed bar's full width: the longest live run, at least this. */
 const MIN_STRIP_SPAN_MS = 15 * 60_000;
 
-export default function MissionBoard({ model: serverModel, completionText, notice, ...link }: MissionBoardProps) {
+export default function MissionBoard({ model: serverModel, completionText, notice, compact = false, visual = null, ...link }: MissionBoardProps) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
@@ -54,15 +68,22 @@ export default function MissionBoard({ model: serverModel, completionText, notic
     .map(t => (t.startedAt != null ? now - t.startedAt : 0));
   const stripSpan = Math.max(MIN_STRIP_SPAN_MS, ...liveSpans);
   const lastCol = model.phases.length - 1;
+  const visualShots = visual && visual.shots.length > 0 ? visual.shots : null;
+  const visualTaskOnBoard = !!visualShots && !!visual?.taskId
+    && model.phases.some(p => p.taskIds.includes(visual.taskId!));
+  const shotsFor = (taskId: string) =>
+    visualShots && visualTaskOnBoard && visual?.taskId === taskId
+      ? <BoardVisualShots key={`${taskId}:shots`} shots={visualShots} missionId={link.missionId} />
+      : null;
 
   return (
-    <div data-testid="mission-board" className="flex flex-col">
-      <Band model={model} />
+    <div data-testid="mission-board" data-compact={compact ? 'true' : undefined} className="flex flex-col">
+      <Band model={model} compact={compact} />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
       ))}
-      {model.complete && <CompletionRecord model={model} text={completionText ?? null} />}
+      {model.complete && <CompletionRecord model={model} text={completionText ?? null} shots={visualShots} />}
 
       {model.phases.length === 0 && model.planning && (
         <PlanningPlaceholder planning={model.planning} now={now} link={link} />
@@ -79,28 +100,40 @@ export default function MissionBoard({ model: serverModel, completionText, notic
           const landed = tasks.filter(t => BOARD_LANDED.has(t.status));
           return (
             <div key={p.key} data-testid="board-column" data-phase={p.key} className="flex min-w-0 flex-col gap-2.5">
-              <div className="flex items-center gap-2.5 border-b-2 border-border-strong pb-2">
+              <div className={`flex gap-2.5 border-b-2 border-border-strong pb-2 ${compact ? 'items-start' : 'items-center'}`}>
                 <span className="font-mono text-[11px] font-bold text-text-primary">{p.ordinal}</span>
-                <SectionLabel className="min-w-0 truncate !text-text-primary">{p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}</SectionLabel>
-                <span aria-hidden="true" className="ml-auto flex gap-0.5">
+                <SectionLabel
+                  data-testid="board-phase-label"
+                  className={`min-w-0 !text-text-primary ${compact ? 'flex-1 [overflow-wrap:anywhere]' : 'truncate'}`}
+                >
+                  {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
+                </SectionLabel>
+                <span aria-hidden="true" className={`ml-auto flex shrink-0 gap-0.5 ${compact ? 'mt-[3px]' : ''}`}>
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
                 </span>
-                <span className="font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
-              {active.map(t => (
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} />
-              ))}
+              {active.map(t => [
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} />,
+                shotsFor(t.id),
+              ])}
               {landed.length > 0 && (
                 <div className="mt-0.5 border-t border-border-default">
-                  {landed.map(t => <LandedRow key={t.id} task={t} link={link} complete={model.complete} />)}
+                  {landed.map(t => [<LandedRow key={t.id} task={t} link={link} complete={model.complete} />, shotsFor(t.id)])}
                 </div>
               )}
             </div>
           );
         })}
       </section>}
+
+      {visualShots && !visualTaskOnBoard && (
+        <section className="mt-[22px] border-t-2 border-border-strong">
+          <BoardVisualShots shots={visualShots} missionId={link.missionId} />
+        </section>
+      )}
 
       {model.complete ? <Concurrency model={model} /> : <Ticker model={model} now={now} link={link} />}
     </div>
@@ -109,7 +142,7 @@ export default function MissionBoard({ model: serverModel, completionText, notic
 
 // ── Band ─────────────────────────────────────────────────────────────────────
 
-function Band({ model }: { model: MissionBoardModel }) {
+function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }) {
   const needs = model.needsYou.length;
   const first = needs ? model.tasks[model.needsYou[0]] : null;
   const cell = 'flex min-w-0 flex-col gap-2.5 border-border-default px-[18px] pb-4 pt-3.5';
@@ -121,7 +154,7 @@ function Band({ model }: { model: MissionBoardModel }) {
       <div data-testid="landed-band" className={`${cell} border-b md:border-b-0 md:border-r`}>
         <SectionLabel>Landed</SectionLabel>
         <Big n={model.landed.done} small={`of ${model.landed.total}`} />
-        <LandedMeter model={model} variant="band" />
+        <LandedMeter model={model} variant="band" compact={compact} />
       </div>
       <a
         href={`#${MISSION_CRITERIA_ANCHOR}`}
@@ -129,7 +162,23 @@ function Band({ model }: { model: MissionBoardModel }) {
         className={`${cell} border-b border-l md:border-b-0 md:border-l-0 md:border-r hover:bg-card-hover`}
       >
         <SectionLabel>{`Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`}</SectionLabel>
-        <div className="grid gap-[5px]">
+        {compact ? (
+          <div className="flex flex-wrap gap-1.5" role="list" aria-label="Goal criteria">
+            {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
+            {model.criteria.map((c, i) => (
+              <span
+                key={i}
+                role="listitem"
+                data-testid="goal-criterion-pip"
+                data-state={c.state}
+                title={`${c.label} · ${c.value}`}
+                aria-label={`${c.label} · ${c.value}`}
+              >
+                <CriterionBox c={c} size={16} />
+              </span>
+            ))}
+          </div>
+        ) : <div className="grid gap-[5px]">
           {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
           {model.criteria.map((c, i) => (
             <div key={i} data-testid="goal-criterion" data-state={c.state} className="flex min-w-0 items-center gap-2 font-mono text-[12px] text-text-secondary">
@@ -138,7 +187,7 @@ function Band({ model }: { model: MissionBoardModel }) {
               <span className={`ml-auto shrink-0 tabular-nums ${c.state === 'pending' ? 'font-medium text-text-muted' : 'font-semibold text-text-primary'}`}>{c.value}</span>
             </div>
           ))}
-        </div>
+        </div>}
       </a>
       <div data-testid="fleet-band" className={`${cell} md:border-r`}>
         <SectionLabel>Fleet</SectionLabel>
@@ -213,14 +262,20 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popLeft }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean }) {
+function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   const head = (
-    <div className="flex min-w-0 items-center gap-2">
+    <div className={`flex min-w-0 gap-2 ${compact ? 'items-start' : 'items-center'}`}>
       <RoleGlyph task={t} />
       <ScopeChip scope={t.scope} />
-      <span className={`min-w-0 truncate font-mono text-[14px] ${queued ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'}`}>{t.label}</span>
+      <span
+        data-testid="board-tile-label"
+        title={compact ? t.title : undefined}
+        className={`min-w-0 font-mono text-[14px] ${compact ? 'line-clamp-2 leading-snug [overflow-wrap:anywhere]' : 'truncate'} ${queued ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'}`}
+      >
+        {t.label}
+      </span>
       <span className="flex-1" />
       {t.attempt > 1 && (
         <span className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{`↻${t.attempt}`}</span>
@@ -262,14 +317,25 @@ function Tile({ task: t, model, now, span, link, popLeft }: { task: BoardTask; m
       </div>
     );
   } else {
-    const showStrip = t.status === 'running' || t.status === 'fixing';
-    body = (
-      <div className="flex min-h-[18px] items-center gap-2.5 font-mono text-[12px] md:text-[11.5px] text-text-muted">
-        {showStrip ? <ElapsedStrip task={t} now={now} span={span} /> : <span className="flex-1" />}
-        {t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null}
-        {showStrip && t.startedAt != null && <span className="font-medium tabular-nums text-text-secondary">{formatAge(now - t.startedAt)}</span>}
+    const live = t.status === 'running' || t.status === 'fixing';
+    const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
+    // A live tile says what it is doing (the current action, else the elapsed
+    // strip) and for how long — or nothing: no empty second line under the title.
+    const lead = live && t.currentAction
+      ? <span data-testid="board-tile-action" className="min-w-0 flex-1 truncate text-text-secondary">{t.currentAction}</span>
+      : live && t.startedAt != null
+        ? <ElapsedStrip task={t} now={now} span={span} />
+        : null;
+    const elapsed = live && t.startedAt != null
+      ? <span className="font-medium tabular-nums text-text-secondary">{formatAge(now - t.startedAt)}</span>
+      : null;
+    body = lead || chip || elapsed || !live ? (
+      <div data-testid="board-tile-body" className="flex min-h-[18px] items-center gap-2.5 font-mono text-[12px] md:text-[11.5px] text-text-muted">
+        {lead ?? <span className="flex-1" />}
+        {chip}
+        {elapsed}
       </div>
-    );
+    ) : null;
   }
 
   return (
@@ -462,24 +528,42 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 
 // ── Completion ───────────────────────────────────────────────────────────────
 
-function CompletionRecord({ model, text }: { model: MissionBoardModel; text: string | null }) {
+function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; text: string | null; shots: readonly VisualShot[] | null }) {
   const r = model.record;
-  const stat = (label: string, value: string, testId: string) => (
-    <div data-testid={testId} className="border-border-default px-[18px] py-3.5 md:border-l">
-      <SectionLabel>{label}</SectionLabel>
-      <div className="mt-2.5 font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{value}</div>
-    </div>
-  );
+  const review = shots ? summarizeVisualRun(shots) : null;
+  // Only what happened: a CI auto-fix count of 0 is not an outcome, and a
+  // visual review is. The numbers sit in one 2-column block beside the prose,
+  // so each tile is about half the prose's height; an odd last tile spans both.
+  const stats: Array<{ label: string; value: string; testId: string; sub?: string }> = [
+    { label: 'PRs merged', value: String(r.prsMerged), testId: 'record-prs' },
+    { label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' },
+    ...(r.ciFixes > 0 ? [{ label: 'CI auto-fix', value: String(r.ciFixes), testId: 'record-ci-fixes' }] : []),
+    ...(review && review.shots > 0
+      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review) }]
+      : []),
+    { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
+  ];
   return (
-    <section data-testid="mission-completion-record" className="mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.4fr_repeat(4,0.5fr)]">
-      <div className="col-span-2 px-[18px] py-3.5 md:col-span-1">
+    <section data-testid="mission-completion-record" className="mt-[18px] grid grid-cols-1 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.4fr_1fr]">
+      <div className="px-[18px] py-3.5">
         <SectionLabel className="!text-status-success">Completion record</SectionLabel>
         {text && <p className="mt-2 font-mono text-[12.5px] leading-[1.55] text-text-secondary whitespace-pre-line">{text}</p>}
       </div>
-      {stat('PRs merged', String(r.prsMerged), 'record-prs')}
-      {stat('Lines', `+${r.linesAdded.toLocaleString()}`, 'record-lines')}
-      {stat('CI auto-fix', String(r.ciFixes), 'record-ci-fixes')}
-      {stat('Your decisions', String(r.decisions), 'record-decisions')}
+      <div data-testid="record-stats" className="grid grid-cols-2 border-t border-border-default md:border-l md:border-t-0">
+        {stats.map((st, i) => (
+          <div
+            key={st.testId}
+            data-testid={st.testId}
+            className={`flex flex-col justify-center gap-2 border-border-default px-[18px] py-3 ${i % 2 ? 'border-l' : ''} ${i >= 2 ? 'border-t' : ''} ${i === stats.length - 1 && i % 2 === 0 ? 'col-span-2' : ''}`}
+          >
+            <SectionLabel>{st.label}</SectionLabel>
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{st.value}</span>
+              {st.sub && <span className={`font-mono text-[12px] ${st.sub === 'all ok' ? 'text-status-success' : 'text-text-secondary'}`}>{st.sub}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

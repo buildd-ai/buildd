@@ -40,6 +40,8 @@ import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
+import { toTaskArtifactItem } from './task-artifact-items';
+import { hasCodeDeliverables as hasTaskCodeDeliverables } from './deliverables';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
@@ -55,7 +57,7 @@ import TaskPageActionZone from './TaskPageActionZone';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
-import { descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
+import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
@@ -765,6 +767,12 @@ export default async function TaskDetailPage({
   const unresolvedDepIds = new Set(unresolvedDeps.map(d => d.id));
   const pathManifest = Array.isArray(task.pathManifest) ? (task.pathManifest as string[]) : [];
   const ciAttemptWorkers = ciAttemptTasks.flatMap(t => t.workers.slice(0, 1));
+  // Attempts the PR history already tells are not listed again under Related tasks.
+  const relatedAttempts = attemptsNotInPrHistory(
+    childTasks.attempts,
+    new Set(prOutcome ? ciAttemptTasks.filter(t => t.workers.length > 0).map(t => t.id) : []),
+  );
+  const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;
   // Every worker on this task's PR, the CI-fix attempts' included.
   const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
   const factRows: FactRow[] = [
@@ -787,7 +795,12 @@ export default async function TaskDetailPage({
           value: (
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
-                <li key={i}>{runnerLabel(w)}<span className="text-text-muted"> · attempt {i + 1}{i > 0 ? ' (retry)' : ''}</span></li>
+                // One line each: the runner, then its attempt number. "(retry)"
+                // is what "attempt 2" already says, and it wrapped on its own.
+                <li key={i} className="flex min-w-0 items-baseline gap-2">
+                  <span className="min-w-0 truncate">{runnerLabel(w)}</span>
+                  <span className="shrink-0 text-text-muted">attempt {i + 1}</span>
+                </li>
               ))}
             </ul>
           ),
@@ -1214,7 +1227,7 @@ export default async function TaskDetailPage({
             tasks={planChain}
             roleMap={Object.fromEntries(roleMap)}
           />
-        ) : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
+        ) : hasRelatedTasks && (
           <div className="mb-6">
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
@@ -1234,7 +1247,7 @@ export default async function TaskDetailPage({
               )}
               {([
                 ['Subtasks', childTasks.subtasks],
-                ['Attempts', childTasks.attempts],
+                ['Attempts', relatedAttempts],
               ] as const).map(([label, list]) => list.length > 0 && (
                 <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
                   <span className="font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
@@ -1429,7 +1442,7 @@ export default async function TaskDetailPage({
         {(task.result as any) && (
           (() => {
             const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
-            const hasCodeDeliverables = (result.commits ?? 0) > 0 || !!result.prUrl || !!result.branch;
+            const hasCodeDeliverables = hasTaskCodeDeliverables(result);
             const isFallbackSummary = result.summarySource === 'fallback';
             // The PR outcome card already carries the code deliverables and summary.
             if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
@@ -1540,19 +1553,11 @@ export default async function TaskDetailPage({
         {/* Artifacts */}
         {visibleArtifacts.length > 0 && (
           <TaskArtifactsSection
-            artifacts={visibleArtifacts.map(a => ({
-              id: a.id,
-              type: a.type,
-              title: a.title,
-              content: a.content,
-              shareToken: a.shareToken,
-              visibility: (a.visibility as 'private' | 'public') ?? 'private',
-              metadata: (a.metadata as Record<string, unknown>) ?? {},
-              createdAt: a.createdAt.toISOString(),
-            }))}
+            artifacts={visibleArtifacts.map(toTaskArtifactItem)}
             taskId={task.id}
             baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
             initialOpenArtifactId={initialOpenArtifactId}
+            missionId={task.missionId ?? null}
           />
         )}
 

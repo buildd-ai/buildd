@@ -182,10 +182,11 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
           )}
         </header>
         {view.goal && <p className="mt-1.5 max-w-[90ch] font-mono text-[12.5px] text-text-muted">{view.goal}</p>}
-        {/* Board and Lanes lay the live store's progress over the model themselves. */}
+        {/* Board and Lanes lay the live store's progress over the model themselves.
+            The pane and the sheet are always narrow: the Board's compact layout. */}
         {variant === 'pane' && layout === 'lanes'
           ? <MissionLanes model={view.board} {...link} />
-          : <MissionBoard model={view.board} {...link} />}
+          : <MissionBoard model={view.board} compact {...link} />}
       </div>
     </MissionLiveContext.Provider>
   );

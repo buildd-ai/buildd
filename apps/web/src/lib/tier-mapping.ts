@@ -21,6 +21,7 @@ export interface TierProviderOption {
 export const TIER_PROVIDER_OPTIONS: readonly TierProviderOption[] = [
   { id: 'anthropic', label: 'Anthropic' },
   { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'openai', label: 'OpenAI', note: 'API key. Server-side calls such as chat; runners cannot use it.' },
   { id: 'openai-codex', label: 'OpenAI Codex', note: 'Runner only. Uses a Codex seat, so chat cannot use it.' },
 ];
 
@@ -71,7 +72,7 @@ export function modelOptionsFor(provider: TierProvider, models: readonly Catalog
     let value: string | undefined;
     if (provider === 'anthropic' && m.provider === 'anthropic') value = m.id;
     else if (provider === 'openrouter') value = m.openRouterId;
-    else if (provider === 'openai-codex' && m.provider === 'openai') value = m.id;
+    else if ((provider === 'openai-codex' || provider === 'openai') && m.provider === 'openai') value = m.id;
     if (!value || seen.has(value)) continue;
     seen.add(value);
     const price = m.inputPrice !== undefined && m.outputPrice !== undefined

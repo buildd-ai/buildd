@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deleteProviderKey, listProviderKeys, setProviderKey } from '@/lib/provider-keys';
 import { isChatProvider, type SetProviderKeyRequest } from '@buildd/shared';
 
@@ -28,8 +28,11 @@ async function resolveCaller(
 
   const teamIds = await getUserTeamIds(userId);
   if (teamIds.length === 0) return { response: NextResponse.json({ error: 'No team found' }, { status: 403 }) };
-  const teamId = requestedTeamId || teamIds[0];
-  if (!teamIds.includes(teamId)) return { response: NextResponse.json({ error: 'Team not found' }, { status: 404 }) };
+  // No teamId ⇒ the session's ACTIVE team (the `buildd-team` cookie), not
+  // whichever membership row happens to come first.
+  const teamId = requestedTeamId
+    || await resolveActiveTeamId(userId, req.cookies.get('buildd-team')?.value ?? null);
+  if (!teamId || !teamIds.includes(teamId)) return { response: NextResponse.json({ error: 'Team not found' }, { status: 404 }) };
 
   const isAdmin = (await getUserAdminTeamIds(userId)).includes(teamId);
   return { caller: { userId, teamId, isAdmin } };

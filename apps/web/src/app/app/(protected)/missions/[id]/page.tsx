@@ -927,6 +927,9 @@ export default async function MissionDetailPage({
   });
   const visualRun = visualReviewState?.run ?? [];
   const visualReview = visualReviewState?.summary ?? null;
+  // The Board and Lanes show the same run: shots under the auditor's row,
+  // screens reviewed in the completion record.
+  const boardVisual = visualRun.length > 0 ? { shots: visualRun, taskId: visualReviewState?.taskId ?? null } : null;
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
     // F3: Integrated counts what the header pulse counts (`pulseDoneCounts`).
@@ -1044,6 +1047,7 @@ export default async function MissionDetailPage({
     title: a.title ?? a.key ?? null,
     // Fetched when the Records sheet opens (AC-18).
     content: null,
+    storageKey: a.storageKey ?? null,
     shareToken: a.shareToken ?? null,
     visibility: (a.visibility as 'private' | 'public') ?? 'private',
     metadata: (a.metadata as Record<string, unknown>) ?? {},
@@ -1422,7 +1426,7 @@ export default async function MissionDetailPage({
       endedAt={boardModel.endedAt}
     >
       {content}
-      <div data-testid="mission-board-footer" className="mt-10 max-w-3xl">
+      <div data-testid="mission-board-footer" className="mt-10">
         {orchestratorRow}
         {footerRows}
       </div>
@@ -1455,8 +1459,8 @@ export default async function MissionDetailPage({
 
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} {...boardLink} />)}
-        lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} {...boardLink} />)}
+        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} />)}
+        lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} visual={boardVisual} {...boardLink} />)}
         feed={(
           <MissionDetailView
             missionId={id}

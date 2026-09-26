@@ -1867,6 +1867,7 @@ export interface CriteriaReviewerReport {
   findings: CriteriaReviewerFindingEntry[];
 }
 
+/** @deprecated Initiative KPIs were removed; kept only to type the column until it is dropped. */
 export interface InitiativeKPI {
   name: string;
   metric: string;
@@ -1876,6 +1877,7 @@ export interface InitiativeKPI {
   blocking?: boolean;
 }
 
+/** @deprecated See InitiativeKPI. */
 export interface InitiativeKPIState {
   evaluatedAt: string;
   evaluatedBy: 'auto' | 'manual' | 'mcp';

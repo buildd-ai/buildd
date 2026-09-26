@@ -158,7 +158,9 @@ export function classifyMissionEvent(event: string, data: unknown, ctx: MissionE
     case 'task:created':
       return p.task?.missionId === ctx.missionId ? { kind: 'refresh' } : { kind: 'ignore' };
     case 'task:claimed':
-      return ours(p.task?.id) ? { kind: 'refresh' } : { kind: 'ignore' };
+      // The claim names the mission, so a task this client has not seen yet
+      // (the planning task filed a moment ago) still counts.
+      return ours(p.task?.id) || (!!ctx.missionId && p.task?.missionId === ctx.missionId) ? { kind: 'refresh' } : { kind: 'ignore' };
     case 'task:children_completed':
       return ours(p.parentTaskId) ? { kind: 'refresh' } : { kind: 'ignore' };
     case 'worker:completed':

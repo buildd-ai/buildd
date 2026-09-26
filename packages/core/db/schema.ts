@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar, date
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -70,9 +70,14 @@ export const teams = pgTable('teams', {
   // not another default inside it. See packages/core/inference-policy.ts.
   enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
-  // timezone. NULL = no cap. Metered from conversation_messages.usage; never
-  // touches accounts.maxCostPerDay, which meters runner work.
+  // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
+  // never "no cap". Metered from conversation_messages.usage (generative turns
+  // plus their routing decision calls); never touches accounts.maxCostPerDay,
+  // which meters runner work.
   chatDailyBudgetUsd: decimal('chat_daily_budget_usd', { precision: 10, scale: 2 }),
+  // Per-person daily share of that budget, in USD. NULL = DEFAULT_CHAT_USER_SHARE
+  // of the team budget. Always clamped to the team budget.
+  chatUserDailyBudgetUsd: decimal('chat_user_daily_budget_usd', { precision: 10, scale: 2 }),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -980,20 +985,23 @@ export const initiatives = pgTable('initiatives', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
+  // Human-set lifecycle, Linear's initiative statuses plus paused/archived.
+  // Nothing derives or auto-advances it. 'planned' needs no migration: text column.
+  status: text('status').default('active').notNull().$type<'planned' | 'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
-  // Denormalized rollup from computeInitiativeProgress, refreshed on child-mission change.
+  // Who answers for the initiative. NULL reads as createdByUserId.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Optional calendar target, no time of day ('YYYY-MM-DD').
+  targetDate: date('target_date', { mode: 'string' }),
+  // DEPRECATED — unread and unwritten. Drop in a later release (schema-change
+  // skill, "Dropping a table or column").
   progressCache: jsonb('progress_cache').$type<InitiativeProgressCache | null>(),
   // Curated artifact-id pointers for context assembly (mirrors missions.contextArtifactIds).
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
-  // KPIs: outcome-oriented indicators that gate initiative completion.
-  // null = no KPIs (completion driven by child-mission rollup alone).
-  // A blocking KPI (blocking: true, the default) holds status='active' until met.
+  // DEPRECATED — initiative KPIs were removed; nothing reads or writes these
+  // three columns. Drop in a later release (schema-change skill).
   kpis: jsonb('kpis').$type<import('@buildd/shared').InitiativeKPI[] | null>(),
-  // Last KPI evaluation result.
   kpiState: jsonb('kpi_state').$type<import('@buildd/shared').InitiativeKPIState | null>(),
-  // When false, organizer never auto-evaluates KPIs; on-demand still works.
-  // null reads as true (default: auto-verify ON when KPIs are set).
   autoVerify: boolean('auto_verify'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2541,7 +2549,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
-  // Per-user turn rate limit (30 per 10 minutes) counts recent messages by author.
+  // Recent messages by author (turn admission itself lives in chat_turn_windows).
   authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
 }));
 
@@ -2569,6 +2577,17 @@ export const conversationApprovals = pgTable('conversation_approvals', {
   approvalIdIdx: uniqueIndex('conversation_approvals_approval_id_idx').on(t.approvalId),
   conversationIdx: index('conversation_approvals_conversation_idx').on(t.conversationId),
 }));
+
+// Chat turn admission: one row per user holding the start times of their turns
+// in the current rate window. A turn is admitted by a single
+// INSERT ... ON CONFLICT DO UPDATE ... WHERE <under the limit> RETURNING, which
+// takes the row lock, so parallel requests are serialized and at most
+// CHAT_RATE_LIMIT get a row back (no db.transaction on neon-http).
+export const chatTurnWindows = pgTable('chat_turn_windows', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).primaryKey(),
+  turnAt: timestamp('turn_at', { withTimezone: true }).array().notNull().default(sql`'{}'::timestamptz[]`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
@@ -2879,6 +2898,7 @@ export const initiativesRelations = relations(initiatives, ({ one, many }) => ({
   team: one(teams, { fields: [initiatives.teamId], references: [teams.id] }),
   workspace: one(workspaces, { fields: [initiatives.workspaceId], references: [workspaces.id] }),
   createdByUser: one(users, { fields: [initiatives.createdByUserId], references: [users.id] }),
+  ownerUser: one(users, { fields: [initiatives.ownerUserId], references: [users.id] }),
   missions: many(missions),
   artifacts: many(artifacts),
 }));
@@ -3335,7 +3355,7 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   tier: text('tier').notNull().$type<'premium-plus' | 'premium' | 'standard' | 'budget'>(),
-  provider: text('provider').notNull().$type<'anthropic' | 'openai-codex' | 'openrouter'>(),
+  provider: text('provider').notNull().$type<'anthropic' | 'openai' | 'openai-codex' | 'openrouter'>(),
   model: text('model').notNull(),
   defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
   defaultMaxTurns: integer('default_max_turns'),

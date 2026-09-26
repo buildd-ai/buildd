@@ -16,8 +16,8 @@ def pr_url(n): return f"{REPO_URL}/pull/{n}"
 SHORT = {
     "T0": "a3f09c12", "T1": "5be71d40", "T2": "c80e2a9f", "T3": "1d4c7b63",
     "T4": "e9a25f08", "T5": "7f31c6d2", "T6": "40bd98e1", "T7": "b62f0a57",
-    "T7a": "0c95e3b4", "T8": "d17a4c9e", "T9": "3e8b51f6", "T10": "9a06d7c3",
-    "T11": "f24c8e1a", "T12": "6b5d2f90", "V1": "8c1e4a7d", "H1": "2f7a9b3c",
+    "T8": "d17a4c9e", "T9": "3e8b51f6", "T10": "9a06d7c3",
+    "T11": "f24c8e1a", "T12": "6b5d2f90", "VA": "e4b7c2a1", "V1": "8c1e4a7d", "H1": "2f7a9b3c",
 }
 MISSION_SHORT = "4d2e8b17"
 
@@ -82,6 +82,11 @@ roles = [
     {"key": "analyst",    "slug": "analyst",    "name": "Analyst",    "color": "#A855F7", "model": "sonnet", "canDelegateTo": ["researcher", "writer"], "description": "Derives judgments from data"},
     {"key": "reviewer",   "slug": "reviewer",   "name": "Reviewer",   "color": "#6366f1", "model": "sonnet", "canDelegateTo": [], "description": "Reviews PRs against the task (used by background missions only)",
      "_note": "stock reviewer color equals organizer's (#6366f1). For video legibility consider #14B8A6 — cosmetic, demo-only."},
+    # Stock visual-auditor role (default-roles.ts, VISUAL_AUDITOR_ROLE_SLUG): the
+    # mission page's Visual review only counts screenshots from its workers.
+    {"key": "visual-auditor", "slug": "visual-auditor", "name": "Visual Auditor", "color": "#14B8A6", "model": "sonnet", "canDelegateTo": [],
+     "allowedTools": ["Read", "Grep", "Glob", "Bash", "AskUserQuestion", "mcp__buildd__buildd"],
+     "description": "Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs"},
 ]
 for r in roles:
     r.update({"table": "workspace_skills", "isRole": True, "enabled": True, "origin": "manual",
@@ -101,7 +106,7 @@ hero_mission = {
     "defaultOutputRequirement": "pr_required", "pacingMode": "eager",
     "mergePolicy": {"tier": "auto-threshold", "threshold": {"maxLines": 800}},
     "integrationBranchEnabled": False, "workingBranch": None,
-    "autoVerify": True, "autoSurfaceAudit": False,
+    "autoVerify": True, "autoSurfaceAudit": True,
     "scheduleId": None,
     "_heartbeat": "none — created from the dashboard (UI-created missions run once, no heartbeat schedule)",
     "goalCriteria": [
@@ -136,6 +141,8 @@ def task(key, title, role, kind, phase, phase_label, deps, **kw):
     return t
 
 P1, P2, P3 = "Foundations", "Currency through the product", "Prove it"
+VISUAL_AUDITOR = "visual-auditor"
+VISUAL_ROUTES = ["/invoices/:id", "/pay/:invoiceId"]
 hero_tasks = [
     task("T0", f"Mission: {M1_TITLE}", "organizer", "coordination", None, None, [],
          mode="planning", outputRequirement="none", creationSource="orchestrator", createdByWorkerId=None,
@@ -189,15 +196,15 @@ hero_tasks = [
          "writer", "writing", 3, P3, ["T7", "T8"], project="web",
          pathManifest=["docs/billing/multi-currency.md"],
          description="How to enable, what customers see, how rounding works, how exports reconcile."),
-    # CI self-heal: created by the GitHub webhook (buildCIRetryTask), not by the organizer
-    task("T7a", "[builder · after CI #1] feat(invoices): render invoices in the customer's currency with a base-currency footnote",
-         "builder", "engineering", 2, P2, [], project="web", priority=7,
-         taskClass="attempt", parentTaskId="T7", ciRetryPrNumber=416, ciRetryHeadSha="9e41c07",
-         creationSource="mcp", createdByWorkerId=None,
-         context={"ciRetryPrNumber": 416, "iteration": 1, "failureContext": {
-             "job": "unit", "test": "packages/pdf/src/invoice.snapshot.test.tsx",
-             "excerpt": "Expected \"1.234,50 €\" — received \"1,234.50 €\" (locale de-DE)"}},
-         description="CI failed on PR #416. Fix on the same branch."),
+    # Visual review (docs/design/visual-qa-auditor.md): a visual-auditor task that
+    # screenshots what the invoice and checkout PRs changed, at desktop and phone
+    # width, and judges each shot. It never edits code, so it opens no PR.
+    task("VA", "Visual review: invoices in EUR and JPY, desktop + phone",
+         VISUAL_AUDITOR, None, 3, P3, ["T7", "T8"], project="web",
+         outputRequirement="artifact_required", creationSource="orchestrator", createdByWorkerId=None,
+         context={"visualQa": {"requiredRoutes": VISUAL_ROUTES}},
+         description="Required routes: " + ", ".join(f"`{r}`" for r in VISUAL_ROUTES) + ". Capture each at desktop (1280x900) and phone (390x844), "
+                     "EUR and JPY invoices, judge every shot, and file a fix task for anything broken. Read-only: no edits, no PR."),
     # Goal-criterion verification (mission-criteria-verify.ts): bookkeeping, observe-only
     task("V1", "Verify goal criterion: currency suite green", None, None, None, None, [],
          outputRequirement="none", taskClass="bookkeeping", creationSource="orchestrator", createdByWorkerId=None,
@@ -215,7 +222,7 @@ LABELS = {
     "T0": "plan the mission", "T1": "FX providers", "T2": "currency columns", "T3": "rates service",
     "T4": "currency picker", "T5": "formatMoney", "T6": "currency on API", "T7": "render in currency",
     "T8": "Stripe in currency", "T9": "dual-currency CSV", "T10": "receipt currency", "T11": "pay a EUR invoice",
-    "T12": "admin guide", "T7a": "fix PDF locale", "V1": "verify currency suite", "H1": "dependency sweep",
+    "T12": "admin guide", "VA": "visual review", "V1": "verify currency suite", "H1": "dependency sweep",
 }
 for t in hero_tasks:
     t["label"] = LABELS[t["key"]]
@@ -237,7 +244,7 @@ PRS = {  # task -> (prNumber, +added, -removed, files, commits)
 
 RUNNER_OF = {"T0": "atlas", "T1": "birch", "T2": "atlas", "T3": "cedar", "T4": "dune", "T5": "atlas",
              "T6": "birch", "T7": "cedar", "T8": "dune", "T9": "atlas", "T10": "birch",
-             "T7a": "birch", "T11": "cedar", "T12": "dune", "V1": "cedar", "H1": "dune"}
+             "VA": "birch", "T11": "cedar", "T12": "dune", "V1": "cedar", "H1": "dune"}
 
 def title_of(k):
     for t in hero_tasks + []:
@@ -246,11 +253,10 @@ def title_of(k):
 
 workers = []
 def mk_worker(tk, wk, **kw):
-    base_title = title_of("T7") if tk == "T7a" else title_of(tk)
+    base_title = title_of(tk)
     w = {"key": wk, "table": "workers", "taskId": tk, "workspaceId": "ws", "accountId": "acct_fleet",
          "name": worker_name(tk), "runner": RUNNER_OF[tk],
-         # T7a pushes to T7's branch: CI-retry attempts continue the parent branch
-         "branch": branch("T7", title_of("T7")) if tk == "T7a" else branch(tk, base_title),
+         "branch": branch(tk, base_title),
          "status": "idle", "_statusAtEnd": "completed",
          "waitingFor": None, "currentAction": None, "milestones": [],
          "prUrl": None, "prNumber": None, "prLifecycleStatus": None, "mergedAt": None,
@@ -264,18 +270,10 @@ def mk_worker(tk, wk, **kw):
     return w
 
 WK = {"T0": "w0", "T1": "w1", "T2": "w2", "T3": "w3", "T4": "w4", "T5": "w5", "T6": "w6", "T7": "w7",
-      "T8": "w8", "T9": "w9", "T10": "w10", "T7a": "w7a", "T11": "w11", "T12": "w12", "V1": "wv1", "H1": "wh1"}
+      "T8": "w8", "T9": "w9", "T10": "w10", "VA": "wva", "T11": "w11", "T12": "w12", "V1": "wv1", "H1": "wh1"}
 for tk, wk in WK.items():
     if tk == "H1": continue
     workers.append(mk_worker(tk, wk))
-# T7a continues PR #416, adds one commit
-for w in workers:
-    if w["key"] == "w7a":
-        w["_final"] = {"prNumber": 416, "prUrl": pr_url(416), "linesAdded": 23, "linesRemoved": 9,
-                       "filesChanged": 2, "commitCount": 1, "prLifecycleStatus": "merged"}
-    if w["key"] == "w7":
-        w["_final"]["prLifecycleStatus"] = "ci_failed"
-        w["_final"]["_note"] = "w7 ends completed with PR #416 ci_failed; mergedAt is stamped on w7 (PR owner) when #416 merges after w7a's fix"
 
 # ------------------------------------------------------------------ artifacts
 artifacts = [
@@ -301,9 +299,35 @@ artifacts = [
      "type": "summary", "key_": "mission-summary", "title": "Multi-currency invoices — shipped",
      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. "
                 "Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; "
-                "the export reconciles to base currency.\n\n11 PRs merged · 1 CI failure fixed automatically · 1 decision from a human.",
+                "the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · 1 decision from a human.",
      "visibility": "private", "metadata": {}},
 ]
+
+# The visual auditor's shots: one `screenshot` artifact per route × viewport, the
+# shape upload_artifact writes (apps/web/src/app/api/artifacts/upload-url): title
+# = filename, metadata.qa for the mission page's Visual review, plus the
+# filename/mimeType/sizeBytes the route stamps. The PNGs are fictional mockups
+# (shots/render-harborline-shots.ts); `_file` is relative to this directory, and
+# seed.ts derives the qa/<workspace>/<id>/<name> storage key and uploads the bytes.
+SHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots")
+RUN_KEY = "harborline-currency-r1"
+VISUAL_SHOTS = [  # (file stem, route, viewport, finding)
+    ("invoices-eur", "/invoices/:id", "desktop", "EUR invoice: amounts use de-DE separators (1.234,50 €), totals line up in one column, and the base-currency footnote names the rate."),
+    ("invoices-eur", "/invoices/:id", "mobile", "EUR invoice at 390px: line items stack, nothing clips or scrolls sideways, and Pay stays a full-width button."),
+    ("invoices-jpy", "/invoices/:id", "desktop", "JPY invoice: no decimals anywhere, yen symbol on every amount, tax and total add up to the line items."),
+    ("invoices-jpy", "/invoices/:id", "mobile", "JPY invoice at 390px: the footnote wraps cleanly and the total reads without scrolling past the items."),
+    ("pay-jpy", "/pay/:invoiceId", "desktop", "JPY checkout: the charge matches the invoice total exactly, with no decimals, and the card form is complete."),
+    ("pay-jpy", "/pay/:invoiceId", "mobile", "JPY checkout at 390px: amount first, card fields full width, Pay button visible without zooming."),
+]
+for i, (stem, route, viewport, finding) in enumerate(VISUAL_SHOTS):
+    fname = f"{stem}-{viewport}.png"
+    artifacts.append({
+        "key": f"a_shot{i + 1}", "table": "artifacts", "workerId": "wva", "workspaceId": "ws", "missionId": "M1",
+        "type": "screenshot", "key_": None, "title": fname, "content": None, "visibility": "private",
+        "_file": f"shots/{fname}",
+        "metadata": {"qa": {"runKey": RUN_KEY, "route": route, "viewport": viewport, "finding": finding, "verdict": "ok"},
+                     "filename": fname, "mimeType": "image/png", "sizeBytes": os.path.getsize(os.path.join(SHOTS_DIR, fname))},
+    })
 for a in artifacts:
     a["key"], a["artifactKey"] = a.pop("key"), a.pop("key_")
     a["_column_note"] = "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
@@ -327,10 +351,12 @@ mission_notes = [
      "authorType": "user", "type": "reply", "replyTo": "n_q", "title": "Per line",
      "body": "Per line. The card charge is what customers see. Put the delta in the export so finance can reconcile.",
      "actorLabel": "Maya Okafor", "status": "open"},
-    {"key": "n_ci", "table": "mission_notes", "missionId": "M1", "taskId": "T7a", "workerId": None,
-     "authorType": "system", "type": "update", "title": "CI failed on #416 — fix dispatched",
-     "body": "Invoice PDF snapshot: de-DE rendered `1,234.50 €`, expected `1.234,50 €`. A builder picked it up on the same branch.",
-     "actorLabel": "buildd", "status": "open"},
+    {"key": "n_visual", "table": "mission_notes", "missionId": "M1", "taskId": "VA", "workerId": "wva",
+     "authorType": "agent", "type": "update", "title": f"Visual review: {len(VISUAL_SHOTS)} of {len(VISUAL_SHOTS)} shots ok",
+     "body": "Checked `/invoices/:id` in EUR and JPY and `/pay/:invoiceId` in JPY, at desktop and phone width. "
+             "Separators and symbols follow each currency's locale, JPY shows no decimals, the base-currency footnote wraps cleanly at 390px, "
+             "and the pay button stays on the first screen. Nothing to fix.",
+     "actorLabel": "Visual Auditor", "status": "open"},
     {"key": "n_done", "table": "mission_notes", "missionId": "M1", "taskId": None, "workerId": None,
      "authorType": "system", "type": "update", "title": "All 4 goal criteria pass — mission complete",
      "body": None, "actorLabel": "buildd", "status": "open"},
@@ -345,7 +371,7 @@ memories = [
     {"key": "mem2", "table": "memories", "teamId": "team", "type": "gotcha", "project": "pdf",
      "title": "Invoice PDF snapshots are locale-sensitive",
      "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale) — never toLocaleString() with the process default.",
-     "tags": ["pdf", "i18n", "ci"], "files": ["packages/pdf/src/invoice.snapshot.test.tsx"], "source": "task:T7a"},
+     "tags": ["pdf", "i18n"], "files": ["packages/pdf/src/invoice.snapshot.test.tsx"], "source": "task:T7"},
     {"key": "mem3", "table": "memories", "teamId": "team", "type": "pattern", "project": "money",
      "title": "Snapshot the FX rate at invoice issue",
      "content": "Store fx_rate_snapshot on the invoice. Anything downstream (checkout, receipt, export) reads the snapshot so a provider outage can't change what a customer owes.",
@@ -489,9 +515,9 @@ def merge(t, tk, pn=None):
        api="auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
        db="workers.mergedAt=now, prLifecycleStatus=merged")
 
-ev(0, "mission_create", mission="M1", title=M1_TITLE, description=M1_GOAL,
-   api="POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
-   db="INSERT missions", beat="The one-sentence goal")
+ev(0, "mission_create", mission="M1", title=M1_TITLE, description=M1_GOAL, conversation="C1",
+   api="chat approval confirmed → manage_missions create → POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
+   db="INSERT missions (conversationId); the proposing tool part turns output-available with the mission ref", beat="Make it a mission")
 ev(2, "task_create", task="T0", api="(mission create auto-starts the organizer)", db="INSERT tasks (mode=planning, roleSlug=organizer)")
 claim(5, "T0")
 prog(8, "T0", 10, "Reading the repo: apps/web, apps/api, packages/money")
@@ -576,21 +602,9 @@ ev(1032, "agent_message", fromWorker="w8", toTask="T9", toWorker="w9",
 prog(1040, "T9", 80, "Added rounding_delta column per the rounding decision")
 prog(1050, "T8", 60, "Per-line rounding in convert(); totals now equal the charge")
 prog(1070, "T10", 40, "Receipt template mirrors the invoice footnote")
-ci(1010, "T7", "ci_running")
-ev(1108, "ci", worker="w7", prNumber=416, state="ci_failed",
-   failure={"job": "unit", "test": "packages/pdf/src/invoice.snapshot.test.tsx", "excerpt": "Expected \"1.234,50 €\" — received \"1,234.50 €\" (locale de-DE)"},
-   api="GitHub webhook check_suite(failure) → POST /api/github/webhook", db="workers.prLifecycleStatus=ci_failed, prCheckFailureCount=1",
-   beat="CI goes red")
-ev(1110, "task_create", task="T7a", api="webhook → buildCIRetryTask()", db="INSERT tasks(taskClass=attempt, parentTaskId=T7, ciRetryPrNumber=416, priority=7)")
-ev(1111, "mission_note", note="n_ci", api="(system)", db="INSERT mission_notes")
-claim(1116, "T7a")
-prog(1130, "T7a", 20, "Reading CI log: de-DE snapshot uses the process locale")
+ci(1010, "T7", "ci_running"); ci(1095, "T7", "ci_green"); merge(1120, "T7")
 open_pr(1150, "T9"); complete(1160, "T9", "Ledger export carries both currencies, the rate, and a rounding delta.")
-prog(1180, "T7a", 60, "PDF footnote was calling toLocaleString() — routed it through formatMoney(locale)")
 prog(1200, "T8", 80, "Stripe test mode: EUR, GBP, JPY (zero-decimal) all charge the invoice total exactly")
-ev(1215, "memory", memory="mem2", api="MCP learn {type:'gotcha'}", db="INSERT memories")
-ev(1222, "push_commit", worker="w7a", prNumber=416, sha="c3d8e21", api="git push (same branch)", db="workers.lastCommitSha, commitCount")
-ci(1225, "T7", "ci_running", 416)
 ci(1165, "T9", "ci_running"); ci(1245, "T9", "ci_green"); merge(1270, "T9")
 # heartbeat tick of the second mission, mid-demo
 ev(1260, "schedule_fire", schedule="S2", task="H1", api="cron → /api/cron/schedules", db="INSERT tasks(H1, creationSource=schedule); task_schedules.lastRunAt, totalRuns+1",
@@ -599,14 +613,26 @@ ev(1263, "claim", task="H1", worker="wh1", runner="dune", api="POST /api/workers
 ev(1266, "worker_status", worker="wh1", status="running", api="PATCH /api/workers/wh1", db="workers.status=running")
 ev(1300, "progress", worker="wh1", pct=60, message="Two patch bumps with green CI — merging", api="update_progress", db="workers.milestones")
 ev(1330, "complete", task="H1", worker="wh1", summary="Merged 2 patch bumps. No majors pending. Next tick in 6h.", api="complete_task", db="tasks.status=completed")
-ev(1300, "ci", worker="w7", prNumber=416, state="ci_green", api="GitHub webhook (check_suite on the PR owner row)", db="workers(w7).prLifecycleStatus=ci_green", beat="CI heals itself")
-complete(1310, "T7a", "Fixed locale-sensitive PDF footnote; CI green on #416.")
-merge(1330, "T7", 416)
 open_pr(1340, "T8"); complete(1352, "T8", "Checkout charges in the customer's currency; per-line rounding matches Stripe exactly.")
 claim(1358, "T11"); claim(1362, "T12")
 TL[-2]["beat"] = "Phase 3: prove it"
 prog(1380, "T10", 85, "Receipt preview in EUR and JPY")
 ci(1355, "T8", "ci_running"); ci(1450, "T8", "ci_green"); merge(1475, "T8")
+# Visual review: once the invoice and checkout PRs are merged, a visual-auditor
+# screenshots what they changed, judges every shot and posts the verdict.
+ev(1476, "task_create", task="VA", api="mission surface audit (ensureMissionSurfaceAudit) → INSERT tasks(roleSlug=visual-auditor)",
+   db="INSERT tasks (roleSlug=visual-auditor, outputRequirement=artifact_required, context.visualQa.requiredRoutes)",
+   beat="Then it looks at what it built")
+claim(1478, "VA")
+prog(1484, "VA", 10, "Required routes from the merged PRs: /invoices/:id, /pay/:invoiceId")
+prog(1500, "VA", 35, "Captured 6 shots: EUR and JPY invoices, JPY checkout, at desktop and phone width")
+for i in range(len(VISUAL_SHOTS)):
+    ev(1504 + i * 4, "artifact", artifact=f"a_shot{i + 1}", worker="wva",
+       api="MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+       db="INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)")
+prog(1528, "VA", 90, "All 6 shots ok: separators, symbols, no JPY decimals, nothing clipped at 390px")
+ev(1531, "mission_note", note="n_visual", api="MCP buildd post_note {type:'update'}", db="INSERT mission_notes")
+complete(1534, "VA", "Visual review passed: 6 of 6 shots ok. EUR and JPY invoices and JPY checkout, at desktop and phone width.")
 open_pr(1420, "T10"); complete(1430, "T10", "Receipts show paid currency and the rate used.")
 prog(1440, "T11", 25, "Seeding a EUR customer and invoice")
 prog(1470, "T12", 35, "Drafting: enabling currencies, what customers see")
@@ -676,6 +702,7 @@ tool('w7', 745, 'Read', 'packages/money/src/formatMoney.ts')
 for t in range(800, 985, 9):
     tool('w7', t, rnd.choice(['Edit', 'Read', 'Read']), rnd.choice(reads7 + ['packages/pdf/src/BaseCurrencyFootnote.tsx']), rnd.randint(2, 12), rnd.randint(0, 4))
 tool('w7', 960, 'Bash', cmd='pnpm --filter @harborline/pdf test')
+ev(985, "memory", memory="mem2", api="MCP learn {type:'gotcha'}", db="INSERT memories")
 
 # T8 (w8): checkout. running 709..868 (then waits), resumes 1018..1352
 reads8 = ['packages/payments/src/stripe.ts', 'apps/web/src/app/pay/[invoiceId]/page.tsx', 'packages/money/src/fx/convert.ts',
@@ -690,19 +717,72 @@ for t, a, r in [(826, 21, 2), (838, 11, 1)]:
 tool('w8', 850, 'Bash', cmd='pnpm --filter @harborline/payments test convert')
 tool('w8', 858, 'Read', 'packages/money/src/fx/convert.ts')
 
-# T7a (w7a): CI fix. running 1119..1310
-for t, p in [(1121, 'packages/pdf/src/invoice.snapshot.test.tsx'), (1127, 'packages/pdf/src/BaseCurrencyFootnote.tsx'),
-             (1134, 'packages/money/src/formatMoney.ts'), (1150, 'packages/pdf/src/BaseCurrencyFootnote.tsx')]:
-    tool('w7a', t, 'Read', p)
-tool('w7a', 1170, 'Edit', 'packages/pdf/src/BaseCurrencyFootnote.tsx', 14, 7)
-tool('w7a', 1176, 'Edit', 'packages/pdf/src/invoice.snapshot.test.tsx', 9, 2)
-tool('w7a', 1190, 'Bash', cmd='pnpm --filter @harborline/pdf test invoice.snapshot')
+# VA (wva): visual review. running 1481..1534. Capture, then read every shot.
+tool('wva', 1486, 'Bash', cmd='QA_VIEWPORT=mobile scripts/qa/shoot.sh /invoices/inv_eur /invoices/inv_jpy /pay/inv_jpy')
+tool('wva', 1494, 'Bash', cmd='scripts/qa/shoot.sh /invoices/inv_eur /invoices/inv_jpy /pay/inv_jpy')
+for i, (stem, _route, viewport, _finding) in enumerate(VISUAL_SHOTS):
+    tool('wva', 1502 + i * 4, 'Read', f'/tmp/qa/screenshots/{stem}-{viewport}.png')
 
 # drop None beats, rename from_ key, sort
 for e in TL:
     if e.get("beat") is None: e.pop("beat", None)
     if "from_" in e: e["from"] = e.pop("from_")
 TL.sort(key=lambda e: e["t"])
+
+# ── Agent chat opener (docs/design/agent-chat.md) ─────────────────────────────
+# The conversation that files M1: seeded before t=0 with the approval card open;
+# the t=0 mission_create event confirms it (scripts/demo/lib/chat.ts). Strings
+# of the form {{KEY}} resolve to the seeded UUID of that dataset key. No model
+# call is made anywhere: the turns are data, replayed as the real route saves them.
+M1_DRAFT = {
+    "action": "create", "workspaceId": "{{ws}}", "title": M1_TITLE,
+    "description": M1_GOAL + "\n\nConstraints:\n- Invoices API changes are additive (v2-safe). FX rate is snapshotted at issue.",
+    "goalCriteria": hero_mission["goalCriteria"], "maxConcurrentTasks": 6,
+}
+def tool_part(call_id, action, inp, summary, objects=None, **kw):
+    part = {"type": f"tool-{action}", "toolCallId": call_id, "state": "output-available", "input": inp,
+            "output": {"data": summary, "objects": objects or [], "summary": summary}}
+    part.update(kw)
+    return part
+chat = {
+    "capabilities": ["chat"],
+    # Synthetic, never valid anywhere: it only makes the chat entry points appear
+    # on the demo stack. Nothing in the storyboard sends a turn.
+    "providerKey": {"provider": "anthropic", "value": "sk-ant-demo-000000000000000000000000-not-a-real-key"},
+    "conversations": [{
+        "key": "C1", "table": "conversations", "workspaceId": "ws", "createdByUserId": "u_maya",
+        "title": M1_TITLE, "titleSource": "auto", "agentRoleSlug": "organizer", "_createdAgo": "-5m",
+        "messages": [
+            {"key": "C1m1", "role": "user", "_at": "-5m",
+             "parts": [{"type": "text", "text": "What would it take to bill customers in their own currency?"}]},
+            {"key": "C1m2", "role": "assistant", "_at": "-5m", "tier": "standard",
+             "parts": [
+                 {"type": "step-start"},
+                 tool_part("call_demo_list", "manage_missions", {"action": "list", "workspace": "billing-web"}, "3 open, none touch currency"),
+                 tool_part("call_demo_recall", "recall", {"query": "currency money rounding"}, "1 recalled: money is integer minor units"),
+                 tool_part("call_demo_tasks", "list_tasks", {"workspace": "billing-web", "status": "in_progress"}, "nothing in flight touches currency"),
+                 {"type": "text", "text": "Nothing in flight touches currency. Amounts are integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."},
+             ]},
+            {"key": "C1m3", "role": "user", "_at": "-2m",
+             "parts": [{"type": "text", "text": "Make it a mission. Keep the public API backward compatible."}]},
+            {"key": "C1m4", "role": "assistant", "_at": "-2m", "tier": "standard",
+             "parts": [
+                 {"type": "step-start"},
+                 {"type": "text", "text": "Here's a draft. I won't file it until you confirm."},
+                 {"type": "tool-manage_missions", "toolCallId": "call_demo_create", "state": "approval-requested",
+                  "input": M1_DRAFT, "approval": {"id": "demo-approval-m1"}},
+             ]},
+        ],
+        # The open approval the card echoes back, and what confirming it turns into.
+        "approval": {"messageKey": "C1m4", "toolCallId": "call_demo_create", "approvalId": "demo-approval-m1", "toolName": "manage_missions"},
+        "_onConfirm": {
+            "summary": f'filed "{M1_TITLE}"',
+            "data": f"Mission created: {M1_TITLE}. The Organizer is planning it.",
+            "objects": [{"kind": "mission", "id": "{{M1}}", "workspaceId": "{{ws}}", "title": M1_TITLE, "fallbackText": f"Mission: {M1_TITLE}"}],
+            "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks.",
+        },
+    }],
+}
 
 data = {
     "_meta": {
@@ -728,6 +808,7 @@ data = {
     "memories": memories,
     "heartbeatPastTicks": heartbeat["past_ticks"],
     "backgroundMissions": [{"missionKey": b["mission"]["key"], "tasks": b["tasks"]} for b in background],
+    "chat": chat,
     "timeline": TL,
 }
 with open(OUT, "w") as f:

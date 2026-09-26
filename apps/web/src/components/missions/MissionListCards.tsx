@@ -17,6 +17,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { MissionCardView } from '@/lib/mission-card-view';
 import { nextRunLabel, shortAgo, shortDuration, type ListTone, type MissionListCardModel } from '@/lib/mission-list-card';
+import { STATUS_TONE_EDGE, STATUS_TONE_SQUARE, STATUS_TONE_TEXT } from '@/lib/status-tone';
 import { timeAgo } from '@/lib/mission-helpers';
 import PhaseBar, { CELL_BOX } from './PhaseBar';
 
@@ -26,27 +27,10 @@ export interface ListCardProps {
   workspaceName?: string | null;
 }
 
-const TONE_TEXT: Record<ListTone, string> = {
-  accent: 'text-accent-text',
-  warning: 'text-status-warning',
-  success: 'text-status-success',
-  error: 'text-status-error',
-  muted: 'text-text-secondary',
-};
-const TONE_SQUARE: Record<ListTone, string> = {
-  accent: 'bg-accent',
-  warning: 'bg-status-warning',
-  success: 'bg-status-success',
-  error: 'bg-status-error',
-  muted: 'border-2 border-text-secondary',
-};
-const TONE_EDGE: Record<ListTone, string> = {
-  accent: 'border-l-accent',
-  warning: 'border-l-status-warning',
-  success: 'border-l-status-success',
-  error: 'border-l-status-error',
-  muted: 'border-l-border-strong',
-};
+// One status → colour mapping for every surface (orange = moving, green = done).
+const TONE_TEXT = STATUS_TONE_TEXT;
+const TONE_SQUARE = STATUS_TONE_SQUARE;
+const TONE_EDGE = STATUS_TONE_EDGE;
 
 export const statusSlug = (label: string) => label.toLowerCase().replace(/\s+/g, '_');
 

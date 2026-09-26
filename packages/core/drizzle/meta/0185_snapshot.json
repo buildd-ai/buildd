@@ -1,5 +1,5 @@
 {
-  "id": "c46d9533-6acb-4c76-8602-cb25e477c5a7",
+  "id": "3f6a6f10-4df7-4351-9a2b-3dd7053492eb",
   "prevId": "fad4d695-0288-4af0-a4e9-f32d96672a07",
   "version": "7",
   "dialect": "postgresql",
@@ -981,6 +981,53 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.chat_turn_windows": {
+      "name": "chat_turn_windows",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "turn_at": {
+          "name": "turn_at",
+          "type": "timestamp with time zone[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::timestamptz[]"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "chat_turn_windows_user_id_users_id_fk": {
+          "name": "chat_turn_windows_user_id_users_id_fk",
+          "tableFrom": "chat_turn_windows",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -7542,18 +7589,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "recheck_requested_at": {
-          "name": "recheck_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_follow_up_task_id": {
-          "name": "auto_follow_up_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "proposal_rejected_reason": {
           "name": "proposal_rejected_reason",
           "type": "text",
@@ -7665,19 +7700,6 @@
           "tableTo": "tasks",
           "columnsFrom": [
             "doc_fix_task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "spec_discrepancies_auto_follow_up_task_id_tasks_id_fk": {
-          "name": "spec_discrepancies_auto_follow_up_task_id_tasks_id_fk",
-          "tableFrom": "spec_discrepancies",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "auto_follow_up_task_id"
           ],
           "columnsTo": [
             "id"
@@ -10031,6 +10053,12 @@
         },
         "chat_daily_budget_usd": {
           "name": "chat_daily_budget_usd",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chat_user_daily_budget_usd": {
+          "name": "chat_user_daily_budget_usd",
           "type": "numeric(10, 2)",
           "primaryKey": false,
           "notNull": false

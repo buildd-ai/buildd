@@ -41,6 +41,7 @@ function Segment({ seg }: { seg: FeedSegment }) {
           {/* While streaming, a caret trails the last paragraph (inline, not a new line). */}
           <MarkdownContent
             content={seg.text}
+            images="link"
             className={`!text-[15.5px] !text-text-primary ${seg.streaming ? "[&_p:last-child]:after:ml-0.5 [&_p:last-child]:after:text-accent [&_p:last-child]:after:content-['▍']" : ''}`}
           />
         </div>

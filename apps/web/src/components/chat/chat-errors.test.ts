@@ -7,6 +7,12 @@ describe('parseChatUnavailable', () => {
     expect(parseChatUnavailable(err)).toEqual({ error: 'no_key', message: 'No provider key.', canManageTeamKeys: true });
   });
 
+  it('keeps whose budget ran out and the server\'s message', () => {
+    const body = { error: 'budget_exhausted', scope: 'user', message: 'You\'ve used your daily chat limit.', retryAfterSeconds: 60 };
+    expect(parseChatUnavailable(new Error(JSON.stringify(body)))).toEqual(body as any);
+    expect(chatErrorLine(new Error(JSON.stringify(body)))).toBe('You\'ve used your daily chat limit.');
+  });
+
   it('ignores anything that is not a known reason', () => {
     expect(parseChatUnavailable(new Error('Failed to fetch'))).toBeNull();
     expect(parseChatUnavailable(new Error('{"error":"boom"}'))).toBeNull();

@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { toVisualShots } from '@/lib/mission-visual-review';
+import { toVisualShots, withVariants } from '@/lib/mission-visual-review';
 import VisualReviewStrip from './VisualReviewStrip';
 
 const shot = (id: string, route: string, viewport: string, verdict: string) => ({
@@ -69,5 +69,38 @@ describe('VisualReviewStrip', () => {
     const ok = renderToStaticMarkup(<VisualReviewStrip shots={shots.slice(0, 1)} missionId="m1" />);
     const count = ok.match(/data-testid="visual-review-count"[^>]*>([\s\S]*?)<\/p>/)![1].replace(/<[^>]+>/g, '');
     expect(count).toBe('1 shot · all ok');
+  });
+});
+
+describe('VisualReviewStrip, variants and phone layout', () => {
+  const titled = (id: string, title: string, route: string, viewport: string) => ({
+    ...shot(id, route, viewport, 'ok'),
+    title,
+    createdAt: `2026-03-10T10:0${id.length}:00.000Z`,
+  });
+  const run = withVariants(toVisualShots([
+    titled('a', 'invoices-eur-desktop.png', '/invoices/:id', 'desktop'),
+    titled('bb', 'invoices-jpy-desktop.png', '/invoices/:id', 'desktop'),
+    titled('ccc', 'pay-jpy-mobile.png', '/pay/:invoiceId', 'mobile'),
+  ]));
+  const html = renderToStaticMarkup(<VisualReviewStrip shots={run} missionId="m1" />);
+  const text = html.replace(/<[^>]+>/g, '\n');
+
+  it('captions colliding shots with their variant, so EUR and JPY no longer read the same', () => {
+    expect(text).toContain('/invoices/:id · eur · desktop');
+    expect(text).toContain('/invoices/:id · jpy · desktop');
+    expect(text).toContain('/pay/:invoiceId · mobile');
+  });
+
+  it('lays thumbs out as a two-column grid on phones, not a row that hides all but two', () => {
+    const list = html.match(/<ul[^>]*data-testid="visual-review-thumbs"[^>]*>/)![0];
+    expect(list).toContain('grid-cols-2');
+    expect(list).not.toMatch(/(^|\s)overflow-x-auto/);
+  });
+
+  it('grid layout (the task page) shows each finding under its shot', () => {
+    const grid = renderToStaticMarkup(<VisualReviewStrip shots={run} missionId="m1" layout="grid" />);
+    expect(grid.match(/data-testid="visual-review-finding"/g)!.length).toBe(3);
+    expect(grid).toContain('Finding for a.');
   });
 });

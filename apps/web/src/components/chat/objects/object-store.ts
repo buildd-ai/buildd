@@ -68,8 +68,13 @@ interface Slot {
 export function watchedTaskIds(view: ObjectView | null): string[] {
   if (!view) return [];
   switch (view.kind) {
-    case 'mission':
-      return Object.keys(view.board.tasks);
+    case 'mission': {
+      // Board rows are deliverables only; the planning task (and any row the
+      // Board folds away) still moves the pane, so watch every mission task.
+      const ids = new Set([...(view.taskIds ?? []), ...Object.keys(view.board.tasks)]);
+      if (view.board.planning) ids.add(view.board.planning.taskId);
+      return [...ids];
+    }
     case 'task':
       return [view.id];
     case 'question':
@@ -108,9 +113,13 @@ export function createObjectStore(source: ObjectSource, opts: { clock?: Clock; w
   const syncCtx = (s: Slot) => {
     const v = s.entry.view;
     s.ctx.missionId = missionIdOf(s.ref, v);
-    // An unseen worker's first progress event only records a baseline status
-    // (classifyMissionEvent), so no seeding is needed here.
     s.ctx.taskIds = new Set(watchedTaskIds(v));
+    // Seed the status baseline from the view, as the mission page does: an
+    // unseen worker's first progress only records a baseline, so without this
+    // the claimed → running change after a load never refetches.
+    if (v?.kind === 'mission' && v.workerStatuses) {
+      for (const [id, st] of Object.entries(v.workerStatuses)) s.ctx.lastStatusByWorker.set(id, st);
+    }
   };
 
   // Hoisted: load() re-opens a blind watch once the view is known.

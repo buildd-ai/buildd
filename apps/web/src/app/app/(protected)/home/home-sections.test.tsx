@@ -42,6 +42,42 @@ describe('StatStrip', () => {
     expect(html).toContain('data-testid="stat-self-healed"');
     expect(html).not.toContain('data-testid="stat-prs-in-ci"');
   });
+
+  const quiet = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(
+    <StatStrip live={0} capacity={8} runners={1} needsYou={0} needsYouDetail={null} mergedToday={3} mergedDetail={null} prsInCi={[]} selfHealed={0} {...extra} />,
+  );
+
+  it('does not lead with "Self-healed 0" when nothing failed', () => {
+    const html = quiet();
+    expect(html).not.toContain('data-testid="stat-self-healed"');
+    expect(html).not.toMatch(/self-healed/i);
+  });
+
+  it('shows the screens reviewed in that slot when there was a visual review', () => {
+    const html = quiet({ screensReviewed: { shots: 6, ok: 6, issues: 0, unsure: 0 } });
+    expect(html).toContain('data-testid="stat-screens-reviewed"');
+    expect(html.replace(/<[^>]+>/g, ' ')).toMatch(/Screens reviewed\s+6\s+all ok/);
+  });
+});
+
+describe('NeedsYouStack shipped card', () => {
+  const shipped = (over: Record<string, unknown> = {}) => ({
+    id: 'm1', title: 'Example mission', href: '/app/missions/m1', completedAt: '2026-01-10T14:00:00.000Z',
+    prs: 11, fixes: 0, durationMs: 37 * 60_000, criteria: null, ...over,
+  });
+  const text = (over: Record<string, unknown> = {}) => renderToStaticMarkup(
+    <NeedsYouStack count={0} questions={[]} held={[]} shipped={[shipped(over)]} timeZone="UTC" />,
+  ).replace(/<[^>]+>/g, ' ');
+
+  it('drops "0 auto-fixes" and shows the visual review instead', () => {
+    const t = text({ screens: { shots: 6, ok: 6, issues: 0, unsure: 0 } });
+    expect(t).not.toMatch(/auto-fix/);
+    expect(t).toMatch(/6\/6\s+screens ok/);
+  });
+
+  it('keeps auto-fixes when there were some', () => {
+    expect(text({ fixes: 2 })).toMatch(/2\s+auto-fixes/);
+  });
 });
 
 describe('FleetStrip', () => {
@@ -172,12 +208,14 @@ describe('FleetStrip — demo polish regressions', () => {
   ], { now: NOW });
   const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
 
-  it('the capacity dots follow the row order (busy slot listed first → filled dot first)', () => {
+  // Rows are in slot order (a running task keeps its row when the slot above it
+  // frees up — demo capture, home fleet live take), and the dots follow them.
+  it('rows stay in slot order and the capacity dots follow the row order', () => {
     const rows = [...html.matchAll(/data-testid="fleet-slot" data-busy="(true|false)"/g)].map(m => m[1]);
-    expect(rows).toEqual(['true', 'false']);
+    expect(rows).toEqual(['false', 'true']);
     const meter = html.match(/<span class="mt-0.5 flex[^"]*" aria-label="[^"]*">(.*?)<\/span>/)?.[1] ?? '';
     const dots = [...meter.matchAll(/<i [^>]*class="([^"]*)"/g)].map(m => m[1].includes('bg-accent') ? 'busy' : 'idle');
-    expect(dots).toEqual(['busy', 'idle']);
+    expect(dots).toEqual(['idle', 'busy']);
   });
 
   it('an idle row keeps its time: the age sits in its own non-shrinking column, outside the truncated text', () => {
@@ -185,6 +223,29 @@ describe('FleetStrip — demo polish regressions', () => {
     expect(at).toContain('shrink-0');
     // The truncating span closes before the time begins.
     expect(html).toMatch(/<span class="[^"]*truncate[^"]*">idle(?:(?!<\/span><span[^>]*fleet-slot-last-at).)*<\/span>(?:<[^>]+>)*?<span[^>]*data-testid="fleet-slot-last-at"/);
+  });
+});
+
+describe('FleetStrip — a just-claimed slot', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://dune.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) };
+  const f = buildFleetSnapshot([hb], [
+    { id: 'c', accountId: 'a', runner: 'http://dune.local:1', status: 'running', startedAt: new Date(NOW - 10_000), task: { id: 'tc', title: 'feat(checkout): Stripe in currency', missionId: 'm1' } },
+    { id: 'd', accountId: 'a', runner: 'http://dune.local:1', status: 'running', startedAt: min(6), task: { id: 'td', title: 'feat(settings): currency picker', missionId: 'm1' } },
+  ], { now: NOW });
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+  const slots = html.split('data-testid="fleet-slot"').slice(1);
+
+  it('says "claimed", not "— · 0m", and draws no empty progress track', () => {
+    const claimed = slots.find(s => s.includes('checkout')) ?? '';
+    expect(claimed).toContain('data-testid="fleet-slot-claimed"');
+    expect(claimed).not.toContain('—');
+    expect(claimed).not.toContain('max-w-[150px]');
+  });
+
+  it('with no progress reported, shows only the elapsed time', () => {
+    const running = slots.find(s => s.includes('currency picker')) ?? '';
+    expect(running).toContain('>6m<');
+    expect(running).not.toContain('—');
   });
 });
 

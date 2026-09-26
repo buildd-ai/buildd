@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, pathClaims, workers, initiatives, teams } from '@buildd/core/db/schema';
 import { eq, and, ne, isNull, isNotNull, sql, desc } from 'drizzle-orm';
-import type { InitiativeKPIState } from '@buildd/shared';
+import { computeInitiativeProgress, type MissionStatus } from '@buildd/core/mission-helpers';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -85,7 +85,6 @@ export interface InitiativeBrief {
   status: string;
   progress: number;
   description: string | null;
-  kpiSummary: string | null;
 }
 
 /**
@@ -220,9 +219,7 @@ function renderOpenPRs(prs: OpenPR[]): string {
 }
 
 function renderInitiative(brief: InitiativeBrief): string {
-  let text = `### Parent initiative: ${brief.title} [${brief.status}, ${brief.progress}%]`;
-  if (brief.kpiSummary) text += `\n${brief.kpiSummary}`;
-  return cap(text, BUDGET_INITIATIVE);
+  return cap(`### Parent initiative: ${brief.title} [${brief.status}, ${brief.progress}%]`, BUDGET_INITIATIVE);
 }
 
 function renderBudget(budgetLine: string): string {
@@ -402,27 +399,18 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
     },
 
     async getInitiativeBrief(initiativeId) {
+      // Progress is missions done over missions, the same rule the dashboard
+      // uses (`computeInitiativeProgress`). One relational query.
       const row = await db.query.initiatives.findFirst({
         where: eq(initiatives.id, initiativeId),
-        columns: {
-          id: true,
-          title: true,
-          status: true,
-          description: true,
-          progressCache: true,
-          kpiState: true,
-        },
+        columns: { id: true, title: true, status: true, description: true },
+        with: { missions: { columns: { status: true } } },
       });
       if (!row) return null;
 
-      const progress = (row.progressCache as { progress?: number } | null)?.progress ?? 0;
-
-      let kpiSummary: string | null = null;
-      const kpiState = row.kpiState as InitiativeKPIState | null;
-      if (kpiState?.kpis?.length) {
-        const met = kpiState.kpis.filter(k => k.verdict === 'pass').length;
-        kpiSummary = `KPIs: ${met}/${kpiState.kpis.length} met`;
-      }
+      const { progress } = computeInitiativeProgress(
+        (row.missions ?? []).map((m) => ({ status: m.status as MissionStatus, totalTasks: 0, completedTasks: 0 })),
+      );
 
       return {
         id: row.id,
@@ -430,7 +418,6 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
         status: row.status,
         progress,
         description: row.description ?? null,
-        kpiSummary,
       };
     },
 

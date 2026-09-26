@@ -409,19 +409,43 @@ own key*. Nothing falls back to a subscription seat.
 
 ### Cost and rate limits
 
-Chat spend is inference spend. It's metered per turn from `usage`, stored on the
-message, and summed per conversation and per team. It never touches an account's
-`maxCostPerDay` / `totalCost`, which meter runner work.
+Chat spend is inference spend. It's metered per turn from `usage` (the
+generative call, plus the routing decision call in front of it, stored on the
+user message), and summed per team and per person per day in the team's
+timezone. It never touches an account's `maxCostPerDay` / `totalCost`, which
+meter runner work.
 
 | Team's runner auth | What the user sees | Limits |
 |---|---|---|
-| `authType: 'api'` | real dollars, next to agent spend in `get_budget_forecast` as its own line | a team daily chat cap (`teams.chatDailyBudgetUsd`, default NULL = no cap), 30 turns per user per 10 minutes |
-| `authType: 'oauth'` | real dollars for chat, labelled "chat, API key". Agent run cost stays virtual, as today, and the two are never summed | the same caps. Hitting one never touches seat budgets |
+| `authType: 'api'` | real dollars, next to agent spend in `get_budget_forecast` as its own line | the team daily chat budget, each person's share of it, 30 turns per user per 10 minutes |
+| `authType: 'oauth'` | real dollars for chat, labelled "chat, API key". Agent run cost stays virtual, as today, and the two are never summed | the same limits. Hitting one never touches seat budgets |
 
-At 80% of the daily cap the agent says so once. At 100%, turns stop until the
-next day in the team's timezone, and the mission form stays available. The
-per-user rate limit also counts approvals and resumes, so they can't be used to
-bypass it.
+The limits (`apps/web/src/lib/chat/limits.ts`), checked in this order before any
+model call:
+
+1. **Team daily budget.** `teams.chatDailyBudgetUsd`. Unset means the default,
+   `DEFAULT_CHAT_DAILY_BUDGET_USD` ($20), never "no cap". `0` pauses chat.
+2. **Per-person share.** `teams.chatUserDailyBudgetUsd`. Unset means
+   `DEFAULT_CHAT_USER_SHARE` (half) of the team budget. Always clamped to the
+   team budget, so a solo team that wants the whole budget sets it equal.
+3. **Turn admission.** 30 turns per user per 10-minute sliding window, taken by
+   one conditional upsert on `chat_turn_windows`
+   (`INSERT … ON CONFLICT DO UPDATE … WHERE <count in window> < 30 RETURNING`).
+   The row lock serializes parallel requests, so exactly the remaining slots
+   succeed. Approvals and resumes are admitted the same way.
+
+A budget refusal consumes no turn. Routing runs after admission, so a refused
+turn spends nothing. Budget is checked against recorded spend, so turns already
+in flight can finish slightly past the cap; admission bounds how many.
+
+Owners and admins set both budgets with `PATCH /api/teams/[id]`
+(`{ chatDailyBudgetUsd, chatUserDailyBudgetUsd }`, dollars, `null` = default).
+
+At 80% of either budget the agent says so once. At 100%, turns stop until
+midnight in the team's timezone, and the mission form stays available. A
+refused turn returns 429 with `error`, `scope` (`team` or `user` for a budget),
+`retryAfterSeconds`, and a `message` that says which limit was hit, when it
+resets and who can raise it.
 
 ### Streaming and cross-device updates
 
