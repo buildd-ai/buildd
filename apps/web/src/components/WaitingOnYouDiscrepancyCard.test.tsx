@@ -114,7 +114,10 @@ describe('WaitingOnYouDiscrepancyCard', () => {
         item={item({ chip: 'FIXING_SPEC', docFixTaskId: 'task-7', docFixTaskStatus: 'completed' })}
       />,
     );
-    expect(html).toContain('Waiting on the conformance re-run');
+    // Truthful: nothing observed a merge, so the card says it does not know,
+    // rather than claiming a re-run is pending.
+    expect(html).toContain('Its PR state isn&#x27;t known yet');
+    expect(html).not.toContain('re-run');
     // Nothing is running any more, and closure is still the checker's word — so
     // the card must not offer a second dispatch, and must not pretend the
     // finding is settled. But a docs PR that never merged would otherwise leave
@@ -134,11 +137,12 @@ describe('WaitingOnYouDiscrepancyCard', () => {
         })}
       />,
     );
-    expect(html).toContain('Waiting on the conformance re-run');
-    // A known merge either resolves on the next checker run or, if it finds
-    // the row still open, releases the claim back to the live CTA set
-    // (isDocFixClaimStale) — so Accept must not be offered as a way to park
-    // it in between.
+    // No forced run was observed, so it says what WILL happen, not that one is
+    // under way. A known merge is a bounded wait: the sweep dispatches the
+    // re-run, which resolves the row or hands it to the follow-up — so Accept
+    // must not be offered as a way to park it in between.
+    expect(html).toContain('A conformance re-run is dispatched within the hour');
+    expect(html).not.toContain('Waiting on the conformance re-run');
     expect(ctas(html)).toEqual([]);
   });
 
@@ -176,7 +180,67 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     );
     expect(ctas(html)).toEqual(['Accept']);
     expect(html).toContain('/app/tasks/task-merged');
-    expect(html).toContain('Doc fix merged');
+    expect(html).toContain('A doc fix merged');
+  });
+
+  // ── One pinned status line + CTA set per automation substate ──────────────
+
+  const automated = (partial: Partial<ActionQueueItem>) =>
+    renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard item={item({ chip: 'FIXING_SPEC', docFixTaskId: 'task-7', ...partial })} />,
+    );
+
+  it('recheck_dispatched: names when the forced re-run went out, no CTA', () => {
+    const html = automated({ docFixAutomation: 'recheck_dispatched', recheckDispatchedMinutesAgo: 12 });
+    expect(html).toContain('Conformance re-run dispatched 12 min ago');
+    expect(html).toContain('>Doc fix<');
+    expect(ctas(html)).toEqual([]);
+  });
+
+  it('recheck_queued: never claims a run is in flight, no CTA', () => {
+    const html = automated({ docFixAutomation: 'recheck_queued' });
+    expect(html).not.toContain('dispatched 0');
+    expect(html).not.toContain('Waiting on the conformance re-run');
+    expect(html).toContain('dispatched within the hour');
+    expect(ctas(html)).toEqual([]);
+  });
+
+  it('follow_up_queued: says a follow-up is being filed, no CTA (agents own it)', () => {
+    const html = automated({ docFixTaskId: null, mergedDocFixTaskId: 'task-merged', docFixAutomation: 'follow_up_queued' });
+    expect(html).toContain('Filing one follow-up fix');
+    expect(html).toContain('/app/tasks/task-merged');
+    expect(ctas(html)).toEqual([]);
+  });
+
+  it('follow_up_running: links the follow-up, no CTA', () => {
+    const html = automated({ docFixTaskId: 'task-follow', docFixAutomation: 'follow_up_running' });
+    expect(html).toContain('Follow-up doc fix in flight');
+    expect(html).toContain('/app/tasks/task-follow');
+    expect(ctas(html)).toEqual([]);
+  });
+
+  it('recheck_stalled: surfaces to the owner with what failed, and no Accept to launder it', () => {
+    const html = automated({ chip: 'DISCREPANCY', docFixAutomation: 'recheck_stalled', docFixMergedHoursAgo: 9 });
+    expect(html).toContain('>Discrepancy<');
+    expect(html).toContain('Doc fix merged 9h ago, and no conformance re-run has checked it since');
+    expect(html).toContain('Spec Discrepancy Ledger workflow');
+    expect(ctas(html)).toEqual([]);
+  });
+
+  it('needs_owner: the evidence, not a bare Accept', () => {
+    const html = automated({
+      chip: 'DISCREPANCY',
+      docFixTaskId: null,
+      mergedDocFixTaskId: 'task-follow',
+      docFixFollowUpTaskId: 'task-follow',
+      docFixAutomation: 'needs_owner',
+      lastCheckedHoursAgo: 2,
+      declaredStatus: 'partially',
+    });
+    expect(html).toContain('A doc fix and one automatic follow-up merged');
+    expect(html).toContain('still finds 1 claim passing while the doc declares &#x27;partially&#x27;');
+    expect(html).toContain('skip_until');
+    expect(ctas(html)).toEqual(['Accept']);
   });
 
   it('the merged-fix link says where it goes; the decision lives on the Accept button below it', () => {

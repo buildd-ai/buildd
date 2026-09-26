@@ -21,6 +21,14 @@ assertions:
     symbol: "promote_discrepancy"
     entry: "packages/core/mcp-tools.ts"
     as: "read"
+  - id: "doc-fix-recheck-sweep"
+    type: "symbol_reachable"
+    symbol: "sweepSpecDiscrepancyRechecks"
+    entry: "apps/web/src/app/api/cron/pr-reconcile/route.ts"
+    as: "call"
+  - id: "doc-fix-recheck-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/spec-recheck.test.ts"
 ---
 # Machine-Checkable Spec Conformance
 
@@ -354,6 +362,15 @@ On completion (pass or fail), the job writes the current HEAD SHA back to the
 artifact via `buildd action=create_artifact key=spec-conformance-last-sha`.
 Keyed artifact upsert ensures no duplicate rows accumulate.
 
+**One pointer per consumer.** The ledger writer (§7) keeps its own,
+`spec-discrepancy-ledger-last-sha`, and advances it only when its job
+succeeded. Sharing the checker's pointer let whichever workflow finished first
+advance it, so the other could diff HEAD against HEAD and skip a commit it had
+never evaluated; recording after a cancelled or failed writer (`if: always()`)
+stamped commits as checked whose rows were never written. The writer's
+workflow also takes `force: true` on `workflow_dispatch`, which bypasses the
+gate entirely — the forced re-run §9 dispatches after a doc-fix merge.
+
 **Why the watch set must include code-surface paths, not just spec paths:**
 The expensive failure mode has no spec delta. A feature ships (`loop-until-verified`
 columns land in migration 0091), the spec is never touched, and every week the
@@ -537,6 +554,34 @@ code is the verdict, not a self-report (`validateGoalCriteria` in
   fail+non-terminal — i.e. it stops contradicting, whether because someone
   built the feature, fixed the frontmatter, or corrected the status string.
 
+A re-evaluation must also be able to *reach* the row. A skipped assertion
+never creates one, but it may not strand one either:
+
+- **Retired doc** (`status: superseded`) — the doc makes no live claim, so
+  there is no gap to measure: the row resolves.
+- **Suppressed** (`skip_until` in force, §6) — the row resolves.
+- **Unrecognized status** (unset, or outside every set — e.g. `shipped`) — the
+  row stays open but is *rechecked*: `last_checked_at` and the evidence move,
+  so the surface reads "re-checked, still open" rather than waiting forever on
+  a re-run that already ran.
+- **No longer asserted** (the assertion was renamed or removed, or the doc was
+  deleted) — a full run resolves the row; the claim it measured is gone.
+
+Before these, every skip left an existing row untouched: a doc fix that
+retired its doc, or used a status outside the sets, stranded its rows with a
+`last_checked_at` older than its own merge, indefinitely.
+
+**The re-run after a doc fix is automatic.** When a doc-fix PR merges, buildd
+dispatches the ledger workflow with `force: true` (§4) — the same workflow and
+the same writer; there is no second path that writes the ledger. The hourly
+merge-state sweep dispatches it again for any merged fix whose rows have not
+been rechecked an hour on. One forced run in flight covers every merge before
+it (`recheck_requested_at` is the dedupe key), a failed dispatch is retried by
+the next sweep, and the sweep stops after a fixed automation budget measured
+from the merge, at which point the row goes to the owner as a stalled re-run
+(§12.1). None of this changes a row's status: only the writer's evaluation
+does.
+
 `status: accepted` (via `adjudicate_discrepancy`, §13) is a parked state, not a
 closed one — an accepted row is still re-evaluated on every run and still
 auto-resolves the moment its assertion result would justify it. Accepting a
@@ -708,24 +753,39 @@ cards are unchanged.
   has merged AND been rechecked since (`last_checked_at` past the merge time)
   and the rows are STILL open releases too — a re-run already ran and changed
   nothing, so the fix demonstrably didn't discharge the claim.
-- **A `completed` task's CTA depends on what the card can actually observe
-  about its PR**, not on task status alone (a task can end its session before
-  its PR merges):
-  - **PR still open** — no re-run is pending, so the card cannot say one is
-    "awaiting"; **accept** is the last-resort exit, since a docs PR that never
-    merges would otherwise leave the card agent-handled forever with no action
-    reachable at all.
-  - **PR merged, not yet rechecked** — this is a bounded wait, not a stuck
-    one: the next checker run either resolves the row or (previous bullet)
-    finds it still open and releases the claim back to a live `code_ahead`
-    card. The card gets **no decision CTA** here — offering accept would let a
-    human launder a pending automatic re-run into an "accepted" row before the
-    checker ever ran, which is the same parking-by-accident failure this
-    section exists to prevent, just moved one step earlier.
-  - **PR lifecycle unknown** (no worker/PR row this card can read) — staleness
-    can never fire without a known merge time to compare against, so this
-    claim has no other backstop; **accept** stays as the last-resort exit,
-    same as the open-PR case.
+- **After the task completes, automation carries the card** until it either
+  closes or genuinely fails. Every state is derived from ledger, task and
+  worker rows (`deriveDocFixAutomation`), never from what an agent reported,
+  and Home files the agent-handled ones under its collapsed in-flight list —
+  never under "waiting on you":
+
+  | State | What the card says | CTA | Owner? |
+  |---|---|---|---|
+  | PR still open | Doc fix PR open, merge it | accept (last resort) | no — the PR is its own card |
+  | PR lifecycle not observed | PR state not known yet | accept (last resort) | no |
+  | merged, forced re-run in flight | re-run dispatched *n* min ago | none | no |
+  | merged, no re-run yet | a re-run is dispatched within the hour | none | no |
+  | merged, rechecked, still open | filing one follow-up fix | none | no |
+  | follow-up running | follow-up doc fix in flight | none | no |
+  | merged past the budget, never rechecked | no re-run has checked it; see the ledger workflow | none | **yes** |
+  | fix **and** follow-up merged, recheck still open | the evidence: declared status, claim count, when rechecked | accept | **yes** |
+
+  "Awaiting the re-run" copy appears only when a forced run was actually
+  dispatched after the merge and is inside its in-flight window. No merged
+  state offers accept before the automation has run out: that would let a
+  human launder a pending automatic re-run into an "accepted" row.
+- **The one automatic follow-up.** A merged fix whose re-run still finds the
+  gap is almost never a prose problem — the assertion structurally passes but
+  does not certify what the status is waiting on. So the follow-up is not a
+  second reconcile: it goes through the same dispatch and claim as the button
+  (mode `follow_up`), and its brief asks for exactly one of three remedies per
+  assertion — promote the status, correct the assertion, or suppress it with
+  `skip_until` + `skip_reason` (§6) — after reading the doc's prior reconcile
+  PRs. The cap is `spec_discrepancies.auto_follow_up_task_id`, stamped by the
+  same atomic UPDATE that takes the claim, so a row gets one follow-up however
+  many sweeps race for it. Only when that follow-up has also merged and been
+  rechecked with the gap open does the card come back to the owner — with the
+  evidence, not a bare accept.
 - **Closure does not move.** §9 is untouched: the rows resolve when a checker
   re-run resolves their assertions. Neither the doc-fix task, nor its PR, nor
   its worker's summary closes anything. The dispatched task is told so
@@ -819,7 +879,8 @@ were already true by construction and are stated for completeness.
    proposes values from the repo's own file tree (mirrors
    `detectAllRiskClasses`) via the same `policy-init` scan endpoint that
    already proposes `policyConfig`.
-3. **The delta gate's keyed artifact, `spec-conformance-last-sha`**, must stay
+3. **The delta gate's keyed artifacts, `spec-conformance-last-sha` and the
+   ledger writer's `spec-discrepancy-ledger-last-sha`**, must stay
    workspace-scoped (it already is "per-repo" per §4's original design;
    `create_artifact`'s workspace scoping gives this for free) — stated
    explicitly here so two workspaces running Tier 2 concurrently never read or

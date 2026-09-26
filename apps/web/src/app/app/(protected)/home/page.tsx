@@ -1639,6 +1639,7 @@ export default async function HomePage({
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
               docFixTaskId: true, lastCheckedAt: true,
+              recheckRequestedAt: true, autoFollowUpTaskId: true, evidence: true,
             },
           });
           if (discrepancyRows.length > 0) {
@@ -1699,6 +1700,9 @@ export default async function HomePage({
                   docFixTaskStatus: r.docFixTaskId ? docFixStatusById.get(r.docFixTaskId) ?? null : null,
                   docFixPrLifecycleStatus: docFixWorker?.prLifecycleStatus ?? null,
                   docFixMergedAt: docFixWorker?.mergedAt ?? null,
+                  recheckRequestedAt: r.recheckRequestedAt,
+                  autoFollowUpTaskId: r.autoFollowUpTaskId,
+                  declaredStatus: typeof r.evidence?.declaredStatus === 'string' ? r.evidence.declaredStatus : null,
                 };
               }),
             );
