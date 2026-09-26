@@ -64,8 +64,8 @@ const CATEGORY_CRITERIA: Record<TaskCategoryValue, { what: string; not_for: stri
     not_for: 'CI/deploy pipeline or infrastructure work, or code restructuring.',
   },
   docs: {
-    what: 'Write or change documentation, READMEs, specs, design docs or code comments.',
-    not_for: 'Changing the code or tests the documentation describes.',
+    what: 'Write or change documentation, READMEs, specs, design docs or code comments that describe how something works or should work.',
+    not_for: 'Changing the code or tests the documentation describes, or investigating an open question and reporting findings.',
   },
   test: {
     what: 'Add or change automated tests or test coverage, without changing product code.',
@@ -80,8 +80,12 @@ const CATEGORY_CRITERIA: Record<TaskCategoryValue, { what: string; not_for: stri
     not_for: 'Backend or API changes that happen to be described as a "design".',
   },
   review: {
-    what: 'Review someone else\'s work (a PR, a change, a plan) and report findings rather than make the change.',
-    not_for: 'Doing the change itself.',
+    what: 'Review a specific existing pull request, diff or proposed change that someone else made, and give a verdict or findings on that change.',
+    not_for: 'Researching options, tools or vendors, or answering an open question where no change exists yet to review; or making the change itself.',
+  },
+  research: {
+    what: 'Investigate an open question and report findings or a recommendation: compare options, evaluate tools, vendors or approaches, a spike or feasibility study. Nothing in the product is changed.',
+    not_for: 'Diagnosing a specific failure (bug), reviewing an existing PR or change (review), or building the thing once it has been chosen.',
   },
 };
 

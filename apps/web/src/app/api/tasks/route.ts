@@ -17,7 +17,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategoryShadow } from '@/lib/task-category-decision';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
-import { TaskCategory } from '@buildd/shared';
+import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
@@ -938,7 +938,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Resolve category: use provided value, or auto-classify
-    type CategoryType = 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design';
+    type CategoryType = TaskCategoryValue;
     const validCategories = Object.values(TaskCategory) as string[];
     let category: CategoryType | null = null;
     if (rawCategory && validCategories.includes(rawCategory)) {

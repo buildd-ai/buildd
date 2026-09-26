@@ -24,6 +24,7 @@ const CATEGORY_OPTIONS: { value: TaskCategoryValue; label: string; color: string
   { value: 'test', label: 'Test', color: 'bg-cat-test/15 text-cat-test border-cat-test/30' },
   { value: 'infra', label: 'Infra', color: 'bg-cat-infra/15 text-cat-infra border-cat-infra/30' },
   { value: 'design', label: 'Design', color: 'bg-cat-design/15 text-cat-design border-cat-design/30' },
+  { value: 'research', label: 'Research', color: 'bg-cat-research/15 text-cat-research border-cat-research/30' },
 ];
 
 const WORKFLOW_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];

@@ -1060,7 +1060,7 @@ export const tasks = pgTable('tasks', {
   reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
   // Task category for visual grouping
-  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
+  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),

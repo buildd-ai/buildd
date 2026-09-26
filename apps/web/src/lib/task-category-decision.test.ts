@@ -47,6 +47,16 @@ describe('TASK_CATEGORY_QUESTIONS', () => {
     expect(labels).not.toContain('other');
   });
 
+  it('has a research label, and review is scoped to an existing change so the two do not overlap', () => {
+    const c = TASK_CATEGORY_QUESTIONS.category.criteria;
+    expect(TASK_CATEGORY_LABELS).toContain('research');
+    expect(c.research.what).toMatch(/report findings/i);
+    expect(c.research.not_for).toMatch(/review/i);
+    expect(c.research.not_for).toMatch(/bug/i);
+    expect(c.review.what).toMatch(/pull request|diff|change/i);
+    expect(c.review.not_for).toMatch(/research/i);
+  });
+
   it('tells the model to follow definitions over title keywords', () => {
     expect(JSON.stringify(TASK_CATEGORY_QUESTIONS.category.instructions)).toMatch(/Follow the category definitions/);
   });
