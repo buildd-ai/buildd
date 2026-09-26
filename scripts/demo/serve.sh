@@ -83,6 +83,10 @@ SERVER_ENV=(
   "STORAGE_ENDPOINT=$DEMO_S3_URL" "STORAGE_REGION=us-east-1" "STORAGE_BUCKET=$DEMO_S3_BUCKET"
   "STORAGE_ACCESS_KEY=demo-blob" "STORAGE_SECRET_KEY=demo-blob-secret-not-real"
 )
+# A TLS-intercepting network (a corporate proxy) needs its root CA for the one
+# outbound call the demo can make: a chat turn to the model provider. A CA path
+# is not a secret; nothing else from the caller's env passes through.
+if [ -n "${NODE_EXTRA_CA_CERTS:-}" ]; then SERVER_ENV+=("NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS"); fi
 
 cd "$DEMO_ROOT/apps/web"
 
