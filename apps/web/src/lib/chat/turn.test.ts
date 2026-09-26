@@ -98,6 +98,8 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
       const path = endpoint.split('?')[0];
       const body = method === 'POST' && path === '/api/missions'
         ? { id: 'mission-1', title: 'Bill in local currency', status: 'active', workspaceId: 'ws-1' }
+        : method === 'POST' && path === '/api/tasks'
+        ? { id: 'task-new', title: 'Add a currency column', status: 'pending', priority: 5, workspaceId: 'ws-1' }
         : { tasks: [{ id: 'task-1', title: 'Currency table', status: 'in_progress', workspaceId: 'ws-1' }] };
       onCall({ method, path, status: 200, body });
       return body;
@@ -253,6 +255,81 @@ describe('"make this a mission"', () => {
     expect(r.res.status).toBe(409);
     expect(apiCalls).toEqual([]);
     expect(approvals[0].status).toBe('pending');
+  });
+});
+
+const TASK_INPUT = {
+  title: 'Add a currency column', description: 'Add invoices.currency, defaulting to USD.', kind: 'engineering',
+  workspaceId: '00000000-0000-4000-8000-000000000001',
+};
+
+describe('"file this as a task"', () => {
+  const modelForTask = () => new MockLanguageModelV4({
+    doStream: [toolStream('call-t', 'create_task', TASK_INPUT), textStream('Filed the task.')] as any,
+  });
+
+  it('every create_task call is one approval card, and nothing is filed yet', async () => {
+    const { turn, apiCalls } = harness({ model: modelForTask() });
+    await turn(userMsg('file a task to add a currency column'));
+    const cards = lastAssistant().parts.filter(p => p.state === 'approval-requested');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].type).toBe('tool-create_task');
+    expect(approvals[0]).toMatchObject({ toolCallId: 'call-t', toolName: 'create_task', status: 'pending', inputHash: hashToolInput(TASK_INPUT) });
+    expect(apiCalls).toEqual([]);
+  });
+
+  it('confirming files exactly one task, links no mission, and replay files nothing', async () => {
+    const { turn, apiCalls, linked } = harness({ model: modelForTask() });
+    await turn(userMsg('file a task'));
+    const confirm = answer(true);
+    const first = await turn(confirm);
+    expect(first.res.status).toBe(200);
+    expect(apiCalls).toEqual(['POST /api/tasks']);
+    expect(linked).toEqual([]);
+    const part = lastAssistant().parts.find(p => p.type === 'tool-create_task');
+    expect(part.state).toBe('output-available');
+    expect(part.output.objects).toEqual([expect.objectContaining({ kind: 'task', id: 'task-new' })]);
+    expect(part.output.summary).toBe('filed "Add a currency column"');
+
+    const replay = await turn(confirm);
+    expect(replay.res.status).toBe(409);
+    expect(apiCalls).toEqual(['POST /api/tasks']);
+  });
+
+  it('denying files nothing', async () => {
+    const { turn, apiCalls } = harness({ model: modelForTask() });
+    await turn(userMsg('file a task'));
+    await turn(answer(false));
+    expect(apiCalls).toEqual([]);
+    expect(approvals[0].status).toBe('denied');
+  });
+
+  it('a task and a mission in one turn share the one-card limit', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [{
+        stream: convertArrayToReadableStream([
+          { type: 'stream-start', warnings: [] },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'manage_missions', input: JSON.stringify(MISSION_INPUT) },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'create_task', input: JSON.stringify(TASK_INPUT) },
+          finish('tool-calls'),
+        ]),
+      }, textStream('One at a time.')] as any,
+    });
+    const { turn, apiCalls } = harness({ model });
+    await turn(userMsg('file a mission and a task'));
+    const cards = lastAssistant().parts.filter(p => p.state === 'approval-requested');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].type).toBe('tool-manage_missions');
+    expect(apiCalls).toEqual([]);
+  });
+
+  it('when routing withholds writes, create_task is not offered at all', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async () => ({ tier: 'standard', allowWrites: false, source: 'decision' }) });
+    await turn(userMsg('thanks'));
+    const tools = (model.doStreamCalls[0] as any).tools ?? [];
+    expect(tools.map((t: any) => t.name)).not.toContain('create_task');
+    expect(tools.map((t: any) => t.name)).toContain('list_tasks');
   });
 });
 

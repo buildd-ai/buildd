@@ -3,10 +3,11 @@
  * handlers `/api/mcp` serves (packages/core/mcp-tools.ts). A chat tool is named
  * after the MCP action it wraps, so a UI part is `tool-{action}`.
  *
- * P1 surface (docs/design/agent-chat.md → Tools and permissions): reads run
- * straight away; `manage_missions` create is the one write, and it only runs
- * after an approval card this request won (see approvals.ts). Every other
- * `manage_missions` sub-action is refused here, whatever the model asks for.
+ * Surface (docs/design/agent-chat.md → Tools and permissions): reads run
+ * straight away. Two writes exist, `manage_missions` create and `create_task`,
+ * and each only runs after an approval card this request won (see
+ * approvals.ts). Every other `manage_missions` sub-action is refused here,
+ * whatever the model asks for.
  */
 
 import { tool, type ToolSet } from 'ai';
@@ -17,9 +18,23 @@ import type { ApiCall } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 
 export const CHAT_TOOL_ACTIONS = [
-  'list_tasks', 'get_task', 'manage_missions', 'list_schedules', 'trace_schedule', 'list_artifacts',
+  'list_tasks', 'get_task', 'manage_missions', 'list_schedules', 'trace_schedule', 'list_artifacts', 'create_task',
 ] as const;
 export type ChatToolAction = (typeof CHAT_TOOL_ACTIONS)[number];
+
+/** Tools where every call is a write. Not registered at all when writes are off. */
+export const CHAT_WRITE_TOOLS: ReadonlySet<ChatToolAction> = new Set<ChatToolAction>(['create_task']);
+
+/** Same vocabulary as tasks.kind and POST /api/tasks. */
+export const CHAT_TASK_KINDS = [
+  'coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation',
+] as const;
+/** Categories a person files; `review` is stamped by the reviewer pipeline, not chosen. */
+export const CHAT_TASK_CATEGORIES = [
+  'bug', 'feature', 'refactor', 'chore', 'docs', 'test', 'infra', 'design', 'research',
+] as const;
+
+export type FiledWork = { kind: 'mission' | 'task'; id: string; toolCallId: string; result: ChatToolResult };
 
 export const MISSION_READ_OPS = ['list', 'get', 'get_criteria_state'] as const;
 export const MISSION_WRITE_OPS = ['create'] as const;
@@ -79,6 +94,15 @@ function schemas(allowWrites: boolean) {
       review: z.boolean().optional(),
       limit: z.number().int().min(1).max(50).optional(),
     }),
+    create_task: z.object({
+      title: z.string().min(1).max(200).describe('A short task title, conventional-commit style where it fits'),
+      description: z.string().min(1).max(8000).describe('What to do and how to tell it is done, in the words settled with the user'),
+      kind: z.enum(CHAT_TASK_KINDS).describe('The shape of the work: engineering changes code, research reads and reports, writing produces docs…'),
+      workspaceId: ws,
+      priority: z.number().int().min(0).max(10).optional(),
+      category: z.enum(CHAT_TASK_CATEGORIES).optional(),
+      missionId: z.string().uuid().optional().describe('Add the task to this existing mission'),
+    }),
   } satisfies Record<ChatToolAction, z.ZodType>;
 }
 
@@ -90,6 +114,8 @@ const DESCRIPTIONS: Record<ChatToolAction, string> = {
   list_schedules: 'List schedules in a workspace.',
   trace_schedule: 'Find the schedule that spawned a task or fired recently.',
   list_artifacts: 'List artifacts (reports, analyses) in a workspace, mission or initiative.',
+  create_task:
+    'File one task: a single concrete piece of work an agent can finish in one go (one PR, one report). Include title, description and kind. The user sees an approval card first; nothing is filed until they confirm.',
 };
 
 export interface ChatToolDeps {
@@ -100,8 +126,8 @@ export interface ChatToolDeps {
   allowWrites: boolean;
   /** Tool calls this request won an approval for; nothing else may write. */
   authorizedToolCallIds: ReadonlySet<string>;
-  /** After a mission is filed: link it to the conversation, store the result. */
-  onMissionFiled?: (args: { missionId: string; toolCallId: string; result: ChatToolResult }) => Promise<void>;
+  /** After an approved write filed a mission or a task: link it, store the result. */
+  onWorkFiled?: (args: FiledWork) => Promise<void>;
   handle?: typeof handleBuilddAction;
 }
 
@@ -115,12 +141,13 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
   const tools: ToolSet = {};
 
   for (const action of CHAT_TOOL_ACTIONS) {
+    if (CHAT_WRITE_TOOLS.has(action) && !deps.allowWrites) continue;
     tools[action] = tool({
       description: `${DESCRIPTIONS[action]}\nParams: ${buildParamsDescription([action]).slice(0, 1500)}`,
       inputSchema: s[action] as z.ZodType<Record<string, unknown>>,
       execute: async (input: Record<string, unknown>, { toolCallId }): Promise<ChatToolResult<string>> => {
         const op = action === 'manage_missions' ? String(input.action ?? '') : null;
-        const isWrite = op !== null && (MISSION_WRITE_OPS as readonly string[]).includes(op);
+        const isWrite = CHAT_WRITE_TOOLS.has(action) || (op !== null && (MISSION_WRITE_OPS as readonly string[]).includes(op));
         if (op !== null && !isWrite && !(MISSION_READ_OPS as readonly string[]).includes(op)) {
           return errorResult(`manage_missions ${op} is not available from chat`);
         }
@@ -148,9 +175,10 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
           objects,
           summary: failed ? text.split('\n')[0].slice(0, 120) : summarize(action, op, objects, text),
         };
-        if (isWrite && !failed) {
-          const mission = objects.find(o => o.kind === 'mission');
-          if (mission && deps.onMissionFiled) await deps.onMissionFiled({ missionId: mission.id, toolCallId, result });
+        if (isWrite && !failed && deps.onWorkFiled) {
+          const kind = action === 'create_task' ? 'task' : 'mission';
+          const filed = objects.find(o => o.kind === kind);
+          if (filed) await deps.onWorkFiled({ kind, id: filed.id, toolCallId, result });
         }
         return result;
       },
@@ -160,7 +188,7 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
 }
 
 function summarize(action: string, op: string | null, objects: BuilddObjectRef[], text: string): string {
-  if (op === 'create') return objects[0]?.title ? `filed "${objects[0].title}"` : 'filed';
+  if (op === 'create' || action === 'create_task') return objects[0]?.title ? `filed "${objects[0].title}"` : 'filed';
   if (objects.length > 0) return `${objects.length} ${objects[0].kind}${objects.length === 1 ? '' : 's'}`;
   return text.split('\n')[0].slice(0, 120);
 }

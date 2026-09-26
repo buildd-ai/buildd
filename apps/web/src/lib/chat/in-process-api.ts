@@ -30,7 +30,8 @@ interface RouteEntry {
 
 /** The whole reachable surface. Adding a chat tool means adding its routes here. */
 export const CHAT_ROUTES: readonly RouteEntry[] = [
-  { pattern: '/api/tasks', methods: ['GET'], load: () => import('@/app/api/tasks/route') },
+  // POST is filing a lone task — reached only through an approved approval card.
+  { pattern: '/api/tasks', methods: ['GET', 'POST'], load: () => import('@/app/api/tasks/route') },
   { pattern: '/api/tasks/:id', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/route') },
   // POST is mission creation — reached only through an approved approval card.
   { pattern: '/api/missions', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/route') },
@@ -143,7 +144,35 @@ async function guardRequest(
     if (parsed.workspaceId != null && !reach.workspaceIds.has(String(parsed.workspaceId))) outOfReach();
     return JSON.stringify({ ...parsed, teamId: reach.teamId });
   }
+
+  if (entry.pattern === '/api/tasks' && method === 'POST') return guardTaskFiling(reach, body);
   return body;
+}
+
+/**
+ * Filing a lone task from chat. The workspace is required and must be in
+ * reach; a mission it joins must be too. Fields that attach the task to other
+ * work or impersonate a worker are refused outright rather than checked: chat
+ * never sets them, so seeing one means the input didn't come from the chat tool.
+ */
+const TASK_FIELDS_REFUSED_FROM_CHAT = [
+  'parentTaskId', 'dependsOn', 'createdByWorkerId', 'assignToLocalUiUrl', 'callbackUrl', 'callbackToken',
+] as const;
+
+async function guardTaskFiling(reach: ChatReach, body: unknown): Promise<string> {
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(String(body ?? '{}')); } catch { outOfReach(); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) outOfReach();
+  if (typeof parsed.workspaceId !== 'string' || !reach.workspaceIds.has(parsed.workspaceId)) outOfReach();
+  for (const f of TASK_FIELDS_REFUSED_FROM_CHAT) if (parsed[f] != null) outOfReach();
+  const ctx = parsed.context as Record<string, unknown> | undefined;
+  if (ctx && typeof ctx === 'object' && ctx.callback != null) outOfReach();
+  if (parsed.missionId != null) {
+    if (typeof parsed.missionId !== 'string') outOfReach();
+    if (!ownerInReach(reach, await reach.ownerOf('mission', parsed.missionId))) outOfReach();
+  }
+  // A person asked for this in the dashboard, so it's a dashboard filing, not an MCP one.
+  return JSON.stringify({ ...parsed, creationSource: 'dashboard' });
 }
 
 function rowInReach(reach: ChatReach, row: unknown, isWorkspaceList: boolean): boolean {

@@ -72,7 +72,10 @@ export interface TurnDeps {
   makeApi: (onCall: (c: ApiCall) => void) => ApiFn;
   actionContext: ActionContext;
   decide?: DecideFn;
-  /** Link a filed mission to this conversation (missions.conversation_id). */
+  /**
+   * Link a filed mission to this conversation (missions.conversation_id).
+   * A filed task has no such column; its approval row keeps the result.
+   */
   linkMission: (missionId: string) => Promise<void>;
   /** Scheduled after the response (Next `after()`); runs inline in tests. */
   later?: (fn: () => Promise<void>) => void;
@@ -199,13 +202,20 @@ export async function runChatTurn(args: {
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
     authorizedToolCallIds,
-    onMissionFiled: async ({ missionId, toolCallId, result }) => {
-      await deps.linkMission(missionId);
+    onWorkFiled: async ({ kind, id, toolCallId, result }) => {
+      if (kind === 'mission') await deps.linkMission(id);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
     },
   });
 
+  // At most one approval card per turn, across every write tool; a second write waits.
   let approvalsThisTurn = 0;
+  const oneCardPerTurn = () => {
+    approvalsThisTurn += 1;
+    return approvalsThisTurn === 1
+      ? 'user-approval' as const
+      : { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
+  };
   const instructions = `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
     now,
     timeZone: user.timeZone,
@@ -224,14 +234,9 @@ export async function runChatTurn(args: {
     stopWhen: isStepCount(MAX_STEPS),
     abortSignal: AbortSignal.timeout(TURN_BUDGET_MS),
     toolApproval: {
-      manage_missions: (input: { action?: string }) => {
-        if (input?.action !== 'create') return 'not-applicable';
-        // At most one approval card per turn; a second write waits.
-        approvalsThisTurn += 1;
-        return approvalsThisTurn === 1
-          ? 'user-approval'
-          : { type: 'denied', reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
-      },
+      manage_missions: (input: { action?: string }) => (input?.action === 'create' ? oneCardPerTurn() : 'not-applicable'),
+      // Every create_task call is a write.
+      create_task: () => oneCardPerTurn(),
     },
   });
 

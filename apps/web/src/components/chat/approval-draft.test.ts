@@ -39,6 +39,30 @@ describe('approvalDraft', () => {
     expect(d.kind === 'mission' && d.criteria).toEqual([]);
   });
 
+  it('reads a task draft: title, the description\'s first paragraph, and only the facts the input states', () => {
+    const d = approvalDraft(part({
+      title: 'Add a currency column', description: 'Add invoices.currency, defaulting to USD.\n\nMore detail.',
+      kind: 'engineering', priority: 7, workspaceId: 'ws',
+    }, 'create_task'));
+    expect(d).toEqual({
+      kind: 'task',
+      title: 'Add a currency column',
+      goal: 'Add invoices.currency, defaulting to USD.',
+      facts: [
+        { label: 'Kind', value: 'engineering' },
+        { label: 'Priority', value: '7' },
+        { label: 'Mission', value: 'none, a lone task' },
+      ],
+      workspaceId: 'ws',
+    });
+  });
+
+  it('a task that joins a mission says so without inventing its name', () => {
+    const d = approvalDraft(part({ missionId: 'm1' }, 'create_task'));
+    expect(d.kind === 'task' && d.title).toBe('Untitled task');
+    expect(d.kind === 'task' && d.facts).toEqual([{ label: 'Mission', value: 'adds to an existing mission' }]);
+  });
+
   it('any other write renders its fields, without the action or workspace id', () => {
     const d = approvalDraft(part({ action: 'update', missionId: 'm1', title: 'x' }));
     expect(d).toEqual({ kind: 'generic', fields: [{ key: 'missionId', value: 'm1' }, { key: 'title', value: 'x' }], workspaceId: null });

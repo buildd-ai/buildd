@@ -30,6 +30,7 @@ function DraftSummary({ draft }: { draft: ApprovalDraft }) {
 /** "4 criteria · constraints · plan": what the folded details hold. */
 function detailsSummary(draft: ApprovalDraft): string {
   if (draft.kind === 'generic') return `${draft.fields.length} field${draft.fields.length === 1 ? '' : 's'}`;
+  if (draft.kind === 'task') return draft.facts.map(f => f.value).join(' · ');
   const bits: string[] = [];
   if (draft.criteria.length) bits.push(`${draft.criteria.length} criteri${draft.criteria.length === 1 ? 'on' : 'a'}`);
   if (draft.constraints) bits.push('constraints');
@@ -38,6 +39,7 @@ function detailsSummary(draft: ApprovalDraft): string {
 }
 
 function hasDetails(draft: ApprovalDraft): boolean {
+  if (draft.kind === 'task') return draft.facts.length > 0;
   return draft.kind === 'generic' ? draft.fields.length > 0 : draft.criteria.length > 0 || !!draft.constraints || !!draft.plan;
 }
 
@@ -49,6 +51,18 @@ function DraftDetails({ draft }: { draft: ApprovalDraft }) {
           <div key={f.key} className="contents">
             <dt className="uppercase tracking-[1.5px] text-[11px] text-text-muted">{f.key}</dt>
             <dd className="min-w-0 [overflow-wrap:anywhere] text-text-primary">{f.value}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  if (draft.kind === 'task') {
+    return (
+      <dl data-testid="approval-draft-facts" className="mt-2 md:mt-4 grid grid-cols-1 md:grid-cols-[130px_1fr] gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
+        {draft.facts.map(f => (
+          <div key={f.label} className="contents">
+            <dt className="uppercase tracking-[1.5px] text-[11px] text-text-muted">{f.label}</dt>
+            <dd className="text-text-primary [overflow-wrap:anywhere]">{f.value}</dd>
           </div>
         ))}
       </dl>
@@ -117,8 +131,8 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   }
 
   const deciding = part.state === 'approval-responded' || sent !== null;
-  const isMission = draft.kind === 'mission';
-  const confirmLabel = isMission ? 'Confirm & file' : 'Confirm';
+  const titled = draft.kind === 'mission' || draft.kind === 'task';
+  const confirmLabel = titled ? 'Confirm & file' : 'Confirm';
 
   return (
     <section
@@ -177,7 +191,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           type="button"
           data-testid="approval-edit"
           disabled={deciding}
-          onClick={() => actions.prefillComposer(isMission ? `Change the draft "${(draft as { title: string }).title}": ` : 'Change it: ')}
+          onClick={() => actions.prefillComposer(titled ? `Change the draft "${(draft as { title: string }).title}": ` : 'Change it: ')}
           className="min-h-11 border-2 border-border-strong shrink-0 bg-surface-3 px-2.5 md:px-4 font-mono text-[13px] md:text-[13.5px] font-medium text-text-primary hover:bg-surface-4 disabled:opacity-60"
         >
           Edit

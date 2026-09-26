@@ -18,6 +18,11 @@ describe('refsFromCall', () => {
     expect(refs).toEqual([{ kind: 'mission', id: 'm1', workspaceId: 'ws', title: 'Multi-currency billing', fallbackText: 'Mission: Multi-currency billing [active]' }]);
   });
 
+  it('a filed task (POST, one task back) becomes one task ref', () => {
+    const refs = refsFromCall(call('POST', '/api/tasks', { id: 't9', title: 'Round per line', status: 'pending', workspaceId: 'ws' }));
+    expect(refs).toEqual([{ kind: 'task', id: 't9', workspaceId: 'ws', title: 'Round per line', fallbackText: 'Task: Round per line [pending]' }]);
+  });
+
   it('a task with a waiting worker yields a question ref keyed by the worker id, plus PR refs', () => {
     const refs = refsFromCall(call('GET', '/api/tasks/t1', {
       id: 't1', title: 'Round per line', status: 'in_progress', workspaceId: 'ws', missionId: 'm1',

@@ -25,13 +25,22 @@ export interface MissionDraft {
   workspaceId: string | null;
 }
 
+export interface TaskDraft {
+  kind: 'task';
+  title: string;
+  goal: string | null;
+  /** Kind, priority, whether it joins a mission: only what the input states. */
+  facts: Array<{ label: string; value: string }>;
+  workspaceId: string | null;
+}
+
 export interface GenericDraft {
   kind: 'generic';
   fields: Array<{ key: string; value: string }>;
   workspaceId: string | null;
 }
 
-export type ApprovalDraft = MissionDraft | GenericDraft;
+export type ApprovalDraft = MissionDraft | TaskDraft | GenericDraft;
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
@@ -93,6 +102,22 @@ export function approvalDraft(part: ChatToolPart): ApprovalDraft {
       criteria,
       constraints: constraintsFrom(description),
       plan: missionPlan(input),
+      workspaceId,
+    };
+  }
+  if (toolNameOf(part) === 'create_task') {
+    const facts: TaskDraft['facts'] = [];
+    const kind = str(input.kind);
+    if (kind) facts.push({ label: 'Kind', value: kind });
+    const category = str(input.category);
+    if (category) facts.push({ label: 'Category', value: category });
+    if (typeof input.priority === 'number') facts.push({ label: 'Priority', value: String(input.priority) });
+    facts.push({ label: 'Mission', value: str(input.missionId) ? 'adds to an existing mission' : 'none, a lone task' });
+    return {
+      kind: 'task',
+      title: str(input.title) ?? 'Untitled task',
+      goal: firstParagraph(str(input.description)),
+      facts,
       workspaceId,
     };
   }

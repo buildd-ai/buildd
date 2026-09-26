@@ -554,7 +554,8 @@ In dependency order, with the load-bearing piece first.
    `missions.conversation_id`.
 3. `POST /api/chat/[id]` on AI SDK v7: context block, tier and intent routing
    through decision calls with the fixed fallback, the read tool set, and
-   `manage_missions` create behind approval.
+   `manage_missions` create behind approval. `create_task` behind approval
+   moved up from P2, so chat can file a lone task as well as a mission.
 4. The object contract and renderers for `mission`, `task`, `pr` and `question`.
    The `/respond` question folds into the feed.
 5. Desktop split (object left, chat right, swappable, collapsible), phone cards
@@ -584,7 +585,7 @@ In dependency order, with the load-bearing piece first.
    directive loader, the short-term expiry sweep, and tier classification through
    a decision call with a three-button fallback.
 2. Approval-gated `create_schedule` / `update_schedule` (in the user's
-   timezone), arming held missions, `create_task`, combine, `learn`, and `merge_pr`
+   timezone), arming held missions, combine, `learn`, and `merge_pr`
    (green CI and merge safety only).
 3. Renderers for `schedule`, `artifact` and `directive`. Settings → You →
    Directives. The admin tier screen with provider key cards and experiment-backed

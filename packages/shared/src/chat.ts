@@ -231,18 +231,24 @@ export const CHAT_READ_TOOLS = [
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
+/** Sub-action wildcard: every call of the tool needs approval, whatever its input. */
+export const CHAT_APPROVAL_ANY = '*';
+
 /**
- * (tool, sub-action) pairs that render as an approval card instead of running.
- * P1 ships exactly one: filing a mission.
+ * (tool, sub-action) pairs that render as an approval card instead of running:
+ * filing a mission (`manage_missions` create) and filing a lone task
+ * (`create_task`, which has no sub-actions, so every call is a write).
  */
 export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = {
   manage_missions: ['create'],
+  create_task: [CHAT_APPROVAL_ANY],
 };
 
 /** Does this tool call need an approval card before it runs? */
 export function chatToolNeedsApproval(tool: string, input: unknown): boolean {
   const subs = CHAT_APPROVAL_TOOLS[tool];
   if (!subs) return false;
+  if (subs.includes(CHAT_APPROVAL_ANY)) return true;
   const action = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
   return typeof action === 'string' && subs.includes(action);
 }

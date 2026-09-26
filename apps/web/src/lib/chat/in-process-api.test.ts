@@ -8,15 +8,15 @@ describe('matchChatRoute (the reachable surface)', () => {
     expect(matchChatRoute('GET', '/api/workspaces/w/schedules/s')?.params).toEqual({ id: 'w', scheduleId: 's' });
   });
 
-  it('mission creation is the only write reachable', () => {
+  it('filing a task and filing a mission are the only writes reachable', () => {
     const writes = CHAT_ROUTES.flatMap(r => r.methods.filter(m => m !== 'GET').map(m => `${m} ${r.pattern}`));
-    expect(writes).toEqual(['POST /api/missions']);
+    expect(writes.sort()).toEqual(['POST /api/missions', 'POST /api/tasks']);
   });
 
   it('refuses anything else: other methods, other routes', () => {
     expect(matchChatRoute('PATCH', '/api/missions/m1')).toBeNull();
     expect(matchChatRoute('DELETE', '/api/tasks/t1')).toBeNull();
-    expect(matchChatRoute('POST', '/api/tasks')).toBeNull();
+    expect(matchChatRoute('POST', '/api/tasks/t1')).toBeNull();
     expect(matchChatRoute('GET', '/api/secrets')).toBeNull();
     expect(matchChatRoute('GET', '/api/workers/w1')).toBeNull();
   });
@@ -73,7 +73,7 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
     },
   });
   const routes = [
-    { pattern: '/api/tasks', methods: ['GET'], load: echo(() => ({ tasks: [
+    { pattern: '/api/tasks', methods: ['GET', 'POST'], load: echo(() => ({ tasks: [
       { id: 't-a', workspaceId: 'ws-ok', title: 'fine' },
       { id: 't-b', workspaceId: 'ws-sensitive', title: 'secret' },
       { id: 't-c', workspaceId: 'ws-other-team', title: 'elsewhere' },
@@ -150,6 +150,50 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
       .rejects.toThrow('API error: 404');
     await expect(api('/api/missions', { method: 'POST', body: JSON.stringify({ title: 'x', teamId: 't-2' }) }))
       .rejects.toThrow('API error: 404');
+  });
+
+  describe('filing a task (POST /api/tasks)', () => {
+    const post = (api: any, body: Record<string, unknown>) => api('/api/tasks', { method: 'POST', body: JSON.stringify(body) });
+
+    it('passes a filing in a reachable workspace, stamped as a dashboard filing', async () => {
+      const { api } = make();
+      seen.length = 0;
+      const out = await post(api, { title: 'x', description: 'd', workspaceId: 'ws-ok', creationSource: 'mcp' });
+      expect(out).toMatchObject({ workspaceId: 'ws-ok' });
+      expect(seen[0].body).toMatchObject({ workspaceId: 'ws-ok', creationSource: 'dashboard' });
+    });
+
+    it('requires a workspace, and refuses one outside reach', async () => {
+      const { api } = make();
+      seen.length = 0;
+      await expect(post(api, { title: 'x' })).rejects.toThrow('API error: 404');
+      await expect(post(api, { title: 'x', workspaceId: 'ws-sensitive' })).rejects.toThrow('API error: 404');
+      await expect(post(api, { title: 'x', workspaceId: 'ws-other-team' })).rejects.toThrow('API error: 404');
+      expect(seen).toEqual([]);
+    });
+
+    it('lets a task join a mission in reach, never another team\'s or a sensitive one', async () => {
+      const { api } = make();
+      seen.length = 0;
+      await post(api, { title: 'x', workspaceId: 'ws-ok', missionId: 'm-team' });
+      expect(seen).toHaveLength(1);
+      await expect(post(api, { title: 'x', workspaceId: 'ws-ok', missionId: 'm-other' })).rejects.toThrow('API error: 404');
+      await expect(post(api, { title: 'x', workspaceId: 'ws-ok', missionId: 'm-sensitive' })).rejects.toThrow('API error: 404');
+      await expect(post(api, { title: 'x', workspaceId: 'ws-ok', missionId: 'm-unknown' })).rejects.toThrow('API error: 404');
+      expect(seen).toHaveLength(1);
+    });
+
+    it('refuses fields that attach the task to other work or act as a worker', async () => {
+      const { api } = make();
+      seen.length = 0;
+      for (const extra of [
+        { parentTaskId: 't-ok' }, { dependsOn: ['t-ok'] }, { createdByWorkerId: 'w1' },
+        { assignToLocalUiUrl: 'http://x' }, { context: { callback: { url: 'https://x' } } },
+      ]) {
+        await expect(post(api, { title: 'x', workspaceId: 'ws-ok', ...extra })).rejects.toThrow('API error: 404');
+      }
+      expect(seen).toEqual([]);
+    });
   });
 
   it('refuses an id-addressed object outside reach, and unknown ids', async () => {
