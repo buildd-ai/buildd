@@ -31,6 +31,7 @@ export const WITHHELD_WORKER_FIELDS = [
   'roleConfig', // carries a presigned download URL
   'assertionTokenCache',
   'assertionReAuthFailed',
+  'roleEnvSecrets', // resolved secret VALUES (ENV_NAME -> value), never client-safe
 ] as const satisfies ReadonlyArray<keyof LocalWorker>;
 
 export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
@@ -114,6 +115,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   modelCapabilities: true,
   roleInstructions: true,
   skillBundles: true,
+  roleEnvMissing: true,
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
@@ -126,6 +128,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   roleConfig: false,
   assertionTokenCache: false,
   assertionReAuthFailed: false,
+  roleEnvSecrets: false,
 };
 
 const PUBLIC_FIELDS: ReadonlyArray<keyof LocalWorker> = (
