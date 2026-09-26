@@ -197,3 +197,22 @@ describe('size="micro" (W4/W6)', () => {
     expect(first).not.toContain('1 / 3 ·');
   });
 });
+
+// Regression (demo reshoot, task page): the context bar's bare RUNNING chip sat
+// beside the task's own FIXING CI / MERGED badge and read as a contradiction.
+// On the micro masthead (task page, task sheet) the chip names whose state it is.
+describe('size="micro" chip names the mission', () => {
+  it('prefixes the state with "Mission ·"', () => {
+    const html = renderToStaticMarkup(
+      <MissionMasthead size="micro" title="M" chip={{ label: 'Running', cls: '' }} segments={segments} />,
+    );
+    const chipHtml = html.match(/<span[^>]*data-testid="mission-state-chip"[^>]*>([\s\S]*?)<\/span>/)?.[1] ?? '';
+    expect(chipHtml.replace(/<[^>]+>/g, '').replace(/<!-- -->/g, '')).toBe('Mission · Running');
+  });
+  it('keeps the bare chip on the card masthead', () => {
+    const html = renderToStaticMarkup(
+      <MissionMasthead size="card" title="M" chip={{ label: 'Running', cls: '' }} segments={segments} />,
+    );
+    expect(html).not.toContain('Mission · ');
+  });
+});
