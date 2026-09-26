@@ -1,53 +1,42 @@
 /**
- * Chat can't start a turn: no provider key resolves, or the team hasn't turned
- * the `chat` capability on. Nothing falls back to a subscription seat. Admins
- * are pointed at the screen that fixes it; members are told who can, or to use
- * their own key. The mission form is untouched either way.
+ * Chat can't start a turn: no provider key resolves, or an admin switched chat
+ * off. Nothing falls back to a subscription seat. Admins are pointed at the
+ * screen that fixes it; members are told who can, or to add their own key when
+ * the team's policy asks for one. The mission form is untouched either way.
  */
 import Link from 'next/link';
 
 export type ChatSetupReason = 'capability_disabled' | 'no_key';
 
-/** Settings screens (the settings UI's own anchors). */
+/** Settings screens that fix each reason. */
 export const CHAT_SETTINGS_HREF = {
   capability: '/app/settings/ai',
-  teamKeys: '/app/settings/models#provider-keys',
-  ownKey: '/app/settings/account#provider-keys',
+  teamKeys: '/app/settings/providers',
+  ownKey: '/app/settings/account',
 } as const;
 
-export function chatSetupCopy(reason: ChatSetupReason, canManage: boolean): { title: string; body: string; cta: { href: string; label: string } | null; secondary: { href: string; label: string } | null } {
-  if (canManage) {
-    return reason === 'capability_disabled'
-      ? {
-          title: 'Turn on chat for your team',
-          body: 'Chat runs on your team’s API key, billed per token, never on a subscription seat. It’s off until you turn it on.',
-          cta: { href: CHAT_SETTINGS_HREF.capability, label: 'Turn on chat' },
-          secondary: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Provider keys' },
-        }
-      : {
-          title: 'Connect a model provider',
-          body: 'Chat is where your team starts missions and asks about the fleet. It runs on an Anthropic, OpenAI or OpenRouter API key, billed per token. Subscription seats can’t run chat turns.',
-          cta: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Connect a provider' },
-          secondary: null,
-        };
+type SetupCopy = { title: string; body: string; cta: { href: string; label: string } | null; secondary: { href: string; label: string } | null };
+
+/**
+ * The real reason and the one action that fixes it. `policy` is the team's key
+ * policy: under `own`, a member's missing key is theirs to add.
+ */
+export function chatSetupCopy(reason: ChatSetupReason, canManage: boolean, policy: 'team' | 'team_or_own' | 'own' = 'team'): SetupCopy {
+  if (reason === 'capability_disabled') {
+    return canManage
+      ? { title: 'Chat is off for your team', body: 'You switched it off in AI features.', cta: { href: CHAT_SETTINGS_HREF.capability, label: 'Turn chat on' }, secondary: null }
+      : { title: 'Chat is off for your team', body: 'An admin switched it off. File work with the mission form until then.', cta: null, secondary: null };
   }
-  return reason === 'capability_disabled'
-    ? {
-        title: 'Chat is off for your team',
-        body: 'Ask a team admin to turn it on. Until then, file work with the mission form.',
-        cta: null,
-        secondary: null,
-      }
-    : {
-        title: 'Chat needs a provider key',
-        body: 'Ask an admin to connect a provider, or use your own key.',
-        cta: { href: CHAT_SETTINGS_HREF.ownKey, label: 'Use my own key' },
-        secondary: null,
-      };
+  if (policy === 'own') {
+    return { title: 'Add your key to use chat', body: 'Everyone on this team brings their own key. OpenRouter covers every model with one key.', cta: { href: CHAT_SETTINGS_HREF.ownKey, label: 'Add your key' }, secondary: null };
+  }
+  return canManage
+    ? { title: 'Connect a model provider', body: 'Chat is where your team starts missions and asks about the fleet. It starts once the team has a key. OpenRouter covers every model with one key.', cta: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Connect a provider' }, secondary: null }
+    : { title: 'Chat is not set up yet', body: 'Ask a team admin to connect a model provider.', cta: null, secondary: null };
 }
 
-export default function ChatSetupCard({ reason, canManage }: { reason: ChatSetupReason; canManage: boolean }) {
-  const copy = chatSetupCopy(reason, canManage);
+export default function ChatSetupCard({ reason, canManage, policy }: { reason: ChatSetupReason; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own' }) {
+  const copy = chatSetupCopy(reason, canManage, policy);
   return (
     <section data-testid="chat-setup-card" data-reason={reason} className="border-2 border-dashed border-border-strong bg-card px-5 py-4">
       <div className="font-mono text-[11px] font-bold uppercase tracking-[2px] text-accent-text">Agent chat</div>

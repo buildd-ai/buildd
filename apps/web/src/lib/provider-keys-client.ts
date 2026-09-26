@@ -34,8 +34,22 @@ const INFO: Record<ChatProvider, Omit<ChatProviderInfo, 'id'>> = {
   openrouter: { label: 'OpenRouter', prefix: 'sk-or-', placeholder: 'sk-or-v1-…', consoleUrl: 'https://openrouter.ai/settings/keys' },
 };
 
-/** Display info per provider, in the shared contract's order. */
-export const CHAT_PROVIDER_INFO: readonly ChatProviderInfo[] = CHAT_PROVIDERS.map((id) => ({ id, ...INFO[id] }));
+/**
+ * Display order: OpenRouter first. One OpenRouter key reaches every model the
+ * tiers name, so it is the one to recommend.
+ */
+export const PROVIDER_DISPLAY_ORDER: readonly ChatProvider[] = ['openrouter', 'anthropic', 'openai'];
+
+/** Display info per provider, in display order. */
+export const CHAT_PROVIDER_INFO: readonly ChatProviderInfo[] = PROVIDER_DISPLAY_ORDER
+  .filter((id) => (CHAT_PROVIDERS as readonly string[]).includes(id))
+  .map((id) => ({ id, ...INFO[id] }));
+
+export type KeyPolicy = 'team' | 'team_or_own' | 'own';
+
+function isKeyPolicy(v: unknown): v is KeyPolicy {
+  return v === 'team' || v === 'team_or_own' || v === 'own';
+}
 
 export type KeyHealth = 'ok' | 'degraded' | 'failing' | 'unknown';
 
@@ -67,6 +81,9 @@ export interface ProviderCard {
 export interface ProviderKeysView {
   canManageTeamKeys: boolean;
   providers: ProviderCard[];
+  /** Whose key a person's chat turn spends. */
+  keyPolicy: KeyPolicy;
+  chatDisabled: boolean;
 }
 
 const SOURCE_NOTE: Record<string, string> = {
@@ -99,7 +116,7 @@ export function toKeyStatus(k: MaskedProviderKey | null | undefined): ProviderKe
  * malformed body reads as "nothing configured" rather than throwing.
  */
 export function normalizeProviderKeys(body: unknown): ProviderKeysView {
-  const b = (body ?? {}) as { canManageTeamKeys?: unknown; providers?: unknown };
+  const b = (body ?? {}) as { canManageTeamKeys?: unknown; providers?: unknown; keyPolicy?: unknown; chatDisabled?: unknown };
   const list = Array.isArray(b.providers) ? (b.providers as Record<string, unknown>[]) : [];
   const byProvider = new Map<ChatProvider, ProviderCard>();
   for (const p of list) {
@@ -113,8 +130,44 @@ export function normalizeProviderKeys(body: unknown): ProviderKeysView {
   }
   return {
     canManageTeamKeys: b.canManageTeamKeys === true,
-    providers: CHAT_PROVIDERS.map((provider) => byProvider.get(provider) ?? { provider, team: null, mine: null, membersWithOwnKey: null }),
+    providers: CHAT_PROVIDER_INFO.map(({ id: provider }) => byProvider.get(provider) ?? { provider, team: null, mine: null, membersWithOwnKey: null }),
+    keyPolicy: isKeyPolicy(b.keyPolicy) ? b.keyPolicy : 'team',
+    chatDisabled: b.chatDisabled === true,
   };
+}
+
+/** What a person's chat runs on, as the Account row says it. */
+export type ChatKeySummary =
+  | { kind: 'own'; provider: ChatProvider }
+  | { kind: 'team'; provider: ChatProvider }
+  /** Everyone brings their own key, and this person has none yet. */
+  | { kind: 'needs_own' }
+  /** No team key yet. */
+  | { kind: 'none' };
+
+const usable = (k: ProviderKeyStatus | null) => !!k && k.health !== 'failing';
+
+/**
+ * Which key a person's chat uses under the team's policy, first provider in
+ * display order. Mirrors `resolveInferenceKey`: `team` ignores own keys, `own`
+ * never falls back to the team key.
+ */
+export function chatKeySummary(view: Pick<ProviderKeysView, 'providers' | 'keyPolicy'>): ChatKeySummary {
+  if (view.keyPolicy !== 'team') {
+    const mine = view.providers.find((p) => usable(p.mine));
+    if (mine) return { kind: 'own', provider: mine.provider };
+    if (view.keyPolicy === 'own') return { kind: 'needs_own' };
+  }
+  const team = view.providers.find((p) => usable(p.team));
+  return team ? { kind: 'team', provider: team.provider } : { kind: 'none' };
+}
+
+/** Status square / chip tone for a key's health (lib/status-tone.ts). */
+export function keyHealthTone(k: Pick<ProviderKeyStatus, 'health'> | null): 'success' | 'warning' | 'error' | 'muted' {
+  if (!k) return 'muted';
+  if (k.health === 'ok') return 'success';
+  if (k.health === 'failing') return 'error';
+  return 'warning';
 }
 
 export type KeySource = 'own' | 'workspace' | 'team' | 'none';

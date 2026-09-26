@@ -76,6 +76,14 @@ export interface ListProviderKeysResponse {
   /** Whether the caller can set/delete team-scope keys (team owner/admin). */
   canManageTeamKeys: boolean;
   providers: ProviderKeySummary[];
+  /**
+   * Whose key a person's chat turn spends (`teams.inferenceKeyPolicy`):
+   * `team` = the team key for everyone, `team_or_own` = the team key or your
+   * own, `own` = everyone brings their own.
+   */
+  keyPolicy: 'team' | 'team_or_own' | 'own';
+  /** An admin switched chat off for the team. */
+  chatDisabled: boolean;
 }
 
 /** `PUT /api/inference-keys` */
@@ -428,6 +436,8 @@ export interface ChatAvailabilityResponse {
   available: boolean;
   reason: ChatUnavailableReason | null;
   canManageTeamKeys: boolean;
+  /** The team's key policy, so a setup card can say whose key is missing. */
+  keyPolicy?: 'team' | 'team_or_own' | 'own';
 }
 
 // ── Realtime ──────────────────────────────────────────────────────────────────

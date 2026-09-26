@@ -13,6 +13,7 @@ export type SettingsSectionId =
   | 'team'
   | 'budgets'
   | 'runners'
+  | 'providers'
   | 'github'
   | 'notifications'
   | 'connectors'
@@ -76,6 +77,12 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         description: 'The Claude or Codex sign-in your runners use, and runner tokens.',
       },
       {
+        id: 'providers',
+        label: 'Model providers',
+        href: '/app/settings/providers',
+        description: 'OpenRouter, Anthropic or OpenAI keys for chat and model features.',
+      },
+      {
         id: 'github',
         label: 'GitHub and Vercel',
         href: '/app/settings/github',
@@ -102,7 +109,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'ai',
         label: 'AI features',
         href: '/app/settings/ai',
-        description: 'Turn chat on, and pick which features call a model directly.',
+        description: 'The chat switch, and which features call a model directly.',
       },
       {
         id: 'models',
@@ -156,6 +163,7 @@ export const LEGACY_SETTINGS_ANCHORS: Record<string, string> = {
   'agent-backends': '/app/settings/runners',
   'runner-tokens': '/app/settings/runners',
   'inference-spending': '/app/settings/ai',
+  'provider-keys': '/app/settings/providers',
   connectors: '/app/settings/connectors',
   notifications: '/app/settings/notifications',
   github: '/app/settings/github',

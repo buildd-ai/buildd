@@ -15,7 +15,7 @@ import {
   type TierAuditLike,
   type TierSuggestion,
 } from '@/lib/tier-mapping';
-import ProviderKeysPanel from './ProviderKeysPanel';
+import Link from 'next/link';
 
 interface Props {
   teamId: string;
@@ -76,9 +76,12 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
   return (
     <div>
       <h1 className="hidden md:block text-xl font-semibold text-text-primary mb-1.5">Model tiers</h1>
-      <p className="text-sm text-text-secondary">Agent runs and chat ask for a tier. Pick the model behind each one.</p>
+      <p className="text-sm text-text-secondary">
+        Agent runs and chat ask for a tier. Pick the model behind each one.{' '}
+        <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link> hold the keys.
+      </p>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-7 mt-6 items-start">
+      <div className="mt-6 max-w-4xl">
         <section aria-label="Tiers">
           {loadError && <div className="notice notice-err mb-3">{loadError}</div>}
           <div className="card" data-testid="tier-table">
@@ -99,8 +102,6 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
             ))}
           </div>
         </section>
-
-        <ProviderKeysPanel teamId={teamId} isAdmin={isAdmin} />
       </div>
     </div>
   );

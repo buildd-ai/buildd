@@ -16,13 +16,14 @@ import { capabilityToggleCopy, FEATURE_TRADEOFF } from './feature-copy';
  * per-feature allowlist (`teams.enabledInferenceCapabilities`) that starts
  * empty. The tradeoff is the same for every row, so the page states it once.
  */
-export default function ModelFeatures({ teamId, canManage, keysHref = '/app/settings/models#provider-keys' }: {
+export default function ModelFeatures({ teamId, canManage, keysHref = '/app/settings/providers' }: {
   teamId: string;
   canManage: boolean;
   /** Where "add a key" goes. */
   keysHref?: string;
 }) {
   const [enabled, setEnabled] = useState<InferenceCapability[]>([]);
+  const [chatDisabled, setChatDisabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -35,6 +36,7 @@ export default function ModelFeatures({ teamId, canManage, keysHref = '/app/sett
         const data = await res.json();
         const list = data.team?.enabledInferenceCapabilities as string[] | null | undefined;
         setEnabled(ALL_INFERENCE_CAPABILITIES.filter((c) => (list ?? []).includes(c)));
+        setChatDisabled(data.team?.chatDisabled === true);
       }
     } catch {
       /* non-fatal */
@@ -67,6 +69,28 @@ export default function ModelFeatures({ teamId, canManage, keysHref = '/app/sett
       setMsg({ type: 'success', text: wasOn ? copy.turnedOff : copy.turnedOn });
     } catch (e) {
       setEnabled(prev); // rollback
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Chat is on whenever a key resolves; this is only the admin's off switch.
+  async function toggleChat() {
+    const next = !chatDisabled;
+    setChatDisabled(next);
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatDisabled: next }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
+      setMsg({ type: 'success', text: next ? 'Chat is off for the team.' : 'Chat is on for everyone with a key.' });
+    } catch (e) {
+      setChatDisabled(!next);
       setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
     } finally {
       setBusy(false);
@@ -111,7 +135,18 @@ export default function ModelFeatures({ teamId, canManage, keysHref = '/app/sett
     <div className="space-y-8">
       <section aria-labelledby="ai-chat-h">
         <h2 id="ai-chat-h" className="section-label mb-3">Chat</h2>
-        <div className="card">{row('chat')}</div>
+        <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3" data-testid="chat-switch">
+          <span className="flex items-center gap-2 text-sm text-text-primary">
+            <span aria-hidden className={`w-2 h-2 shrink-0 ${chatDisabled ? 'bg-text-muted' : 'bg-status-success'}`} />
+            {chatDisabled ? 'Off for the team' : 'On for everyone with a key'}
+            <Link href={keysHref} className="text-xs text-text-secondary underline hover:text-text-primary">Keys</Link>
+          </span>
+          {canManage && (
+            <button onClick={toggleChat} disabled={busy || !loaded} className="btn btn-quiet self-start sm:self-auto">
+              {chatDisabled ? 'Turn chat on' : 'Turn chat off'}
+            </button>
+          )}
+        </div>
       </section>
 
       <section aria-labelledby="ai-features-h" id="inference-spending" className="scroll-mt-20">

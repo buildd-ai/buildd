@@ -7,6 +7,8 @@ import {
   keyHealthPill,
   normalizeProviderKeys,
   toKeyStatus,
+  chatKeySummary,
+  keyHealthTone,
 } from './provider-keys-client';
 
 // Illustrative fixtures only. Nothing here is a real key.
@@ -20,7 +22,7 @@ const masked = (over: Record<string, unknown> = {}) => ({
 
 describe('CHAT_PROVIDER_INFO', () => {
   it('covers exactly the providers chat accepts, in display order', () => {
-    expect(CHAT_PROVIDER_INFO.map((p) => p.id)).toEqual(['anthropic', 'openai', 'openrouter']);
+    expect(CHAT_PROVIDER_INFO.map((p) => p.id)).toEqual(['openrouter', 'anthropic', 'openai']);
   });
 });
 
@@ -126,9 +128,9 @@ describe('normalizeProviderKeys', () => {
       ],
     });
     expect(out.canManageTeamKeys).toBe(true);
-    expect(out.providers.map((p) => p.provider)).toEqual(['anthropic', 'openai', 'openrouter']);
-    expect(out.providers[0]).toEqual({ provider: 'anthropic', team: null, mine: null, membersWithOwnKey: null });
-    expect(out.providers[2]).toMatchObject({ team: { masked: '…91c0' }, membersWithOwnKey: 2 });
+    expect(out.providers.map((p) => p.provider)).toEqual(['openrouter', 'anthropic', 'openai']);
+    expect(out.providers[1]).toEqual({ provider: 'anthropic', team: null, mine: null, membersWithOwnKey: null });
+    expect(out.providers[0]).toMatchObject({ team: { masked: '…91c0' }, membersWithOwnKey: 2 });
   });
 
   it('keeps your own key separate from the team key', () => {
@@ -136,13 +138,54 @@ describe('normalizeProviderKeys', () => {
       teamId: 't', canManageTeamKeys: false,
       providers: [{ provider: 'anthropic', team: masked(), mine: masked({ id: 'k2', scope: 'user', last4: '7d31' }), membersWithOwnKey: null }],
     });
-    expect(out.providers[0].mine?.masked).toBe('…7d31');
-    expect(out.providers[0].team?.masked).toBe('…4f2a');
+    const anthropic = out.providers.find((p) => p.provider === 'anthropic')!;
+    expect(anthropic.mine?.masked).toBe('…7d31');
+    expect(anthropic.team?.masked).toBe('…4f2a');
   });
 
   it('survives a malformed body', () => {
     const out = normalizeProviderKeys(null);
     expect(out.canManageTeamKeys).toBe(false);
     expect(out.providers.every((p) => !p.team && !p.mine)).toBe(true);
+    // An unknown policy reads as the column default.
+    expect(out.keyPolicy).toBe('team');
+    expect(out.chatDisabled).toBe(false);
+  });
+
+  it('carries the key policy and the chat switch', () => {
+    const out = normalizeProviderKeys({ providers: [], keyPolicy: 'own', chatDisabled: true });
+    expect(out).toMatchObject({ keyPolicy: 'own', chatDisabled: true });
+  });
+});
+
+describe('chatKeySummary', () => {
+  const card = (provider: string, team: string | null, mine: string | null) => ({
+    provider, membersWithOwnKey: null,
+    team: team ? toKeyStatus(masked({ provider, health: team }) as never) : null,
+    mine: mine ? toKeyStatus(masked({ provider, scope: 'user', health: mine }) as never) : null,
+  }) as never;
+
+  it("'team': the team key, even when you hold your own", () => {
+    expect(chatKeySummary({ keyPolicy: 'team', providers: [card('openrouter', 'healthy', 'healthy')] })).toEqual({ kind: 'team', provider: 'openrouter' });
+    expect(chatKeySummary({ keyPolicy: 'team', providers: [card('openrouter', null, 'healthy')] })).toEqual({ kind: 'none' });
+  });
+
+  it("'team_or_own': your key wins, the team key covers the rest", () => {
+    expect(chatKeySummary({ keyPolicy: 'team_or_own', providers: [card('openrouter', 'healthy', 'healthy')] })).toEqual({ kind: 'own', provider: 'openrouter' });
+    expect(chatKeySummary({ keyPolicy: 'team_or_own', providers: [card('openrouter', 'healthy', 'revoked')] })).toEqual({ kind: 'team', provider: 'openrouter' });
+  });
+
+  it("'own': never the team key", () => {
+    expect(chatKeySummary({ keyPolicy: 'own', providers: [card('openrouter', 'healthy', null)] })).toEqual({ kind: 'needs_own' });
+    expect(chatKeySummary({ keyPolicy: 'own', providers: [card('anthropic', null, 'healthy')] })).toEqual({ kind: 'own', provider: 'anthropic' });
+  });
+});
+
+describe('keyHealthTone', () => {
+  it('matches the badge: working is green, rejected red, untested amber, none muted', () => {
+    expect(keyHealthTone(toKeyStatus(masked({ health: 'healthy' }) as never))).toBe('success');
+    expect(keyHealthTone(toKeyStatus(masked({ health: 'revoked' }) as never))).toBe('error');
+    expect(keyHealthTone(toKeyStatus(masked({ health: 'unknown' }) as never))).toBe('warning');
+    expect(keyHealthTone(null)).toBe('muted');
   });
 });

@@ -25,6 +25,11 @@ describe('SETTINGS_NAV', () => {
     }
   });
 
+  it('puts model providers right after runners: both are core connections', () => {
+    const connections = SETTINGS_NAV.find((g) => g.label === 'Connections')!.items.map((i) => i.id);
+    expect(connections.slice(0, 2)).toEqual(['runners', 'providers']);
+  });
+
   it('has unique ids and hrefs', () => {
     expect(new Set(SETTINGS_ITEMS.map((i) => i.id)).size).toBe(SETTINGS_ITEMS.length);
     expect(new Set(SETTINGS_ITEMS.map((i) => i.href)).size).toBe(SETTINGS_ITEMS.length);
@@ -68,6 +73,7 @@ describe('legacy settings links', () => {
     expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/runners');
     expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/ai');
     expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connectors');
+    expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/providers');
     expect(legacySettingsTarget('#nope')).toBeNull();
     expect(legacySettingsTarget('')).toBeNull();
   });

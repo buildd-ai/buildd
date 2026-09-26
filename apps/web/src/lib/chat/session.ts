@@ -7,7 +7,6 @@ import type { NextRequest } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, teams, workspaces } from '@buildd/core/db/schema';
-import { isInferenceEnabled } from '@buildd/core/inference-policy';
 import { resolveTimezone } from '@buildd/core/timezone';
 import type { ChatAvailabilityResponse } from '@buildd/shared';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
@@ -35,10 +34,11 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { enabledInferenceCapabilities: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
+    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
   });
   return {
-    chatEnabled: isInferenceEnabled('chat', team?.enabledInferenceCapabilities ?? null),
+    // On whenever a key resolves; an admin can switch it off (teams.chatDisabled).
+    chatEnabled: team ? team.chatDisabled !== true : false,
     timezone: team?.timezone ?? null,
     // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
@@ -57,9 +57,9 @@ export async function turnUserFor(user: CurrentUser, teamId: string, teamTimezon
 }
 
 /**
- * Should the UI show a Chat entry point for this user in this team? Only when
- * the capability is on AND a key resolves for the default tier — so a team
- * with chat off, or with no key, sees nothing change.
+ * Should the UI show a Chat entry point for this user in this team? When a key
+ * resolves for the default tier under the team's key policy, unless an admin
+ * switched chat off.
  */
 export async function chatAvailability(teamId: string, userId: string, role: string | null): Promise<ChatAvailabilityResponse> {
   const canManageTeamKeys = role === 'owner' || role === 'admin';

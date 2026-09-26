@@ -13,8 +13,6 @@ mock.module('next/navigation', () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
-// The keys panel has its own tests; stub it so this file stays about the table.
-mock.module('./ProviderKeysPanel', () => ({ default: () => null }));
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');

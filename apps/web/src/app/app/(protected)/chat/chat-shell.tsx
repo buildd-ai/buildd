@@ -36,7 +36,7 @@ export interface ChatShellData {
   conversations: ConversationListItem[];
 }
 
-export async function loadChatShell(): Promise<ChatShellData | { unavailable: true; teamId: string | null; canManage: boolean; reason: 'capability_disabled' | 'no_key' }> {
+export async function loadChatShell(): Promise<ChatShellData | { unavailable: true; teamId: string | null; canManage: boolean; reason: 'capability_disabled' | 'no_key'; policy?: 'team' | 'team_or_own' | 'own' }> {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
   const scope = await resolveActiveTeamScope(user.id, (await cookies()).get('buildd-team')?.value);
@@ -50,7 +50,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
     listConversations(user.id, teamId).catch(() => []),
   ]);
   if (!avail.available) {
-    return { unavailable: true, teamId, canManage: avail.canManageTeamKeys, reason: avail.reason === 'no_key' ? 'no_key' : 'capability_disabled' };
+    return { unavailable: true, teamId, canManage: avail.canManageTeamKeys, reason: avail.reason === 'no_key' ? 'no_key' : 'capability_disabled', policy: avail.keyPolicy };
   }
   return {
     user: { id: user.id, name: user.name ?? null, email: user.email ?? null },
@@ -66,10 +66,10 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; formHref?: string }) {
+export function ChatUnavailable({ reason, canManage, policy, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
-      <ChatSetupCard reason={reason} canManage={canManage} />
+      <ChatSetupCard reason={reason} canManage={canManage} policy={policy} />
       <Link href={formHref} className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
         {formHref.startsWith('/app/tasks/new') ? 'File a task instead →' : 'File a mission instead →'}
       </Link>

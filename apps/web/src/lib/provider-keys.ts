@@ -9,10 +9,11 @@
  */
 
 import { db } from '@buildd/core/db';
-import { secrets } from '@buildd/core/db/schema';
+import { secrets, teams } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { maskKeyLast4, verifyProviderKey } from '@buildd/core/inference-keys';
+import { isInferenceKeyPolicy, policyAllowsOwnKey, type InferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import {
   CHAT_PROVIDERS,
   type ChatProvider,
@@ -94,12 +95,31 @@ function pickTeamRow(rows: KeyRow[], provider: ChatProvider): KeyRow | null {
     )[0] ?? null;
 }
 
+/**
+ * The team's key policy and chat switch. An unreadable row reads as the
+ * pre-policy behaviour (own keys allowed, chat on), like the resolver.
+ */
+export async function loadTeamKeySettings(teamId: string): Promise<{ keyPolicy: InferenceKeyPolicy; chatDisabled: boolean }> {
+  try {
+    const row = await db.query.teams.findFirst({
+      where: eq(teams.id, teamId),
+      columns: { inferenceKeyPolicy: true, chatDisabled: true },
+    });
+    return {
+      keyPolicy: isInferenceKeyPolicy(row?.inferenceKeyPolicy) ? row.inferenceKeyPolicy : 'team_or_own',
+      chatDisabled: row?.chatDisabled === true,
+    };
+  } catch {
+    return { keyPolicy: 'team_or_own', chatDisabled: false };
+  }
+}
+
 export async function listProviderKeys(
   teamId: string,
   userId: string,
   canManageTeamKeys: boolean,
 ): Promise<ListProviderKeysResponse> {
-  const rows = await loadRows(teamId);
+  const [rows, settings] = await Promise.all([loadRows(teamId), loadTeamKeySettings(teamId)]);
   const providers: ProviderKeySummary[] = CHAT_PROVIDERS.map(provider => {
     const team = pickTeamRow(rows, provider);
     const mine = rows.find(r => r.userId === userId && r.purpose === 'inference_key' && rowProvider(r) === provider);
@@ -113,7 +133,7 @@ export async function listProviderKeys(
       membersWithOwnKey: canManageTeamKeys ? others.size : null,
     };
   });
-  return { teamId, canManageTeamKeys, providers };
+  return { teamId, canManageTeamKeys, providers, ...settings };
 }
 
 /** Trim, and strip one pair of wrapping quotes (pasted keys often carry them). */
@@ -145,6 +165,12 @@ export async function setProviderKey(input: {
   scope: 'user' | 'team';
   value: string;
 }): Promise<SetResult> {
+  if (input.scope === 'user') {
+    const { keyPolicy } = await loadTeamKeySettings(input.teamId);
+    if (!policyAllowsOwnKey(keyPolicy)) {
+      return { ok: false, status: 403, error: 'Your team pays for chat with the team key. Ask an admin if you want to use your own.' };
+    }
+  }
   const value = sanitizeProviderKey(input.value);
   const problem = providerKeyProblem(input.provider, value);
   if (problem) return { ok: false, status: 400, error: problem };

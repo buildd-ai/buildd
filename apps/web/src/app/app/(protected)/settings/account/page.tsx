@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 /** Settings → Account → Profile (was /app/you; next.config redirects the old path). */
 export default async function AccountSettingsPage() {
-  const { user, teams, currentTeamId } = await loadSettingsContext();
+  const { user, teams, currentTeamId, isTeamAdmin } = await loadSettingsContext();
   const initials = getInitials(user.name, user.email);
 
   return (
@@ -34,11 +34,8 @@ export default async function AccountSettingsPage() {
         </div>
       </section>
 
-      {/* Personal provider keys (chat). Wins over the team key for your turns. */}
-      <PersonalProviderKeys
-        teamId={currentTeamId}
-        teamName={teams.find((t) => t.id === currentTeamId)?.name ?? null}
-      />
+      {/* What your chat runs on; your own key only when the team's policy allows it. */}
+      <PersonalProviderKeys teamId={currentTeamId} isAdmin={isTeamAdmin} />
 
       <section aria-labelledby="teams-h">
         <div className="flex justify-between items-center mb-3">

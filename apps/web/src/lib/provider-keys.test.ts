@@ -9,6 +9,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  */
 
 let rows: any[] = [];
+let teamRow: any = null;
 let deletedWhere: unknown = null;
 let findFirstWhere: unknown = null;
 let updateSet: any = null;
@@ -17,6 +18,7 @@ const replaceScoped = mock(async (_v: string, _m: any) => 'new-id');
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
+      teams: { findFirst: async () => teamRow },
       secrets: {
         findMany: async () => rows,
         findFirst: async (q: any) => { findFirstWhere = q.where; return rows[0]; },
@@ -71,6 +73,7 @@ const realFetch = globalThis.fetch;
 let fetchStatus = 200;
 beforeEach(() => {
   rows = [];
+  teamRow = null;
   deletedWhere = null;
   findFirstWhere = null;
   updateSet = null;
@@ -187,5 +190,29 @@ describe('deleteProviderKey', () => {
     expect(sql).toContain('"secrets"."account_id" is null');
     expect(sql).toContain('"secrets"."workspace_id" is null');
     expect(params).not.toContain('anthropic_api_key');
+  });
+});
+
+describe('team key policy', () => {
+  it('lists the policy and the chat switch with the keys', async () => {
+    teamRow = { inferenceKeyPolicy: 'own', chatDisabled: true };
+    const view = await listProviderKeys('t-1', 'u-1', true);
+    expect(view).toMatchObject({ keyPolicy: 'own', chatDisabled: true });
+  });
+
+  it("refuses a personal key when the team pays for everyone ('team')", async () => {
+    teamRow = { inferenceKeyPolicy: 'team', chatDisabled: false };
+    replaceScoped.mockClear();
+    const r = await setProviderKey({ teamId: 't-1', userId: 'u-1', provider: 'openrouter', scope: 'user', value: 'sk-or-v1-personal-key-0000' });
+    expect(r).toMatchObject({ ok: false, status: 403 });
+    expect(replaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('still lets an admin store the team key under any policy', async () => {
+    teamRow = { inferenceKeyPolicy: 'own', chatDisabled: false };
+    replaceScoped.mockClear();
+    const r = await setProviderKey({ teamId: 't-1', userId: 'u-1', provider: 'openrouter', scope: 'team', value: 'sk-or-v1-team-key-00000000' });
+    expect(r.ok).toBe(true);
+    expect(replaceScoped).toHaveBeenCalled();
   });
 });

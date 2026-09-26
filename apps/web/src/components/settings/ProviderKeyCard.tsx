@@ -5,9 +5,11 @@ import {
   checkKeyShape,
   formatCheckedAgo,
   keyHealthPill,
+  keyHealthTone,
   type ChatProviderInfo,
   type ProviderKeyStatus,
 } from '@/lib/provider-keys-client';
+import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 
 /**
  * One provider's key at one scope: the team key (admin screen) or your own key
@@ -27,13 +29,13 @@ export interface ProviderKeyCardProps {
   onSave: (value: string) => Promise<ProviderKeyStatus | null>;
   onRemove: () => Promise<void>;
   onTest: () => Promise<{ ok: boolean; error: string | null }>;
-  /** Personal mode: one line saying which key chat uses for you. */
-  inUse?: string;
+  /** Marks the provider to pick first (OpenRouter). */
+  recommended?: boolean;
   now?: Date;
 }
 
 export function ProviderKeyCard({
-  info, status, mode, ownKeyCount = null, canEdit: canEditScope, loading = false, onSave, onRemove, onTest, inUse, now,
+  info, status, mode, ownKeyCount = null, canEdit: canEditScope, loading = false, onSave, onRemove, onTest, recommended = false, now,
 }: ProviderKeyCardProps) {
   // A key that serves chat from elsewhere (runner API key, decision key) is
   // shown but managed where it was set. Adding one here still works: it
@@ -102,8 +104,15 @@ export function ProviderKeyCard({
   return (
     <div className="card" data-testid={`provider-key-${info.id}`} data-configured={configured ? 'true' : 'false'}>
       <div className="flex items-center gap-2.5 px-3 py-2.5 border-b border-border-default">
-        <span className="w-2.5 h-2.5 shrink-0 bg-text-primary" aria-hidden />
+        {/* Same tone as the badge (lib/status-tone.ts), like a runner row. */}
+        <span
+          className={`w-2.5 h-2.5 shrink-0 ${loading ? STATUS_TONE_SQUARE.muted : STATUS_TONE_SQUARE[keyHealthTone(status)]}`}
+          data-testid="provider-key-square"
+          data-tone={loading ? 'muted' : keyHealthTone(status)}
+          aria-hidden
+        />
         <b className="text-[13px] font-semibold text-text-primary">{info.label}</b>
+        {recommended && <span className="text-[10px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span>}
         <span className="flex-1" />
         <span className={`status-pill status-pill-${pill.tone} shrink-0`} data-testid="provider-key-health">{pill.label}</span>
       </div>
@@ -119,11 +128,6 @@ export function ProviderKeyCard({
             <span className="text-text-secondary">
               {ownKeyCount === 0 ? 'nobody' : `${ownKeyCount} ${ownKeyCount === 1 ? 'member' : 'members'}`}
             </span>
-          </Row>
-        )}
-        {inUse && (
-          <Row label="Chat uses">
-            <span className="text-text-secondary" data-testid="provider-key-in-use">{inUse}</span>
           </Row>
         )}
         {status && status.health === 'failing' && status.error && (
@@ -199,8 +203,8 @@ export function ProviderKeyCard({
         {confirmRemove && (
           <p className="text-text-secondary">
             {mode === 'team'
-              ? 'Members without their own key lose chat on this provider.'
-              : 'Chat falls back to the workspace or team key.'}
+              ? 'Chat and model features stop using this provider.'
+              : 'Your chats go back to the team key, if the team has one.'}
           </p>
         )}
 
@@ -222,25 +226,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-baseline justify-between gap-3">
       <span className="text-text-muted shrink-0">{label}</span>
       <span className="min-w-0 text-right truncate">{children}</span>
-    </div>
-  );
-}
-
-/** "Which key a chat turn uses", shared by both screens. */
-export function KeyPrecedenceNote({ mode }: { mode: 'team' | 'personal' }) {
-  return (
-    <div className="border border-dashed border-border-strong px-3 py-2.5 text-xs text-text-secondary" data-testid="key-precedence">
-      <b className="text-text-primary">Which key a chat turn uses</b>
-      <ol className="list-decimal ml-5 mt-1.5 space-y-0.5">
-        <li>Your own key{mode === 'personal' ? ' (set here)' : ''}</li>
-        <li>The workspace key</li>
-        <li>The team key{mode === 'team' ? ' (set here)' : ''}</li>
-      </ol>
-      <p className="text-text-muted mt-1.5">
-        {mode === 'team'
-          ? 'The team key covers everyone who has not added their own. A subscription seat can’t make these calls. With no key, chat stays off and says why.'
-          : 'Your key wins for your turns only. Remove it and chat falls back to the team key. A subscription seat can’t make these calls.'}
-      </p>
     </div>
   );
 }
