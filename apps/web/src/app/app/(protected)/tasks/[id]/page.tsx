@@ -1,4 +1,6 @@
 import { Suspense } from 'react';
+import { runnerDisplayResolver } from '@/lib/runner-display';
+import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
@@ -260,7 +262,7 @@ export default async function TaskDetailPage({
   const workerIds = taskWorkers.map(w => w.id);
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
   const LIVE_WORKER_STATUSES = ['running', 'starting', 'waiting_input'];
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks] = await Promise.all([
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -313,7 +315,7 @@ export default async function TaskDetailPage({
           columns: { id: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
             workers: {
-              columns: { runner: true, commitCount: true, linesAdded: true, linesRemoved: true, filesChanged: true, createdAt: true, startedAt: true, completedAt: true, lastCommitSha: true },
+              columns: { runner: true, accountId: true, localUiUrl: true, commitCount: true, linesAdded: true, linesRemoved: true, filesChanged: true, createdAt: true, startedAt: true, completedAt: true, lastCommitSha: true },
               orderBy: desc(workers.createdAt),
             },
           },
@@ -328,8 +330,14 @@ export default async function TaskDetailPage({
           limit: 6,
         })
       : Promise.resolve([]),
+    // Heartbeats of this task's runner accounts: names its runners (and its
+    // CI retries' sibling runners) by hostname.
+    loadRunnerHeartbeats(taskWorkers),
   ]);
   const shippedRelease = ship.shippedRelease;
+  // Runners by hostname, never their raw URL (runner-display).
+  const runnerName = runnerDisplayResolver(runnerHeartbeats);
+  const runnerLabel = (w: { runner?: string | null; localUiUrl?: string | null; accountId?: string | null }) => runnerName(w)?.name ?? null;
   const shippedReleaseLabel = ship.label;
 
   // Origin (U6, Problem §4) — provenance from stored columns only, no title parsing.
@@ -678,7 +686,7 @@ export default async function TaskDetailPage({
   let prOutcome: PrOutcome | null = null;
   if (prWorker) {
     const firstAttempt = {
-      runner: prWorker.runner ?? null,
+      runner: runnerLabel(prWorker),
       roleName,
       commits: prWorker.commitCount ?? 0,
       add: prWorker.linesAdded ?? 0,
@@ -693,7 +701,7 @@ export default async function TaskDetailPage({
     const retryAttempts = retried.map(t => {
       const w = t.workers[0];
       return {
-        runner: w.runner ?? null,
+        runner: runnerLabel(w),
         roleName,
         commits: w.commitCount ?? 0,
         add: w.linesAdded ?? 0,
@@ -780,13 +788,13 @@ export default async function TaskDetailPage({
           value: (
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
-                <li key={i}>{w.runner}<span className="text-text-muted"> · attempt {i + 1}{i > 0 ? ' (retry)' : ''}</span></li>
+                <li key={i}>{runnerLabel(w)}<span className="text-text-muted"> · attempt {i + 1}{i > 0 ? ' (retry)' : ''}</span></li>
               ))}
             </ul>
           ),
         }]
       : factWorker
-        ? [{ key: 'runner', label: 'Runner', value: factWorker.runner }]
+        ? [{ key: 'runner', label: 'Runner', value: runnerLabel(factWorker) }]
         : []),
     ...(factWorker?.branch && !(prOutcome && isTerminal)
       ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]

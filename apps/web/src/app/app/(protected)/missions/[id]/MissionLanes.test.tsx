@@ -63,10 +63,19 @@ describe('MissionLanes — question and complete', () => {
 });
 
 describe('laneWindow', () => {
-  it('runs at least 20 minutes and five past now while live', () => {
+  it('runs at least 10 minutes and five past now while live', () => {
     const m = boardFixture('running');
-    expect(laneWindow(m, BOARD_T0 + 12 * 60_000)).toEqual({ from: BOARD_T0, to: BOARD_T0 + 20 * 60_000 });
+    expect(laneWindow(m, BOARD_T0 + 3 * 60_000)).toEqual({ from: BOARD_T0, to: BOARD_T0 + 10 * 60_000 });
+    expect(laneWindow(m, BOARD_T0 + 12 * 60_000)).toEqual({ from: BOARD_T0, to: BOARD_T0 + 17 * 60_000 });
     expect(laneWindow(m, BOARD_T0 + 30 * 60_000).to).toBe(BOARD_T0 + 35 * 60_000);
+  });
+
+  it('a mission created long before its first run starts the axis at that run', () => {
+    const m = boardFixture('running');
+    const created = { ...m, startedAt: BOARD_T0 - 3 * 3_600_000 };
+    const { from } = laneWindow(created, BOARD_T0 + 12 * 60_000);
+    expect(from).toBeLessThan(BOARD_T0 + 60_000);
+    expect(from).toBeGreaterThanOrEqual(BOARD_T0 - 5 * 60_000);
   });
 
   it('fits the finished run with a little air once complete', () => {

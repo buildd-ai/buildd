@@ -225,6 +225,9 @@ export default function SlotLanes({
             {grid}
             {bars.map(b => {
               const end = drawEnd(b);
+              // Wholly outside the axis: clamped, it would draw as an empty
+              // box at the edge. Its slot still counts (rows line up).
+              if (end <= from || b.start >= to) return null;
               const frac = axisFraction(end, from, to) - axisFraction(b.start, from, to);
               const outside = b.end == null && frac < OUTSIDE_LABEL_FRACTION;
               const isActive = active?.id === b.id || (!!b.group && activeGroups.has(b.group));

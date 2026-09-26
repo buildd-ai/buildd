@@ -28,6 +28,7 @@ import {
 } from './mission-pulse';
 import { deriveWorkKind, LIVE_WORKER_STATUSES } from './task-presentation';
 import { boardTaskLabel } from './mission-board-label';
+import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,11 @@ export interface BoardMilestone {
 export interface BoardWorkerInput {
   id: string;
   status: string;
+  /** `workers.runner`: a runner claims with its local UI URL. Never shown raw. */
   runner: string | null;
+  /** Joins the runner's heartbeat (with `localUiUrl`); optional. */
+  accountId?: string | null;
+  localUiUrl?: string | null;
   startedAt: number | null;
   completedAt: number | null;
   updatedAt: number | null;
@@ -100,6 +105,8 @@ export interface MissionBoardInput {
   artifacts?: readonly BoardArtifactInput[];
   /** When a human steered the mission (answers, guidance): the Board's "? you" marks. */
   humanTouches?: readonly number[];
+  /** Heartbeats of the runners these workers ran on, for hostnames (`resolveRunnerDisplay`). */
+  runnerHeartbeats?: readonly RunnerHeartbeatLike[];
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -139,7 +146,7 @@ export interface BoardTask {
   roleColor: string | null;
   phaseKey: string;
   status: BoardStatus;
-  /** Runner of the live worker (the fix attempt's, while fixing), else the last one. */
+  /** Runner (display name) of the live worker (the fix attempt's, while fixing), else the last one. */
   runner: string | null;
   /** 0-based slot on that runner, derived from overlap. */
   slot: number | null;
@@ -180,8 +187,11 @@ export interface BoardCriterion {
 }
 
 export interface BoardRunner {
+  /** The raw runner key (its URL): lanes group on this, never show it. */
+  id: string;
   name: string;
   initial: string;
+  machine: string | null;
   /** Slots this runner needed during the mission. */
   capacity: number;
   /** What holds each slot now: a live task, a waiting one, or nothing. */
@@ -202,7 +212,10 @@ export type LaneBarTone = 'live' | 'done' | 'waiting' | 'plan';
 export interface MissionLaneBar {
   id: string;
   taskId: string;
+  /** Display name (`resolveRunnerDisplay`). */
   runner: string;
+  /** The raw runner key its lane groups on. */
+  runnerId: string;
   start: number;
   end: number | null;
   tone: LaneBarTone;
@@ -315,6 +328,8 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     id: String(w.id),
     status: str(w.status) ?? 'unknown',
     runner: str(w.runner),
+    accountId: str(w.accountId),
+    localUiUrl: str(w.localUiUrl),
     startedAt: epoch(w.startedAt),
     completedAt: epoch(w.completedAt),
     updatedAt: epoch(w.updatedAt),
@@ -465,6 +480,7 @@ const TICKER_MAX = 6;
 export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   const { now } = input;
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
+  const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
   const allById = new Map(input.tasks.map(t => [t.id, t]));
   const folded = foldMissionDeliverables(input.tasks);
   const ordered = orderDeliverables(folded.rows);
@@ -523,7 +539,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       roleColor: role?.color ?? null,
       phaseKey: phaseKeyOf(t),
       status,
-      runner: activeWorker?.runner ?? null,
+      runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
       slot: null,
       workerId: activeWorker?.id ?? null,
       startedAt: activeWorker?.startedAt ?? null,
@@ -591,7 +607,8 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       bars.push({
         id: w.id,
         taskId: rowId ?? t.id,
-        runner: w.runner,
+        runner: displayOf(w)?.name ?? w.runner,
+        runnerId: runnerKey(w) ?? w.runner,
         start: w.startedAt,
         end,
         tone: w.status === 'waiting_input' ? 'waiting' : live ? 'live' : isPlan ? 'plan' : 'done',
@@ -610,20 +627,29 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   // Slots per runner, and the fleet band's "what holds each slot now".
   const byRunner = new Map<string, Span[]>();
   for (const b of bars) {
-    const list = byRunner.get(b.runner) ?? [];
+    const list = byRunner.get(b.runnerId) ?? [];
     list.push(b);
-    byRunner.set(b.runner, list);
+    byRunner.set(b.runnerId, list);
   }
-  const runners: BoardRunner[] = [...byRunner.keys()].sort().map(name => {
-    const a = assignSlots(byRunner.get(name)!);
-    for (const b of byRunner.get(name)!) {
+  const runnerDisplay = new Map<string, RunnerDisplay>();
+  for (const t of input.tasks) for (const w of t.workers) {
+    const key = runnerKey(w);
+    const d = key && !runnerDisplay.has(key) ? displayOf(w) : null;
+    if (key && d) runnerDisplay.set(key, d);
+  }
+  const runnerIds = [...byRunner.keys()].sort((a, b) =>
+    (runnerDisplay.get(a)?.name ?? a).localeCompare(runnerDisplay.get(b)?.name ?? b) || (a < b ? -1 : a > b ? 1 : 0));
+  const runners: BoardRunner[] = runnerIds.map(id => {
+    const d = runnerDisplay.get(id) ?? resolveRunnerDisplay({ runner: id })!;
+    const a = assignSlots(byRunner.get(id)!);
+    for (const b of byRunner.get(id)!) {
       const bt = tasks[b.taskId];
       if (bt && bt.workerId === b.id) bt.slot = a.slotOf.get(b.id) ?? null;
     }
     const occ = occupiedSlots(a, now).map(s =>
       s && s.end == null ? { taskId: s.taskId, waiting: s.tone === 'waiting' } : null,
     );
-    return { name, initial: name.slice(0, 1).toUpperCase(), capacity: a.slots, slots: occ };
+    return { id, name: d.name, initial: d.initial, machine: d.machineLabel, capacity: a.slots, slots: occ };
   });
   const live = bars.filter(b => b.end == null).length;
 
@@ -662,7 +688,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   for (const b of bars) {
     const bt = tasks[b.taskId];
     if (!bt || b.tone === 'plan') continue;
-    ticker.push({ kind: 'claimed', at: b.start, taskId: bt.id, text: `${b.retry ? `${tag(bt)} fix` : tag(bt)} → ${b.runner.slice(0, 1).toUpperCase()}` });
+    ticker.push({ kind: 'claimed', at: b.start, taskId: bt.id, text: `${b.retry ? `${tag(bt)} fix` : tag(bt)} → ${runnerDisplay.get(b.runnerId)?.initial ?? b.runner.slice(0, 1).toUpperCase()}` });
     if (b.tone === 'waiting' && b.waits[0]) ticker.push({ kind: 'asked', at: b.waits[0].start, taskId: bt.id, text: `${tag(bt)} asked you` });
   }
   for (const r of rows) {

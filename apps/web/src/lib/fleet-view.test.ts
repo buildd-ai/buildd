@@ -87,6 +87,27 @@ describe('buildFleetSnapshot', () => {
     expect(old.window.from).toBeGreaterThanOrEqual(NOW - 35 * 60_000);
   });
 
+  it('a fleet that started two minutes ago fills the chart, not its right edge', () => {
+    const fresh = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766')],
+      [worker('api', 'http://atlas.local:8766', { startedAt: min(2) })],
+      { now: NOW },
+    );
+    // At most ~12 minutes of axis for 2 minutes of work (the old floor was 30).
+    expect(NOW - fresh.window.from).toBeLessThanOrEqual(12 * 60_000);
+    expect(fresh.window.from).toBeLessThan(min(2).getTime());
+  });
+
+  it('an older burst starts just before its earliest bar', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766')],
+      [worker('api', 'http://atlas.local:8766', { startedAt: min(47) })],
+      { now: NOW },
+    );
+    expect(s.window.from).toBeLessThan(min(47).getTime());
+    expect(s.window.from).toBeGreaterThanOrEqual(min(55).getTime());
+  });
+
   it('slots follow SlotLanes: overlap opens a slot, a finished slot is reused', () => {
     const s2 = buildFleetSnapshot(
       [hb('h1', 'http://atlas.local:8766', 2)],

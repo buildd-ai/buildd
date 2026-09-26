@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
+import { runnerInitial } from '@/lib/runner-display';
 import type { BoardCriterion, BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 
@@ -83,7 +84,7 @@ export function RunnerAvatar({ runner, className = '' }: { runner: string | null
       title={runner}
       className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 font-mono text-[11px] md:text-[10.5px] font-bold uppercase text-text-primary ${className}`}
     >
-      {runner.slice(0, 1)}
+      {runnerInitial(runner)}
     </span>
   );
 }

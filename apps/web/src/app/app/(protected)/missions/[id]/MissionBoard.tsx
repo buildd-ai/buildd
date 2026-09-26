@@ -140,7 +140,7 @@ function Band({ model }: { model: MissionBoardModel }) {
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
         <div className="flex flex-wrap gap-3">
           {model.runners.map(r => (
-            <span key={r.name} className="flex items-center gap-1" title={r.name}>
+            <span key={r.id} className="flex items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
               <RunnerAvatar runner={r.name} />
               {r.slots.map((s, i) => (
                 <span
