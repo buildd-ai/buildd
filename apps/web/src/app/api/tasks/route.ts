@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, artifacts } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
@@ -46,6 +46,7 @@ import {
 // registry in here would add a DB dependency to task creation for a constant.
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
+import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -194,22 +195,7 @@ export async function GET(req: NextRequest) {
           // Deliverable attribution — only worth the extra columns/join in audit
           // mode, where the whole point is telling a real completion from a
           // fallback summary with nothing shipped.
-          ...(isTerminalAudit ? {
-            updatedAt: tasks.updatedAt,
-            summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
-            // Audit mode reaches the entire terminal history, unbounded by the
-            // 24h window every other query path stays inside — including tasks
-            // completed before this field's shape was settled. A bare ::int
-            // cast throws and kills the whole query the moment one historical
-            // row has a non-numeric value here, so guard it instead of trusting
-            // the shape.
-            prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
-            hasArtifact: sql<boolean>`EXISTS (
-              SELECT 1 FROM ${workers} w
-              JOIN ${artifacts} a ON a.worker_id = w.id
-              WHERE w.task_id = ${tasks.id}
-            )`,
-          } : {}),
+          ...(isTerminalAudit ? terminalAuditFields : {}),
         })
         .from(tasks)
         .where(where)
