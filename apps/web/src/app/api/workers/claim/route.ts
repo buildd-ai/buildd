@@ -43,7 +43,7 @@ import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { missionNotHeld } from './held-gate';
+import { missionNotHeld, taskNotHeld } from './held-gate';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -417,6 +417,8 @@ export async function POST(req: NextRequest) {
   // until explicitly armed (mission.isHeld=false). Force-starting a single task
   // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
   claimableConditions.push(missionNotHeld());
+  // A single task held by a person (PATCH { held: true }) waits for resume.
+  claimableConditions.push(taskNotHeld());
 
   // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
   // exclude tasks whose subject PR has been reconciled (marked dead by the

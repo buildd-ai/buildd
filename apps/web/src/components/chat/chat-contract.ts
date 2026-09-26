@@ -42,6 +42,8 @@ export interface ToolApproval {
   id: string;
   approved?: boolean;
   reason?: string;
+  /** Why the server asked: for chat writes, the encoded before → after preview (CHAT_PREVIEW_PREFIX). */
+  requestReason?: string;
 }
 
 export interface ChatToolPart {

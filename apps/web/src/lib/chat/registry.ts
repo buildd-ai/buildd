@@ -199,7 +199,12 @@ export const CHAT_TOOL_SPECS = {
 /** Chat-only tools: no MCP action, same registry rules. */
 export const CHAT_NATIVE_TOOL_SPECS = {
   /** Answer (or re-answer) a worker's waiting question. MCP has no action for this; the dashboard posts /respond. */
-  answer_question: single('workers', write({ param: 'workerId', is: 'worker' }, 'GET /api/workers/:id', 'POST /api/workers/:id/respond')),
+  answer_question: single('workers', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/respond')),
+  /**
+   * Hold or resume one task: no new claims while held, and a running agent is
+   * told to stop at a safe point (or to carry on, on resume).
+   */
+  hold_task: single('tasks', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'PATCH /api/tasks/:id', 'POST /api/workers/:id/instruct')),
   /** Knowledge search (the MCP `recall` tool). */
   recall: single('memory', read()),
   /** Save team knowledge (the MCP `learn` tool). Team-visible, so a card. */

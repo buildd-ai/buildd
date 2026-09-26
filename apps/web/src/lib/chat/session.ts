@@ -4,7 +4,7 @@
  */
 
 import type { NextRequest } from 'next/server';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, teams, workspaces } from '@buildd/core/db/schema';
 import { isInferenceEnabled } from '@buildd/core/inference-policy';
@@ -98,6 +98,16 @@ export async function workspaceForConversation(workspaceId: string | null, teamI
 }
 
 /** Record which conversation a mission was filed from, within the team. */
+/** The mission this conversation filed most recently (docked when the request docks nothing). */
+export async function linkedMissionFor(conversationId: string, teamId: string): Promise<string | null> {
+  const [row] = await db.select({ id: missions.id })
+    .from(missions)
+    .where(and(eq(missions.conversationId, conversationId), eq(missions.teamId, teamId)))
+    .orderBy(desc(missions.createdAt))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 export async function linkMissionToConversation(missionId: string, conversationId: string, teamId: string) {
   await db.update(missions)
     .set({ conversationId })

@@ -11,7 +11,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { missionNotHeld, BYPASS_HELD_GATE_KEY, checkMissionHeld } from './held-gate';
+import { missionNotHeld, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -119,5 +119,17 @@ describe('checkMissionHeld — query shape', () => {
     expect(text.replace(/\s+/g, ' ')).toContain('"missions"."is_held" = $2');
     expect(text).toContain('"missions"."id" = $1');
     expect(params).toEqual(['mission-abc', true]);
+  });
+});
+
+describe('taskNotHeld() — a single held task is not claimable', () => {
+  it('passes a task only when its context carries no hold', () => {
+    const text = dialect.sqlToQuery(taskNotHeld()).sql.replace(/\s+/g, ' ').trim();
+    // `IS NOT NULL` would make every task unclaimable except the held ones.
+    expect(text).toBe(`("tasks"."context"->'${TASK_HOLD_KEY}') IS NULL`);
+  });
+
+  it('the hold key is stable — the PATCH route writes it', () => {
+    expect(TASK_HOLD_KEY).toBe('heldBy');
   });
 });

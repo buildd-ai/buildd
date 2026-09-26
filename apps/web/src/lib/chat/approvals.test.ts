@@ -3,6 +3,7 @@ import { describe, it, expect, mock } from 'bun:test';
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
 const { reconcileApprovals, hashToolInput, canonicalJson, approvalRequestsIn } = await import('./approvals');
+const { encodeApprovalPreview } = await import('@buildd/shared');
 
 const input = { action: 'create', title: 'Bill in local currency', goalCriteria: [{ type: 'description', description: 'x' }] };
 
@@ -109,5 +110,42 @@ describe('reconcileApprovals', () => {
     const r = await reconcileApprovals([requested()], [responded(true, { toolCallId: 'call-other' })], decide);
     expect(decide).not.toHaveBeenCalled();
     expect(r.authorizedToolCallIds.size).toBe(0);
+  });
+});
+
+describe('stored previews: typed confirmation and what execution checks against', () => {
+  const preview = (confirmText?: string) => encodeApprovalPreview({
+    v: 1, verb: 'Delete mission', target: { kind: 'mission', id: 'm-1', label: 'Multi-currency checkout' },
+    changes: [], fingerprint: 'fp-1', ...(confirmText ? { confirmText } : {}),
+  });
+  const storedWith = (reason: string) => requested({ approval: { id: 'appr-1', requestReason: reason } });
+
+  it('an admin card decides nothing until the target\'s name is typed exactly', async () => {
+    const { decide } = fakeStore();
+    const stored = [storedWith(preview('Multi-currency checkout'))];
+    const none = await reconcileApprovals(stored, [responded(true)], decide);
+    const wrong = await reconcileApprovals(stored, [responded(true, { approval: { id: 'appr-1', approved: true, reason: 'multi-currency' } })], decide);
+    expect(none.decided + wrong.decided).toBe(0);
+    expect(decide).not.toHaveBeenCalled();
+    const right = await reconcileApprovals(stored, [responded(true, { approval: { id: 'appr-1', approved: true, reason: 'Multi-currency checkout' } })], decide);
+    expect(right.authorizedToolCallIds.has('call-1')).toBe(true);
+  });
+
+  it('denying an admin card needs no typing', async () => {
+    const { decide } = fakeStore();
+    const r = await reconcileApprovals([storedWith(preview('Multi-currency checkout'))], [responded(false)], decide);
+    expect(r.decided).toBe(1);
+    expect(r.authorizedToolCallIds.size).toBe(0);
+  });
+
+  it('the preview execution checks is the STORED one, never the client\'s copy', async () => {
+    const { decide } = fakeStore();
+    const forged = encodeApprovalPreview({ v: 1, verb: 'x', target: { kind: 'mission', id: 'other', label: 'x' }, changes: [], fingerprint: 'forged' });
+    const r = await reconcileApprovals(
+      [storedWith(preview())],
+      [responded(true, { approval: { id: 'appr-1', approved: true, requestReason: forged } })],
+      decide,
+    );
+    expect(r.approvedPreviews.get('call-1')?.fingerprint).toBe('fp-1');
   });
 });

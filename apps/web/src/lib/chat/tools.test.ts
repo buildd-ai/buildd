@@ -76,12 +76,14 @@ describe('read tools', () => {
 });
 
 describe('manage_missions', () => {
-  it('refuses sub-actions outside the P1 set without calling the handler', async () => {
+  it('write sub-actions without an approval never reach the handler; admin ones not even for a member', async () => {
     const { run, handle } = setup();
-    for (const op of ['update', 'delete', 'arm', 'link_task', 'evaluate']) {
+    for (const op of ['update', 'arm', 'link_task', 'evaluate']) {
       const out = await run('manage_missions', { action: op, missionId: 'm1' });
-      expect(out.data).toContain('not available from chat');
+      expect(out.data).toContain('not approved');
     }
+    const del = await run('manage_missions', { action: 'delete', missionId: 'm1' });
+    expect(del.data).toMatch(/not available from chat|needs a team owner or admin/);
     expect(handle).not.toHaveBeenCalled();
   });
 

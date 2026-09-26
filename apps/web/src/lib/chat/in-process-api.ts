@@ -131,6 +131,11 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/experiments/:id/readout', methods: ['GET'], load: () => import('@/app/api/experiments/[id]/readout/route'), reach: { path: path(['id', 'experiment']), ...ROWS } },
 ];
 
+/** Every GET in CHAT_ROUTES and nothing else: what previews and the docked object read through. */
+export function chatReadRoutes(routes: readonly RouteEntry[] = CHAT_ROUTES): RouteEntry[] {
+  return routes.filter(r => r.methods.includes('GET')).map(r => ({ ...r, methods: ['GET'] }));
+}
+
 /** A copy of the routes narrowed to exactly the `METHOD /pattern` refs an op declares. */
 export function routesFor(refs: readonly string[], routes: readonly RouteEntry[] = CHAT_ROUTES): RouteEntry[] {
   const out: RouteEntry[] = [];
@@ -263,6 +268,14 @@ async function guardRequest(
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) outOfReach();
   }
   await assertFieldsInReach(reach, Object.entries(parsed));
+  if (entry.pattern === '/api/tasks' && method === 'POST') {
+    // A task filed from chat: a person asked for it in the dashboard, never a
+    // worker, and never with a callback that reports outside buildd.
+    const ctx = parsed.context as Record<string, unknown> | undefined;
+    if (parsed.parentTaskId != null || parsed.createdByWorkerId != null || ctx?.callback != null) outOfReach();
+    parsed = { ...parsed, creationSource: 'dashboard' };
+    body = JSON.stringify(parsed);
+  }
   const pinnedByRequest = (r.path?.length ?? 0) > 0 || r.pinTeam || (r.requireQuery ?? []).some(q => url.searchParams.get(q));
   if (!pinnedByRequest && r.requireBody?.length && !r.requireBody.some(f => parsed[f] != null && parsed[f] !== '')) {
     throw new Error(`API error: 400 - from chat, ${method} ${url.pathname} needs ${r.requireBody.join(' or ')}`);

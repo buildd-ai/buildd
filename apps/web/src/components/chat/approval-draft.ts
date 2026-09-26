@@ -2,7 +2,7 @@
  * What an approval card shows for a proposed write. Pure: reads the tool input
  * the model proposed and never invents a field the input doesn't carry.
  */
-import type { GoalCriterion } from '@buildd/shared';
+import { approvalChangeLine, approvalHeadline, parseApprovalPreview, type GoalCriterion } from '@buildd/shared';
 import { criterionLabel } from '@/lib/goal-criterion-label';
 import { toolNameOf, type ChatToolPart } from './chat-contract';
 import { toolAction } from './feed-model';
@@ -31,7 +31,19 @@ export interface GenericDraft {
   workspaceId: string | null;
 }
 
-export type ApprovalDraft = MissionDraft | GenericDraft;
+/** A write on an existing object: the server's before → after preview. */
+export interface PreviewDraft {
+  kind: 'preview';
+  /** "Hold task: checkout · Stripe in currency (running on dune)" */
+  headline: string;
+  changes: Array<{ label: string; before: string | null; after: string | null; line: string }>;
+  note: string | null;
+  /** Admin writes: type this to confirm. */
+  confirmText: string | null;
+  workspaceId: string | null;
+}
+
+export type ApprovalDraft = MissionDraft | GenericDraft | PreviewDraft;
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
@@ -94,6 +106,18 @@ export function approvalDraft(part: ChatToolPart): ApprovalDraft {
       constraints: constraintsFrom(description),
       plan: missionPlan(input),
       workspaceId,
+    };
+  }
+  // Every other write carries the server's preview: what changes, from state.
+  const preview = parseApprovalPreview(part.approval?.requestReason);
+  if (preview) {
+    return {
+      kind: 'preview',
+      headline: approvalHeadline(preview),
+      changes: preview.changes.map(c => ({ ...c, line: approvalChangeLine(c) })),
+      note: preview.note ?? null,
+      confirmText: preview.confirmText ?? null,
+      workspaceId: preview.target.workspaceId ?? workspaceId,
     };
   }
   const fields = Object.entries(input)

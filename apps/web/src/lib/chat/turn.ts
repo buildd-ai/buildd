@@ -25,6 +25,8 @@ import {
 import type { ActionContext } from '@buildd/core/mcp-tools';
 import {
   CHAT_EVENT_PART_TYPE,
+  encodeApprovalPreview,
+  type ChatApprovalPreview,
   type ChatMessagePart,
   type ChatTurnEntry,
   type ChatTurnRequest,
@@ -36,8 +38,11 @@ import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
 import { resolveChatModel, turnCostUsd, type ChatTier, type ResolvedChatModel } from './models';
-import { buildChatTools, CORE_GROUPS, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
-import type { ToolGroup } from './registry';
+import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
+import { chatReadRoutes } from './in-process-api';
+import { loadDocked, renderDocked } from './docked';
+import { buildPreview } from './previews';
+import { opSpec, type ToolGroup } from './registry';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -77,6 +82,8 @@ export interface TurnDeps {
   decide?: DecideFn;
   /** Link a filed mission to this conversation (missions.conversation_id). */
   linkMission: (missionId: string) => Promise<void>;
+  /** The mission this conversation filed, docked when the request docks nothing. */
+  linkedMissionId?: () => Promise<string | null>;
   /** Scheduled after the response (Next `after()`); runs inline in tests. */
   later?: (fn: () => Promise<void>) => void;
   autoTitle?: (conversation: ConversationRow, messages: UIMessage[], model: ResolvedChatModel & { ok: true }) => Promise<void>;
@@ -177,6 +184,7 @@ export async function runChatTurn(args: {
   const resolveModel = deps.resolveModel ?? resolveChatModel;
   let route: TurnRoute;
   let authorizedToolCallIds = new Set<string>();
+  let approvedPreviews = new Map<string, ChatApprovalPreview>();
   let continuing: MessageRow | null = null;
 
   if (message.role === 'user') {
@@ -188,6 +196,7 @@ export async function runChatTurn(args: {
     const r = await reconcileApprovals(last.parts, message.parts, deps.decide ?? dbDecide(conv.id, user.id));
     if (r.decided === 0) return Response.json({ error: 'approval_not_pending' }, { status: 409 });
     authorizedToolCallIds = r.authorizedToolCallIds;
+    approvedPreviews = r.approvedPreviews;
     continuing = { ...last, parts: r.parts };
     await updateMessage(last.id, conv.id, { parts: r.parts });
     route = { tier: (last.tier as ChatTier) || FALLBACK_TIER, allowWrites: true, source: 'fallback' };
@@ -216,32 +225,61 @@ export async function runChatTurn(args: {
   }
 
   const canAdmin = user.teamRole === 'owner' || user.teamRole === 'admin';
+  const entry = turnEntry(body.entry);
+
+  // Reads for the docked object and for approval cards: every chat GET, still
+  // reach-guarded, never a write route.
+  const read = deps.makeApi(() => {}, { routes: chatReadRoutes() });
+  const linkedMissionId = entry?.about ? null : await (deps.linkedMissionId?.() ?? Promise.resolve(null)).catch(() => null);
+  const docked = await loadDocked(read, entry?.about ?? null, linkedMissionId);
+  const previewEnv = {
+    read,
+    scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: args.workspace?.id ?? null },
+  };
+  const preview = (tool: string, input: Record<string, unknown>) => {
+    const s = opSpec(tool, input);
+    const admin = !!s && effectiveClass(tool, s.op, s.spec, input) === 'admin';
+    return buildPreview(tool, input, previewEnv, { confirmAdmin: admin });
+  };
+
   const tools: ToolSet = buildChatTools({
     ctx: deps.actionContext,
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
     canAdmin,
     authorizedToolCallIds,
+    approvedPreviews,
+    preview,
     memory: deps.memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
     },
   });
-  const activeTools = toolNamesForGroups(tools, turnGroups({ route, continuing, canAdmin }));
+  const activeTools = toolNamesForGroups(tools, turnGroups({
+    route, continuing, canAdmin, dockGroups: docked ? ['missions', 'tasks', 'workers'] : [],
+  }));
 
   let approvalsThisTurn = 0;
   const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
     name,
-    (input: unknown) => {
+    async (input: unknown) => {
       if (!needsApproval(name, input)) return 'not-applicable' as const;
       // At most one approval card per turn; a second write waits.
+      if (approvalsThisTurn >= 1) {
+        return { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
+      }
+      // The card says exactly what changes, from current state. A target that
+      // isn't exactly one thing gets no card: the tool answers with a question.
+      const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);
+      if (p && !p.ok) return 'not-applicable' as const;
       approvalsThisTurn += 1;
-      return approvalsThisTurn === 1
-        ? 'user-approval' as const
-        : { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
+      return p?.ok
+        ? { type: 'user-approval' as const, reason: encodeApprovalPreview(p.preview) }
+        : 'user-approval' as const;
     },
   ]));
+  const dockedBlock = docked ? `\n\n${renderDocked(docked)}` : '';
   const instructions = `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
     now,
     timeZone: user.timeZone,
@@ -250,8 +288,8 @@ export async function runChatTurn(args: {
     user: { name: user.name, teamRole: user.teamRole, isOperator: user.teamRole !== 'member' },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
-    entry: turnEntry(body.entry),
-  })}`;
+    entry,
+  })}${dockedBlock}`;
 
   const result = (deps.streamTextImpl ?? streamText)({
     model: resolved.model as LanguageModel,

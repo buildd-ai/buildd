@@ -44,6 +44,13 @@ describe('refsFromCall', () => {
   });
 });
 
+describe('a filed task', () => {
+  it('POST /api/tasks returns the task itself, which becomes a live task ref', () => {
+    expect(refsFromCall(call('POST', '/api/tasks', { id: 't9', title: 'JPY e2e test', status: 'pending', workspaceId: 'ws' })))
+      .toEqual([expect.objectContaining({ kind: 'task', id: 't9', title: 'JPY e2e test', workspaceId: 'ws' })]);
+  });
+});
+
 describe('refsFromCalls', () => {
   it('dedupes by kind and id across calls', () => {
     const refs = refsFromCalls([

@@ -10,25 +10,13 @@
  * approval decides nothing and executes nothing.
  */
 
-import { createHash } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { conversationApprovals } from '@buildd/core/db/schema';
-import type { ChatMessagePart } from '@buildd/shared';
+import { parseApprovalPreview, type ChatApprovalPreview, type ChatMessagePart } from '@buildd/shared';
+import { canonicalJson, hashToolInput } from './canonical';
 
-/** Deterministic JSON: object keys sorted at every depth. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-}
-
-export function hashToolInput(input: unknown): string {
-  return createHash('sha256').update(canonicalJson(input)).digest('hex');
-}
+export { canonicalJson, hashToolInput };
 
 type ToolPart = ChatMessagePart & {
   toolCallId: string;
@@ -73,6 +61,8 @@ export interface ReconcileResult {
   authorizedToolCallIds: Set<string>;
   /** How many approvals this request decided (approved or denied). */
   decided: number;
+  /** The server-built preview each authorized call was approved against. */
+  approvedPreviews: Map<string, ChatApprovalPreview>;
 }
 
 /**
@@ -96,6 +86,7 @@ export async function reconcileApprovals(
   }
 
   const authorizedToolCallIds = new Set<string>();
+  const approvedPreviews = new Map<string, ChatApprovalPreview>();
   let decided = 0;
   const parts: ChatMessagePart[] = [];
   for (const part of stored) {
@@ -115,13 +106,26 @@ export async function reconcileApprovals(
       continue;
     }
     const approved = answer.approval!.approved === true;
+    // A preview the server stored with the request (never the client's copy).
+    const preview = parseApprovalPreview((part.approval as { requestReason?: unknown }).requestReason);
+    if (approved && preview?.confirmText) {
+      // Admin writes: the user typed the target's name. A missing or wrong name
+      // decides nothing; the card stays open.
+      if (String(answer.approval?.reason ?? '').trim() !== preview.confirmText.trim()) {
+        parts.push(part);
+        continue;
+      }
+    }
     const won = await decide({ approvalId: part.approval.id, inputHash, approved });
     if (!won) {
       parts.push(part);
       continue;
     }
     decided++;
-    if (approved) authorizedToolCallIds.add(part.toolCallId);
+    if (approved) {
+      authorizedToolCallIds.add(part.toolCallId);
+      if (preview) approvedPreviews.set(part.toolCallId, preview);
+    }
     parts.push({
       ...part,
       state: 'approval-responded',
@@ -132,7 +136,7 @@ export async function reconcileApprovals(
       },
     });
   }
-  return { parts, authorizedToolCallIds, decided };
+  return { parts, authorizedToolCallIds, approvedPreviews, decided };
 }
 
 // ── DB ────────────────────────────────────────────────────────────────────────

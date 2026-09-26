@@ -125,6 +125,8 @@ export async function GET(
           id: true,
           status: true,
           branch: true,
+          // Which runner a live agent is on ("running on dune" on a chat approval card).
+          runner: true,
           prUrl: true,
           prNumber: true,
           error: true,
@@ -227,7 +229,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -302,6 +304,28 @@ export async function PATCH(
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
+    }
+    // Hold / resume one task (the claim route's taskNotHeld gate reads
+    // context.heldBy). A running worker keeps its session; the caller tells it
+    // to stop at a safe point (chat does, through /instruct).
+    if (held !== undefined) {
+      if (typeof held !== 'boolean') {
+        return NextResponse.json({ error: 'held must be true or false' }, { status: 400 });
+      }
+      if (held && ['completed', 'failed', 'cancelled'].includes(task.status)) {
+        return NextResponse.json({ error: `A ${task.status} task can't be held` }, { status: 400 });
+      }
+      const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
+      if (held) {
+        baseCtx.heldBy = {
+          at: new Date().toISOString(),
+          userId: user && !apiAccount ? user.id : null,
+          ...(typeof heldReason === 'string' && heldReason.trim() ? { reason: heldReason.trim().slice(0, 280) } : {}),
+        };
+      } else {
+        delete baseCtx.heldBy;
+      }
+      updateData.context = baseCtx;
     }
     if (rawRequiredConnectors !== undefined) {
       if (rawRequiredConnectors === null) {
