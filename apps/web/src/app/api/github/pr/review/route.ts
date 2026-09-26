@@ -18,6 +18,8 @@ import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
@@ -40,6 +42,26 @@ import {
 } from '@/lib/pr-review-status';
 
 type Account = { id: string; teamId: string };
+
+/**
+ * Which workspaces a caller may resolve a PR in. An API key reaches its own
+ * team, and a foreign workspace is refused (403) as it always was. A dashboard
+ * session reaches the user's teams (or the one pinned by `teamId`), and a
+ * foreign workspace simply does not exist for it (404).
+ */
+interface TargetScope {
+  teamIds: string[];
+  workspaceIds: () => Promise<string[]>;
+  foreignWorkspace: 'forbidden' | 'not_found';
+}
+
+function accountScope(account: Account): TargetScope {
+  return {
+    teamIds: [account.teamId],
+    workspaceIds: () => getTeamWorkspaceIds(account.teamId),
+    foreignWorkspace: 'forbidden',
+  };
+}
 
 interface ResolvedTarget {
   workspace: {
@@ -67,20 +89,22 @@ function bad(error: string, status: number, extra: Record<string, unknown> = {})
  * rather than a guess — reviewing in the wrong repo is not recoverable.
  */
 async function resolveTarget(
-  account: Account,
+  scope: TargetScope,
   prNumber: number,
   workspaceIdInput: string | null,
 ): Promise<ResolvedTarget | { error: string; status: number; candidates?: string[] }> {
   if (workspaceIdInput) {
-    const ws = await resolveWorkspace(workspaceIdInput, { teamIds: [account.teamId] });
+    const ws = await resolveWorkspace(workspaceIdInput, { teamIds: scope.teamIds });
     if (!ws) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
-    if (ws.teamId !== account.teamId) {
-      return { error: 'Workspace belongs to a different team', status: 403 };
+    if (!scope.teamIds.includes(ws.teamId)) {
+      return scope.foreignWorkspace === 'forbidden'
+        ? { error: 'Workspace belongs to a different team', status: 403 }
+        : { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     }
     return { workspace: ws as ResolvedTarget['workspace'] };
   }
 
-  const wsIds = await getTeamWorkspaceIds(account.teamId);
+  const wsIds = await scope.workspaceIds();
   if (wsIds.length === 0) return { error: 'No workspaces found for account', status: 403 };
 
   const owning = await db.query.workers.findFirst({
@@ -162,7 +186,7 @@ export async function POST(req: NextRequest) {
   const callbackOn: PrReviewWaitFor = body.callbackOn === 'merge' ? 'merge' : 'verdict';
 
   const target = await resolveTarget(
-    account as Account,
+    accountScope(account as Account),
     prNumber,
     typeof body.workspaceId === 'string' ? body.workspaceId : null,
   );
@@ -380,9 +404,14 @@ export async function POST(req: NextRequest) {
   );
 }
 
+// Auth: API key, or the dashboard session (GET only — POST dispatches a
+// reviewer and stays key-only). A session resolves within the user's teams, or
+// just `teamId` when given; anything outside 404s. A key, when present, is
+// authoritative and `teamId` is ignored.
 export async function GET(req: NextRequest) {
   const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null);
-  if (!account) return bad('Invalid API key', 401);
+  const sessionUser = account ? null : await getCurrentUser();
+  if (!account && !sessionUser) return bad('Invalid API key', 401);
 
   const url = new URL(req.url);
   const prNumber = Number(url.searchParams.get('prNumber'));
@@ -390,7 +419,16 @@ export async function GET(req: NextRequest) {
     return bad('prNumber is required and must be a positive integer', 400);
   }
 
-  const target = await resolveTarget(account as Account, prNumber, url.searchParams.get('workspaceId'));
+  let scope: TargetScope;
+  if (account) {
+    scope = accountScope(account as Account);
+  } else {
+    const teamIds = await resolveSessionTeamIds(sessionUser!.id, url.searchParams.get('teamId'));
+    if (!teamIds) return bad('Team not found', 404);
+    scope = { teamIds, workspaceIds: () => workspaceIdsForTeams(teamIds), foreignWorkspace: 'not_found' };
+  }
+
+  const target = await resolveTarget(scope, prNumber, url.searchParams.get('workspaceId'));
   if ('error' in target) return bad(target.error, target.status, target.candidates ? { candidates: target.candidates } : {});
   const { workspace } = target;
 

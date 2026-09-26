@@ -18,8 +18,18 @@ const mockMissionsFindFirst = mock(async () => ({ id: 'mission', workspaceId: '1
 const mockWorkspacesFindFirst = mock(async () => ({ id: '11111111-1111-1111-1111-111111111111', teamId: 'team-1' }) as Row | undefined);
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
-mock.module('@/lib/team-access', () => ({ getTeamWorkspaceIds: mockGetTeamWorkspaceIds }));
-mock.module('@/lib/pr-resolve', () => ({ resolveWorkerByPrNumber: mockResolveWorkerByPrNumber }));
+const mockGetCurrentUser = mock(async () => null as Row | null);
+const mockGetUserTeamIds = mock(async (_userId: string) => [] as string[]);
+const mockResolveWorkerByPrNumberInWorkspaces = mock(async () => ({ status: 404, error: 'PR not found' }) as Row);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
+mock.module('@/lib/team-access', () => ({
+  getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
+  getUserTeamIds: mockGetUserTeamIds,
+}));
+mock.module('@/lib/pr-resolve', () => ({
+  resolveWorkerByPrNumber: mockResolveWorkerByPrNumber,
+  resolveWorkerByPrNumberInWorkspaces: mockResolveWorkerByPrNumberInWorkspaces,
+}));
 mock.module('@/lib/explain', () => ({
   explainTask: mockExplainTask,
   explainMission: mockExplainMission,
@@ -55,6 +65,14 @@ function req(query: string): NextRequest {
 }
 
 beforeEach(() => {
+  mockGetCurrentUser.mockReset();
+  mockGetCurrentUser.mockImplementation(async () => null);
+  mockGetUserTeamIds.mockReset();
+  mockGetUserTeamIds.mockImplementation(async () => []);
+  mockGetTeamWorkspaceIds.mockReset();
+  mockGetTeamWorkspaceIds.mockImplementation(async () => [WS]);
+  mockResolveWorkerByPrNumberInWorkspaces.mockReset();
+  mockResolveWorkerByPrNumberInWorkspaces.mockImplementation(async () => ({ status: 404, error: 'PR not found' }));
   mockAuthenticateApiKey.mockClear();
   mockExplainTask.mockClear();
   mockExplainMission.mockClear();
@@ -171,5 +189,102 @@ describe('GET /api/explain — happy paths', () => {
     mockExplainPr.mockImplementation(async () => null);
     const res = await GET(req('prNumber=7'));
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/explain — dashboard session', () => {
+  const WS_B = '44444444-4444-4444-4444-444444444444';
+
+  function sessionReq(query: string): NextRequest {
+    return new NextRequest(`http://localhost:3000/api/explain?${query}`);
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockImplementation(async () => null);
+    mockGetCurrentUser.mockImplementation(async () => ({ id: 'user-1' }));
+    // The user is in two teams; team-1 owns WS, team-2 owns WS_B.
+    mockGetUserTeamIds.mockImplementation(async () => ['team-1', 'team-2']);
+    mockGetTeamWorkspaceIds.mockImplementation(async (teamId: string) => (teamId === 'team-1' ? [WS] : [WS_B]));
+    mockExplainPr.mockImplementation(async () => ({ scope: 'pr', subjects: [] }));
+  });
+
+  it('explains a task in one of the user teams', async () => {
+    const res = await GET(sessionReq(`taskId=${TASK}`));
+    expect(res.status).toBe(200);
+    expect(mockGetUserTeamIds).toHaveBeenCalledWith('user-1');
+    expect(mockExplainTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains a workspace owned by any of the user teams', async () => {
+    mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS_B, teamId: 'team-2' }));
+    const res = await GET(sessionReq(`workspaceId=${WS_B}`));
+    expect(res.status).toBe(200);
+  });
+
+  it('404s a task outside every team the user belongs to', async () => {
+    mockTasksFindFirst.mockImplementation(async () => ({ id: TASK, workspaceId: 'other-ws' }));
+    const res = await GET(sessionReq(`taskId=${TASK}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainTask).not.toHaveBeenCalled();
+  });
+
+  it('404s a workspace outside the user teams', async () => {
+    mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS, teamId: 'other-team' }));
+    const res = await GET(sessionReq(`workspaceId=${WS}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('resolves a PR number across the user workspaces with the shared resolver', async () => {
+    mockResolveWorkerByPrNumberInWorkspaces.mockImplementation(async () => ({
+      id: 'w', taskId: 't', workspaceId: WS, prNumber: 7, status: 'completed',
+    }));
+    const res = await GET(sessionReq('prNumber=7'));
+    expect(res.status).toBe(200);
+    expect(mockResolveWorkerByPrNumber).not.toHaveBeenCalled();
+    expect((mockResolveWorkerByPrNumberInWorkspaces.mock.calls[0] as unknown[])[0]).toEqual([WS, WS_B]);
+  });
+
+  describe('teamId pin', () => {
+    it('limits results to the pinned team: a team-2 task is not visible under ?teamId=team-1', async () => {
+      mockTasksFindFirst.mockImplementation(async () => ({ id: TASK, workspaceId: WS_B }));
+      const res = await GET(sessionReq(`taskId=${TASK}&teamId=team-1`));
+      expect(res.status).toBe(404);
+      expect(mockExplainTask).not.toHaveBeenCalled();
+    });
+
+    it('limits a workspace subject to the pinned team', async () => {
+      mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS_B, teamId: 'team-2' }));
+      const res = await GET(sessionReq(`workspaceId=${WS_B}&teamId=team-1`));
+      expect(res.status).toBe(404);
+    });
+
+    it('searches only the pinned team workspaces for a PR number', async () => {
+      mockResolveWorkerByPrNumberInWorkspaces.mockImplementation(async () => ({
+        id: 'w', taskId: 't', workspaceId: WS, prNumber: 7, status: 'completed',
+      }));
+      await GET(sessionReq('prNumber=7&teamId=team-1'));
+      expect((mockResolveWorkerByPrNumberInWorkspaces.mock.calls[0] as unknown[])[0]).toEqual([WS]);
+    });
+
+    it('404s a pin to a team the user is not in', async () => {
+      const res = await GET(sessionReq(`taskId=${TASK}&teamId=team-9`));
+      expect(res.status).toBe(404);
+      expect(mockExplainTask).not.toHaveBeenCalled();
+    });
+  });
+
+  it('401s with neither a session nor a key', async () => {
+    mockGetCurrentUser.mockImplementation(async () => null);
+    const res = await GET(sessionReq(`taskId=${TASK}`));
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps a present key authoritative and ignores teamId on the key path', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => ({ teamId: 'team-1' }));
+    const res = await GET(req(`taskId=${TASK}&teamId=team-9`));
+    expect(res.status).toBe(200);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+    expect(mockGetUserTeamIds).not.toHaveBeenCalled();
   });
 });

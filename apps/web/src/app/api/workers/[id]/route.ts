@@ -6,6 +6,8 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
@@ -520,8 +522,12 @@ export async function GET(
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
+  // GET also accepts the dashboard session (the in-app chat reads worker
+  // milestones as the signed-in user). PATCH stays worker-key-only. A key,
+  // when present, is authoritative.
+  const sessionUser = account ? null : await getCurrentUser();
 
-  if (!account) {
+  if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -537,6 +543,21 @@ export async function GET(
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
+
+  if (!account) {
+    // Session: membership of the worker workspace's team, as on the dashboard.
+    // Outside it the worker does not exist for this caller.
+    const access = worker.workspaceId ? await verifyWorkspaceAccess(sessionUser!.id, worker.workspaceId) : null;
+    if (!access) {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
+    // The workspace row carries the webhook dispatch bearer token; a team
+    // member reading a worker has no use for it.
+    const workspace = worker.workspace
+      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
+      : worker.workspace;
+    return NextResponse.json({ ...worker, workspace });
   }
 
   if (worker.accountId !== account.id) {

@@ -24,7 +24,22 @@ export async function resolveWorkerByPrNumber(
   workspaceId: string | null | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
-  const wsIds = await getTeamWorkspaceIds(account.teamId);
+  return resolveWorkerByPrNumberInWorkspaces(await getTeamWorkspaceIds(account.teamId), prNumber, workspaceId);
+}
+
+/**
+ * The same resolution as `resolveWorkerByPrNumber`, over an explicit set of
+ * workspace ids — for a dashboard-session caller, whose scope is the teams
+ * they belong to rather than one API account's team. Keeping one body means
+ * the session and key paths cannot disagree about disambiguation or about
+ * what an ambiguous PR number means.
+ */
+export async function resolveWorkerByPrNumberInWorkspaces(
+  wsIds: string[],
+  prNumber: number,
+  workspaceId: string | null | undefined,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
   if (wsIds.length === 0) {
     return { error: 'No workspaces found for account', status: 403 };
   }
