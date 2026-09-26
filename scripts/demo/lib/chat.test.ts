@@ -80,4 +80,28 @@ describe('the multi-currency chat opener', () => {
     expect(board.steps[0]).toMatchObject({ id: 'c0-chat-propose', goto: '/app/chat/{C1}' });
     expect(board.steps.some(s => s.click === 'object-expand' && s.viewports?.includes('phone'))).toBe(true);
   });
+
+  type BoardStep = { id: string; goto?: string; advance?: string; waitFor?: string | string[]; scrollTo?: string; scrollAlign?: string; record?: { advanceTo?: string } };
+  const boardSteps = () =>
+    (Bun.YAML.parse(readFileSync(join(import.meta.dir, '../storyboards/multi-currency.yaml'), 'utf8')) as { steps: BoardStep[] }).steps;
+
+  test('the opener frames the confirm button, not just the top of a card taller than the chat', () => {
+    // The approval card is taller than the chat on a phone and nearly so on
+    // desktop; anchored at its top, the composer covered "Confirm & file".
+    expect(boardSteps().find((s) => s.id === 'c0-chat-propose')).toMatchObject({ scrollTo: 'approval-confirm', scrollAlign: 'end' });
+  });
+
+  test('the respond step waits for the chat question sheet: a mission from a chat answers there', () => {
+    // /app/tasks/[id]/respond redirects to the mission's conversation
+    // (?focus=question) once one exists, so the standalone respond hero never renders.
+    const respond = boardSteps().find((s) => s.goto === '/app/tasks/{T8}/respond');
+    const waits = [respond?.waitFor ?? []].flat();
+    expect(waits).not.toContain('respond-question-hero');
+    expect(waits.join(' ')).toContain('chat-object-sheet');
+  });
+
+  test('records the home fleet filling to peak, 10:00 -> 12:00', () => {
+    const live = boardSteps().find((s) => s.goto === '/app/home' && s.record);
+    expect(live).toMatchObject({ advance: '10:00', record: { advanceTo: '12:00' } });
+  });
 });

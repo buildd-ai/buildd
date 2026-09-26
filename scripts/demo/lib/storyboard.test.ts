@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, highlightTargets, isRendered, resolveViewports, stepViewports } from './storyboard';
+import { captureFile, captureKey, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -61,5 +61,23 @@ describe('isRendered', () => {
   });
   test('without checkVisibility (older engines) it falls back to rendered', () => {
     expect(isRendered({})).toBe(true);
+  });
+});
+
+describe('scrollPlan', () => {
+  test('default: target at the top edge, backed off 120px for sticky headers', () => {
+    expect(scrollPlan({})).toEqual({ block: 'start', delta: -120 });
+    expect(scrollPlan({ scrollOffset: 0 })).toEqual({ block: 'start', delta: 0 });
+  });
+
+  test('scrollAlign end: target at the bottom edge, pushed past it by the offset', () => {
+    // A target near the end of a scroller cannot be brought to the top edge
+    // (scrollTop clamps), so "start minus an offset" scrolls the wrong way.
+    expect(scrollPlan({ scrollAlign: 'end' })).toEqual({ block: 'end', delta: 24 });
+    expect(scrollPlan({ scrollAlign: 'end', scrollOffset: 60 })).toEqual({ block: 'end', delta: 60 });
+  });
+
+  test('rejects an unknown alignment instead of silently using start', () => {
+    expect(() => scrollPlan({ scrollAlign: 'middle' as any })).toThrow(/scrollAlign/);
   });
 });
