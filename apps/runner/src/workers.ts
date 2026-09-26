@@ -46,6 +46,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
+import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { advertisedRoleSlugs } from './role-advertising';
@@ -2513,6 +2514,7 @@ export class WorkerManager {
    */
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
+    worker.sessionCwd = cwd;
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
@@ -5551,18 +5553,10 @@ export class WorkerManager {
             this.addCheckpoint(worker, CheckpointEvent.FIRST_EDIT);
           }
 
-          // Emit action milestones for notable tool calls (Edit, Write, Bash)
-          if (toolName === 'Edit' || toolName === 'Write') {
-            const filePath = input.file_path as string;
-            const shortPath = filePath ? filePath.split('/').pop() || filePath : 'file';
-            this.addMilestone(worker, { type: 'action', label: `${toolName === 'Edit' ? 'Edited' : 'Wrote'} ${shortPath}`, ts: Date.now() });
-          } else if (toolName === 'Bash') {
-            const cmd = (input.command as string) || '';
-            // Only emit for notable bash commands, skip trivial ones
-            if (cmd.includes('git commit') || cmd.includes('npm') || cmd.includes('bun') || cmd.includes('test') || cmd.includes('build')) {
-              this.addMilestone(worker, { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts: Date.now() });
-            }
-          }
+          // Emit structured action milestones for tool calls (Edit, Write,
+          // MultiEdit, Read, notable Bash) — see tool-milestones.ts.
+          const actionMilestone = toolActionMilestone(toolName, input, worker.sessionCwd ?? worker.worktreePath);
+          if (actionMilestone) this.addMilestone(worker, actionMilestone);
 
           // Update currentAction (still useful for live display)
           const redactAction = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
@@ -6063,17 +6057,18 @@ export class WorkerManager {
     if (redact && 'label' in milestone && typeof milestone.label === 'string') {
       milestone = { ...milestone, label: redact(milestone.label) };
     }
-    worker.milestones.push(milestone);
-    // Keep last 50 milestones; prioritize phases/checkpoints over actions when trimming
-    if (worker.milestones.length > 50) {
-      const actionIdx = worker.milestones.findIndex(m => m.type === 'action');
-      if (actionIdx >= 0) {
-        worker.milestones.splice(actionIdx, 1);
-      } else {
-        worker.milestones.shift();
-      }
+    if (redact && milestone.type === 'action') {
+      if (typeof milestone.cmd === 'string') milestone = { ...milestone, cmd: redact(milestone.cmd) };
+      if (typeof milestone.path === 'string') milestone = { ...milestone, path: redact(milestone.path) };
     }
-    this.emit({ type: 'milestone', workerId: worker.id, milestone });
+    // Cap 100; same-path consecutive Reads fold; trims Reads, then other
+    // actions, then oldest (see appendMilestone).
+    const { folded } = appendMilestone(worker.milestones, milestone);
+    if (!folded) this.emit({ type: 'milestone', workerId: worker.id, milestone });
+
+    // Reads are high-frequency — leave them to the 10s periodic sync rather
+    // than PATCHing on every file read.
+    if (milestone.type === 'action' && milestone.tool === 'Read') return;
 
     // Sync this worker immediately so web dashboard sees milestones right away
     if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {
