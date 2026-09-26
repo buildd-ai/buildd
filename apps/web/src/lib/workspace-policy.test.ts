@@ -8,7 +8,6 @@ import {
   buildPolicyClassPaths,
   guessRiskClass,
   findUncoveredRiskPaths,
-  inferPolicyConfigFromLegacy,
   applyPolicyConfigToMergePolicy,
   getClassAction,
   PRESET_ACTIONS,
@@ -226,7 +225,8 @@ describe('resolveEffectivePolicyForPR', () => {
     expect(match).toBeNull();
   });
 
-  it('respects userPaths additions', () => {
+  // Hand-written userPaths are no longer read: paths come from the repo scan.
+  it('ignores a stored userPaths entry', () => {
     const policy: WorkspacePolicyConfig = {
       ...BALANCED_POLICY,
       riskClasses: [
@@ -238,7 +238,7 @@ describe('resolveEffectivePolicyForPR', () => {
       ],
     };
     const match = resolveEffectivePolicyForPR(policy, ['deploy/custom-script.sh']);
-    expect(match?.action).toBe('agent-review');
+    expect(match).toBeNull();
   });
 });
 
@@ -329,34 +329,6 @@ describe('findUncoveredRiskPaths', () => {
   });
 });
 
-// ── inferPolicyConfigFromLegacy ───────────────────────────────────────────────
-
-describe('inferPolicyConfigFromLegacy', () => {
-  // AC-6: existing config migrates with no loss of coverage
-  it('classifies legacy escalateToPaths into classes', () => {
-    const legacy = ['.github/workflows/', 'packages/core/drizzle/', 'packages/core/db/schema.ts'];
-    const config = inferPolicyConfigFromLegacy(legacy, 'reviewer');
-    expect(config.preset).toBe('balanced');
-    const classNames = config.riskClasses.map((c) => c.name);
-    expect(classNames).toContain('destructive_schema_change');
-    expect(classNames).toContain('ci_deploy_config');
-  });
-
-  it('preserves all paths in userPaths', () => {
-    const legacy = ['.github/workflows/', 'packages/core/drizzle/'];
-    const config = inferPolicyConfigFromLegacy(legacy, 'reviewer');
-    const ci = config.riskClasses.find((c) => c.name === 'ci_deploy_config');
-    expect(ci?.userPaths).toContain('.github/workflows/');
-    const schema = config.riskClasses.find((c) => c.name === 'destructive_schema_change');
-    expect(schema?.userPaths).toContain('packages/core/drizzle/');
-  });
-
-  it('accepts a custom preset', () => {
-    const config = inferPolicyConfigFromLegacy(['.github/workflows/'], 'reviewer', 'cautious');
-    expect(config.preset).toBe('cautious');
-  });
-});
-
 // ── applyPolicyConfigToMergePolicy ───────────────────────────────────────────
 
 describe('applyPolicyConfigToMergePolicy', () => {
@@ -434,11 +406,124 @@ describe('effectivePathsForClass — malformed stored config', () => {
     const entry = { name: 'auth_and_secrets', userPaths: ['lib/auth.ts'] } as never;
 
     expect(() => effectivePathsForClass(entry)).not.toThrow();
-    expect(effectivePathsForClass(entry)).toEqual(['lib/auth.ts']);
+    // userPaths is no longer an effective path source.
+    expect(effectivePathsForClass(entry)).toEqual([]);
   });
 
   it('does not throw when both path lists are absent', () => {
     const entry = { name: 'dependency_bump' } as never;
     expect(effectivePathsForClass(entry)).toEqual([]);
+  });
+});
+
+// ── File-form vs directory-form detection ─────────────────────────────────────
+//
+// Single-file matchers used to collapse to their parent directory, so one
+// `middleware.ts` put a whole app behind auth_and_secrets. File-form matches
+// are stored verbatim; directory-form matches stop at the matched directory.
+
+describe('detectRiskClassPaths — file-form matches are never collapsed', () => {
+  const MONOREPO = [
+    'apps/web/src/middleware.ts',
+    'apps/web/src/app/page.tsx',
+    'apps/web/src/components/Button.tsx',
+    'apps/web/src/lib/task.ts',
+  ];
+
+  it('stores a nested middleware file as the exact file path', () => {
+    expect(detectRiskClassPaths(MONOREPO, 'auth_and_secrets')).toEqual(['apps/web/src/middleware.ts']);
+  });
+
+  it('stores deploy config files exactly, not their parent directory', () => {
+    const files = ['app/vercel.json', 'app/Dockerfile', 'app/src/index.ts'];
+    expect(detectRiskClassPaths(files, 'ci_deploy_config')).toEqual(['app/Dockerfile', 'app/vercel.json']);
+  });
+
+  it('stores a schema source file exactly and a migrations dir as its directory', () => {
+    const files = ['app/src/lib/db/schema.ts', 'app/src/lib/db/client.ts', 'packages/core/drizzle/0001_x.sql'];
+    expect(detectRiskClassPaths(files, 'destructive_schema_change')).toEqual([
+      'app/src/lib/db/schema.ts',
+      'packages/core/drizzle/',
+    ]);
+  });
+
+  it('a root-level drizzle dir is stored as drizzle/', () => {
+    expect(detectRiskClassPaths(['drizzle/0001_x.sql'], 'destructive_schema_change')).toEqual(['drizzle/']);
+  });
+
+  it('workflows collapse to .github/workflows/', () => {
+    expect(detectRiskClassPaths(['.github/workflows/a.yml', '.github/workflows/b.yml'], 'ci_deploy_config')).toEqual([
+      '.github/workflows/',
+    ]);
+  });
+
+  it('an auth directory collapses to the auth directory itself, not its parent', () => {
+    const files = ['apps/web/src/lib/auth/session.ts', 'apps/web/src/lib/auth/providers/github.ts'];
+    expect(detectRiskClassPaths(files, 'auth_and_secrets')).toEqual(['apps/web/src/lib/auth/']);
+  });
+
+  it('drops a file already covered by a kept directory prefix', () => {
+    const files = ['apps/web/src/lib/auth/session.ts', 'apps/web/src/lib/auth/middleware.ts'];
+    expect(detectRiskClassPaths(files, 'auth_and_secrets')).toEqual(['apps/web/src/lib/auth/']);
+  });
+
+  it('drops a directory prefix nested inside another kept prefix', () => {
+    const files = ['db/migrations/0001.sql', 'db/migrations/migrations/0002.sql'];
+    expect(detectRiskClassPaths(files, 'destructive_schema_change')).toEqual(['db/migrations/']);
+  });
+
+  it('stores env loaders and shared type roots in their own form', () => {
+    expect(detectRiskClassPaths(['apps/web/src/env.ts', 'apps/api/src/env/server.ts'], 'auth_and_secrets')).toEqual([
+      'apps/api/src/env/',
+      'apps/web/src/env.ts',
+    ]);
+    expect(
+      detectRiskClassPaths(['packages/shared/src/a.ts', 'packages/shared/src/deep/b.ts'], 'public_api_contract'),
+    ).toEqual(['packages/shared/src/']);
+  });
+
+  it('matches package-lock.json and only the root package.json', () => {
+    expect(
+      detectRiskClassPaths(['package-lock.json', 'package.json', 'apps/web/package.json'], 'dependency_bump'),
+    ).toEqual(['package-lock.json', 'package.json']);
+  });
+});
+
+describe('resolveEffectivePolicyForPR — exact vs prefix entries', () => {
+  const policyWith = (paths: string[], userPaths?: string[]): WorkspacePolicyConfig => ({
+    preset: 'balanced',
+    reviewerRole: 'reviewer',
+    riskClasses: [{ name: 'auth_and_secrets', detectedPaths: paths, userPaths }],
+  });
+
+  it('a file entry does not cover its sibling files', () => {
+    const policy = policyWith(['apps/web/src/middleware.ts']);
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/app/page.tsx'])).toBeNull();
+  });
+
+  it('a file entry covers exactly that file', () => {
+    const policy = policyWith(['apps/web/src/middleware.ts']);
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/middleware.ts'])?.matchedClass).toBe('auth_and_secrets');
+  });
+
+  it('a legacy stored directory entry still matches as a prefix', () => {
+    const policy = policyWith(['apps/web/src/']);
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/app/page.tsx'])?.matchedClass).toBe('auth_and_secrets');
+  });
+
+  it('a file entry does not match a longer path sharing its prefix', () => {
+    const policy = policyWith(['app/Dockerfile']);
+    expect(resolveEffectivePolicyForPR(policy, ['app/Dockerfile.dev'])).toBeNull();
+  });
+
+  it('a detected entry without a trailing slash is exact, not a directory', () => {
+    const policy = policyWith(['apps/web/src/env']);
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/env/server.ts'])).toBeNull();
+  });
+
+  it('a stored hand-authored userPath no longer covers anything', () => {
+    const policy = policyWith([], ['apps/web/src/lib/auth']);
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/lib/auth/session.ts'])).toBeNull();
+    expect(resolveEffectivePolicyForPR(policy, ['apps/web/src/lib/auth'])).toBeNull();
   });
 });

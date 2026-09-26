@@ -36,7 +36,9 @@ export type InferenceCapability =
   | 'criteria_grading'
   | 'visual_qa'
   | 'task_classification'
-  | 'mission_summary';
+  | 'mission_summary'
+  | 'task_category_shadow'
+  | 'chat';
 
 export interface CapabilityDescriptor {
   id: InferenceCapability;
@@ -63,7 +65,7 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     id: 'criteria_grading',
     label: 'Goal criteria grading',
     description:
-      'Grade a mission\'s prose (description) goal criteria against task summaries and artifacts.',
+      'Grades a mission\'s written goal criteria against task summaries and artifacts.',
     fallback: 'agent',
     costHint: '~$0.001 per mission verification',
   },
@@ -71,7 +73,7 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     id: 'visual_qa',
     label: 'Visual QA judgment',
     description:
-      'Judge release-PR screenshots against their spec claims. Multimodal — an agent run cannot see the screenshot.',
+      'Checks release-PR screenshots against what the spec promises. An agent run cannot look at images, so this has no fallback.',
     fallback: 'none',
     costHint: '~$0.01 per page judged',
   },
@@ -79,7 +81,7 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     id: 'task_classification',
     label: 'Task classification',
     description:
-      'Tag a task with kind and complexity when it is created outside a mission.',
+      'Tags a task created outside a mission with its kind and complexity.',
     fallback: 'none',
     costHint: '~$0.001 per task',
   },
@@ -87,9 +89,27 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     id: 'mission_summary',
     label: 'Mission summaries',
     description:
-      'Answer questions about a mission and compress long note threads on request.',
+      'Answers questions about a mission and condenses long note threads when you ask.',
     fallback: 'none',
     costHint: '~$0.005 per request',
+  },
+  task_category_shadow: {
+    id: 'task_category_shadow',
+    label: 'Task category shadow check',
+    description:
+      'Asks a model for each new task\'s category next to the keyword rules and logs whether they agree. It never changes a task.',
+    // Nothing depends on it: turning it off stops the comparison, nothing else.
+    fallback: 'none',
+    costHint: '~$0.00002 per task',
+  },
+  chat: {
+    id: 'chat',
+    label: 'Agent chat',
+    description:
+      'Talk to your buildd agent. It answers from live fleet state and files missions through approval cards. Chat runs on the server with a provider API key, never on a runner or a subscription seat.',
+    // No agent run can stand in for a streaming chat turn: off means no chat.
+    fallback: 'none',
+    costHint: '~$0.005–0.05 per turn, by tier',
   },
 };
 

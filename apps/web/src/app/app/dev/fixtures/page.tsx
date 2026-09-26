@@ -2,20 +2,22 @@
 
 import { useEffect, useState } from 'react';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
+import VisualReviewStrip from '../../(protected)/missions/[id]/VisualReviewStrip';
 import { mockWorkers, type FixtureState } from './fixtures-data';
+import { FIXTURE_VIEWS, VISUAL_REVIEW_FIXTURE_STATE, isFixtureView, visualReviewFixtureShots } from './visual-review-fixtures';
 
 export default function DevFixturesPage() {
     // Read the selected state from the URL after mount. Doing this during render
     // (typeof window checks) diverges between the server and client and causes a
     // hydration mismatch, so start from the default and sync on the client.
-    const [state, setState] = useState<FixtureState>('waiting-input');
+    const [state, setState] = useState<string>('waiting-input');
 
     useEffect(() => {
         const param = new URLSearchParams(window.location.search).get('state');
-        if (param && param in mockWorkers) setState(param as FixtureState);
+        if (isFixtureView(param)) setState(param);
     }, []);
 
-    const worker = mockWorkers[state] || mockWorkers['waiting-input'];
+    const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
 
     return (
         <div className="min-h-screen bg-surface-1 p-8">
@@ -28,7 +30,7 @@ export default function DevFixturesPage() {
 
                     {/* State selector */}
                     <div className="flex gap-2 flex-wrap">
-                        {Object.keys(mockWorkers).map((s) => (
+                        {FIXTURE_VIEWS.map((s) => (
                             <a
                                 key={s}
                                 href={`?state=${s}`}
@@ -43,30 +45,39 @@ export default function DevFixturesPage() {
                     </div>
                 </div>
 
-                <div className="bg-surface-2 rounded-xl shadow-lg p-6">
-                    <h2 className="text-lg font-semibold mb-4">
-                        Active Worker: <span className="text-primary">{state}</span>
-                    </h2>
-                    <RealTimeWorkerView
-                        taskId="fixture-task"
-                        initialWorker={worker as any}
-                        statusColors={{
-                            pending: 'bg-status-warning/10 text-status-warning',
-                            assigned: 'bg-status-info/10 text-status-info',
-                            running: 'bg-status-success/10 text-status-success',
-                            waiting_input: 'bg-status-running/10 text-status-running',
-                            completed: 'bg-surface-3 text-text-secondary',
-                            failed: 'bg-status-error/10 text-status-error',
-                        }}
-                    />
-                </div>
+                {state === VISUAL_REVIEW_FIXTURE_STATE ? (
+                    <div className="border-2 border-border-strong bg-card p-6 shadow-lg">
+                        <h2 className="section-label mb-3">Mission Delivery: Visual review</h2>
+                        <VisualReviewStrip shots={visualReviewFixtureShots} missionId="fixture-mission" />
+                    </div>
+                ) : (
+                    <>
+                        <div className="bg-surface-2 rounded-xl shadow-lg p-6">
+                            <h2 className="text-lg font-semibold mb-4">
+                                Active Worker: <span className="text-primary">{state}</span>
+                            </h2>
+                            <RealTimeWorkerView
+                                taskId="fixture-task"
+                                initialWorker={worker as any}
+                                statusColors={{
+                                    pending: 'bg-status-warning/10 text-status-warning',
+                                    assigned: 'bg-status-info/10 text-status-info',
+                                    running: 'bg-status-success/10 text-status-success',
+                                    waiting_input: 'bg-status-running/10 text-status-running',
+                                    completed: 'bg-surface-3 text-text-secondary',
+                                    failed: 'bg-status-error/10 text-status-error',
+                                }}
+                            />
+                        </div>
 
-                <div className="mt-6 p-4 bg-surface-3 rounded-lg">
-                    <h3 className="font-medium mb-2">Raw Worker Data</h3>
-                    <pre className="text-xs overflow-auto max-h-64 p-2 bg-surface-1 text-status-success rounded">
-                        {JSON.stringify(worker, null, 2)}
-                    </pre>
-                </div>
+                        <div className="mt-6 p-4 bg-surface-3 rounded-lg">
+                            <h3 className="font-medium mb-2">Raw Worker Data</h3>
+                            <pre className="text-xs overflow-auto max-h-64 p-2 bg-surface-1 text-status-success rounded">
+                                {JSON.stringify(worker, null, 2)}
+                            </pre>
+                        </div>
+                    </>
+                )}
             </div>
         </div>
     );

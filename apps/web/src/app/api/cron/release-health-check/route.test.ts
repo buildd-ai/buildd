@@ -20,9 +20,13 @@ const mockProbeAndDegrade = mock((_release: any, _url: string, _db: any, _repoId
 const mockHealSupersededRelease = mock((_release: any, _url: string, _db: any, _repoIdentity: any) =>
   Promise.resolve('unresolved'),
 );
+const mockHealHttpErrorRelease = mock((_release: any, _url: string, _db: any, _repoIdentity: any) =>
+  Promise.resolve('unresolved'),
+);
 mock.module('@/lib/release-health-watcher', () => ({
   probeAndDegrade: mockProbeAndDegrade,
   healSupersededRelease: mockHealSupersededRelease,
+  healHttpErrorRelease: mockHealHttpErrorRelease,
 }));
 
 const mockFindMergedReleasePrContaining = mock((_p: any) => Promise.resolve(null as any));
@@ -76,6 +80,7 @@ mock.module('drizzle-orm', () => ({
   gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...c: any[]) => ({ c, type: 'and' }),
+  or: (...c: any[]) => ({ c, type: 'or' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
@@ -167,6 +172,8 @@ beforeEach(() => {
   mockProbeAndDegrade.mockResolvedValue('ok' as any);
   mockHealSupersededRelease.mockClear();
   mockHealSupersededRelease.mockResolvedValue('unresolved' as any);
+  mockHealHttpErrorRelease.mockClear();
+  mockHealHttpErrorRelease.mockResolvedValue('unresolved' as any);
   mockVerifyReleaseDeployment.mockClear();
   mockVerifyReleaseDeployment.mockResolvedValue(undefined as any);
   mockFindMergedReleasePrContaining.mockReset();
@@ -485,6 +492,48 @@ describe('release-health-check cron — self-heal degraded (sha-mismatch false p
 
     expect(data.healableDegraded).toBe(1);
     expect(data.healed).toBe(0);
+  });
+
+  it('calls healHttpErrorRelease (not healSupersededRelease) for an HTTP-status degradation', async () => {
+    const httpErrorRow = { ...degradedRow, id: 'rel-degraded-http', failureReason: 'health check returned HTTP 502' };
+    selectResults = [[], [], [], [], [httpErrorRow]];
+    mockHealHttpErrorRelease.mockResolvedValue('healed' as any);
+    queryWorkspaceResult = { githubRepo: { fullName: 'org/repo', installation: { installationId: 7 } } };
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(mockHealHttpErrorRelease).toHaveBeenCalledTimes(1);
+    expect(mockHealSupersededRelease).not.toHaveBeenCalled();
+    expect(mockHealHttpErrorRelease.mock.calls[0][0].id).toBe('rel-degraded-http');
+    expect(data.healableDegraded).toBe(1);
+    expect(data.healed).toBe(1);
+  });
+
+  it('calls healHttpErrorRelease for a network-error degradation', async () => {
+    const netErrorRow = { ...degradedRow, id: 'rel-degraded-net', failureReason: 'health check failed: fetch failed' };
+    selectResults = [[], [], [], [], [netErrorRow]];
+    mockHealHttpErrorRelease.mockResolvedValue('unresolved' as any);
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(mockHealHttpErrorRelease).toHaveBeenCalledTimes(1);
+    expect(mockHealSupersededRelease).not.toHaveBeenCalled();
+    expect(data.healableDegraded).toBe(1);
+    expect(data.healed).toBe(0);
+  });
+
+  it('still routes a sha-mismatch reason to healSupersededRelease, not healHttpErrorRelease', async () => {
+    const shaRow = { ...degradedRow, failureReason: 'deployed sha abc does not match release head sha def' };
+    selectResults = [[], [], [], [], [shaRow]];
+    mockHealSupersededRelease.mockResolvedValue('healed' as any);
+
+    const res = await GET(makeRequest());
+    await res.json();
+
+    expect(mockHealSupersededRelease).toHaveBeenCalledTimes(1);
+    expect(mockHealHttpErrorRelease).not.toHaveBeenCalled();
   });
 
   it('skips a degraded candidate with no configured verification URL', async () => {

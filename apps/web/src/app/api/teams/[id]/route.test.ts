@@ -4,18 +4,20 @@ import { NextRequest } from 'next/server';
 const mockRequireSessionUser = mock(() => Promise.resolve(null as any));
 mock.module('@/lib/auth-helpers', () => ({
   requireSessionUser: mockRequireSessionUser,
-  getRequestPrincipal: async () => null,
+  getRequestPrincipal: async () => principal,
 }));
+let principal: any = null;
 
 let membership: any = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
 let teamRow: any = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
 const capturedUpdates: any[] = [];
+const teamQueries: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findFirst: () => Promise.resolve(membership), findMany: () => Promise.resolve([]) },
-      teams: { findFirst: () => Promise.resolve(teamRow) },
+      teams: { findFirst: (q: any) => { teamQueries.push(q); return Promise.resolve(teamRow); } },
     },
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
@@ -34,7 +36,7 @@ mock.module('@buildd/core/db/schema', () => ({
   users: 'users',
 }));
 
-import { PATCH } from './route';
+import { GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: 'team-1' }) };
 
@@ -83,6 +85,97 @@ describe('PATCH /api/teams/[id] — timezone', () => {
     membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
     const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+});
+
+describe('GET /api/teams/[id] — response columns', () => {
+  it('no longer reads the deprecated criteriaEvaluationStrategy column', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    const res = await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(res.status).toBe(200);
+    const columns = teamQueries[0]?.columns ?? {};
+    expect(Object.keys(columns).length).toBeGreaterThan(0);
+    expect(columns).not.toHaveProperty('criteriaEvaluationStrategy');
+    principal = null;
+  });
+});
+
+describe('PATCH /api/teams/[id] — chat budgets', () => {
+  it('an admin can raise the team and per-person daily chat budgets', async () => {
+    const res = await PATCH(patchReq({ chatDailyBudgetUsd: 150, chatUserDailyBudgetUsd: 40.5 }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ chatDailyBudgetUsd: '150.00', chatUserDailyBudgetUsd: '40.50' });
+  });
+
+  it('null reverts to the defaults', async () => {
+    const res = await PATCH(patchReq({ chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null });
+  });
+
+  it('rejects negative, non-numeric or absurd values', async () => {
+    for (const v of [-1, 'lots', Number.MAX_SAFE_INTEGER]) {
+      const res = await PATCH(patchReq({ chatDailyBudgetUsd: v }), ctx);
+      expect(res.status).toBe(400);
+    }
+    expect((await PATCH(patchReq({ chatUserDailyBudgetUsd: -5 }), ctx)).status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('a member cannot change them', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    const res = await PATCH(patchReq({ chatDailyBudgetUsd: 1000 }), ctx);
+    expect(res.status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('GET returns the key policy and the chat switch too', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ inferenceKeyPolicy: true, chatDisabled: true });
+    principal = null;
+  });
+
+  it('GET returns both, so a settings page can show them', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true });
+    principal = null;
+  });
+});
+
+describe('PATCH /api/teams/[id] — key policy and chat switch', () => {
+  it('an admin sets the key policy', async () => {
+    for (const p of ['team', 'team_or_own', 'own']) {
+      capturedUpdates.length = 0;
+      const res = await PATCH(patchReq({ inferenceKeyPolicy: p }), ctx);
+      expect(res.status).toBe(200);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: p });
+    }
+  });
+
+  it('rejects an unknown policy', async () => {
+    const res = await PATCH(patchReq({ inferenceKeyPolicy: 'anyone' }), ctx);
+    expect(res.status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('an admin switches chat off and back on', async () => {
+    await PATCH(patchReq({ chatDisabled: true }), ctx);
+    await PATCH(patchReq({ chatDisabled: false }), ctx);
+    expect(capturedUpdates.map((u) => u.chatDisabled)).toEqual([true, false]);
+    const bad = await PATCH(patchReq({ chatDisabled: 'yes' }), ctx);
+    expect(bad.status).toBe(400);
+  });
+
+  it('a member can change neither', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    expect((await PATCH(patchReq({ inferenceKeyPolicy: 'own' }), ctx)).status).toBe(403);
+    expect((await PATCH(patchReq({ chatDisabled: true }), ctx)).status).toBe(403);
     expect(capturedUpdates).toHaveLength(0);
   });
 });

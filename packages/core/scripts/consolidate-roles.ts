@@ -77,7 +77,7 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 - Keep PRs focused — one concern per PR
 - Use conventional commits (feat:, fix:, refactor:, etc.)
 `,
-    color: '#D4724A', // terracotta
+    color: '#0C72CB', // cobalt (off the accent orange)
     model: 'inherit',
   },
   {
@@ -100,7 +100,7 @@ You are the Researcher — responsible for gathering intelligence, analyzing eco
 - Structure output as actionable insights, not raw data dumps
 - Flag urgent findings (breaking changes, security issues) immediately
 `,
-    color: '#D97706', // amber
+    color: '#B24C9C', // orchid (off the accent orange)
     model: 'inherit',
   },
   {

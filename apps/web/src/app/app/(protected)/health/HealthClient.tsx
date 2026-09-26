@@ -306,8 +306,8 @@ export function HealthClient({
           pushOnlyResult: {
             online,
             message: online
-              ? idlePushOnly ? `last beat ${beat} — healthy (idle)` : `last beat ${beat} — healthy`
-              : `last beat ${beat} — stale`,
+              ? idlePushOnly ? `last beat ${beat} · healthy (idle)` : `last beat ${beat} · healthy`
+              : `last beat ${beat} · stale`,
           },
         });
         return next;
@@ -425,7 +425,7 @@ export function HealthClient({
     const divergenceAbsent = consumption.modelDivergence.kind === 'unavailable';
     if (!perModelAbsent && !costAbsent && !divergenceAbsent) return null;
     return 'Seat-based (OAuth) auth reports no per-model usage and no cost, so some numbers below '
-      + 'are absent rather than zero. Each one still carries its own reason where it sits.';
+      + 'are blank. Each blank shows its reason in place.';
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
@@ -492,7 +492,7 @@ export function HealthClient({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium text-text-primary">{purposeLabel}</p>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        <span className={`text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium ${
                           isRevoked
                             ? 'bg-status-error/10 text-status-error'
                             : 'bg-status-warning/10 text-status-warning'
@@ -501,8 +501,8 @@ export function HealthClient({
                         </span>
                         {cred.consecutiveAuthFailures > 0 && (
                           <span
-                            className="text-[10px] text-text-muted"
-                            title="Consecutive auth failures — a lifetime streak, reset by the next success. It does not obey the page window."
+                            className="text-[11px] md:text-[10px] text-text-muted"
+                            title="Consecutive auth failures: a lifetime streak that resets on the next success. The page window doesn't apply."
                           >
                             auth failures {failureStreak(cred.consecutiveAuthFailures)}
                           </span>
@@ -513,7 +513,7 @@ export function HealthClient({
                           Last failure: {timeAgo(cred.lastFailureAt, now)}
                           {cred.lastFailureMessage && (
                             <span className={`ml-1 ${isRevoked ? 'text-status-error' : 'text-status-warning'}`}>
-                              — {cred.lastFailureMessage.slice(0, 100)}
+                              · {cred.lastFailureMessage.slice(0, 100)}
                             </span>
                           )}
                         </p>
@@ -525,7 +525,7 @@ export function HealthClient({
                       )}
                     </div>
                     <a
-                      href="/app/settings?section=agent-backends"
+                      href="/app/settings/runners"
                       className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                     >
                       Fix in Settings
@@ -546,13 +546,13 @@ export function HealthClient({
                       <p className="text-sm font-medium text-text-primary">
                         {b.label} has no credential
                       </p>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
+                      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
                         {b.strandedPending} task{b.strandedPending === 1 ? '' : 's'} unclaimable
                       </span>
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
-                      Pending work is routed to {b.label}, so no runner can claim it
-                      {b.enabledForTeam ? ' — connect it, or disable it team-wide to reroute' : ''}.
+                      Pending work routes to {b.label}, and no runner can claim it
+                      {b.enabledForTeam ? '. Connect it, or disable it team-wide to reroute' : ''}.
                     </p>
                     {b.sampleTasks.length > 0 && (
                       <p className="text-xs text-text-muted mt-0.5 truncate">
@@ -564,7 +564,7 @@ export function HealthClient({
                     )}
                   </div>
                   <a
-                    href="/app/settings?section=agent-backends"
+                    href="/app/settings/runners"
                     className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                   >
                     Fix in Settings
@@ -649,7 +649,7 @@ export function HealthClient({
                         )}
                       </p>
                     </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">
+                    <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">
                       last 24h
                     </span>
                   </div>
@@ -663,7 +663,7 @@ export function HealthClient({
                   +{failureGroups.hiddenFailures} more failure
                   {failureGroups.hiddenFailures === 1 ? '' : 's'} in{' '}
                   {failureGroups.hiddenGroups} other group
-                  {failureGroups.hiddenGroups === 1 ? '' : 's'} — see Worker failures below
+                  {failureGroups.hiddenGroups === 1 ? '' : 's'} · see Worker failures below
                 </span>
               </div>
             )}
@@ -725,11 +725,11 @@ export function HealthClient({
                           <p className="text-sm text-text-primary truncate">
                             {hb.accountName || 'Runner'}
                           </p>
-                          <span className={`text-[10px] font-mono ${statusClass}`}>
+                          <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>
                           <span
-                            className={`text-[10px] font-mono ${sandboxClass}`}
+                            className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
                             title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · not yet probed'}`}
                           >
                             {sandboxLabel}
@@ -864,7 +864,7 @@ export function HealthClient({
                   <div className="font-medium text-status-warning">Duplicate crons detected</div>
                   <p className="text-text-secondary mt-1">
                     {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
-                    workspace. They fire simultaneously, so pause the stale copy below.
+                    workspace. They fire at the same time. Pause the stale copy below.
                   </p>
                 </div>
               )}
@@ -899,12 +899,12 @@ export function HealthClient({
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="text-sm font-medium text-text-primary truncate">{s.name}</p>
                             {isDupe && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
                                 duplicate cron
                               </span>
                             )}
                             {s.missionTitle && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
                                 {s.missionTitle}
                               </span>
                             )}
@@ -935,11 +935,11 @@ export function HealthClient({
                           <p className="text-xs text-text-tertiary mt-0.5">
                             {s.enabled ? `next ${timeUntil(s.nextRunAt, now)}` : 'paused'} · last {timeAgo(s.lastRunAt, now)}
                             {' · '}
-                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt, now)} — an all-time counter, not a windowed one` : undefined}>
+                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt, now)}. All-time counter; the page window doesn't apply.` : undefined}>
                               {lifetimeRuns(s.totalRuns)}
                             </span>
                             {s.consecutiveFailures > 0 && (
-                              <span className="text-status-error" title="Consecutive failed runs — a streak, reset by the next success">
+                              <span className="text-status-error" title="Consecutive failed runs. Resets on the next success.">
                                 {' · '}{failureStreak(s.consecutiveFailures)} failed
                               </span>
                             )}
@@ -1094,7 +1094,7 @@ export function HealthClient({
           >
             <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
             <p className="text-sm text-text-secondary mb-4">
-              This is permanent and cannot be undone.
+              You can&apos;t undo this.
             </p>
             <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
               <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
@@ -1166,14 +1166,14 @@ function OrphanedPrsBlock({ rows, now }: { rows: OrphanedPrRow[]; now: number })
         </span>
       </div>
       <p className="text-xs text-text-muted mb-2">
-        buildd could not resolve these against GitHub and has stopped retrying. They are
-        excluded from Home — nothing here is a merge you can make.
+        buildd couldn&apos;t resolve these against GitHub and stopped retrying. Home hides
+        them. None of them is a merge you can make.
       </p>
       <div className="border border-border rounded-[10px] divide-y divide-border">
         {rows.map(row => (
           <div key={row.workerId} className="px-4 py-2.5">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-raised text-text-muted font-mono shrink-0">
+              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-surface-raised text-text-muted font-mono shrink-0">
                 {row.workspaceName}
               </span>
               <span className="text-sm text-text-primary truncate">
@@ -1242,7 +1242,7 @@ function ConsumptionSection({
           <span
             data-testid="consumption-scan-caveat"
             className="text-[11px] text-text-muted text-right"
-            title={`The scan reads the newest ${scan.limit} terminal workers, newest first. Rows older than the cap were not read, so every figure in this section — including the per-model rows — is a floor for the ${window} window, and a complete count only from ${scan.completeSince} onward.`}
+            title={`The scan reads the newest ${scan.limit} terminal workers, newest first. Rows older than the cap were not read, so every figure in this section, per-model rows included, is a floor for the ${window} window, and a complete count only from ${scan.completeSince} onward.`}
           >
             {caveat}
           </span>
@@ -1257,7 +1257,7 @@ function ConsumptionSection({
           href={usageDrilldownHref({ window, workspaceId })}
           className="flex items-baseline justify-between gap-3 text-xs text-text-secondary hover:text-text-primary transition-colors"
         >
-          <span>What a task costs — tokens, turns, tool calls, cost</span>
+          <span>Cost per task: tokens, turns, tool calls, cost</span>
           <span className="text-primary shrink-0">usage →</span>
         </a>
 
@@ -1269,7 +1269,7 @@ function ConsumptionSection({
                 <span
                   data-testid="tool-coverage"
                   className="text-xs text-text-muted"
-                  title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log, so their counts are a floor — which is what the ≥ marks. Orthogonal to the scan cap noted above, which truncates the population rather than the attribution."
+                  title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log, so their counts are a floor. The ≥ marks those. Separate from the scan cap above, which truncates the population rather than the attribution."
                 >
                   {/* `≥` when any counted row is reconstructed rather than
                       measured: without it, a floor reads as an exact count. */}
@@ -1308,7 +1308,7 @@ function ConsumptionSection({
 
           {topModels.length > 0 ? (
             <>
-              <div className="flex items-center gap-2 text-[9px] uppercase tracking-wide text-text-muted">
+              <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
                 <span className="flex-1 min-w-0">model</span>
                 <span className="w-14 text-right">tokens</span>
                 <span className="w-16 text-right">cost</span>
@@ -1351,8 +1351,8 @@ function ConsumptionSection({
           <div className="flex items-baseline justify-between gap-3 pt-2">
             <div className="min-w-0">
               <div
-                className="text-[9px] uppercase tracking-wide text-text-muted"
-                title="How often the model that ran disagreed with the model the router assigned (tasks.predicted_model). Aliases match any release in their family, so a team-less task assigned a bare family alias that ran a release of that same family counts as agreement, not divergence."
+                className="text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted"
+                title="How often the model that ran disagreed with the model the router assigned (tasks.predicted_model). Aliases match any release in their family, so a team-less task assigned a bare family alias that ran a release of that same family counts as agreement."
               >
                 assigned vs actual
               </div>
@@ -1409,7 +1409,7 @@ const CBM_STATE: Record<
     label: 'Never queried',
     tone: 'text-error',
     hint: 'The graph was mounted and warm on every task and no agent called it. '
-      + 'Indexing is being paid for and nothing is using it. That is a steering problem, not an availability one.',
+      + 'You pay for indexing and no agent uses it. The graph is available, so fix the steering.',
   },
   unavailable: {
     label: 'Not mounted',
@@ -1528,7 +1528,7 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
               <div key={reason} className="flex items-center justify-between gap-2">
                 <span
                   className="text-xs text-text-secondary"
-                  title="A decision, not a failure — excluded from the fallback rate."
+                  title="A deliberate skip. The fallback rate excludes it."
                 >
                   Skipped by design: {reason.replace(/_/g, ' ')}
                 </span>
@@ -1610,7 +1610,7 @@ function SubagentDelegationSection({
             <div className="flex items-baseline justify-between gap-3">
               <span
                 className="text-xs text-text-secondary"
-                title="Background subagents run alongside the parent session rather than inside its wall clock, so this is a share of total agent effort (wall clock + background time), not a slice taken out of wall clock."
+                title="Background subagents run alongside the parent session rather than inside its wall clock, so this is a share of total agent effort (wall clock + background time)."
               >
                 Median share of session effort in background subagents
               </span>
@@ -1632,13 +1632,13 @@ function SubagentDelegationSection({
         )}
         {panel.kind === 'value' && panel.value.windowPredatesCapture && (
           <p className="text-[11px] text-text-muted pt-2 border-t border-border-default">
-            Background-agent time has been tracked only since {panel.value.capturedSince}; sessions before
-            that date are excluded rather than counted as zero delegation.
+            buildd has tracked background-agent time since {panel.value.capturedSince}. This panel
+            excludes earlier sessions instead of counting them as zero delegation.
           </p>
         )}
         {panel.kind === 'value' && panel.value.truncated && (
           <p className="text-[11px] text-text-muted">
-            Reads the newest sessions in the window up to a cap — figures above are a floor.
+            Reads the newest sessions in the window up to a cap. Figures above are a floor.
           </p>
         )}
       </div>
@@ -1679,9 +1679,9 @@ function ErrorPatternSection({
             <>
               <p
                 className="text-[11px] text-text-muted"
-                title="Raw occurrence count is not used: a pattern that fires repeatedly on output that never hurt anything would outrank a rare one that always coincides with a dead worker."
+                title="Raw occurrence count would rank a pattern that fires often on harmless output above a rare one that always coincides with a dead worker."
               >
-                Ranked by distinct workers whose session ended in failure while this pattern fired — not raw occurrence count.
+                Ranked by distinct workers whose session failed while this pattern fired.
               </p>
               <div className="divide-y divide-border-default">
                 {panel.value.patterns.map((p) => {
@@ -1720,13 +1720,13 @@ function ErrorPatternSection({
         )}
         {panel.kind === 'value' && panel.value.windowPredatesCapture && (
           <p className="text-[11px] text-text-muted pt-2 border-t border-border-default">
-            The scanner's false-positive gating was only completed on {panel.value.gatedSince}; this panel
-            counts only traces from on/after that date, excluding earlier ones rather than counting them as zero.
+            The scanner&apos;s false-positive gating landed on {panel.value.gatedSince}. This panel counts
+            traces from that date on and excludes earlier ones instead of counting them as zero.
           </p>
         )}
         {panel.kind === 'value' && panel.value.truncated && (
           <p className="text-[11px] text-text-muted">
-            Reads the newest traces in the window up to a cap — counts above are a floor.
+            Reads the newest traces in the window up to a cap. Counts above are a floor.
           </p>
         )}
       </div>
@@ -1802,7 +1802,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Documented exception: pinned to the provider's own session window and
             the calendar month. It cannot obey `?window=`, so it says what it
             does obey instead of quietly ignoring the control. */}
-        <span className="text-[11px] text-text-muted">provider session window · not {'?window='}</span>
+        <span className="text-[11px] text-text-muted text-right">provider session window · ignores the page window</span>
       </div>
       <div className="card divide-y divide-border-default">
 
@@ -1814,7 +1814,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
               <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                 <span
                   className="tabular-nums font-medium text-text-primary"
-                  title="Usage vs. conservative floor (p25 of exhaustion history). Real remaining capacity is typically higher."
+                  title="Usage vs. conservative floor (p25 of exhaustion history). Remaining capacity is usually higher."
                 >
                   {s.pressurePct}% of floor
                 </span>
@@ -1827,7 +1827,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
                       className={confidenceClass(s.confidence)}
                       title={
                         s.confidence === 'high'
-                          ? `Conservative floor estimate from ${s.episodes} exhaustion episode${s.episodes !== 1 ? 's' : ''}${s.limiter === 'tokens' ? ' — token data is often underreported on OAuth' : ''}`
+                          ? `Conservative floor estimate from ${s.episodes} exhaustion episode${s.episodes !== 1 ? 's' : ''}${s.limiter === 'tokens' ? '. OAuth often underreports token data' : ''}`
                           : undefined
                       }
                     >
@@ -1854,7 +1854,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
             <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
-              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} — no exhaustion data
+              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} · no exhaustion data
             </span>
           </div>
         )}
@@ -1890,7 +1890,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
                     <span className="text-text-muted">·</span>
                     <span
                       className={confidenceClass(forecast.monthly.confidence)}
-                      title={forecast.monthly.confidence === 'high' ? 'Burn rate estimate from recent worker costs. High confidence = stable reading, not a certainty signal.' : undefined}
+                      title={forecast.monthly.confidence === 'high' ? 'Burn rate estimate from recent worker costs. High confidence means a stable reading. It is not a guarantee.' : undefined}
                     >
                       {forecast.monthly.confidence === 'high' ? 'burn rate est.' : `confidence: ${forecast.monthly.confidence}`}
                     </span>
@@ -2020,7 +2020,7 @@ function CredentialStateSection({
                   <span className="text-text-muted">·</span>
                   <span
                     className="text-status-warning"
-                    title="Consecutive auth failures — a lifetime streak, reset by the next success. Not a count over the page window."
+                    title="Consecutive auth failures: a lifetime streak that resets on the next success. The page window doesn't apply."
                   >
                     {failureStreak(c.consecutiveAuthFailures)}
                   </span>
@@ -2077,7 +2077,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
         <div className="flex items-baseline justify-between gap-2">
           <span
             className="text-sm text-text-secondary"
-            title="Tasks that ran with no role assigned — a routing-health signal, and the one number /app/team cannot show, because its query filters roleSlug IS NOT NULL."
+            title="Tasks that ran with no role assigned. A routing-health signal. /app/team can't show it because its query filters roleSlug IS NOT NULL."
           >
             {stats.unassigned} task{stats.unassigned === 1 ? '' : 's'} ran with no role ({window})
           </span>
@@ -2085,7 +2085,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
         <a
           href="/app/team"
           data-testid="per-role-link"
-          className="inline-block text-xs text-accent hover:underline"
+          className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-accent-text hover:underline"
         >
           per role →
         </a>
@@ -2168,7 +2168,7 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
           type="button"
           onClick={() => select(o.value)}
           aria-pressed={current === o.value}
-          className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
+          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
             current === o.value
               ? 'bg-surface-3 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'
@@ -2216,15 +2216,15 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
         <div className="card divide-y divide-border-default">
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="gate-headline">
             {([
-              ['Rejected', totals.rejected, 'Requests the platform refused outright — a 4xx the caller had to act on.'],
-              ['Deferred', totals.deferred, 'Accepted but not acted on yet: a wait, a queue, a single-flight. Not an error.'],
+              ['Rejected', totals.rejected, 'Requests buildd refused with a 4xx the caller had to act on.'],
+              ['Deferred', totals.deferred, 'Accepted and held: a wait, a queue, or a single-flight. These are expected.'],
               ['Bypassed', totals.bypassed, 'A gate fired and the caller carried an explicit escape hatch. Over a lint, this IS its false-positive rate.'],
-              ['Warned', totals.warned, 'Advisory only — the response carried a warning and the work proceeded.'],
-              ['Stranded', totals.stranded, 'A task deferred long enough that the sweep flagged it — nothing re-arms it on its own; it needs a look.'],
+              ['Warned', totals.warned, 'Advisory. The response carried a warning and the work went ahead.'],
+              ['Stranded', totals.stranded, 'A task deferred long enough for the sweep to flag it. Nothing re-arms it, so check it.'],
             ] as const).map(([label, value, title]) => (
               <div key={label}>
                 <span
-                  className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                   title={title}
                 >
                   {label}
@@ -2239,7 +2239,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
           </div>
 
           <div className="px-4 py-3">
-            <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
               By gate
             </p>
             <ul className="space-y-1.5">
@@ -2280,7 +2280,7 @@ function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
 
   return (
     <div className="px-4 py-3" data-testid="gate-claim-deferrals">
-      <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+      <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
         Claim-loop deferrals by reason
       </p>
       <ul className="space-y-1.5">
@@ -2335,7 +2335,7 @@ function FailureAnalyticsSection({
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="failure-headline">
             <div>
               <span
-                className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                 title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator. They have not had the chance to fail yet, and counting them made this number drift downward as work landed."
               >
                 Failure rate
@@ -2352,8 +2352,8 @@ function FailureAnalyticsSection({
             </div>
             <div>
               <span
-                className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
-                title="Failures that used 2 turns or fewer at $0 cost — they consumed a slot and produced nothing. A high count points at a platform bug, not bad agent work."
+                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                title="Failures that used 2 turns or fewer at $0 cost. They took a slot and produced nothing. A high count points at a platform bug."
               >
                 Died early
               </span>
@@ -2374,7 +2374,7 @@ function FailureAnalyticsSection({
                 window cannot make it more true). One tile could only lie about
                 one of them. */}
             <div>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 Completed
               </span>
               <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
@@ -2385,7 +2385,7 @@ function FailureAnalyticsSection({
               </p>
             </div>
             <div>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 Still running
               </span>
               <p
@@ -2401,7 +2401,7 @@ function FailureAnalyticsSection({
           {/* Exit-cause breakdown — magnitude only, one hue, direct-labelled */}
           {byExitCause.length > 0 && (
             <div className="px-4 py-3 space-y-2" data-testid="failure-exit-causes">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 By exit cause
               </span>
               {byExitCause.map((c) => (
@@ -2427,7 +2427,7 @@ function FailureAnalyticsSection({
           {signatures.length > 0 && (
             <div className="py-1" data-testid="failure-signatures">
               <div className="px-4 pt-2 pb-1">
-                <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                   Failure signatures
                 </span>
               </div>
@@ -2522,7 +2522,7 @@ function FailureAnalyticsSection({
                 <div className="mt-3 space-y-4" data-testid="failure-breakdown">
                   {byRole.length > 0 && (
                     <div className="space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                         By role
                       </span>
                       {byRole.slice(0, 6).map((r) => (
@@ -2539,7 +2539,7 @@ function FailureAnalyticsSection({
 
                   {byWorkspace.length > 1 && (
                     <div className="space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                         By workspace
                       </span>
                       {byWorkspace.slice(0, 6).map((w) => (
@@ -2557,7 +2557,7 @@ function FailureAnalyticsSection({
                   {repeatFailureTasks.length > 0 && (
                     <div className="space-y-1">
                       <span
-                        className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                        className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                         title="Tasks that burned more than one worker inside the window"
                       >
                         Repeat-failure tasks

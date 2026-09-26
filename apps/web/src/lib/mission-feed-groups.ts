@@ -162,8 +162,11 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
   }
   let currentAssigned = false;
   phases.forEach((p, i) => {
-    const done = p.rows.filter(r => DONE_STATES.has(r.state)).length;
-    const finished = done === p.rows.length;
+    // Finished: nothing left to do (done or cancelled). Counted: `pulseDoneCounts`'
+    // definition — a cancelled row is listed but is neither done nor in N (F3).
+    const finished = p.rows.every(r => DONE_STATES.has(r.state));
+    const done = p.rows.filter(r => r.state === 'done').length;
+    const countable = p.rows.filter(r => r.state !== 'skipped').length;
     const status = finished ? 'finished' : currentAssigned ? 'future' : 'current';
     if (status === 'current') currentAssigned = true;
 
@@ -189,7 +192,7 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
       visibleLimit,
       hiddenCount: visibleLimit === null ? 0 : Math.max(0, own.length - visibleLimit),
       done,
-      total: p.rows.length,
+      total: countable,
       items,
     });
   });

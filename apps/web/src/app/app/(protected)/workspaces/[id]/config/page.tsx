@@ -7,7 +7,8 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
-import { TeamTransferSection } from './TeamTransferSection';
+import { WorkspaceHealthCard } from './WorkspaceHealthCard';
+import { checkWorkspaceHealth } from '@/lib/workspace-health';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
 import BranchStrategySection from './BranchStrategySection';
@@ -15,6 +16,7 @@ import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
+import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -22,7 +24,6 @@ export default async function WorkspaceConfigPage({
     params: Promise<{ id: string }>;
 }) {
     const { id } = await params;
-    const isDev = process.env.NODE_ENV === 'development';
     const user = await getCurrentUser();
 
     if (!user) {
@@ -41,6 +42,7 @@ export default async function WorkspaceConfigPage({
             teamId: true,
             gitConfig: true,
             configStatus: true,
+            accessMode: true,
             releaseConfig: true,
             workTrackerConfig: true,
         },
@@ -51,44 +53,42 @@ export default async function WorkspaceConfigPage({
     if (!workspace) {
         notFound();
     }
-    if (isDev) {
-        return (
-            <main className="min-h-screen p-8">
-                <div className="max-w-2xl mx-auto">
-                    <p className="text-text-muted">Development mode - no database</p>
-                </div>
-            </main>
-        );
-    }
 
     return (
-        <main className="min-h-screen p-8">
+        <main className="min-h-screen p-4 md:p-8">
             <div className="max-w-2xl mx-auto">
                 <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
                     &larr; Back to {workspace.name}
                 </Link>
 
                 <div className="mb-8">
-                    <h1 className="text-3xl font-bold">Git Workflow Configuration</h1>
+                    <h1 className="text-2xl md:text-3xl font-bold">Git Workflow Configuration</h1>
                     <p className="text-text-muted mt-1">
-                        Configure how agents should work with git in this workspace.
+                        Set how agents use git in this workspace.
                     </p>
                 </div>
+
+                {/* Every health action is an admin write, so members do not see the card. */}
+                {(access.role === 'owner' || access.role === 'admin') && (
+                    <WorkspaceHealthCard
+                        workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
+                        teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
+                        items={checkWorkspaceHealth({
+                            name: workspace.name,
+                            repo: workspace.repo,
+                            configStatus: workspace.configStatus,
+                            accessMode: workspace.accessMode,
+                            gitConfig: workspace.gitConfig as Record<string, unknown> | null,
+                            userTeamCount: userTeams.length,
+                        })}
+                    />
+                )}
 
                 <GitConfigForm
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
                     initialConfig={workspace.gitConfig as WorkspaceGitConfig | null}
-                    configStatus={workspace.configStatus as 'unconfigured' | 'admin_confirmed'}
                 />
-
-                {userTeams.length > 1 && (
-                    <TeamTransferSection
-                        workspaceId={workspace.id}
-                        currentTeamId={workspace.teamId}
-                        teams={userTeams}
-                    />
-                )}
 
                 <ConnectClaudeSection
                     workspaceId={workspace.id}
@@ -120,6 +120,20 @@ export default async function WorkspaceConfigPage({
                     workspaceId={workspace.id}
                     initialPolicy={(workspace.gitConfig as any)?.subjectPolicy ?? null}
                 />
+
+                {/* Destructive action lives here, away from the workspace header's primary actions. */}
+                <section
+                    data-testid="workspace-danger-zone"
+                    className="mt-10 border border-status-error/30 rounded-lg p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                    <div className="min-w-0">
+                        <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
+                        <p className="text-xs text-text-muted mt-1">
+                            Deletes the workspace and its tasks and workers. You can&apos;t undo this.
+                        </p>
+                    </div>
+                    <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
+                </section>
             </div>
         </main>
     );

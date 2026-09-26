@@ -1,16 +1,17 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import { formatInZone } from '@/lib/zoned-time';
 
 /**
- * Renders a timestamp as HH:MM in the *viewer's* local timezone.
+ * Renders a timestamp as HH:MM in the display zone — the team's zone, else the
+ * viewer's browser zone (see `useDisplayTimezone`).
  *
  * Budget/rate-limit reset times were previously shown as raw UTC
  * (`toISOString().slice(11,16)`), which is unreadable for anyone not on UTC.
- * Formatting must happen client-side: a server component would use the Vercel
- * host tz (UTC), not the viewer's. We format after mount so SSR and the first
- * client paint agree (no hydration mismatch) — before that we show the optional
- * `fallback` (e.g. the UTC value) so there's no layout jump.
+ * With a team zone the string is known on the server, so SSR and hydration
+ * agree. Without one the zone is only known after mount; until then we show
+ * the optional `fallback` (e.g. the UTC value) so there's no layout jump.
  */
 export default function LocalTime({
   iso,
@@ -23,19 +24,13 @@ export default function LocalTime({
   suffix?: string;
   fallback?: string;
 }) {
-  const [text, setText] = useState<string | null>(null);
-
-  useEffect(() => {
-    const d = new Date(iso);
-    if (!Number.isNaN(d.getTime())) {
-      setText(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    }
-  }, [iso]);
+  const tz = useDisplayTimezone();
+  const text = tz ? formatInZone(iso, tz, { hour: '2-digit', minute: '2-digit' }) : '';
 
   return (
     <span suppressHydrationWarning>
       {prefix}
-      {text ?? fallback}
+      {text || fallback}
       {suffix}
     </span>
   );

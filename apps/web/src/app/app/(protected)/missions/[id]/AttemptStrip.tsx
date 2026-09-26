@@ -62,13 +62,13 @@ export default function AttemptStrip({
   return (
     <div className={hideToggle ? 'pb-0.5' : 'pl-7 pb-0.5'} data-testid="attempt-strip">
       {hideToggle ? (
-        <div className="flex items-center gap-1.5 text-[10px] text-text-muted font-mono">{summaryLine}</div>
+        <div className="flex items-center gap-1.5 text-[11px] md:text-[10px] text-text-muted font-mono">{summaryLine}</div>
       ) : (
         <button
           type="button"
           onClick={() => setExpanded(v => !v)}
           aria-expanded={expanded}
-          className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-text-secondary transition-colors font-mono"
+          className="flex items-center gap-1.5 text-[11px] md:text-[10px] text-text-muted hover:text-text-secondary transition-colors font-mono"
           title="Attempts on this task"
         >
           {summaryLine}
@@ -78,7 +78,7 @@ export default function AttemptStrip({
       {open && (
         <div className="mt-1 space-y-1 border-l border-border-default pl-2.5">
           {strip.attempts.map(attempt => (
-            <div key={attempt.id} className="flex items-baseline gap-2 flex-wrap text-[10px]">
+            <div key={attempt.id} className="flex items-baseline gap-2 flex-wrap text-[11px] md:text-[10px]">
               <span aria-hidden="true" className="text-text-secondary">
                 {attempt.settled ? '●' : '○'}
               </span>

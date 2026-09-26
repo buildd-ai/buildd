@@ -1,11 +1,21 @@
 ---
 status: proposed
 # Structural conformance only; passing does not certify every prose invariant.
+# `secrets.userId` itself already exists (personal inference keys, PR #2832), so
+# a check for the bare column cannot tell this design apart from that one. These
+# assertions pin the pieces only this design adds: the agent-backend resolver,
+# claim-time injection, and the runner refresh route reading the owner.
 assertions:
-  - id: "user-owned-secret-field"
-    type: "config_key"
-    key: "userId"
-    file: "packages/core/secrets/types.ts"
+  - id: "codex-resolver-user-owned"
+    type: "symbol_reachable"
+    symbol: "userId"
+    entry: "apps/web/src/lib/codex-credential.ts"
+    as: "read"
+  - id: "refresh-route-user-owned-auth"
+    type: "symbol_reachable"
+    symbol: "userId"
+    entry: "apps/web/src/app/api/runner/credential-refresh/route.ts"
+    as: "read"
   - id: "claim-user-owned-credential"
     type: "symbol_reachable"
     symbol: "userId"
@@ -15,7 +25,7 @@ assertions:
 # User-owned agent credentials
 
 **Status:** Proposed
-**Related:** `packages/core/db/schema.ts` (`secrets`, `accounts`, `users`, `teamMembers`), `apps/web/src/lib/codex-credential.ts`, `apps/web/src/app/api/runner/credential-refresh/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`, `docs/credentials-architecture.md`, `docs/specs/credential-refresh-lifecycle.md`
+**Related:** `packages/core/db/schema.ts` (`secrets`, `accounts`, `users`, `teamMembers`), `packages/core/inference-keys.ts`, `apps/web/src/lib/codex-credential.ts`, `apps/web/src/app/api/runner/credential-refresh/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`, `docs/credentials-architecture.md`, `docs/specs/credential-refresh-lifecycle.md`
 
 ## Problem
 
@@ -51,6 +61,16 @@ the subscription and the human are all the same one.
 
 - `secrets.teamId` — `uuid ... .notNull()`, cascade on team delete. There is no
   scope above a team.
+- `secrets.userId` now exists (nullable FK to `users`, cascade), but only for
+  personal **`inference_key`** rows: metered API keys for chat, inference and
+  decision calls, added in PR #2832. Those rows still carry a non-null `teamId`,
+  and their partial unique index `secrets_personal_inference_key_idx` is
+  `(teamId, userId, label)`. A personal key is therefore personal *within one
+  team*, not across teams. `resolveInferenceKey` in
+  `packages/core/inference-keys.ts` reads it; no agent-backend resolver does.
+  `SecretMetadata.userId` in `packages/core/secrets/types.ts` is documented as
+  `inference_key` only, and `replaceScoped` already includes `userId` in its
+  scope tuple.
 - Precedence is documented in `docs/credentials-architecture.md` and implemented
   per-backend (`scopeMatch` in `apps/web/src/lib/codex-credential.ts`): most
   specific of workspace / account / team-wide wins.
@@ -119,16 +139,22 @@ Load-bearing piece first.
    exactly as it does today. New accounts created through an interactive login
    record the user; service accounts (`type = 'service'`) legitimately stay NULL
    forever, since no human owns them.
-2. **`secrets.userId`** — nullable uuid FK, plus a CHECK that for agent-backend
-   purposes exactly one of `teamId` / `userId` is non-null. This requires
-   relaxing `secrets.teamId` to nullable, which is the one irreversible-feeling
-   part of the migration; the CHECK is what keeps it honest.
-3. **Unique index.** The existing partial unique index is
+2. **`secrets.userId` for agent-backend purposes.** The column already exists
+   (see Current state); what is missing is allowing it on agent-backend rows
+   and letting such a row stand without a team. That means relaxing
+   `secrets.teamId` to nullable, plus a CHECK that for agent-backend purposes
+   exactly one of `teamId` / `userId` is non-null. Relaxing `teamId` is the one
+   irreversible-feeling part of the migration; the CHECK is what keeps it
+   honest. Personal `inference_key` rows keep a non-null `teamId` and are
+   unaffected.
+3. **Unique index.** The existing partial unique index
+   `secrets_scoped_auth_credential_idx` is
    `(teamId, accountId, workspaceId, purpose, label)` with `NULLS NOT DISTINCT`,
    over auth purposes only. Two user-owned rows for *different* users both have
    a NULL `teamId` and would collide under `NULLS NOT DISTINCT`. `userId` must
-   join that index (or get a sibling partial index) or the second user to
-   connect silently overwrites the first.
+   join that index (or get a sibling partial index, as
+   `secrets_personal_inference_key_idx` does for inference keys) or the second
+   user to connect silently overwrites the first.
 4. **Resolvers** — extend the precedence in the per-backend resolvers and in
    `apps/web/src/app/api/workers/claim/credential-injection.ts`, including
    `resolveAccountCredentialRefreshes` (added in PR #2235), which announces
@@ -160,7 +186,8 @@ can spend my subscription".
 **Blast radius — unchanged for existing rows, narrower for new ones.** Nothing
 about team-owned resolution or authorization changes. See the safety property.
 
-**Migration — additive, defaults to a no-op.** Two nullable columns and an index
+**Migration — additive, defaults to a no-op.** One new nullable column
+(`accounts.userId`; `secrets.userId` already exists), a relaxed `teamId`, a CHECK and an index
 change. Every existing row keeps `teamId` set and behaves identically; no
 backfill is required, and users opt in by connecting once as personal. The
 `accounts.userId` backfill is deliberately skipped rather than guessed: inferring
@@ -178,7 +205,11 @@ whose rotation was already lost needs a manual reconnect.
   configured team asset as intentional. The counter-argument is that a user who
   connects personally probably expects their own subscription to be used; if
   that turns out to be the common expectation, the order should flip — but it
-  should flip deliberately, not by default.
+  should flip deliberately, not by default. Note the precedent now in the code:
+  `resolveInferenceKey` puts the caller's personal `inference_key` *first*,
+  because the person asking is the one paying. That was the right call there. An
+  inference key is a metered key the user pasted themselves, and it has no
+  rotation to break. It does not settle the question for subscription OAuth.
 - **What is `accounts.seatId` for?** It is an unindexed-by-FK `text` column with
   an index, currently unused in the data, and seat-based billing already
   distinguishes OAuth from API-key auth. If it was intended as the human-identity

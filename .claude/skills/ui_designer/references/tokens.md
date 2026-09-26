@@ -125,6 +125,7 @@ The ONLY bright/saturated colors in the UI. Each maps to exactly one semantic me
 | `--cat-test` | `#e0b35a` | `#9a7a20` |
 | `--cat-infra` | `#c8956a` | `#b07d4f` |
 | `--cat-design` | `#d4a574` | `#b07d4f` |
+| `--cat-research` | `#c77bb5` | `#b24c9c` |
 
 ## Spacing Tokens
 

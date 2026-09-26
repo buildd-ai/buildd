@@ -112,9 +112,8 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
   return (
     <SettingsSection title="Timezone">
       <p className="text-sm text-text-secondary">
-        The wall clock buildd uses for anything it writes outside the dashboard — timestamps in the
-        activity comment it posts on your pull requests, the default zone for new schedules, and
-        mission active hours. Your own dashboard already follows{' '}
+        buildd uses this zone for timestamps in the activity comment it posts on your pull requests,
+        the default zone for new schedules, and mission active hours. Your dashboard follows{' '}
         <span className="font-mono text-xs">{detected}</span>, detected from this browser.
       </p>
 
@@ -153,8 +152,8 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
 
           <div className="text-xs text-text-tertiary">
             {stored === null
-              ? 'Not set — buildd is using UTC.'
-              : `Currently ${stored}.`}
+              ? 'Not set. buildd uses UTC.'
+              : `Set to ${stored}.`}
             {preview && <> It is <span className="font-mono">{preview}</span> there now.</>}
           </div>
 

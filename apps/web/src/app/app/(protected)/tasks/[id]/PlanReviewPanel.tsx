@@ -1,8 +1,61 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Spinner from '@/components/Spinner';
+import MarkdownContent from '@/components/MarkdownContent';
+
+/** Descriptions longer than this collapse to four lines behind "Show more". */
+export const PLAN_STEP_PREVIEW_CHARS = 280;
+
+/**
+ * A plan step's description: rendered as markdown (planners write backticked
+ * paths and bold), wrapped anywhere so a long path or URL cannot push the page
+ * sideways on a phone, and clamped when long so the Approve / Reject actions
+ * stay reachable.
+ */
+export function PlanStepDescription({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  // The char count only seeds the server render. Whether four lines actually
+  // overflow depends on the width, so once mounted the clamped box is measured
+  // (and re-measured on resize) and the toggle drops out where it would do
+  // nothing, e.g. a 300-char step on a wide desktop column.
+  const [overflows, setOverflows] = useState(content.length > PLAN_STEP_PREVIEW_CHARS);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el || expanded) return;
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [expanded, content]);
+  const isLong = overflows;
+  const clamped = !expanded;
+  return (
+    <div className="mt-1 min-w-0">
+      <div ref={boxRef} className={clamped ? 'line-clamp-4 overflow-hidden' : undefined}>
+        <MarkdownContent
+          content={content}
+          variant="compact"
+          className="text-sm text-text-secondary [overflow-wrap:anywhere]"
+        />
+      </div>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          aria-expanded={expanded}
+          className="mt-1 min-h-11 md:min-h-0 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary cursor-pointer"
+        >
+          {expanded ? 'Show less ↑' : 'Show more ↓'}
+        </button>
+      )}
+    </div>
+  );
+}
 
 interface PlanStep {
   ref: string;
@@ -38,13 +91,13 @@ export function resolveRejectOutcome(data: {
   if (!data.taskId) {
     return {
       text:
-        'Proposal rejected — the reason is kept on the discrepancy it was about, ' +
-        'and the documentation fix already shipped is unaffected.',
+        'Proposal rejected. The reason stays on its discrepancy, and the ' +
+        'shipped documentation fix is unchanged.',
       navigateTo: null,
     };
   }
   return {
-    text: 'Plan rejected, revised task created. Redirecting...',
+    text: 'Plan rejected. Opening the revised task…',
     navigateTo: data.taskId,
   };
 }
@@ -141,7 +194,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
 
   return (
     <div className="mb-8">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Plan Review
       </div>
 
@@ -172,27 +225,25 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
                   <code className="px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-muted rounded">
                     {step.ref}
                   </code>
-                  <span className="text-sm font-medium text-text-primary">{step.title}</span>
+                  <span className="text-sm font-medium text-text-primary min-w-0 [overflow-wrap:anywhere]">{step.title}</span>
                   {step.priority != null && step.priority > 0 && (
-                    <span className="px-1.5 py-0.5 text-[10px] font-mono bg-status-warning/10 text-status-warning rounded">
+                    <span className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono bg-status-warning/10 text-status-warning rounded">
                       P{step.priority}
                     </span>
                   )}
                 </div>
 
                 {/* Description */}
-                {step.description && (
-                  <p className="text-sm text-text-secondary mt-1">{step.description}</p>
-                )}
+                {step.description && <PlanStepDescription content={step.description} />}
 
                 {/* Metadata row */}
                 <div className="flex items-center gap-3 mt-2 flex-wrap">
                   {/* Dependencies */}
                   {step.dependsOn && step.dependsOn.length > 0 && (
                     <div className="flex items-center gap-1">
-                      <span className="text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Depends on:</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Depends on:</span>
                       {step.dependsOn.map((dep) => (
-                        <code key={dep} className="px-1.5 py-0.5 text-[10px] font-mono bg-surface-3 text-text-secondary rounded">
+                        <code key={dep} className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono bg-surface-3 text-text-secondary rounded">
                           {dep}
                         </code>
                       ))}
@@ -202,9 +253,9 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
                   {/* Capabilities */}
                   {step.requiredCapabilities && step.requiredCapabilities.length > 0 && (
                     <div className="flex items-center gap-1">
-                      <span className="text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Requires:</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-[1px]">Requires:</span>
                       {step.requiredCapabilities.map((cap) => (
-                        <span key={cap} className="px-1.5 py-0.5 text-[10px] font-medium bg-primary/10 text-primary rounded">
+                        <span key={cap} className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium bg-primary/10 text-primary rounded">
                           {cap}
                         </span>
                       ))}
@@ -221,12 +272,12 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
       {showRejectForm && (
         <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-[10px]">
           <label className="block text-sm text-text-secondary mb-2">
-            Provide feedback for revision (required)
+            What should change? (required)
           </label>
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Describe what should be changed in the plan…"
+            placeholder="Describe the changes you want…"
             className="w-full px-3 py-2 text-sm bg-surface-1 border border-border-default rounded-[6px] text-text-primary placeholder:text-text-muted resize-y min-h-[80px] focus:outline-none focus:border-primary"
             rows={3}
             disabled={rejecting}

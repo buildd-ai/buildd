@@ -55,7 +55,7 @@ describe('WaitingOnYouReviewCard recommendation', () => {
       <WaitingOnYouReviewCard item={item({ escalationReason: 'Touches auth' })} />,
     );
     expect(html).not.toContain('Agent recommends');
-    expect(html).not.toContain('No handoff recommendation');
+    expect(html).not.toContain('left no handoff recommendation');
   });
 });
 

@@ -73,7 +73,7 @@ function SignInContent() {
             <div className="mb-6 bg-status-error/10 border border-status-error/30 rounded-lg p-4 text-status-error">
               {error === 'AccessDenied'
                 ? 'Access denied. Your email is not on the allowed list.'
-                : 'An error occurred during sign in.'}
+                : 'Sign-in failed. Try again.'}
             </div>
           )}
 

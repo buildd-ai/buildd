@@ -101,6 +101,34 @@ cd apps/web && bun run build:only   # next build only, no migration, no DATABASE
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 
+## Visual Review
+
+Screenshot any UI change at phone and desktop width before calling it done. Full
+checklist and gotchas: [`.claude/skills/visual-review/SKILL.md`](../.claude/skills/visual-review/SKILL.md).
+
+**Local** (needs a `DATABASE_URL` for a dev DB or Neon dev branch, never prod):
+
+```bash
+QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
+  scripts/qa/shoot.sh /app/missions
+# → /tmp/qa/screenshots/*.png   (macOS: sips -Z 1800 to downscale)
+```
+
+**Workers** (no DB): dispatch Visual QA on your pushed branch. It runs on a
+PII-scrubbed Neon clone and uploads a `qa-screenshots` artifact:
+
+```bash
+gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
+gh run list --workflow visual-qa.yml --branch <branch> --limit 1   # get the run id
+gh run watch <id> --exit-status && gh run download <id> -n qa-screenshots
+```
+
+Inputs: `routes`, `viewport` (`mobile` | `WxH`, default desktop), `mission_id`,
+`task_id`, `judge` (default `false`). By default a dispatch only captures and
+uploads, and the agent reads the PNGs and judges them itself. `judge=true` (and the
+label-gated release-PR path) adds a CI verdict from `anthropics/claude-code-action`
+on the team OAuth seat. `scripts/visual-qa-workflow.test.ts` pins this.
+
 ## UI Fixtures
 
 ### Purpose
@@ -130,12 +158,18 @@ UI components have `data-testid` attributes for reliable E2E test selectors.
 | Test ID | Component | Location |
 |---------|-----------|----------|
 | `task-header-status` | Status badge | Task detail page header |
-| `worker-needs-input-banner` | Banner container | Active worker section |
-| `worker-needs-input-label` | "Needs input" label | Banner |
-| `worker-needs-input-prompt` | Question text | Banner |
-| `worker-needs-input-options` | Options container | Banner |
-| `worker-interrupt-btn` | Interrupt button | Worker controls |
-| `worker-abort-btn` | Abort button | Worker controls |
+| `worker-needs-input-banner` | Question hero wrapper (worker `waitingFor`) | Active worker section |
+| `worker-needs-input-label` | "The builder asks" eyebrow | Question hero |
+| `worker-needs-input-prompt` | Question headline | Question hero |
+| `worker-needs-input-options` | Choices container (`question-option`, `data-recommended`) | Question hero |
+| `worker-needs-input-freetext` | Free-text answer form | Question hero |
+| `worker-paused-bar` | "Paused at N%" strip | Waiting state |
+| `worker-now-strip` | Now strip hero (`worker-current-action`, `worker-progress-bar`, `worker-step-rail`) | Running state |
+| `worker-stats` | Stat row (`worker-pr-link` inside the PR tile) | Running state |
+| `worker-activity-timeline` | Activity: tape (`worker-activity-tape`), Touched (`worker-touched-row`), log | Running state |
+| `pr-outcome` | PR outcome card (`pr-diff-bar`, `pr-lineage`, `pr-commit-checks`) | Task page |
+| `task-side-panel` | Side panel (`task-fact-sheet`, `task-also-running`, `task-while-you-decide`) | Task page |
+| `worker-abort-btn` | Stop agent button | Side panel (`worker-steer-panel`) |
 
 ### Data Attributes
 Some elements include additional data attributes:

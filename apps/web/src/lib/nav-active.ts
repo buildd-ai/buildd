@@ -18,8 +18,19 @@ export function isNavActive(pathname: string, href: string): boolean {
   if (href === '/app/team') {
     return pathname === '/app/team' || pathname.startsWith('/app/team/');
   }
+  if (href === '/app/chat') {
+    return pathname === '/app/chat' || pathname.startsWith('/app/chat/');
+  }
   if (href === '/app/health') {
     return pathname.startsWith('/app/health');
   }
   return pathname === href;
+}
+
+/**
+ * Account/connection pages have no bottom-nav tab — they are reached from the
+ * header avatar menu, which shows the active state for them instead.
+ */
+export function isAccountRoute(pathname: string): boolean {
+  return pathname === '/app/settings' || pathname.startsWith('/app/settings/');
 }

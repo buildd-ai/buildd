@@ -416,7 +416,8 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
 });
 
 describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
-  it('blocks on escalateToPaths for agent-review tier', async () => {
+  // Read-only fallback release: legacy stored paths still block.
+  it('blocks on a legacy stored escalateToPaths for agent-review tier (fallback release)', async () => {
     mockGithubApi.mockReset();
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })

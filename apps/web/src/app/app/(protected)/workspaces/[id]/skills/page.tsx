@@ -50,32 +50,32 @@ export default async function WorkspaceSkillsPage({
     .map(s => ({ slug: s.slug, name: s.name }));
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
         <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; {workspace.name}
         </Link>
 
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Roles</h1>
+        <div className="flex flex-wrap justify-between items-center gap-3 mb-8">
+          <div className="min-w-0">
+            <h1 className="text-2xl md:text-3xl font-bold">Roles</h1>
             <p className="text-text-muted mt-1">
               {skills.length} role{skills.length !== 1 ? 's' : ''}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 md:gap-3 shrink-0">
             <a
               href="https://docs.buildd.dev/docs/features/skills"
               target="_blank"
               rel="noopener noreferrer"
-              className="px-4 py-2 border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-3 rounded-lg text-sm"
+              className="px-3 md:px-4 py-2 border border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-3 rounded-lg text-sm"
             >
               Docs
             </a>
             {!showNew && (
               <Link
                 href={`/app/workspaces/${id}/skills?new=1`}
-                className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg"
+                className="whitespace-nowrap px-3 md:px-4 py-2 text-sm md:text-base bg-primary text-white hover:bg-primary-hover rounded-lg"
               >
                 + New Role
               </Link>

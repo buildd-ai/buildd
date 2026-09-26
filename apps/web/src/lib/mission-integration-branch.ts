@@ -245,11 +245,11 @@ export async function ensureIntegrationBaseForTaskPr(args: {
       title: `Integration branch \`${ensured.branch}\` was re-cut from trunk`,
       body:
         `${subject} needed this mission's integration branch to open its PR, and the branch was `
-        + `not on the remote — it is deleted when the mission PR merges, which happens before work `
+        + `not on the remote. Buildd deletes it when the mission PR merges, which happens before work `
         + `filed later has landed.\n\n`
         + `Rather than dead-end the task, buildd re-cut \`${ensured.branch}\` from trunk and let the `
         + `PR proceed. The mission therefore gets a SECOND mission PR for this round of work, which `
-        + `is one merge for one round — not one merge per task. Nothing that already shipped is `
+        + `is one merge for this round of work. Nothing that already shipped is `
         + `affected: the previous mission PR's diff is in trunk, so the new branch starts from it.`,
     });
     return { usable: true, recreated: true };
@@ -257,12 +257,12 @@ export async function ensureIntegrationBaseForTaskPr(args: {
 
   const fallback = args.fallbackBase ? `\`${args.fallbackBase}\`` : 'trunk';
   await postMissionNote(args.missionId, {
-    title: `Integration branch \`${args.integrationBase}\` is unavailable — PR falls back to ${fallback}`,
+    title: `Integration branch \`${args.integrationBase}\` is unavailable · PR falls back to ${fallback}`,
     body:
       `${subject} could not base its PR on this mission's integration branch: the branch is absent `
       + `from the remote and could not be re-cut (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}).\n\n`
       + `The PR was opened against ${fallback} instead, so the task could deliver. This mission's `
-      + `"one merge into trunk" guarantee does NOT hold for that PR — it reaches trunk on its own. `
+      + `"one merge into trunk" guarantee does NOT hold for that PR: it reaches trunk on its own. `
       + `If more work is coming, switch the mission to the direct strategy deliberately rather than `
       + `letting each task discover this.`,
   });

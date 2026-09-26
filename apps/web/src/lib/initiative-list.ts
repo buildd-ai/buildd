@@ -19,33 +19,15 @@ export interface InitiativeListItem {
   id: string;
   title: string;
   description: string | null;
-  status: 'active' | 'paused' | 'completed' | 'archived';
+  status: 'planned' | 'active' | 'paused' | 'completed' | 'archived';
   priority: number;
+  /** Null reads as the creator. */
+  ownerUserId: string | null;
+  /** 'YYYY-MM-DD' or null. */
+  targetDate: string | null;
   workspaceId: string | null;
   workspace: { id: string; name: string } | null;
-  missions: Array<{
-    id: string;
-    title: string;
-    status: string;
-    // The three fields below are present only under `pendingSignals: true`.
-    // `GET /api/initiatives` returns these items verbatim, and its contract is a
-    // light mission index — a task array per mission would balloon that payload.
-    isHeld?: boolean;
-    /** ISO string; feeds the 7-day "shipped this week" window. */
-    updatedAt?: string | null;
-    /** Enough per-task shape for `derivePendingCounts` and `countBlockedByPR`. */
-    tasks?: Array<{
-      id: string;
-      status: string;
-      dependsOn: string[] | null;
-      workers: Array<{
-        prUrl: string | null;
-        prNumber: number | null;
-        mergedAt: Date | string | null;
-        prLifecycleStatus: string | null;
-      }>;
-    }>;
-  }>;
+  missions: Array<{ id: string; title: string; status: string }>;
   progress: InitiativeProgress;
   segments: MissionSegment[];
   /** ISO string of the most recent child-mission update, or null if no missions. */
@@ -56,56 +38,21 @@ export interface InitiativeListItem {
 }
 
 /**
- * Keep only the newest worker per task, for the rollup.
+ * Load the caller's initiatives with rolled-up progress, for GET
+ * /api/initiatives and Home's progress headline. The Initiatives tab itself
+ * uses `loadInitiativeCards` (lib/initiative-cards.ts), which carries the
+ * per-mission state this light index leaves out.
  *
- * Worker rows arrive newest-first (see the `orderBy` on the sub-query), so the
- * newest is index 0. The latest worker is what decides `ghost` (in flight) vs
- * `half` (PR open) vs `solid`; an older worker left in the list would let a
- * stale live attempt ghost a task that has since shipped.
- *
- * This mirrors `latestWorkerPerTask` on the initiative detail page, which is the
- * rule the two surfaces must share. It is duplicated rather than imported
- * because that helper lives under `app/`, and nothing in `lib/` imports from
- * `app/`; hoisting it into `lib/` is the right follow-up.
- */
-function newestWorkerOnly<T extends { workers?: unknown[] | null }>(tasks: T[]): T[] {
-  return tasks.map((t) => ({ ...t, workers: (t.workers ?? []).slice(0, 1) }));
-}
-
-/**
- * Load the caller's initiatives with rolled-up progress. Shared by
- * `GET /api/initiatives` and the initiatives list page so the two cannot drift.
- *
- * - Rollup + segments come from the shared `computeInitiative*` helpers (read
- *   time; the `progressCache` column stays dormant). Tasks are loaded once to
- *   compute both.
- * - Workers carry PR identity, merge state AND `status`, newest first, because
- *   the Initiatives list is the triage host (spec §4) and must agree with
- *   initiative detail count-for-count (§5.2, AC-20, AC-29). `status` is what
- *   `deriveMissionSegmentState` reads to return `ghost`; without it an in-flight
- *   retry of a completed task read as `solid` here and `ghost` on detail, and
- *   `completedTasks` — so `progress` — disagreed between the two surfaces.
- *   The rollup sees only the newest worker per task (`newestWorkerOnly`, the
- *   same narrowing detail applies via `latestWorkerPerTask`); the returned rows
- *   keep every worker, because the open PR that makes a task await merge is not
- *   always on the newest one.
- * - `hasLinearLink` is one batched existence query over every child mission id,
- *   never one query per card.
- * - Ordering is left to the caller (the UI sorts blocked-first, then
- *   `lastMotionAt` desc); the DB order here is only a stable default.
+ * - Rollup + segments come from the shared `computeInitiative*` helpers.
+ * - `hasLinearLink` is one batched existence query over every child mission id.
+ * - Ordering is left to the caller; the DB order is only a stable default.
  */
 export async function loadInitiativeList(opts: {
   teamIds: string[];
   statusFilter?: string | null;
   workspaceIdFilter?: string | null;
-  /**
-   * Load the per-mission hold flag, timestamps, and task/worker PR state that
-   * `derivePendingCounts` and `countBlockedByPR` need. Off by default so the HTTP
-   * route keeps its light payload and pays for no worker rows.
-   */
-  pendingSignals?: boolean;
 }): Promise<InitiativeListItem[]> {
-  const { teamIds, statusFilter, workspaceIdFilter, pendingSignals = false } = opts;
+  const { teamIds, statusFilter, workspaceIdFilter } = opts;
   if (teamIds.length === 0) return [];
 
   let where = inArray(initiatives.teamId, teamIds);
@@ -115,28 +62,15 @@ export async function loadInitiativeList(opts: {
   const results = await db.query.initiatives.findMany({
     where,
     orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
-    columns: { id: true, title: true, description: true, status: true, priority: true, workspaceId: true, createdAt: true },
+    columns: { id: true, title: true, description: true, status: true, priority: true, workspaceId: true, ownerUserId: true, targetDate: true, createdAt: true },
     with: {
       workspace: { columns: { id: true, name: true } },
       missions: {
-        // updatedAt drives the client-side motion sort + "moved 2h ago" label.
-        columns: { id: true, title: true, status: true, updatedAt: true, isHeld: true },
+        // updatedAt drives the motion timestamp.
+        columns: { id: true, title: true, status: true, updatedAt: true },
         with: {
           tasks: {
             columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, taskClass: true },
-            ...(pendingSignals
-              ? {
-                  with: {
-                    workers: {
-                      // `status` is load-bearing: `deriveMissionSegmentState`
-                      // needs it to reach `ghost`. Newest first, so the rollup's
-                      // narrowing picks the same worker detail picks.
-                      columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
-                      orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
-                    },
-                  },
-                }
-              : {}),
           },
         },
       },
@@ -163,7 +97,7 @@ export async function loadInitiativeList(opts: {
     const missionsRaw = (initiative.missions || []) as any[];
     const children: ChildMissionProgress[] = [];
     const perChild = missionsRaw.map((m) => {
-      const r = computeMissionProgress(newestWorkerOnly(m.tasks || []));
+      const r = computeMissionProgress(m.tasks || []);
       children.push({ status: m.status as ChildMissionProgress['status'], totalTasks: r.totalTasks, completedTasks: r.completedTasks });
       return r;
     });
@@ -183,28 +117,9 @@ export async function loadInitiativeList(opts: {
       priority: initiative.priority,
       workspaceId: initiative.workspaceId,
       workspace: (initiative as any).workspace ?? null,
-      missions: missionsRaw.map((m) => ({
-        id: m.id,
-        title: m.title,
-        status: m.status,
-        ...(pendingSignals
-          ? {
-              isHeld: Boolean(m.isHeld),
-              updatedAt: m.updatedAt ? new Date(m.updatedAt).toISOString() : null,
-              tasks: (m.tasks || []).map((t: any) => ({
-                id: t.id,
-                status: t.status,
-                dependsOn: (t.dependsOn as string[] | null) ?? null,
-                workers: (t.workers || []).map((w: any) => ({
-                  prUrl: w.prUrl ?? null,
-                  prNumber: w.prNumber ?? null,
-                  mergedAt: w.mergedAt ?? null,
-                  prLifecycleStatus: w.prLifecycleStatus ?? null,
-                })),
-              })),
-            }
-          : {}),
-      })),
+      ownerUserId: (initiative as any).ownerUserId ?? null,
+      targetDate: (initiative as any).targetDate ?? null,
+      missions: missionsRaw.map((m) => ({ id: m.id, title: m.title, status: m.status })),
       progress,
       segments,
       lastMotionAt,

@@ -226,7 +226,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 </div>
                 {mode === 'planning' && (
                   <p className="text-xs text-text-secondary mt-1">
-                    Agent will create a structured plan for review instead of executing directly
+                    The agent writes a plan for your review before it changes any code.
                   </p>
                 )}
               </div>

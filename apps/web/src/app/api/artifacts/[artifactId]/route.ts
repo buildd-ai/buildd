@@ -3,7 +3,8 @@ import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
@@ -16,8 +17,12 @@ export async function GET(
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
+  // The dashboard session (e.g. the in-app agent chat calling this in-process
+  // as the signed-in user) is accepted on this read only. A key, when present,
+  // stays authoritative so the key path is unchanged.
+  const sessionUser = account ? null : await getCurrentUser();
 
-  if (!account) {
+  if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -30,16 +35,26 @@ export async function GET(
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   }
 
-  // Verify access: owner of the worker, or workspace member
-  const isOwner = artifact.worker?.accountId === account.id;
-  if (!isOwner) {
-    if (artifact.workspaceId) {
-      const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
-      if (!hasAccess) {
+  if (!account) {
+    // Session: membership of the artifact's workspace team, same as the
+    // dashboard. Outside it the artifact does not exist for this caller.
+    const workspaceId = artifact.workspaceId ?? artifact.worker?.workspaceId ?? null;
+    const access = workspaceId ? await verifyWorkspaceAccess(sessionUser!.id, workspaceId) : null;
+    if (!access) {
+      return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
+    }
+  } else {
+    // Key: owner of the worker, or workspace member
+    const isOwner = artifact.worker?.accountId === account.id;
+    if (!isOwner) {
+      if (artifact.workspaceId) {
+        const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
+        if (!hasAccess) {
+          return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+      } else {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
-    } else {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   }
 

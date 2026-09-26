@@ -25,9 +25,9 @@ function getSummary(task: HeartbeatTimelineProps['tasks'][0]): string {
   const summary = task.result?.structuredOutput?.summary || task.result?.summary;
   if (summary) return summary;
   const status = getTaskHeartbeatStatus(task);
-  if (status === 'ok') return 'All systems nominal';
-  if (status === 'action_taken') return 'Action was taken';
-  if (status === 'error') return 'Error occurred';
+  if (status === 'ok') return 'No issues found';
+  if (status === 'action_taken') return 'Agent took action';
+  if (status === 'error') return 'Error';
   return task.status === 'completed' ? 'Completed' : task.status;
 }
 
@@ -61,7 +61,7 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
         </svg>
       </button>
       <p className="text-[11px] text-text-muted mt-0.5">
-        Periodic re-evaluation cycles — not task executions
+        Heartbeat re-evaluation cycles
       </p>
 
       {expanded && (
@@ -102,7 +102,7 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
                   hbStatus === 'error' ? 'bg-status-error/60' :
                   'bg-border-default'
                 }`} />
-                <span className={`text-[9px] font-bold tracking-wider w-8 shrink-0 ${statusClass}`}>{statusLabel}</span>
+                <span className={`text-[11px] md:text-[9px] font-bold tracking-wider w-12 md:w-8 shrink-0 ${statusClass}`}>{statusLabel}</span>
                 <span className="text-[11px] text-text-muted shrink-0 w-12 tabular-nums">{timeAgo(task.createdAt)}</span>
                 <span className="flex-1 truncate text-text-secondary">{summary}</span>
                 <span onClick={(e) => e.stopPropagation()}>

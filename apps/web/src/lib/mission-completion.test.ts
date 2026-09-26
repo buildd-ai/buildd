@@ -119,6 +119,7 @@ import {
   CRITERIA_BLOCK_CODES,
   AWAITING_VERIFICATION_NOTE_TITLE,
 } from './mission-completion';
+import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -350,6 +351,49 @@ describe('canCompleteMission — task rows', () => {
     expect(d.reason).toContain('Deploy the worker');
   });
 
+  // Visual QA auditor (docs/design/visual-qa-auditor.md): an audit that dies
+  // before it can park a question is recorded infra_stalled by the worker
+  // PATCH route, so nobody-looked can never read as looked-and-passed.
+  describe('a visual audit that errored before it could ask', () => {
+    const audit = (status: string, result: unknown, title = '[surface audit] Mobile nav') =>
+      work(status, title, { roleSlug: 'visual-auditor', result });
+
+    it('keeps the mission blocked as infra_stalled, naming the audit', async () => {
+      activeMission();
+      taskRows = [
+        work('completed', 'Build the nav'),
+        audit('failed', { errorType: 'infra_stalled', error: 'Visual audit ended without evidence: boom' }),
+      ];
+
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(false);
+      expect(d.code).toBe('infra_stalled');
+      expect(d.infraStalledTitles).toEqual(['[surface audit] Mobile nav']);
+    });
+
+    it('a stalled round-2 re-check blocks the same way', async () => {
+      activeMission();
+      taskRows = [
+        work('completed', 'Build the nav'),
+        audit('completed', null),
+        work('completed', '[surface fix] /app/tasks/:id: header overflows'),
+        audit('failed', { errorType: 'infra_stalled' }, '[surface audit] round 2: Mobile nav'),
+      ];
+
+      const d = await canCompleteMission('m1');
+      expect(d.code).toBe('infra_stalled');
+      expect(d.infraStalledTitles).toEqual(['[surface audit] round 2: Mobile nav']);
+    });
+
+    it('why the write side matters: a plain failed audit would release the mission', async () => {
+      activeMission();
+      taskRows = [work('completed', 'Build the nav'), audit('failed', { error: 'boom' })];
+
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(true);
+    });
+  });
+
   it('allows completion when deliverables are a mix of completed and (non-infra) failed', async () => {
     activeMission();
     taskRows = [work('completed', 'A'), work('failed', 'B')];
@@ -558,6 +602,84 @@ describe('canCompleteMission — PR supersession (task fcaf83d5: a closed-unmerg
   });
 });
 
+/**
+ * The awaiting-merge gate and the `all_prs_merged` criterion used to answer
+ * "did this PR ship?" separately, and only the gate knew about supersession —
+ * so a mission could clear the gate and still read FAIL on the criterion
+ * forever. Both now call `@buildd/core/pr-shipped`; these fixtures run through
+ * BOTH and assert the same answer.
+ */
+describe('canCompleteMission and the all_prs_merged criterion agree', () => {
+  beforeEach(reset);
+
+  const pr = (n: number) => `https://github.com/org/repo/pull/${n}`;
+  /** Feed the same task rows (with their latest worker) to the criterion. */
+  function criterionVerdict(rows: any[]) {
+    const state = evaluateGoalCriteria(
+      { id: 'm1' },
+      [{ type: 'all_prs_merged' }],
+      {
+        tasks: rows,
+        workers: rows.flatMap(t => (t.workers ?? []).slice(0, 1).map((w: any) => ({ ...w, taskId: t.id }))),
+        artifacts: [],
+        evaluatedBy: 'manual',
+      },
+    );
+    return state.criteria[0];
+  }
+
+  const cases: Array<{ name: string; rows: () => any[]; shipped: boolean }> = [
+    {
+      name: 'closed PR + recorded edge to a merged PR',
+      shipped: true,
+      rows: () => [
+        work('completed', 'A', { workers: [{ prUrl: pr(10), prNumber: 10, mergedAt: null, prLifecycleStatus: 'closed', supersededByPrNumber: 12 }] }),
+        work('completed', 'B', { workers: [{ prUrl: pr(12), prNumber: 12, mergedAt: '2026-01-01', prLifecycleStatus: 'merged' }] }),
+      ],
+    },
+    {
+      name: 'closed PR, no edge',
+      shipped: false,
+      rows: () => [work('completed', 'A', { workers: [{ prUrl: pr(10), prNumber: 10, mergedAt: null, prLifecycleStatus: 'closed' }] })],
+    },
+    {
+      name: 'open PR with changes requested (M4)',
+      shipped: false,
+      rows: () => [work('completed', 'A', { workers: [{ prUrl: pr(20), prNumber: 20, mergedAt: null, prLifecycleStatus: 'pr_open' }] })],
+    },
+    {
+      name: 'closed PR followed by a merged PR from its own after-review attempt',
+      shipped: true,
+      rows: () => [
+        { ...work('completed', 'A', { workers: [{ prUrl: pr(30), prNumber: 30, mergedAt: null, prLifecycleStatus: 'closed' }] }), id: 'root' },
+        { id: 'retry', status: 'completed', title: 'A (after review)', taskClass: 'attempt', mode: 'execution', parentTaskId: 'root', result: null,
+          workers: [{ prUrl: pr(31), prNumber: 31, mergedAt: '2026-01-01', prLifecycleStatus: 'merged' }] },
+      ],
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: both say ${c.shipped ? 'shipped' : 'not shipped'}`, async () => {
+      activeMission({ goalCriteria: null });
+      taskRows = c.rows();
+      const d = await canCompleteMission('m1');
+      const crit = criterionVerdict(c.rows());
+      expect(d.code === 'awaiting_merge').toBe(!c.shipped);
+      expect(crit.verdict === 'pass').toBe(c.shipped);
+    });
+  }
+
+  it('the lineage-derived supersession is reported, with a reason saying it was derived', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = cases[3].rows();
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.supersededCount).toBe(1);
+    expect(d.supersededDetails[0].supersededByPrNumber).toBe(31);
+    expect(d.supersededDetails[0].supersededReason).toContain('derived');
+  });
+});
+
 describe('canCompleteMission — the goal-criteria gate', () => {
   beforeEach(reset);
 
@@ -656,6 +778,49 @@ describe('canCompleteMission — the goal-criteria gate', () => {
     expect(d.ok).toBe(false);
     expect(d.code).toBe('criteria_pending');
     expect(d.reason).toContain('in flight');
+  });
+
+  it('holds while a runner-graded prose criterion is in flight, then passes once its verdict lands', async () => {
+    const criteria = [{ type: 'description', description: 'Contract applied', notMechanizableReason: 'stated reason', grader: 'runner' }];
+    activeMission({ goalCriteria: criteria });
+    taskRows = [work('completed')];
+    mockEnsureCriteriaVerdict.mockImplementation(() => Promise.resolve({
+      evaluatedAt: '2026-09-01T12:00:00.000Z',
+      evaluatedBy: 'auto',
+      overall: 'UNVERIFIED',
+      criteria: [{ index: 0, type: 'description', verdict: 'PENDING', evidence: 'Verifying on runner… (task abcd1234, pending)', workerTaskId: 'abcd1234' }],
+    }) as any);
+
+    const held = await canCompleteMission('m1');
+    expect(held.ok).toBe(false);
+    expect(held.code).toBe('criteria_pending');
+
+    // `unsure` from the runner lands as NOT_EVALUATED — still not a pass.
+    activeMission({
+      goalCriteria: criteria,
+      goalCriteriaState: {
+        evaluatedAt: '2026-09-01T12:05:00.000Z',
+        evaluatedBy: 'auto',
+        overall: 'UNVERIFIED',
+        criteria: [{ index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'Runner was unsure: x', workerTaskId: 'abcd1234' }],
+      },
+    });
+    const unsure = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(unsure.ok).toBe(false);
+    expect(unsure.code).toBe('criteria_unverified');
+
+    // The write-back hook stored a pass and re-attempts with evaluateCriteria=false.
+    activeMission({
+      goalCriteria: criteria,
+      goalCriteriaState: {
+        evaluatedAt: '2026-09-01T12:10:00.000Z',
+        evaluatedBy: 'auto',
+        overall: 'pass',
+        criteria: [{ index: 0, type: 'description', verdict: 'pass', evidence: 'applied', workerTaskId: 'abcd1234', evaluatedAt: '2026-09-01T12:10:00.000Z' }],
+      },
+    });
+    const passed = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(passed.ok).toBe(true);
   });
 
   it('uses the stored verdict without evaluating when evaluateCriteria=false', async () => {
@@ -1003,7 +1168,7 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
 
     const d = await canCompleteMission('m1', { path: 'dormancy' });
     expect(d.code).toBe('awaiting_mission_pr');
-    expect(d.reason).toContain('has not been opened');
+    expect(d.reason).toContain('The mission PR is not open yet');
   });
 
   it('refuses, and says it will not self-resolve, when the mission PR was closed', async () => {

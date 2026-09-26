@@ -62,8 +62,15 @@ export function getPusherClient(): PusherClient | null {
 
   debug('[Pusher] Initializing client with cluster:', cluster);
 
+  // NEXT_PUBLIC_PUSHER_HOST: self-hosted Pusher-protocol server (soketi in
+  // scripts/demo). Unset = Pusher's hosted cluster, exactly as before.
+  const wsHost = process.env.NEXT_PUBLIC_PUSHER_HOST;
+  const wsPort = Number(process.env.NEXT_PUBLIC_PUSHER_PORT) || undefined;
   pusherClient = new PusherClient(key, {
     cluster,
+    ...(wsHost
+      ? { wsHost, wsPort, wssPort: wsPort, forceTLS: false, enabledTransports: ['ws', 'wss'] as ('ws' | 'wss')[] }
+      : {}),
   });
 
   // Log connection state changes

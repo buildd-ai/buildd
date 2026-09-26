@@ -4,7 +4,7 @@
  * page humanises it at render. Fixtures are illustrative.
  */
 import { describe, expect, it } from 'bun:test';
-import { formatCompletionRecord } from './mission-completion-record';
+import { formatCompletionRecord, situationRepeatsCompletion } from './mission-completion-record';
 
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000 - 60_000).toISOString();
 
@@ -37,5 +37,21 @@ describe('formatCompletionRecord', () => {
 
   it('leaves an unrecognised deliverables line as written', () => {
     expect(formatCompletionRecord('Deliverables: all of them')).toBe('Deliverables: all of them');
+  });
+});
+
+describe('situationRepeatsCompletion', () => {
+  it('is true for a complete mission that shows its completion summary', () => {
+    expect(situationRepeatsCompletion('complete', true)).toBe(true);
+  });
+
+  it('keeps the situation block when there is no completion summary to carry the answer', () => {
+    expect(situationRepeatsCompletion('complete', false)).toBe(false);
+  });
+
+  it('never hides the situation for a mission that is not complete', () => {
+    for (const state of ['running', 'idle', 'waiting_decision', 'blocked', null, undefined]) {
+      expect(situationRepeatsCompletion(state, true)).toBe(false);
+    }
   });
 });

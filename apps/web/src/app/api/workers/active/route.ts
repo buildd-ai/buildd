@@ -8,6 +8,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { getDeployIdentity } from '@/lib/deploy-identity';
 
 // Runner heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min)
 // to let Neon suspend. Stale threshold is 2.5× so a single dropped beat isn't fatal.
@@ -177,6 +178,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Deployed sha, read once — zero network cost, from build-time env (see
+    // getDeployIdentity). This is the "behind" comparison for a runner
+    // tracking `main`, which is also the only branch Vercel deploys from (see
+    // CLAUDE.md); a runner tracking `dev` has nothing to compare against here
+    // and gets `upToDateWithDeployed: null` rather than a wrong answer.
+    const deployedSha = getDeployIdentity().sha;
+
     // Filter to only heartbeats that have access to user's workspaces
     const activeLocalUis = await Promise.all(
       heartbeats.map(async hb => {
@@ -209,6 +217,19 @@ export async function GET(req: NextRequest) {
           environment: hb.environment || null,
           runnerCommit: hb.runnerCommit || null,
           runnerVersion: hb.runnerVersion || null,
+          // The runner's own live update-state — same fields it reports on
+          // its local /api/version, now visible without SSH into the host.
+          currentCommit: hb.currentCommit || null,
+          diskCommit: hb.diskCommit || null,
+          commitDrift: hb.commitDrift ?? null,
+          updating: hb.updating ?? null,
+          updateAvailable: hb.updateAvailable ?? null,
+          trackedBranch: hb.trackedBranch || null,
+          // Only meaningful for a `main`-tracking runner (Vercel deploys from
+          // `main` only) with both sides known; otherwise null, not a guess.
+          upToDateWithDeployed: hb.trackedBranch === 'main' && hb.diskCommit && deployedSha
+            ? hb.diskCommit === deployedSha
+            : null,
           lastUpdated: hb.lastHeartbeatAt,
         };
       })

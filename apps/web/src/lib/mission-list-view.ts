@@ -9,3 +9,12 @@ export type MissionListView = 'timeline' | 'structure';
 export function parseMissionListView(raw: string | null | undefined): MissionListView {
   return raw === 'structure' ? 'structure' : 'timeline';
 }
+
+/**
+ * The md+ list views sit in a closed disclosure under the feed. A URL that
+ * names a non-default view (a deep link, or a reload after toggling) opens it,
+ * so the view the URL names is on screen.
+ */
+export function missionListViewOpensDisclosure(raw: string | null | undefined): boolean {
+  return parseMissionListView(raw) === 'structure';
+}

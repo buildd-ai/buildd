@@ -201,7 +201,6 @@ No `SkillModel` column changes are required for phase-1 implementation. A follow
 |------|------|------|-----------|
 | `packages/core/model-aliases.ts` | 21–23 | Default alias map (`haiku/sonnet/opus → full IDs`) | IS the registry fallback; only entry point for alias resolution |
 | `packages/core/model-prices.ts` | 41+ | Pricing table keyed by model substring | Billing, not routing; model-specific by necessity |
-| `apps/web/src/app/api/qa/judge/route.ts` | 15 | `const MODEL = 'claude-haiku-4-5-20251001'` | Internal eval judge, not user-visible routing; budget model pinned intentionally for cost predictability |
 | `packages/core/model-router.ts` | (all) | Router outputs `'haiku'/'sonnet'/'opus'` aliases | The router; mapped to new vocabulary at claim boundary |
 
 #### Display-only (UI dropdowns / placeholder text) → exempt
@@ -235,7 +234,6 @@ ALLOWLIST=(
   "packages/core/model-aliases.ts"
   "packages/core/model-prices.ts"
   "packages/core/model-tier-registry.ts"   # the resolver's fallback defaults
-  "apps/web/src/app/api/qa/judge/route.ts" # internal eval judge — pinned intentionally
   "apps/runner/src/index.ts"               # UI model list (display only)
   "apps/web/src/lib/config-helpers.ts"
   "apps/web/src/app"                       # UI dropdowns broadly
@@ -260,7 +258,7 @@ fi
 echo "lint-model-ids: OK"
 ```
 
-The allowlist entries for UI dropdown files use path-prefix matching (`apps/web/src/app`), accepting that the UI is exempt wholesale. The narrow exemptions (`model-aliases.ts`, `model-prices.ts`, `model-tier-registry.ts`, `qa/judge`) are exact file matches.
+The allowlist entries for UI dropdown files use path-prefix matching (`apps/web/src/app`), accepting that the UI is exempt wholesale. The narrow exemptions (`model-aliases.ts`, `model-prices.ts`, `model-tier-registry.ts`) are exact file matches.
 
 **Failure signal:** any new `.ts`/`.tsx` file that hard-codes a model version string — e.g. `'claude-sonnet-5-20260101'` — causes CI to fail and forces the author to either route through the tier system or add a justified allowlist entry.
 

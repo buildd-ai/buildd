@@ -5,7 +5,7 @@
  * tiles. Empty steps are hidden.
  */
 import { describe, expect, it } from 'bun:test';
-import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
+import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionPrCount, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
 
 const base: DeliveryInput = {
   missionStatus: 'active',
@@ -129,14 +129,70 @@ describe('buildDeliverySteps', () => {
     expect(capped).toMatchObject({ state: 'blocked', detail: 'paused at cap' });
   });
 
-  it('orders steps Integrated → Verified → Shipped → Budget', () => {
+  it('orders steps Integrated → Verified → Visual review → Shipped → Budget', () => {
     expect(keys({
       ...base,
       criteria: { total: 2, passed: 1, overall: 'UNVERIFIED' },
+      visual: { shots: 4, ok: 4, issues: 0, unsure: 0 },
       mergedAt: [AFTER],
       release: { releasedThrough: BASELINE },
       budget: { budgetUsd: 10, spendUsd: 10, exhausted: true },
-    })).toEqual(['integrated', 'verified', 'shipped', 'budget']);
+    })).toEqual(['integrated', 'verified', 'visual', 'shipped', 'budget']);
+  });
+
+  // docs/design/visual-qa-auditor.md, "Where the screenshots show". Verdicts
+  // are advisory: only a boot failure blocks (and so auto-opens <details>).
+  describe('Visual review step', () => {
+    const visual = (v: NonNullable<DeliveryInput['visual']>) =>
+      buildDeliverySteps({ ...base, visual: v }).find(s => s.key === 'visual');
+
+    it('is hidden when the mission has no audit and no shots', () => {
+      expect(keys({ ...base, visual: null })).not.toContain('visual');
+      expect(keys(base)).not.toContain('visual');
+    });
+
+    it('is done with a shot count when every shot is ok', () => {
+      expect(visual({ shots: 8, ok: 8, issues: 0, unsure: 0 })).toMatchObject({
+        label: 'Visual review', state: 'done', value: '8 shots', detail: '8 shots, all ok',
+      });
+      expect(visual({ shots: 1, ok: 1, issues: 0, unsure: 0 })!.value).toBe('1 shot');
+    });
+
+    it('is partial, never blocked, when a shot has an issue or is unsure', () => {
+      expect(visual({ shots: 12, ok: 9, issues: 2, unsure: 1 })).toMatchObject({
+        state: 'partial', value: '2✕ 1?', detail: '12 shots · 2 issues · 1 unsure',
+      });
+      expect(visual({ shots: 4, ok: 3, issues: 1, unsure: 0 })).toMatchObject({ state: 'partial', value: '1✕', detail: '4 shots · 1 issue' });
+      expect(visual({ shots: 4, ok: 3, issues: 0, unsure: 1 })).toMatchObject({ state: 'partial', value: '1?' });
+    });
+
+    it('is todo while the audit is open with no shots yet', () => {
+      expect(visual({ shots: 0, ok: 0, issues: 0, unsure: 0 })).toMatchObject({ state: 'todo', value: '–', detail: 'waiting for the visual audit' });
+    });
+
+    it('is partial when fewer shots than required were captured', () => {
+      expect(visual({ shots: 4, ok: 4, issues: 0, unsure: 0, required: 8 })).toMatchObject({
+        state: 'partial', value: '4/8', detail: '4 of 8 required shots, all ok',
+      });
+      expect(visual({ shots: 8, ok: 8, issues: 0, unsure: 0, required: 8 })!.state).toBe('done');
+    });
+
+    // Coverage counts required route × viewport cells, not shots: a re-shoot or
+    // an extra route the auditor added must not make "8 shots" read as 8/8.
+    it('reads coverage from covered cells when known, not from the shot count', () => {
+      expect(visual({ shots: 10, ok: 10, issues: 0, unsure: 0, required: 8, covered: 6 })).toMatchObject({
+        state: 'partial', value: '6/8', detail: '6 of 8 required shots, all ok',
+      });
+      expect(visual({ shots: 9, ok: 9, issues: 0, unsure: 0, required: 8, covered: 8 })).toMatchObject({
+        state: 'done', value: '9 shots',
+      });
+    });
+
+    it('is blocked only when the app did not boot', () => {
+      expect(visual({ shots: 0, ok: 0, issues: 0, unsure: 0, bootFailed: true })).toMatchObject({
+        state: 'blocked', value: 'boot', detail: 'the app did not boot for the visual audit',
+      });
+    });
   });
 });
 
@@ -205,5 +261,28 @@ describe('formatDeliverySummary', () => {
 
   it('is empty for no steps', () => {
     expect(formatDeliverySummary([])).toBe('');
+  });
+});
+
+// Regression: a completed mission's Integrated step read one more PR than the
+// all_prs_merged evidence — a CI-retry task pushes to its parent's PR, and the
+// step counted worker rows instead of PRs.
+describe('missionPrCount', () => {
+  const url = (n: number) => `https://github.example/org/repo/pull/${n}`;
+
+  it('counts a PR a parent and its CI retry both carry once', () => {
+    const tasks = [
+      { id: 'parent', workers: [{ prUrl: url(1), mergedAt: '2026-03-01T00:00:00Z' }] },
+      { id: 'retry', workers: [{ prUrl: url(1), mergedAt: null }] },
+      { id: 'other', workers: [{ prUrl: url(2), mergedAt: '2026-03-02T00:00:00Z' }] },
+      { id: 'no-pr', workers: [{ prUrl: null }] },
+    ];
+    expect(missionPrCount(tasks)).toBe(2);
+    const integrated = buildDeliverySteps({ ...base, missionStatus: 'completed', prCount: missionPrCount(tasks) })[0];
+    expect(integrated.detail).toContain('2 PRs');
+  });
+
+  it('is zero for a mission with no PRs', () => {
+    expect(missionPrCount([{ id: 'a', workers: [] }, { id: 'b', workers: null }])).toBe(0);
   });
 });

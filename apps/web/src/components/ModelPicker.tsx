@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { isModelListed } from '@buildd/core/model-tier-liveness';
 
 /** Legacy alias → canonical tier */
 const ALIAS_MAP: Record<string, string> = {
@@ -41,7 +42,7 @@ export function detectStalePin(
   if (KNOWN_TIERS.has(normalized)) return false;
   if (!catalogComplete) return false;
   if (liveModelIds.length === 0) return false;
-  return !liveModelIds.includes(normalized);
+  return !isModelListed(normalized, liveModelIds);
 }
 
 interface ModelEntry {
@@ -118,7 +119,8 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
   return (
     <div className="space-y-1.5">
       {/* Primary: Tier selector */}
-      <div className="flex gap-1" data-testid="model-tier-selector">
+      {/* A grid, not flex: four equal cells that shrink with the column instead of overflowing at 320px. */}
+      <div className="grid grid-cols-4 gap-1" data-testid="model-tier-selector">
         {TIER_OPTIONS.map(tier => {
           const isSelected = normalized === tier.value;
           return (
@@ -129,7 +131,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
               data-tier={tier.value}
               data-selected={isSelected}
               onClick={() => onChange(tier.value)}
-              className={`flex-1 px-2 py-1.5 text-[12px] font-medium rounded border transition-colors ${
+              className={`min-w-0 min-h-11 md:min-h-0 px-1 sm:px-2 py-1.5 text-[12px] font-medium rounded border transition-colors truncate ${
                 isSelected
                   ? 'bg-text-primary text-surface-1 border-text-primary'
                   : 'bg-surface-1 text-text-secondary border-border-default hover:text-text-primary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed'
@@ -156,7 +158,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
             <line x1="12" y1="9" x2="12" y2="13" />
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
-          Pinned model may be unavailable — will fall back to tier
+          Pinned model may be unavailable. The agent falls back to the tier.
         </div>
       )}
 
@@ -178,7 +180,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
         type="button"
         disabled={disabled}
         onClick={() => setShowAdvanced(!showAdvanced)}
-        className="flex items-center gap-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+        className="flex items-center gap-1 min-h-11 md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
         data-testid="advanced-toggle"
       >
         <svg
@@ -203,7 +205,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           )}
           {!modelsLoading && modelsFetched && models.length === 0 && (
             <p className="text-[11px] text-text-muted">
-              No models available yet — set this workspace&apos;s model tiers in Settings.
+              No models yet. Set this workspace&apos;s model tiers in Settings.
             </p>
           )}
           {models.length > 0 && (
@@ -221,19 +223,19 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
                   }`}
                 >
                   <span className="block truncate">{m.displayName}</span>
-                  <span className="block font-mono text-[10px] text-text-muted truncate">{m.id}</span>
+                  <span className="block font-mono text-[11px] md:text-[10px] text-text-muted truncate">{m.id}</span>
                 </button>
               ))}
             </div>
           )}
           {!modelsLoading && modelsFetched && models.length > 0 && !catalogComplete && (
             <p className="text-[11px] text-text-muted" data-testid="tier-only-hint">
-              Showing your configured tiers. Connect an agent backend in Settings →
-              Agent Backends to browse every model release.
+              Showing your configured tiers. Connect Claude or Codex under Settings,
+              Runners to see every model release.
             </p>
           )}
-          <p className="text-[10px] text-text-muted">
-            Pin to a specific model release. Falls back to tier if unavailable.
+          <p className="text-[11px] md:text-[10px] text-text-muted">
+            Pin a specific model release. If it&apos;s unavailable, the agent uses the tier.
           </p>
         </div>
       )}

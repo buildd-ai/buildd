@@ -111,18 +111,18 @@ export default function VercelSection({ teams }: Props) {
   return (
     <SettingsSection title="Vercel">
         <p className="text-sm text-text-secondary">
-          Watcher uses these tokens to read your Vercel deployment status and alert when prod is unhealthy. Generate one at{' '}
+          The watcher uses these tokens to read your Vercel deployment status and alert you when prod is unhealthy. Create one at{' '}
           <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">
             vercel.com/account/tokens
           </a>{' '}
-          with read access. Stored encrypted at the team level — never sent to runners.
+          with read access. buildd stores it encrypted at the team level and never sends it to runners.
         </p>
 
         {justAdded && (
           <div className="notice notice-ok space-y-2">
             <div className="font-medium text-status-success">Token ready</div>
             <p className="text-sm text-text-secondary">
-              Attach it to a watched project to start receiving prod-deploy alerts. Open the project at <strong>/app/health</strong>, set its Vercel project ID, and pick this token from the dropdown.
+              Attach it to a watched project to get prod-deploy alerts: open the project at <strong>/app/health</strong>, set its Vercel project ID, and pick this token.
             </p>
             <div className="flex items-center gap-3">
               <Link
@@ -156,7 +156,7 @@ export default function VercelSection({ teams }: Props) {
         {loading ? (
           <div className="text-sm text-text-tertiary">Loading…</div>
         ) : tokens.length === 0 ? (
-          <div className="text-sm text-text-tertiary">No tokens stored yet.</div>
+          <div className="text-sm text-text-tertiary">No tokens yet.</div>
         ) : (
           <ul className="space-y-2">
             {tokens.map((t) => (
@@ -197,7 +197,7 @@ export default function VercelSection({ teams }: Props) {
             <input
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder="Label (e.g. 'Personal — read deployments')"
+              placeholder="Label (e.g. 'Personal · read deployments')"
               className="w-full h-10 px-3 bg-surface text-sm"
             />
             <input

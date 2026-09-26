@@ -242,15 +242,15 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
             <select
               value={strategy}
               onChange={(e) => setStrategy(e.target.value as StrategyOption)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             >
-              <option value="none">None — releases not configured</option>
+              <option value="none">None · releases off</option>
               <option value="branch_merge">Branch merge (merge source → production)</option>
               <option value="workflow_dispatch">Workflow dispatch (trigger GitHub Actions)</option>
-              <option value="script" disabled>Script — coming soon</option>
+              <option value="script" disabled>Script · coming soon</option>
             </select>
             {strategy === 'none' && (
-              <p className="text-xs text-text-muted mt-1">No automatic or manual releases will run for this workspace.</p>
+              <p className="text-xs text-text-muted mt-1">buildd won&apos;t run releases for this workspace.</p>
             )}
           </div>
 
@@ -264,7 +264,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={ref}
                   onChange={(e) => setRef(e.target.value)}
                   placeholder="dev"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
               <div>
@@ -274,7 +274,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={prodBranch}
                   onChange={(e) => setProdBranch(e.target.value)}
                   placeholder="main"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
             </div>
@@ -290,7 +290,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={workflowFile}
                   onChange={(e) => setWorkflowFile(e.target.value)}
                   placeholder="release.yml"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
               <div>
@@ -300,7 +300,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   value={ref}
                   onChange={(e) => setRef(e.target.value)}
                   placeholder="dev"
-                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm font-mono"
+                  className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm font-mono"
                 />
               </div>
             </div>
@@ -317,7 +317,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       value: 'on_mission_complete' as ReleaseTrigger,
                       label: 'When mission completes',
                       badge: 'recommended',
-                      help: 'Releases once after all tasks in a mission finish. Batches your work into one ship.',
+                      help: 'Releases once after every task in a mission finishes, as one ship.',
                     },
                     {
                       value: 'every_merge' as ReleaseTrigger,
@@ -327,13 +327,13 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     {
                       value: 'manual' as ReleaseTrigger,
                       label: 'Manual only',
-                      help: "Nothing releases automatically. Use the 'Release now' action on mission detail or Home, or trigger_release via MCP.",
+                      help: "You release by hand: 'Release now' on Home, or trigger_release over MCP.",
                     },
                     {
                       value: 'scheduled' as ReleaseTrigger,
                       label: 'Scheduled',
                       disabled: true,
-                      help: 'Phase 2 — coming soon. Nightly or periodic releases on a cron schedule.',
+                      help: 'Not available yet. Releases on a cron schedule, such as nightly.',
                     },
                   ] as Array<{
                     value: ReleaseTrigger;
@@ -366,12 +366,12 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{opt.label}</span>
                         {opt.badge && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary/15 text-primary">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] md:text-[10px] font-semibold bg-primary/15 text-primary">
                             {opt.badge}
                           </span>
                         )}
                         {opt.disabled && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-4 text-text-muted">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] md:text-[10px] font-medium bg-surface-4 text-text-muted">
                             coming soon
                           </span>
                         )}
@@ -383,7 +383,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               </div>
               {trigger === 'on_mission_complete' && (
                 <p className="text-xs text-text-muted mt-2">
-                  Note: tasks not in a mission will not trigger a release with this setting.
+                  Tasks outside a mission don&apos;t trigger a release with this setting.
                 </p>
               )}
             </div>
@@ -398,9 +398,9 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               <span className="text-status-success font-medium">Configured ✓</span>
             ) : (
               <span className="text-amber-600 font-medium">
-                Not configured —{' '}
-                <Link href="/app/settings" className="underline hover:no-underline">
-                  Configure in Connections →
+                Not configured ·{' '}
+                <Link href="/app/settings/github" className="underline hover:no-underline">
+                  Add one in Settings, GitHub and Vercel
                 </Link>
               </span>
             )}
@@ -460,14 +460,14 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
             {recentReleases.length > 0 && (
               <div>
                 <div className="text-xs font-medium text-text-secondary mb-2">Recent releases</div>
-                <div className="rounded-md border border-border-default overflow-hidden">
-                  <table className="w-full text-xs">
+                <div className="rounded-md border border-border-default overflow-x-auto">
+                  <table className="w-full table-fixed text-xs">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left font-medium text-text-secondary">When</th>
+                        <th className="w-[88px] sm:w-[96px] px-3 py-2 text-left font-medium text-text-secondary">When</th>
                         <th className="px-3 py-2 text-left font-medium text-text-secondary">Task</th>
-                        <th className="px-3 py-2 text-left font-medium text-text-secondary">Commit</th>
-                        <th className="px-3 py-2 text-left font-medium text-text-secondary">Status</th>
+                        <th className="hidden sm:table-cell w-[80px] px-3 py-2 text-left font-medium text-text-secondary">Commit</th>
+                        <th className="w-[104px] px-3 py-2 text-left font-medium text-text-secondary">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-default">
@@ -476,7 +476,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                           <td className="px-3 py-2 text-text-secondary whitespace-nowrap" title={r.completedAt}>
                             {relativeTime(r.completedAt)}
                           </td>
-                          <td className="px-3 py-2 max-w-[180px] truncate">
+                          <td className="px-3 py-2 truncate">
                             <Link
                               href={`/app/tasks/${r.taskId}`}
                               className="text-primary hover:underline truncate block"
@@ -484,7 +484,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                               {r.taskTitle || r.taskId.slice(0, 8)}
                             </Link>
                           </td>
-                          <td className="px-3 py-2 font-mono text-text-secondary">
+                          <td className="hidden sm:table-cell px-3 py-2 font-mono text-text-secondary">
                             {r.sha ? r.sha.slice(0, 7) : '—'}
                           </td>
                           <td className="px-3 py-2">

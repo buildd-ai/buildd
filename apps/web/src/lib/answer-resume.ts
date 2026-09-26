@@ -249,7 +249,7 @@ export interface ContinuationParentTask {
   priority?: number | null;
   outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto' | null;
   outputSchema?: Record<string, unknown> | null;
-  category?: 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | null;
+  category?: 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research' | null;
   pathManifest?: string[] | null;
   backend?: 'claude' | 'codex' | null;
   context?: unknown;

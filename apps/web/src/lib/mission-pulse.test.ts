@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { groupTasksByPhase } from './flight-strip-nav';
+import { resolveReviewerGate } from './reviewer-gate';
 import {
   buildPulseSegments,
   deriveFeedTaskState,
@@ -8,7 +9,11 @@ import {
   orderDeliverables,
   PULSE_FOLD_THRESHOLD,
   PULSE_STATE_TOKEN,
+  PULSE_STATE_GLYPH,
   PR_STATE_TOKEN,
+  buildPulseCaption,
+  missionDeliverableCounts,
+  pulseDoneCounts,
   type FeedPrState,
   type MissionFeedTaskInput,
 } from './mission-pulse';
@@ -125,6 +130,30 @@ describe('deriveFeedTaskState × PR lifecycle (completed task)', () => {
   }
 });
 
+describe('deriveFeedTaskState — a just-green PR is still merging (shared with the reviewer gate)', () => {
+  const NOW = Date.parse('2026-01-01T12:00:00Z');
+  const green = (agoMs: number) => t(`green-${agoMs}`, {
+    status: 'completed',
+    worker: { status: 'completed', prNumber: 9, prLifecycleStatus: 'ci_green', updatedAt: new Date(NOW - agoMs) },
+  });
+  it('inside the auto-merge grace window the platform owns the merge: moving, not needs-you', () => {
+    expect(deriveFeedTaskState({ task: green(20_000), attempts: [] }, { now: NOW })).toMatchObject({ state: 'moving', needsYou: null });
+  });
+  it('past the grace window the merge rail held it: needs you', () => {
+    expect(deriveFeedTaskState({ task: green(10 * 60_000), attempts: [] }, { now: NOW })).toMatchObject({ state: 'needs_you', needsYou: 'pr' });
+  });
+  it('agrees with resolveReviewerGate on both sides of the boundary', () => {
+    for (const ago of [0, 20_000, 4 * 60_000, 6 * 60_000, 60 * 60_000]) {
+      const gate = resolveReviewerGate({
+        policyTier: 'auto-threshold', escalationReason: null, approvalSummary: null, reviewerTask: null,
+        now: new Date(NOW), prLifecycleStatus: 'ci_green', prLifecycleUpdatedAt: new Date(NOW - ago),
+      } as any);
+      const feed = deriveFeedTaskState({ task: green(ago), attempts: [] }, { now: NOW });
+      expect(feed.state === 'needs_you').toBe(gate.actor === 'human');
+    }
+  });
+});
+
 describe('deriveFeedTaskState', () => {
   const row = (task: MissionFeedTaskInput, attempts: MissionFeedTaskInput[] = []) => ({ task, attempts });
 
@@ -198,7 +227,7 @@ describe('buildPulseSegments', () => {
       t('f', { status: 'failed' }),
     ]);
     expect(segs.map(s => s.state)).toEqual(['needs_you', 'moving', 'queued', 'done', 'needs_you']);
-    expect(PULSE_STATE_TOKEN).toMatchObject({ needs_you: 'accent', moving: 'info', queued: 'border', done: 'success', failed: 'error' });
+    expect(PULSE_STATE_TOKEN).toMatchObject({ needs_you: 'warning', moving: 'accent', queued: 'border', done: 'success', failed: 'error' });
   });
 
   it('counts only deliverable rows: attempts and cancelled re-creations add no segments (D1)', () => {
@@ -225,5 +254,41 @@ describe('buildPulseSegments', () => {
     expect(over[0]).toMatchObject({ kind: 'phase', phaseLabel: 'THINK', fill: 1, state: 'done' });
     expect(over[1]).toMatchObject({ phaseLabel: 'BUILD', fill: 0, state: 'queued' });
     expect(over.map(s => s.gapBefore)).toEqual([false, true, true]);
+  });
+});
+
+// ─── F3: one count definition ────────────────────────────────────────────────
+
+describe('F3: n/N excludes cancelled rows', () => {
+  it('pulseDoneCounts: cancelled is neither done nor in N', () => {
+    const segs = buildPulseSegments([
+      t('a', { status: 'completed' }), t('b', { status: 'cancelled' }), t('c'), t('d', { status: 'failed' }),
+    ]);
+    expect(segs.map(s => s.state)).toEqual(['done', 'skipped', 'queued', 'needs_you']);
+    expect(pulseDoneCounts(segs)).toEqual({ done: 1, total: 3 });
+    expect(buildPulseCaption(segs)).toBe('1/3');
+  });
+
+  it('a folded phase counts the same way', () => {
+    const many = Array.from({ length: PULSE_FOLD_THRESHOLD + 2 }, (_, i) =>
+      t(`x${i}`, { ...phase(0, 'BUILD'), status: i === 0 ? 'cancelled' : i < 11 ? 'completed' : 'pending' }));
+    const segs = buildPulseSegments(many);
+    expect(segs).toHaveLength(1);
+    expect(pulseDoneCounts(segs)).toEqual({ done: 10, total: PULSE_FOLD_THRESHOLD + 1 });
+  });
+
+  it('the caption is empty with no countable rows (F7a: never "0/0")', () => {
+    expect(buildPulseCaption([])).toBe('');
+    expect(buildPulseCaption(buildPulseSegments([t('a', { status: 'cancelled' })]))).toBe('');
+    expect(buildPulseCaption([], { liveWorkers: 2 })).toBe('2 live');
+  });
+
+  it('missionDeliverableCounts is the same definition, from tasks', () => {
+    const tasks = [t('a', { status: 'completed' }), t('b', { status: 'cancelled' }), t('c')];
+    expect(missionDeliverableCounts(tasks)).toEqual({ done: 1, total: 2, cancelled: 1 });
+  });
+
+  it('cancelled has its own glyph, never the queued one', () => {
+    expect(PULSE_STATE_GLYPH.skipped).not.toBe(PULSE_STATE_GLYPH.queued);
   });
 });

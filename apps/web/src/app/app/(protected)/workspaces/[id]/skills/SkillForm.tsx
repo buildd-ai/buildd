@@ -5,15 +5,11 @@ import { useRouter } from 'next/navigation';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE } from '@/lib/role-tool-scope';
+import { ColorSwatches, ROLE_COLOR_VALUES } from '@/components/ColorSwatches';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
   'WebSearch', 'WebFetch', 'Agent', 'NotebookEdit',
-];
-
-const COLOR_PALETTE = [
-  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
-  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
 
 interface Props {
@@ -44,7 +40,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
   const [canDelegateTo, setCanDelegateTo] = useState<string[]>([]);
   const [background, setBackground] = useState(false);
   const [maxTurns, setMaxTurns] = useState('');
-  const [color, setColor] = useState(COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)]);
+  const [color, setColor] = useState(ROLE_COLOR_VALUES[Math.floor(Math.random() * ROLE_COLOR_VALUES.length)]);
 
   function handleNameChange(value: string) {
     setName(value);
@@ -122,7 +118,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               type="text"
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Builder"
               required
             />
@@ -134,11 +130,11 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               type="text"
               value={slug}
               onChange={(e) => handleSlugChange(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
               placeholder="builder"
               pattern="^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
             />
-            <p className="text-xs text-text-muted mt-1">Auto-generated from name.</p>
+            <p className="text-xs text-text-muted mt-1">Generated from the name.</p>
           </div>
 
           <div>
@@ -147,7 +143,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               placeholder="Ship high-quality code"
             />
           </div>
@@ -158,7 +154,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={10}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
               placeholder="You are Builder, a senior software engineer…"
               required
             />
@@ -179,7 +175,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
             <label className="block text-sm font-medium mb-1.5">Agent backend</label>
             <BackendSelect value={defaultBackend} onChange={setDefaultBackend} inheritLabel="Inherit" />
             <p className="text-xs text-text-muted mt-1">
-              Default backend for tasks routed to this role. Requires that backend&apos;s credentials in Settings.
+              Backend for tasks routed to this role. Add that backend&apos;s credentials in Settings.
             </p>
           </div>
 
@@ -195,7 +191,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
                       key={opt.slug}
                       type="button"
                       onClick={() => toggleDelegate(opt.slug)}
-                      className={`px-3 py-1 rounded-full text-[12px] font-medium border transition-colors ${
+                      className={`min-h-11 md:min-h-0 px-3 py-1 rounded-full text-[12px] font-medium border transition-colors ${
                         active
                           ? 'bg-status-success/10 border-status-success text-status-success'
                           : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
@@ -225,9 +221,9 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
                     key={tool}
                     type="button"
                     onClick={() => toggleTool(tool)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-colors ${
+                    className={`min-h-11 md:min-h-0 px-2.5 md:px-2 py-0.5 rounded text-[11px] font-mono border transition-colors ${
                       active
-                        ? 'bg-text-primary text-white border-text-primary'
+                        ? 'bg-text-primary text-surface-1 border-text-primary'
                         : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
                     }`}
                   >
@@ -256,7 +252,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
                 type="number"
                 value={maxTurns}
                 onChange={(e) => setMaxTurns(e.target.value)}
-                className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm"
+                className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                 placeholder="--"
                 min="1"
               />
@@ -266,19 +262,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
           {/* Color */}
           <div>
             <label className="block text-sm font-medium mb-1.5">Color</label>
-            <div className="flex gap-2">
-              {COLOR_PALETTE.map(c => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  className={`w-6 h-6 rounded-full transition-all ${
-                    color === c ? 'ring-2 ring-offset-2 ring-text-primary scale-110' : 'hover:scale-110'
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
+            <ColorSwatches value={color} onChange={setColor} />
           </div>
         </div>
       </div>

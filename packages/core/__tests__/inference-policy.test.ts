@@ -102,3 +102,15 @@ describe('the capability registry', () => {
     expect(isInferenceCapability(42)).toBe(false);
   });
 });
+
+describe('the chat capability', () => {
+  it('exists, has no agent fallback, and is off by default', () => {
+    // Chat never runs on a runner or a seat (docs/design/agent-chat.md), so
+    // turning it off turns the feature off. Pasting a key never starts spend.
+    expect(INFERENCE_CAPABILITIES.chat.fallback).toBe('none');
+    expect(isInferenceEnabled('chat', null)).toBe(false);
+    expect(isInferenceEnabled('chat', [])).toBe(false);
+    expect(isInferenceEnabled('chat', ['criteria_grading'])).toBe(false);
+    expect(isInferenceEnabled('chat', ['chat'])).toBe(true);
+  });
+});

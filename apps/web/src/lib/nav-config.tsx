@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { settingsBackHref, settingsItemFor } from './settings-nav';
 
 /**
  * Single source of truth for primary navigation (unified-app-ia §D.2).
@@ -12,6 +13,12 @@ export interface NavItem {
   /** Shown in the desktop sidebar only; filtered out of the mobile bottom tab bar
    * (which is kept to a small tab count — Initiatives is reached via the Home rail). */
   desktopOnly?: boolean;
+  /**
+   * Shown only when agent chat is available to this person (the team's `chat`
+   * capability is on and a provider key resolves). With chat off nothing about
+   * the nav changes (docs/design/agent-chat.md, P1 acceptance).
+   */
+  requiresChat?: boolean;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -22,6 +29,16 @@ export const NAV_ITEMS: NavItem[] = [
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <circle cx="12" cy="12" r="3" />
         <circle cx="12" cy="12" r="9" strokeDasharray="2 4" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Chat',
+    href: '/app/chat',
+    requiresChat: true,
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 5h16v11H9l-5 4z" />
       </svg>
     ),
   },
@@ -93,6 +110,34 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+export interface NavContext {
+  /** Agent chat is available to this person. */
+  chat: boolean;
+  /** Members get Chat first; operators keep Home (the fleet) first. */
+  audience: 'member' | 'operator';
+}
+
+/** The mobile tab bar holds at most this many tabs. */
+export const MOBILE_TAB_LIMIT = 5;
+
+/**
+ * The nav for one person. Without chat it is exactly NAV_ITEMS as before. With
+ * chat, a member's first item is Chat; on the phone, Team steps off the tab
+ * bar to keep it at five (it stays in the desktop rail).
+ */
+export function navItemsFor(ctx: NavContext, surface: 'desktop' | 'mobile'): NavItem[] {
+  let items = NAV_ITEMS.filter(i => !i.requiresChat || ctx.chat);
+  if (ctx.chat && ctx.audience === 'member') {
+    const chat = items.find(i => i.requiresChat);
+    items = chat ? [chat, ...items.filter(i => i !== chat)] : items;
+  }
+  if (surface === 'mobile') {
+    items = items.filter(i => !i.desktopOnly);
+    if (items.length > MOBILE_TAB_LIMIT) items = items.filter(i => i.href !== '/app/team');
+  }
+  return items;
+}
+
 /**
  * Top-level pages get a mobile header (title + team switcher + account menu).
  * Detail pages return null — they render their own headers.
@@ -107,8 +152,37 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/team') return 'Team';
   if (pathname === '/app/health') return 'Health';
   if (pathname === '/app/artifacts') return 'Artifacts';
-  if (pathname === '/app/you') return 'Account';
-  if (pathname === '/app/settings') return 'Connections';
-  if (pathname === '/app/connections') return 'Connections';
+  if (pathname === '/app/settings') return 'Settings';
+  // Each settings section is a full page on a phone (list → detail); the
+  // header names it and carries the back arrow (mobileBackHref).
+  const section = settingsItemFor(pathname);
+  if (section) return section.label;
   return null;
+}
+
+/**
+ * Where the mobile header's back arrow points, or null for no arrow. Only
+ * settings sections have one: they are the detail half of list → detail, and
+ * the phone has no sub-nav to get back to the list.
+ */
+export function mobileBackHref(pathname: string): string | null {
+  return settingsBackHref(pathname);
+}
+
+/**
+ * Top-level pages whose server component reads `?workspace=`. The header
+ * WorkspaceFilter only renders here — anywhere else it would be a control that
+ * changes the URL and nothing else. nav-config.test.tsx checks each page.tsx.
+ */
+export const WORKSPACE_FILTERED_PAGES: ReadonlySet<string> = new Set([
+  '/app/home',
+  '/app/dashboard', // redirect-only (next.config.mjs → /app/home); the header still renders mid-redirect
+  '/app/missions',
+  '/app/releases',
+  '/app/tasks',
+  '/app/health',
+]);
+
+export function showsWorkspaceFilter(pathname: string): boolean {
+  return WORKSPACE_FILTERED_PAGES.has(pathname);
 }

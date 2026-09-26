@@ -113,6 +113,13 @@ const mockGithubApi = mock(() => Promise.resolve({ state: 'open', merged: false,
 
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
+// Sibling-row merge stamp; its predicate is covered in pr-merge-stamp.test.ts.
+const mockStampPrMergedOnAllRows = mock(async (_input: any) => [] as Array<{ id: string; taskId: string | null }>);
+mock.module('@/lib/pr-merge-stamp', () => ({
+  stampPrMergedOnAllRows: mockStampPrMergedOnAllRows,
+  noRowOfPrMerged: () => ({ op: 'noRowOfPrMerged' }),
+}));
+
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
 import {
@@ -186,6 +193,23 @@ describe('refreshWorkerMergeStateIfStale', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ prLifecycleStatus: 'merged' }),
     );
+  });
+
+  it('stamps the merge on every other row carrying the PR (read-through tier)', async () => {
+    mockStampPrMergedOnAllRows.mockClear();
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' },
+      456,
+    );
+
+    expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
+      prUrl: 'https://github.com/owner/repo/pull/55',
+      prNumber: 55,
+      mergedAt: new Date('2026-03-01T10:00:00Z'),
+    }));
   });
 
   it('returns false when PR is open (not merged)', async () => {
@@ -318,6 +342,24 @@ describe('reconcileStalePrWorkers', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ prLifecycleStatus: 'merged' }),
     );
+  });
+
+  it('stamps the merge on every other row carrying the PR (cron tier)', async () => {
+    mockStampPrMergedOnAllRows.mockClear();
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, prUrl: 'https://github.com/owner/repo/pull/42', workspaceId: 'ws1' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      mergedAt: new Date('2026-01-01T00:00:00Z'),
+    }));
   });
 
   it('AC-4: advances prLastVerifiedAt alongside prLastCheckedAt when GitHub confirms merged', async () => {

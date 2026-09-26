@@ -7,6 +7,7 @@ import {
   missionIntegrationBase,
 } from './mission-integration';
 import { isSurfaceAuditTask } from './surface-audit';
+import { countDistinctPrs, deriveLineageSupersession, prShipState, summarizePrShipStates } from './pr-shipped';
 export type { DerivedMetric } from './derived-metric';
 
 // ─── Task type detection ───────────────────────────────────────────────────────
@@ -212,6 +213,9 @@ export function validateGoalCriteria(
             `Prefer a command criterion: a script that exits 0 needs no model to grade it.`
           );
         }
+        if (raw.grader !== undefined && !(['auto', 'api', 'runner'] as unknown[]).includes(raw.grader)) {
+          return `${at}.grader must be one of "auto", "api", "runner" (got ${JSON.stringify(raw.grader)})`;
+        }
         break;
       }
     }
@@ -279,11 +283,18 @@ export function evaluateGoalCriteria(
       taskClass?: string | null;
       creationSource?: string | null;
       category?: string | null;
+      /** Attempt lineage — lets a closed PR be superseded by its own retry's merged PR. */
+      parentTaskId?: string | null;
     }>;
     workers: Array<{
       taskId?: string | null;
       mergedAt?: string | Date | null;
       prUrl?: string | null;
+      prNumber?: number | null;
+      /** 'closed' separates a dead PR from an open one in the failure detail. */
+      prLifecycleStatus?: string | null;
+      /** Recorded supersession edge (record_pr_supersession) — counts as shipped. */
+      supersededByPrNumber?: number | null;
       branchName?: string | null;
       /**
        * The PR's base ref as GitHub reports it. Null means **unknown**, never
@@ -347,21 +358,41 @@ export function evaluateGoalCriteria(
           break;
         }
 
-        const unmerged = prWorkers.filter(w => !w.mergedAt);
+        // "Shipped" is the predicate `canCompleteMission` uses (pr-shipped.ts):
+        // merged, or closed with a supersession edge naming a merged PR —
+        // recorded, or derived from the task's own attempt lineage. Judged per
+        // PR, not per worker row, so a PR two sessions pushed to is one PR.
+        const prs = summarizePrShipStates(deriveLineageSupersession(context.tasks, prWorkers));
+        const unmerged = prs.filter(p => p.state === 'open' || p.state === 'closed_unsuperseded');
         if (unmerged.length > 0) {
           // Covers the mission PR too: while it is open this reads `fail`, the
           // same way an open task PR always has, and it clears when the PR
           // merges rather than needing anything to re-evaluate it.
           verdict = 'fail';
-          evidence = `${unmerged.length} PR(s) not yet merged${branchNote}`;
+          const name = (p: (typeof prs)[number]) => (p.prNumber ? `#${p.prNumber}` : p.prUrl);
+          const open = unmerged.filter(p => p.state === 'open');
+          const closed = unmerged.filter(p => p.state === 'closed_unsuperseded');
+          const parts: string[] = [];
+          if (open.length > 0) parts.push(`open: ${open.map(name).join(', ')}`);
+          if (closed.length > 0) {
+            parts.push(
+              `closed, no supersession recorded: ${closed.map(name).join(', ')}`
+                + ' (record_pr_supersession if the work landed under another merged PR)',
+            );
+          }
+          evidence = `${unmerged.length} PR(s) not yet merged — ${parts.join('; ')}${branchNote}`;
           break;
         }
+        const supersededCount = prs.filter(p => p.state === 'superseded').length;
+        const supersededNote = supersededCount > 0
+          ? ` (${supersededCount} closed PR(s) superseded by a merged PR)`
+          : '';
 
         if (!integrationBase) {
           // Not opted in — exactly the pre-A' answer, including for a mission
           // whose base refs happen to name a `mission/…` branch.
           verdict = 'pass';
-          evidence = `All ${prWorkers.length} PR(s) merged${branchNote}`;
+          evidence = `All ${prs.length} PR(s) merged${supersededNote}${branchNote}`;
           break;
         }
 
@@ -388,16 +419,17 @@ export function evaluateGoalCriteria(
           verdict = 'UNVERIFIED';
           const anyMissionPr = prWorkers.some(isMissionPrWorker);
           evidence = anyMissionPr
-            ? `All ${prWorkers.length} PR(s) merged, but the mission PR's base ref does not show it `
+            ? `All ${prs.length} PR(s) merged, but the mission PR's base ref does not show it `
               + `landing outside \`${integrationBase}\``
-            : `All ${prWorkers.length} PR(s) merged into \`${integrationBase}\`, but the mission has `
+            : `All ${prs.length} PR(s) merged into \`${integrationBase}\`, but the mission has `
               + `no PR into trunk yet — nothing has reached the default branch`;
           evidence += branchNote;
           break;
         }
 
         verdict = 'pass';
-        const taskPrCount = prWorkers.filter(w => !isMissionPrWorker(w)).length;
+        // Distinct PRs: a CI retry pushing to its parent's PR is one PR.
+        const taskPrCount = countDistinctPrs(prWorkers.filter(w => !isMissionPrWorker(w)));
         evidence = `All ${taskPrCount} task PR(s) merged into \`${integrationBase}\`, and the mission PR `
           + `merged into \`${landedOnTrunk[0].prBaseRef}\`${branchNote}`;
         break;
@@ -422,16 +454,17 @@ export function evaluateGoalCriteria(
         // protection — it only stops a pending audit from pinning this
         // criterion at FAIL, which left the organizer unable to either plan
         // or report completion and re-dispatched it on every heartbeat.
-        const deliverable = context.tasks.filter(
-          t => isDeliverableTask(t) && !isSurfaceAuditTask(t.title ?? ''),
-        );
-        const open = deliverable.filter(t =>
-          !['completed', 'cancelled', 'failed'].includes(t.status)
-        );
+        // Bookkeeping (orchestrator ticks, criteria evaluations, planning
+        // passes) and attempts are never deliverables — `isNoOpenTasksCandidate`
+        // is the one predicate, shared with the surfaces that name blockers.
+        const deliverable = context.tasks.filter(isNoOpenTasksCandidate);
+        const open = deliverable.filter(t => !TERMINAL_DELIVERABLE_STATUSES.has(t.status));
         verdict = open.length === 0 ? 'pass' : 'fail';
+        // Titles, not bare statuses: the stored evidence is read long after the
+        // run, and "pending, pending" names nothing a reader can go and close.
         evidence = open.length === 0
           ? `All ${deliverable.length} deliverable task(s) are closed`
-          : `${open.length} task(s) still open: ${open.map(t => t.status).join(', ')}`;
+          : `${open.length} task(s) still open: ${open.map(t => (t.title ? `${t.title} (${t.status})` : t.status)).join(', ')}`;
         break;
       }
 
@@ -460,7 +493,8 @@ export function evaluateGoalCriteria(
       }
 
       case 'description': {
-        // Free-form criteria are evaluated by LLM in the evaluate route.
+        // Free-form criteria are graded by `mission-criteria-eval` (an inference
+        // call or a runner task, per the criterion's grader).
         // The pure evaluator marks NOT_EVALUATED so the route can distinguish
         // "never checked" from UNVERIFIED ("checked, ambiguous evidence").
         verdict = 'NOT_EVALUATED';
@@ -496,85 +530,6 @@ export function evaluateGoalCriteria(
     overall: recalculateOverall(results),
     criteria: results,
   };
-}
-
-/**
- * Evaluate an initiative's KPIs.
- *
- * Accepts an optional MetricResolver; callers inject the DB-backed default resolver
- * (buildDefaultResolver) for production, or a mock for unit tests. Without a resolver
- * every KPI returns UNVERIFIED. Non-blocking KPIs are evaluated and stored but do not
- * affect the overall verdict.
- */
-export async function evaluateInitiativeKPIs(
-  initiativeId: string,
-  kpis: InitiativeKPI[],
-  opts: {
-    evaluatedBy: 'auto' | 'manual' | 'mcp';
-    now?: string;
-    resolver?: import('./initiative-metric-registry').MetricResolver;
-  },
-): Promise<InitiativeKPIState> {
-  const evaluatedAt = opts.now ?? new Date().toISOString();
-  const results: InitiativeKPIState['kpis'] = [];
-
-  for (let i = 0; i < kpis.length; i++) {
-    const kpi = kpis[i];
-
-    if (!opts.resolver) {
-      results.push({
-        index: i,
-        name: kpi.name,
-        verdict: 'UNVERIFIED',
-        evidence: 'no resolver provided — metric queries require a database connection',
-      });
-      continue;
-    }
-
-    const result = await opts.resolver(kpi.metric, initiativeId);
-
-    if ('unavailable' in result) {
-      results.push({
-        index: i,
-        name: kpi.name,
-        verdict: 'UNVERIFIED',
-        evidence: result.unavailable,
-      });
-    } else {
-      const passes = applyOperator(result.value, kpi.operator, kpi.threshold);
-      results.push({
-        index: i,
-        name: kpi.name,
-        verdict: passes ? 'pass' : 'fail',
-        observedValue: result.value,
-      });
-    }
-  }
-
-  // Overall: all blocking KPIs must pass. Non-blocking KPIs are informational.
-  const blockingResults = results.filter((_, i) => kpis[i].blocking !== false);
-  const overall: CriterionVerdict =
-    blockingResults.length === 0 ? 'pass'
-    : blockingResults.every(r => r.verdict === 'pass') ? 'pass'
-    : blockingResults.some(r => r.verdict === 'fail') ? 'fail'
-    : 'UNVERIFIED';
-
-  return { evaluatedAt, evaluatedBy: opts.evaluatedBy, overall, kpis: results };
-}
-
-function applyOperator(
-  value: number,
-  operator: InitiativeKPI['operator'],
-  threshold: number,
-): boolean {
-  switch (operator) {
-    case 'gt':  return value > threshold;
-    case 'gte': return value >= threshold;
-    case 'lt':  return value < threshold;
-    case 'lte': return value <= threshold;
-    case 'eq':  return value === threshold;
-    case 'neq': return value !== threshold;
-  }
 }
 
 // ─── Criteria/KPI gate presentation ──────────────────────────────────────────
@@ -837,6 +792,16 @@ export function isDeliverableTask(task: {
 const TERMINAL_DELIVERABLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
 
 /**
+ * True when the `no_open_tasks` criterion counts this task at all: a
+ * deliverable (`isDeliverableTask`, so bookkeeping and attempts never count)
+ * that is not the auto-appended `[surface audit]` check. The criterion fails
+ * while any such task is open; surfaces naming what holds it use this too.
+ */
+export function isNoOpenTasksCandidate(task: Parameters<typeof isDeliverableTask>[0]): boolean {
+  return isDeliverableTask(task) && !isSurfaceAuditTask(task.title ?? '');
+}
+
+/**
  * True when a deliverable task (`isDeliverableTask`) is still open. This is the
  * `hasPendingDeliverableWork` input `deriveMissionHealth` requires before it
  * will report `escalated` — every surface computes it here so the mission
@@ -868,18 +833,15 @@ function deriveMissionSegmentState(task: {
   if (workers.some(w => LIVE_SET.has(w.status as any))) return 'ghost';
 
   if (task.status === 'completed') {
-    const prWorker = workers.find(w => w.prUrl);
-    if (!prWorker || prWorker.mergedAt) return 'solid';
-    // Recorded as superseded (task fcaf83d5) — the diff landed anyway, under a
-    // different, already-merged PR. Shipped, same as a direct merge, even
-    // though this PR itself never merged.
-    if (prWorker.supersededByPrNumber) return 'solid';
-    // A PR closed without merging, with no supersession recorded, is not "in
-    // progress toward merge" — the deliverable never shipped. Fold it in with
-    // 'notch' (didn't land cleanly) rather than 'half' (actively awaiting
-    // merge), so it doesn't inflate the awaiting-merge count with dead PRs
-    // nobody is about to merge.
-    if (prWorker.prLifecycleStatus === 'closed') return 'notch';
+    // Shared shipped predicate (pr-shipped.ts): merged, or superseded by an
+    // already-merged PR (task fcaf83d5), is shipped. A PR closed without
+    // merging and with no supersession is not "in progress toward merge" —
+    // fold it in with 'notch' (didn't land cleanly) rather than 'half'
+    // (actively awaiting merge), so it doesn't inflate the awaiting-merge
+    // count with dead PRs nobody is about to merge.
+    const state = prShipState(workers.find(w => w.prUrl));
+    if (state === 'no_pr' || state === 'merged' || state === 'superseded') return 'solid';
+    if (state === 'closed_unsuperseded') return 'notch';
     return 'half';
   }
 

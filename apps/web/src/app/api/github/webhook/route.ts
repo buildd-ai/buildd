@@ -64,7 +64,9 @@ import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
-import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
+import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
+import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
@@ -1012,10 +1014,28 @@ async function handlePullRequestEvent(event: {
     if (pr.merged) {
       // Stamp mergedAt regardless of task completion state so the dependsOn gate
       // (which checks workers.mergedAt) is unblocked for downstream tasks.
-      await db
-        .update(workers)
-        .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-        .where(eq(workers.id, worker.id));
+      // Every row carrying this PR, not just the one findFirst returned: a
+      // CI-retry attempt pushes to its parent's branch and adopts the PR
+      // number, and a sibling left unstamped reads as an open PR forever.
+      await stampPrMergedOnAllRows({
+        prUrl: prUrlFor(repository.full_name, pr.number),
+        prNumber: pr.number,
+        mergedAt: new Date(),
+      });
+      // A merged doc fix gets its conformance re-run now, not whenever the
+      // next dev push happens to evaluate the doc (spec-conformance.md §9).
+      // Best-effort; the hourly pr-reconcile sweep is the backstop.
+      if (worker.taskId) {
+        const docFixTaskId = worker.taskId;
+        const recheck = () => requestRecheckForMergedDocFix(docFixTaskId).catch(e =>
+          console.error(`[webhook] spec recheck dispatch failed for task ${docFixTaskId}:`, e),
+        );
+        try {
+          after(recheck);
+        } catch {
+          await recheck();
+        }
+      }
       await reconcileReviewWithMerge({
         workspaceId: worker.workspaceId,
         taskId: worker.taskId,
@@ -2002,7 +2022,7 @@ async function maybeDispatchReviewer(
       files: prFiles,
     });
 
-    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
+    // Apply semantic risk-class policy override (detected policyConfig paths)
     const policyConfig = workspace.gitConfig?.policyConfig ?? null;
     const policy = applyPolicyConfigToMergePolicy(
       basePolicy,
@@ -2804,7 +2824,7 @@ async function advanceReleaseStateFromWorkflowRun(
   // "no workflow_run ever arrived, dispatch outcome unknown" — no longer true
   // once dispatch has succeeded. `pending_external` already means "known
   // in-flight, waiting on something outside buildd's control" everywhere else
-  // it's read (see initiative-metric-registry.ts), which is exactly this.
+  // it's read, which is exactly this.
   const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
 
   // A gated row already in `deploying` got there from its release PR merging

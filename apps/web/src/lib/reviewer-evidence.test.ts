@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { selectReviewerEvidence, RECOMMENDATION_MARKER } from './reviewer-evidence';
+import { selectReviewerEvidence, RECOMMENDATION_MARKER, approvedAwaitingMergeTitle } from './reviewer-evidence';
 
 function note(partial: Partial<Parameters<typeof selectReviewerEvidence>[0][number]> = {}) {
   return {
@@ -35,5 +35,38 @@ describe('selectReviewerEvidence recommendations', () => {
       note({ body: `New reason.${RECOMMENDATION_MARKER}New advice.`, createdAt: new Date('2026-09-02T10:00:00Z') }),
     ]);
     expect(escalationMap.get('task-1')!.recommendation).toBe('New advice.');
+  });
+});
+
+describe('approve-only gate note title', () => {
+  const plain = (createdAt: string) => note({
+    type: 'reviewer_approved',
+    title: 'PR #42 approved by reviewer',
+    body: 'Reviewer approved (confidence 0.95): Looks good!',
+    createdAt: new Date(createdAt),
+  });
+
+  it('writes the title in plain active voice with no em dash', () => {
+    const title = approvedAwaitingMergeTitle(42);
+    expect(title).toContain('#42');
+    expect(title).not.toContain('\u2014');
+    expect(title).not.toMatch(/awaiting/i);
+  });
+
+  it('treats a note carrying the new title as gate evidence', () => {
+    const { approvalMap } = selectReviewerEvidence([
+      note({ type: 'reviewer_approved', title: approvedAwaitingMergeTitle(42), body: null, createdAt: new Date('2026-07-20T10:00:00Z') }),
+      plain('2026-07-20T10:05:00Z'),
+    ]);
+    expect(approvalMap.get('task-1')!.summary).toBe(approvedAwaitingMergeTitle(42));
+  });
+
+  it('still treats a legacy "awaiting human merge" title as gate evidence', () => {
+    const legacy = 'PR #42 approved \u2014 awaiting human merge';
+    const { approvalMap } = selectReviewerEvidence([
+      note({ type: 'reviewer_approved', title: legacy, body: null, createdAt: new Date('2026-07-20T10:00:00Z') }),
+      plain('2026-07-20T10:05:00Z'),
+    ]);
+    expect(approvalMap.get('task-1')!.summary).toBe(legacy);
   });
 });

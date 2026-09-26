@@ -65,13 +65,17 @@ Key config (all JSONB, migration-free to evolve):
 - **`gitConfig`** (`WorkspaceGitConfig`) — branching strategy, commit style, PR/merge
   behavior, agent instructions, sandbox, model/thinking/effort defaults,
   **`defaultBackend`** (`claude | codex`), CI auto-retry (`maxCiRetries`), and
-  **`mergePolicy`** — the merge-policy tier (§4a). The legacy flags
-  `autoMergeOnGreenCI` / `autoMergeDenyPaths` / `autoMergeMaxLines` are still read
-  as a fallback when no `mergePolicy` is set; `resolvePolicy` maps them onto a tier.
+  **`mergePolicy`** — the merge-policy tier (§4a). The legacy `autoMerge*` flags are
+  not consulted by `resolvePolicy`. Hand-written path lists (`autoMergeDenyPaths`,
+  `escalateToPaths`, `threshold.denyPaths`, `policyConfig.riskClasses[].userPaths`) are
+  refused on every write with a 400 pointing at "Re-scan repo"; merge-policy paths are
+  auto-detected only (`policyConfig`). A legacy stored `denyPaths` / `escalateToPaths` is
+  still read by the merge gate for one fallback release.
 - **`policyConfig`** (`WorkspacePolicyConfig`) — risk classes (`destructive_schema_change`,
   `ci_deploy_config`, `auth_and_secrets`, `dependency_bump`, `public_api_contract`) and a
   preset (`cautious | balanced | autonomous`) that assigns each class an action
-  (`auto | agent-review | human`). Supersedes `agentReview.escalateToPaths` when present.
+  (`auto | agent-review | human`). Paths per class are detected by `POST /policy-init`
+  and refreshed by re-scanning (settings "Re-scan repo" shows the per-class diff first).
   `destructive_schema_change` fires on the EXPAND/CONTRACT migration verdict
   (`migration-safety.ts`), not on path alone: additive migrations do not trigger it.
   Also carries `reviewerPatchEvidence` (opt-in: pre-inject the PR patch into the

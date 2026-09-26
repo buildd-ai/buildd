@@ -40,14 +40,14 @@ export default async function WorkspaceMemoryPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const isDev = process.env.NODE_ENV === 'development';
+  const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   if (isDev) {
     return (
       <main className="min-h-screen p-8">
         <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode - no database</p>
+          <p className="text-text-muted">Development mode · no database</p>
         </div>
       </main>
     );

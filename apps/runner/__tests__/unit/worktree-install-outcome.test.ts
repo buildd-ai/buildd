@@ -31,6 +31,8 @@ let treeFiles: Set<string> = new Set();
 let manifestYaml: string | null = null;
 /** Error message each `bun install` should reject with, keyed by frozen-ness. */
 let installErrors: { frozen?: string; unfrozen?: string } = {};
+/** Registry config files inside the worktree (`.npmrc`, `bunfig.toml`), repo-relative. */
+let configFiles: Record<string, string> = {};
 
 function mockExecSync(cmd: string) {
   syncCalls.push(cmd);
@@ -75,6 +77,7 @@ function mockExistsSync(abs: string): boolean {
   const rel = relInWorktree(abs);
   if (rel === null) return false;
   if (rel === '.buildd/env.yaml') return manifestYaml !== null;
+  if (rel in configFiles) return true;
   return treeFiles.has(rel);
 }
 
@@ -105,6 +108,7 @@ beforeEach(() => {
   treeFiles = new Set(['package.json', 'bun.lock']);
   manifestYaml = null;
   installErrors = {};
+  configFiles = {};
   __setGitOpsDeps({
     execSync: mockExecSync as any,
     execFile: mockExecFile as any,
@@ -112,7 +116,9 @@ beforeEach(() => {
     readdirSync: mockReaddirSync as any,
     mkdirSync: (() => {}) as any,
     readFileSync: ((p: string) => {
-      if (relInWorktree(p) === '.buildd/env.yaml') return manifestYaml ?? '';
+      const rel = relInWorktree(p);
+      if (rel === '.buildd/env.yaml') return manifestYaml ?? '';
+      if (rel !== null && rel in configFiles) return configFiles[rel];
       return '# exclude\n';
     }) as any,
     appendFileSync: () => {},
@@ -122,7 +128,21 @@ beforeEach(() => {
 });
 
 const installs = () => fileCalls.filter(c => c.file === 'bun' && c.args[0] === 'install');
-const setup = () => setupWorktree(REPO, BRANCH, DEFAULT_BRANCH, 'worker-1');
+const setup = (installEnv?: Record<string, string>) =>
+  setupWorktree(REPO, BRANCH, DEFAULT_BRANCH, 'worker-1', undefined, undefined, installEnv);
+
+/** Run `fn` with every console line captured, so a test can assert what never got logged. */
+async function captureLogs<T>(fn: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const lines: string[] = [];
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  const grab = (...args: unknown[]) => { lines.push(args.map(a => (a instanceof Error ? a.message : String(a))).join(' ')); };
+  console.log = grab; console.warn = grab; console.error = grab;
+  try {
+    return { result: await fn(), lines };
+  } finally {
+    Object.assign(console, orig);
+  }
+}
 
 describe('install location', () => {
   test('installs at the worktree root when the root carries the lockfile', async () => {
@@ -261,5 +281,85 @@ describe('install failure is classified and surfaced', () => {
 
     expect(installs().length).toBe(1);
     expect(result.install.failure).toBe('unknown');
+  });
+});
+
+describe('install env (undeclared repos get the worker-resolved secrets)', () => {
+  const TOKEN = 'npm-token-value-not-for-logs';
+
+  test('the install receives the role-resolved var, overlaid on the runner env', async () => {
+    const { result, lines } = await captureLogs(() => setup({ NODE_AUTH_TOKEN: TOKEN }));
+
+    expect(result.install).toEqual({ status: 'ok', dirs: ['.'] });
+    const env = installs()[0].opts.env as Record<string, string>;
+    expect(env.NODE_AUTH_TOKEN).toBe(TOKEN);
+    // Overlay, not replacement: PATH etc. still reach bun.
+    expect(env.PATH).toBe(process.env.PATH);
+    // The value is never logged — only the key count.
+    expect(lines.some(l => l.includes(TOKEN))).toBe(false);
+    expect(lines.some(l => l.includes('1 worker-resolved var'))).toBe(true);
+  });
+
+  test('a failing install does not leak the value into the outcome or logs either', async () => {
+    installErrors = { frozen: 'error: GET https://npm.pkg.github.com/download/@acme/private-lib/0.2.0/x - 401' };
+    configFiles = { '.npmrc': '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' };
+
+    const { result, lines } = await captureLogs(() => setup({ NODE_AUTH_TOKEN: TOKEN }));
+
+    expect(result.install.failure).toBe('registry-auth');
+    // Present-but-rejected is a different fix from absent.
+    expect(result.install.registry.envVarSet).toBe(true);
+    expect(JSON.stringify(result.install)).not.toContain(TOKEN);
+    expect(lines.some(l => l.includes(TOKEN))).toBe(false);
+  });
+
+  test('no resolved env: no `env` key at all, so bun inherits exactly as before', async () => {
+    await setup();
+    await setup({});
+
+    for (const call of installs()) expect('env' in call.opts).toBe(false);
+  });
+
+  test('no secret: still registry-auth, with host, package and the expected env var', async () => {
+    installErrors = { frozen: 'error: GET https://npm.pkg.github.com/download/@acme/private-lib/0.2.0/x - 401' };
+    configFiles = {
+      '.npmrc': '@acme:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n',
+    };
+    const saved = process.env.NODE_AUTH_TOKEN;
+    delete process.env.NODE_AUTH_TOKEN;
+    try {
+      const result = await setup();
+
+      expect(installs().length).toBe(1);
+      expect(result.install.failure).toBe('registry-auth');
+      expect(result.install.registry).toEqual({
+        host: 'npm.pkg.github.com',
+        pkg: '@acme/private-lib',
+        envVar: 'NODE_AUTH_TOKEN',
+        source: '.npmrc',
+        envVarSet: false,
+      });
+    } finally {
+      if (saved !== undefined) process.env.NODE_AUTH_TOKEN = saved;
+    }
+  });
+
+  test('declared repo: setupWorktree still does not install, env or not — the gate owns it', async () => {
+    manifestYaml = 'install:\n  command: bun install --frozen-lockfile\n';
+
+    const result = await setup({ NODE_AUTH_TOKEN: TOKEN });
+
+    expect(installs()).toEqual([]);
+    expect(result.install).toEqual({ status: 'skipped', reason: 'declared-manifest' });
+  });
+
+  test('the install still runs in this worktree, never the shared clone', async () => {
+    treeFiles = new Set(['packages/api/package.json', 'packages/api/bun.lock']);
+
+    await setup({ NODE_AUTH_TOKEN: TOKEN });
+
+    expect(installs().length).toBe(1);
+    expect(installs()[0].opts.cwd).toBe(`${WT}/packages/api`);
+    expect(String(installs()[0].opts.cwd).startsWith(`${REPO}/.buildd-worktrees/`)).toBe(true);
   });
 });

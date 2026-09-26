@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -6,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
@@ -37,6 +39,11 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  // workers.id is a uuid column: a non-UUID can never name a worker, and
+  // querying with one throws 22P02, which escaped as a 500.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
 
   // Dual auth: session OR API key
   const user = await getCurrentUser();
@@ -91,7 +98,7 @@ export async function POST(
   const task = (worker as any).task;
   const isSensitive = (worker as any).workspace?.dataClass === 'sensitive';
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
-  const milestones = (worker.milestones as Array<{ type?: string; label?: string; timestamp: number }>) || [];
+  const milestones = (worker.milestones as unknown as Array<{ type?: string; label?: string; timestamp: number }>) || [];
   const question = (worker.waitingFor as { prompt: string }).prompt;
 
   // ── The decision ──────────────────────────────────────────────────────────
@@ -122,7 +129,7 @@ export async function POST(
   // recorded durably as a cold continuation instead of being bounced.
   if (preflight.revoked) {
     return NextResponse.json({
-      error: `Backend credential (${backend}) is revoked — reconnect it in Settings → Agent Backends before continuing.`
+      error: `Backend credential (${backend}) is revoked. Reconnect it under Settings, Runners before continuing.`
         + (preflight.lastFailureMessage ? ` Last error: ${preflight.lastFailureMessage.slice(0, 200)}` : ''),
       credentialRevoked: true,
       backend,
@@ -369,6 +376,15 @@ async function respondByContinuation(args: {
 
   if (task?.id) {
     await recordAnswerDelivery(task.id, task.context, deliveryRecord);
+
+    // The worker on the OLD task was just superseded outside
+    // PATCH /api/workers/[id], and the old task's own status is never flipped
+    // to a terminal one here (recordAnswerDelivery only touches context) — it
+    // stays whatever it was. Any path claims it held must still be released
+    // now: the work continues under `newTask`'s id, not this one, so a claim
+    // left here would strand every other task overlapping those paths
+    // indefinitely.
+    await releaseAndNotify(task.id, 'abandoned');
   }
 
   // Best-effort back-reference from the answered worker to its continuation, so

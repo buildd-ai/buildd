@@ -311,6 +311,28 @@ describe('isBookkeepingExit', () => {
   });
 });
 
+// Regression: a task cancelled server-side while its worker was running used to
+// land as a failure (code_failure / output_unmet). Once the task is cancelled
+// the session's outcome is moot, so it must be neither charged nor counted
+// against the failure rate.
+describe('task cancelled while the worker was running', () => {
+  it('classifies as task_cancelled, ahead of every other signal', () => {
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, taskCancelled: true })).toBe('task_cancelled');
+    expect(classifyReportedFailure({
+      budgetLimited: true,
+      sandboxMountGap: true,
+      serverRefused: true,
+      outputGateRefused: true,
+      taskCancelled: true,
+    })).toBe('task_cancelled');
+  });
+
+  it('is a bookkeeping exit and never consumes a retry', () => {
+    expect(isBookkeepingExit('task_cancelled')).toBe(true);
+    expect(consumesRetryAttempt('task_cancelled')).toBe(false);
+  });
+});
+
 describe('isSilentStartShape', () => {
   const cases = [
     { turns: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 },

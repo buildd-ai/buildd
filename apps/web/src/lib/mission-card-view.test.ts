@@ -313,6 +313,32 @@ describe('review fixes: live count, latest worker, payload', () => {
     expect(JSON.stringify(view)).not.toContain('example.test/pr/1');
   });
 
+  // Regression: a running mission whose PR was still in CI read "Running — but
+  // waiting on you to merge #413" while auto-merge owned it. The pulse already
+  // treats a CI-pending PR as the platform's (`checks_running` → moving); the
+  // situation line must agree.
+  it('a PR whose CI is still running is not a merge ask', () => {
+    const inCi = task('fx', {
+      status: 'completed',
+      workers: [{ status: 'completed', prUrl: 'https://example.test/pr/413', prNumber: 413, prLifecycleStatus: 'ci_running' }],
+    });
+    const live = task('api', { status: 'in_progress', workers: [{ status: 'running' }] });
+    const view = buildMissionCardView(mission({ tasks: [inCi, live] }), { from: 'missions', now: NOW });
+    expect(view.situation.headline.toLowerCase()).not.toContain('merge');
+    expect(JSON.stringify(view.situation.alsoOutstanding)).not.toContain('"merge"');
+    const idle = buildMissionCardView(mission({ tasks: [inCi] }), { from: 'missions', now: NOW });
+    expect(idle.situation.headline.toLowerCase()).not.toContain('waiting on you to merge');
+  });
+
+  it('a green PR that has not merged is still a merge ask', () => {
+    const green = task('fx', {
+      status: 'completed',
+      workers: [{ status: 'completed', prUrl: 'https://example.test/pr/413', prNumber: 413, prLifecycleStatus: 'ci_green' }],
+    });
+    const view = buildMissionCardView(mission({ tasks: [green] }), { from: 'missions', now: NOW });
+    expect(view.situation.headline.toLowerCase()).toContain('waiting on you to merge');
+  });
+
   it('builds a card without reading task.result (Home does not load it)', () => {
     const failed = task('a', { status: 'failed' });
     Object.defineProperty(failed, 'result', { get() { throw new Error('card read task.result'); } });

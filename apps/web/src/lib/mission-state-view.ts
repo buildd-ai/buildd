@@ -96,6 +96,7 @@ import type { CompletionDecisionCode } from '@buildd/core/mission-completion-cod
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
 import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
@@ -186,10 +187,33 @@ export type WaitingOnDescriptor =
       /** True when the unmerged PR is the mission's own integration PR, not a task PR. */
       missionPr: boolean;
     }
-  /** The completion gate is holding on a criterion that failed. */
-  | { kind: 'criterion_failing'; tone: WaitingOnTone; label: string; count: number; criteria: string[]; refused: boolean }
-  /** The completion gate has no verdict yet. Quiet by construction — see the module note. */
-  | { kind: 'criterion_unverified'; tone: WaitingOnTone; label: string; count: number; criteria: string[] }
+  /**
+   * The completion gate is holding on a criterion that failed.
+   *
+   * `blockers` names what holds a structural criterion (`no_open_tasks`: the
+   * open deliverables; `all_prs_merged`: the unmerged PRs), all of them — a
+   * surface shows `CRITERION_BLOCKERS_VISIBLE` and "+N more". `stale` is set
+   * when the stored verdict is contradicted by the rows loaded now: it failed
+   * on open tasks, and none is open any more. The completion gate still reads
+   * the stored verdict, so the next step is to re-run verification.
+   */
+  | {
+      kind: 'criterion_failing';
+      tone: WaitingOnTone;
+      label: string;
+      count: number;
+      criteria: string[];
+      refused: boolean;
+      blockers?: CriterionBlocker[];
+      stale?: boolean;
+    }
+  /**
+   * The completion gate has no verdict yet. Quiet by construction — see the
+   * module note — EXCEPT when `awaitingRunner` names criteria whose runner
+   * verification task has sat unclaimed past the wait bound: then nothing is
+   * verifying them, and saying "not yet verified" would hide that.
+   */
+  | { kind: 'criterion_unverified'; tone: WaitingOnTone; label: string; count: number; criteria: string[]; awaitingRunner?: string[] }
   /** A human owes an answer; nothing automated will move this. */
   | { kind: 'human_decision'; tone: WaitingOnTone; label: string; detail: string | null }
   /**
@@ -220,6 +244,16 @@ export type WaitingOnDescriptor =
       blockedByPr?: number | null;
       taskIds: string[];
     };
+
+/** A task holding a structural criterion at fail. `status` is display text (`queued`, `PR #12 open`). */
+export interface CriterionBlocker {
+  taskId: string;
+  title: string;
+  status: string;
+}
+
+/** How many blockers a surface names before "+N more". */
+export const CRITERION_BLOCKERS_VISIBLE = 3;
 
 // ─── The view ─────────────────────────────────────────────────────────────────
 
@@ -342,15 +376,19 @@ export interface MissionStateInput {
   /** From `deriveCriteriaGatePresentation`. Null when the mission states no criteria. */
   criteriaGate?: CriteriaGatePresentation | null;
   /** Per-criterion detail, for naming which one is holding. */
-  criteriaItems?: Array<{ verdict: string; label?: string; name?: string; type?: string }>;
+  criteriaItems?: Array<{ verdict: string; label?: string; name?: string; type?: string; awaitingRunner?: boolean }>;
   /** From `canCompleteMission`, when a caller ran it. */
   completion?: MissionCompletionSummary | null;
   /** From `classifyMissionWait`, when a caller ran it. */
   wait?: { reason: string; waitUntil: Date | string } | null;
   /** From `evaluateMissionWorkState`, when a caller ran it. */
   workState?: { complete: boolean; reason: string; unfinishedTaskCount: number; unmergedPrCount: number } | null;
-  /** Open deliverable rows, for naming which tasks are holding. */
-  openTasks?: Array<{ id: string; status: string; title?: string | null }>;
+  /**
+   * Open deliverable rows, for naming which tasks are holding.
+   * `waitingOnTaskIds`: unmet `dependsOn` entries of a pending row. Such a row
+   * cannot be claimed, so it is never named as the blocker — its dependency is.
+   */
+  openTasks?: Array<{ id: string; status: string; title?: string | null; waitingOnTaskIds?: string[] }>;
   /** Failed deliverable rows, for naming which tasks failed. */
   failedTasks?: Array<{ id: string; title?: string | null; infra?: boolean }>;
   /**
@@ -552,7 +590,7 @@ function resolve(input: MissionStateInput): Resolution {
   if (isHeld) {
     return {
       kind: 'held',
-      waitingOn: { kind: 'human_decision', tone: 'info', label: 'Held — arm the mission to start work', detail: null },
+      waitingOn: { kind: 'human_decision', tone: 'info', label: 'Held until you arm the mission', detail: null },
       displayState: 'held',
       source: 'mission.startMode',
     };
@@ -586,7 +624,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'human_decision',
         tone: 'warning',
-        label: 'Goal criteria escalated — the owner must decide',
+        label: 'Goal criteria escalated for your decision',
         detail: input.escalationDetail ?? null,
       },
       displayState: 'waiting_decision',
@@ -632,7 +670,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'self_resolving_wait',
         tone: 'neutral',
-        label: `Waiting — ${wait.reason}`,
+        label: `Waiting: ${wait.reason}`,
         reason: wait.reason,
         waitUntil: toIso(wait.waitUntil),
       },
@@ -650,7 +688,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'self_resolving_wait',
         tone: 'neutral',
-        label: 'Waiting — the heartbeat is deliberately holding this cycle',
+        label: 'Waiting: the heartbeat is holding this cycle',
         reason: 'heartbeat wait',
         waitUntil: null,
       },
@@ -744,7 +782,7 @@ function attemptFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'task',
       tone: 'neutral',
-      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued — no worker yet'}`,
+      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued, no worker yet'}`,
       count: 1,
       taskIds: [a.taskId],
       byStatus: { [a.status]: 1 },
@@ -784,7 +822,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
         kind: 'merge',
         tone: 'warning',
         label: missionPr
-          ? 'The mission PR has not merged — the work is not on trunk'
+          ? 'The mission PR has not merged, so the work is not on trunk'
           : `${completion.awaitingMerge ?? details.length} completed task(s) have an unmerged PR`,
         count: completion.awaitingMerge ?? details.length,
         prNumbers,
@@ -829,7 +867,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
         kind: 'merge',
         tone: 'warning',
         label: missionPr
-          ? 'The mission PR has not merged — the work is not on trunk'
+          ? 'The mission PR has not merged, so the work is not on trunk'
           : `${rowPrs.length} completed task(s) have an unmerged PR`,
         count: missionPr ? 1 : rowPrs.length,
         prNumbers: missionPr
@@ -871,6 +909,31 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       return acc;
     }, {});
   const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(', ');
+
+  // Never cite a row that is only waiting on its dependency: it cannot be
+  // claimed, so it is not what is holding the mission. Claimable rows lead;
+  // when there are none, the unmet dependencies are the honest answer, and
+  // the reading is a wait on the DAG rather than a stall.
+  const claimable = openTasks.filter(t => !(t.waitingOnTaskIds?.length));
+  const depOnly = !live && openTasks.length > 0 && claimable.length === 0;
+  if (depOnly) {
+    const depIds = [...new Set(openTasks.flatMap(t => t.waitingOnTaskIds ?? []))];
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'task',
+        tone: 'neutral',
+        label: `${pendingCount} task(s) waiting on ${depIds.length === 1 ? 'an unmet dependency' : `${depIds.length} unmet dependencies`}`,
+        count: pendingCount,
+        taskIds: depIds,
+        byStatus,
+      },
+      displayState: 'active',
+      source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+    };
+  }
+  const citedIds = (live ? openTasks : claimable).map(t => t.id);
+
   return {
     kind: live ? 'running' : 'blocked',
     waitingOn: {
@@ -884,12 +947,67 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
           ? `${pendingCount} task(s) open with no live worker (${breakdown})`
           : `${pendingCount} task(s) open with no live worker`,
       count: pendingCount,
-      taskIds: openTasks.map(t => t.id),
+      taskIds: citedIds,
       byStatus,
     },
     displayState: live ? 'running' : 'stalled',
     source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
   };
+}
+
+const OPEN_STATUS_LABEL: Record<string, string> = {
+  pending: 'queued',
+  assigned: 'claimed',
+  in_progress: 'running',
+};
+
+/**
+ * What holds each failing structural criterion, read from the rows this view
+ * was given — never from the stored evidence, which is as old as the run.
+ *
+ * - `no_open_tasks`: the open deliverables, minus the `[surface audit]` check
+ *   (the evaluator's own rule, `isNoOpenTasksCandidate`; `openTasks` are
+ *   already deliverables).
+ * - `all_prs_merged`: the unmerged task PRs.
+ *
+ * `stale`: every failing criterion is `no_open_tasks`, the caller loaded the
+ * open rows, and there are none. The verdict predates the task state.
+ */
+function criterionBlockers(
+  input: MissionStateInput,
+  failingItems: ReadonlyArray<{ type?: string }>,
+): { blockers: CriterionBlocker[]; stale: boolean } {
+  const types = new Set(failingItems.map(c => c.type));
+  const out: CriterionBlocker[] = [];
+  const seen = new Set<string>();
+  const push = (b: CriterionBlocker) => {
+    if (seen.has(b.taskId)) return;
+    seen.add(b.taskId);
+    out.push(b);
+  };
+
+  let openBlockers = 0;
+  if (types.has('no_open_tasks')) {
+    for (const t of input.openTasks ?? []) {
+      if (isSurfaceAuditTask(t.title ?? '')) continue;
+      openBlockers++;
+      push({ taskId: t.id, title: t.title ?? t.id, status: OPEN_STATUS_LABEL[t.status] ?? t.status.replace(/_/g, ' ') });
+    }
+  }
+  if (types.has('all_prs_merged')) {
+    const prs = input.completion?.awaitingMergeDetails?.length
+      ? input.completion.awaitingMergeDetails
+      : input.unmergedPrs ?? [];
+    for (const p of prs) {
+      push({ taskId: p.taskId, title: p.title ?? p.taskId, status: p.prNumber != null ? `PR #${p.prNumber} open` : 'PR open' });
+    }
+  }
+
+  const stale = failingItems.length > 0
+    && failingItems.every(c => c.type === 'no_open_tasks')
+    && input.openTasks !== undefined
+    && openBlockers === 0;
+  return { blockers: out, stale };
 }
 
 /** Rule 10 — the completion gate has not cleared. Never `blocked`. */
@@ -903,6 +1021,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
 
     if (criteriaGate.state === 'failing' || failing.length > 0 || (refused && completion?.code === 'criteria_failed')) {
       const count = failing.length || 1;
+      const { blockers, stale } = criterionBlockers(input, items.filter(c => c.verdict === 'fail'));
       return {
         kind: 'awaiting_verification',
         waitingOn: {
@@ -914,6 +1033,8 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
           count,
           criteria: failing,
           refused,
+          ...(blockers.length > 0 ? { blockers } : {}),
+          ...(stale ? { stale } : {}),
         },
         displayState: 'awaiting_verification',
         source: 'deriveCriteriaGatePresentation',
@@ -921,6 +1042,27 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
     }
 
     const count = nonPass.length || 1;
+    const awaitingRunner = items
+      .filter(c => c.verdict !== 'pass' && c.awaitingRunner === true)
+      .map(nameCriterion);
+    if (awaitingRunner.length > 0) {
+      return {
+        kind: 'awaiting_verification',
+        waitingOn: {
+          kind: 'criterion_unverified',
+          // Not quiet: a verification task nobody claims never resolves itself.
+          tone: 'warning',
+          label: awaitingRunner.length === 1
+            ? `Waiting for a runner to verify "${awaitingRunner[0]}"`
+            : `Waiting for a runner to verify ${awaitingRunner.length} criteria`,
+          count,
+          criteria: nonPass,
+          awaitingRunner,
+        },
+        displayState: 'awaiting_verification',
+        source: 'deriveCriteriaGatePresentation',
+      };
+    }
     return {
       kind: 'awaiting_verification',
       waitingOn: {
@@ -929,8 +1071,8 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
         // attempted and held — only then is a missing verdict newsworthy.
         tone: refused ? 'warning' : 'neutral',
         label: count === 1
-          ? '1 criterion not yet verified — run verification'
-          : `${count} criteria not yet verified — run verification`,
+          ? '1 criterion not verified yet · run verification'
+          : `${count} criteria not verified yet · run verification`,
         count,
         criteria: nonPass,
       },
@@ -947,7 +1089,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
       kind: 'awaiting_verification',
       waitingOn: failing
         ? { kind: 'criterion_failing', tone: 'warning', label: 'Goal criteria failed', count: 1, criteria: [], refused: true }
-        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria not yet verified — run verification', count: 1, criteria: [] },
+        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria not verified yet · run verification', count: 1, criteria: [] },
       displayState: 'awaiting_verification',
       source: 'canCompleteMission',
     };
@@ -967,7 +1109,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
  */
 /** The gate reason, plus the PR it waits on when the ledger named one. */
 function deferralReasonText(d: { reason: string; blockedByPr?: number | null }): string {
-  return typeof d.blockedByPr === 'number' ? `${d.reason} — blocked by PR #${d.blockedByPr}` : d.reason;
+  return typeof d.blockedByPr === 'number' ? `${d.reason}, blocked by PR #${d.blockedByPr}` : d.reason;
 }
 
 function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
@@ -980,8 +1122,8 @@ function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
     kind: 'claim_deferral',
     tone: 'warning',
     label: stuck.length === 1
-      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${reason}`
-      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${reason})`,
+      ? `The claim loop deferred a task ${worst.consecutiveDeferrals} times in a row: ${reason}`
+      : `The claim loop is deferring ${stuck.length} tasks (worst: ${worst.consecutiveDeferrals} in a row, ${reason})`,
     count: stuck.length,
     reason: worst.reason,
     consecutiveDeferrals: worst.consecutiveDeferrals,
@@ -1056,14 +1198,14 @@ function fromResolution(r: Resolution | null): OutstandingEntry | null {
  * "waiting on you to …" when the owner is the only one who can clear it,
  * a statement of fact when they are not.
  */
-function situationPhrase(d: WaitingOnDescriptor): string {
+function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {}): string {
   switch (d.kind) {
     case 'dependency':
       return 'waiting on an upstream mission to meet its gate condition';
     case 'task':
       if (d.attempt) {
         const fix = fixLabel(d.attempt).toLowerCase();
-        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued — no worker yet)`;
+        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, no worker yet)`;
       }
       return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
     case 'task_failed':
@@ -1082,26 +1224,43 @@ function situationPhrase(d: WaitingOnDescriptor): string {
           ? `waiting on you to merge 1 open PR${ref}`
           : `waiting on you to merge ${d.count} open PRs`;
     }
-    case 'criterion_failing':
+    case 'criterion_failing': {
+      const named = d.count === 1 && d.criteria[0] ? `"${d.criteria[0]}"` : `${d.count} goal criteria`;
+      if (d.stale) {
+        return `waiting on you to re-run verification: ${named} failed at the last check and no task is open`;
+      }
+      // While work is in flight a failing criterion is the work not being
+      // finished yet, not an ask (`missionNeedsYou`), so it is stated as fact.
+      const ask = opts.running ? '' : 'waiting on you: ';
+      const n = d.blockers?.length ?? 0;
+      if (n > 0) {
+        return `${ask}${named} ${d.count === 1 ? 'is' : 'are'} failing on ${n === 1 ? '1 task' : `${n} tasks`}`;
+      }
       return d.count === 1 && d.criteria[0]
-        ? `waiting on you — the goal criterion "${d.criteria[0]}" is failing`
-        : `waiting on you — ${d.count} goal criteria are failing`;
+        ? `${ask}the goal criterion "${d.criteria[0]}" is failing`
+        : `${ask}${d.count} goal criteria are failing`;
+    }
     case 'criterion_unverified':
+      if (d.awaitingRunner && d.awaitingRunner.length > 0) {
+        return d.awaitingRunner.length === 1
+          ? `waiting for a runner to verify "${d.awaitingRunner[0]}"`
+          : `waiting for a runner to verify ${d.awaitingRunner.length} goal criteria`;
+      }
       return d.count === 1
-        ? 'waiting on goal-criteria verification — 1 criterion has no verdict yet'
-        : `waiting on goal-criteria verification — ${d.count} criteria have no verdict yet`;
+        ? 'waiting on goal-criteria verification: 1 criterion has no verdict'
+        : `waiting on goal-criteria verification: ${d.count} criteria have no verdict`;
     case 'human_decision':
-      // These labels already read as statements ("Held — arm the mission to
-      // start work"), so they are quoted, not re-worded.
+      // These labels already read as statements ("Held until you arm the
+      // mission"), so they are quoted, not re-worded.
       return `waiting on you: ${d.label}`;
     case 'self_resolving_wait':
       return d.waitUntil
-        ? `waiting on ${d.reason} — resumes on its own at ${d.waitUntil}`
-        : `waiting on ${d.reason} — resumes on its own`;
+        ? `waiting (${d.reason}) until ${d.waitUntil}`
+        : `waiting (${d.reason})`;
     case 'claim_deferral':
       return d.count === 1
-        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${deferralReasonText(d)}`
-        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${deferralReasonText(d)}`;
+        ? `the claim loop has turned away an agent ${d.consecutiveDeferrals} times in a row: ${deferralReasonText(d)}`
+        : `the claim loop is turning away ${d.count} agents (worst: ${d.consecutiveDeferrals} in a row, ${deferralReasonText(d)})`;
   }
 }
 
@@ -1129,7 +1288,7 @@ function deriveSituation(
 
   if (resolved.kind === 'complete') {
     return {
-      headline: 'Complete — nothing outstanding.',
+      headline: 'Complete. Nothing outstanding.',
       tone: 'neutral',
       focus: null,
       nextAction: null,
@@ -1142,8 +1301,8 @@ function deriveSituation(
     // Every source that could contradict this was consulted and had nothing to
     // say. Say THAT, rather than falling back to a row of buttons.
     const headline = resolved.kind === 'running'
-      ? `Running — ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
-      : 'Nothing to do — no source reports anything outstanding.';
+      ? `Running: ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
+      : 'Nothing to do. No source reports outstanding work.';
     return {
       headline,
       tone: 'neutral',
@@ -1154,9 +1313,9 @@ function deriveSituation(
     };
   }
 
-  const phrase = situationPhrase(focus);
+  const phrase = situationPhrase(focus, { running: resolved.kind === 'running' });
   const headline = resolved.kind === 'running'
-    ? `Running (${countAgents(input.activeAgents)}) — but ${phrase}.`
+    ? `Running (${countAgents(input.activeAgents)}). ${capitalize(phrase)}.`
     : `${capitalize(phrase)}.`;
 
   return {
@@ -1185,31 +1344,117 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'task':
       if (waitingOn.attempt) {
         return waitingOn.attempt.claimed
-          ? 'Nothing to do yet — the fix is in progress; review runs again after it pushes.'
-          : 'Nothing to do yet — the fix is queued for the next free worker. Cancel it if the work is no longer wanted.';
+          ? 'Nothing to do yet. The reviewer runs again after the fix pushes.'
+          : 'Nothing to do yet. The fix is queued for the next free worker; cancel it if you no longer want the work.';
       }
-      return 'Dispatch a worker for the open task(s), or cancel them if the work is no longer wanted.';
+      return 'Dispatch a worker for the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':
       return waitingOn.infra
-        ? 'Investigate the infrastructure failure and re-run the task; retries are already exhausted.'
+        ? 'Retries are exhausted. Investigate the infrastructure failure and re-run the task.'
         : 'Read the failure and either retry the task or change its scope.';
     case 'merge':
       return waitingOn.missionPr
-        ? 'Land the mission PR — the work is on the integration branch, not on trunk.'
-        : 'Resolve and merge the open PR(s); a completed task with an unmerged PR has not shipped.';
+        ? 'Merge the mission PR to move the work from the integration branch to trunk.'
+        : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
     case 'criterion_failing':
+      if (waitingOn.stale) {
+        return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';
+      }
+      if (waitingOn.blockers && waitingOn.blockers.length > 0) {
+        return 'Finish, cancel or merge the tasks holding it, then re-run verification.';
+      }
       return 'File work against the failing criterion, or correct the criterion if it no longer describes the goal.';
     case 'criterion_unverified':
+      if (waitingOn.awaitingRunner && waitingOn.awaitingRunner.length > 0) {
+        return 'Start or free up a runner for this workspace. No runner has claimed the queued verification task.';
+      }
       return 'Run goal-criteria verification to produce a verdict.';
     case 'human_decision':
-      return 'An owner decision is required; nothing automated will move this.';
+      return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':
       return waitingOn.waitUntil
-        ? `Nothing to do — this resumes on its own at ${waitingOn.waitUntil}.`
-        : 'Nothing to do — this resumes on its own.';
+        ? `Nothing to do. Work resumes at ${waitingOn.waitUntil}.`
+        : 'Nothing to do. Work resumes when the wait ends.';
     case 'claim_deferral':
-      return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}) — clear that gate, or cancel the task if the work is no longer wanted.`;
+      return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}). Clear that gate, or cancel the task if you no longer want the work.`;
   }
+}
+
+// ─── Whose move is it? ────────────────────────────────────────────────────────
+
+/** Verdicts whose next step is the owner's, whatever the mission's health says. */
+const NEEDS_YOU_KINDS: ReadonlySet<MissionStateKind> = new Set([
+  'awaiting_merge',
+  'awaiting_verification',
+  'awaiting_decision',
+  'failing',
+]);
+
+/**
+ * Facts that are the owner's to clear even when they did not win precedence
+ * (a live worker, a hold). A criterion fact is NOT one of them: while work is
+ * still moving, a failing "no open tasks" is the work not being finished yet,
+ * not an ask. With nothing moving, `missionNeedsYou` reads it off the
+ * situation's focus instead.
+ */
+const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
+  'merge',
+  'task_failed',
+  'human_decision',
+]);
+
+/**
+ * True when the mission's next step is the owner's (F1). The one input the
+ * mission grouping reads to put a mission under "active" — list header, list
+ * groups and Home — so a card whose chip asks you for something is never filed
+ * under PAUSED / HELD or SCHEDULED.
+ *
+ * A held mission's own ask ("arm it") does not count: arming is a start, not an
+ * answer (§1.1). Anything else it is waiting on you for does.
+ */
+export function missionNeedsYou(view: MissionStateView): boolean {
+  if (view.kind === 'complete') return false;
+  if (NEEDS_YOU_KINDS.has(view.kind)) return true;
+  const holdAsk = view.kind === 'held' ? view.waitingOn : null;
+  if (view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind))) return true;
+  // needsYou follows the situation. With no work in flight (not `running`) and
+  // no hold, a failing criterion the headline leads with is the owner's to
+  // clear, even when it did not win precedence: a paused mission whose open
+  // tasks stalled resolves to `blocked` (STALLED) yet reads "Waiting on you —
+  // "no open tasks" is failing on 2 tasks". Nothing automated moves it.
+  return view.kind !== 'running' && view.kind !== 'held' && view.situation.focus?.kind === 'criterion_failing';
+}
+
+// ─── The situation's one explanatory line ─────────────────────────────────────
+
+/**
+ * What the situation block prints under its headline — exactly one line, so
+ * the same fact is not said three times (headline, causal claim, criterion ref).
+ *
+ * - The focus names blockers → the blockers (the first
+ *   `CRITERION_BLOCKERS_VISIBLE`, then "+N more").
+ * - The focus is a criterion → its next action. The causal claim ("criterion X
+ *   returned a failing verdict") only restates the headline.
+ * - Anything else → the first causal link, whose hard ref is the evidence.
+ */
+export type SituationDetail<L> =
+  | { kind: 'blockers'; items: CriterionBlocker[]; more: number }
+  | { kind: 'text'; text: string }
+  | { kind: 'why'; link: L };
+
+export function situationDetail<L>(situation: MissionSituation, because: readonly L[]): SituationDetail<L> | null {
+  const focus = situation.focus;
+  if (focus?.kind === 'criterion_failing' && focus.blockers && focus.blockers.length > 0) {
+    return {
+      kind: 'blockers',
+      items: focus.blockers.slice(0, CRITERION_BLOCKERS_VISIBLE),
+      more: Math.max(0, focus.blockers.length - CRITERION_BLOCKERS_VISIBLE),
+    };
+  }
+  if (focus?.kind === 'criterion_failing' || focus?.kind === 'criterion_unverified') {
+    return situation.nextAction ? { kind: 'text', text: situation.nextAction } : null;
+  }
+  return because[0] !== undefined ? { kind: 'why', link: because[0] } : null;
 }
 
 /** Exported for the threshold's own regression test and for surfaces that explain it. */

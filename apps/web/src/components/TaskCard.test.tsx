@@ -145,3 +145,70 @@ describe('TaskCard — work-kind badge fallback', () => {
     expect(html).not.toMatch(/<span[^>]*><\/span>/); // no empty spans
   });
 });
+
+// Activity rows showed the PR number twice (the "DONE #N" chip and a
+// "PR #N↗" link beside it), and PR-review tasks titled "PR #N: …" said it a
+// third time in the title.
+describe('TaskCard — PR number shown once', () => {
+  const pr = { prUrl: 'https://github.com/example-org/example-repo/pull/42', prNumber: 42, prLifecycleStatus: 'merged' };
+
+  for (const density of ['row', 'full'] as const) {
+    it(`${density} density: the chip carries #N and the link does not repeat it`, () => {
+      const html = renderToStaticMarkup(<TaskCard {...baseProps({ density, ...pr })} />);
+      expect(html).toContain('>#42</span>');
+      expect(html).not.toContain('>PR #');
+      expect(html).toContain(`href="${pr.prUrl}"`);
+      expect(html).toContain('aria-label="Open PR #42"');
+    });
+
+    it(`${density} density: strips a leading "PR #N:" from the title when the chip shows #N`, () => {
+      const html = renderToStaticMarkup(
+        <TaskCard {...baseProps({ density, title: 'PR #42: fix(ui): tighten spacing', ...pr })} />,
+      );
+      expect(html).toContain('>fix(ui): tighten spacing<');
+      expect(html).not.toContain('>PR #42: fix(ui)');
+    });
+  }
+
+  it('keeps the title prefix when the chip does not show that number', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ title: 'PR #7: review the other one' })} />,
+    );
+    expect(html).toContain('>PR #7: review the other one<');
+  });
+
+  it('keeps the "PR #N" link text when no chip shows the number (running, no PR stage)', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskStatus: 'in_progress', workerStatus: 'running', prUrl: pr.prUrl, prNumber: 42 })} />,
+    );
+    expect(html).toContain('PR #42');
+  });
+});
+
+describe('TaskCard — PR link edge cases', () => {
+  it('never renders "PR #null" when there is a PR URL but no number', () => {
+    for (const density of ['row', 'full'] as const) {
+      const html = renderToStaticMarkup(
+        <TaskCard {...baseProps({ density, prUrl: 'https://github.com/example-org/example-repo/pull/1', prNumber: null })} />,
+      );
+      expect(html).not.toContain('#null');
+      expect(html).toContain('PR ↗');
+      expect(html).toContain('aria-label="Open PR"');
+    }
+  });
+
+  // The enlarged hit area is a touch affordance. On desktop it covered the
+  // elapsed line and reached into the next row, opening the wrong PR.
+  it('scopes the enlarged PR hit area to below md', () => {
+    const pr = { prUrl: 'https://github.com/example-org/example-repo/pull/42', prNumber: 42, prLifecycleStatus: 'merged' };
+    for (const density of ['row', 'full', 'inline'] as const) {
+      const html = renderToStaticMarkup(<TaskCard {...baseProps({ density, ...pr })} />);
+      const cls = html.match(new RegExp(`href="${pr.prUrl}"[^>]*class="([^"]*)"`))?.[1].split(/\s+/) ?? [];
+      const afterClasses = cls.filter(c => c.includes('after:'));
+      expect(afterClasses.length).toBeGreaterThan(0);
+      expect(afterClasses.every(c => c.startsWith('max-md:after:'))).toBe(true);
+      // Never the old 14px vertical spill.
+      expect(afterClasses.some(c => c.includes('inset-y-3.5'))).toBe(false);
+    }
+  });
+});

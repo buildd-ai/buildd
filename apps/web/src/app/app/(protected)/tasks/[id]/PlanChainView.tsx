@@ -88,21 +88,21 @@ function ChainNode({
 
       {/* Status + artifacts row */}
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className={`inline-flex items-center gap-1 font-mono text-[10px] ${style.text}`}>
+        <span className={`inline-flex items-center gap-1 font-mono text-[11px] md:text-[10px] ${style.text}`}>
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${style.dot}`} />
           {task.status === 'waiting_input' ? 'waiting' : task.status}
         </span>
 
         {/* PR chip */}
         {task.worker?.prNumber && (
-          <span className="bg-status-success/10 text-status-success font-mono text-[10px] rounded px-1.5">
+          <span className="bg-status-success/10 text-status-success font-mono text-[11px] md:text-[10px] rounded px-1.5">
             #{task.worker.prNumber}{isDone ? ' ✓' : ''}
           </span>
         )}
 
         {/* Artifact count (non-PR) */}
         {(task.artifacts || []).length > 0 && !task.worker?.prNumber && (
-          <span className="bg-surface-3 text-text-muted font-mono text-[10px] rounded px-1.5">
+          <span className="bg-surface-3 text-text-muted font-mono text-[11px] md:text-[10px] rounded px-1.5">
             {task.artifacts.length} artifact{task.artifacts.length !== 1 ? 's' : ''}
           </span>
         )}
@@ -122,7 +122,7 @@ function ChainNode({
 export default function PlanChainView({ currentTaskId, tasks, roleMap }: PlanChainViewProps) {
   return (
     <div className="mb-6">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-3">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-3">
         Execution Plan · {tasks.length} phase{tasks.length !== 1 ? 's' : ''}
       </div>
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">

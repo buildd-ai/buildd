@@ -18,6 +18,8 @@ import { sessionLog as realSessionLog } from './session-logger';
 import { isGeneratedPath } from '@buildd/shared';
 import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
+import { describePrimaryCloneDrift } from './worktree-confinement';
+import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -116,7 +118,7 @@ export type InstallFailureClass =
 export type InstallOutcome =
   | { status: 'ok'; dirs: string[]; unfrozen?: boolean }
   | { status: 'skipped'; reason: 'no-manifest' | 'non-bun-toolchain' | 'declared-manifest' }
-  | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string };
+  | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string; registry?: RegistryAuthDiagnosis };
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -170,8 +172,18 @@ export function classifyInstallFailure(err: unknown): InstallFailureClass {
  * different risk profile. A non-bun lockfile yields
  * `{status:'skipped', reason:'non-bun-toolchain'}` — honest, and recorded. Repos
  * that need it declare `.buildd/env.yaml` and the provision gate owns it.
+ *
+ * `installEnv` is the worker's resolved secret env (role env today), overlaid
+ * on the runner's own env. Without it a repo whose `.npmrc` reads
+ * `${NODE_AUTH_TOKEN}` could only ever get that token from the host
+ * container, because this runs before the agent env exists. Values are never
+ * logged — only the key count.
  */
-async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<InstallOutcome> {
+async function installWorkspaceDeps(
+  worktreePath: string,
+  workerId: string,
+  installEnv?: Record<string, string>,
+): Promise<InstallOutcome> {
   const plans = detectInstallPlans(worktreePath, {
     exists: (rel) => existsSync(join(worktreePath, rel)),
     listDirs: (rel) => {
@@ -205,9 +217,29 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
   const dirs: string[] = [];
   let usedUnfrozen = false;
 
+  // No overlay → no `env` key at all, so execFile inherits exactly as before.
+  const hasOverlay = !!installEnv && Object.keys(installEnv).length > 0;
+  const env = hasOverlay ? { ...process.env, ...installEnv } : undefined;
+  if (hasOverlay) {
+    console.log(`[Worker ${workerId}] Install env carries ${Object.keys(installEnv!).length} worker-resolved var(s)`);
+  }
+  const failed = (dir: string, failure: InstallFailureClass, message: string): InstallOutcome => {
+    if (failure !== 'registry-auth') return { status: 'failed', dir, failure, message };
+    const registry = diagnoseRegistryAuth(
+      message,
+      dir,
+      (rel) => {
+        const abs = join(worktreePath, rel);
+        return existsSync(abs) ? String(readFileSync(abs, 'utf-8')) : null;
+      },
+      env ?? process.env,
+    );
+    return { status: 'failed', dir, failure, message, registry };
+  };
+
   for (const plan of bunPlans) {
     const cwd = plan.dir === '.' ? worktreePath : join(worktreePath, plan.dir);
-    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const };
+    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const, ...(env ? { env } : {}) };
     // new Promise + execFile directly rather than util.promisify, so mock
     // injection via __setGitOpsDeps works consistently across bun versions.
     const run = (args: string[]) => new Promise<void>((resolve, reject) => {
@@ -225,7 +257,7 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
         console.warn(
           `[Worker ${workerId}] bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
         );
-        return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+        return failed(plan.dir, failure, errMessage(err));
       }
       console.warn(
         `[Worker ${workerId}] Frozen bun install in ${plan.dir} rejected the lockfile, retrying unfrozen: ${errMessage(err)}`,
@@ -241,7 +273,7 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
       console.warn(
         `[Worker ${workerId}] Unfrozen bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
       );
-      return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+      return failed(plan.dir, failure, errMessage(err));
     }
   }
 
@@ -366,6 +398,37 @@ export interface SetupWorktreeResult {
   };
 }
 
+/**
+ * Probe the primary clone and log a loud warning when it is dirty, holds
+ * stashes, or is off `expectedBranch`. Warning only — never resets: a dirty
+ * primary may hold the only copy of someone's work. Every probe failure is
+ * swallowed; this must never block worktree setup.
+ */
+export function warnOnPrimaryCloneDrift(repoPath: string, expectedBranch: string, workerId: string): string | null {
+  const opts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'] };
+  const run = (cmd: string): string | undefined => {
+    try {
+      const out = execSync(cmd, opts);
+      return typeof out === 'string' ? out : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const lines = (s: string | undefined) => (s ?? '').split('\n').filter(l => l.trim().length > 0).length;
+  const branch = run('git rev-parse --abbrev-ref HEAD')?.trim() || undefined;
+  const warning = describePrimaryCloneDrift({
+    branch,
+    expectedBranch,
+    dirtyEntries: lines(run('git status --porcelain')),
+    stashes: lines(run('git stash list')),
+  });
+  if (warning) {
+    console.warn(`[Worker ${workerId}] ${warning} (${repoPath})`);
+    try { sessionLog(workerId, 'warn', 'primary_clone_drift', warning); } catch { /* best effort */ }
+  }
+  return warning;
+}
+
 /** Branch name → directory name. The only place this mapping is spelled. */
 function safeWorktreeDirName(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -383,6 +446,12 @@ export async function setupWorktree(
    * have no in-memory map).
    */
   liveWorkers?: Iterable<[string, WorktreeOwnershipRecord]>,
+  /**
+   * Worker-resolved env overlaid onto the tolerant install (undeclared repos
+   * only — a declared repo's install runs in the provision gate with the full
+   * agent env). See installWorkspaceDeps.
+   */
+  installEnv?: Record<string, string>,
 ): Promise<SetupWorktreeResult | null> {
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
@@ -417,6 +486,11 @@ export async function setupWorktree(
     } catch (err) {
       console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
     }
+
+    // The primary clone should be a pristine base that nobody works in. If it
+    // is dirty or off its branch, something has been working in the shared
+    // checkout — say so loudly. Never reset it: it may hold unpushed work.
+    warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
 
     // Clean up stale worktree at this path if it exists.
     //
@@ -525,7 +599,10 @@ export async function setupWorktree(
       try {
         const countStr = execSync(
           `git rev-list --count "origin/${defaultBranch}..origin/${candidate}"`,
-          { ...execOpts, timeout: 10000 },
+          // Piped: a missing candidate is an expected negative (caught below and
+          // logged by resolveWorktreeBase). Inherited stderr put git's
+          // "fatal: ambiguous argument" in the runner log on every such start.
+          { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
         ).trim();
         const count = parseInt(countStr, 10);
         if (!isNaN(count) && count > 50) {
@@ -557,7 +634,7 @@ export async function setupWorktree(
       try {
         const out = execSync(
           `git rev-list --count "origin/${defaultBranch}..${candidate}"`,
-          { ...execOpts, timeout: 10000 },
+          { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
         ).trim();
         const n = parseInt(out, 10);
         return isNaN(n) ? 0 : n;
@@ -903,7 +980,7 @@ export async function setupWorktree(
     const install: InstallOutcome =
       declared.source === 'manifest' && declared.manifest?.install?.command
         ? { status: 'skipped', reason: 'declared-manifest' }
-        : await installWorkspaceDeps(worktreePath, workerId);
+        : await installWorkspaceDeps(worktreePath, workerId, installEnv);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return {

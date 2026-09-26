@@ -27,6 +27,7 @@ interface ArtifactItem {
   key?: string | null;
   missionId?: string | null;
   initiativeId?: string | null;
+  storageKey?: string | null;
 }
 
 interface Props {
@@ -175,6 +176,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
       type: a.type,
       title: a.title,
       content: a.content,
+      storageKey: a.storageKey ?? null,
       shareToken: share.shareToken,
       visibility: share.visibility,
       metadata: a.metadata,
@@ -196,7 +198,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
         </svg>
         <p className="text-lg mb-2">No artifacts yet</p>
         <p className="text-sm">
-          Artifacts are created by agents for non-code deliverables like reports, articles, and analysis.
+          Agents create artifacts for non-code deliverables: reports, articles, analysis.
         </p>
       </div>
     );
@@ -213,7 +215,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
             aria-describedby={serverScope?.partial ? 'artifact-search-partial' : undefined}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 px-3 py-2 border border-border-default rounded-lg bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
+            className="flex-1 min-w-0 px-3 py-2 border border-border-default rounded-lg bg-surface-1 text-base md:text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
           />
         )}
       </div>

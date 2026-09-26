@@ -259,6 +259,57 @@ describe('cleanupStuckWaitingInput', () => {
     expect(capturedValues.workspaceId).toBe('ws-1');
   });
 
+  it('keeps roleSlug on the retry, so a visual-auditor audit stays browser-routed and evidence-gated', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: '[surface audit] M', description: 'd', priority: 0,
+      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
+      mode: 'execution', outputRequirement: 'artifact_required', outputSchema: null,
+      roleSlug: 'visual-auditor', dependsOn: ['builder-a', 'builder-b'],
+    });
+    let capturedValues: any = null;
+    mockTasksInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { returning: mock(() => [{ id: 'new-task-id' }]) };
+      }),
+    });
+
+    await cleanupStuckWaitingInput('account-1');
+
+    expect(capturedValues.roleSlug).toBe('visual-auditor');
+    // Required routes are re-derived at completion from dependsOn's
+    // pathManifests; a clone without it would fall back to "any one route".
+    expect(capturedValues.dependsOn).toEqual(['builder-a', 'builder-b']);
+  });
+
+  it('does not copy dependsOn onto the retry of an ordinary task (unchanged behaviour)', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', description: 'd', priority: 0,
+      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
+      mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+      roleSlug: 'builder', dependsOn: ['dep-1'],
+    });
+    let capturedValues: any = null;
+    mockTasksInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { returning: mock(() => [{ id: 'new-task-id' }]) };
+      }),
+    });
+
+    await cleanupStuckWaitingInput('account-1');
+
+    expect(capturedValues.dependsOn).toBeUndefined();
+  });
+
   it('sets resumeBranch alongside baseBranch on the retry task, so the runner resumes the stalled branch rather than treating it as a declared base', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
@@ -1092,6 +1143,62 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet.status).toBe('failed');
     expect(taskUpdateSet.result).toBeDefined();
     expect(taskUpdateSet.result.error).toContain('3 worker attempts');
+  });
+
+  // Visual auditor (docs/design/visual-qa-auditor.md): the reaper must neither
+  // pass an audit around its evidence check nor fail it into releasing the
+  // mission.
+  it('a visual-auditor mission task at the retry cap fails as infra_stalled, so the mission stays blocked', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', parentTaskId: null, status: 'in_progress',
+      missionId: 'mission-1', roleSlug: 'visual-auditor', context: {},
+    });
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result.errorType).toBe('infra_stalled');
+    expect(taskUpdateSet.result.error).toContain('3 worker attempts');
+  });
+
+  it('never reaper-completes a visual-auditor task from its artifacts: that would skip the evidence check', async () => {
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '3 artifacts',
+    });
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // no failed workers yet
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', parentTaskId: null, status: 'in_progress',
+      missionId: 'mission-1', roleSlug: 'visual-auditor', context: {},
+    });
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(sets.some((v) => v.status === 'completed')).toBe(false);
+    // Requeued for another auditor run instead.
+    expect(sets.some((v) => v.status === 'pending')).toBe(true);
   });
 
   it('still promotes to completed with deliverables even when retry cap is reached', async () => {
@@ -2115,6 +2222,40 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('failed');
     expect(taskUpdateSet.result.error).toContain('silent-start');
+  });
+
+  it('a visual-auditor mission task at the silent-start cap fails as infra_stalled, so the mission stays blocked', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'silent-4', taskId: 'task-1', status: 'running', startedAt: new Date(), turns: 1, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'silent_start' },
+        { id: 'f2', exitCause: 'silent_start' },
+        { id: 'f3', exitCause: 'silent_start' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', parentTaskId: null, status: 'in_progress',
+      missionId: 'mission-1', roleSlug: 'visual-auditor', context: {},
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result.error).toContain('silent-start');
+    expect(taskUpdateSet.result.errorType).toBe('infra_stalled');
   });
 
   // Regression: costUsd is never populated on the reaper's own kill path, so

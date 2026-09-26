@@ -27,6 +27,7 @@ function matches(row: any, filter: any): boolean {
   if (!filter) return true;
   if (filter.type === 'and') return filter.args.every((f: any) => matches(row, f));
   if (filter.type === 'eq') return row[filter.col] === filter.val;
+  if (filter.type === 'ne') return row[filter.col] !== filter.val;
   return true;
 }
 
@@ -50,7 +51,12 @@ export const db = {
         return {
           where(filter: any) {
             const rows = [...store.values()].filter((r) => matches(r, filter));
-            return Promise.resolve(rows.map((r) => ({ status: r.status, firstSeenAt: r.firstSeenAt })));
+            return Promise.resolve(rows.map((r) => ({
+              status: r.status,
+              firstSeenAt: r.firstSeenAt,
+              specPath: r.specPath,
+              assertionId: r.assertionId,
+            })));
           },
         };
       },
@@ -85,6 +91,7 @@ export function installSpecDiscrepancyDbMock(): void {
   mock.module('../db/schema', () => ({ specDiscrepancies: specDiscrepanciesCols }));
   mock.module('drizzle-orm', () => ({
     eq: (col: any, val: any) => ({ type: 'eq', col, val }),
+    ne: (col: any, val: any) => ({ type: 'ne', col, val }),
     and: (...args: any[]) => ({ type: 'and', args }),
   }));
 }

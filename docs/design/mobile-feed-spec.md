@@ -244,7 +244,7 @@ The web dashboard (`apps/web/`) already has a warm, fully-responsive design syst
 
 ### Shared primitives to restyle (cascade order)
 
-`.card` / `.card-interactive` → `.mission-card` (keep 4px left status border, square the rest) → buttons (primary = ink fill + accent hard shadow; secondary = bordered) → `components/ui/Select.tsx` + `BackendSelect.tsx` → badges/`.health-pill`/`.filter-pill` (→ StatusChip variants) → `.glow-dot` → modals/sheets (`ConfirmDialog`, `QuickCreateModal`, `StartTaskModal`) → grids (`MissionGrid`/`TaskGrid`/`TeamGrid`) → `MarkdownContent` (square code blocks).
+`.card` / `.card-interactive` → `.mission-card` (keep 4px left status border, square the rest) → buttons (primary = ink fill + accent hard shadow; secondary = bordered) → `components/ui/Select.tsx` + `BackendSelect.tsx` → badges/`.health-pill`/`.filter-pill` (→ StatusChip variants) → `.glow-dot` → modals/sheets (`ConfirmDialog`; `QuickCreateModal` and `StartTaskModal` were deleted as dead code in #2776) → grids (`MissionGrid`/`TaskGrid`/`TeamGrid`) → `MarkdownContent` (square code blocks).
 
 ### Reference pages to pin in Pencil (desktop ≥1280 + mobile 393)
 

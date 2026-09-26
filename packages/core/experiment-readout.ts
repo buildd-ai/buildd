@@ -37,7 +37,7 @@ export type RowOutcome = 'clean' | 'unclean' | 'pending';
  */
 export const INFRA_EXIT_CAUSES: ReadonlySet<string> = new Set([
   'budget_limited', 'infra_failure', 'never_started', 'silent_start', 'reassigned',
-  'sandbox_mount_gap', 'server_refused', 'needs_input',
+  'sandbox_mount_gap', 'server_refused', 'needs_input', 'task_cancelled',
 ]);
 
 /** One enrolled task, with everything the readout needs already joined. */

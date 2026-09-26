@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { consumesRetryAttempt, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
 import { NextRequest } from 'next/server';
@@ -66,7 +66,7 @@ const mockExhaustMissionBudget = mock(() => Promise.resolve());
 // and resolves to the same task object the tests already set on
 // mockTasksFindFirst, wrapped in an array — so existing `outputRequirement`
 // setups drive both the relational and the select-based reads.
-const mockSelect = mock(() => {
+const selectAllColumns = () => {
   const chain: any = {
     from: () => chain,
     where: () => chain,
@@ -76,7 +76,33 @@ const mockSelect = mock(() => {
       mockTasksFindFirst().then((row: any) => (row ? [row] : [])).then(resolve, reject),
   };
   return chain;
-});
+};
+// Projection-honouring variant: a select returns ONLY the columns it names, so
+// a column dropped from a projection reads as undefined, as it would in SQL.
+const selectProjectedColumns = (projection?: Record<string, unknown>) => {
+  const chain: any = {
+    from: () => chain,
+    where: () => chain,
+    limit: () => chain,
+    orderBy: () => chain,
+    then: (resolve: any, reject: any) =>
+      mockTasksFindFirst()
+        .then((row: any) => {
+          if (!row) return [];
+          if (!projection) return [row];
+          return [Object.fromEntries(Object.keys(projection).map((k) => [k, row[k]]))];
+        })
+        .then(resolve, reject),
+  };
+  return chain;
+};
+const mockSelect = mock(selectAllColumns);
+
+// Dashboard session — accepted on GET only.
+const mockGetCurrentUser = mock(async () => null as { id: string } | null);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
+const mockVerifyWorkspaceAccess = mock(async (_userId: string, _workspaceId: string) => null as { teamId: string; role: string } | null);
+mock.module('@/lib/team-access', () => ({ verifyWorkspaceAccess: mockVerifyWorkspaceAccess }));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -528,6 +554,15 @@ mock.module('@/lib/terminal-record-ledger', () => ({
   TERMINAL_OUTCOMES: ['completed', 'failed', 'refused', 'crashed'],
 }));
 
+// Visual-auditor evidence check. Its own queries/predicates are covered in
+// lib/visual-audit-evidence.test.ts; here only the gate's wiring is under test.
+const okEvidence = { ok: true, requiredRoutes: [], missing: [], emptyFindings: [], notUploaded: [], unlinkedIssues: [] };
+const mockLoadVisualAuditEvidence = mock((_opts: any) => Promise.resolve(okEvidence as any));
+mock.module('@/lib/visual-audit-evidence', () => ({
+  loadVisualAuditEvidence: mockLoadVisualAuditEvidence,
+  formatVisualEvidenceRejection: (v: any) => `Visual audit evidence incomplete. Missing: ${v.missing.join(', ')}`,
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -549,7 +584,52 @@ function createMockRequest(options: {
   return new NextRequest('http://localhost:3000/api/workers/worker-1', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+// workers.id is a uuid column, so the route rejects a non-UUID id before any
+// lookup. Fixture rows keep their readable 'worker-1' ids; only the route
+// param has to be UUID-shaped.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: WORKER_ID });
+
+// A non-UUID id can never name a worker, and handing one to Postgres raises
+// `invalid input syntax for type uuid` (22P02), which escaped the handler as a
+// 500. A runner holding a stale local record under a non-UUID id retried that
+// 500 on every reconcile pass; it must get a 404 it can act on, without the id
+// ever reaching the database.
+describe('/api/workers/[id] with a non-UUID id', () => {
+  const nonUuidParams = Promise.resolve({ id: 'worker-1' });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    // Behave like Postgres: comparing a uuid column to a non-UUID throws.
+    mockWorkersFindFirst.mockImplementation(() => {
+      throw new Error('invalid input syntax for type uuid: "worker-1"');
+    });
+  });
+
+  it('GET returns 404 without querying the database', async () => {
+    const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+    expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('PATCH returns 404 without querying the database', async () => {
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+    expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+  });
+});
 
 describe('GET /api/workers/[id]', () => {
   beforeEach(() => {
@@ -619,6 +699,85 @@ describe('GET /api/workers/[id]', () => {
     const data = await res.json();
     expect(data.id).toBe('worker-1');
     expect(data.status).toBe('running');
+  });
+});
+
+describe('GET /api/workers/[id] — dashboard session', () => {
+  const SESSION_WORKER = {
+    id: 'worker-1',
+    accountId: 'account-runner',
+    workspaceId: 'ws-1',
+    status: 'running',
+    milestones: [{ label: 'Edited route.ts' }],
+    task: { id: 'task-1', title: 'Test Task' },
+    workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig: { url: 'https://example.test/hook', token: 'hook-secret', enabled: true } },
+  };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkersFindFirst.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockReset();
+  });
+
+  it('returns the worker (with milestones) to a member of its workspace', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.id).toBe('worker-1');
+    expect(data.milestones).toEqual([{ label: 'Edited route.ts' }]);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-1');
+  });
+
+  it('never hands the workspace webhook bearer token to a session caller', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+
+    expect(JSON.stringify(await res.json())).not.toContain('hook-secret');
+  });
+
+  it('404s (not 403) a worker outside the user teams', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+  });
+
+  it('401s with neither a session nor a key', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const res = await GET(createMockRequest(), { params: mockParams });
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps the key path authoritative when a key is present', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+    expect(mockVerifyWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a session on PATCH', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { status: 'completed' } }), { params: mockParams });
+
+    expect(res.status).toBe(401);
   });
 });
 
@@ -1486,7 +1645,7 @@ describe('PATCH /api/workers/[id]', () => {
       // The trace row is queryable via get_error_traces regardless of whether
       // this PATCH's own appendErrorTraces (none, here) carried anything.
       expect(lastInsertValues).toMatchObject({
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
         taskId: 'task-1',
         pattern: 'post_supersession_error',
         source: 'post_supersession',
@@ -3986,6 +4145,142 @@ describe('PATCH /api/workers/[id]', () => {
       expect((await res.json()).hint).toBe('create_pr or create_artifact');
     });
 
+    // The mission arm exists for rows written with workerId NULL (the mission
+    // artifacts route). A row owned by ANOTHER worker is that worker's
+    // deliverable: before upload-url set missionId it could not match; now
+    // every mission upload carries one, so without the NULL bound a sibling's
+    // screenshot (or the auditor's) satisfied this task's gate.
+    it("artifact_required is NOT satisfied by a sibling worker's mission artifact", async () => {
+      const matches = (pred: any, row: Record<string, any>): boolean => {
+        if (!pred) return true;
+        switch (pred.type) {
+          case 'and': return pred.args.every((a: any) => matches(a, row));
+          case 'or': return pred.args.some((a: any) => matches(a, row));
+          case 'not': return !matches(pred.expr, row);
+          case 'eq': return row[pred.field] === pred.value;
+          case 'isNull': return row[pred.field] === null || row[pred.field] === undefined;
+          case 'gte': return new Date(row[pred.field]).getTime() >= new Date(pred.value).getTime();
+          default: return true;
+        }
+      };
+      const siblingShot = {
+        'artifacts.workerId': 'worker-sibling',
+        'artifacts.missionId': 'mission-1',
+        'artifacts.updatedAt': new Date('2026-08-01T10:05:00.000Z'),
+      };
+      mockArtifactsFindMany.mockImplementation((args: any) =>
+        Promise.resolve(matches(args?.where, siblingShot) ? [{ id: 'art-1' }] : []),
+      );
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        branch: 'buildd/mission-research', commitCount: 0, prUrl: null, prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'), pendingInstructions: null, milestones: null, waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('create_pr or create_artifact');
+    });
+
+    describe('visual-auditor evidence check (replaces hasDeliverableArtifact)', () => {
+      const failing = {
+        ok: false, requiredRoutes: ['/app/missions'], missing: ['/app/missions @ desktop'],
+        emptyFindings: [], notUploaded: [], unlinkedIssues: [],
+      };
+
+      function auditWorker(overrides: Record<string, unknown> = {}) {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+          branch: 'buildd/audit', commitCount: 0, prUrl: null, prNumber: null,
+          startedAt: new Date('2026-08-01T10:00:00.000Z'), pendingInstructions: null, milestones: null, waitingFor: null,
+          ...overrides,
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1', roleSlug: 'visual-auditor',
+        });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+      }
+      const complete = () => PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Audited.', summarySource: 'agent' },
+      }), { params: mockParams });
+
+      beforeEach(() => {
+        mockLoadVisualAuditEvidence.mockReset();
+        mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+        // The gate keys off terminalTaskRow's `roleSlug`. With the all-columns
+        // select mock, dropping `roleSlug: tasks.roleSlug` from that projection
+        // still passed every test here while prod would never gate an audit.
+        mockSelect.mockImplementation(selectProjectedColumns as any);
+      });
+      afterEach(() => {
+        mockSelect.mockImplementation(selectAllColumns);
+      });
+
+      it('refuses with a message naming what is missing, and records the refusal', async () => {
+        auditWorker();
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        let capturedSet: any = null;
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((vals: any) => { capturedSet = vals; return { where: mock(() => ({ returning: mock(() => []) })) }; }),
+        });
+
+        const res = await complete();
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('/app/missions @ desktop');
+        expect(data.hint).toBe('visual_evidence');
+        expect(data.gate).toBeTruthy();
+        expect(capturedSet?.rejectedCompletionPayload?.reason).toBe('visual_evidence');
+        expect(mockLoadVisualAuditEvidence).toHaveBeenCalledWith({
+          workerId: WORKER_ID, taskId: 'task-1', missionId: 'mission-1', workspaceId: 'ws-1',
+          workerStartedAt: new Date('2026-08-01T10:00:00.000Z'),
+        });
+      });
+
+      it('a sibling mission artifact does not satisfy it (the generic artifact check is replaced)', async () => {
+        auditWorker();
+        mockArtifactsFindMany.mockResolvedValue([{ id: 'sibling-art' }] as any);
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        expect((await complete()).status).toBe(400);
+      });
+
+      it('a PR on the worker does not bypass it', async () => {
+        auditWorker({ prUrl: 'https://github.com/o/r/pull/7', prNumber: 7 });
+        mockLoadVisualAuditEvidence.mockResolvedValue(failing as any);
+        expect((await complete()).status).toBe(400);
+      });
+
+      it('completes when the evidence is complete, with no artifact row of the generic kind', async () => {
+        auditWorker();
+        mockArtifactsFindMany.mockResolvedValue([]);
+        const res = await complete();
+        expect(res.status).toBe(200);
+        expect(mockLoadVisualAuditEvidence).toHaveBeenCalledTimes(1);
+      });
+
+      it('is not consulted for any other role', async () => {
+        auditWorker();
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', outputRequirement: 'artifact_required', missionId: 'mission-1', roleSlug: 'builder',
+        });
+        mockArtifactsFindMany.mockResolvedValue([{ id: 'art-1' }] as any);
+        const res = await complete();
+        expect(res.status).toBe(200);
+        expect(mockLoadVisualAuditEvidence).not.toHaveBeenCalled();
+      });
+    });
+
     // Regression for the 54-turn-run-lost incident: a research task declares
     // artifact_required, produces no artifact, and the ONLY completion attempt
     // is the runner's own end-of-session PATCH (summarySource: 'fallback') —
@@ -6373,7 +6668,7 @@ describe('PATCH /api/workers/[id]', () => {
         body: { status: 'completed' },
       }), { params: mockParams });
       const arg = mockRecordTaskOutcome.mock.calls[0][0];
-      expect(arg.workerId).toBe('worker-1');
+      expect(arg.workerId).toBe(WORKER_ID);
       expect(arg.exitCause).toBe('infra_failure');
     });
 
@@ -8117,7 +8412,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(connectorAuthCall).toBeTruthy();
       expect(connectorAuthCall[0]).toBe('workspace-ws-1');
       expect(connectorAuthCall[2]).toMatchObject({
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
         connectorId: 'conn-1',
         connectorName: 'GitHub',
       });
@@ -8224,7 +8519,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(permCall).toBeTruthy();
       expect(permCall[0]).toBe('workspace-ws-1');
       expect(permCall[2]).toMatchObject({
-        workerId: 'worker-1',
+        workerId: WORKER_ID,
         connectorId: 'conn-1',
         connectorName: 'GitHub',
       });
@@ -8668,7 +8963,7 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(req, { params: mockParams });
 
       const progress = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
-      expect(progress?.[2]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', currentAction: 'Reading main.ts' });
+      expect(progress?.[2]).toMatchObject({ workerId: WORKER_ID, taskId: 'task-1', currentAction: 'Reading main.ts' });
     });
 
     it('the progress event carries the masked action for a sensitive workspace, and nothing when none was sent', async () => {
@@ -9648,6 +9943,74 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  // ── Visual auditor: an audit that errors must hold its mission ──────────────
+  // A failed task is terminal in mission-completion and RELEASES the mission.
+  // A visual-auditor task that died before it could park a question has seen
+  // nothing, so once its retries are spent it is recorded infra_stalled, which
+  // canCompleteMission blocks on (docs/design/visual-qa-auditor.md).
+  describe('visual-auditor failure holds the mission', () => {
+    function setupAuditFailure(task: Record<string, unknown>) {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: 'mission-1',
+        outputRequirement: 'artifact_required', roleSlug: 'visual-auditor', context: {}, ...task,
+      });
+      return { taskSetCalls };
+    }
+    const fail = () => PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'failed', error: 'playwright: browser closed unexpectedly' },
+    }), { params: mockParams });
+
+    it('first failure still takes the ordinary mission retry', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: {} });
+      await fail();
+      expect(taskSetCalls.find((c: any) => c.status === 'pending')?.context?.retryCount).toBe(1);
+      expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+    });
+
+    it('once retries are spent, the audit fails as infra_stalled, not as a plain failure', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: { retryCount: 1 } });
+      const res = await fail();
+      expect(res.status).toBe(200);
+      const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+      expect(failing).toBeDefined();
+      expect(failing.result.errorType).toBe('infra_stalled');
+      expect(failing.result.error).toContain('Visual audit');
+      expect(failing.result.error).toContain('browser closed unexpectedly');
+    });
+
+    it('a builder task failing the same way stays a plain failure', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: { retryCount: 1 }, roleSlug: 'builder' });
+      await fail();
+      const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+      expect(failing).toBeDefined();
+      expect(failing.result?.errorType).toBeUndefined();
+    });
+
+    it('an audit outside a mission has nothing to hold and stays a plain failure', async () => {
+      const { taskSetCalls } = setupAuditFailure({ context: {}, missionId: null });
+      await fail();
+      const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+      expect(failing?.result?.errorType).toBeUndefined();
+    });
+  });
+
   // ── Cancelled-task protection ────────────────────────────────────────────────
   // Regression: a cancelled task's in-flight worker can send a final PATCH after
   // the cancel, which previously reset the task to 'pending' via auto-retry,
@@ -9757,6 +10120,166 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+  });
+
+  // Regression: the task was cancelled server-side while its worker ran; the
+  // agent's own complete_task was fenced off ("TASK CANCELLED"), the SDK
+  // session still ended cleanly, and the runner's fallback completion PATCH hit
+  // the output_requirement gate — a 400 the runner recorded as a terminal
+  // error, counted as a failure. The gate asks for a deliverable the task no
+  // longer wants: a cancelled task has no outcome left to confirm.
+  describe('task cancelled while the worker was running', () => {
+    let taskSetCalls: any[];
+    let workerSetCalls: any[];
+
+    beforeEach(() => {
+      taskSetCalls = [];
+      workerSetCalls = [];
+      mockAuthenticateApiKey.mockReset();
+      mockWorkersFindFirst.mockReset();
+      mockTasksFindFirst.mockReset();
+      mockWorkersUpdate.mockReset();
+      mockTasksUpdate.mockReset();
+      mockArtifactsFindMany.mockReset();
+      mockWorkspacesFindFirst.mockReset();
+      mockTeamsFindFirst.mockReset();
+
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => {
+          workerSetCalls.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', accountId: 'account-1', workspaceId: 'ws-1', status: vals.status ?? 'running', exitCause: vals.exitCause ?? null }]) })) };
+        }),
+      }));
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+      mockTeamsFindFirst.mockResolvedValue(null);
+    });
+
+    function runningWorker(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', branch: 'buildd/test', commitCount: 0, dirtyWorktree: false,
+        prUrl: null, prNumber: null, pendingInstructions: null, milestones: [],
+        ...overrides,
+      };
+    }
+
+    const terminalWorkerSet = () => workerSetCalls.find((s: any) => s.exitCause);
+
+    it('does not apply the output gate to a fallback completion of a cancelled task', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker());
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'auto', context: {} });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'The fix already landed upstream; discarded local edits.', summarySource: 'fallback' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.gate).toBeUndefined();
+      // Recorded as a cancellation: not completed (nothing was confirmed) and
+      // not a failure that counts or charges a retry.
+      const terminal = terminalWorkerSet();
+      expect(terminal?.status).toBe('failed');
+      expect(terminal?.exitCause).toBe('task_cancelled');
+      expect(consumesRetryAttempt(terminal?.exitCause)).toBe(false);
+      expect(terminal?.error).toMatch(/cancelled/i);
+      expect(data.exitCause).toBe('task_cancelled');
+      // The task stays cancelled — never flipped to completed, failed or pending.
+      expect(taskSetCalls.some((u: any) => u.status === 'completed' || u.status === 'pending')).toBe(false);
+    });
+
+    it('also skips the gate under pr_required', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker());
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'pr_required', context: {} });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'stopped', summarySource: 'fallback' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(terminalWorkerSet()?.exitCause).toBe('task_cancelled');
+    });
+
+    it('keeps a delivered PR as a completion (write-fence carve-out unchanged)', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker({ prUrl: 'https://github.com/o/r/pull/1', prNumber: 1 }));
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'auto', context: {} });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Opened the PR', summarySource: 'agent' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSetCalls.some((s: any) => s.exitCause === 'task_cancelled')).toBe(false);
+      expect(workerSetCalls.some((s: any) => s.status === 'completed')).toBe(true);
+    });
+
+    // A PR opened outside create_pr (e.g. `gh pr create`) is not on the worker
+    // row yet: the output gate's GitHub auto-detect is what adopts it. The
+    // cancellation rewrite must not pre-empt that door — before it existed,
+    // this completion adopted the PR and completed.
+    it('keeps a PR the auto-detect would adopt from GitHub as a completion', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker({ commitCount: 2 }));
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'auto', context: {} });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({ id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 } });
+      mockGithubApi.mockResolvedValue([{ html_url: 'https://github.com/org/repo/pull/42', number: 42, state: 'open' }]);
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'stopped', summarySource: 'fallback' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSetCalls.some((s: any) => s.exitCause === 'task_cancelled')).toBe(false);
+      expect(workerSetCalls.some((s: any) => s.prUrl === 'https://github.com/org/repo/pull/42')).toBe(true);
+      expect(workerSetCalls.some((s: any) => s.status === 'completed')).toBe(true);
+    });
+
+    it('classifies a failed report on a cancelled task as task_cancelled, not code_failure', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker());
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'cancelled', outputRequirement: 'none', context: {} });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Aborted by user' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(terminalWorkerSet()?.exitCause).toBe('task_cancelled');
+    });
+
+    it('still refuses the same completion when the task is NOT cancelled', async () => {
+      mockWorkersFindFirst.mockResolvedValue(runningWorker());
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', outputRequirement: 'auto', context: {} });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'stopped', summarySource: 'fallback' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.gate).toBe('output_requirement');
+      // The message used to read "Task has no confirmed outcome — the session
+      // ended without the agent calling complete_task but no pull request or
+      // artifact" — two clauses spliced into one sentence.
+      expect(data.error).not.toContain('complete_task but no pull request');
+      expect(data.error).toContain('no confirmed outcome');
     });
   });
 
@@ -9907,7 +10430,7 @@ describe('PATCH /api/workers/[id]', () => {
         headers: { Authorization: 'Bearer bld_test' },
         body: {
           status: 'completed',
-          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+          verificationEvidence: { workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
         },
       });
       const res = await PATCH(req, { params: mockParams });
@@ -9963,7 +10486,7 @@ describe('PATCH /api/workers/[id]', () => {
         set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
       });
       mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({
-        verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+        verificationEvidence: { workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
       }));
       mockTasksFindFirst.mockResolvedValue(makeLoopTask());
 
@@ -12274,7 +12797,7 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     const overlapCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'path_overlap_detected');
     expect(overlapCalls.length).toBe(1);
     const payload = overlapCalls[0][2];
-    expect(payload.detectedWorkerId).toBe('worker-1');
+    expect(payload.detectedWorkerId).toBe(WORKER_ID);
     expect(payload.detectedTaskId).toBe('task-1');
     expect(payload.siblingWorkerId).toBe('worker-2');
     expect(payload.siblingTaskId).toBe('task-2');

@@ -7,12 +7,13 @@ import {
   deriveTimestampLabel,
   deriveWorkKind,
   isStaleWorker,
+  stripPrTitlePrefix,
   type ChainPositionResult,
   type IntensityResult,
   type IntensityTier,
   type WorkKind,
 } from '@/lib/task-presentation';
-import { StageChip } from '@/components/StageChip';
+import { StageChip, stageChipShowsPrNumber } from '@/components/StageChip';
 import { deriveStage, type Stage } from '@/lib/stage';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
@@ -204,7 +205,7 @@ function TaskTypeBadge({
     const cfg = ATTEMPT_TYPE_BADGE[taskType];
     return (
       <span
-        className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
+        className={`font-mono text-[11px] md:text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
         title={cfg.label}
         aria-label={cfg.label}
       >
@@ -218,7 +219,7 @@ function TaskTypeBadge({
   if (!result) return null;
   return (
     <span
-      className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
+      className={`font-mono text-[11px] md:text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
       title={result.label}
       aria-label={result.label}
     >
@@ -307,6 +308,13 @@ export function TaskCard({
   // A mission task opens as the sheet over its mission (mission-task-href.ts).
   const href = missionTaskHref({ missionId, taskId: id, mode: 'sheet' });
   const showAttempt = (attemptCurrent ?? 0) >= 2;
+  // Row/full densities pass prNumber to the chip. When it shows `#N`, the
+  // title and the PR link must not say it again.
+  const chipShowsPr = stageChipShowsPrNumber({ stage, prNumber, loopMaxLoops, loopState });
+  const displayTitle = (() => {
+    const t = taskType ? stripTaskTypePrefix(title) : title;
+    return chipShowsPr ? stripPrTitlePrefix(t, prNumber) : t;
+  })();
   const tierColor = intensity ? TIER_COLOR[intensity.tier] : 'text-text-secondary';
 
   // ─── INLINE density — mission timeline row ────────────────────────────────
@@ -331,7 +339,7 @@ export function TaskCard({
     const prStatusCls   = prLifecycleStatus === 'merged' ? 'text-status-success' : 'text-text-muted';
 
     return (
-      <div className="relative group flex items-center gap-2 py-1.5 min-w-0">
+      <div className="relative group flex items-center gap-2 py-1.5 min-w-0" data-testid="task-card" data-status={displayStatus}>
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -367,20 +375,20 @@ export function TaskCard({
 
         {/* T3 — elapsed time for queued tasks (right side empty otherwise) */}
         {!showChip && !showInlinePr && (
-          <span className="font-mono text-[10px] text-text-muted tabular-nums shrink-0 pointer-events-none">
+          <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums shrink-0 pointer-events-none">
             {timestampLabel}
           </span>
         )}
 
         {/* T4 — inline PR for done-group tasks (merged / closed): single line */}
         {showInlinePr && (
-          <span className="shrink-0 flex items-center gap-1 font-mono text-[10px] pointer-events-none">
+          <span className="shrink-0 flex items-center gap-1 font-mono text-[11px] md:text-[10px] pointer-events-none">
             <a
               href={prUrl!}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 pointer-events-auto text-accent-text hover:underline"
+              className="relative z-10 pointer-events-auto text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-2 max-md:after:-inset-y-1.5 max-md:after:content-['']"
             >
               #{prNumber}
             </a>
@@ -397,7 +405,7 @@ export function TaskCard({
   // Tiers 1–4, sparkline optional.
   if (density === 'row') {
     return (
-      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors">
+      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -416,7 +424,7 @@ export function TaskCard({
           {/* T1 — title (with optional type badge) */}
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-text-primary group-hover:text-accent-text transition-colors">
             <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
-            <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
+            <span className="truncate">{displayTitle}</span>
             <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
           </div>
 
@@ -425,13 +433,13 @@ export function TaskCard({
             <div className="text-[11px] text-text-muted mt-0.5 truncate">
               {missionTitle && <span>{missionTitle}</span>}
               {missionTitle && workspaceName && <span className="mx-1">·</span>}
-              {workspaceName && <span className="font-mono uppercase tracking-wide text-[9px]">{workspaceName}</span>}
+              {workspaceName && <span className="font-mono uppercase tracking-wide text-[11px] md:text-[9px]">{workspaceName}</span>}
             </div>
           )}
           {/* workspace only when inside group (missionTitle suppressed) */}
           {groupScoped && workspaceName && (
             <div className="text-[11px] text-text-muted mt-0.5 truncate">
-              <span className="font-mono uppercase tracking-wide text-[9px]">{workspaceName}</span>
+              <span className="font-mono uppercase tracking-wide text-[11px] md:text-[9px]">{workspaceName}</span>
             </div>
           )}
 
@@ -453,7 +461,7 @@ export function TaskCard({
           <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
 
           {/* T3 — elapsed */}
-          <span className={`font-mono text-[10px] tabular-nums ${tierColor}`}>
+          <span className={`font-mono text-[11px] md:text-[10px] tabular-nums ${tierColor}`}>
             {timestampLabel}
             {stale && <span className="ml-1 text-status-warning">!</span>}
           </span>
@@ -464,22 +472,26 @@ export function TaskCard({
               <Sparkline data={intensity.sparkline} tier={intensity.tier} />
             )}
             {showAttempt && (
-              <span className="font-mono text-[10px] text-text-muted tabular-nums">
+              <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums">
                 {attemptCurrent}/{attemptTotal}
               </span>
             )}
           </div>
 
-          {/* T4 — PR link */}
+          {/* T4 — PR link. Below md the ::after widens the hit area without
+              growing the row. It stops at the gap above (the elapsed line
+              stays the task's) and at the row's bottom padding (so it never
+              reaches the next row's overlay). The chip names #N when it can. */}
           {prUrl && (
             <a
               href={prUrl}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline"
+              aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
+              className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
             >
-              PR #{prNumber}↗
+              {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
             </a>
           )}
         </div>
@@ -490,7 +502,7 @@ export function TaskCard({
   // ─── FULL density — Home Right Now ───────────────────────────────────────
   // All tiers.
   return (
-    <div className="relative group border-l-2 border-accent bg-card-rightnow px-4 py-3 min-w-0 hover:bg-surface-3 transition-colors">
+    <div className="relative group border-l-2 border-accent bg-card-rightnow px-4 py-3 min-w-0 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
       {/* Link overlay */}
       <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -498,7 +510,7 @@ export function TaskCard({
       <div className="flex items-start justify-between gap-3 mb-0.5 pointer-events-none">
         <div className="flex items-center gap-1.5 text-[15px] font-medium text-text-primary group-hover:text-accent-text transition-colors flex-1 min-w-0">
           <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
-          <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
+          <span className="truncate">{displayTitle}</span>
           <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
         </div>
         <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
@@ -512,7 +524,7 @@ export function TaskCard({
           )}
           {missionTitle && workspaceName && <span className="shrink-0">·</span>}
           {workspaceName && (
-            <span className="font-mono text-[9px] uppercase tracking-wide shrink-0">{workspaceName}</span>
+            <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide shrink-0">{workspaceName}</span>
           )}
         </div>
       )}
@@ -528,7 +540,7 @@ export function TaskCard({
             />
           )}
           {chain.unblocks > 0 && chain.blockedBy.length === 0 && (
-            <span className="text-[10px] text-text-muted">
+            <span className="text-[11px] md:text-[10px] text-text-muted">
               → unblocks {chain.unblocks}
             </span>
           )}
@@ -541,13 +553,13 @@ export function TaskCard({
           {timestampLabel}
         </span>
         {stale && (
-          <span className="font-mono text-[10px] text-status-warning uppercase tracking-wide">stale</span>
+          <span className="font-mono text-[11px] md:text-[10px] text-status-warning uppercase tracking-wide">stale</span>
         )}
         {intensity && intensity.sparkline.length > 0 && (
           <Sparkline data={intensity.sparkline} tier={intensity.tier} />
         )}
         {showAttempt && (
-          <span className="font-mono text-[10px] text-text-muted tabular-nums">
+          <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums">
             attempt {attemptCurrent}/{attemptTotal}
           </span>
         )}
@@ -556,7 +568,7 @@ export function TaskCard({
       {/* T4 — runner (last) + PR link */}
       <div className="flex items-center justify-between gap-2">
         {runnerName ? (
-          <span className="font-mono text-[10px] text-text-muted truncate pointer-events-none">{runnerName}</span>
+          <span className="font-mono text-[11px] md:text-[10px] text-text-muted truncate pointer-events-none">{runnerName}</span>
         ) : (
           <span />
         )}
@@ -566,9 +578,10 @@ export function TaskCard({
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0"
+            aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
+            className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline shrink-0 max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-3 max-md:after:content-['']"
           >
-            PR #{prNumber}↗
+            {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
           </a>
         )}
       </div>

@@ -96,13 +96,24 @@ export interface MissionMastheadProps {
   className?: string;
 }
 
-function StateChip({ chip }: { chip: MastheadChip }) {
+/**
+ * A caller-supplied node (`verified`, `actions`, `expand`) as a single child.
+ * On mission detail these arrive from the server page, and an outlined Flight
+ * chunk is a lazy node around an unvalidated element: left bare in a JSX
+ * children array it trips React's missing-key warning. As a fragment's only
+ * child it is not a list item.
+ */
+function Slot({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function StateChip({ chip, owner }: { chip: MastheadChip; owner?: string }) {
   return (
     <span
       data-testid="mission-state-chip"
-      className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase leading-none tracking-wider ${chip.cls}`}
+      className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase leading-none tracking-wider ${chip.cls}`}
     >
-      {chip.label}
+      {owner ? `${owner} · ${chip.label}` : chip.label}
     </span>
   );
 }
@@ -203,8 +214,8 @@ export default function MissionMasthead(props: MissionMastheadProps) {
           {/* Controls sit above the stretched card link, never inside it. */}
           {(expand || actions) && (
             <span className="relative z-10 flex shrink-0 items-center gap-1">
-              {actions}
-              {expand}
+              <Slot>{actions}</Slot>
+              <Slot>{expand}</Slot>
             </span>
           )}
         </div>
@@ -244,18 +255,18 @@ export default function MissionMasthead(props: MissionMastheadProps) {
           )}
           <h1 className="min-w-0 flex-1 truncate font-mono text-[16px] font-semibold text-text-primary">{title}</h1>
           {folded && <StateChip chip={chip} />}
-          {actions}
+          <Slot>{actions}</Slot>
         </div>
         {!folded && (
           <div className="flex min-h-[28px] flex-wrap items-center gap-2">
             <StateChip chip={chip} />
-            {verified}
+            <Slot>{verified}</Slot>
           </div>
         )}
         <div className="flex items-center gap-2">
           <MissionPulse variant="header" segments={segments} connected segmentLabels={segmentLabels} className={`flex-1 ${pulseClassName}`} />
           {caption && <span className="ml-auto shrink-0 font-mono text-[11px] text-text-muted">{caption}</span>}
-          {expand}
+          <Slot>{expand}</Slot>
         </div>
       </header>
     );
@@ -272,13 +283,18 @@ export default function MissionMasthead(props: MissionMastheadProps) {
         ) : (
           <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold text-text-primary">{title}</span>
         )}
-        <StateChip chip={chip} />
+        {/* A task's own status badge sits right below this bar: name whose state
+            this is, so MISSION · RUNNING beside FIXING CI is not a contradiction. */}
+        <StateChip chip={chip} owner="Mission" />
       </div>
       <div className="flex items-center gap-2">
-        <MissionPulse variant="context" segments={segments} selectedTaskId={selectedTaskId} className="flex-1" />
+        {/* The pulse keeps a floor width and never shrinks below it: squeezed to
+            ~0px beside a long phase label, its ringed segment's outline painted
+            over the count. The position text is what gives way (truncates). */}
+        <MissionPulse variant="context" segments={segments} selectedTaskId={selectedTaskId} className="flex-[1_0_5rem]" />
         {position && (
           <>
-            <span className="shrink-0 font-mono text-[11px] text-text-muted">
+            <span className="min-w-0 truncate font-mono text-[11px] text-text-muted">
               {`${position.n} / ${position.total}${position.phaseLabel ? ` · ${position.phaseLabel}` : ''}`}
             </span>
             <StepLink dir="prev" href={position.prevHref} onStep={onStep} />

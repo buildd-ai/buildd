@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -134,6 +136,13 @@ async function lookupSignature(
  *                 failed worker. Combine with `errorPrefix` to roll up gate
  *                 reasons sharing a literal prefix.
  *
+ *   teamId      — dashboard session only: pin the scope to one of the user's
+ *                 teams (default: all of them). A team the user is not in
+ *                 404s. Ignored on the API key path, whose scope is its team.
+ *
+ * Auth: API key (scope = the key's team) or the dashboard session (scope = the
+ * user's teams, or the pinned one). A key, when present, is authoritative.
+ *
  * Response: { analytics, lookup?, family?, gates?, gateFamily? }
  *
  * `analytics` is always present, including under `family=gate` — the gate block
@@ -144,15 +153,29 @@ export async function GET(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') ?? null;
     const account = await authenticateApiKey(apiKey);
-    if (!account) {
+    const sessionUser = account ? null : await getCurrentUser();
+    if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    if (!account.teamId) {
+    const { searchParams } = new URL(req.url);
+
+    // The teams this caller may read: the key's own team, or the session
+    // user's teams (optionally pinned to one of them).
+    let teamIds: string[];
+    if (account) {
+      teamIds = account.teamId ? [account.teamId] : [];
+    } else {
+      const sessionTeamIds = await resolveSessionTeamIds(sessionUser!.id, searchParams.get('teamId'));
+      if (!sessionTeamIds) {
+        return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      }
+      teamIds = sessionTeamIds;
+    }
+    if (teamIds.length === 0) {
       return NextResponse.json({ error: 'No team associated with this account' }, { status: 400 });
     }
 
-    const { searchParams } = new URL(req.url);
     const rawWindow = searchParams.get('window');
     if (rawWindow !== null && !(FAILURE_WINDOWS as readonly string[]).includes(rawWindow)) {
       return NextResponse.json(
@@ -176,16 +199,18 @@ export async function GET(req: NextRequest) {
         where: eq(workspaces.id, workspaceId),
         columns: { id: true, teamId: true },
       });
-      if (!ws || ws.teamId !== account.teamId) {
+      if (!ws || !teamIds.includes(ws.teamId)) {
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
       scopedWsIds = [workspaceId];
-    } else {
+    } else if (account) {
       const wsRows = await db.query.workspaces.findMany({
         where: eq(workspaces.teamId, account.teamId),
         columns: { id: true },
       });
       scopedWsIds = wsRows.map((w: { id: string }) => w.id);
+    } else {
+      scopedWsIds = await workspaceIdsForTeams(teamIds);
     }
 
     const analytics = await getFailureAnalytics(scopedWsIds, window);

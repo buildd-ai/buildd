@@ -54,11 +54,12 @@ export default async function WorkspaceMergePolicyPage({
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-2xl mx-auto">
+      <div className="max-w-2xl">
         <MergePolicyEditor
           workspaceId={workspaceId}
           workspaceName={workspace.name}
           initial={effectivePolicy}
+          policyConfig={workspace.gitConfig?.policyConfig ?? null}
           roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
           missionOverrides={missionOverrides}
         />

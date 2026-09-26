@@ -82,6 +82,33 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     expect(html).toContain('max-width:80px');
   });
 
+  // Regression: a CI-retry task pushes to its parent's PR. When both land in
+  // the same band as separate rows, the band must count one PR, not two.
+  it('counts a PR carried by a parent and its CI retry once on the band row', () => {
+    const merged = (id: string) => ({
+      id,
+      status: 'completed',
+      prUrl: 'https://github.example/org/repo/pull/7',
+      prNumber: 7,
+      prLifecycleStatus: 'merged',
+      mergedAt: '2025-01-01T00:00:00Z',
+      completedAt: null,
+      startedAt: null,
+      currentAction: null,
+      branch: 'b',
+      waitingFor: null,
+    });
+    const doneTasks = [
+      makeTask('parent', { status: 'completed', latestWorker: merged('w-parent') }),
+      makeTask('retry', { status: 'completed', title: '[builder · after CI #1] Task parent', latestWorker: merged('w-retry') }),
+    ];
+    const html = renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: doneTasks.map(toChain) }} allTasksCount={2} />,
+    );
+    expect(html).toContain('· 1 PR<');
+    expect(html).not.toContain('2 PRs');
+  });
+
   it('strip on done/failed row uses only done+failed task segments (not all segments)', () => {
     const doneTasks = [makeTask('done1', { status: 'completed' })];
     const failedTasks = [makeTask('fail1', { status: 'failed' })];
@@ -267,7 +294,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(html).toContain('0.92');
     // Full verdict prose should NOT appear (collapsed)
     expect(html).not.toContain('Looks good');
-    expect(html).not.toContain('Merging automatically');
+    expect(html).not.toContain('Auto-merging');
   });
 
   it('suppresses PR status line for approved verdicts (chip is the only affordance)', () => {
@@ -307,7 +334,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(desktopTree(html)).not.toContain('#42');
   });
 
-  it('names the successor PR on a closed PR recorded as superseded, instead of "closed — not merged" (task fcaf83d5)', () => {
+  it('names the successor PR on a closed PR recorded as superseded, instead of "closed · not merged" (task fcaf83d5)', () => {
     const supersededTask = makeTask('t-superseded', {
       status: 'completed',
       latestWorker: {
@@ -338,10 +365,10 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     );
     expect(desktopTree(html)).toContain('landed as');
     expect(desktopTree(html)).toContain('#2293');
-    expect(desktopTree(html)).not.toContain('closed — not merged');
+    expect(desktopTree(html)).not.toContain('closed · not merged');
   });
 
-  it('still renders "closed — not merged" for a closed PR with no supersession recorded', () => {
+  it('still renders "closed · not merged" for a closed PR with no supersession recorded', () => {
     const closedTask = makeTask('t-closed', {
       status: 'completed',
       latestWorker: {
@@ -367,7 +394,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
         allTasksCount={1}
       />,
     );
-    expect(desktopTree(html)).toContain('closed — not merged');
+    expect(desktopTree(html)).toContain('closed · not merged');
     expect(desktopTree(html)).not.toContain('landed as');
   });
 

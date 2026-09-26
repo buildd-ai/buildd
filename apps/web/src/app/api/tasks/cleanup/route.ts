@@ -10,6 +10,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -183,6 +184,13 @@ export async function POST(req: NextRequest) {
         updatedAt: now,
       })
       .where(inArray(workers.id, stalledWorkerIds));
+
+    // These workers were just terminated outside PATCH /api/workers/[id], so
+    // this sweep must release their path claims itself — a timed-out worker
+    // never got to report a real outcome, so nothing landed.
+    for (const staleTaskId of stalledTaskIds) {
+      await releaseAndNotify(staleTaskId, 'abandoned');
+    }
 
     // Reset associated tasks to pending so they can be re-claimed — but cap
     // retries via resetOrFailTask to break loops on persistently-failing tasks.
@@ -387,6 +395,16 @@ export async function POST(req: NextRequest) {
           } else {
             await resetOrFailTask(taskId, now, 'worker runner heartbeat expired');
           }
+
+          // The worker was just terminated outside PATCH /api/workers/[id], so
+          // this sweep must release its path claims itself. An open PR on a
+          // task just promoted to completed means the work landed but hasn't
+          // merged yet — tell the waiter to keep waiting, not to rebase on
+          // nothing.
+          await releaseAndNotify(
+            taskId,
+            hasDeliverables && orphanWorker?.prNumber ? 'pending_merge' : 'abandoned',
+          );
         }
       }
 

@@ -113,7 +113,7 @@ export default function MissionConfig({
         </div>
         {selectedWorkspaceId !== (workspaceId || '') && (
           <p className="text-[11px] text-status-warning mt-1">
-            Changing workspace will update where scheduled tasks run.
+            Scheduled tasks run in this workspace.
           </p>
         )}
       </div>

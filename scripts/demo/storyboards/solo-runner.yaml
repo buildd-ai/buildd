@@ -1,0 +1,23 @@
+# Home against a real-shaped single-runner workspace (stories/solo-runner.json):
+# one runner x 10 slots, mostly idle, 100+ finished missions, a schedule due
+# months from now, a stack of doc fixes waiting on the same re-run.
+#
+#   bun run demo:shoot scripts/demo/storyboards/solo-runner.yaml --out <dir>
+#   DEMO_STORY=scripts/demo/stories/solo-runner-busy.json bun run demo:shoot scripts/demo/storyboards/solo-runner.yaml --out <dir>
+story: ../stories/solo-runner.json
+name: solo-runner
+viewport: { width: 1440, height: 900, scale: 1 }
+viewports: { phone: { width: 390, height: 844, scale: 2 } }
+themes: [dark, light]
+highlight:
+  - home-stat-strip
+  - home-fleet
+  - fleet-slot
+  - waiting-in-flight
+steps:
+  - id: home
+    goto: /app/home
+    viewports: [desktop, phone]
+    waitFor: home-headline
+    fullPage: true
+    caption: "Home on an ordinary day: one runner, mostly idle."

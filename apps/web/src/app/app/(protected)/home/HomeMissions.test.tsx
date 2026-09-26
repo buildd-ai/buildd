@@ -10,7 +10,7 @@ import {
   type MissionCardRow,
   type MissionCardTaskRow,
 } from '@/lib/mission-card-view';
-import { HomeMissions, selectHomeMissions, type HomeMissionSummary } from './HomeMissions';
+import { HomeMissions, selectHomeMissions, homeMissionsMoreLabel, type HomeMissionSummary } from './HomeMissions';
 import { MISSION_CARD_VIEW_CAP } from '@/lib/mission-card-view';
 
 let clock = Date.UTC(2026, 0, 1);
@@ -58,8 +58,50 @@ describe('selectHomeMissions', () => {
     expect(sel.visibleIds).toEqual(['r', 'a', 's2', 's3', 's1']);
     expect(sel.activeCount).toBe(2);
     expect(sel.hiddenCount).toBe(3);
-    expect(sel.scheduledCount).toBe(4);
+    // Only the scheduled mission WITHOUT a card counts toward "+N more".
+    expect(sel.scheduledCount).toBe(1);
     expect(sel.completedCount).toBe(1);
+    expect(sel.otherHiddenCount).toBe(1);
+  });
+
+  it('"+N more" never counts a scheduled mission whose card is already shown', () => {
+    // Regression: "+3 more (3 completed, 1 scheduled)" while the one scheduled
+    // mission was drawn right above the line.
+    const list: HomeMissionSummary[] = [
+      { id: 's1', group: 'scheduled', nextScanMins: 30 },
+      { id: 'c1', group: 'completed', nextScanMins: null },
+      { id: 'c2', group: 'completed', nextScanMins: null },
+      { id: 'c3', group: 'completed', nextScanMins: null },
+    ];
+    const sel = selectHomeMissions(list);
+    expect(sel.visibleIds).toEqual(['s1']);
+    expect(sel.scheduledCount).toBe(0);
+    expect(homeMissionsMoreLabel(sel)).toBe('+3 more (3 completed) →');
+  });
+
+  it('"+N more" parts always sum to N', () => {
+    const list: HomeMissionSummary[] = [
+      ...['s1', 's2', 's3', 's4', 's5'].map((id, i) => ({ id, group: 'scheduled' as const, nextScanMins: i })),
+      { id: 'c1', group: 'completed', nextScanMins: null },
+      { id: 'p1', group: 'paused', nextScanMins: null },
+    ];
+    const sel = selectHomeMissions(list);
+    expect(sel.hiddenCount).toBe(4);
+    expect(homeMissionsMoreLabel(sel)).toBe('+4 more (1 completed, 2 scheduled, 1 other) →');
+  });
+
+  it('the "+N more" line wraps on a phone instead of truncating', () => {
+    const list: HomeMissionSummary[] = [
+      { id: 's1', group: 'scheduled', nextScanMins: 30 },
+      { id: 'c1', group: 'completed', nextScanMins: null },
+    ];
+    const views = selectHomeMissions(list).visibleIds.map(id => buildMissionCardView({
+      id, title: `Mission ${id}`, status: 'active', tasks: [],
+    }, { from: 'home' }));
+    const out = renderToStaticMarkup(<HomeMissions missions={list} views={views} />);
+    const line = out.slice(0, out.indexOf('+1 more'));
+    const cls = line.slice(line.lastIndexOf('class="'));
+    expect(cls).not.toContain('truncate');
   });
   it('caps the cards it builds and counts the capped active missions as hidden', () => {
     const many: HomeMissionSummary[] = Array.from({ length: MISSION_CARD_VIEW_CAP + 4 }, (_, i) => ({
@@ -82,7 +124,7 @@ describe('selectHomeMissions', () => {
       tasks: [task(`${id}-t`, { status: 'in_progress', workers: [{ status: 'running' }] })],
     }, { from: 'home' }));
     const out = renderToStaticMarkup(<HomeMissions missions={many} views={views} />);
-    expect(out).toContain('+2 more (2 active, 0 completed, 0 scheduled)');
+    expect(out).toContain('+2 more (2 active) →');
   });
 });
 

@@ -69,7 +69,7 @@ export default function MissionMonitoringToggle({
         </div>
       </div>
       <p className="text-[11px] text-text-muted">
-        Enables automatic heartbeat checks on the configured schedule.
+        Runs heartbeat checks on the configured schedule.
       </p>
     </div>
   );

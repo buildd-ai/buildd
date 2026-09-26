@@ -1,12 +1,14 @@
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
 import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
+import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
 import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 
 /**
  * Dependencies that the hook factory needs from WorkerManager.
@@ -179,6 +181,49 @@ export class HookFactory {
     };
   }
 
+  /**
+   * PreToolUse guard that keeps the agent acting in its own worktree.
+   *
+   * Worktrees are nested inside the primary clone, and agents were running
+   * `cd <primary> && …` — testing, stashing and committing in the checkout every
+   * worker shares. Denies Bash that changes directory into (or runs in) the
+   * primary clone or a sibling worktree, and Edit/Write/MultiEdit/NotebookEdit
+   * there. The worker's own worktree — itself under the primary path — and all
+   * reads stay allowed. Policy lives in worktree-confinement.ts.
+   */
+  createWorktreeConfinementHook(
+    worker: LocalWorker,
+    worktreePath: string,
+    primaryPath: string,
+  ): HookCallback {
+    const scope = { worktreePath, primaryPath };
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      const toolName = (input as any).tool_name as string;
+      const toolInput = ((input as any).tool_input ?? {}) as Record<string, unknown>;
+
+      let reason: string | null = null;
+      if (toolName === 'Bash') {
+        const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+        const cwd = typeof (input as any).cwd === 'string' ? (input as any).cwd as string : undefined;
+        reason = findWorktreeEscape(command, { ...scope, cwd });
+      } else if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
+        const raw = (toolName === 'NotebookEdit' ? toolInput.notebook_path : toolInput.file_path) as string | undefined;
+        if (raw) reason = findWriteEscape(raw, scope);
+      }
+      if (!reason) return {};
+
+      console.log(`[Worker ${worker.id}] Worktree confinement: denied ${toolName} outside own worktree`);
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse' as const,
+          permissionDecision: 'deny' as const,
+          permissionDecisionReason: reason,
+        },
+      };
+    };
+  }
+
   createPermissionHook(worker: LocalWorker, opts?: { inputPolicy?: string }): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
@@ -197,6 +242,20 @@ export class HookFactory {
 
       const toolName = (input as any).tool_name;
       const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      // An AskUserQuestion that asks nothing is not a question — deny it under
+      // every input policy (see ask-user-question.ts). handleMessage skips the
+      // park/abort for the same input, so the denial is what the agent sees.
+      if (toolName === 'AskUserQuestion' && !asksAQuestion(toolInput)) {
+        console.log(`[Worker ${worker.id}] Denied AskUserQuestion with no question text`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'deny' as const,
+            permissionDecisionReason: EMPTY_QUESTION_DENY_REASON,
+          },
+        };
+      }
 
       // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
       // Prompt-level instruction alone is unreliable — enforce at hook level.

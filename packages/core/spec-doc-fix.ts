@@ -72,7 +72,10 @@ export function buildDocFixTaskDescription(params: {
     '## What to change',
     '',
     `1. The status frontmatter and any body text that still describes ${specPath} as unbuilt,`,
-    '   proposed, or in progress.',
+    '   proposed, or in progress. Use a status the checker recognises — `implemented` (design) or',
+    '   `active` (spec) when everything shipped; `partially`, `proposed` or `accepted` when it has',
+    '   not; `superseded` plus `superseded_by` when another doc replaced it. Anything else (for',
+    '   example `shipped`) is not a status the checker can classify, so the rows stay open.',
     '2. Any claim text naming a symbol, path, route or migration that has since been renamed or',
     '   moved. Point the claim at what the code actually calls it now — this is the',
     "   naming-divergence case the spec's own Case 1 documents, where an assertion kept pointing",
@@ -104,6 +107,72 @@ export function buildDocFixTaskDescription(params: {
     '**Having nothing to propose is the expected outcome.** Return no plan at all in that case.',
     'An empty or padded proposal puts a decision in front of a human for no reason, which is worse',
     'than staying quiet.',
+  ].join('\n');
+}
+
+export function docFixFollowUpTaskTitle(specPath: string): string {
+  return `Settle stale spec assertions after a merged doc fix: ${specPath}`;
+}
+
+/**
+ * The ONE automatic follow-up (docs/design/spec-conformance.md §9/§12): a doc
+ * fix merged, the conformance re-run evaluated it, and the rows are still
+ * open. By then the prose is rarely the problem — the assertion structurally
+ * passes but does not certify what the doc's status is waiting on — so this
+ * brief asks for a decision between exactly three remedies instead of another
+ * prose reconcile, which would reproduce the same result.
+ */
+export function buildDocFixFollowUpDescription(params: {
+  specPath: string;
+  assertions: DocFixAssertion[];
+  priorTaskId: string | null;
+  priorPrUrl: string | null;
+  declaredStatus: string | null;
+}): string {
+  const { specPath, assertions, priorTaskId, priorPrUrl, declaredStatus } = params;
+  const claimList = assertions
+    .map((a) => `- \`${a.assertionId}\`${a.detail ? ` — ${a.detail}` : ''}`)
+    .join('\n');
+  const prior = [
+    priorPrUrl ? `the doc-fix PR ${priorPrUrl}` : null,
+    priorTaskId ? `task \`${priorTaskId.slice(0, 8)}\`` : null,
+  ].filter(Boolean).join(', ');
+
+  return [
+    `A doc fix for \`${specPath}\` already merged${prior ? ` (${prior})` : ''}, and the conformance`,
+    're-run that evaluated it still finds these assertions passing while the doc declares',
+    `\`${declaredStatus ?? 'no recognised status'}\`:`,
+    '',
+    claimList,
+    '',
+    'Another prose reconcile will not close them. This is the one automatic follow-up these rows',
+    'get; if it does not settle them, the card goes to the owner.',
+    '',
+    '## First: check what already happened',
+    '',
+    `Run \`git log --oneline -- ${specPath}\` and read the prior reconcile PRs before changing`,
+    'anything. If one of them already made the decision below, finish it rather than redoing it.',
+    '',
+    '## Then decide — exactly one per assertion',
+    '',
+    '1. **Promote the status.** Everything the doc describes has shipped: set `implemented`',
+    '   (design) or `active` (spec). Check the doc\'s other assertions first — a failing one means',
+    '   this is not the right remedy.',
+    '2. **Correct the assertion.** It passes but tests the wrong thing (a pre-existing symbol, a',
+    '   file that exists for another reason). Point it at the deliverable the status is waiting',
+    '   on, so it fails until that ships.',
+    '3. **Suppress it** with `skip_until` + `skip_reason` (docs/design/spec-conformance.md §6).',
+    '   It genuinely passes and genuinely belongs to this doc, but the doc must stay non-terminal',
+    '   for other, still-unbuilt work. Say that in `skip_reason`, and pick a date you would want',
+    '   to look again.',
+    '',
+    'Use a status the checker recognises (`implemented`, `active`, `partially`, `proposed`,',
+    '`accepted`, `draft`, or `superseded` with `superseded_by`). This PR is docs-only.',
+    '',
+    '## Do not close the ledger rows',
+    '',
+    'A re-run of the conformance checker closes them, and only if its evaluation is clean. Do',
+    'not edit the ledger or report the rows as resolved. Land the change and stop.',
   ].join('\n');
 }
 

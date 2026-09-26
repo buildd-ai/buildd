@@ -43,6 +43,7 @@ export interface ArtifactPageItem {
   key: string | null;
   missionId: string | null;
   initiativeId: string | null;
+  storageKey: string | null;
 }
 
 export interface ArtifactsPage {
@@ -142,6 +143,7 @@ export async function loadArtifactsPage(
       key: a.key,
       missionId: a.missionId,
       initiativeId: a.initiativeId,
+      storageKey: a.storageKey,
     };
   });
 

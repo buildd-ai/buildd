@@ -283,8 +283,9 @@ failure surfaces in worker telemetry but is not proactively shown to the task cr
   the user before they create or start Codex tasks.
 - `GET /api/workspaces/[id]/backends` (PR #1858) already returns
   `{ id, label, available, reason }` using the same logic the old gate used.
-  The task-creation UI (`EditTaskModal`, `QuickCreateModal`) fetches this on mount and
-  disables unavailable backends with a tooltip. The gap is at the _workspace level_:
+  The task-editing UI (`EditTaskModal`) fetches this on mount and
+  disables unavailable backends with a tooltip. (Note: `QuickCreateModal`, which
+  did the same, was deleted as dead code in #2776.) The gap is at the _workspace level_:
   a new workspace with no Codex credential should surface that during setup, not
   only when a task fails.
 

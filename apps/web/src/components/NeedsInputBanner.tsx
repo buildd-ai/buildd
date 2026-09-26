@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
 import { missionTaskHref } from '@/lib/mission-task-href';
+import { bannerTasks, useHiddenNeedsInput } from '@/lib/needs-input-hidden';
 
 /**
  * A waiting task opens as the sheet over its mission, so answering it leaves
@@ -13,7 +14,11 @@ export function needsInputTaskHref(task: { id: string; missionId?: string | null
 }
 
 export default function NeedsInputBanner() {
-  const { tasks, count, alertPermission, enableAlerts } = useNeedsInput();
+  const { tasks: waiting, alertPermission, enableAlerts } = useNeedsInput();
+  // A question whose own sheet or pane is open is answered right there; the
+  // banner naming it on top of that sheet only repeats it.
+  const tasks = bannerTasks(waiting, useHiddenNeedsInput());
+  const count = tasks.length;
 
   if (count === 0) return null;
 

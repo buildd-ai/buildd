@@ -385,6 +385,36 @@ export async function postPrReview(params: {
   }
 }
 
+interface CheckSuiteSummary {
+  status: string;
+  conclusion: string | null;
+  app?: { slug?: string } | null;
+  latest_check_runs_count?: number;
+}
+
+/**
+ * GitHub creates a check suite for every installed app with checks permission
+ * on every commit. An app that never reports (an assistant or dependency bot
+ * installed for other reasons) leaves its suite `queued` with zero runs
+ * forever, and requiring every suite to complete would then block every PR.
+ * Such suites carry no check runs, so the merge gate's check-run read never
+ * sees them either. `github-actions` is never skipped: its suite can exist a
+ * moment before its runs register, and skipping it then would pass on CI
+ * that has not started.
+ */
+export function checkSuitesAllPassed(suites: CheckSuiteSummary[]): boolean {
+  const real = suites.filter(
+    (s) =>
+      !(s.status === 'queued' && s.latest_check_runs_count === 0 && s.app?.slug && s.app.slug !== 'github-actions'),
+  );
+  if (real.length === 0) return false;
+  return real.every(
+    (suite) =>
+      suite.status === 'completed' &&
+      (suite.conclusion === 'success' || suite.conclusion === 'skipped' || suite.conclusion === 'neutral'),
+  );
+}
+
 // Check if all check suites on a commit have passed
 export async function allCheckSuitesPassed(
   installationId: number,
@@ -397,17 +427,7 @@ export async function allCheckSuitesPassed(
       `/repos/${repoFullName}/commits/${headSha}/check-suites`
     );
 
-    const suites = data.check_suites as Array<{ status: string; conclusion: string | null }>;
-
-    if (!suites || suites.length === 0) {
-      return false;
-    }
-
-    return suites.every(
-      (suite) =>
-        suite.status === 'completed' &&
-        (suite.conclusion === 'success' || suite.conclusion === 'skipped' || suite.conclusion === 'neutral')
-    );
+    return checkSuitesAllPassed(data.check_suites ?? []);
   } catch (error) {
     console.warn(`Failed to check suites for ${repoFullName}@${headSha}:`, error);
     return false;

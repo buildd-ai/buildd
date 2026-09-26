@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { isValidTaskId } from '@/lib/task-id';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import { useConfirm } from '@/components/useConfirm';
-import Switch from '@/components/ui/Switch';
+import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 
 interface PendingSuggestion {
   cronExpression?: string;
@@ -115,7 +115,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
   }
 
   async function deleteSchedule(id: string) {
-    if (!(await confirm({ title: 'Delete schedule?', message: 'Existing tasks will not be affected.', confirmLabel: 'Delete', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Delete schedule?', message: 'Tasks it already created stay as they are.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setDeleting(id);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/schedules/${id}`, {
@@ -136,7 +136,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
     return (
       <div className="text-center py-12 text-text-muted">
         <p className="text-lg mb-2">No schedules yet</p>
-        <p className="text-sm">Create a schedule to automatically run tasks on a cron cadence.</p>
+        <p className="text-sm">A schedule creates a task on a cron cadence.</p>
       </div>
     );
   }
@@ -145,10 +145,10 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
     <div className="border border-border-default rounded-lg divide-y divide-border-default">
       {schedules.map((schedule) => (
         <div key={schedule.id} className="p-4">
-          <div className="flex items-start justify-between">
+          <div data-testid="schedule-row" className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-0">
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-medium truncate">{schedule.name}</h3>
+                <h3 className="font-medium min-w-0 [overflow-wrap:anywhere]">{schedule.name}</h3>
                 {!schedule.enabled && (
                   <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">
                     Paused
@@ -164,7 +164,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                 <code className="text-xs bg-surface-3 px-1 py-0.5 rounded">{schedule.cronExpression}</code>
                 {' '}{schedule.timezone}
               </p>
-              <p className="text-sm text-text-muted mt-0.5">
+              <p className="text-sm text-text-muted mt-0.5 [overflow-wrap:anywhere]">
                 Creates: {schedule.taskTemplate.title}
               </p>
               {schedule.taskTemplate.trigger && (
@@ -237,7 +237,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                         {isValidTaskId(schedule.pendingSuggestion.suggestedByTaskId) && (
                           <a
                             href={`/app/tasks/${schedule.pendingSuggestion.suggestedByTaskId}`}
-                            className="text-[10px] text-primary hover:underline ml-auto"
+                            className="text-[11px] md:text-[10px] text-primary hover:underline ml-auto"
                           >
                             View task
                           </a>
@@ -249,19 +249,20 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               )}
             </div>
 
-            <div className="flex items-center gap-2 ml-4">
+            <div data-testid="schedule-row-actions" className="flex items-center gap-1 md:gap-2 sm:ml-4 shrink-0">
               {/* Enable/Disable toggle */}
               <Switch
                 checked={schedule.enabled}
                 onChange={() => toggleEnabled(schedule)}
                 disabled={toggling === schedule.id}
                 label={`Enable ${schedule.name}`}
+                className={SWITCH_HIT_AREA}
               />
 
               {/* Edit */}
               <button
                 onClick={() => router.push(`/app/workspaces/${workspaceId}/schedules?edit=${schedule.id}`)}
-                className="p-1.5 text-text-muted hover:text-text-secondary"
+                className="inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 p-1.5 text-text-muted hover:text-text-secondary"
                 title="Edit"
                 aria-label={`Edit ${schedule.name}`}
               >
@@ -274,7 +275,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               <button
                 onClick={() => deleteSchedule(schedule.id)}
                 disabled={deleting === schedule.id}
-                className="p-1.5 text-text-muted hover:text-status-error"
+                className="inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 p-1.5 text-text-muted hover:text-status-error"
                 title="Delete"
                 aria-label={`Delete ${schedule.name}`}
               >

@@ -157,6 +157,7 @@ export const TaskCategory = {
   INFRA: 'infra',
   DESIGN: 'design',
   REVIEW: 'review',
+  RESEARCH: 'research',
 } as const;
 
 export type TaskCategoryValue = typeof TaskCategory[keyof typeof TaskCategory];
@@ -347,12 +348,15 @@ export interface RiskClassEntry {
   name: RiskClassName;
   /** Auto-detected paths for this class in this repo. Set by init scan, never by user. */
   detectedPaths: string[];
-  /** Optional user additions — visible, editable, but empty by default. */
+  /**
+   * @deprecated Hand-written additions are no longer accepted on write and are
+   * ignored when matching. Refresh `detectedPaths` with a re-scan instead.
+   */
   userPaths?: string[];
 }
 
 /**
- * New workspace policy model — supersedes `agentReview.escalateToPaths` when present.
+ * Workspace policy model — the only source of merge-policy paths.
  * A single preset selects per-class escalation behavior; detected paths are derived,
  * not authored. The reviewer sees intent ("destructive schema changes escalate here"),
  * not a raw glob list.
@@ -389,13 +393,21 @@ export interface MergePolicy {
   threshold?: {
     maxLines?: number;          // total additions+deletions; default 800
     maxSourceLines?: number;    // non-test lines only; default = maxLines
-    denyPaths?: string[];       // block if any touched file starts with these prefixes
+    /**
+     * @deprecated Hand-written; rejected on write. Still read (prefix match) as a
+     * one-release fallback for stored values — see `LEGACY_PATH_FALLBACK_NOTE`.
+     */
+    denyPaths?: string[];
   };
 
   // Tier 2 config (required when tier = 'agent-review')
   agentReview?: {
     reviewerRole: string;               // slug of reviewer skill in workspace_skills
-    escalateToPaths?: string[];         // force escalate if any touched file matches
+    /**
+     * @deprecated Hand-written; rejected on write. Still read (prefix match) as a
+     * one-release fallback for stored values — see `LEGACY_PATH_FALLBACK_NOTE`.
+     */
+    escalateToPaths?: string[];
     maxConfidenceThreshold?: number;    // 0–1; escalate if confidence < threshold (default 0.6)
     gateCondition?: 'approve-and-merge' | 'approve-only'; // default 'approve-and-merge'
   };
@@ -409,10 +421,69 @@ const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotify
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
+// ── Removed hand-written path fields ────────────────────────────────────────
+//
+// Merge-policy paths are auto-detected from the repo (POST /policy-init →
+// policyConfig.riskClasses[].detectedPaths). The hand-typed lists below are
+// refused on every write path; stored values are still read for one release.
+
+/**
+ * Dated marker for the read-only fallback that still honours stored
+ * `escalateToPaths` / `denyPaths`. Added 2026-09-24; remove the fallback (and
+ * these fields from the types) in the next release.
+ */
+export const LEGACY_PATH_FALLBACK_NOTE = 'legacy-hand-written-paths: read-only fallback added 2026-09-24, remove next release';
+
+/** 400 body text for a request that carries a removed path field. */
+export function removedPolicyPathFieldError(field: string): string {
+  return `${field} is no longer accepted: merge-policy paths are detected from the repo, not typed. ` +
+    `Use "Re-scan repo" on the workspace Merge Policy page (or MCP manage_workspaces action=init) to refresh them.`;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** First removed path field present in a MergePolicy-shaped value, as a dotted path under `prefix`. */
+export function findRemovedPathFieldInMergePolicy(mp: unknown, prefix = 'mergePolicy'): string | null {
+  if (!isObj(mp)) return null;
+  if (isObj(mp.threshold) && 'denyPaths' in mp.threshold) return `${prefix}.threshold.denyPaths`;
+  if (isObj(mp.agentReview) && 'escalateToPaths' in mp.agentReview) return `${prefix}.agentReview.escalateToPaths`;
+  return null;
+}
+
+/** First removed path field present in a WorkspacePolicyConfig-shaped value. */
+export function findRemovedPathFieldInPolicyConfig(pc: unknown, prefix = 'policyConfig'): string | null {
+  if (!isObj(pc) || !Array.isArray(pc.riskClasses)) return null;
+  const hit = pc.riskClasses.findIndex((e) => isObj(e) && 'userPaths' in e);
+  return hit === -1 ? null : `${prefix}.riskClasses[${hit}].userPaths`;
+}
+
+/**
+ * First removed path field present in a gitConfig-shaped write body (a full
+ * gitConfig, a partial one, or the config form's flat body). Presence is what
+ * counts — an empty array is refused too, so a stale client learns immediately.
+ */
+export function findRemovedPathFieldInGitConfig(gc: unknown, prefix = ''): string | null {
+  if (!isObj(gc)) return null;
+  const at = (k: string) => (prefix ? `${prefix}.${k}` : k);
+  for (const key of ['autoMergeDenyPaths', 'escalateToPaths']) {
+    if (key in gc) return at(key);
+  }
+  return findRemovedPathFieldInMergePolicy(gc.mergePolicy, at('mergePolicy'))
+    ?? findRemovedPathFieldInPolicyConfig(gc.policyConfig, at('policyConfig'));
+}
+
 export type MergePolicyParseResult =
   | { ok: true; policy: MergePolicy }
   | { ok: false; error: string; field?: string };
 
+/**
+ * Shape-check a MergePolicy. Deliberately still tolerates the deprecated
+ * `threshold.denyPaths` / `agentReview.escalateToPaths` keys, because this also
+ * backs the fail-soft READ path — rejecting them here would drop a stored legacy
+ * policy to the default. Write paths must call
+ * `findRemovedPathFieldInMergePolicy` first and refuse with
+ * `removedPolicyPathFieldError`.
+ */
 export function parseMergePolicy(val: unknown): MergePolicyParseResult {
   if (!val || typeof val !== 'object' || Array.isArray(val)) {
     return { ok: false, error: 'mergePolicy must be an object' };
@@ -594,6 +665,10 @@ export interface Task {
   externalId: string | null;
   externalUrl: string | null;
   title: string;
+  /** Short 2–4 word display label (≤48 chars). Supplied by the creator or the
+   * creation-time classifier; NULL on legacy rows. Draw it via
+   * `taskDisplayLabel` (`@buildd/core/task-label`), which falls back to the title. */
+  label?: string | null;
   description: string | null;
   context: Record<string, unknown>;
   status: TaskStatusType;
@@ -672,7 +747,12 @@ export type WorkerExitCause =
    * A declared output gate refused the completion: the session ran and shipped
    * nothing reviewable. Charged — but not as a code failure.
    */
-  | 'output_unmet';
+  | 'output_unmet'
+  /**
+   * The task was cancelled while this worker's session was still running.
+   * Bookkeeping — excluded from the failure rate, never charged a retry.
+   */
+  | 'task_cancelled';
 
 export interface Worker {
   id: string;
@@ -993,6 +1073,28 @@ export interface RunnerUpdateCanaryReport {
   } | null;
 }
 
+/**
+ * The runner's own live update-state — the same fields it reports on its
+ * local, unauthenticated-off-box `/api/version` endpoint
+ * (`apps/runner/src/index.ts`) — now also sent on every heartbeat (see
+ * `apps/runner/src/updater.ts`'s `getRunnerUpdateSnapshot` and
+ * `apps/runner/src/buildd.ts`'s `sendHeartbeat`) and persisted on
+ * `worker_heartbeats`. Lets `GET /api/workers/active` show a runner's
+ * drift/update status without SSH into the host.
+ */
+export interface RunnerUpdateSnapshot {
+  /** The commit this process loaded at boot (or after its last successful self-update) — not a fresh disk read. */
+  currentCommit: string | null;
+  /** Fresh `git rev-parse HEAD`, read at snapshot time. */
+  diskCommit: string | null;
+  /** True when diskCommit and currentCommit disagree — an external process rewrote the tree without restarting this runner. */
+  commitDrift: boolean;
+  updating: boolean;
+  updateAvailable: boolean;
+  /** The branch this install tracks (its `BUILDD_BRANCH`). */
+  trackedBranch: string;
+}
+
 // ============================================================================
 // API INPUT TYPES
 // ============================================================================
@@ -1008,6 +1110,9 @@ export interface CreateTaskInput {
   externalId?: string;
   externalUrl?: string;
   title: string;
+  /** Optional short 2–4 word display label (≤48 chars, e.g. "rates service").
+   * Omit it and the server derives one from the title. */
+  label?: string;
   description?: string;
   context?: Record<string, unknown>;
   priority?: number;
@@ -1117,7 +1222,10 @@ export interface ClaimTasksInput {
   maxTasks?: number;
   runner: string;
   environment?: WorkerEnvironment;
-  availableSkills?: string[]; // skill slugs this runner can execute
+  // Skill slugs this runner can execute. Omitted/empty = may claim any
+  // role-routed task EXCEPT the opt-in EXPLICIT_ROLE_SLUGS, which always need
+  // an explicit match.
+  availableSkills?: string[];
   // Explicit opt-in for a multi-workspace OAuth token to claim the next pending
   // task across ALL its accessible workspaces in one call (server ranks/picks).
   // Distinguishes a deliberate cross-workspace runner poll from an accidental
@@ -1296,6 +1404,16 @@ export interface ClaimTasksResponse {
     roleConfig?: RoleConfig;
     /** Role persona for the claimed task's assigned role — present whenever a role row resolves */
     roleInstructions?: RoleInstructions;
+    /**
+     * Decrypted secrets resolved against the role's (or workspace's) declared
+     * ENV_NAME → secret label mapping (purpose='role_env_secret'), keyed by the
+     * ENV_NAME the value should be injected under. Merged into the role env by
+     * the runner's `resolveWorkerRoleEnv`, alongside whatever the local
+     * env-mapping.json/process-env resolution already provides.
+     */
+    roleEnvSecrets?: Record<string, string>;
+    /** ENV_NAME keys declared in that mapping with no matching secrets row — surfaced as a degraded-role-env milestone. */
+    roleEnvMissing?: string[];
     /** Connectors that failed availability checks but are not hard-required (advisory mode only).
      *  Present when workspace.connectorAdvisoryMode=true and the task claimed despite connector failures. */
     degradedConnectors?: DegradedConnector[];
@@ -1554,6 +1672,17 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
 // Use these constants everywhere so typos can't cause silent mismatches.
 export const CAPABILITY_BROWSER = 'browser';
 
+// Role slug for the mission visual auditor (see docs/design/visual-qa-auditor.md).
+// Its tasks need a runner that can actually launch a browser, so a runner
+// advertises this slug in `availableSkills` only when env-scan reports
+// CAPABILITY_BROWSER.
+export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
+
+// Role slugs that are opt-in: a task routed to one of these is claimable ONLY
+// by a runner that lists the slug in `availableSkills`. Every other roleSlug
+// keeps the legacy rule (an empty `availableSkills` list claims anything).
+export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
 // ============================================================================
 // GOAL CRITERIA & INITIATIVE KPIs
 // ============================================================================
@@ -1622,10 +1751,11 @@ export type GoalCriterion =
     }
   | {
       /**
-       * Free-form natural-language criterion, graded by an LLM against mission
-       * evidence. The escape hatch of last resort: its verdict depends on a model
-       * being reachable at the moment it is needed, so it is the one criterion
-       * form that can silently degrade to NOT_EVALUATED.
+       * Free-form natural-language criterion, graded by an inference call
+       * (`api`) or a read-only runner task (`runner`) — see {@link CriteriaGrader}.
+       * The escape hatch of last resort: its verdict is a model's judgment, so it
+       * is the one criterion form that can land NOT_EVALUATED (no key, no runner,
+       * an `unsure` answer).
        *
        * Because of that, writing one requires stating why no mechanical form
        * (`command` / `all_prs_merged` / `no_open_tasks` / `artifact_exists`)
@@ -1639,8 +1769,33 @@ export type GoalCriterion =
        * read back unchanged.
        */
       notMechanizableReason?: string;
+      /**
+       * Who grades this criterion. Overrides the workspace's
+       * `gitConfig.criteriaGrader`; absent falls through to it, then to `auto`.
+       * See {@link CriteriaGrader}.
+       */
+      grader?: CriteriaGrader;
       label?: string;
     };
+
+/**
+ * How a `description` (prose) criterion is graded.
+ *
+ * - `api`    — one inference call against the team's API-key credential (or the
+ *              server env fallback). Seconds, billed per token. With no key the
+ *              criterion reads NOT_EVALUATED saying so; it never switches to a
+ *              runner behind the caller's back.
+ * - `runner` — a read-only verification task per criterion, claimed by one of the
+ *              team's runners on whatever agent credential it has (an OAuth seat
+ *              included). Asynchronous; no per-token call from the web app.
+ * - `auto`   — `api` when the inference client resolves a key for the team,
+ *              otherwise `runner`. The default.
+ *
+ * Resolution: criterion `grader` > workspace `gitConfig.criteriaGrader` > `auto`.
+ */
+export type CriteriaGrader = 'auto' | 'api' | 'runner';
+
+export const CRITERIA_GRADERS: readonly CriteriaGrader[] = ['auto', 'api', 'runner'];
 
 export interface GoalCriteriaEvidenceRef {
   type: 'artifact' | 'task';
@@ -1665,6 +1820,17 @@ export interface GoalCriteriaState {
      * the provenance of a pass/fail.
      */
     workerTaskId?: string;
+    /**
+     * When this criterion's own verdict was produced (a runner-graded prose
+     * criterion lands asynchronously, after the state-level `evaluatedAt`).
+     */
+    evaluatedAt?: string;
+    /**
+     * Set while a runner-graded criterion's verification task has sat unclaimed
+     * past the wait bound: no runner has picked it up, so the verdict is not
+     * merely slow — it is waiting on capacity someone may need to provide.
+     */
+    awaitingRunner?: boolean;
     /**
      * Identity of the criterion this verdict was produced for, from
      * `criterionFingerprint()`. Array index alone is NOT identity: deleting one
@@ -1723,6 +1889,7 @@ export interface CriteriaReviewerReport {
   findings: CriteriaReviewerFindingEntry[];
 }
 
+/** @deprecated Initiative KPIs were removed; kept only to type the column until it is dropped. */
 export interface InitiativeKPI {
   name: string;
   metric: string;
@@ -1732,6 +1899,7 @@ export interface InitiativeKPI {
   blocking?: boolean;
 }
 
+/** @deprecated See InitiativeKPI. */
 export interface InitiativeKPIState {
   evaluatedAt: string;
   evaluatedBy: 'auto' | 'manual' | 'mcp';
@@ -2112,4 +2280,85 @@ export interface WorkspaceErrorTracesResponse {
   since: string;
   limit: number;
   patterns: WorkspaceErrorTracePattern[];
+}
+
+// ─── Home fleet (runners × slots) ─────────────────────────────────────────────
+
+/**
+ * One bar on a lane timeline: a worker's run on one runner slot. Generic
+ * `{ lane, bars[] }` shape, shared by Home's fleet panel and any other lane
+ * grid, so the two can render through one component.
+ */
+export interface LaneBar {
+  id: string;
+  /** Epoch ms. */
+  start: number;
+  /** Epoch ms; null while still running. */
+  end: number | null;
+  /** The task's short label ("reconcile exports spec"). */
+  label: string;
+  /** One-word scope chip ("exports"), or null. */
+  scope?: string | null;
+  /** Full task title, for the hover tooltip. */
+  title?: string | null;
+  /** Role colour from the role's own data; null = neutral. */
+  color: string | null;
+  roleSlug?: string | null;
+  state: 'running' | 'waiting' | 'done' | 'failed';
+  href?: string | null;
+}
+
+export interface Lane {
+  id: string;
+  bars: LaneBar[];
+}
+
+/** A live worker occupying a runner slot. */
+export interface FleetSlotWorker {
+  workerId: string;
+  taskId: string | null;
+  missionId: string | null;
+  /** One-word task name ("checkout") and its short label. */
+  label: string;
+  rest: string;
+  roleSlug: string | null;
+  roleName: string | null;
+  roleColor: string | null;
+  status: string;
+  /** 0..100, or null when the runner has not reported progress. */
+  progress: number | null;
+  startedAt: string | null;
+  /** Set while the worker is parked on a question. */
+  question: string | null;
+}
+
+export interface FleetSlot {
+  index: number;
+  worker: FleetSlotWorker | null;
+  /**
+   * Last finished run on this slot, for an idle slot's "last …" line. `label`
+   * is the task's own short label (null when it has none worth showing);
+   * `scope` the one-word chip; `at` when it ended (epoch ms).
+   */
+  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null } | null;
+  lane: Lane;
+}
+
+export interface FleetRunner {
+  /** Heartbeat id, or a synthetic key for workers on an unknown runner. */
+  id: string;
+  name: string;
+  /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
+  machine: string | null;
+  maxSlots: number;
+  online: boolean;
+  slots: FleetSlot[];
+}
+
+export interface FleetSnapshot {
+  runners: FleetRunner[];
+  live: number;
+  capacity: number;
+  /** Timeline window, epoch ms. */
+  window: { from: number; to: number };
 }

@@ -82,8 +82,18 @@ mock.module('@/lib/github', () => ({
 }));
 
 // Mock team-access
+const mockVerifyWorkspaceAccess = mock(async (_userId: string, _workspaceId: string) => null as { teamId: string; role: string } | null);
+const mockGetUserTeamIds = mock(async (_userId: string) => [] as string[]);
 mock.module('@/lib/team-access', () => ({
   getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  getUserTeamIds: mockGetUserTeamIds,
+}));
+
+// Dashboard session — GET only. Default: no session.
+const mockGetCurrentUser = mock(async () => null as { id: string } | null);
+mock.module('@/lib/auth-helpers', () => ({
+  getCurrentUser: mockGetCurrentUser,
 }));
 
 // Mock database
@@ -127,6 +137,12 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // Mock pr-review-request — the stored-verdict lookup the agent-review
 // self-merge gate consults, plus the role listing the auto-review feature uses.
+// Claim grants for the cross-team runner path (canActOnWorkerPr). Default: none.
+const mockGetAccountWorkspacePermissions = mock(async (_accountId: string) => [] as Array<{ workspaceId: string; canClaim: boolean; canCreate: boolean }>);
+mock.module('@/lib/account-workspace-cache', () => ({
+  getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
+}));
+
 mock.module('@/lib/pr-review-request', () => ({
   readPrReviewStatus: mockReadPrReviewStatus,
   listWorkspaceRoles: mockListWorkspaceRoles,
@@ -362,6 +378,28 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error).toBe('Worker belongs to different account');
+  });
+
+  // A shared runner on its own team reaches this workspace through a claim
+  // grant; the claim path honours it, so create_pr must too.
+  it('lets the cross-team account running the worker through while it holds a claim grant', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetAccountWorkspacePermissions.mockResolvedValueOnce([{ workspaceId: 'ws-other', canClaim: true, canCreate: false }]);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-other',
+      name: 'test-worker',
+      workspace: WORKSPACE_OTHER_TEAM,
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).not.toBe(403);
   });
 
   it('returns 400 when workspace not linked to GitHub repo', async () => {
@@ -3871,6 +3909,25 @@ describe('GET /api/github/pr', () => {
     expect(data.error).toBe('Worker belongs to different account');
   });
 
+  // Same claim-grant path as the POST test above, exercised through the
+  // sessionUser-less (API-key) branch of the GET workerId lookup.
+  it('lets the cross-team account running the worker through while it holds a claim grant', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetAccountWorkspacePermissions.mockResolvedValueOnce([{ workspaceId: 'ws-other', canClaim: true, canCreate: false }]);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-other',
+      prNumber: 42,
+      workspace: WORKSPACE_OTHER_TEAM,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    const res = await GET(createGetRequest('w-1', 42));
+
+    expect(res.status).not.toBe(403);
+  });
+
   it('returns 400 when workspace not linked to GitHub repo', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -4516,6 +4573,136 @@ describe('GET /api/github/pr', () => {
       expect(res.status).toBe(200);
       expect(data.comments).toEqual({ items: [], total: 0, omitted: 0 });
     });
+  });
+});
+
+describe('GET /api/github/pr — dashboard session', () => {
+  const SESSION_USER = { id: 'user-1' };
+  const WORKER_ROW = {
+    id: 'w-1',
+    accountId: 'account-runner',
+    workspaceId: 'ws-team-1',
+    prNumber: 42,
+    prUrl: 'https://github.com/owner/repo/pull/42',
+    lastCommitSha: null,
+    workspace: WORKSPACE_OK,
+  };
+
+  function sessionGet(query: string): NextRequest {
+    return new NextRequest(`http://localhost:3000/api/github/pr?${query}`, { method: 'GET' });
+  }
+
+  function stubGithubOpenPr() {
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({ number: 42, title: 'feat: x', state: 'open', head: { sha: 'abc' } });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+  }
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGithubApi.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockGetTeamWorkspaceIds.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+    // user-1 is in team-1 (ws-team-1) and team-2 (ws-team-2).
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockGetTeamWorkspaceIds.mockImplementation(async (teamId: string) => [`ws-${teamId}`]);
+    // The resolver scopes by inArray(workspaceId, …); honour it so scoping is observable.
+    mockWorkersFindMany.mockImplementation(async (q: any) => {
+      const ids: string[] = q.where.conditions[0].values;
+      return [
+        { ...WORKER_ROW, id: 'w-1', workspaceId: 'ws-team-1' },
+        { ...WORKER_ROW, id: 'w-2', workspaceId: 'ws-team-2', prNumber: 77, workspace: { ...WORKSPACE_OK, teamId: 'team-2' } },
+      ].filter((w) => ids.includes(w.workspaceId) && w.prNumber === q.where.conditions[1].value);
+    });
+  });
+
+  it('reads a worker PR for a member of the worker workspace', async () => {
+    mockWorkersFindFirst.mockResolvedValue(WORKER_ROW);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    stubGithubOpenPr();
+
+    const res = await GET(sessionGet('workerId=w-1'));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).pr.number).toBe(42);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-team-1');
+  });
+
+  it('404s (not 403) a worker outside the user teams', async () => {
+    mockWorkersFindFirst.mockResolvedValue(WORKER_ROW);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const res = await GET(sessionGet('workerId=w-1'));
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('404s a worker in another of the user teams under a ?teamId pin', async () => {
+    mockWorkersFindFirst.mockResolvedValue(WORKER_ROW);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(sessionGet('workerId=w-1&teamId=team-2'));
+
+    expect(res.status).toBe(404);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('resolves a PR number across every team the user belongs to', async () => {
+    stubGithubOpenPr();
+    const res = await GET(sessionGet('prNumber=77'));
+    expect(res.status).toBe(200);
+    expect(mockGetUserTeamIds).toHaveBeenCalledWith('user-1');
+  });
+
+  it('?teamId pins PR-number resolution: a team-2 PR is not found under ?teamId=team-1', async () => {
+    const res = await GET(sessionGet('prNumber=77&teamId=team-1'));
+    expect(res.status).toBe(404);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect((mockWorkersFindMany.mock.calls[0] as any[])[0].where.conditions[0].values).toEqual(['ws-team-1']);
+  });
+
+  it('404s a ?teamId pin to a team the user is not in', async () => {
+    const res = await GET(sessionGet('prNumber=42&teamId=team-9'));
+    expect(res.status).toBe(404);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
+
+  it('401s with neither a session nor a key', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const res = await GET(sessionGet('workerId=w-1'));
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps the key path authoritative when a key is present (403 out of team, no session lookup)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ ...WORKER_ROW, workspace: WORKSPACE_OTHER_TEAM });
+    const res = await GET(createGetRequest('w-1', 42));
+    expect(res.status).toBe(403);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a session on POST, PATCH or PUT', async () => {
+    const body = JSON.stringify({ workerId: 'w-1', prNumber: 42 });
+    for (const [handler, method] of [[POST, 'POST'], [PATCH, 'PATCH'], [PUT, 'PUT']] as const) {
+      const res = await handler(new NextRequest('http://localhost:3000/api/github/pr', {
+        method,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body,
+      }));
+      expect(res.status).toBe(401);
+    }
   });
 });
 

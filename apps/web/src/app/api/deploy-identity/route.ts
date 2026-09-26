@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getDeployIdentity } from '@/lib/deploy-identity';
 
 /**
  * GET /api/deploy-identity
@@ -9,14 +10,11 @@ import { NextResponse } from 'next/server';
  * unreachable, since "is the right code deployed" is precisely the question
  * asked when something else is broken.
  *
- * Distinct from /api/version, which reports the default branch's head in the
- * git repository (a different question, with a live consumer in the runner's
- * poll loop) — that endpoint is untouched by this one.
+ * `/api/version`'s `deployed` block now reports the same values (via the
+ * shared `getDeployIdentity` helper) so the two endpoints can never disagree;
+ * this route stays as the minimal, dependency-free form for callers that only
+ * need deploy identity, such as release-health verification.
  */
 export async function GET() {
-  return NextResponse.json({
-    sha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
-    environment: process.env.VERCEL_ENV ?? null,
-    deploymentId: process.env.VERCEL_DEPLOYMENT_ID ?? null,
-  });
+  return NextResponse.json(getDeployIdentity());
 }

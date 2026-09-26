@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -7,7 +9,7 @@ const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => ({
-      returning: mock(() => [{ id: 'worker-1' }]),
+      returning: mock(() => [{ id: WORKER_ID }]),
     })),
   })),
 }));
@@ -73,7 +75,7 @@ function createMockRequestWithAuth(body?: any, apiKey?: string): NextRequest {
   return new NextRequest('http://localhost:3000/api/workers/worker-1/instruct', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 describe('POST /api/workers/[id]/instruct', () => {
   beforeEach(() => {
@@ -87,7 +89,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
         where: mock(() => ({
-          returning: mock(() => [{ id: 'worker-1' }]),
+          returning: mock(() => [{ id: WORKER_ID }]),
         })),
       })),
     });
@@ -120,7 +122,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'running',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -139,7 +141,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'running',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -156,7 +158,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'running',
       workspace: { teamId: 'other-team' },
       instructionHistory: [],
@@ -174,7 +176,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       workspaceId: 'ws-1',
       status: 'running',
       workspace: { teamId: 'team-1' },
@@ -203,7 +205,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'running',
       workspace: { teamId: 'other-team' },
     });
@@ -219,7 +221,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'completed',
       workspace: { teamId: 'team-1' },
     });
@@ -237,7 +239,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'failed',
       workspace: { teamId: 'team-1' },
     });
@@ -253,7 +255,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'running',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -272,7 +274,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'running',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -293,7 +295,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'waiting_input',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -312,7 +314,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     // Verify Pusher was called with correct channel and event
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
     expect(mockTriggerEvent).toHaveBeenCalledWith(
-      `private-worker-worker-1`,
+      `private-worker-${WORKER_ID}`,
       'worker:command',
       expect.objectContaining({ action: 'message', text: 'Use JWT tokens' })
     );
@@ -323,7 +325,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'waiting_input',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -347,7 +349,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       status: 'waiting_input',
       workspace: { teamId: 'team-1' },
       instructionHistory: [],
@@ -368,13 +370,13 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'running',
         workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
@@ -401,13 +403,13 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'running',
         workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
@@ -432,13 +434,13 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'running',
         workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
@@ -459,13 +461,13 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'running',
         workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
@@ -488,7 +490,7 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'error',
         workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],
@@ -496,7 +498,7 @@ describe('POST /api/workers/[id]/instruct', () => {
         supportsInstructionAck: true,
       });
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) })),
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) })),
       });
     }
 
@@ -519,7 +521,7 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
 
@@ -541,13 +543,13 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'running',
         workspace: { teamId: 'team-1', dataClass: 'sensitive' },
         instructionHistory: [],
@@ -571,13 +573,13 @@ describe('POST /api/workers/[id]/instruct', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
           capturedSet = updates;
-          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
         }),
       });
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         status: 'running',
         workspace: { teamId: 'team-1', dataClass: 'standard' },
         instructionHistory: [],

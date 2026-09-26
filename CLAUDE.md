@@ -234,6 +234,8 @@ by the harness safety policy even though the underlying escalation works. This a
 root `bun run build` fails in a sandbox (it runs `db:migrate` first) — use `cd apps/web &&
 bun run build:only` (same command CI's `Build` step uses) to verify compilation with no DB
 and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
+Workers get screenshots by dispatching the Visual QA workflow (`gh workflow run visual-qa.yml
+--ref <branch> -f routes=… -f viewport=mobile`), not from a local DB. See `/visual-review`.
 
 ### UI Fixtures
 View worker UI states in isolation: `http://localhost:3000/app/dev/fixtures?state=waiting-input`
@@ -285,6 +287,7 @@ locally does not fail the suite for everyone else.
 - **Schema change**: `.claude/skills/schema-change/` — Ship a Drizzle migration without losing a column or a release. Migration index collisions happen several times a day with concurrent sessions and git does **not** conflict on the `.sql` files; read this before pushing anything that touches `packages/core/drizzle/`.
 - **Spec sync**: `.claude/skills/spec-sync/` — Keep `docs/SPEC.md` the source of truth and reconcile the doc/site repos against it.
 - **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
+- **Visual review**: `.claude/skills/visual-review/` — Phone- and desktop-width screenshots before calling UI work done: `scripts/qa/shoot.sh` locally (needs a DATABASE_URL), or dispatch `visual-qa.yml` on your branch and download the `qa-screenshots` artifact (workers, no DB).
 - **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
 - **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB over the neon HTTP driver (direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner, KB and CBM. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
 

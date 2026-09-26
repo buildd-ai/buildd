@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -64,7 +65,7 @@ export async function GET(
   const { id } = await params;
 
   // Dev mode returns mock task data so polling doesn't break
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({
       id,
       title: 'Development mode task',
@@ -124,10 +125,15 @@ export async function GET(
           id: true,
           status: true,
           branch: true,
+          // Which runner a live agent is on ("running on dune" on a chat approval card).
+          runner: true,
           prUrl: true,
           prNumber: true,
           error: true,
           currentAction: true,
+          // A waiting question renders in chat as a `question` object; already
+          // redacted to its type for sensitive workspaces when it's written.
+          waitingFor: true,
           startedAt: true,
           completedAt: true,
           lastCommitSha: true,
@@ -223,7 +229,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -286,12 +292,40 @@ export async function PATCH(
     // GitHub webhook (maybePostWorkTrackerIssueUpdate reads task.externalIssueId).
     if (externalIssueId !== undefined) updateData.externalIssueId = externalIssueId || null;
     if (externalIssueUrl !== undefined) updateData.externalIssueUrl = externalIssueUrl || null;
-    if (missionId !== undefined) updateData.missionId = missionId || null;
+    if (missionId !== undefined) {
+      // A mission link must stay inside the task's team (see isMissionLinkable).
+      if (missionId && !(await isMissionLinkable(missionId, task.workspace?.teamId))) {
+        return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      }
+      updateData.missionId = missionId || null;
+    }
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
+    }
+    // Hold / resume one task (the claim route's taskNotHeld gate reads
+    // context.heldBy). A running worker keeps its session; the caller tells it
+    // to stop at a safe point (chat does, through /instruct).
+    if (held !== undefined) {
+      if (typeof held !== 'boolean') {
+        return NextResponse.json({ error: 'held must be true or false' }, { status: 400 });
+      }
+      if (held && ['completed', 'failed', 'cancelled'].includes(task.status)) {
+        return NextResponse.json({ error: `A ${task.status} task can't be held` }, { status: 400 });
+      }
+      const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
+      if (held) {
+        baseCtx.heldBy = {
+          at: new Date().toISOString(),
+          userId: user && !apiAccount ? user.id : null,
+          ...(typeof heldReason === 'string' && heldReason.trim() ? { reason: heldReason.trim().slice(0, 280) } : {}),
+        };
+      } else {
+        delete baseCtx.heldBy;
+      }
+      updateData.context = baseCtx;
     }
     if (rawRequiredConnectors !== undefined) {
       if (rawRequiredConnectors === null) {

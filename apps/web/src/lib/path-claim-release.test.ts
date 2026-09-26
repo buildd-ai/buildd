@@ -16,6 +16,8 @@ const mockReleaseClaims = mock(async (_taskId: string) => null as any);
 const mockTriggerEvent = mock(async () => {});
 const mockEnqueue = mock(async () => true);
 const mockRearm = mock(async () => {});
+const mockWorkersFindMany = mock(async () => [] as any[]);
+const mockTasksFindFirst = mock(async () => null as any);
 
 mock.module('@buildd/core/path-claim', () => ({
   releaseClaims: mockReleaseClaims,
@@ -35,8 +37,23 @@ mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
 }));
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      workers: { findMany: (...args: any[]) => mockWorkersFindMany(...args) },
+      tasks: { findFirst: (...args: any[]) => mockTasksFindFirst(...args) },
+    },
+  },
+}));
+mock.module('@buildd/core/db/schema', () => ({
+  workers: { taskId: 'task_id', mergedAt: 'merged_at', prLifecycleStatus: 'pr_lifecycle_status', prNumber: 'pr_number' },
+  tasks: { id: 'id', status: 'status' },
+}));
+mock.module('drizzle-orm', () => ({
+  eq: (a: any, b: any) => ({ type: 'eq', a, b }),
+}));
 
-const { releaseAndNotify } = await import('./path-claim-release');
+const { releaseAndNotify, resolveReleaseReasonForTask } = await import('./path-claim-release');
 
 const WS = 'ws-1';
 const HOLDER = 'task-holder';
@@ -49,6 +66,10 @@ beforeEach(() => {
   mockEnqueue.mockClear();
   mockRearm.mockClear();
   mockEnqueue.mockImplementation(async () => true);
+  mockWorkersFindMany.mockReset();
+  mockWorkersFindMany.mockResolvedValue([]);
+  mockTasksFindFirst.mockReset();
+  mockTasksFindFirst.mockResolvedValue(null);
 });
 
 describe('releaseAndNotify', () => {
@@ -196,5 +217,47 @@ describe('releaseAndNotify', () => {
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
     const [, msg] = mockEnqueue.mock.calls[0] as any[];
     expect(msg.body.paths).toEqual(['a.ts']);
+  });
+});
+
+describe('resolveReleaseReasonForTask', () => {
+  it('returns merged when any worker recorded a merge', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { mergedAt: new Date(), prLifecycleStatus: null, prNumber: 5 },
+    ]);
+    expect(await resolveReleaseReasonForTask(HOLDER)).toBe('merged');
+  });
+
+  it('returns merged from prLifecycleStatus even without mergedAt', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { mergedAt: null, prLifecycleStatus: 'merged', prNumber: 5 },
+    ]);
+    expect(await resolveReleaseReasonForTask(HOLDER)).toBe('merged');
+  });
+
+  it('returns pending_merge when the task is completed with a still-open PR', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { mergedAt: null, prLifecycleStatus: 'pr_open', prNumber: 5 },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ status: 'completed' });
+    expect(await resolveReleaseReasonForTask(HOLDER)).toBe('pending_merge');
+  });
+
+  it('returns abandoned when the task never merged and never completed', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { mergedAt: null, prLifecycleStatus: 'pr_open', prNumber: 5 },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ status: 'pending' });
+    expect(await resolveReleaseReasonForTask(HOLDER)).toBe('abandoned');
+  });
+
+  it('returns abandoned when there is no open PR at all', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ mergedAt: null, prLifecycleStatus: null, prNumber: null }]);
+    expect(await resolveReleaseReasonForTask(HOLDER)).toBe('abandoned');
+  });
+
+  it('returns abandoned when the task has no workers', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    expect(await resolveReleaseReasonForTask(HOLDER)).toBe('abandoned');
   });
 });

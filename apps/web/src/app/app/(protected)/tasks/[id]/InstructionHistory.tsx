@@ -1,5 +1,8 @@
 'use client';
 
+import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import { formatInZone } from '@/lib/zoned-time';
+
 interface HistoryEntry {
   type: 'instruction' | 'response';
   message: string;
@@ -12,13 +15,14 @@ interface InstructionHistoryProps {
 }
 
 export default function InstructionHistory({ history }: InstructionHistoryProps) {
+  const displayTz = useDisplayTimezone();
+
   if (!history.length) {
     return null;
   }
 
   const formatTime = (timestamp: number) => {
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return displayTz ? formatInZone(timestamp, displayTz, 'time') : '';
   };
 
   return (

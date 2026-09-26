@@ -5,6 +5,7 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { buildDelegateOptions } from '@/lib/delegate-options';
 import { TeamRoleEditor } from './TeamRoleEditor';
 
 export const dynamic = 'force-dynamic';
@@ -81,19 +82,13 @@ export default async function TeamRoleSettingsPage({
     ),
     columns: { slug: true, name: true, workspaceId: true },
   });
-  // Build a name map from workspaceList (already fetched above)
-  const wsNameMapForDelegate = new Map(workspaceList.map(w => [w.id, w.name]));
-  const seenDelegateSlugs = new Set<string>();
-  const delegateOptions = allRoles
-    .filter(r => r.slug !== slug && !seenDelegateSlugs.has(r.slug))
-    .map(r => {
-      seenDelegateSlugs.add(r.slug);
-      return {
-        slug: r.slug,
-        name: r.name,
-        workspaceName: r.workspaceId ? (wsNameMapForDelegate.get(r.workspaceId) ?? undefined) : undefined,
-      };
-    });
+  // One option per slug: canDelegateTo stores slugs, and the same slug can
+  // exist in several workspaces.
+  const delegateOptions = buildDelegateOptions(
+    allRoles,
+    slug,
+    new Map(workspaceList.map(w => [w.id, w.name])),
+  );
 
   return (
     <TeamRoleEditor

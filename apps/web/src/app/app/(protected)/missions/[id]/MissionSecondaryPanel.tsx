@@ -52,7 +52,7 @@ export default function MissionSecondaryPanel({
         </svg>
         <h2 className="section-label">Settings</h2>
         {!expanded && configSummary && (
-          <span className="text-[11px] text-text-secondary font-mono ml-1">— {configSummary}</span>
+          <span className="text-[11px] text-text-secondary font-mono ml-1">· {configSummary}</span>
         )}
         <svg
           className={`w-4 h-4 text-text-secondary ml-auto transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
@@ -62,7 +62,7 @@ export default function MissionSecondaryPanel({
         </svg>
       </button>
       {!expanded && (
-        <p className="text-[11px] text-text-muted">Schedule, configuration & more</p>
+        <p className="text-[11px] text-text-muted">Schedule and configuration</p>
       )}
       {expanded && (
         <div className="mt-3 space-y-4">

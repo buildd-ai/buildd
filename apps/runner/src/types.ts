@@ -56,7 +56,24 @@ export type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
   | { type: 'status'; label: string; progress?: number; ts: number }
   | { type: 'checkpoint'; event: CheckpointEventType; label: string; ts: number }
-  | { type: 'action'; label: string; ts: number };
+  | {
+      type: 'action';
+      label: string;
+      ts: number;
+      // Structured tool-call fields (see tool-milestones.ts). The web task page
+      // reads these exact names for the tool tape and "Touched files" list.
+      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+      /** File path from the tool input, relative to the session cwd when under it. */
+      path?: string;
+      /** Lines added (multiset line diff for Edit/MultiEdit; content lines for Write). */
+      add?: number;
+      /** Lines removed. */
+      rem?: number;
+      /** Bash only: command, truncated to ~80 chars and secret-redacted. */
+      cmd?: string;
+      /** Read only: consecutive same-path Reads folded into this milestone. */
+      count?: number;
+    };
 
 // Tool call tracking
 export interface ToolCall {
@@ -190,6 +207,8 @@ export interface LocalWorker {
   // When subagentTasksObservedCount > subagentTasks.length, persisted span metrics are floors.
   subagentTasksObservedCount: number;
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
+  /** cwd of the current agent session (worktree or shared clone). Makes milestone paths repo-relative. */
+  sessionCwd?: string;
   /**
    * The ref this worker's worktree was cut from, as resolved by setupWorktree —
    * `origin/<default>` on a trunk task, the mission integration branch on a
@@ -337,6 +356,16 @@ export interface LocalWorker {
   // row, packaged or not; the only source of the agent's persona on both the
   // Claude (systemPrompt.append) and Codex (AGENTS.md) paths.
   roleInstructions?: RoleInstructions;
+  // Role/workspace env secrets (ENV_NAME → value) resolved server-side against
+  // the `secrets` table (purpose='role_env_secret') and delivered inline at
+  // claim time. Merged into role env by resolveWorkerRoleEnv — independent of
+  // roleConfig, so an MCP-registered role with no packaged R2 bundle still
+  // gets its declared env vars.
+  roleEnvSecrets?: Record<string, string>;
+  // ENV_NAME keys the role/workspace mapping declared with no matching secrets
+  // row — merged into resolveWorkerRoleEnv's `missing` so a declared-but-unmet
+  // requirement still records the existing "Role env degraded" milestone.
+  roleEnvMissing?: string[];
   // Skill bundles resolved by the claim route for task.context.skillSlugs.
   // Materialized to disk by syncSkillToLocal in startSession so the SDK's
   // native Skill tool can find them — without this, a task instructed to

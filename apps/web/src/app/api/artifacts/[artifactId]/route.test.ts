@@ -4,6 +4,8 @@ import { NextRequest } from 'next/server';
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockVerifyAccountWorkspaceAccess = mock(() => false as any);
+const mockGetCurrentUser = mock(async () => null as any);
+const mockVerifyWorkspaceAccess = mock(async () => null as any);
 
 // What the PATCH UPDATE ... RETURNING hands back; per-test overridable.
 let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
@@ -14,6 +16,11 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+}));
+
+mock.module('@/lib/auth-helpers', () => ({
+  getCurrentUser: mockGetCurrentUser,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -214,6 +221,102 @@ describe('GET /api/artifacts/[artifactId]', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error).toBe('Forbidden');
+  });
+});
+
+describe('GET /api/artifacts/[artifactId] — dashboard session', () => {
+  const artifactRow = {
+    id: 'artifact-1',
+    workerId: 'worker-1',
+    workspaceId: 'ws-1',
+    type: 'report',
+    title: 'Session Report',
+    content: 'Body',
+    shareToken: null,
+    visibility: 'private',
+    metadata: {},
+    worker: { accountId: 'account-1', workspaceId: 'ws-1' },
+  };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+  });
+
+  it('returns the artifact to a signed-in member of its workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockArtifactsFindFirst.mockResolvedValue(artifactRow);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifact.title).toBe('Session Report');
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-1');
+  });
+
+  it('404s (not 403) a signed-in user outside the artifact workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-2' });
+    mockArtifactsFindFirst.mockResolvedValue(artifactRow);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Artifact not found');
+  });
+
+  it('falls back to the worker workspace when the artifact row has none', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockArtifactsFindFirst.mockResolvedValue({ ...artifactRow, workspaceId: null, worker: { accountId: 'a', workspaceId: 'ws-9' } });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-9');
+  });
+
+  it('404s a signed-in user when the artifact has no workspace at all', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockArtifactsFindFirst.mockResolvedValue({ ...artifactRow, workspaceId: null, worker: null });
+
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect(mockVerifyWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 with neither a session nor a key', async () => {
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps the API key path authoritative when a key is present', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2' });
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockArtifactsFindFirst.mockResolvedValue(artifactRow);
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
+
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect(mockVerifyWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a session on PATCH', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockArtifactsFindFirst.mockResolvedValue(artifactRow);
+
+    const res = await PATCH(createMockPatchRequest({ title: 'x' }), { params: mockParams });
+
+    expect(res.status).toBe(401);
   });
 });
 

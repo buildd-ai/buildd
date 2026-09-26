@@ -57,9 +57,16 @@
   --cat-test: #e0b35a;
   --cat-infra: #f4811f;
   --cat-design: #f59b4e;
+  --cat-research: #c77bb5;
 
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
+
+  /* Task page: the hard shadow under an accent-bordered hero, ink on an accent
+     fill, and the muted fill for read ticks on the activity tape. */
+  --accent-shadow: 5px 5px 0 0 #f4811f;
+  --on-accent: #1a1512;
+  --tape-read: rgba(255, 245, 230, 0.28);
 
   color-scheme: dark;
 }
@@ -110,9 +117,14 @@
   --cat-test: #9a7a20;
   --cat-infra: #d96e12;
   --cat-design: #d96e12;
+  --cat-research: #b24c9c;
 
   --chrome-bg: rgba(247, 244, 240, 0.92);
   --chrome-sidebar: #f7f4f0;
+
+  --accent-shadow: 5px 5px 0 0 #1a1512;
+  --on-accent: #1a1512;
+  --tape-read: rgba(26, 21, 18, 0.30);
 
   color-scheme: light;
 }
@@ -138,6 +150,18 @@ textarea,
 select {
   border: 2px solid var(--border-strong) !important;
   border-radius: 0 !important;
+}
+
+/* iOS Safari zooms the page when a focused field's font-size is under 16px.
+   Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and
+   unlayered rules beat every layer regardless of specificity, so this wins over
+   `text-xs`/`text-sm` on a field below md. At md+ the utilities apply as written. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
 
 @keyframes status-pulse {
@@ -528,8 +552,46 @@ select {
   }
 }
 
+/* Mobile type floor: nothing under 11px below md. Desktop keeps the 9-10px mono
+ * caption rhythm; phones get 11px. Must stay after every class it lifts.
+ * Guarded by mobile-type-floor.test.ts. */
+@layer components {
+  @media (width < 48rem) {
+    .type-label,
+    .health-pill,
+    .section-label-missions,
+    .status-pill,
+    .field-label {
+      font-size: 11px;
+    }
+  }
+}
+
 [data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
 [data-theme="light"] .glow-dot-running { --glow-color: rgba(217, 110, 18, 0.3); }
 [data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }
 [data-theme="light"] .glow-dot-error { --glow-color: rgba(192, 82, 74, 0.25); }
 [data-theme="light"] .glow-dot-info { --glow-color: rgba(80, 136, 176, 0.25); }
+
+/* ── Fleet surfaces: the mission Board and Lanes, and SlotLanes wherever it
+ * is reused. Every value derives from the tokens above; the hatching marks
+ * queued work and future time, never decoration. */
+:root, [data-theme="dark"] {
+  --fleet-border-mid: color-mix(in srgb, var(--text-primary) 28%, transparent);
+  --fleet-hatch: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+[data-theme="light"] {
+  --fleet-border-mid: color-mix(in srgb, var(--border-strong) 42%, transparent);
+  --fleet-hatch: color-mix(in srgb, var(--border-strong) 8%, transparent);
+}
+:root {
+  --fleet-faint: color-mix(in srgb, var(--text-muted) 70%, var(--surface-1));
+  --fleet-ok-soft: color-mix(in srgb, var(--status-success) 14%, transparent);
+  --fleet-err-soft: color-mix(in srgb, var(--status-error) 16%, transparent);
+}
+@layer components {
+  .fleet-hatch { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 2px, transparent 2px 6px); }
+  .fleet-hatch-future { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 1px, transparent 1px 7px); }
+  .fleet-hatch-accent { background-image: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 4px); }
+  .fleet-hatch-ok { background-image: repeating-linear-gradient(90deg, var(--fleet-ok-soft) 0 3px, transparent 3px 5px); }
+}

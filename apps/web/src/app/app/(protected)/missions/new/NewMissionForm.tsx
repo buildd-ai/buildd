@@ -102,8 +102,8 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
       <div className="flex items-center gap-1.5 mt-1.5">
         <span className="w-1.5 h-1.5 rounded-full bg-status-warning shrink-0" />
         <span className="text-xs text-status-warning">
-          Token expired —{' '}
-          <Link href="/app/settings" className="underline">refresh in Settings</Link>
+          Token expired:{' '}
+          <Link href="/app/settings/runners" className="underline">refresh in Settings, Runners</Link>
         </span>
       </div>
     );
@@ -113,9 +113,9 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
     <div className="flex items-center gap-1.5 mt-1.5">
       <span className="w-1.5 h-1.5 rounded-full bg-text-muted shrink-0" />
       <span className="text-xs text-text-muted">
-        Not configured —{' '}
-        <Link href="/app/settings" className="underline hover:text-text-secondary">
-          add credentials in Settings
+        Not configured:{' '}
+        <Link href="/app/settings/runners" className="underline hover:text-text-secondary">
+          add credentials in Settings, Runners
         </Link>
       </span>
     </div>
@@ -128,12 +128,15 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
 // same `validateGoalCriteria` that POST /api/missions enforces. This component
 // renders messages; it never decides them.
 
+// min-w-0 + w-full: a flex child's min-width is its content, so without them
+// the fields refuse to shrink and push the ✕ off a 320px screen. 16px below md
+// so iOS does not zoom the page on focus.
 const FIELD_CLS =
-  'flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-primary';
+  'min-w-0 w-full flex-1 bg-surface-1 border border-border-default text-base md:text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-primary';
 const FIELD_LABEL_CLS =
-  'text-[10px] text-text-muted font-mono uppercase tracking-wide w-24 shrink-0 pt-1';
+  'text-[11px] md:text-[10px] text-text-muted font-mono uppercase tracking-wide w-24 shrink-0 pt-1';
 
-function CriterionRow({
+export function CriterionRow({
   draft,
   error,
   onChange,
@@ -166,14 +169,14 @@ function CriterionRow({
         <button
           type="button"
           onClick={onRemove}
-          className="text-[11px] text-text-muted hover:text-status-error px-1 py-1"
+          className="shrink-0 inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 text-[11px] text-text-muted hover:text-status-error px-1 py-1"
           aria-label="Remove criterion"
         >
           ✕
         </button>
       </div>
 
-      {option && <p className="text-[10px] text-text-muted/80">{option.hint}</p>}
+      {option && <p className="text-[11px] md:text-[10px] text-text-muted/80">{option.hint}</p>}
 
       {draft.type === 'command' && (
         <div className="flex items-start gap-2">
@@ -496,7 +499,7 @@ export default function NewMissionForm({
             onChange={e => setName(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="e.g. Migrate auth to NextAuth v5"
-            className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors"
+            className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-base md:text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors"
             autoFocus
             data-testid="mission-name-input"
           />
@@ -510,9 +513,9 @@ export default function NewMissionForm({
           <textarea
             value={description}
             onChange={e => setDescription(e.target.value)}
-            placeholder="Add more context about what this mission should accomplish…"
+            placeholder="Goal, scope, constraints, links…"
             rows={3}
-            className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors resize-none"
+            className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-base md:text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors resize-none"
             data-testid="mission-description-input"
           />
         </div>
@@ -613,7 +616,7 @@ export default function NewMissionForm({
                   value={costBudgetUsd}
                   onChange={e => setCostBudgetUsd(e.target.value)}
                   placeholder="e.g. 10.00"
-                  className="w-32 px-3 py-2 bg-surface-1 border border-border-default rounded-sm text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="w-32 px-3 py-2 bg-surface-1 border border-border-default rounded-sm text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary"
                 />
               </div>
               <p className="text-xs text-text-muted mt-1">
@@ -634,7 +637,7 @@ export default function NewMissionForm({
 
               {!cronExpression && (
                 <p className="text-xs text-text-muted mb-3">
-                  Add a schedule to run this mission periodically.
+                  Run this mission on a schedule.
                 </p>
               )}
 
@@ -675,7 +678,7 @@ export default function NewMissionForm({
                     value={cronExpression}
                     onChange={e => setCronExpression(e.target.value)}
                     placeholder="e.g. 0 */6 * * * (every 6 hours)"
-                    className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                    className="w-full px-3 py-2 bg-surface-1 border border-border-default rounded-md text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                     autoFocus
                   />
                 </div>

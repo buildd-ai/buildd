@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import ApiKeyModal from '@/components/ApiKeyModal';
+import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
 
 interface Team {
   id: string;
@@ -59,12 +60,9 @@ export default function NewAccountPage() {
         if (res.ok) {
           const data = await res.json();
           setTeams(data.teams || []);
-          const personal = (data.teams || []).find((t: Team) => t.slug.startsWith('personal-'));
-          if (personal) {
-            setSelectedTeamId(personal.id);
-          } else if (data.teams?.length > 0) {
-            setSelectedTeamId(data.teams[0].id);
-          }
+          // Default to the team the user is viewing (team switcher), not Personal.
+          const initial = defaultTeamId(data.teams || [], readActiveTeamCookie());
+          if (initial) setSelectedTeamId(initial);
         }
       } catch {
         // Teams not available
@@ -127,7 +125,7 @@ export default function NewAccountPage() {
   return (
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+        <Link href="/app/settings/runners" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
         <h1 className="text-2xl font-semibold mb-8">New Account</h1>
@@ -154,7 +152,7 @@ export default function NewAccountPage() {
                 }))}
               />
               <p className="text-xs text-text-secondary mt-1">
-                Which team owns this account
+                The team that owns this account
               </p>
             </div>
           )}
@@ -169,7 +167,7 @@ export default function NewAccountPage() {
               name="name"
               required
               placeholder="my-laptop-agent"
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             />
           </div>
 
@@ -183,7 +181,7 @@ export default function NewAccountPage() {
                 value={selectedWorkspaceId}
                 onChange={setSelectedWorkspaceId}
                 options={[
-                  { value: '', label: 'None — link later' },
+                  { value: '', label: 'None · link later' },
                   ...workspaces.map((ws) => ({
                     value: ws.id,
                     label: ws.name + (ws.repo ? ` (${ws.repo})` : ''),
@@ -191,7 +189,7 @@ export default function NewAccountPage() {
                 ]}
               />
               <p className="text-xs text-text-secondary mt-1">
-                Auto-link this account to a workspace so the API key works immediately
+                Links this account to a workspace so the API key works right away
               </p>
             </div>
           )}
@@ -230,9 +228,9 @@ export default function NewAccountPage() {
                       value={accountType}
                       onChange={setAccountType}
                       options={[
-                        { value: 'user', label: 'User - Personal laptop/workstation' },
-                        { value: 'service', label: 'Service - Always-on server/VM' },
-                        { value: 'action', label: 'Action - GitHub Actions runner' },
+                        { value: 'user', label: 'User · personal laptop or workstation' },
+                        { value: 'service', label: 'Service · always-on server or VM' },
+                        { value: 'action', label: 'Action · GitHub Actions runner' },
                       ]}
                     />
                     <p className="text-xs text-text-secondary mt-1">
@@ -250,9 +248,9 @@ export default function NewAccountPage() {
                     value={tokenLevel}
                     onChange={handleTokenLevelChange}
                     options={[
-                      { value: 'trigger', label: 'Trigger - Can create tasks and artifacts only' },
-                      { value: 'worker', label: 'Worker - Can claim and execute tasks' },
-                      { value: 'admin', label: 'Admin - Can also reassign and manage tasks' },
+                      { value: 'trigger', label: 'Trigger · create tasks and artifacts only' },
+                      { value: 'worker', label: 'Worker · claim and run tasks' },
+                      { value: 'admin', label: 'Admin · also reassign and manage tasks' },
                     ]}
                   />
                   <p className="text-xs text-text-secondary mt-1">
@@ -273,7 +271,7 @@ export default function NewAccountPage() {
                       max="10"
                       value={maxConcurrent}
                       onChange={(e) => setMaxConcurrent(e.target.value)}
-                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                     />
                   </div>
                 )}
@@ -290,7 +288,7 @@ export default function NewAccountPage() {
               {loading ? 'Creating…' : 'Create Account'}
             </button>
             <Link
-              href="/app/settings"
+              href="/app/settings/runners"
               className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3 text-center"
             >
               Cancel
@@ -307,7 +305,7 @@ export default function NewAccountPage() {
           apiKey={createdAccount.apiKey}
           onClose={() => {
             setCreatedAccount(null);
-            router.push('/app/settings');
+            router.push('/app/settings/runners');
           }}
         />
       )}

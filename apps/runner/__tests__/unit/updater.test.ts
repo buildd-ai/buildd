@@ -24,7 +24,7 @@ mock.module('child_process', () => ({
 }));
 
 // Import after mocking
-const { getCurrentCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable } = await import('../../src/updater');
+const { getCurrentCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, setRunnerUpdateSnapshotProvider, getRunnerUpdateSnapshot, __resetRunnerUpdateSnapshotForTests } = await import('../../src/updater');
 import type { UpdateExecOps } from '../../src/updater';
 
 const NODE_MODULES = join(TMP_HOME, 'node_modules');
@@ -314,5 +314,32 @@ describe('shouldShowUpdateAvailable', () => {
 
   test('true when entries are present even if flagged unreliable', () => {
     expect(shouldShowUpdateAvailable(['abc1234 fix: something'], false, true)).toBe(true);
+  });
+});
+
+describe('runner update snapshot provider', () => {
+  afterAll(() => {
+    __resetRunnerUpdateSnapshotForTests();
+  });
+
+  test('returns null when no provider has been registered', () => {
+    __resetRunnerUpdateSnapshotForTests();
+    expect(getRunnerUpdateSnapshot()).toBeNull();
+  });
+
+  test('returns the registered provider\'s live value on every call, not a snapshot taken at registration time', () => {
+    let updating = false;
+    setRunnerUpdateSnapshotProvider(() => ({
+      currentCommit: 'aaa1111',
+      diskCommit: 'aaa1111',
+      commitDrift: false,
+      updating,
+      updateAvailable: false,
+      trackedBranch: 'main',
+    }));
+
+    expect(getRunnerUpdateSnapshot()?.updating).toBe(false);
+    updating = true;
+    expect(getRunnerUpdateSnapshot()?.updating).toBe(true);
   });
 });

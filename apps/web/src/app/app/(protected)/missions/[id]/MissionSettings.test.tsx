@@ -87,3 +87,42 @@ describe('the header owns the primary action', () => {
     expect(html).toContain(PRIMARY);
   });
 });
+
+// Mobile QA: Archive / Delete / Disarm were ~40x17 text links, and the quick
+// task field was 13px (iOS zooms the page on focus under 16px).
+describe('touch targets and input size on a phone', () => {
+  const buttons = (html: string) => html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [];
+  const cls = (el: string) => (el.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/);
+  const byText = (html: string, text: string) => buttons(html).filter(b => b.replace(/<[^>]+>/g, '').trim() === text);
+
+  it('every capability in the menu is at least 44px tall below md', () => {
+    const html = render({ displayState: 'active' });
+    for (const label of ['Plan now', 'Disarm', 'Add schedule', 'Complete', 'Delete']) {
+      const [btn] = byText(html, label);
+      expect(btn).toBeDefined();
+      expect(cls(btn)).toContain('min-h-11');
+    }
+    const summary = html.match(/<summary\b[^>]*>/)![0];
+    expect(cls(summary)).toContain('min-h-11');
+  });
+
+  it('Archive and Delete on a completed mission are 44px targets', () => {
+    const html = render({ currentStatus: 'completed' });
+    for (const label of ['Archive', 'Delete']) {
+      const [btn] = byText(html, label);
+      expect(btn).toBeDefined();
+      expect(cls(btn)).toContain('min-h-11');
+    }
+  });
+
+  it('Delete on an archived mission is a 44px target', () => {
+    const [btn] = byText(render({ currentStatus: 'archived' }), 'Delete');
+    expect(cls(btn)).toContain('min-h-11');
+  });
+
+  it('the quick-task input is 16px below md', () => {
+    const html = render({ displayState: 'active' });
+    const input = html.match(/<input\b[^>]*placeholder="Add a task to this mission…"[^>]*>/)![0];
+    expect(cls(input)).toContain('text-base');
+  });
+});
