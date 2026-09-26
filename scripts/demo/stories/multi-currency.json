@@ -2275,7 +2275,7 @@
       "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
     },
     {
-      "t": 63,
+      "t": 59,
       "op": "claim",
       "task": "T1",
       "worker": "w1",
@@ -2284,7 +2284,7 @@
       "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
     },
     {
-      "t": 64,
+      "t": 60,
       "op": "claim",
       "task": "T2",
       "worker": "w2",
@@ -2293,7 +2293,7 @@
       "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
     },
     {
-      "t": 65,
+      "t": 61,
       "op": "claim",
       "task": "T3",
       "worker": "w3",
@@ -2302,7 +2302,7 @@
       "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
     },
     {
-      "t": 66,
+      "t": 62,
       "op": "worker_status",
       "worker": "w1",
       "status": "running",
@@ -2310,7 +2310,7 @@
       "db": "workers.status=running, startedAt; tasks.status=in_progress"
     },
     {
-      "t": 66,
+      "t": 62,
       "op": "claim",
       "task": "T4",
       "worker": "w4",
@@ -2319,7 +2319,7 @@
       "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
     },
     {
-      "t": 67,
+      "t": 63,
       "op": "worker_status",
       "worker": "w2",
       "status": "running",
@@ -2327,7 +2327,7 @@
       "db": "workers.status=running, startedAt; tasks.status=in_progress"
     },
     {
-      "t": 67,
+      "t": 63,
       "op": "claim",
       "task": "T5",
       "worker": "w5",
@@ -2337,7 +2337,7 @@
       "beat": "Five agents, four machines, same minute"
     },
     {
-      "t": 68,
+      "t": 64,
       "op": "worker_status",
       "worker": "w3",
       "status": "running",
@@ -2345,7 +2345,7 @@
       "db": "workers.status=running, startedAt; tasks.status=in_progress"
     },
     {
-      "t": 69,
+      "t": 65,
       "op": "worker_status",
       "worker": "w4",
       "status": "running",
@@ -2353,7 +2353,7 @@
       "db": "workers.status=running, startedAt; tasks.status=in_progress"
     },
     {
-      "t": 70,
+      "t": 66,
       "op": "worker_status",
       "worker": "w5",
       "status": "running",
@@ -3920,10 +3920,10 @@
     {
       "t": 1300,
       "op": "ci",
-      "worker": "w7a",
+      "worker": "w7",
       "prNumber": 416,
       "state": "ci_green",
-      "api": "GitHub webhook",
+      "api": "GitHub webhook (check_suite on the PR owner row)",
       "db": "workers(w7).prLifecycleStatus=ci_green",
       "beat": "CI heals itself"
     },

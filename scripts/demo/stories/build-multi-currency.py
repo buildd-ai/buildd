@@ -506,7 +506,7 @@ complete(58, "T0", "Planned 12 tasks in 3 phases. Five can start now.")
 
 # Phase 1 — five at once
 for i, k in enumerate(["T1", "T2", "T3", "T4", "T5"]):
-    claim(63 + i, k)  # plan lands by 1:00; all five running by 1:10
+    claim(59 + i, k)  # runners are nudged the moment the plan lands; all five running by 1:06
 TL[-2]["beat"] = "Five agents, four machines, same minute"
 prog(140, "T1", 15, "Reading three providers' docs and status-page history", )
 prog(150, "T2", 20, "Writing migration: invoices.currency, fx_rate_snapshot")
@@ -599,7 +599,7 @@ ev(1263, "claim", task="H1", worker="wh1", runner="dune", api="POST /api/workers
 ev(1266, "worker_status", worker="wh1", status="running", api="PATCH /api/workers/wh1", db="workers.status=running")
 ev(1300, "progress", worker="wh1", pct=60, message="Two patch bumps with green CI — merging", api="update_progress", db="workers.milestones")
 ev(1330, "complete", task="H1", worker="wh1", summary="Merged 2 patch bumps. No majors pending. Next tick in 6h.", api="complete_task", db="tasks.status=completed")
-ev(1300, "ci", worker="w7a", prNumber=416, state="ci_green", api="GitHub webhook", db="workers(w7).prLifecycleStatus=ci_green", beat="CI heals itself")
+ev(1300, "ci", worker="w7", prNumber=416, state="ci_green", api="GitHub webhook (check_suite on the PR owner row)", db="workers(w7).prLifecycleStatus=ci_green", beat="CI heals itself")
 complete(1310, "T7a", "Fixed locale-sensitive PDF footnote; CI green on #416.")
 merge(1330, "T7", 416)
 open_pr(1340, "T8"); complete(1352, "T8", "Checkout charges in the customer's currency; per-line rounding matches Stripe exactly.")
