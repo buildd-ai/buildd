@@ -9,9 +9,11 @@ import type { ReactNode } from 'react';
  * the rhythm stays identical.
  */
 export default function SettingsSection({
-  title, action, tone = 'default', children, bare = false,
+  title, action, tone = 'default', children, bare = false, id,
 }: {
   title: string;
+  /** Anchor for deep links, e.g. `/app/settings#agent-backends`. */
+  id?: string;
   /** Right-aligned control in the header row (a link, a team picker). */
   action?: ReactNode;
   tone?: 'default' | 'danger';
@@ -20,7 +22,7 @@ export default function SettingsSection({
   bare?: boolean;
 }) {
   return (
-    <section>
+    <section id={id} className={id ? 'scroll-mt-20' : undefined}>
       <div className="flex items-center justify-between gap-3 mb-3 min-h-8">
         <h2 className={`section-label shrink-0 ${tone === 'danger' ? 'text-status-error' : ''}`}>{title}</h2>
         {/* min-w-0 lets a wide action (a team <select> sized to its longest
