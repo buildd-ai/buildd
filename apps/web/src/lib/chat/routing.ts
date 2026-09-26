@@ -8,7 +8,7 @@
  * can pick a cheaper tier for a turn; it never changes which model backs one.
  */
 
-import { gateChoice, type ChoiceQuestion, type DecisionResult, decisionCall } from '@buildd/core/decision-client';
+import { gateChoice, type ChoiceQuestion, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
 
 export const CHAT_ROUTING_QUESTIONS = {
@@ -58,6 +58,8 @@ export interface TurnRoute {
   /** Load manage_missions create at all this turn. */
   allowWrites: boolean;
   source: 'decision' | 'fallback';
+  /** What the routing decision call cost, when it answered. Metered with the turn. */
+  usage?: DecisionUsage;
 }
 
 type Decide = (p: Parameters<typeof decisionCall<typeof CHAT_ROUTING_QUESTIONS>>[0])
@@ -93,5 +95,6 @@ export async function routeTurn(
     // confidence keeps them (the approval card is the backstop either way).
     allowWrites: !(intentGate.apply && intentGate.label !== 'file_work'),
     source: tierGate.apply || intentGate.apply ? 'decision' : 'fallback',
+    ...(res.usage ? { usage: res.usage } : {}),
   };
 }

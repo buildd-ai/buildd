@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 /** Chat availability: the capability AND a resolvable key, or nothing shows. */
 
-let team: any = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null };
+let team: any = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
 let modelOk = true;
 
 mock.module('@buildd/core/db', () => ({
@@ -19,7 +19,7 @@ mock.module('./models', () => ({
 const { chatAvailability, loadTeamChatSettings } = await import('./session');
 
 beforeEach(() => {
-  team = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null };
+  team = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
   modelOk = true;
 });
 
@@ -46,9 +46,10 @@ describe('chatAvailability', () => {
 });
 
 describe('loadTeamChatSettings', () => {
-  it('reads the daily cap as a number, NULL as no cap', async () => {
-    expect((await loadTeamChatSettings('t')).dailyBudgetUsd).toBeNull();
+  it('reads the daily caps as numbers, NULL as not set (the limits apply defaults)', async () => {
+    expect(await loadTeamChatSettings('t')).toMatchObject({ dailyBudgetUsd: null, userDailyBudgetUsd: null });
     team.chatDailyBudgetUsd = '12.50';
-    expect((await loadTeamChatSettings('t')).dailyBudgetUsd).toBe(12.5);
+    team.chatUserDailyBudgetUsd = '4.00';
+    expect(await loadTeamChatSettings('t')).toMatchObject({ dailyBudgetUsd: 12.5, userDailyBudgetUsd: 4 });
   });
 });

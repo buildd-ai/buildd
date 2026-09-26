@@ -70,9 +70,14 @@ export const teams = pgTable('teams', {
   // not another default inside it. See packages/core/inference-policy.ts.
   enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
-  // timezone. NULL = no cap. Metered from conversation_messages.usage; never
-  // touches accounts.maxCostPerDay, which meters runner work.
+  // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
+  // never "no cap". Metered from conversation_messages.usage (generative turns
+  // plus their routing decision calls); never touches accounts.maxCostPerDay,
+  // which meters runner work.
   chatDailyBudgetUsd: decimal('chat_daily_budget_usd', { precision: 10, scale: 2 }),
+  // Per-person daily share of that budget, in USD. NULL = DEFAULT_CHAT_USER_SHARE
+  // of the team budget. Always clamped to the team budget.
+  chatUserDailyBudgetUsd: decimal('chat_user_daily_budget_usd', { precision: 10, scale: 2 }),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -2531,7 +2536,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
-  // Per-user turn rate limit (30 per 10 minutes) counts recent messages by author.
+  // Recent messages by author (turn admission itself lives in chat_turn_windows).
   authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
 }));
 
@@ -2559,6 +2564,17 @@ export const conversationApprovals = pgTable('conversation_approvals', {
   approvalIdIdx: uniqueIndex('conversation_approvals_approval_id_idx').on(t.approvalId),
   conversationIdx: index('conversation_approvals_conversation_idx').on(t.conversationId),
 }));
+
+// Chat turn admission: one row per user holding the start times of their turns
+// in the current rate window. A turn is admitted by a single
+// INSERT ... ON CONFLICT DO UPDATE ... WHERE <under the limit> RETURNING, which
+// takes the row lock, so parallel requests are serialized and at most
+// CHAT_RATE_LIMIT get a row back (no db.transaction on neon-http).
+export const chatTurnWindows = pgTable('chat_turn_windows', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).primaryKey(),
+  turnAt: timestamp('turn_at', { withTimezone: true }).array().notNull().default(sql`'{}'::timestamptz[]`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {

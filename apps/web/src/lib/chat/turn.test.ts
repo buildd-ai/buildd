@@ -75,7 +75,7 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4 }) {
+function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any> }) {
   const apiCalls: string[] = [];
   const linked: string[] = [];
   const decide = async ({ approvalId, inputHash, approved }: any) => {
@@ -87,8 +87,8 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
   const deps = {
     now: () => new Date('2026-09-26T21:30:00Z'),
     chatEnabled: async () => opts.enabled ?? true,
-    limits: async () => ({ ok: true as const, budgetWarning: false }),
-    route: async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const }),
+    limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
+    route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     resolveModel: async (o: any) => (opts.key ?? true)
       ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const }
       : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier },
@@ -253,5 +253,52 @@ describe('"make this a mission"', () => {
     expect(r.res.status).toBe(409);
     expect(apiCalls).toEqual([]);
     expect(approvals[0].status).toBe('pending');
+  });
+});
+
+describe('limits', () => {
+  it('a refused turn returns the limit message and retry-after, and never routes, calls a model or saves', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('hi') as any });
+    let routed = 0;
+    const { turn } = harness({
+      model,
+      limits: async () => ({ ok: false, reason: 'budget_exhausted', scope: 'user', retryAfterSeconds: 3600, message: 'You\'ve used your daily chat limit.' }),
+      route: async () => { routed++; return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+    });
+    const { res, text } = await turn(userMsg('what is in flight?'));
+    expect(res.status).toBe(429);
+    expect(JSON.parse(text)).toMatchObject({ error: 'budget_exhausted', scope: 'user', retryAfterSeconds: 3600, message: 'You\'ve used your daily chat limit.' });
+    expect(routed).toBe(0);
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(messages).toHaveLength(0);
+  });
+
+  it('approval answers go through the same limits', async () => {
+    let checks = 0;
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('Filed it.')] as any,
+    });
+    const { turn, apiCalls } = harness({
+      model,
+      limits: async () => (++checks === 1
+        ? { ok: true, budgetWarning: false }
+        : { ok: false, reason: 'rate_limited', retryAfterSeconds: 60, message: 'Try again in 1 minute.' }),
+    });
+    await turn(userMsg('make this a mission'));
+    const r = await turn(answer(true));
+    expect(r.res.status).toBe(429);
+    expect(apiCalls).toEqual([]);
+    expect(approvals[0].status).toBe('pending');
+  });
+
+  it('the routing decision call\'s cost is recorded with the turn, so it counts toward the budget', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({
+      model,
+      route: async () => ({ tier: 'standard', allowWrites: true, source: 'decision', usage: { inputTokens: 40, outputTokens: 4, costUsd: 0.0007 } }),
+    });
+    await turn(userMsg('hello'));
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
   });
 });

@@ -18,7 +18,7 @@ import {
   workspaceForConversation,
 } from '@/lib/chat/session';
 import { runChatTurn } from '@/lib/chat/turn';
-import { evaluateLimits, loadLimitInputs } from '@/lib/chat/limits';
+import { checkChatLimits } from '@/lib/chat/limits';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
@@ -96,7 +96,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     body,
     deps: {
       chatEnabled: async () => settings.chatEnabled,
-      limits: async a => evaluateLimits({ ...a, ...(await loadLimitInputs(a)), dailyBudgetUsd: settings.dailyBudgetUsd }),
+      limits: a => checkChatLimits({ ...a, settings }),
       makeApi: onCall => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach }),
       actionContext: {
         workspaceId: conv.workspaceId ?? undefined,
