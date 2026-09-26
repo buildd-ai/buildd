@@ -147,3 +147,22 @@ export async function shiftAllTimestamps(db: LocalDb, deltaMs: number): Promise<
       from jsonb_array_elements(milestones) m)
     where jsonb_typeof(milestones) = 'array' and jsonb_array_length(milestones) > 0`));
 }
+
+/**
+ * A real runner claims with `runner = <its localUiUrl>` and reports that URL on
+ * the worker row too; the platform joins workers to heartbeats on it. Stories
+ * name runners by key ("atlas"), so map the key to the runner's URL.
+ */
+export function runnerUrl(story: Story, key: string | null | undefined): string {
+  const r = (story.runners ?? []).find((x: Entity) => x.runner === key || x.key === key);
+  return r?.localUiUrl ?? String(key ?? 'runner');
+}
+
+/** The heartbeat `environment` a real runner reports: hostname + a readable machine label. */
+export function runnerEnvironment(r: Entity): Record<string, unknown> {
+  const [host, machine] = String(r._display ?? r.runner ?? '').split(/\s*·\s*/);
+  return {
+    tools: [], envKeys: [], mcp: [], scannedAt: new Date(0).toISOString(),
+    labels: { type: 'local', hostname: host || String(r.runner), ...(machine ? { machine } : {}) },
+  };
+}

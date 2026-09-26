@@ -32,6 +32,13 @@ describe('taskShortLabel', () => {
     expect(t.label).toBe(taskDisplayLabel({ title: 'feat: onboarding checklist for admins' }).label.split(' ')[0].toLowerCase());
   });
 
+  it('never repeats the type as the line beside the cell', () => {
+    const t = taskShortLabel({ title: 'RESEARCH: Rate providers compared, and what breaks' });
+    expect(t.label).toBe('research');
+    expect(t.rest.toLowerCase()).not.toBe('research');
+    expect(t.rest.length).toBeGreaterThan(0);
+  });
+
   it('clips a long label', () => {
     expect(taskShortLabel({ title: 'feat(supercalifragilistic): x' }).label.length).toBeLessThanOrEqual(12);
   });

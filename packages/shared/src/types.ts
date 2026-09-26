@@ -2256,3 +2256,75 @@ export interface WorkspaceErrorTracesResponse {
   limit: number;
   patterns: WorkspaceErrorTracePattern[];
 }
+
+// ─── Home fleet (runners × slots) ─────────────────────────────────────────────
+
+/**
+ * One bar on a lane timeline: a worker's run on one runner slot. Generic
+ * `{ lane, bars[] }` shape, shared by Home's fleet panel and any other lane
+ * grid, so the two can render through one component.
+ */
+export interface LaneBar {
+  id: string;
+  /** Epoch ms. */
+  start: number;
+  /** Epoch ms; null while still running. */
+  end: number | null;
+  label: string;
+  /** Role colour from the role's own data; null = neutral. */
+  color: string | null;
+  roleSlug?: string | null;
+  state: 'running' | 'waiting' | 'done' | 'failed';
+  href?: string | null;
+}
+
+export interface Lane {
+  id: string;
+  bars: LaneBar[];
+}
+
+/** A live worker occupying a runner slot. */
+export interface FleetSlotWorker {
+  workerId: string;
+  taskId: string | null;
+  missionId: string | null;
+  /** One-word task name ("checkout") and its short label. */
+  label: string;
+  rest: string;
+  roleSlug: string | null;
+  roleName: string | null;
+  roleColor: string | null;
+  status: string;
+  /** 0..100, or null when the runner has not reported progress. */
+  progress: number | null;
+  startedAt: string | null;
+  /** Set while the worker is parked on a question. */
+  question: string | null;
+}
+
+export interface FleetSlot {
+  index: number;
+  worker: FleetSlotWorker | null;
+  /** Last finished run on this slot, for an idle slot's "last …" line. */
+  last: { label: string; prNumber: number | null; fix: boolean } | null;
+  lane: Lane;
+}
+
+export interface FleetRunner {
+  /** Heartbeat id, or a synthetic key for workers on an unknown runner. */
+  id: string;
+  name: string;
+  /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
+  machine: string | null;
+  maxSlots: number;
+  online: boolean;
+  slots: FleetSlot[];
+}
+
+export interface FleetSnapshot {
+  runners: FleetRunner[];
+  live: number;
+  capacity: number;
+  /** Timeline window, epoch ms. */
+  window: { from: number; to: number };
+}

@@ -11,6 +11,14 @@
  * No product imports: this module knows spans, not tasks or missions.
  */
 
+/**
+ * Row and axis-band heights of `SlotLanes`, here (not in the client
+ * component) so a server component drawing its own labels beside the chart
+ * can read the numbers and line its rows up.
+ */
+export const SLOT_LANE_ROW_PX = 50;
+export const SLOT_LANE_AXIS_PX = 30;
+
 export interface SpanInput {
   id: string;
   /** Epoch ms. */

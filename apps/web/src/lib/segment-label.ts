@@ -12,7 +12,7 @@
  * Pure and client-safe.
  */
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
-import { taskDisplayLabel } from '@buildd/core/task-label';
+import { heuristicTaskLabel, taskDisplayLabel } from '@buildd/core/task-label';
 
 export interface TaskShortLabel {
   /** One word, lower case, at most `MAX_LABEL` chars. */
@@ -36,7 +36,13 @@ export function taskShortLabel(task: { title: string; label?: string | null; mod
   }
   if (display.scope) return { label: clip(display.scope.split(/[,/\s]/)[0]), rest: display.label };
   const type = TYPE_PREFIX.exec(title)?.[1];
-  if (type && !GENERIC_TYPES.has(type.toLowerCase())) return { label: clip(type), rest: display.label };
+  if (type && !GENERIC_TYPES.has(type.toLowerCase())) {
+    // The cell already says the type; the line beside it says what the task is.
+    const rest = display.label.toLowerCase() === type.toLowerCase()
+      ? heuristicTaskLabel(title.replace(TYPE_PREFIX, '')).label
+      : display.label;
+    return { label: clip(type), rest };
+  }
   const [first, ...more] = display.label.split(/\s+/);
   return { label: clip(first ?? ''), rest: more.join(' ') };
 }

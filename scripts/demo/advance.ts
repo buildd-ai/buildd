@@ -15,7 +15,7 @@
  */
 import { DEMO } from './lib/guard';
 import { createLocalDb, schema as s, sql, eq, type LocalDb } from '../../packages/core/db/local-client';
-import { IdMap, loadState, loadStory, saveState, shiftAllTimestamps, toRow, type DemoState, type Entity, type Story, type TimelineEvent } from './lib/story';
+import { IdMap, loadState, loadStory, runnerUrl, saveState, shiftAllTimestamps, toRow, type DemoState, type Entity, type Story, type TimelineEvent } from './lib/story';
 import { artifactRow, seedStory } from './seed';
 import { triggerPusher } from './lib/pusher';
 import { toolMilestone } from './lib/tool-milestone';
@@ -106,7 +106,8 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
     await c.db.update(s.tasks).set({ status: 'assigned', claimedBy: account ? c.ids.get(account.key) : null, claimedAt: c.at(e.t), updatedAt: c.at(e.t) } as any)
       .where(eq(s.tasks.id, c.ids.get(e.task)));
     await c.db.insert(s.workers).values(toRow(w, c.ids, {
-      id: c.ids.get(w.key!), status: 'idle', runner: e.runner ?? w.runner, milestones: [], createdAt: c.at(e.t), updatedAt: c.at(e.t),
+      id: c.ids.get(w.key!), status: 'idle', runner: runnerUrl(c.story, e.runner ?? w.runner),
+      localUiUrl: runnerUrl(c.story, e.runner ?? w.runner), milestones: [], createdAt: c.at(e.t), updatedAt: c.at(e.t),
     }) as any);
     const task = find(c.story.tasks, e.task);
     if (task.missionId) await c.db.update(s.missions).set({ lastTaskStartedAt: c.at(e.t) } as any).where(eq(s.missions.id, c.ids.get(task.missionId)));
@@ -320,7 +321,7 @@ async function syncRunners(c: Ctx) {
   for (const r of c.story.runners ?? []) {
     await c.db.execute(sql`
       update worker_heartbeats set last_heartbeat_at = now(), updated_at = now(),
-        active_worker_count = (select count(*) from workers where runner = ${r.runner} and status in ('idle','starting','running','waiting_input'))
+        active_worker_count = (select count(*) from workers where runner = ${r.localUiUrl} and status in ('idle','starting','running','waiting_input'))
       where local_ui_url = ${r.localUiUrl}`);
   }
 }

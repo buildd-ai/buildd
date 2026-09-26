@@ -173,7 +173,12 @@ export function resolveStaleGate(input: StaleGateInput): StaleGate | null {
   const ageHours = Number.isFinite(ageMs) ? Math.floor(ageMs / HOUR_MS) : 0;
 
   const verifiedAt = input.prLifecycleVerifiedAt ?? null;
-  if (!isPrStateFresh({ prOpenedAt: input.prOpenedAt, verifiedAt, now: input.now })) {
+  // Inside a PR's first check window the opening report IS the observation:
+  // the sweep is not due yet, so "never verified" is not "stale" (a card
+  // used to read "STALE 0h old" minutes after the PR opened). Past the window
+  // an unverified row fails closed exactly as before.
+  const withinFirstWindow = !verifiedAt && openedAt !== null && ageMs >= 0 && ageMs <= prStateSlaMs(ageMs);
+  if (!withinFirstWindow && !isPrStateFresh({ prOpenedAt: input.prOpenedAt, verifiedAt, now: input.now })) {
     const sla = prStateSlaMs(ageMs);
     return {
       kind: 'unverified',
