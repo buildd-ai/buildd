@@ -15,7 +15,7 @@ import { Outbox } from './outbox';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
-  reapChild, withTimeout, TRACKED_BRANCH } from './updater';
+  reapChild, withTimeout, TRACKED_BRANCH, setRunnerUpdateSnapshotProvider, type RunnerUpdateSnapshot } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain } from './update-drain';
@@ -565,6 +565,20 @@ initCurrentCommit().then(() => {
   updateState.currentCommit = getCurrentCommit();
 });
 
+// Registered once so workers.ts can read a live snapshot on every heartbeat
+// tick without a circular import — see setRunnerUpdateSnapshotProvider's doc.
+setRunnerUpdateSnapshotProvider((): RunnerUpdateSnapshot => {
+  const diskCommit = getDiskCommit();
+  return {
+    currentCommit: updateState.currentCommit,
+    diskCommit,
+    commitDrift: hasCommitDrift(diskCommit, updateState.currentCommit),
+    updating: updateState.updating,
+    updateAvailable: updateState.updateAvailable,
+    trackedBranch: TRACKED_BRANCH,
+  };
+});
+
 // =============================================================================
 // POST-UPDATE CANARY (update-canary.ts)
 // =============================================================================
@@ -752,13 +766,18 @@ async function setLatestCommit(sha: string) {
 let versionPollInterval: Timer | undefined;
 async function pollVersion() {
   try {
-    const res = await fetch(`${config.builddServer}/api/version`, {
+    // `?branch=` matters: an unscoped /api/version answers with the version
+    // cache's default branch, which this install may not even track — the
+    // same bug the heartbeat path fixed by resolving per-runner (see
+    // buildd.ts:sendHeartbeat). `latestAvailable.commit` (not the old flat
+    // `latestCommit`) is the head of THAT branch specifically.
+    const res = await fetch(`${config.builddServer}/api/version?branch=${encodeURIComponent(TRACKED_BRANCH)}`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.latestCommit) {
-        setLatestCommit(data.latestCommit);
+      if (data.latestAvailable?.commit) {
+        setLatestCommit(data.latestAvailable.commit);
       }
     }
   } catch {

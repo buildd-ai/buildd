@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import { resolveBuilddHome } from './buildd-home';
 import { join } from 'path';
 import { readFileSync } from 'fs';
+import type { RunnerUpdateSnapshot } from '@buildd/shared';
 
 // Resolved per call (default params included) so a test runtime without a temp
 // BUILDD_HOME fails closed (see buildd-home.ts) instead of resetting the real install.
@@ -587,6 +588,36 @@ export async function reapChild(
 
 /** Attempts allowed against one target commit before auto-update gives up on it. */
 export const AUTO_UPDATE_RETRY_LIMIT = 3;
+
+// ── Update-state snapshot for the heartbeat ─────────────────────────────────
+//
+// `index.ts` owns the live `updateState` object (currentCommit, updating,
+// updateAvailable — none of which belong in this module, which has no
+// process-level state of its own). `workers.ts` needs a live read of it on
+// every heartbeat tick. Rather than a circular import between the two (or
+// threading a new constructor param through every `new WorkerManager(...)`
+// call site in index.ts), this is a registered-provider singleton — the same
+// pattern `update-canary.ts` uses for its process-scope instance: index.ts
+// registers a getter once at startup, workers.ts calls it at send time.
+
+export type { RunnerUpdateSnapshot };
+
+let updateSnapshotProvider: (() => RunnerUpdateSnapshot) | null = null;
+
+/** Registered once at startup by index.ts, which owns the live update state. */
+export function setRunnerUpdateSnapshotProvider(fn: () => RunnerUpdateSnapshot): void {
+  updateSnapshotProvider = fn;
+}
+
+/** Read by the heartbeat sender. Null until index.ts registers a provider (e.g. in unit tests that never boot the full runner). */
+export function getRunnerUpdateSnapshot(): RunnerUpdateSnapshot | null {
+  return updateSnapshotProvider ? updateSnapshotProvider() : null;
+}
+
+/** Test-only: clear the registered provider so one test file cannot leak state into another. */
+export function __resetRunnerUpdateSnapshotForTests(): void {
+  updateSnapshotProvider = null;
+}
 
 /**
  * Is there budget left to attempt an auto-update to `targetCommit`?

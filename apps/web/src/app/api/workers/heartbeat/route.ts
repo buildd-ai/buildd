@@ -46,7 +46,27 @@ export async function POST(req: NextRequest) {
        * behaviour for them.
        */
       branch = undefined,
+      /**
+       * The same live update-state the runner reports on its own local
+       * /api/version, sent as one bundle (see BuilddClient.sendHeartbeat's
+       * `updateSnapshot` param) — always all six fields together, or none.
+       * `undefined` (not sent) means "no snapshot on this heartbeat" (legacy
+       * runner, or `git rev-parse` genuinely raced the process); `null` inside
+       * the bundle for currentCommit/diskCommit is a real fact ("disk read
+       * failed just now"), not "no data" — see the persistence below for why
+       * they are handled differently in the upsert.
+       */
+      currentCommit = undefined,
+      diskCommit = undefined,
+      commitDrift = undefined,
+      updating = undefined,
+      updateAvailable = undefined,
+      trackedBranch = undefined,
     } = body;
+    // Presence of the bundle is keyed on one field rather than requiring all
+    // six, since `undefined` only ever appears here when the runner omitted
+    // the whole group (buildd.ts sends it as one unit or not at all).
+    const updateSnapshotProvided = trackedBranch !== undefined;
 
     if (!localUiUrl) {
       return NextResponse.json({ error: 'localUiUrl is required' }, { status: 400 });
@@ -86,6 +106,12 @@ export async function POST(req: NextRequest) {
         sandboxProbeAt: sandboxProbeDate,
         runnerCommit: runnerCommit as string | null,
         runnerVersion: runnerVersion as string | null,
+        currentCommit: (currentCommit ?? null) as string | null,
+        diskCommit: (diskCommit ?? null) as string | null,
+        commitDrift: (commitDrift ?? null) as boolean | null,
+        updating: (updating ?? null) as boolean | null,
+        updateAvailable: (updateAvailable ?? null) as boolean | null,
+        trackedBranch: (trackedBranch ?? null) as string | null,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -97,6 +123,18 @@ export async function POST(req: NextRequest) {
           ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
           ...(runnerCommit !== null ? { runnerCommit: runnerCommit as string | null } : {}),
           ...(runnerVersion !== null ? { runnerVersion: runnerVersion as string | null } : {}),
+          // Omitted entirely (not nulled) when the runner didn't send this
+          // heartbeat's bundle, so a degraded beat can never wipe out the last
+          // known-good drift/update status — same convention as runnerCommit
+          // above.
+          ...(updateSnapshotProvided ? {
+            currentCommit: (currentCommit ?? null) as string | null,
+            diskCommit: (diskCommit ?? null) as string | null,
+            commitDrift: (commitDrift ?? null) as boolean | null,
+            updating: (updating ?? null) as boolean | null,
+            updateAvailable: (updateAvailable ?? null) as boolean | null,
+            trackedBranch: (trackedBranch ?? null) as string | null,
+          } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,
         },
