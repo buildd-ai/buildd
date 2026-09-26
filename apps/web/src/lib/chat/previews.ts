@@ -43,6 +43,29 @@ const clip = (s: unknown, n = 140): string | null => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+/** Models send `"true"` / `"false"` as often as booleans. */
+export const asBool = (v: unknown, dflt: boolean): boolean =>
+  v === undefined || v === null ? dflt : v === true || v === 'true' ? true : v === false || v === 'false' ? false : dflt;
+/** A list param sent as one string is a list of one. */
+const listOf = (v: unknown): unknown[] => {
+  if (Array.isArray(v)) return v;
+  if (typeof v !== 'string' || !v.trim()) return [];
+  // …or as a JSON-encoded list.
+  if (v.trim().startsWith('[')) {
+    try { const parsed = JSON.parse(v); if (Array.isArray(parsed)) return parsed; } catch { /* a plain string */ }
+  }
+  return [v];
+};
+/** "http://dune.local:8766" → "dune"; a plain name stays as it is. */
+export function runnerName(r: unknown): string {
+  const s = String(r ?? '');
+  try {
+    const host = new URL(s).hostname;
+    return host.replace(/\.(local|lan|internal)$/, '') || s;
+  } catch {
+    return s;
+  }
+}
 
 function fingerprint(targetId: string, changes: Change[], extra: unknown = null): string {
   return hashToolInput({ t: targetId, b: changes.map(c => c.before), x: extra });
@@ -70,7 +93,7 @@ function workerDetail(t: Obj, live: Obj | null): string | undefined {
   if (t?.context?.heldBy) return 'held';
   if (!live) return t?.status ? String(t.status) : undefined;
   if (live.status === 'waiting_input') return 'waiting for your answer';
-  return `running${live.runner ? ` on ${live.runner}` : ''}`;
+  return `running${live.runner ? ` on ${runnerName(live.runner)}` : ''}`;
 }
 
 async function resolveTask(env: PreviewEnv, ref: unknown): Promise<{ ok: true; loaded: LoadedTask } | { ok: false; question: string }> {
@@ -124,14 +147,14 @@ const holdTask: Builder = async (input, env) => {
   const t = await resolveTask(env, input.taskId);
   if (!t.ok) return question(t.question);
   const { task, live } = t.loaded;
-  const hold = input.hold !== false;
+  const hold = asBool(input.hold, true);
   const isHeld = !!task.context?.heldBy;
   if (hold === isHeld) return question(`That task is already ${isHeld ? 'held' : 'not held'}. Tell the user; nothing to change.`);
   if (hold && ['completed', 'failed', 'cancelled'].includes(task.status)) return question(`That task is ${task.status}; there's nothing to hold.`);
   const changes: Change[] = [{ label: 'Claims', before: isHeld ? 'held' : 'open', after: hold ? 'held' : 'open' }];
   const reason = str(input.reason);
   if (hold && reason) changes.push({ label: 'Until', before: null, after: clip(reason)! });
-  const where = live?.runner ? ` on ${live.runner}` : '';
+  const where = live?.runner ? ` on ${runnerName(live.runner)}` : '';
   const note = live
     ? (hold ? `The agent running${where} is told to stop at a safe point and wait.` : `The agent${where} is told to carry on.`)
     : hold ? 'No agent picks it up until you resume it.' : 'It can be claimed again.';
@@ -192,6 +215,19 @@ const answerQuestion: Builder = async (input, env) => {
   };
 };
 
+/** A workspace by id or name, among the reach-filtered workspace list; null when out of reach. */
+async function workspaceOf(env: PreviewEnv, ref: string | null): Promise<{ id: string; name: string } | null> {
+  if (!ref) return null;
+  try {
+    const data = await env.read('/api/workspaces');
+    const list = (Array.isArray(data?.workspaces) ? data.workspaces : []) as Obj[];
+    const w = list.find(x => x.id === ref) ?? list.find(x => String(x.name ?? '').toLowerCase() === ref.toLowerCase());
+    return w ? { id: String(w.id), name: String(w.name ?? 'workspace') } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function missionOf(env: PreviewEnv, id: unknown): Promise<Obj | null> {
   const mid = str(id) ?? env.scope.missionId ?? null;
   if (!mid) return null;
@@ -203,7 +239,7 @@ const createTask: Builder = async (input, env) => {
   if (input.missionId && !mission) return question('That mission isn\'t available here. Ask the user which mission the task belongs to.');
   const dependsOn: string[] = [];
   const depLabels: string[] = [];
-  for (const ref of Array.isArray(input.dependsOn) ? input.dependsOn : []) {
+  for (const ref of listOf(input.dependsOn)) {
     const r = await resolveTask(env, ref);
     if (!r.ok) return question(r.question);
     dependsOn.push(r.loaded.task.id);
@@ -217,6 +253,8 @@ const createTask: Builder = async (input, env) => {
   if (depLabels.length) changes.push({ label: 'After', before: null, after: depLabels.join(', ') });
   if (str(input.baseBranch)) changes.push({ label: 'Branch', before: null, after: str(input.baseBranch)! });
   if (str(input.roleSlug)) changes.push({ label: 'Role', before: null, after: str(input.roleSlug)! });
+  const paths = listOf(input.pathManifest).filter((p): p is string => typeof p === 'string');
+  if (paths.length) changes.push({ label: 'Paths', before: null, after: clip(paths.join(', '), 200)! });
   const workspaceId = str(input.workspaceId) ?? mission?.workspaceId ?? env.scope.workspaceId ?? null;
   return {
     ok: true,
@@ -224,6 +262,7 @@ const createTask: Builder = async (input, env) => {
       ...input,
       ...(mission ? { missionId: mission.id } : {}),
       ...(dependsOn.length ? { dependsOn } : {}),
+      ...(paths.length ? { pathManifest: paths } : {}),
       ...(workspaceId && !input.workspaceId ? { workspaceId } : {}),
     },
     preview: {
@@ -255,6 +294,16 @@ const updateMission: Builder = async (input, env) => {
     changes.push({ label, before: clip(m[k]), after: clip(input[k]) });
   }
   if (input.startMode !== undefined) changes.push({ label: 'Start', before: m.isHeld ? 'held' : 'armed', after: String(input.startMode) });
+  // Add or remove criteria against the mission's CURRENT list, so a change
+  // never drops a criterion the model couldn't see in full.
+  const add = listOf(input.addGoalCriteria).filter((c): c is Obj => !!c && typeof c === 'object');
+  const remove = listOf(input.removeGoalCriteria).map(String);
+  if (add.length || remove.length) {
+    const current = Array.isArray(m.goalCriteria) ? m.goalCriteria : [];
+    const kept = current.filter((c: Obj) => !remove.includes(criterionText(c)));
+    const { addGoalCriteria: _a, removeGoalCriteria: _r, ...rest } = input;
+    input = { ...rest, goalCriteria: [...kept, ...add] };
+  }
   if (Array.isArray(input.goalCriteria)) {
     const before = (Array.isArray(m.goalCriteria) ? m.goalCriteria : []).map(criterionText);
     const after = input.goalCriteria.map(criterionText);
@@ -300,12 +349,13 @@ const createSchedule: Builder = async (input, env) => {
     { label: 'Runs', before: null, after: `${cron}${str(input.timezone) ? ` (${str(input.timezone)})` : ''}` },
   ];
   if (str(input.title)) changes.push({ label: 'Each run files', before: null, after: clip(input.title)! });
-  const workspaceId = str(input.workspaceId) ?? env.scope.workspaceId ?? null;
-  if (!workspaceId) return question('Which workspace should the schedule run in?');
+  const ws = await workspaceOf(env, str(input.workspaceId) ?? env.scope.workspaceId ?? null);
+  if (!ws) return question('Which workspace should the schedule run in? (It must be one this conversation can reach.)');
+  const workspaceId = ws.id;
   return {
     ok: true, input: { ...input, workspaceId },
     preview: {
-      v: 1, verb: 'New schedule in', target: { kind: 'workspace', id: workspaceId, label: 'this workspace', workspaceId },
+      v: 1, verb: 'New schedule in', target: { kind: 'workspace', id: workspaceId, label: ws.name, workspaceId },
       changes, fingerprint: fingerprint(workspaceId, changes),
     },
   };

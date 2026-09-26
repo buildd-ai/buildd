@@ -42,6 +42,7 @@ import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, 
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
+import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import type { LimitVerdict } from './limits';
 import {
@@ -250,6 +251,7 @@ export async function runChatTurn(args: {
     authorizedToolCallIds,
     approvedPreviews,
     preview,
+    resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
     memory: deps.memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
