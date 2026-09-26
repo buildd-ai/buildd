@@ -444,8 +444,15 @@ export function readTaskAreaHint(context: unknown): TaskAreaContextHint | null {
  * prediction is a union over other people's diffs. The wording exists to make
  * the block useful for narrowing a `codebase-memory` or `recall` query without
  * licensing "these are the files I am allowed to change".
+ *
+ * `cbmAvailable: false` drops the graph from that sentence. A task in the
+ * CBM-withheld arm of the cbm_access experiment has no codebase-memory tools,
+ * and telling it to query one is steering toward a tool it does not have.
  */
-export function renderTaskAreaBlock(hint: TaskAreaContextHint): string {
+export function renderTaskAreaBlock(hint: TaskAreaContextHint, opts: { cbmAvailable?: boolean } = {}): string {
+  const narrow = opts.cbmAvailable === false
+    ? 'to narrow a `recall` query or your first file search, then verify. If the'
+    : 'to narrow a `codebase-memory` or `recall` query first, then verify. If the';
   const sourceLabel = hint.source === 'diff'
     ? 'what those tasks actually changed'
     : 'the file scopes those tasks declared';
@@ -459,7 +466,7 @@ export function renderTaskAreaBlock(hint: TaskAreaContextHint): string {
     'ADVISORY. This is a prediction from past work, not a declaration of scope:',
     'it is not this task\'s path manifest, it does not constrain what you may',
     'change, and it is not evidence that any of these files is involved. Use it',
-    'to narrow a `codebase-memory` or `recall` query first, then verify. If the',
+    narrow,
     'work is somewhere else, it is somewhere else.',
   ].join('\n');
 }
