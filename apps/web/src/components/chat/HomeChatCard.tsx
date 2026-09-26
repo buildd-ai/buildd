@@ -1,9 +1,10 @@
 'use client';
 
 /**
- * Chat on Home (docs/design/agent-chat.md, "Who sees what first"): a member's
- * home opens on the conversation — the composer, then their recent chats. The
- * first send creates the conversation and continues on its page.
+ * Chat on Home: the first thing on the page for everyone, because chat is
+ * how work starts (lib/chat/entry-points.ts). The composer, then recent chats;
+ * operators get the fleet directly underneath. The first send creates the
+ * conversation and continues on its page.
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -15,18 +16,22 @@ import { chatErrorLine } from './chat-errors';
 import type { ConversationListItem } from '@/lib/chat/conversations';
 
 export default function HomeChatCard({
-  teamId, workspaces, recent, agentName = 'Organizer', compact = false,
+  teamId, workspaces, recent, agentName = 'Organizer', compact = false, initialWorkspaceId = null,
 }: {
   teamId: string;
   workspaces: readonly ComposerWorkspace[];
   recent: readonly ConversationListItem[];
   agentName?: string;
-  /** Operators: the fleet stays first, chat is one card among the rest. */
+  /** Operators: fewer recent chats, so the fleet stays on the first screen. */
   compact?: boolean;
+  /** Home's workspace filter, when it names one of these workspaces. */
+  initialWorkspaceId?: string | null;
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState('');
-  const [workspaceId, setWorkspaceId] = useState<string | null>(workspaces[0]?.id ?? null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(
+    (initialWorkspaceId && workspaces.some(w => w.id === initialWorkspaceId) ? initialWorkspaceId : null) ?? workspaces[0]?.id ?? null,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +56,7 @@ export default function HomeChatCard({
   }
 
   return (
-    <section data-testid="home-chat-card" className="mb-8">
+    <section data-testid="home-chat-card" className="mb-6">
       <div className="mb-3 flex items-center justify-between font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">
         <span>{`Ask ${agentName}`}</span>
         <Link href="/app/chat" className="hover:text-text-primary">All chats →</Link>
@@ -62,7 +67,7 @@ export default function HomeChatCard({
         onSend={send}
         busy={busy}
         disabled={busy}
-        placeholder={compact ? 'Ask about your fleet…' : 'Ask about your fleet, or describe the work…'}
+        placeholder="Describe the work, or ask about your fleet…"
         workspaces={workspaces}
         workspaceId={workspaceId}
         onWorkspaceChange={setWorkspaceId}

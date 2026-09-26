@@ -3,6 +3,7 @@ import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, w
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 import Link from 'next/link';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -140,12 +141,13 @@ export default async function WorkspaceDetailPage({
           </div>
           <div className="flex gap-2 w-full md:w-auto shrink-0">
             {/* Delete lives in Configure's danger zone, not beside the primary action. */}
-            <Link
-              href={`/app/tasks/new?workspaceId=${workspace.id}`}
+            <NewWorkLink
+              kind="task"
+              workspaceId={workspace.id}
               className="px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base whitespace-nowrap bg-primary text-white hover:bg-primary-hover rounded-[10px]"
             >
               + New Task
-            </Link>
+            </NewWorkLink>
           </div>
         </div>
 

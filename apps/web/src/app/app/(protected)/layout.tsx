@@ -14,6 +14,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
 import { getChatAvailability } from '@/lib/chat-availability';
 import { homeAudience } from './home/home-view';
+import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
+import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 import type { NavContext } from '@/lib/nav-config';
 
 export default async function ProtectedLayout({
@@ -28,6 +30,8 @@ export default async function ProtectedLayout({
   let teamWorkspaces: { id: string; name: string }[] = [];
   let teamTimezone: string | null = null;
   let nav: NavContext = { chat: false, audience: 'operator' };
+  // Create buttons open chat when it's available (components/chat/ChatEntry.tsx).
+  let chatEntry: ChatEntryValue = { available: false, teamId: null, setupHref: null };
 
   if (user) {
     // These three have no dependency on each other, and this layout re-runs on
@@ -54,12 +58,18 @@ export default async function ProtectedLayout({
         // for every team that hasn't turned chat on. Both are React cache()d,
         // so Home and /app/chat reuse the answer. Off on any failure.
         .then(async (scope) => {
-          if (!scope.teamId) return { scope, nav };
+          if (!scope.teamId) return { scope, nav, chatEntry };
           const [avail, role] = await Promise.all([
             getChatAvailability(user.id, scope.teamId).catch(() => null),
             getUserTeamRole(user.id, scope.teamId).catch(() => null),
           ]);
-          return { scope, nav: { chat: avail?.available === true, audience: homeAudience(role) } as NavContext };
+          const entry: ChatEntryValue = {
+            available: avail?.available === true,
+            teamId: scope.teamId,
+            // Only the missing key is an admin's to fix; a team that switched chat off isn't nagged.
+            setupHref: avail && !avail.available && avail.reason === 'no_key' && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
+          };
+          return { scope, nav: { chat: avail?.available === true, audience: homeAudience(role) } as NavContext, chatEntry: entry };
         }),
     ]);
     userTeams = userTeamsResult;
@@ -68,12 +78,15 @@ export default async function ProtectedLayout({
     teamWorkspaces = scopeResult.scope.workspaces;
     teamTimezone = scopeResult.scope.timezone;
     nav = scopeResult.nav;
+    chatEntry = scopeResult.chatEntry;
   }
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
 
   return (
     <AuthGuard>
+      <ChatEntryProvider value={chatEntry}>
+      <ChatShortcut />
       <DisplayTimezoneProvider teamTimezone={teamTimezone}>
       <EscalationProvider workspaceIds={workspaceIds}>
       <NeedsInputProvider workspaceIds={workspaceIds}>
@@ -125,6 +138,7 @@ export default async function ProtectedLayout({
       </NeedsInputProvider>
       </EscalationProvider>
       </DisplayTimezoneProvider>
+      </ChatEntryProvider>
     </AuthGuard>
   );
 }

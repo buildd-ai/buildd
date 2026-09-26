@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
@@ -530,22 +531,22 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           <h2 className="text-xl font-semibold text-text-primary mb-2">No activity yet</h2>
           <p className="text-text-secondary mb-4">Tasks from your missions show up here.</p>
           <div className="flex flex-wrap items-center justify-center gap-2">
-            <Link
-              href="/app/missions/new"
+            <NewWorkLink
+              kind="mission"
               className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
             >
               <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
               New Mission
-            </Link>
-            <Link
-              href="/app/tasks/new"
-              data-testid="activity-empty-new-task"
+            </NewWorkLink>
+            <NewWorkLink
+              kind="task"
+              testId="activity-empty-new-task"
               className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
             >
               New task
-            </Link>
+            </NewWorkLink>
           </div>
         </div>
       </div>

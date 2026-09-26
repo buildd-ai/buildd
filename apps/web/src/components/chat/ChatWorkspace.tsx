@@ -50,6 +50,17 @@ export interface ChatWorkspaceProps {
   emptyState?: ReactNode;
   /** Start with the pane closed: chat full width, objects as inline cards. */
   initialPaneClosed?: boolean;
+  /** The composer's placeholder when nothing is docked ("Describe the outcome you want…"). */
+  composerPlaceholder?: string;
+  /** Focus the composer on arrival: the chat was opened to start something. */
+  autoFocus?: boolean;
+  /**
+   * On a phone, open `focusRef` as a sheet on arrival (the respond deep link).
+   * False for "Ask about this…": the object shows as a strip above the feed instead.
+   */
+  focusOpensSheet?: boolean;
+  /** Where the form fallback lives ("Fill in a form instead"), shown until the first message. */
+  formFallbackHref?: string | null;
 }
 
 const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 768px)').matches;
@@ -59,6 +70,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, titleSource = 'auto', teamName,
     agent, tier, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
+    composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null,
   } = props;
   const [pane, dispatch] = useReducer(paneReducer, INITIAL_PANE, s => (
     focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
@@ -79,8 +91,13 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   // Phone deep link: the focused question opens as a sheet.
   useEffect(() => {
-    if (focusRef && !isDesktop()) setSheet(focusRef);
-  }, [focusRef]);
+    if (focusRef && focusOpensSheet && !isDesktop()) setSheet(focusRef);
+  }, [focusRef, focusOpensSheet]);
+
+  // Opened to start something (+ Mission, New task, Ask about…): type straight away.
+  useEffect(() => {
+    if (autoFocus) composer.current?.focus();
+  }, [autoFocus]);
 
   const focus = pane.closed ? null : paneFocus(messages, pane.pinned);
 
@@ -173,6 +190,18 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       {header}
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div ref={content} className={`mx-auto px-4 py-5 md:px-6 ${docked ? '' : 'max-w-[860px]'}`}>
+          {messages.length === 0 && focusRef && !focusOpensSheet && (
+            <button
+              type="button"
+              data-testid="chat-about-strip"
+              onClick={() => setSheet(focusRef)}
+              className="mb-5 flex min-h-12 w-full items-center gap-2.5 border-2 border-border-strong bg-card px-3.5 text-left font-mono text-[13px] hover:bg-card-hover md:hidden"
+            >
+              <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[1.5px] text-text-muted">{focusRef.kind}</span>
+              <span className="min-w-0 flex-1 truncate font-semibold text-text-primary">{focusRef.title ?? focusRef.fallbackText}</span>
+              <span aria-hidden="true" className="shrink-0 text-text-muted">Open ›</span>
+            </button>
+          )}
           {messages.length === 0 && emptyState}
           <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
@@ -187,13 +216,24 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             onSend={send}
             onStop={onStop}
             busy={busy}
-            placeholder={docked ? 'Ask about this, or anything else…' : undefined}
+            placeholder={composerPlaceholder ?? (docked ? 'Ask about this, or anything else…' : undefined)}
             workspaces={workspaces}
             workspaceId={workspaceId}
             onWorkspaceChange={onWorkspaceChange}
             tier={tier}
             compact={docked}
           />
+          {formFallbackHref && messages.length === 0 && (
+            <div className="mt-2 flex justify-end">
+              <Link
+                href={formFallbackHref}
+                data-testid="chat-form-fallback"
+                className="inline-flex min-h-9 items-center font-mono text-[12px] text-text-muted underline decoration-dotted underline-offset-4 hover:text-text-primary"
+              >
+                Fill in a form instead
+              </Link>
+            </div>
+          )}
         </div>
       </div>
     </section>
