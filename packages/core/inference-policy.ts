@@ -36,7 +36,8 @@ export type InferenceCapability =
   | 'criteria_grading'
   | 'visual_qa'
   | 'task_classification'
-  | 'mission_summary';
+  | 'mission_summary'
+  | 'task_category_shadow';
 
 export interface CapabilityDescriptor {
   id: InferenceCapability;
@@ -90,6 +91,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
       'Answer questions about a mission and compress long note threads on request.',
     fallback: 'none',
     costHint: '~$0.005 per request',
+  },
+  task_category_shadow: {
+    id: 'task_category_shadow',
+    label: 'Task category shadow check',
+    description:
+      'Observe-only: ask a decision model (OpenRouter decision key) for each new task\'s category alongside the keyword classifier and log whether they agree. Never changes a task.',
+    // Nothing depends on it: turning it off stops the comparison, nothing else.
+    fallback: 'none',
+    costHint: '~$0.00002 per task',
   },
 };
 

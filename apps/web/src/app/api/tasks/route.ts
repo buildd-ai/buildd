@@ -15,6 +15,7 @@ import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
+import { scheduleTaskCategoryShadow } from '@/lib/task-category-decision';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -945,6 +946,9 @@ export async function POST(req: NextRequest) {
     } else if (!rawCategory) {
       category = classifyTask(title, description) as CategoryType | null;
     }
+    // Only a keyword-derived category is shadowed: a caller-supplied one is the
+    // filer's own label, not a classifier output worth comparing against.
+    const categoryWasKeywordClassified = !rawCategory;
 
     // Short display label: whoever files the task may supply one; otherwise the
     // classifier derives it from the title. Pure and synchronous — never blocks
@@ -1311,6 +1315,27 @@ export async function POST(req: NextRequest) {
         assignToLocalUiUrl,
         runnerPreference,
       });
+    }
+
+    // Decision-model shadow of the keyword category (observe-only, off unless
+    // the team enabled `task_category_shadow` and stored a decision key). Runs
+    // after the response via after(); it cannot change `category` on the row
+    // and cannot fail this request. See docs/design/decision-calls.md.
+    if (categoryWasKeywordClassified && intake.outcome.action !== 'attached') {
+      try {
+        scheduleTaskCategoryShadow({
+          taskId: task.id,
+          teamId: targetWorkspace.teamId,
+          workspaceId,
+          accountId: creatorContext.createdByAccountId ?? null,
+          title,
+          description: description ?? null,
+          keywordCategory: category,
+          dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
+        }, after);
+      } catch (err) {
+        console.error('[task-create] decision shadow scheduling failed (non-fatal):', err);
+      }
     }
 
     // A task filed against a mission — by the dashboard, a plain API call, or an
