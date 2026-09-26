@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { reverifyProviderKey } from '@/lib/provider-keys';
 import { isChatProvider, type VerifyProviderKeyRequest } from '@buildd/shared';
 
@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
   const teamIds = await getUserTeamIds(userId);
-  const teamId = body.teamId || teamIds[0];
+  const teamId = body.teamId || await resolveActiveTeamId(userId, req.cookies.get('buildd-team')?.value ?? null);
   if (!teamId || !teamIds.includes(teamId)) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
   if (!isChatProvider(body.provider)) {
     return NextResponse.json({ error: 'provider must be anthropic, openai or openrouter' }, { status: 400 });

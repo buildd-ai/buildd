@@ -3325,7 +3325,7 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   tier: text('tier').notNull().$type<'premium-plus' | 'premium' | 'standard' | 'budget'>(),
-  provider: text('provider').notNull().$type<'anthropic' | 'openai-codex' | 'openrouter'>(),
+  provider: text('provider').notNull().$type<'anthropic' | 'openai' | 'openai-codex' | 'openrouter'>(),
   model: text('model').notNull(),
   defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
   defaultMaxTurns: integer('default_max_turns'),

@@ -129,6 +129,9 @@ export async function GET(
           prNumber: true,
           error: true,
           currentAction: true,
+          // A waiting question renders in chat as a `question` object; already
+          // redacted to its type for sensitive workspaces when it's written.
+          waitingFor: true,
           startedAt: true,
           completedAt: true,
           lastCommitSha: true,

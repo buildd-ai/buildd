@@ -211,6 +211,10 @@ export interface ChatToolResult<T = unknown> {
  * approval card header renders `manage_missions · create`.
  */
 export const CHAT_READ_TOOLS = [
+  // The design's read class: renders as a tool row and runs straight away.
+  // The server exposes a subset today (see CHAT_TOOL_ACTIONS in
+  // apps/web/src/lib/chat/tools.ts); the rest arrive as their routes accept a
+  // dashboard session. check_path_claim needs a worker context, so it's out.
   'list_tasks',
   'get_task',
   'manage_missions', // list | get | get_criteria_state run straight away
@@ -224,7 +228,6 @@ export const CHAT_READ_TOOLS = [
   'get_budget_forecast',
   'explain',
   'recall',
-  // check_path_claim is left out: it needs a worker context, and chat has none.
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 

@@ -19,7 +19,7 @@ const MODELS = [
 
 describe('TIER_PROVIDER_OPTIONS', () => {
   it('offers only providers the registry accepts', () => {
-    expect(TIER_PROVIDER_OPTIONS.map((p) => p.id)).toEqual(['anthropic', 'openrouter', 'openai-codex']);
+    expect(TIER_PROVIDER_OPTIONS.map((p) => p.id)).toEqual(['anthropic', 'openrouter', 'openai', 'openai-codex']);
   });
 });
 
@@ -47,6 +47,10 @@ describe('modelOptionsFor', () => {
     expect(ids).toContain('qwen/qwen3-coder');
     expect(ids).toContain('anthropic/claude-sonnet-5');
     expect(ids).not.toContain('claude-sonnet-5-20260630'); // no OpenRouter id
+  });
+
+  it('openai (API key) lists OpenAI models by native id, like codex', () => {
+    expect(modelOptionsFor('openai', MODELS).map((o) => o.value)).toEqual(['gpt-5.6-terra']);
   });
 
   it('openai-codex lists OpenAI models by native id', () => {
