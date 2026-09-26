@@ -26,6 +26,7 @@ import type { ActionContext, ApiFn } from '@buildd/core/mcp-tools';
 import {
   CHAT_EVENT_PART_TYPE,
   type ChatMessagePart,
+  type ChatTurnEntry,
   type ChatTurnRequest,
   type ChatUnavailableReason,
   type ChatUsage,
@@ -104,6 +105,24 @@ export function toUiHistory(rows: MessageRow[]): UIMessage[] {
     if (parts.length > 0) out.push({ id: m.id, role: m.role, parts } as UIMessage);
   }
   return out;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The client's `entry` (how the chat was opened), reduced to known values.
+ * It only shapes the context block; the tools' reach checks still decide what
+ * the model can read, so an id outside the conversation's team reads nothing.
+ */
+export function turnEntry(raw: unknown): ChatTurnEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { intent?: unknown; about?: unknown };
+  const intent = r.intent === 'mission' || r.intent === 'task' ? r.intent : null;
+  const a = r.about as { kind?: unknown; id?: unknown } | null | undefined;
+  const about = a && (a.kind === 'mission' || a.kind === 'task') && typeof a.id === 'string' && UUID_RE.test(a.id)
+    ? { kind: a.kind as 'mission' | 'task', id: a.id }
+    : null;
+  return intent || about ? { intent, about } : null;
 }
 
 function userText(message: ChatTurnRequest['message']): string | null {
@@ -214,6 +233,7 @@ export async function runChatTurn(args: {
     user: { name: user.name, teamRole: user.teamRole, isOperator: user.teamRole !== 'member' },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
+    entry: turnEntry(body.entry),
   })}`;
 
   const result = (deps.streamTextImpl ?? streamText)({

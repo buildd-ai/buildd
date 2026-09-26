@@ -387,6 +387,19 @@ export interface UpdateConversationRequest {
  */
 export interface ChatTurnRequest {
   message: { id: string; role: 'user' | 'assistant'; parts: ChatMessagePart[] };
+  /**
+   * How the conversation was opened: from + Mission / New task (`intent`), or
+   * from "Ask about this mission/task" (`about`, docked beside the chat). The
+   * server validates both and names them in the turn's context block; an
+   * invalid value is dropped. Never trusted for authorization — the tools'
+   * reach checks still decide what the model can read.
+   */
+  entry?: ChatTurnEntry;
+}
+
+export interface ChatTurnEntry {
+  intent?: 'mission' | 'task' | null;
+  about?: { kind: 'mission' | 'task'; id: string } | null;
 }
 
 /**

@@ -55,6 +55,7 @@ import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import TaskOverflowMenu from './TaskOverflowMenu';
+import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
@@ -938,6 +939,7 @@ export default async function TaskDetailPage({
                   merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
                 />
               </span>
+              <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
               <TaskOverflowMenu>
                 <EditTaskButton
                   task={{

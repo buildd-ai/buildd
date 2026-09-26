@@ -5,6 +5,7 @@
  * on /app/missions; these rows share their model (lib/mission-list-card.ts).
  */
 import Link from 'next/link';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import PhaseBar from '@/components/missions/PhaseBar';
 import { StatusWord } from '@/components/missions/MissionListCards';
 import type { MissionCardView } from '@/lib/mission-card-view';
@@ -90,7 +91,7 @@ export function HomeMissionsSummary({ rows, total, shippedToday, timeZone }: { r
       </div>
       {rows.length === 0 ? (
         <div className="border border-dashed border-border-strong px-5 py-4 font-mono text-[12.5px] text-text-secondary">
-          No missions running. <Link href="/app/missions/new" className="text-accent-text hover:underline">Start one</Link>.
+          No missions running. <NewWorkLink kind="mission" className="text-accent-text hover:underline">Start one</NewWorkLink>.
         </div>
       ) : (
         <div className="card p-0">

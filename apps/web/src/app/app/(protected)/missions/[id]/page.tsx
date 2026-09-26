@@ -19,6 +19,7 @@ import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary } from
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
+import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
@@ -1361,6 +1362,8 @@ export default async function MissionDetailPage({
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   ) : undefined;
+  // Chat is how you ask about work: opens a conversation with this mission docked.
+  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1419,7 +1422,7 @@ export default async function MissionDetailPage({
       title={mission.title}
       chip={stateChip}
       verified={verifiedPill}
-      actions={overflowMenu}
+      actions={<>{askAbout}{overflowMenu}</>}
       goal={goalLine}
       serverNow={renderedAt}
       startedAt={boardModel.startedAt}
@@ -1471,7 +1474,7 @@ export default async function MissionDetailPage({
             caption={pulseCaption}
             back={back}
             verified={verifiedPill}
-            actions={<><MissionLayoutTabs />{overflowMenu}</>}
+            actions={<><MissionLayoutTabs />{askAbout}{overflowMenu}</>}
             expand={<MissionStripExpand data={flightStripData} missionId={id} missionTitle={mission.title} />}
             desktopStrip={<MissionFlightStripInline data={flightStripData} />}
             description={<MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} />}

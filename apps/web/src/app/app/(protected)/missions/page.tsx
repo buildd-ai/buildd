@@ -6,6 +6,7 @@ import { loadReleaseFooterData } from '@/lib/release-footer';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
+import { NewWorkLink, SetUpChatNudge } from '@/components/chat/ChatEntry';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { computeMissionFlightStrip, type MissionFlightStripData } from '@buildd/core/mission-helpers';
@@ -275,13 +276,15 @@ export default async function MissionsPage({
               selectedId={wsFilter ?? null}
             />
           </span>
-          <Link
-            href="/app/missions/new"
-            data-testid="new-mission-link"
+          <SetUpChatNudge />
+          <NewWorkLink
+            kind="mission"
+            workspaceId={wsFilter ?? null}
+            testId="new-mission-link"
             className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover md:min-h-9"
           >
             + New mission
-          </Link>
+          </NewWorkLink>
         </div>
       </div>
 

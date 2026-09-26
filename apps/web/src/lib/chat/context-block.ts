@@ -16,6 +16,8 @@ export interface ChatContextInput {
   tier: string;
   /** True once the team has used 80% of its daily chat budget. */
   budgetWarning?: boolean;
+  /** How the chat was opened, already validated (see turn.ts `turnEntry`). */
+  entry?: { intent?: 'mission' | 'task' | null; about?: { kind: 'mission' | 'task'; id: string } | null } | null;
 }
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -44,6 +46,18 @@ export function zonedIsoWithOffset(now: Date, timeZone: string): { iso: string; 
   return { iso, weekday, date };
 }
 
+function entryLine(entry: ChatContextInput['entry']): string | null {
+  if (entry?.about) {
+    const how = entry.about.kind === 'mission'
+      ? `manage_missions (action "get", missionId ${entry.about.id})`
+      : `get_task (taskId ${entry.about.id})`;
+    return `The user opened this chat from ${entry.about.kind} ${entry.about.id}, which is shown beside the chat. "this ${entry.about.kind}" means it. Read it with ${how} before answering about it.`;
+  }
+  if (entry?.intent === 'task') return 'The user opened this chat from New task: they came to file one concrete piece of work. Settle what should change and where, then propose it.';
+  if (entry?.intent === 'mission') return 'The user opened this chat from New mission: they came to start a goal. Settle the outcome and how you will know it is done, then propose the mission.';
+  return null;
+}
+
 export function renderChatContextBlock(input: ChatContextInput): string {
   const { iso, weekday } = zonedIsoWithOffset(input.now, input.timeZone);
   const who = [
@@ -60,6 +74,7 @@ export function renderChatContextBlock(input: ChatContextInput): string {
       : 'No default workspace: ask which workspace, or pass workspaceId, before filing work.',
     `${who}.`,
     `Model tier for this turn: ${input.tier}.`,
+    entryLine(input.entry),
     input.budgetWarning
       ? 'The team has used over 80% of its daily chat budget. Mention this once, briefly.'
       : null,
