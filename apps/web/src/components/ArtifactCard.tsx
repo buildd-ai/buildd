@@ -127,6 +127,8 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
 
   return (
     <div
+      data-testid="artifact-card"
+      data-kind={artifact.type}
       role="button"
       tabIndex={0}
       onClick={onOpen}

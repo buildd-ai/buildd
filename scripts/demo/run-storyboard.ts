@@ -18,7 +18,7 @@
  *       goto: /app/missions/{M1}      # {key} = the seeded UUID of dataset key "M1"
  *       viewports: [desktop, phone]   # default [desktop]
  *       waitFor: mission-detail       # data-testid (or `text=…` / any Playwright selector)
- *       click: mission-task-row       # optional: testid/selector to click before the shot
+ *       click: mission-task-row       # optional: testid/selector to click before the shot (or a list, clicked in order)
  *       scrollTo: mission-feed        # optional: testid/selector to scroll into view
  *       scrollAlign: end              # optional: bring it to the bottom edge (default start = top edge)
  *       highlight: [mission-pulse, mission-task-row]   # bounding boxes → manifest.json (warned when missing)
@@ -44,7 +44,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, DESKTOP, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -52,7 +52,7 @@ type Step = {
   advance?: string | number;
   viewports?: string[];
   waitFor?: string | string[];
-  click?: string;
+  click?: string | string[];
   scrollTo?: string;
   scrollOffset?: number;
   scrollAlign?: 'start' | 'end';
@@ -115,7 +115,10 @@ async function main() {
   const noRecord = process.argv.includes('--no-record');
   const viewports = resolveViewports(board);
   // Validate every step's viewports up front, before minutes of shooting.
-  for (const step of board.steps) stepViewports(step, viewports);
+  for (const step of board.steps) {
+    stepViewports(step, viewports);
+    clickTargets(step);
+  }
 
   const db = createLocalDb();
   if (!process.argv.includes('--no-seed')) {
@@ -174,8 +177,8 @@ async function main() {
         if (process.argv.includes('--strict')) throw new Error(`waitFor "${w}" missing (--strict)`);
       }
     }
-    if (step.click) {
-      await page.locator(sel(step.click)).first().click();
+    for (const target of clickTargets(step)) {
+      await page.locator(sel(target)).first().click();
       await page.waitForLoadState('networkidle');
     }
     // Let the page settle first — some pages auto-scroll on mount (e.g. a

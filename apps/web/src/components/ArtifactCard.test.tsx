@@ -40,3 +40,9 @@ describe('ArtifactCard, mobile layout', () => {
     expect(title).toContain('min-w-0');
   });
 });
+
+describe('ArtifactCard, test hooks', () => {
+  it('marks the card and its type for E2E and demo storyboards', () => {
+    expect(html).toMatch(/^<div data-testid="artifact-card" data-kind="report"/);
+  });
+});

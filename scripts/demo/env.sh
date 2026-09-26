@@ -14,12 +14,19 @@ export DEMO_PG_PORT="${DEMO_PG_PORT:-55432}"
 export DEMO_NEON_PORT="${DEMO_NEON_PORT:-54444}"
 export DEMO_SOKETI_PORT="${DEMO_SOKETI_PORT:-56001}"
 export DEMO_APP_PORT="${DEMO_APP_PORT:-3217}"
+export DEMO_S3_PORT="${DEMO_S3_PORT:-59000}"
 
 # Demo database — intentionally NOT overridable from the caller's environment,
 # so an exported prod DATABASE_URL in your shell can't slip through.
 export DATABASE_URL="postgres://demo:demo@localhost:${DEMO_PG_PORT}/buildd_demo"
 export NEON_LOCAL_FETCH_ENDPOINT="http://127.0.0.1:${DEMO_NEON_PORT}/sql"
 export DEMO_BASE_URL="http://localhost:${DEMO_APP_PORT}"
+# Artifact bytes (the visual auditor's screenshots): blob-server.ts serves
+# DEMO_BLOB_DIR at this URL, the app's STORAGE_ENDPOINT. The keys are throwaway:
+# the server only answers loopback GETs and never checks a signature.
+export DEMO_S3_URL="http://127.0.0.1:${DEMO_S3_PORT}"
+export DEMO_S3_BUCKET="buildd-demo"
+export DEMO_BLOB_DIR="${DEMO_BLOB_DIR:-${TMPDIR:-/tmp}/buildd-demo-blobs-${DEMO_S3_PORT}}"
 # Throwaway secret for the local Auth.js session cookie. Only this stack uses it.
 export DEMO_AUTH_SECRET="buildd-demo-local-auth-secret-not-real-0000"
 
@@ -35,7 +42,7 @@ demo_is_loopback_url() {
 
 demo_guard() {
   local v
-  for v in DATABASE_URL NEON_LOCAL_FETCH_ENDPOINT DEMO_BASE_URL; do
+  for v in DATABASE_URL NEON_LOCAL_FETCH_ENDPOINT DEMO_BASE_URL DEMO_S3_URL; do
     if ! demo_is_loopback_url "${!v}"; then
       echo "[demo] REFUSING: $v is not a localhost URL" >&2
       exit 1

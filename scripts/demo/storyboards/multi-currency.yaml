@@ -3,7 +3,8 @@
 # outcome, phone answer page).
 #
 # Keys in {braces} are dataset keys from the story JSON: M1 = the mission,
-# T7 = invoice render (CI red -> self-healed -> merged), T8 = checkout (asks the question).
+# T7 = invoice render, T8 = checkout (asks the question), VA = the visual review
+# of both (screenshots at desktop + phone, all ok).
 #
 #   bun run demo:shoot scripts/demo/storyboards/multi-currency.yaml --out <dir>
 #
@@ -45,6 +46,9 @@ highlight:
   - worker-touched-row
   - pr-outcome
   - pr-lineage
+  - visual-review-strip
+  - visual-review-thumb
+  - artifact-card
 steps:
   # ── chat opener ────────────────────────────────────────────────────────────
   # The demo opens in the chat (docs/design/agent-chat.md): the goal asked as a
@@ -230,47 +234,53 @@ steps:
     fullPage: true
     caption: "The question and its answers, right on the mission."
 
-  # ── CI red, self-healed ────────────────────────────────────────────────────
-  - id: 18-board-ci-red
-    advance: "18:40"
-    goto: /app/missions/{M1}
-    waitFor: mission-board
-    fullPage: true
-    caption: "CI broke. A fix is already running."
+  # ── visual review ──────────────────────────────────────────────────────────
+  # Once the invoice (#416) and checkout (#418) PRs merge, a visual-auditor
+  # screenshots what they changed at desktop and phone width, judges every shot
+  # and posts the verdict (story task VA, 24:36 -> 25:34). The mission's
+  # Delivery line gains "Visual review", which expands into the shots strip.
+  - id: 18-mission-visual-review
+    advance: "25:40"
+    # The Delivery line (and so the Visual review) renders in the Feed layout,
+    # not on the Board.
+    goto: /app/missions/{M1}?layout=feed
+    viewports: [desktop, phone]
+    waitFor: mission-delivery
+    click: mission-delivery-summary
+    # The step row, not the strip, so its "Visual review" label clears the
+    # sticky phone header.
+    scrollTo: '[data-testid="mission-delivery-step"][data-step="visual"]'
+    scrollOffset: 240
+    highlight: [visual-review-strip, visual-review-count, visual-review-thumb]
+    hold: 900
+    caption: "Then it looks at what it built. Six screens, desktop and phone, all ok."
 
-  - id: 19-lanes-ci-red
-    goto: /app/missions/{M1}?layout=lanes
-    waitFor: mission-lanes
-    fullPage: true
-    caption: "CI broke. A fix is already running."
+  - id: 19-mission-visual-shot
+    goto: /app/missions/{M1}?layout=feed
+    viewports: [desktop, phone]
+    waitFor: mission-delivery
+    click: [mission-delivery-summary, visual-review-thumb]
+    highlight: [visual-review-lightbox-route]
+    hold: 900
+    caption: "Every shot comes with what the reviewer checked."
 
-  # Live take: Board 18:40 -> 20:00 (retry working on the red PR).
-  - id: 20-board-retry-live
-    goto: /app/missions/{M1}
-    waitFor: mission-board
-    shot: false
-    record: { ms: 18000, advanceTo: "20:00", ticks: 9 }
+  - id: 20-task-visual-review
+    goto: /app/tasks/{VA}
+    viewports: [desktop, phone]
+    waitFor: task-artifacts
+    scrollTo: task-artifacts
+    highlight: [task-artifacts, artifact-card]
+    hold: 900
+    caption: "The reviewer's own page: the shots it took, the verdict it posted."
 
-  - id: 21-task-ci-retry
-    advance: "20:00"
-    goto: /app/tasks/{T7}
-    waitFor: pr-outcome
-    fullPage: true
-    caption: "Red, retried on the same branch."
-
-  - id: 22-home-self-healed
-    advance: "22:00"
-    goto: /app/home
-    waitFor: home-stat-strip
-    fullPage: true
-    caption: "Self-healed. Nobody touched it."
-
-  - id: 23-task-merged
-    advance: "22:30"
-    goto: /app/tasks/{T7}
-    waitFor: pr-outcome
-    fullPage: true
-    caption: "Red, retried, green, merged."
+  - id: 21-task-visual-shot
+    goto: /app/tasks/{VA}
+    viewports: [desktop, phone]
+    waitFor: task-artifacts
+    click: '[data-testid="artifact-card"][data-kind="screenshot"]'
+    highlight: [artifact-viewer]
+    hold: 900
+    caption: "Open any shot from the task."
 
   # ── prove it, done ─────────────────────────────────────────────────────────
   - id: 24-board-2600
@@ -317,4 +327,4 @@ steps:
     goto: /app/home
     waitFor: home-fleet
     fullPage: true
-    caption: "11 PRs merged. 1 CI failure fixed automatically. 1 decision from a human."
+    caption: "11 PRs merged. 6 screens reviewed. 1 decision from a human."

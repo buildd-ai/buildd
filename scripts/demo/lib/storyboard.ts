@@ -49,6 +49,18 @@ export function scrollPlan(step: { scrollAlign?: 'start' | 'end'; scrollOffset?:
   return block === 'end' ? { block, delta: step.scrollOffset ?? 24 } : { block, delta: 0 - (step.scrollOffset ?? 120) };
 }
 
+/**
+ * A step's `click` as an ordered list: one target, or several clicked in turn
+ * (open a collapsed block, then a thumbnail inside it). Empty entries are an
+ * error rather than a silent no-op click.
+ */
+export function clickTargets(step: { click?: string | string[] }): string[] {
+  if (step.click === undefined) return [];
+  const list = Array.isArray(step.click) ? step.click : [step.click];
+  if (list.some((t) => typeof t !== 'string' || !t.trim())) throw new Error('[storyboard] click targets must be non-empty strings');
+  return list;
+}
+
 /** Manifest key + PNG name for one capture. Desktop keeps the legacy `<id>-<theme>` names. */
 export function captureKey(viewport: string, theme: string): string {
   return viewport === DESKTOP ? theme : `${viewport}-${theme}`;
