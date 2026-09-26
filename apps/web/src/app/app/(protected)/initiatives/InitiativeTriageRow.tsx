@@ -110,7 +110,7 @@ export function InitiativeTriageRow({ pulse, onDismiss }: InitiativeTriageRowPro
           style={{ width: revealWidth, transition: isSwiping ? 'none' : 'width 0.2s ease' }}
           aria-hidden="true"
         >
-          <div className="flex flex-col items-center justify-center h-full w-[140px] shrink-0 px-3 bg-status-warning text-[10px] text-white leading-tight text-center">
+          <div className="flex flex-col items-center justify-center h-full w-[140px] shrink-0 px-3 bg-status-warning text-[11px] md:text-[10px] text-white leading-tight text-center">
             <span>Hidden from this list</span>
             <span className="opacity-70">· cleared on reload</span>
           </div>
@@ -139,14 +139,14 @@ export function InitiativeTriageRow({ pulse, onDismiss }: InitiativeTriageRowPro
               the whole width instead of the remainder after the right rail. */}
           <span className="col-span-2 sm:col-span-1 sm:col-start-1 sm:row-start-1 flex items-start gap-2 min-w-0">
             <span
-              className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border leading-4 ${chip.className}`}
+              className={`shrink-0 text-[11px] md:text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border leading-4 ${chip.className}`}
             >
               {chip.label}
             </span>
             {/* Confidence is a qualifier, never part of the verdict (§6.5). */}
             {confidence === 'unverified' && (
               <span
-                className="shrink-0 text-[10px] text-text-muted leading-5"
+                className="shrink-0 text-[11px] md:text-[10px] text-text-muted leading-5"
                 title="No goal criteria or KPI has checked this outcome"
               >
                 unverified

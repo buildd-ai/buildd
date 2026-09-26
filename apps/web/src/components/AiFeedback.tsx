@@ -82,7 +82,7 @@ export default function AiFeedback({
 
   if (dismissed && showUndo) {
     return (
-      <div className={`flex items-center gap-2 ${compact ? 'text-[10px]' : 'text-[11px]'} text-text-muted`}>
+      <div className={`flex items-center gap-2 ${compact ? 'text-[11px] md:text-[10px]' : 'text-[11px]'} text-text-muted`}>
         <span>Dismissed</span>
         <button
           onClick={undoDismiss}

@@ -230,7 +230,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     <div className="border-t border-border-default">
       {wsNavLinks && (
         <div className="border-b border-border-default">
-          <div className={`font-mono uppercase tracking-widest text-text-muted ${isMobile ? 'px-5 pt-3 pb-1 text-[9px]' : 'px-3 pt-2 pb-0.5 text-[8px]'}`}>
+          <div className={`font-mono uppercase tracking-widest text-text-muted ${isMobile ? 'px-5 pt-3 pb-1 text-[11px]' : 'px-3 pt-2 pb-0.5 text-[11px] md:text-[8px]'}`}>
             {options.find((o) => o.id === selectedId)?.label ?? 'Workspace'}
           </div>
           {wsNavLinks.map(({ label, href }) => (
@@ -295,7 +295,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
           open ? 'shadow-sm text-text-primary' : ''
         }`}
       >
-        <span className="text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
+        <span className="text-[11px] md:text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
         <div className="flex items-center gap-1.5">
           {/* Grid glyph: mobile-only, always shown on mobile. Filled when workspace is selected to indicate active filter. */}
           <svg

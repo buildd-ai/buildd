@@ -110,7 +110,7 @@ The workflow should:
 
   return (
     <div className="mb-8">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
         Runners
       </div>
 
@@ -133,7 +133,7 @@ The workflow should:
                   <span className="text-[13px] font-medium text-text-primary truncate">
                     {runner.accountName}
                   </span>
-                  <span className={`text-[10px] font-mono ${runner.status === 'online' ? 'text-status-success' : 'text-text-muted'}`}>
+                  <span className={`text-[11px] md:text-[10px] font-mono ${runner.status === 'online' ? 'text-status-success' : 'text-text-muted'}`}>
                     {runner.status}
                   </span>
                 </div>
@@ -143,7 +143,7 @@ The workflow should:
               </div>
               <div className="text-right shrink-0">
                 <div className="text-[13px] font-medium text-text-primary">{runner.capacity}</div>
-                <div className="text-[10px] text-text-muted font-mono uppercase tracking-wide">slots</div>
+                <div className="text-[11px] md:text-[10px] text-text-muted font-mono uppercase tracking-wide">slots</div>
               </div>
             </div>
           ))}
@@ -173,7 +173,7 @@ The workflow should:
               <div className="flex items-center justify-between mb-1">
                 <span className="font-medium text-sm">{meta.label}</span>
                 {names.length > 0 && (
-                  <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-status-success/10 text-status-success">
+                  <span className="px-2 py-0.5 text-[11px] md:text-[10px] font-medium rounded-full bg-status-success/10 text-status-success">
                     {names.length}
                   </span>
                 )}

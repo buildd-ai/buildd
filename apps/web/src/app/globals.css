@@ -540,6 +540,21 @@ select {
   }
 }
 
+/* Mobile type floor: nothing under 11px below md. Desktop keeps the 9-10px mono
+ * caption rhythm; phones get 11px. Must stay after every class it lifts.
+ * Guarded by mobile-type-floor.test.ts. */
+@layer components {
+  @media (width < 48rem) {
+    .type-label,
+    .health-pill,
+    .section-label-missions,
+    .status-pill,
+    .field-label {
+      font-size: 11px;
+    }
+  }
+}
+
 [data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
 [data-theme="light"] .glow-dot-running { --glow-color: rgba(217, 110, 18, 0.3); }
 [data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }

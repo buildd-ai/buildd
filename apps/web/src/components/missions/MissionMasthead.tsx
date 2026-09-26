@@ -111,7 +111,7 @@ function StateChip({ chip }: { chip: MastheadChip }) {
   return (
     <span
       data-testid="mission-state-chip"
-      className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase leading-none tracking-wider ${chip.cls}`}
+      className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase leading-none tracking-wider ${chip.cls}`}
     >
       {chip.label}
     </span>

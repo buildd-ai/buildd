@@ -60,7 +60,7 @@ export default async function RespondPage({
         <Link
           href={back.href}
           data-testid="respond-back-link"
-          className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary"
+          className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary"
         >
           ← {back.label}
         </Link>
@@ -75,7 +75,7 @@ export default async function RespondPage({
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
             </span>
-            <span className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">
+            <span className="font-mono text-[11px] md:text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">
               Needs input
             </span>
           </div>

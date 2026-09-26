@@ -199,7 +199,7 @@ function CodeNavigationPanelView({ view }: { view: UsageDrilldownView }) {
           </p>
         ) : (
           <>
-            <div className="flex items-center gap-2 text-[9px] uppercase tracking-wide text-text-muted">
+            <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
               <span className="flex-1">tool</span>
               <span className="w-14 text-right">calls</span>
               <span className="w-16 text-right">/ task</span>
@@ -400,7 +400,7 @@ function DrilldownWindowPicker({ window: current }: { window: DrilldownWindow })
           type="button"
           onClick={() => select(value)}
           aria-pressed={current === value}
-          className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
+          className={`px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
             current === value
               ? 'bg-surface-3 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'

@@ -89,13 +89,13 @@ function MobileHistogramBar({ counts }: { counts: StageCounts }) {
 function VerifiedTag({ verified }: { verified: boolean }) {
   if (verified) {
     return (
-      <span className="font-mono text-[10px] text-status-success shrink-0">
+      <span className="font-mono text-[11px] md:text-[10px] text-status-success shrink-0">
         ✓ VERIFIED
       </span>
     );
   }
   return (
-    <span className="font-mono text-[10px] text-status-warning shrink-0">
+    <span className="font-mono text-[11px] md:text-[10px] text-status-warning shrink-0">
       ⚠ UNVERIFIED
     </span>
   );
@@ -118,7 +118,7 @@ function InlineBar({ counts, failedCount, verified }: { counts: StageCounts; fai
         <MobileHistogramBar counts={counts} />
       </div>
       {/* Labels row */}
-      <div className="flex items-center gap-2 text-[10px] font-mono text-text-muted">
+      <div className="flex items-center gap-2 text-[11px] md:text-[10px] font-mono text-text-muted">
         <span>{doneLabel} done</span>
         {failedCount > 0 && (
           <span className="text-status-error">⚠ {failedCount} failed</span>
@@ -155,7 +155,7 @@ function FullBar({
     <div className="min-w-0 space-y-1.5">
       <div className="flex min-w-0 items-center gap-2">
         <SegmentStrip segments={projected} label={`${completedTasks} of ${totalTasks} tasks complete`} />
-        <span className="shrink-0 font-mono text-[10px] tabular-nums text-text-muted">
+        <span className="shrink-0 font-mono text-[11px] md:text-[10px] tabular-nums text-text-muted">
           {completedTasks}/{totalTasks}
         </span>
       </div>
@@ -191,7 +191,7 @@ function StackedBar({
   return (
     <div className="flex min-w-0 items-center gap-2" style={{ width: 200 }}>
       <SegmentStrip segments={projected} label={`${completedTasks}/${totalTasks}`} />
-      <span className="shrink-0 font-mono text-[10px] tabular-nums text-text-muted">
+      <span className="shrink-0 font-mono text-[11px] md:text-[10px] tabular-nums text-text-muted">
         {completedTasks}/{totalTasks}
       </span>
     </div>

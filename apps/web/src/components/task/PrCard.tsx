@@ -82,7 +82,7 @@ export default function PrCard({
       <div className="flex items-center justify-between gap-2">
         <span className="text-[12px] font-semibold text-text-primary">Pull request</span>
         {lifecycle && (
-          <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ${lifecycle.cls}`}>
+          <span className={`inline-flex items-center px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded ${lifecycle.cls}`}>
             {lifecycle.label}
           </span>
         )}

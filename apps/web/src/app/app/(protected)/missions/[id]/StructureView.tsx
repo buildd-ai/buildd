@@ -204,19 +204,19 @@ function StructureNodeView({
             taskType: headTask.taskType ?? null,
           });
           return glyph ? (
-            <span aria-hidden="true" className="shrink-0 font-mono text-[10px] text-text-muted">
+            <span aria-hidden="true" className="shrink-0 font-mono text-[11px] md:text-[10px] text-text-muted">
               {glyph.glyph}
             </span>
           ) : null;
         })()}
-        <span className="text-[10px] text-text-muted truncate font-mono flex-1 min-w-0">
+        <span className="text-[11px] md:text-[10px] text-text-muted truncate font-mono flex-1 min-w-0">
           {truncate(node.label, node.isCollapsed ? 36 : 28)}
         </span>
         {/* Task detail link */}
         {headTask && (
           <Link
             href={`/app/tasks/${headTask.id}`}
-            className="text-[9px] text-text-muted hover:text-accent ml-auto shrink-0"
+            className="text-[11px] md:text-[9px] text-text-muted hover:text-accent ml-auto shrink-0"
             onClick={e => e.stopPropagation()}
             tabIndex={-1}
             aria-label="Open task detail"
@@ -258,7 +258,7 @@ function StructureNodeView({
       {/* Expand affordance for collapsed chains */}
       {node.isCollapsed && onExpand && (
         <button
-          className="absolute bottom-1 right-2 text-[9px] text-text-muted hover:text-accent font-mono"
+          className="absolute bottom-1 right-2 text-[11px] md:text-[9px] text-text-muted hover:text-accent font-mono"
           onClick={e => { e.stopPropagation(); onExpand(node.id); }}
           tabIndex={-1}
           aria-label={`Expand chain of ${node.chainLength} tasks`}
@@ -515,14 +515,14 @@ export default function StructureView<T extends StructureTask>({
           <svg width="24" height="8" className="shrink-0">
             <line x1="0" y1="4" x2="24" y2="4" stroke="var(--color-status-warning)" strokeWidth="1.5" />
           </svg>
-          <span className="text-[10px] text-text-muted font-mono">depends on</span>
+          <span className="text-[11px] md:text-[10px] text-text-muted font-mono">depends on</span>
         </div>
         {hasRetryEdges && showRetries && (
           <div className="flex items-center gap-1.5">
             <svg width="24" height="8" className="shrink-0">
               <line x1="0" y1="4" x2="24" y2="4" stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="4 2" />
             </svg>
-            <span className="text-[10px] text-text-muted font-mono">retry</span>
+            <span className="text-[11px] md:text-[10px] text-text-muted font-mono">retry</span>
           </div>
         )}
         {hasContention && showContention && (
@@ -530,7 +530,7 @@ export default function StructureView<T extends StructureTask>({
             <svg width="24" height="8" className="shrink-0">
               <line x1="0" y1="4" x2="24" y2="4" stroke="var(--color-status-error)" strokeWidth="1.5" strokeDasharray="2 2 6 2" opacity="0.6" />
             </svg>
-            <span className="text-[10px] text-text-muted font-mono">file conflict</span>
+            <span className="text-[11px] md:text-[10px] text-text-muted font-mono">file conflict</span>
           </div>
         )}
       </div>

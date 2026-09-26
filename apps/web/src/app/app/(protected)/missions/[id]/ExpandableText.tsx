@@ -66,7 +66,7 @@ function CollapsibleCode({ content, language }: { content: string; language: str
         className="w-full flex items-center justify-between px-3 py-1.5 text-text-muted hover:text-text-secondary transition-colors text-left"
       >
         <span className="font-mono tracking-wide">{label}</span>
-        <span className="opacity-50 text-[10px]">{open ? '▲' : '▼'}</span>
+        <span className="opacity-50 text-[11px] md:text-[10px]">{open ? '▲' : '▼'}</span>
       </button>
 
       {open && tasks && (
@@ -83,7 +83,7 @@ function CollapsibleCode({ content, language }: { content: string; language: str
       )}
 
       {open && !tasks && (
-        <pre className="border-t border-border-default px-3 py-2 text-text-secondary overflow-auto max-h-48 font-mono leading-relaxed whitespace-pre-wrap text-[10px]">
+        <pre className="border-t border-border-default px-3 py-2 text-text-secondary overflow-auto max-h-48 font-mono leading-relaxed whitespace-pre-wrap text-[11px] md:text-[10px]">
           {content}
         </pre>
       )}

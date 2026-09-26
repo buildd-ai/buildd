@@ -222,7 +222,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
                   }`}
                 >
                   <span className="block truncate">{m.displayName}</span>
-                  <span className="block font-mono text-[10px] text-text-muted truncate">{m.id}</span>
+                  <span className="block font-mono text-[11px] md:text-[10px] text-text-muted truncate">{m.id}</span>
                 </button>
               ))}
             </div>
@@ -233,7 +233,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
               Agent Backends to browse every model release.
             </p>
           )}
-          <p className="text-[10px] text-text-muted">
+          <p className="text-[11px] md:text-[10px] text-text-muted">
             Pin to a specific model release. Falls back to tier if unavailable.
           </p>
         </div>

@@ -492,7 +492,7 @@ export function HealthClient({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium text-text-primary">{purposeLabel}</p>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        <span className={`text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium ${
                           isRevoked
                             ? 'bg-status-error/10 text-status-error'
                             : 'bg-status-warning/10 text-status-warning'
@@ -501,7 +501,7 @@ export function HealthClient({
                         </span>
                         {cred.consecutiveAuthFailures > 0 && (
                           <span
-                            className="text-[10px] text-text-muted"
+                            className="text-[11px] md:text-[10px] text-text-muted"
                             title="Consecutive auth failures — a lifetime streak, reset by the next success. It does not obey the page window."
                           >
                             auth failures {failureStreak(cred.consecutiveAuthFailures)}
@@ -546,7 +546,7 @@ export function HealthClient({
                       <p className="text-sm font-medium text-text-primary">
                         {b.label} has no credential
                       </p>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
+                      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
                         {b.strandedPending} task{b.strandedPending === 1 ? '' : 's'} unclaimable
                       </span>
                     </div>
@@ -649,7 +649,7 @@ export function HealthClient({
                         )}
                       </p>
                     </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">
+                    <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">
                       last 24h
                     </span>
                   </div>
@@ -725,11 +725,11 @@ export function HealthClient({
                           <p className="text-sm text-text-primary truncate">
                             {hb.accountName || 'Runner'}
                           </p>
-                          <span className={`text-[10px] font-mono ${statusClass}`}>
+                          <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>
                           <span
-                            className={`text-[10px] font-mono ${sandboxClass}`}
+                            className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
                             title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · not yet probed'}`}
                           >
                             {sandboxLabel}
@@ -899,12 +899,12 @@ export function HealthClient({
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="text-sm font-medium text-text-primary truncate">{s.name}</p>
                             {isDupe && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
                                 duplicate cron
                               </span>
                             )}
                             {s.missionTitle && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
                                 {s.missionTitle}
                               </span>
                             )}
@@ -1173,7 +1173,7 @@ function OrphanedPrsBlock({ rows, now }: { rows: OrphanedPrRow[]; now: number })
         {rows.map(row => (
           <div key={row.workerId} className="px-4 py-2.5">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-raised text-text-muted font-mono shrink-0">
+              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-surface-raised text-text-muted font-mono shrink-0">
                 {row.workspaceName}
               </span>
               <span className="text-sm text-text-primary truncate">
@@ -1308,7 +1308,7 @@ function ConsumptionSection({
 
           {topModels.length > 0 ? (
             <>
-              <div className="flex items-center gap-2 text-[9px] uppercase tracking-wide text-text-muted">
+              <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
                 <span className="flex-1 min-w-0">model</span>
                 <span className="w-14 text-right">tokens</span>
                 <span className="w-16 text-right">cost</span>
@@ -1351,7 +1351,7 @@ function ConsumptionSection({
           <div className="flex items-baseline justify-between gap-3 pt-2">
             <div className="min-w-0">
               <div
-                className="text-[9px] uppercase tracking-wide text-text-muted"
+                className="text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted"
                 title="How often the model that ran disagreed with the model the router assigned (tasks.predicted_model). Aliases match any release in their family, so a team-less task assigned a bare family alias that ran a release of that same family counts as agreement, not divergence."
               >
                 assigned vs actual
@@ -2168,7 +2168,7 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
           type="button"
           onClick={() => select(o.value)}
           aria-pressed={current === o.value}
-          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
+          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
             current === o.value
               ? 'bg-surface-3 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'
@@ -2224,7 +2224,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
             ] as const).map(([label, value, title]) => (
               <div key={label}>
                 <span
-                  className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                   title={title}
                 >
                   {label}
@@ -2239,7 +2239,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
           </div>
 
           <div className="px-4 py-3">
-            <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
               By gate
             </p>
             <ul className="space-y-1.5">
@@ -2280,7 +2280,7 @@ function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
 
   return (
     <div className="px-4 py-3" data-testid="gate-claim-deferrals">
-      <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+      <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
         Claim-loop deferrals by reason
       </p>
       <ul className="space-y-1.5">
@@ -2335,7 +2335,7 @@ function FailureAnalyticsSection({
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="failure-headline">
             <div>
               <span
-                className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                 title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator. They have not had the chance to fail yet, and counting them made this number drift downward as work landed."
               >
                 Failure rate
@@ -2352,7 +2352,7 @@ function FailureAnalyticsSection({
             </div>
             <div>
               <span
-                className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                 title="Failures that used 2 turns or fewer at $0 cost — they consumed a slot and produced nothing. A high count points at a platform bug, not bad agent work."
               >
                 Died early
@@ -2374,7 +2374,7 @@ function FailureAnalyticsSection({
                 window cannot make it more true). One tile could only lie about
                 one of them. */}
             <div>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 Completed
               </span>
               <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
@@ -2385,7 +2385,7 @@ function FailureAnalyticsSection({
               </p>
             </div>
             <div>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 Still running
               </span>
               <p
@@ -2401,7 +2401,7 @@ function FailureAnalyticsSection({
           {/* Exit-cause breakdown — magnitude only, one hue, direct-labelled */}
           {byExitCause.length > 0 && (
             <div className="px-4 py-3 space-y-2" data-testid="failure-exit-causes">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 By exit cause
               </span>
               {byExitCause.map((c) => (
@@ -2427,7 +2427,7 @@ function FailureAnalyticsSection({
           {signatures.length > 0 && (
             <div className="py-1" data-testid="failure-signatures">
               <div className="px-4 pt-2 pb-1">
-                <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                   Failure signatures
                 </span>
               </div>
@@ -2522,7 +2522,7 @@ function FailureAnalyticsSection({
                 <div className="mt-3 space-y-4" data-testid="failure-breakdown">
                   {byRole.length > 0 && (
                     <div className="space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                         By role
                       </span>
                       {byRole.slice(0, 6).map((r) => (
@@ -2539,7 +2539,7 @@ function FailureAnalyticsSection({
 
                   {byWorkspace.length > 1 && (
                     <div className="space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
                         By workspace
                       </span>
                       {byWorkspace.slice(0, 6).map((w) => (
@@ -2557,7 +2557,7 @@ function FailureAnalyticsSection({
                   {repeatFailureTasks.length > 0 && (
                     <div className="space-y-1">
                       <span
-                        className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                        className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
                         title="Tasks that burned more than one worker inside the window"
                       >
                         Repeat-failure tasks

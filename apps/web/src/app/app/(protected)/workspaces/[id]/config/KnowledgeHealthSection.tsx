@@ -139,7 +139,7 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted border-b border-border-subtle">
+                  <tr className="text-left font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted border-b border-border-subtle">
                     <th className="py-2 font-normal">Corpus</th>
                     <th className="py-2 font-normal text-right">Current chunks</th>
                   </tr>
@@ -166,7 +166,7 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
 
           {/* Last ingest per repo */}
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
               Last ingest
             </div>
             {health.lastIngestByRepo.length === 0 ? (

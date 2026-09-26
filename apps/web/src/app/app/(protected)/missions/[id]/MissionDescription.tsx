@@ -149,7 +149,7 @@ export default function MissionDescription({
           >
             Cancel
           </button>
-          <span className="hidden font-mono text-[10px] text-text-muted md:inline">Markdown · ⌘↵ to save</span>
+          <span className="hidden font-mono text-[11px] md:text-[10px] text-text-muted md:inline">Markdown · ⌘↵ to save</span>
         </div>
       </div>
     );

@@ -256,13 +256,13 @@ function MessageBlock({ message }: { message: SessionMessage }) {
     <div className={`text-[11px] font-mono ${isUser ? 'pl-4' : ''}`}>
       {/* Role label */}
       <div className="flex items-center gap-1.5 mb-0.5">
-        <span className={`font-medium uppercase tracking-[1px] text-[9px] ${
+        <span className={`font-medium uppercase tracking-[1px] text-[11px] md:text-[9px] ${
           isUser ? 'text-primary' : 'text-accent-secondary'
         }`}>
           {isUser ? 'User' : 'Assistant'}
         </span>
         {message.timestamp && (
-          <span className="text-text-muted text-[9px]">
+          <span className="text-text-muted text-[11px] md:text-[9px]">
             <ZonedTime value={message.timestamp} format="time-seconds" />
           </span>
         )}
@@ -281,7 +281,7 @@ function MessageBlock({ message }: { message: SessionMessage }) {
           {toolUseParts.map((tool, i) => (
             <div
               key={i}
-              className="flex items-center gap-1.5 px-2 py-1 bg-surface-3 rounded border border-border-default/50 text-[10px]"
+              className="flex items-center gap-1.5 px-2 py-1 bg-surface-3 rounded border border-border-default/50 text-[11px] md:text-[10px]"
             >
               <span className="text-status-info font-medium">{tool.name}</span>
               {tool.input && (

@@ -941,11 +941,11 @@ export default async function MissionDetailPage({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
+            <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
               {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
             </span>
-            <span className="text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
+            <span className="text-[11px] md:text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
@@ -1108,11 +1108,11 @@ export default async function MissionDetailPage({
       {completionPick && (
         <div className="card p-3 mb-3 border-l-2 border-status-success/40">
           <div className="flex items-center gap-2 mb-1.5">
-            <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
+            <h3 className="text-[11px] md:text-[10px] font-semibold tracking-wider text-text-muted uppercase">
               Completed <ZonedTime value={mission.updatedAt} format="date" />
             </h3>
             {completionPick.source === 'completion_record' && (
-              <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+              <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
                 completion record
               </span>
             )}
@@ -1177,7 +1177,7 @@ export default async function MissionDetailPage({
         {mission.workspaceId && (hasPolicyOverride || awaitingMerge > 0) && (
           <Link
             href={`/app/settings/workspace/${mission.workspaceId}`}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
             title={`Merge policy: ${policyLabel}${hasPolicyOverride ? ' (overridden)' : ' (inherited)'}`}
           >
             {policyLabel}

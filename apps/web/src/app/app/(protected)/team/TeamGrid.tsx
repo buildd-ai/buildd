@@ -52,7 +52,7 @@ function StatusBadge({ status, count }: { status: string; count?: number }) {
 function ScopeBadge({ scopeLabel, workspaceId }: { scopeLabel: string; workspaceId: string | null }) {
   const isTeamDefault = workspaceId === null;
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded ${
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded ${
       isTeamDefault
         ? 'bg-accent-text/10 text-accent-text'
         : 'bg-surface-3 text-text-muted'
@@ -103,7 +103,7 @@ function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId
           <div className="flex items-center gap-2">
             <span className="text-[15px] font-semibold text-text-primary truncate">{role.name}</span>
             {role.model && (
-              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+              <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
                 {role.model}
               </span>
             )}
@@ -119,7 +119,7 @@ function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId
       <div className="flex items-center gap-2 mb-3">
         <ScopeBadge scopeLabel={role.scopeLabel} workspaceId={role.workspaceId} />
         {role.overrideCount > 0 && (
-          <span className="text-[10px] text-text-muted">
+          <span className="text-[11px] md:text-[10px] text-text-muted">
             +{role.overrideCount} override{role.overrideCount !== 1 ? 's' : ''}
           </span>
         )}
@@ -172,12 +172,12 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
       {/* Scope badge */}
       <ScopeBadge scopeLabel={role.scopeLabel} workspaceId={role.workspaceId} />
       {role.overrideCount > 0 && (
-        <span className="text-[10px] text-text-muted shrink-0">
+        <span className="text-[11px] md:text-[10px] text-text-muted shrink-0">
           +{role.overrideCount}
         </span>
       )}
       {role.model && (
-        <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+        <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
           {role.model}
         </span>
       )}

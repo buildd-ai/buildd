@@ -169,7 +169,7 @@ export default function MissionInitiativeSelector({
                   className={`w-full text-left px-3 py-2 text-[12px] hover:bg-surface-3 transition-colors flex items-center justify-between gap-2 ${initiative.id === currentInitiativeId ? 'bg-surface-3' : ''}`}
                 >
                   <span className="text-text-primary truncate">{initiative.title}</span>
-                  <span className="shrink-0 text-[10px] text-text-muted font-mono tabular-nums">{initiative.progress}%</span>
+                  <span className="shrink-0 text-[11px] md:text-[10px] text-text-muted font-mono tabular-nums">{initiative.progress}%</span>
                 </button>
               ))
             )}

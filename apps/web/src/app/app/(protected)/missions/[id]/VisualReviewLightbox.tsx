@@ -108,15 +108,15 @@ export default function VisualReviewLightbox({
           {qa.route}
         </h2>
         <dl className="grid grid-cols-[88px_1fr] gap-x-2.5 gap-y-1.5 font-mono text-[12px]">
-          <dt className="pt-px text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Viewport</dt>
+          <dt className="pt-px text-[11px] md:text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Viewport</dt>
           <dd className="text-text-primary">{qa.viewport}</dd>
           {qa.theme && (
             <>
-              <dt className="pt-px text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Theme</dt>
+              <dt className="pt-px text-[11px] md:text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Theme</dt>
               <dd className="text-text-primary">{qa.theme}</dd>
             </>
           )}
-          <dt className="pt-px text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Verdict</dt>
+          <dt className="pt-px text-[11px] md:text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Verdict</dt>
           <dd className="inline-flex items-center gap-1.5 text-text-primary">
             <i aria-hidden="true" className={`inline-block h-2 w-2 ${VERDICT_DOT[qa.verdict]}`} />
             {qa.verdict}

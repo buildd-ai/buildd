@@ -102,7 +102,7 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
                   hbStatus === 'error' ? 'bg-status-error/60' :
                   'bg-border-default'
                 }`} />
-                <span className={`text-[9px] font-bold tracking-wider w-8 shrink-0 ${statusClass}`}>{statusLabel}</span>
+                <span className={`text-[11px] md:text-[9px] font-bold tracking-wider w-12 md:w-8 shrink-0 ${statusClass}`}>{statusLabel}</span>
                 <span className="text-[11px] text-text-muted shrink-0 w-12 tabular-nums">{timeAgo(task.createdAt)}</span>
                 <span className="flex-1 truncate text-text-secondary">{summary}</span>
                 <span onClick={(e) => e.stopPropagation()}>

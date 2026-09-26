@@ -89,7 +89,7 @@ export function DependencyRail({ blockedBy = [], totalBlocked, max = 2, mode = '
   const hidden = Math.max(totalBlocked ?? blockedBy.length, blockedBy.length) - named.length;
 
   return (
-    <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px] text-status-warning min-w-0 mt-0.5">
+    <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[11px] md:text-[10px] text-status-warning min-w-0 mt-0.5">
       {named.map((blocker) => (
         <Link
           key={blocker.id}

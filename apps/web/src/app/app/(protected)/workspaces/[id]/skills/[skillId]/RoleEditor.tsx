@@ -132,7 +132,7 @@ interface Props {
 function ConnectorBadge({ authMode, status }: { authMode: Connector['authMode']; status: Connector['status'] }) {
   if (authMode === 'none') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-info/10 text-status-info border border-status-info/30">
+      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-info/10 text-status-info border border-status-info/30">
         public
       </span>
     );
@@ -140,20 +140,20 @@ function ConnectorBadge({ authMode, status }: { authMode: Connector['authMode'];
   const label = authMode === 'oauth' ? 'oauth' : 'header';
   if (status === 'connected') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">
+      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">
         {label} · connected
       </span>
     );
   }
   if (status === 'expired') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
+      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
         {label} · expired
       </span>
     );
   }
   return (
-    <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">
+    <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">
       {label} · connect
     </span>
   );
@@ -289,14 +289,14 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
                     </div>
                     <p className="text-[11px] text-text-muted mt-0.5 line-clamp-2">{s.description}</p>
                     <div className="flex items-center gap-2 mt-1">
-                      {hasRemote && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">HTTP</span>}
-                      {hasPkg && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">npm</span>}
+                      {hasRemote && <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">HTTP</span>}
+                      {hasPkg && <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">npm</span>}
                       {s.repository && (
                         <a
                           href={s.repository.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-[10px] text-text-muted hover:text-text-secondary"
+                          className="text-[11px] md:text-[10px] text-text-muted hover:text-text-secondary"
                           onClick={(e) => e.stopPropagation()}
                         >
                           repo
@@ -607,7 +607,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[13px] text-text-muted mt-0.5">
               <span className="font-mono text-xs">{skill.slug}</span>
               <span>&middot;</span>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-surface-3 text-text-muted">
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
                   <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                   <polyline points="9,22 9,12 15,12 15,22" />
@@ -825,20 +825,20 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           <div className="flex items-center gap-1.5">
                             <span className="text-[13px] font-medium text-text-primary truncate">{connector.name}</span>
                             {connector.transport === 'stdio' && (
-                              <span className="text-[10px] text-text-muted font-mono">stdio</span>
+                              <span className="text-[11px] md:text-[10px] text-text-muted font-mono">stdio</span>
                             )}
                           </div>
                           {connector.url && (
                             <span className="block text-[11px] text-text-muted font-mono truncate">{connector.url}</span>
                           )}
                           {/* Scope label — mirrors the connector-add ScopeSelector vocab */}
-                          <span className={`text-[10px] font-medium ${enabledHere ? 'text-status-success' : 'text-text-muted'}`}>
+                          <span className={`text-[11px] md:text-[10px] font-medium ${enabledHere ? 'text-status-success' : 'text-text-muted'}`}>
                             {enabledHere ? 'Enabled for this workspace' : 'Not yet enabled for this workspace'}
                           </span>
                         </div>
                         <div className="flex-shrink-0 flex items-center gap-1.5">
                           {connector.needsReview && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
+                            <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
                               needs review
                             </span>
                           )}
@@ -846,16 +846,16 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           {healthStatus.has(connector.id) && (() => {
                             const hs = healthStatus.get(connector.id)!;
                             if (hs === 'ok') return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">OK</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">OK</span>
                             );
                             if (hs === 'auth_expired') return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
                             );
                             if (hs === 'server_unreachable') return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>
                             );
                             return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">not configured</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">not configured</span>
                             );
                           })()}
                         </div>

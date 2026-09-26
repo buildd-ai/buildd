@@ -68,10 +68,10 @@ export function ReleaseRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-2">
             <h2 className="font-medium text-text-primary truncate">{workspaceName}</h2>
-            <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
+            <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
               {stateBadge.label}
             </span>
-            <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${archetypeBadge.cls}`}>
+            <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${archetypeBadge.cls}`}>
               {archetypeBadge.label}
             </span>
             {release.version && (

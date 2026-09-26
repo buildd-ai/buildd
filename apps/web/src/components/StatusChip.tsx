@@ -26,7 +26,7 @@ export function StatusChip({ policyTier, waitingMinutes, className = '' }: Props
 
   return (
     <span
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded border whitespace-nowrap ${cfg.className} ${className}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-semibold rounded border whitespace-nowrap ${cfg.className} ${className}`}
     >
       {cfg.label}
       {waitingMinutes != null && waitingMinutes > 0 && (
