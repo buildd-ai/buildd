@@ -45,7 +45,7 @@ export default function ConnectClaudeSection({ workspaceId, workspaceName }: Pro
             Point Claude Code at the API-key endpoint. Set{' '}
             <code className="bg-surface-3 px-1 rounded text-[11px]">$BUILDD_API_KEY</code> in your shell
             first. Generate one in{' '}
-            <a href="/app/settings" className="text-primary hover:underline">Settings → Runner Tokens</a>.
+            <a href="/app/settings/runners" className="text-primary hover:underline">Settings, Runners</a>.
           </p>
           <CopyBlock text={cliCommand} />
         </div>

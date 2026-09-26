@@ -13,10 +13,10 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ProviderKeyCard, KeyPrecedenceNote } = await import('./ProviderKeyCard');
+const { ProviderKeyCard } = await import('./ProviderKeyCard');
 const { CHAT_PROVIDER_INFO, toKeyStatus } = await import('@/lib/provider-keys-client');
 
-const ANTHROPIC = CHAT_PROVIDER_INFO[0];
+const ANTHROPIC = CHAT_PROVIDER_INFO.find((p) => p.id === 'anthropic')!;
 const NOW = new Date('2026-09-26T12:00:00Z');
 const SET_KEY = toKeyStatus({
   id: 'k1', provider: 'anthropic', scope: 'team', last4: '4f2a', health: 'healthy',
@@ -120,7 +120,7 @@ describe('ProviderKeyCard', () => {
     render();
     await click(button('Remove'));
     expect(onRemove).not.toHaveBeenCalled();
-    expect(host.textContent).toMatch(/lose chat/);
+    expect(host.textContent).toMatch(/stop using this provider/);
     await click(button('Confirm remove'));
     expect(onRemove).toHaveBeenCalledTimes(1);
   });
@@ -152,23 +152,28 @@ describe('ProviderKeyCard', () => {
   it('shows a key set elsewhere without offering to change it here', () => {
     render({ status: RUNNER_KEY });
     expect(host.textContent).toContain('…0c0c');
-    expect(host.textContent).toMatch(/Agent backends/);
+    expect(host.textContent).toMatch(/Settings, Runners/);
     expect(button('Remove')).toBeUndefined();
     expect(button('Replace')).toBeUndefined();
   });
 
-  it('personal mode offers "Use my own key" and says which key chat uses', () => {
-    render({ mode: 'personal', status: UNSET, inUse: 'the team key' });
+  it('personal mode offers "Use my own key"', () => {
+    render({ mode: 'personal', status: UNSET });
     expect(button('Use my own key')).toBeDefined();
-    expect(host.querySelector('[data-testid="provider-key-in-use"]')?.textContent).toBe('the team key');
   });
-});
 
-describe('KeyPrecedenceNote', () => {
-  it('lists your key, then workspace, then team, with no em dashes', () => {
-    act(() => root.render(<KeyPrecedenceNote mode="team" />));
-    const items = [...host.querySelectorAll('li')].map((li) => li.textContent);
-    expect(items).toEqual(['Your own key', 'The workspace key', 'The team key (set here)']);
-    expect(host.textContent).not.toContain('—');
+  // Regression: the square stayed white while the badge said WORKING.
+  it('colours the status square like the badge', () => {
+    render({ status: SET_KEY });
+    const sq = host.querySelector('[data-testid="provider-key-square"]')!;
+    expect(sq.getAttribute('data-tone')).toBe('success');
+    expect(sq.className).toContain('bg-status-success');
+    render({ status: UNSET });
+    expect(host.querySelector('[data-testid="provider-key-square"]')!.getAttribute('data-tone')).toBe('muted');
+  });
+
+  it('marks the recommended provider', () => {
+    render({ status: UNSET, recommended: true });
+    expect(host.textContent).toContain('recommended');
   });
 });

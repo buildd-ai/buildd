@@ -129,7 +129,7 @@ export async function POST(
   // recorded durably as a cold continuation instead of being bounced.
   if (preflight.revoked) {
     return NextResponse.json({
-      error: `Backend credential (${backend}) is revoked — reconnect it in Settings → Agent Backends before continuing.`
+      error: `Backend credential (${backend}) is revoked. Reconnect it under Settings, Runners before continuing.`
         + (preflight.lastFailureMessage ? ` Last error: ${preflight.lastFailureMessage.slice(0, 200)}` : ''),
       credentialRevoked: true,
       backend,

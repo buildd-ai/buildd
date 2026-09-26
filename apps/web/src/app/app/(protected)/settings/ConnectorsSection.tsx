@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
 import SettingsSection from './SettingsSection';
 
 interface Workspace {
@@ -22,7 +21,7 @@ interface Connector {
   status: 'connected' | 'expired' | 'not_connected';
   /** Present when the connector is shared *to* the current team (spec §1b).
    * Shared-in connectors are enable-only here; owner controls live with the
-   * owner team on /app/connections. */
+   * owner team on Settings → MCP connectors. */
   shared?: boolean;
   ownerTeamName?: string | null;
 }
@@ -90,7 +89,7 @@ export default function ConnectorsSection({
   }, [load]);
 
   // Re-run the OAuth authorization flow for an expired/dead credential. Reuses the
-  // same POST /connect → authorizationUrl redirect that /app/connections uses to
+  // same POST /connect → authorizationUrl redirect that ConnectionsClient uses to
   // connect — no new endpoint.
   async function handleReconnect(connectorId: string) {
     setReconnecting(connectorId);
@@ -141,7 +140,7 @@ export default function ConnectorsSection({
 
   return (
     <SettingsSection
-      title="Connectors"
+      title="Workspace access"
       bare
       action={
         <div className="flex items-center gap-2 min-w-0">
@@ -157,7 +156,6 @@ export default function ConnectorsSection({
               ))}
             </select>
           )}
-          <Link href="/app/connections" className="btn btn-quiet shrink-0">Manage</Link>
         </div>
       }
     >
@@ -170,11 +168,8 @@ export default function ConnectorsSection({
       {loading ? (
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
-        <div className="card p-6 text-center">
-          <p className="text-text-muted mb-3 text-sm">No connectors yet</p>
-          <Link href="/app/connections" className="btn btn-primary">
-            Add a connection
-          </Link>
+        <div className="card p-4">
+          <p className="text-text-muted text-sm">Add a connector above, then choose its workspaces here.</p>
         </div>
       ) : (
         <div className="card divide-y divide-border-default">

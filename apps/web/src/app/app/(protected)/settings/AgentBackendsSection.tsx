@@ -3,13 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import SettingsSection from './SettingsSection';
-import Link from 'next/link';
-import {
-  INFERENCE_CAPABILITIES,
-  ALL_INFERENCE_CAPABILITIES,
-  type CapabilityDescriptor,
-  type InferenceCapability,
-} from '@buildd/core/inference-policy';
 import { useConfirm } from '@/components/useConfirm';
 
 /**
@@ -253,29 +246,11 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
     <SettingsSection title="Agent backends" id="agent-backends">
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
-          Runners use these credentials to sign in to an agent backend. Set one credential
-          for <strong className="text-text-primary">all workspaces</strong> in the team, scope it to one workspace{multiTeam ? <>, or apply it across <strong className="text-text-primary">all {teamTargets.length} teams</strong> you manage</> : null}.
+          One credential covers every workspace in the team. You can narrow it to one workspace{multiTeam ? <> or copy it to all {teamTargets.length} teams you manage</> : null}.
         </p>
 
         {/* Team provider routing toggle (reversible mask over the resolution chain) */}
         <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} onRoutingChange={refreshStrand} />
-        <div className="border-t border-border-default" />
-
-        {/* Per-action opt-in for metered inference (separate from holding a key) */}
-        <InferenceCapabilitiesToggle teamId={teamId} />
-
-        {/* Chat and inference keys + tier mapping live on their own page. */}
-        <Link
-          href="/app/settings/models"
-          className="flex items-center justify-between gap-3 inset-panel hover:bg-surface-4 transition-colors"
-          data-testid="model-tiers-link"
-        >
-          <span className="flex flex-col gap-0.5">
-            <span className="text-sm text-text-primary">Model tiers and provider keys</span>
-            <span className="text-xs text-text-secondary">Choose the model behind each tier. Add the Anthropic, OpenAI and OpenRouter keys chat uses.</span>
-          </span>
-          <span aria-hidden className="text-text-muted">→</span>
-        </Link>
         <div className="border-t border-border-default" />
 
         {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
@@ -327,162 +302,6 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
  * in one switch, instead of editing every workspace/role.
  */
-/**
- * Button and status wording for one capability row.
- *
- * Chat is a feature switch, not a speed/cost trade: there is no agent path for a
- * chat turn, so "Use agent" / "Use inference" would misdescribe it. Chat also
- * needs a provider key to do anything, which the row says, because turning the
- * capability on spends nothing by itself.
- *
- * Keyed on the id string so this builds before `chat` joins
- * `INFERENCE_CAPABILITIES`; the row appears once it does.
- */
-export function capabilityToggleCopy(
-  d: Pick<CapabilityDescriptor, 'label' | 'fallback' | 'costHint'> & { id: string },
-  on: boolean,
-): { button: string; meta: string; needsKeyHint: boolean; turnedOn: string; turnedOff: string } {
-  if (d.id === 'chat') {
-    return {
-      button: on ? 'Turn off chat' : 'Turn on chat',
-      meta: on ? `on · ${d.costHint}` : 'off',
-      needsKeyHint: true,
-      turnedOn: `Chat is on. Each turn spends on a provider key (${d.costHint}).`,
-      turnedOff: 'Chat is off. Nobody on the team sees it until you turn it back on.',
-    };
-  }
-  return {
-    button: on ? 'Use agent' : 'Use inference',
-    meta: on ? `inference · ${d.costHint}` : d.fallback === 'agent' ? 'agent run' : 'disabled',
-    needsKeyHint: false,
-    turnedOn: `${d.label} now uses an inference call (${d.costHint}).`,
-    turnedOff: d.fallback === 'agent'
-      ? `${d.label} is back on the agent path: slower, no metered spend.`
-      : `${d.label} is off. It has no agent fallback, so the feature is disabled.`,
-  };
-}
-
-/**
- * Per-action opt-in for metered inference calls.
- *
- * Holding an inference key and spending it are separate decisions. An inference
- * call is seconds and cents; the agent path is slower and runs on the
- * subscription seat already being paid for. Which is right differs per action and
- * per team, so this is an allowlist rather than one master switch — and it starts
- * empty, so storing a key changes nothing until an action is opted in.
- */
-export function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
-  const [enabled, setEnabled] = useState<InferenceCapability[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  const load = useCallback(async () => {
-    if (!teamId) return;
-    try {
-      const res = await fetch(`/api/teams/${teamId}`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = data.team?.enabledInferenceCapabilities as string[] | null | undefined;
-        setEnabled(ALL_INFERENCE_CAPABILITIES.filter((c) => (list ?? []).includes(c)));
-      }
-    } catch {
-      /* non-fatal */
-    } finally {
-      setLoaded(true);
-    }
-  }, [teamId]);
-
-  useEffect(() => { void load(); }, [load]);
-
-  const isOn = (c: InferenceCapability) => enabled.includes(c);
-
-  async function toggle(c: InferenceCapability) {
-    const wasOn = isOn(c);
-    const next = wasOn ? enabled.filter((x) => x !== c) : [...enabled, c];
-    const ordered = ALL_INFERENCE_CAPABILITIES.filter((x) => next.includes(x));
-    const prev = enabled;
-    setEnabled(ordered); // optimistic
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await fetch(`/api/teams/${teamId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabledInferenceCapabilities: ordered }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
-      // `enabled` in this closure is the state BEFORE the toggle, so `wasOn`
-      // true means the user just turned it off. (Reading isOn(c) directly here
-      // used to report the opposite of what happened.)
-      const copy = capabilityToggleCopy(INFERENCE_CAPABILITIES[c], wasOn);
-      setMsg({ type: 'success', text: wasOn ? copy.turnedOff : copy.turnedOn });
-    } catch (e) {
-      setEnabled(prev); // rollback
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-2 scroll-mt-20" id="inference-spending">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Inference spending</h3>
-        <p className="text-xs text-text-secondary mt-0.5">
-          Choose which actions spend a metered inference call instead of dispatching an agent run.
-          All start off. Storing an inference key spends nothing.
-          Inference is faster. An agent run is slower and uses the subscription seat you already pay for.
-        </p>
-      </div>
-      <div className="space-y-2">
-        {ALL_INFERENCE_CAPABILITIES.map((c) => {
-          const d = INFERENCE_CAPABILITIES[c];
-          const on = isOn(c);
-          const copy = capabilityToggleCopy(d, on);
-          return (
-            <div key={c} className="flex items-start justify-between gap-3 inset-panel" data-testid={`capability-${c}`}>
-              <span className="flex flex-col gap-0.5 text-sm text-text-primary">
-                <span className="flex flex-wrap items-center gap-2">
-                  <span className={`w-2 h-2 shrink-0 ${on ? 'bg-status-success' : 'bg-text-muted'}`} />
-                  {d.label}
-                  <span className="text-xs text-text-muted">{copy.meta}</span>
-                </span>
-                <span className="text-xs text-text-secondary">{d.description}</span>
-                {copy.needsKeyHint ? (
-                  <span className="text-xs text-text-secondary">
-                    Needs a provider key.{' '}
-                    <Link href="/app/settings/models#provider-keys" className="underline text-text-primary hover:text-accent-text">
-                      Set team keys
-                    </Link>
-                    {' '}or members add their own on the You page.
-                  </span>
-                ) : d.fallback === 'none' && !on && (
-                  /* The distinction that must not be flattened: for these, off is
-                     not "slower", it is "gone". */
-                  <span className="text-xs text-status-warning">
-                    No agent fallback. This feature stays off until you enable it.
-                  </span>
-                )}
-              </span>
-              <button
-                onClick={() => toggle(c)}
-                disabled={busy || !loaded}
-                className={`btn shrink-0 ${on ? '' : 'btn-accent'}`}
-              >
-                {copy.button}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      {msg && (
-        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
-      )}
-    </div>
-  );
-}
-
 function ProviderRoutingToggle({
   teamId,
   workspaceId,

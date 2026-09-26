@@ -236,7 +236,7 @@ describe('resolveProseCriterion — unavailable', () => {
     const res = await resolveProseCriterion(input());
     expect(res.kind).toBe('unavailable');
     if (res.kind !== 'unavailable') return;
-    expect(res.evidence).toContain('Agent Backends');
+    expect(res.evidence).toContain('Settings, Runners');
     expect(insertedValues).toHaveLength(0);
   });
 

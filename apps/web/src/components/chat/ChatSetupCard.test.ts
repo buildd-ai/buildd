@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'bun:test';
+import { chatSetupCopy } from './ChatSetupCard';
+
+describe('chatSetupCopy', () => {
+  it('admin, no key: connect a provider (not "turn on chat")', () => {
+    const c = chatSetupCopy('no_key', true);
+    expect(c.title).toBe('Connect a model provider');
+    expect(c.cta).toEqual({ href: '/app/settings/providers', label: 'Connect a provider' });
+  });
+
+  it('admin, switched off: turn it back on in AI features', () => {
+    expect(chatSetupCopy('capability_disabled', true).cta).toEqual({ href: '/app/settings/ai', label: 'Turn chat on' });
+  });
+
+  it('member, team key policy: who to ask, no settings trip', () => {
+    const c = chatSetupCopy('no_key', false);
+    expect(c.body).toContain('Ask a team admin');
+    expect(c.cta).toBeNull();
+  });
+
+  it('member, everyone brings their own key: add yours', () => {
+    const c = chatSetupCopy('no_key', false, 'own');
+    expect(c.title).toBe('Add your key to use chat');
+    expect(c.cta?.href).toBe('/app/settings/account');
+  });
+
+  it('no em dashes', () => {
+    for (const r of ['no_key', 'capability_disabled'] as const) {
+      for (const admin of [true, false]) {
+        const c = chatSetupCopy(r, admin);
+        expect(`${c.title} ${c.body}`).not.toContain('—');
+      }
+    }
+  });
+});

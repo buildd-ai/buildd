@@ -73,7 +73,8 @@ import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
 import { getChatAvailability } from '@/lib/chat-availability';
 import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
 import HomeChatCard from '@/components/chat/HomeChatCard';
-import ChatSetupCard from '@/components/chat/ChatSetupCard';
+import ProviderOnboardingCard from '@/components/onboarding/ProviderOnboardingCard';
+import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 
@@ -1894,8 +1895,9 @@ export default async function HomePage({
         {chatPlacement.kind === 'chat' && chatTeamId && (
           <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
         )}
-        {chatPlacement.kind === 'setup' && (
-          <div className="mb-6"><ChatSetupCard reason={chatPlacement.reason} canManage /></div>
+        {chatPlacement.kind === 'onboarding' && chatTeamId && <ProviderOnboardingCard teamId={chatTeamId} />}
+        {chatPlacement.kind === 'connect-own' && chatTeamId && (
+          <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />
         )}
 
         {rightNow !== 'create-workspace' && rightNow !== 'get-started' && (

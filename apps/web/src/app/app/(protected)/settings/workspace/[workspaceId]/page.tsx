@@ -53,8 +53,8 @@ export default async function WorkspaceMergePolicyPage({
     .map(m => ({ id: m.id, title: m.title, policy: m.mergePolicy! }));
 
   return (
-    <main className="min-h-screen pt-4 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-2xl mx-auto">
+    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
+      <div className="max-w-2xl">
         <MergePolicyEditor
           workspaceId={workspaceId}
           workspaceName={workspace.name}

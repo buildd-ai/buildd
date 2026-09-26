@@ -125,7 +125,7 @@ export default function NewAccountPage() {
   return (
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+        <Link href="/app/settings/runners" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
         <h1 className="text-2xl font-semibold mb-8">New Account</h1>
@@ -288,7 +288,7 @@ export default function NewAccountPage() {
               {loading ? 'Creating…' : 'Create Account'}
             </button>
             <Link
-              href="/app/settings"
+              href="/app/settings/runners"
               className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3 text-center"
             >
               Cancel
@@ -305,7 +305,7 @@ export default function NewAccountPage() {
           apiKey={createdAccount.apiKey}
           onClose={() => {
             setCreatedAccount(null);
-            router.push('/app/settings');
+            router.push('/app/settings/runners');
           }}
         />
       )}

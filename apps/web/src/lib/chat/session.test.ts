@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-/** Chat availability: the capability AND a resolvable key, or nothing shows. */
+/** Chat availability: on whenever a key resolves, unless an admin switched chat off. */
 
-let team: any = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
+let team: any = { chatDisabled: false, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
 let modelOk = true;
 
 mock.module('@buildd/core/db', () => ({
@@ -19,29 +19,28 @@ mock.module('./models', () => ({
 const { chatAvailability, loadTeamChatSettings } = await import('./session');
 
 beforeEach(() => {
-  team = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
+  team = { chatDisabled: false, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
   modelOk = true;
 });
 
 describe('chatAvailability', () => {
-  it('capability off (the default) ⇒ no Chat entry point, even with a key', async () => {
-    expect(await chatAvailability('t', 'u', 'member')).toEqual({ available: false, reason: 'capability_disabled', canManageTeamKeys: false });
+  it('a key resolves ⇒ available, with no separate "turn on chat" step', async () => {
+    expect(await chatAvailability('t', 'u', 'member')).toEqual({ available: true, reason: null, canManageTeamKeys: false });
   });
 
-  it('capability on but no key resolves (e.g. an OAuth-only team) ⇒ no turn is possible', async () => {
-    team.enabledInferenceCapabilities = ['chat'];
+  it('no key resolves (e.g. an OAuth-only team) ⇒ no_key', async () => {
     modelOk = false;
     expect(await chatAvailability('t', 'u', 'admin')).toEqual({ available: false, reason: 'no_key', canManageTeamKeys: true });
   });
 
-  it('capability on and a key ⇒ available', async () => {
-    team.enabledInferenceCapabilities = ['chat'];
-    expect((await chatAvailability('t', 'u', 'member')).available).toBe(true);
+  it('an admin switched chat off ⇒ capability_disabled, even with a key', async () => {
+    team.chatDisabled = true;
+    expect(await chatAvailability('t', 'u', 'member')).toEqual({ available: false, reason: 'capability_disabled', canManageTeamKeys: false });
   });
 
-  it('other capabilities being on does not turn chat on', async () => {
-    team.enabledInferenceCapabilities = ['criteria_grading', 'task_category_shadow'];
-    expect((await chatAvailability('t', 'u', 'member')).available).toBe(false);
+  it('the old opt-in list no longer gates chat', async () => {
+    team.enabledInferenceCapabilities = null;
+    expect((await chatAvailability('t', 'u', 'member')).available).toBe(true);
   });
 });
 

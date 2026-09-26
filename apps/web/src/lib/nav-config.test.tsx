@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobilePageTitle, navItemsFor, showsWorkspaceFilter } from './nav-config';
+import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobileBackHref, mobilePageTitle, navItemsFor, showsWorkspaceFilter } from './nav-config';
 
 describe('NAV_ITEMS', () => {
   it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
@@ -92,10 +92,19 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/health')).toBe('Health');
   });
 
-  it('titles the menu-accessed surfaces (Account / Connections)', () => {
-    expect(mobilePageTitle('/app/you')).toBe('Account');
-    expect(mobilePageTitle('/app/settings')).toBe('Connections');
-    expect(mobilePageTitle('/app/connections')).toBe('Connections');
+  it('titles the settings index and each settings section', () => {
+    expect(mobilePageTitle('/app/settings')).toBe('Settings');
+    expect(mobilePageTitle('/app/settings/account')).toBe('Profile');
+    expect(mobilePageTitle('/app/settings/runners')).toBe('Runners');
+    expect(mobilePageTitle('/app/settings/models')).toBe('Model tiers');
+    expect(mobilePageTitle('/app/settings/workspace/ws-1')).toBe('Workspaces');
+  });
+
+  it('gives settings sections a back arrow and nothing else one', () => {
+    expect(mobileBackHref('/app/settings/runners')).toBe('/app/settings');
+    expect(mobileBackHref('/app/settings/workspace/ws-1')).toBe('/app/settings/workspaces');
+    expect(mobileBackHref('/app/settings')).toBeNull();
+    expect(mobileBackHref('/app/home')).toBeNull();
   });
 
   it('returns null on detail pages so they render their own headers', () => {
@@ -110,7 +119,7 @@ describe('showsWorkspaceFilter', () => {
   // Paths with no page.tsx: next.config.mjs redirects them before any page renders.
   const REDIRECT_ONLY = new Set(['/app/dashboard']);
   // Top-level pages with a mobile header that ignore the param — a filter there is a no-op control.
-  const IGNORES_PARAM = ['/app/you', '/app/settings', '/app/connections', '/app/artifacts', '/app/initiatives', '/app/workspaces', '/app/team'];
+  const IGNORES_PARAM = ['/app/settings', '/app/settings/account', '/app/settings/runners', '/app/artifacts', '/app/initiatives', '/app/workspaces', '/app/team'];
 
   it('shows on every allowlisted path', () => {
     for (const path of WORKSPACE_FILTERED_PAGES) expect(showsWorkspaceFilter(path)).toBe(true);

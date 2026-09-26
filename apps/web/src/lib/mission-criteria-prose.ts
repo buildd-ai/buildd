@@ -248,7 +248,7 @@ export async function resolveProseCriterion(opts: ProseCriterionInput): Promise<
   if (!(await hasAgentBackendCredential(mission.teamId))) {
     return {
       kind: 'unavailable',
-      evidence: 'Prose criterion cannot be verified on a runner: no agent backend credential is connected. Connect one in Settings → Agent Backends.',
+      evidence: 'Prose criterion cannot be verified on a runner: no agent backend credential is connected. Connect one under Settings, Runners.',
     };
   }
 

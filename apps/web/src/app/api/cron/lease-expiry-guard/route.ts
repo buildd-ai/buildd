@@ -100,7 +100,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     await notifyTeam(credential.teamId, 'credentialExpired', {
       title: 'Credential lease expired — runner may be down',
       message: `The broker lease for a ${purpose} credential expired without renewal (runner: ${lease.heldByRunnerId}). The runner may have crashed. ${fallbackNote}`,
-      url: `${appUrl}/app/settings`,
+      url: `${appUrl}/app/settings/runners`,
       urlTitle: 'Open settings',
       priority: 0,
     }).catch(err => console.error('[lease-expiry-guard] notify failed:', err));

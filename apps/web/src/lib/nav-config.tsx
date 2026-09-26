@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { settingsBackHref, settingsItemFor } from './settings-nav';
 
 /**
  * Single source of truth for primary navigation (unified-app-ia §D.2).
@@ -151,10 +152,21 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/team') return 'Team';
   if (pathname === '/app/health') return 'Health';
   if (pathname === '/app/artifacts') return 'Artifacts';
-  if (pathname === '/app/you') return 'Account';
-  if (pathname === '/app/settings') return 'Connections';
-  if (pathname === '/app/connections') return 'Connections';
+  if (pathname === '/app/settings') return 'Settings';
+  // Each settings section is a full page on a phone (list → detail); the
+  // header names it and carries the back arrow (mobileBackHref).
+  const section = settingsItemFor(pathname);
+  if (section) return section.label;
   return null;
+}
+
+/**
+ * Where the mobile header's back arrow points, or null for no arrow. Only
+ * settings sections have one: they are the detail half of list → detail, and
+ * the phone has no sub-nav to get back to the list.
+ */
+export function mobileBackHref(pathname: string): string | null {
+  return settingsBackHref(pathname);
 }
 
 /**

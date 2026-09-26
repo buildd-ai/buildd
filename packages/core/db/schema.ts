@@ -78,6 +78,14 @@ export const teams = pgTable('teams', {
   // Per-person daily share of that budget, in USD. NULL = DEFAULT_CHAT_USER_SHARE
   // of the team budget. Always clamped to the team budget.
   chatUserDailyBudgetUsd: decimal('chat_user_daily_budget_usd', { precision: 10, scale: 2 }),
+  // Whose provider key a person's chat turn spends (packages/core/inference-keys.ts
+  // enforces it): 'team' = the team key for everyone, personal keys ignored;
+  // 'team_or_own' = the team key, and a person may use their own instead;
+  // 'own' = everyone brings their own key, no team fallback for chat.
+  inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Chat is on whenever a key resolves; an admin can switch it off for the team.
+  // Replaces the opt-in `chat` entry in enabledInferenceCapabilities.
+  chatDisabled: boolean('chat_disabled').notNull().default(false),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));

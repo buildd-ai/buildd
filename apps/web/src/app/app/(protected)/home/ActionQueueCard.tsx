@@ -82,7 +82,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
       return (
         <Link
           key={item.subjectKey}
-          href="/app/connections"
+          href="/app/settings/connectors"
           className="block border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3 hover:bg-status-error/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
