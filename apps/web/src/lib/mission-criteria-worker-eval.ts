@@ -186,8 +186,8 @@ export async function resolveCriteriaWorkerEval(opts: {
         kind: 'pending',
         taskId: existing.id,
         evidence: stalled
-          ? `Worker evaluator ${existing.id.slice(0, 8)} has been ${existing.status} for ${Math.round(waitedMs / 60000)}m — no runner has claimed it`
-          : `Worker evaluator ${existing.id.slice(0, 8)} is ${existing.status} — evaluation in progress`,
+          ? `Worker evaluator ${existing.id.slice(0, 8)} has been ${existing.status} for ${Math.round(waitedMs / 60000)}m with no runner claiming it`
+          : `Worker evaluator ${existing.id.slice(0, 8)} is ${existing.status} · evaluation in progress`,
       };
     }
 
@@ -197,7 +197,7 @@ export async function resolveCriteriaWorkerEval(opts: {
       // agent run on the same empty answer every evaluation round.
       return {
         kind: 'unavailable',
-        evidence: `Worker evaluator ${existing.id.slice(0, 8)} finished without returning verdicts — will retry after ${Math.round(WORKER_EVAL_TTL_MS / 60000)}m`,
+        evidence: `Worker evaluator ${existing.id.slice(0, 8)} finished without returning verdicts. Retrying after ${Math.round(WORKER_EVAL_TTL_MS / 60000)}m.`,
       };
     }
     // Stale, criteria changed, or verdicts are gone — dispatch a fresh task.
@@ -208,7 +208,7 @@ export async function resolveCriteriaWorkerEval(opts: {
   return {
     kind: 'pending',
     taskId: dispatched.taskId,
-    evidence: `Worker evaluator ${dispatched.taskId.slice(0, 8)} dispatched — evaluating ${criteria.length} criteri${criteria.length === 1 ? 'on' : 'a'}`,
+    evidence: `Worker evaluator ${dispatched.taskId.slice(0, 8)} dispatched · evaluating ${criteria.length} criteri${criteria.length === 1 ? 'on' : 'a'}`,
   };
 }
 
@@ -454,7 +454,7 @@ export async function handleCriteriaWorkerEvalOutcome(
         `[criteria-worker-eval] mission ${task.missionId} criterion ${index} changed while task ${task.id} ran — discarding its verdict`
       );
       cs.verdict = 'NOT_EVALUATED';
-      cs.evidence = 'Criterion was edited while the evaluator ran — grading again on the next round';
+      cs.evidence = 'Someone edited the criterion while the evaluator ran. The next round grades it again.';
       fireNotEvaluated(index, 'criterion_changed');
       return;
     }
@@ -479,7 +479,7 @@ export async function handleCriteriaWorkerEvalOutcome(
     cs.verdict = correctedVerdict;
     cs.evidence = correctedVerdict === v.verdict
       ? evidence
-      : `${evidence} — corrected to UNVERIFIED: the command could not run (environment error), which is not evidence the criterion is unmet`;
+      : `${evidence}. Corrected to UNVERIFIED: an environment error stopped the command, so this says nothing about the criterion.`;
     cs.workerTaskId = task.id;
     if (v.evidenceRef) cs.evidenceRefs = [v.evidenceRef];
     applied = true;

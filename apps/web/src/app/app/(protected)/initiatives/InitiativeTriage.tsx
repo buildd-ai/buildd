@@ -139,7 +139,7 @@ export function InitiativeTriage({ items, teamId }: InitiativeTriageProps) {
             onClick={() => handleUndo(item.id)}
             className="text-[12px] text-text-muted hover:text-text-secondary transition-colors"
           >
-            Hid &ldquo;{item.title}&rdquo; — undo
+            Hid &ldquo;{item.title}&rdquo; · Undo
           </button>
         </div>
       ))}

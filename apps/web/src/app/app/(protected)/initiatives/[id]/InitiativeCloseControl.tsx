@@ -73,7 +73,7 @@ export default function InitiativeCloseControl({
         disabled={busy}
         title={
           nextStatus === 'completed'
-            ? 'Close this initiative — child missions are untouched'
+            ? 'Close this initiative. Child missions stay as they are.'
             : 'Archive this initiative'
         }
         className={

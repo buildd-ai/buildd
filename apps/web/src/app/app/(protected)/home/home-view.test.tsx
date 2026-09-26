@@ -57,7 +57,7 @@ describe('homeSubheading — the greeting and the Waiting-on-You header say the 
     expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 needs you');
     expect(homeSubheading(null, 2)).toBe('2 need you');
     expect(homeSubheading('1 ship overnight', 0)).toBe('1 ship overnight');
-    expect(homeSubheading(null, 0)).toBe('Your agents are standing by');
+    expect(homeSubheading(null, 0)).toBe('Nothing waiting on you');
   });
 
   it('matches the header summary for the same (initiative-filtered) queue', () => {

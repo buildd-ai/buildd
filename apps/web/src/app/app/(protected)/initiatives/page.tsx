@@ -50,7 +50,7 @@ export default async function InitiativesListPage() {
         <div className="card p-8 text-center max-w-md mx-auto mt-10">
           <p className="text-sm text-text-secondary mb-1">No initiatives yet.</p>
           <p className="text-xs text-text-muted mb-4">
-            Group related missions under a durable arc to track cumulative progress.
+            Group related missions under one goal to track their combined progress.
           </p>
           <Link
             href="/app/initiatives/new"

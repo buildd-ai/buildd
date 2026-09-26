@@ -249,7 +249,7 @@ describe('resolveCriteriaWorkerEval', () => {
 
     expect(res.kind).toBe('pending');
     expect(res.evidence).toMatch(/stalled-/);
-    expect(res.evidence).toMatch(/no runner has claimed it/);
+    expect(res.evidence).toMatch(/with no runner claiming it/);
   });
 
   it('returns unavailable (with reason) when prior task finished without verdicts within TTL', async () => {
@@ -471,7 +471,7 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     const saved = updateCalls[0].goalCriteriaState;
     const c1 = saved.criteria.find((c: any) => c.index === 1);
     expect(c1.verdict).toBe('UNVERIFIED');
-    expect(c1.evidence).toContain('corrected to UNVERIFIED');
+    expect(c1.evidence).toContain('Corrected to UNVERIFIED');
     expect(firedGateEvents.some(e => e.reason === 'exit_126_127')).toBe(true);
   });
 

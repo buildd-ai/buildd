@@ -122,7 +122,7 @@ function MissionVerifiedPillInner({
   if (overall === 'NOT_EVALUATED') {
     icon = '–';
     text = 'No evaluator';
-    title = 'Criteria set — no evaluator available';
+    title = 'Criteria set, no evaluator available';
     toneClass = 'text-text-muted/60 border-border-default';
   } else if (overall === 'PENDING') {
     icon = '⋯';

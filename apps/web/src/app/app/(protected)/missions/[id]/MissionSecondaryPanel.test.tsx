@@ -31,6 +31,6 @@ describe('MissionSecondaryPanel', () => {
       </MissionSecondaryPanel>,
     );
     expect(html).not.toContain('data-testid="mission-settings-row"');
-    expect(html).toContain('Schedule, configuration &amp; more');
+    expect(html).toContain('Schedule and configuration');
   });
 });

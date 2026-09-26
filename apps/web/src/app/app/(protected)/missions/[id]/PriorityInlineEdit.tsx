@@ -51,7 +51,7 @@ export default function PriorityInlineEdit({
     <button
       onClick={() => setEditing(true)}
       className="flex items-center gap-1 text-[11px] hover:opacity-75 transition-opacity group"
-      title="Click to change priority"
+      title="Change priority"
     >
       <span className="text-text-muted">Priority:</span>
       <span className={`font-medium ${colorClass}`}>{label}</span>

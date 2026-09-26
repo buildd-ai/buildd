@@ -12,9 +12,9 @@ interface WaitingOnYouDiscrepancyCardProps {
 type Mode = 'idle' | 'accepting' | 'flipping' | 'error';
 
 const DIRECTION_LABEL: Record<DiscrepancyDirection, string> = {
-  contradicted: 'Contradicted — needs a call',
-  spec_ahead: 'Spec ahead — unbuilt work',
-  code_ahead: 'Code ahead — doc fix',
+  contradicted: 'Contradicted · needs your call',
+  spec_ahead: 'Spec ahead · unbuilt work',
+  code_ahead: 'Code ahead · doc fix',
 };
 
 function ageLabel(hours: number | null | undefined): string | null {
@@ -287,9 +287,9 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
           >
             {docFixPrOpen
-              ? 'Doc fix PR open — merge to continue →'
+              ? 'Doc fix PR open. Merge it to continue →'
               : docFixShipped
-                ? 'Doc fix shipped — awaiting the conformance re-run →'
+                ? 'Doc fix shipped. Waiting on the conformance re-run →'
                 : 'Fix in flight →'}
           </Link>
         )}
@@ -298,7 +298,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             task, so it says so rather than naming the decision. */}
         {mergedFixTaskId && (
           <div>
-            <p className="text-[12px] text-text-secondary">Doc fix merged, but the gap is still open.</p>
+            <p className="text-[12px] text-text-secondary">Doc fix merged. The gap is still open.</p>
             <Link
               href={`/app/tasks/${mergedFixTaskId}`}
               className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"

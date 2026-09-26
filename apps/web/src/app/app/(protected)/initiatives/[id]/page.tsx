@@ -284,7 +284,7 @@ export default async function InitiativeDetailPage({
               <a
                 href={evidenceAnchor}
                 className="shrink-0 text-[11px] text-text-muted underline decoration-dotted hover:text-text-secondary transition-colors"
-                title="No goal criteria or KPI has checked this outcome — review the KPIs"
+                title="No goal criteria or KPI has checked this outcome. Review the KPIs."
               >
                 unverified
               </a>
@@ -339,8 +339,8 @@ export default async function InitiativeDetailPage({
               className={`text-[11px] font-mono px-2 py-0.5 border rounded-sm ${CRITERIA_GATE_TONE_CLASS[kpiGate.tone]}`}
               title={
                 kpiGate.state === 'failing'
-                  ? 'All child missions completed but a KPI failed its threshold'
-                  : 'All child missions completed but KPIs not yet verified'
+                  ? 'All child missions completed. A KPI missed its threshold.'
+                  : 'All child missions completed. KPIs not yet verified.'
               }
             >
               {kpiGate.detail ? `${kpiGate.label}: ${kpiGate.detail}` : kpiGate.label}

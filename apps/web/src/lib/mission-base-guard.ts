@@ -120,7 +120,7 @@ export function buildMissionBaseGuard(args: {
           `mission's integration branch so the mission reaches trunk through one merge.`,
         hint:
           `Retarget ${subject} to base '${integrationBase}' on GitHub, then retry. ` +
-          `A base buildd cannot read is treated as illegal — unknown never resolves to a passing check.`,
+          `Buildd treats a base it cannot read as illegal, so an unknown base never passes this check.`,
       };
     },
   };

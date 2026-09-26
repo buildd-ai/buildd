@@ -87,7 +87,7 @@ describe('NeedsYouStack', () => {
         {null}
       </NeedsYouStack>,
     );
-    expect(empty).toContain('Nothing needs you');
+    expect(empty).toContain('Nothing waiting on you');
     expect(empty).not.toContain('data-testid="needs-you-count"');
   });
   it('does not show the empty state when the action queue renders', () => {
@@ -97,7 +97,7 @@ describe('NeedsYouStack', () => {
         {false}
       </NeedsYouStack>,
     );
-    expect(withQueue).not.toContain('Nothing needs you');
+    expect(withQueue).not.toContain('Nothing waiting on you');
   });
   it('splits an option into its answer and its reason', () => {
     expect(splitOption('Per line — match Stripe')).toEqual({ main: 'Per line', sub: 'match Stripe' });

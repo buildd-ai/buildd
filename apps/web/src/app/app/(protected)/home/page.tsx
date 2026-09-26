@@ -1244,7 +1244,7 @@ export default async function HomePage({
                     : (w.taskId ? reviewerRecommendationMap.get(w.taskId) ?? null : null),
                   leaseState,
                   escalationReason: deadZoneInfo
-                    ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
+                    ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
                     : (gate?.reason ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
@@ -1948,7 +1948,7 @@ export default async function HomePage({
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
-                    This team doesn&rsquo;t have a workspace yet. Connect a GitHub repo to start running agents here.
+                    This team has no workspace. Connect a GitHub repo to run agents.
                   </p>
                   <Link
                     href="/app/workspaces/new"
