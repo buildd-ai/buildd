@@ -59,7 +59,7 @@ export default function PersonalProviderKeys({ teamId, teamName }: { teamId: str
         Only you use it. Nobody, admins included, can read it back.
       </p>
       {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+      <div className="space-y-2.5">
         {CHAT_PROVIDER_INFO.map((info) => {
           const card = view?.providers.find((p) => p.provider === info.id);
           return (

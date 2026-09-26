@@ -298,7 +298,9 @@ function TierRow({
               ))}
             </datalist>
             <p className="text-[11px] text-text-muted mt-1">
-              {options.length} in the catalog for {providerLabel(provider)}.
+              {options.length > 0
+                ? `${options.length} in the catalog for ${providerLabel(provider)}.`
+                : `The ${providerLabel(provider)} catalog didn’t load. Type a model id.`}
               {chosen?.price ? ` ${chosen.price} per MTok in / out.` : ''}
               {' '}This tier&apos;s auto band is {tierBandLabel(tier)}.
             </p>

@@ -105,7 +105,7 @@ export function ProviderKeyCard({
         <span className="w-2.5 h-2.5 shrink-0 bg-text-primary" aria-hidden />
         <b className="text-[13px] font-semibold text-text-primary">{info.label}</b>
         <span className="flex-1" />
-        <span className={`status-pill status-pill-${pill.tone}`} data-testid="provider-key-health">{pill.label}</span>
+        <span className={`status-pill status-pill-${pill.tone} shrink-0`} data-testid="provider-key-health">{pill.label}</span>
       </div>
 
       <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">
