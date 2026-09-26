@@ -58,3 +58,5 @@ scripts/agent-docs-drift.test.ts
 # sessions that end via complete_task. Its guard also reads the shape
 # vocabularies from packages/shared and the Agent SDK's result subtypes.
 apps/runner/__tests__/unit/task-shape-contract.test.ts
+# Enumerates tracked files for a prod server started under Bun (`--bun next start`).
+scripts/prod-server-runtime.test.ts

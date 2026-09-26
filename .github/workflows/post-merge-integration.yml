@@ -55,7 +55,12 @@ jobs:
           # top of an untested server change must not leave the head untested.
           git fetch --quiet origin main
           CHANGED=$(git diff --name-only origin/main...HEAD)
-          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|packages/core/|packages/shared/)' && echo "true" || echo "false")
+          # The server's start script and the job body count too: a change to
+          # either is exactly what this job has to exercise.
+          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|apps/web/package\.json$|packages/core/|packages/shared/|\.github/workflows/(post-merge-)?integration\.yml$)' && echo "true" || echo "false")
+          # A manual run always tests: otherwise dispatching it on a branch
+          # right after a release (dev == main) reports green having run nothing.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then API=true; fi
           echo "api=$API" >> "$GITHUB_OUTPUT"
           echo "::notice::server changes ahead of main: $API"
 

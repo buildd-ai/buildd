@@ -49,9 +49,18 @@ if lsof -ti "tcp:$DEMO_APP_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 BUN_BIN="$(command -v bun)"
+# `next start` runs under Node, as on Vercel. Under Bun it depends on the Bun
+# version: Bun 1.3.x cannot load Next 16.3's compiled server runtime and 500s
+# every request (scripts/prod-server-runtime.test.ts). Refuse a `node` that is
+# really Bun (bun's node fallback shim).
+NODE_BIN="$(command -v node || true)"
+if [ -z "$NODE_BIN" ] || ! "$NODE_BIN" -e 'process.exit(process.versions.bun ? 1 : 0)' 2>/dev/null; then
+  echo "[demo] Node.js is required to serve the production build (next start); install node >= 20" >&2
+  exit 1
+fi
 SERVER_ENV=(
   env -i
-  "HOME=$HOME" "PATH=$(dirname "$BUN_BIN"):/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+  "HOME=$HOME" "PATH=$(dirname "$NODE_BIN"):$(dirname "$BUN_BIN"):/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
   "TERM=${TERM:-xterm}" "TMPDIR=${TMPDIR:-/tmp}"
   "__NEXT_PROCESSED_ENV=true"
   "NEXT_TELEMETRY_DISABLED=1"
@@ -99,7 +108,9 @@ fi
 echo "[demo] serving $DEMO_BASE_URL (db $DATABASE_URL, blobs $DEMO_S3_URL)"
 
 if [ "${1:-}" = "--bg" ]; then
-  "${SERVER_ENV[@]}" "$BUN_BIN" --no-env-file --bun next start --port "$DEMO_APP_PORT" >"$DEMO_LOG" 2>&1 &
+  # Node does not read .env files on its own (Bun needed --no-env-file), and
+  # __NEXT_PROCESSED_ENV stops Next from loading them.
+  "${SERVER_ENV[@]}" "$NODE_BIN" node_modules/next/dist/bin/next start --port "$DEMO_APP_PORT" >"$DEMO_LOG" 2>&1 &
   echo $! >"$DEMO_PID_FILE"
   for i in $(seq 1 180); do
     if curl -sf -o /dev/null "$DEMO_BASE_URL/api/version"; then
@@ -114,4 +125,4 @@ if [ "${1:-}" = "--bg" ]; then
   echo "[demo] timed out waiting for server" >&2; tail -30 "$DEMO_LOG" >&2; exit 1
 fi
 
-exec "${SERVER_ENV[@]}" "$BUN_BIN" --no-env-file --bun next start --port "$DEMO_APP_PORT"
+exec "${SERVER_ENV[@]}" "$NODE_BIN" node_modules/next/dist/bin/next start --port "$DEMO_APP_PORT"
