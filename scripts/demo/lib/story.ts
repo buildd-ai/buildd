@@ -86,6 +86,20 @@ export function relTime(anchorMs: number, rel: string | undefined, fallbackMs = 
   return new Date(anchorMs - Number(m[1]) * unit);
 }
 
+export const SCHEDULE_INTERVAL_MS = 6 * 3_600_000;
+
+/**
+ * A schedule's baseline lastRunAt/nextRunAt. If the timeline fires it
+ * (`schedule_fire`), the next run is due exactly when that tick fires, so the
+ * recurring mission counts down ("next 9m") instead of reading "due now" for the
+ * whole story; the previous run is one interval earlier.
+ */
+export function scheduleBaseline(story: Story, scheduleKey: string, anchorMs: number, intervalMs = SCHEDULE_INTERVAL_MS): { lastRunAt: Date; nextRunAt: Date } {
+  const fire = (story.timeline ?? []).find((e) => e.op === 'schedule_fire' && e.schedule === scheduleKey);
+  const nextMs = fire ? anchorMs + fire.t * 1000 : anchorMs;
+  return { lastRunAt: new Date(nextMs - intervalMs), nextRunAt: new Date(nextMs) };
+}
+
 // ── persisted demo state (lives in the demo DB itself, system_cache) ──────────
 
 export type DemoState = {

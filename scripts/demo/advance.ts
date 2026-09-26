@@ -19,6 +19,7 @@ import { IdMap, loadState, loadStory, runnerUrl, saveState, shiftAllTimestamps, 
 import { artifactRow, seedStory } from './seed';
 import { triggerPusher } from './lib/pusher';
 import { toolMilestone } from './lib/tool-milestone';
+import { taskClaimedPush, taskCreatedPush, webhookPrNudge } from './lib/realtime';
 
 type Ctx = { db: LocalDb; story: Story; ids: IdMap; state: DemoState; at: (t: number) => Date; ms: (t: number) => number; pushes: Array<[string, string, unknown]> };
 
@@ -60,11 +61,19 @@ async function ensureTask(c: Ctx, key: string, t: number) {
     id: c.ids.get(key), status: 'pending', createdAt: c.at(t), updatedAt: c.at(t),
     heartbeatTickAnchor: task.heartbeatTickAnchor ? c.at(t).toISOString() : null,
   }) as any);
-  c.pushes.push([`workspace-${task.workspaceId ? c.ids.ref(task.workspaceId) : ''}`, 'task:created', { task: { id: c.ids.get(key) } }]);
+  c.pushes.push(taskCreatedPush(wsChannel(c), taskPayload(c, key)));
 }
 
 function wsChannel(c: Ctx) {
   return `workspace-${c.ids.get(c.story.workspace.key)}`;
+}
+
+function taskPayload(c: Ctx, key: string) {
+  const t = find(c.story.tasks, key);
+  return {
+    id: c.ids.get(key), title: String(t.title), workspaceId: c.ids.get(c.story.workspace.key),
+    mode: t.mode ?? null, priority: t.priority ?? null, missionId: t.missionId ? String(c.ids.ref(t.missionId)) : null,
+  };
 }
 
 function workerPush(c: Ctx, workerKey: string, taskKey: string | null, status: string, extra: Record<string, unknown> = {}) {
@@ -111,7 +120,7 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
     }) as any);
     const task = find(c.story.tasks, e.task);
     if (task.missionId) await c.db.update(s.missions).set({ lastTaskStartedAt: c.at(e.t) } as any).where(eq(s.missions.id, c.ids.get(task.missionId)));
-    c.pushes.push([wsChannel(c), 'task:claimed', { task: { id: c.ids.get(e.task) }, workerId: c.ids.get(w.key!) }]);
+    c.pushes.push(taskClaimedPush(wsChannel(c), taskPayload(c, e.task), { id: c.ids.get(w.key!), name: String(w.name ?? '') }));
   },
 
   async worker_status(c, e) {
@@ -178,15 +187,13 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
   async ci(c, e) {
     await c.db.update(s.workers).set({ prLifecycleStatus: e.state, prLastCheckedAt: c.at(e.t), updatedAt: c.at(e.t) } as any)
       .where(eq(s.workers.id, c.ids.get(e.worker)));
-    const w = await workerRow(c, e.worker);
-    workerPush(c, e.worker, taskKeyOfWorker(c, e.worker), w?.status ?? 'completed');
+    c.pushes.push(webhookPrNudge(wsChannel(c), c.ids.get(taskKeyOfWorker(c, e.worker))));
   },
 
   async merge(c, e) {
     await c.db.update(s.workers).set({ mergedAt: c.at(e.t), prLifecycleStatus: 'merged', updatedAt: c.at(e.t) } as any)
       .where(eq(s.workers.id, c.ids.get(e.worker)));
-    const w = await workerRow(c, e.worker);
-    workerPush(c, e.worker, taskKeyOfWorker(c, e.worker), w?.status ?? 'completed');
+    c.pushes.push(webhookPrNudge(wsChannel(c), c.ids.get(taskKeyOfWorker(c, e.worker))));
   },
 
   async complete(c, e) {

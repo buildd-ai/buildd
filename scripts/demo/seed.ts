@@ -14,7 +14,7 @@
 import { DEMO } from './lib/guard';
 import { createHash } from 'crypto';
 import { createLocalDb, schema, sql, type LocalDb } from '../../packages/core/db/local-client';
-import { IdMap, loadStory, relTime, runnerEnvironment, runnerUrl, saveState, toRow, type Entity, type Story } from './lib/story';
+import { IdMap, loadStory, relTime, runnerEnvironment, runnerUrl, saveState, scheduleBaseline, toRow, type Entity, type Story } from './lib/story';
 
 const DEFAULT_STORY = new URL('./stories/placeholder.json', import.meta.url).pathname;
 
@@ -145,11 +145,11 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
     }) as any);
   }
   for (const sch of story.taskSchedules ?? []) {
-    const lastRun = at('-6h');
+    const { lastRunAt, nextRunAt } = scheduleBaseline(story, sch.key!, anchorMs);
     await db.insert(s.taskSchedules).values(toRow(sch, ids, {
       id: ids.get(sch.key), workspaceId: ids.get(ws.key),
       taskTemplate: JSON.parse(JSON.stringify(sch.taskTemplate ?? {}), (k, v) => (k === 'missionId' ? ids.ref(v) : v)),
-      lastRunAt: lastRun, nextRunAt: new Date(lastRun.getTime() + 6 * 3_600_000), createdAt: at('-12d'),
+      lastRunAt, nextRunAt, createdAt: at('-12d'),
     }) as any);
     // Link missions that point at this schedule.
     for (const m of story.missions ?? []) {
@@ -207,13 +207,18 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   // ── heartbeat history for the recurring mission ───────────────────────────
   const hbMission = (story.missions ?? []).find((m) => m.scheduleId);
   const hbSchedule = (story.taskSchedules ?? [])[0];
+  // Past ticks are "N hours before the tick the story fires", so the latest one
+  // lines up with the schedule's lastRunAt.
+  const hbNextMs = hbSchedule ? scheduleBaseline(story, hbSchedule.key!, anchorMs).nextRunAt.getTime() : anchorMs;
+  const hbTickTask = (story.tasks ?? []).find((t: Entity) => t.scheduleId && t.scheduleId === hbSchedule?.key);
   for (const [i, tick] of (story.heartbeatPastTicks ?? []).entries()) {
     if (!hbMission) break;
-    const startMs = anchorMs - tick.agoHours * 3_600_000;
+    const startMs = hbNextMs - tick.agoHours * 3_600_000;
     const tKey = `__hb${i}`;
     const tId = ids.register(tKey);
     await db.insert(s.tasks).values({
       id: tId, workspaceId: ids.get(ws.key), missionId: ids.get(hbMission.key), title: hbSchedule?.taskTemplate?.title ?? `Mission: ${hbMission.title}`,
+      label: hbTickTask?.label ?? null, taskClass: 'bookkeeping',
       description: 'Heartbeat tick.', status: 'completed', mode: 'planning', roleSlug: 'organizer', kind: 'coordination', creationSource: 'schedule',
       scheduleId: hbSchedule ? ids.get(hbSchedule.key) : null, heartbeatTickAnchor: new Date(startMs).toISOString(),
       claimedBy: account ? ids.get(account.key) : null, claimedAt: new Date(startMs), createdAt: new Date(startMs), updatedAt: new Date(startMs + 70_000),
