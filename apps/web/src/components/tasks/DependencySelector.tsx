@@ -127,7 +127,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
       <div className="relative">
         <input
           type="text"
-          placeholder={loadingTasks ? 'Loading tasks…' : 'Search tasks to add as dependency…'}
+          placeholder={loadingTasks ? 'Loading tasks…' : 'Search tasks to add a dependency…'}
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
@@ -168,7 +168,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
         )}
       </div>
       <p className="text-xs text-text-muted mt-1">
-        Tasks that must complete before this task can be claimed.
+        Workers claim this task after these tasks complete.
       </p>
     </div>
   );

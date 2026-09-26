@@ -73,7 +73,7 @@ export default function SwitchBackendButton({
       ))}
       {usable.length === 0 && blocked.map(o => (
         <span key={o.backend} className="text-xs text-text-muted">
-          {o.label} unavailable — {o.blockedReason}
+          {o.label} unavailable: {o.blockedReason}
         </span>
       ))}
       {error && <span className="text-xs text-status-error">{error}</span>}

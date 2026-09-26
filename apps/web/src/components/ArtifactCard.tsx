@@ -68,7 +68,7 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
     if (artifact.storageKey) {
       return (
         <span className="text-xs text-text-muted">
-          {[fileName, sizeLabel].filter(Boolean).join(' — ') || 'File'}
+          {[fileName, sizeLabel].filter(Boolean).join(' · ') || 'File'}
         </span>
       );
     }
@@ -108,7 +108,7 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
     if (artifact.storageKey) {
       return (
         <p className="text-[12px] font-mono text-text-muted line-clamp-2">
-          {[fileName, sizeLabel].filter(Boolean).join(' — ') || 'File'}
+          {[fileName, sizeLabel].filter(Boolean).join(' · ') || 'File'}
         </p>
       );
     }
