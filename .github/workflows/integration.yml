@@ -303,7 +303,7 @@ jobs:
                 export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
                 set -a; source /tmp/buildd-ci/.env.test; set +a
                 export PORT=3333
-                cd /tmp/buildd-ci/apps/web && bun run start >> /tmp/buildd-web.log 2>&1
+                cd /tmp/buildd-ci/apps/web && bun run start > /tmp/buildd-web.log 2>&1
               "
             '
           SCRIPT
