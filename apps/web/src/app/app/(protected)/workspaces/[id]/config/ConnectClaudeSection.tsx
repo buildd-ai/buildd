@@ -32,7 +32,7 @@ export default function ConnectClaudeSection({ workspaceId, workspaceName }: Pro
           <h3 className="text-sm font-medium text-text-primary mb-1">claude.ai (web &amp; mobile)</h3>
           <p className="text-xs text-text-secondary mb-2 leading-relaxed">
             In claude.ai: <strong>Settings → Connectors → Add custom connector</strong>. Paste the URL
-            below. You&apos;ll be redirected to buildd to sign in (or confirm) — the connector binds to{' '}
+            below. buildd asks you to sign in or confirm, then binds the connector to{' '}
             <strong className="text-text-primary">{workspaceName}</strong> only.
           </p>
           <CopyBlock text={oauthUrl} />
@@ -42,9 +42,9 @@ export default function ConnectClaudeSection({ workspaceId, workspaceName }: Pro
         <div>
           <h3 className="text-sm font-medium text-text-primary mb-1">Claude Code (CLI)</h3>
           <p className="text-xs text-text-secondary mb-2 leading-relaxed">
-            For local terminal use, point Claude Code at the API-key endpoint. Set{' '}
+            Point Claude Code at the API-key endpoint. Set{' '}
             <code className="bg-surface-3 px-1 rounded text-[11px]">$BUILDD_API_KEY</code> in your shell
-            first — generate one in{' '}
+            first. Generate one in{' '}
             <a href="/app/settings" className="text-primary hover:underline">Settings → Runner Tokens</a>.
           </p>
           <CopyBlock text={cliCommand} />

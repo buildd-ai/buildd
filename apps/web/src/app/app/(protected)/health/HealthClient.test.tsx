@@ -514,7 +514,7 @@ describe('HealthClient — Trend', () => {
         },
       },
     });
-    expect(html).toContain('tracked only since 2026-08-15');
+    expect(html).toContain('tracked background-agent time since 2026-08-15');
   });
 });
 
@@ -541,7 +541,7 @@ describe('HealthClient — error trace patterns', () => {
       },
     });
     expect(html).toContain('data-testid="health-section-error-patterns"');
-    expect(html).toContain('Ranked by distinct workers whose session ended in failure');
+    expect(html).toContain('Ranked by distinct workers whose session failed');
     expect(html).toContain('over 20 workers');
     // git_fatal (3 failed workers) must render before the chattier
     // cd_no_such_file (40 occurrences, 0 failed workers) — this is the whole point.
@@ -590,7 +590,7 @@ describe('HealthClient — error trace patterns', () => {
         },
       },
     });
-    expect(html).toContain('completed on 2026-09-07');
+    expect(html).toContain('gating landed on 2026-09-07');
   });
 });
 
@@ -631,7 +631,7 @@ describe('HealthClient — orphaned PRs', () => {
 
   it('says plainly that these are not merges the human can make', () => {
     const html = render({ orphanedPrs: [orphan()] });
-    expect(html).toContain('excluded from Home');
+    expect(html).toContain('Home hides');
   });
 
   it('files the block under Problems, not State or Trend', () => {

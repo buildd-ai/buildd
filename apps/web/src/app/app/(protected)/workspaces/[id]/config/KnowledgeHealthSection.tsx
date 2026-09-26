@@ -43,19 +43,19 @@ const FRESHNESS_META: Record<
     label: 'Fresh',
     dot: 'bg-status-success',
     text: 'text-status-success',
-    blurb: 'Code index reflects a recent successful ingest.',
+    blurb: 'The code index is up to date with a recent ingest.',
   },
   stale: {
     label: 'Stale',
     dot: 'bg-status-warning',
     text: 'text-status-warning',
-    blurb: 'No successful ingest recently — knowledge may lag behind the repo.',
+    blurb: 'No recent ingest. Knowledge may lag behind the repo.',
   },
   'no-index': {
     label: 'No index',
     dot: 'bg-status-error',
     text: 'text-status-error',
-    blurb: 'This workspace has no code index yet. It will backfill after the next merged PR.',
+    blurb: 'No code index yet. buildd builds one after the next merged PR.',
   },
 };
 
@@ -120,8 +120,7 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
         )}
       </div>
       <p className="text-sm text-text-muted mb-4">
-        Retrievable knowledge indexed for this workspace — chunks per corpus, latest ingest, and
-        index freshness.
+        Indexed knowledge for this workspace: chunks per corpus, latest ingest, and index freshness.
       </p>
 
       {loading && <p className="text-sm text-text-muted">Loading…</p>}
@@ -209,7 +208,7 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
               {health.pendingEntityRefs.toLocaleString()}
             </span>
             <span className="text-text-muted">
-              pending entity {health.pendingEntityRefs === 1 ? 'ref' : 'refs'} awaiting resolution
+              unresolved entity {health.pendingEntityRefs === 1 ? 'ref' : 'refs'}
             </span>
           </div>
         </div>

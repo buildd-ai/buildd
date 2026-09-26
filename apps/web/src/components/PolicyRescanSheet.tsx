@@ -101,7 +101,7 @@ export function PolicyRescanSheet({
                 <div className="space-y-4">
                     <p className="text-xs text-text-muted">
                         {scan.repoFullName} · preset <span className="text-text-primary">{scan.proposed.preset}</span>.
-                        Paths are detected from the repo.
+                        buildd detected these paths from the repo.
                     </p>
                     <PolicyDiffList diff={scan.diff} />
                     {applyError && <p className="text-sm text-status-error">{applyError}</p>}
@@ -129,7 +129,7 @@ export function PolicyDiffList({ diff }: { diff: PolicyConfigDiff }) {
             )}
             {!diff.hasChanges && (
                 <p className="text-xs text-text-muted" data-testid="policy-diff-unchanged">
-                    No changes — the detected paths match the applied policy.
+                    No changes. The detected paths match the applied policy.
                 </p>
             )}
             <ul className="divide-y divide-border-default border-y border-border-default">

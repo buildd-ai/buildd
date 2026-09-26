@@ -157,7 +157,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
             <line x1="12" y1="9" x2="12" y2="13" />
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
-          Pinned model may be unavailable — will fall back to tier
+          Pinned model may be unavailable. The agent falls back to the tier.
         </div>
       )}
 
@@ -204,7 +204,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           )}
           {!modelsLoading && modelsFetched && models.length === 0 && (
             <p className="text-[11px] text-text-muted">
-              No models available yet — set this workspace&apos;s model tiers in Settings.
+              No models yet. Set this workspace&apos;s model tiers in Settings.
             </p>
           )}
           {models.length > 0 && (
@@ -230,11 +230,11 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           {!modelsLoading && modelsFetched && models.length > 0 && !catalogComplete && (
             <p className="text-[11px] text-text-muted" data-testid="tier-only-hint">
               Showing your configured tiers. Connect an agent backend in Settings →
-              Agent Backends to browse every model release.
+              Agent Backends to see all model releases.
             </p>
           )}
           <p className="text-[11px] md:text-[10px] text-text-muted">
-            Pin to a specific model release. Falls back to tier if unavailable.
+            Pin a specific model release. If it&apos;s unavailable, the agent uses the tier.
           </p>
         </div>
       )}
