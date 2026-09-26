@@ -339,6 +339,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
       {/* Current action */}
       {worker.currentAction && (
         <div
+          data-testid="worker-current-action"
           className="mb-3 flex items-center gap-2 min-w-0 cursor-pointer"
           onClick={() => setCurrentActionExpanded(!currentActionExpanded)}
         >
@@ -506,7 +507,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
 
 
       {/* Stats row */}
-      <div className="flex items-center gap-3 mt-3 font-mono text-xs text-text-muted flex-wrap">
+      <div className="flex items-center gap-3 mt-3 font-mono text-xs text-text-muted flex-wrap" data-testid="worker-stats">
         <span>Turns: {worker.turns}</span>
         {worker.account?.authType === 'oauth'
           ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
@@ -529,6 +530,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, statusColors
             target="_blank"
             rel="noopener noreferrer"
             className="text-status-success hover:underline"
+            data-testid="worker-pr-link"
           >
             PR #{worker.prNumber}
           </a>

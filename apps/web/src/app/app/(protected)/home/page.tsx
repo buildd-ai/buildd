@@ -1887,7 +1887,7 @@ export default async function HomePage({
 
             {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE · RESOLVING) */}
             {actionQueue.length > 0 && (
-              <div className="mb-8">
+              <div className="mb-8" data-testid="home-waiting-on-you">
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div className="section-label">Waiting on You</div>
                   {/* Names both halves: "1 needs you · 4 in flight". A bare
@@ -2208,7 +2208,7 @@ export default async function HomePage({
               </div>
             )}
             {actionQueue.length === 0 && activeItems.length > 0 && (
-              <div className="mb-8">
+              <div className="mb-8" data-testid="home-waiting-on-you">
                 <div className="section-label mb-3">Waiting on You</div>
                 <p className="text-[13px] text-text-muted">Nothing waiting on you. All in-flight work is autonomous.</p>
                 {resolvedEscalations.length > 0 && (
@@ -2218,7 +2218,7 @@ export default async function HomePage({
             )}
 
             {/* Right Now */}
-            <div className="mb-8">
+            <div className="mb-8" data-testid="home-right-now">
               <div className="section-label mb-4">Right Now</div>
               {rightNow === 'create-workspace' ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
@@ -2474,7 +2474,7 @@ export default async function HomePage({
                 No recent activity yet.
               </p>
             ) : (
-              <div className="card">
+              <div className="card" data-testid="home-activity">
                 {recentActivity.map((event, i) => {
                   const stage = deriveStage({
                     taskStatus: event.taskStatus,

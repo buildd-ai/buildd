@@ -1,0 +1,105 @@
+{
+  "_meta": {
+    "purpose": "Minimal synthetic fallback story for scripts/demo. Everything here is made up. Same key conventions as the full demo story (M1 = mission, T7/T8 = tasks the storyboard visits), so storyboards run against either.",
+    "wallClockSeconds": 900
+  },
+  "team": { "key": "team", "name": "Example Co", "slug": "example-co", "timezone": "UTC" },
+  "users": [{ "key": "u_demo", "name": "Demo User", "email": "demo@example.com" }],
+  "accounts": [
+    { "key": "acct_fleet", "type": "user", "level": "worker", "name": "example-fleet", "authType": "oauth", "maxConcurrentWorkers": 4, "apiKey": "bld_demo_placeholder_not_a_real_key_00", "apiKeyPrefix": "bld_demo" }
+  ],
+  "runners": [
+    { "key": "alpha", "runner": "alpha", "localUiUrl": "http://alpha.local:8766", "maxConcurrentWorkers": 2 },
+    { "key": "beta", "runner": "beta", "localUiUrl": "http://beta.local:8766", "maxConcurrentWorkers": 2 }
+  ],
+  "workspace": {
+    "key": "ws", "name": "example-app", "repo": "https://github.com/example/example-app", "accessMode": "restricted", "configStatus": "admin_confirmed",
+    "gitConfig": { "defaultBranch": "main", "branchingStrategy": "trunk", "branchStrategy": "direct", "commitStyle": "conventional", "requiresPR": true, "targetBranch": "main", "autoCreatePR": true },
+    "_github": { "fullName": "example/example-app" }
+  },
+  "roles": [
+    { "key": "organizer", "slug": "organizer", "name": "Organizer", "color": "#6366F1", "model": "sonnet", "isRole": true, "description": "Plans missions into tasks" },
+    { "key": "builder", "slug": "builder", "name": "Builder", "color": "#D4724A", "model": "opus", "isRole": true, "description": "Writes code and opens PRs" },
+    { "key": "researcher", "slug": "researcher", "name": "Researcher", "color": "#D97706", "model": "sonnet", "isRole": true, "description": "Investigates and reports" }
+  ],
+  "missions": [
+    {
+      "key": "M1", "workspaceId": "ws", "title": "Saved searches", "description": "Let users save a search and get notified when new results match.",
+      "status": "active", "priority": 5, "maxConcurrentTasks": 4, "defaultOutputRequirement": "pr_required",
+      "goalCriteria": [{ "type": "all_prs_merged", "label": "every task PR merged" }, { "type": "no_open_tasks", "label": "no open tasks" }]
+    },
+    { "key": "B1", "workspaceId": "ws", "title": "Faster first page load", "description": "Cut time-to-interactive on the dashboard.", "status": "completed", "_createdAgo": "-5d", "_completedAgo": "-4d", "goalCriteria": [{ "type": "all_prs_merged" }], "goalCriteriaState": { "overall": "pass" } }
+  ],
+  "backgroundMissions": [
+    { "missionKey": "B1", "tasks": [
+      { "key": "B1_t1", "workspaceId": "ws", "missionId": "B1", "title": "perf(web): lazy-load the chart bundle", "roleSlug": "builder", "kind": "engineering", "status": "completed", "outputRequirement": "pr_required", "_worker": { "runner": "alpha", "status": "completed", "prNumber": 101, "prUrl": "https://github.com/example/example-app/pull/101", "linesAdded": 88, "linesRemoved": 40, "prLifecycleStatus": "merged" } },
+      { "key": "B1_t2", "workspaceId": "ws", "missionId": "B1", "title": "perf(api): cache the workspace summary query", "roleSlug": "builder", "kind": "engineering", "status": "completed", "outputRequirement": "pr_required", "_worker": { "runner": "beta", "status": "completed", "prNumber": 102, "prUrl": "https://github.com/example/example-app/pull/102", "linesAdded": 64, "linesRemoved": 9, "prLifecycleStatus": "merged" } }
+    ] }
+  ],
+  "tasks": [
+    { "key": "T0", "_idShort": "a1000001", "workspaceId": "ws", "missionId": "M1", "title": "Mission: Saved searches", "mode": "planning", "roleSlug": "organizer", "kind": "coordination", "outputRequirement": "none", "creationSource": "orchestrator" },
+    { "key": "T1", "_idShort": "a1000002", "workspaceId": "ws", "missionId": "M1", "title": "RESEARCH: how other products notify on saved searches", "roleSlug": "researcher", "kind": "research", "missionPhaseIndex": 1, "missionPhaseLabel": "Foundations", "outputRequirement": "artifact_required", "creationSource": "mcp" },
+    { "key": "T2", "_idShort": "a1000003", "workspaceId": "ws", "missionId": "M1", "title": "feat(db): saved_searches table", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 1, "missionPhaseLabel": "Foundations", "outputRequirement": "pr_required", "creationSource": "mcp" },
+    { "key": "T3", "_idShort": "a1000004", "workspaceId": "ws", "missionId": "M1", "title": "feat(api): CRUD endpoints for saved searches", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 1, "missionPhaseLabel": "Foundations", "dependsOn": ["T2"], "outputRequirement": "pr_required", "creationSource": "mcp" },
+    { "key": "T4", "_idShort": "a1000005", "workspaceId": "ws", "missionId": "M1", "title": "feat(ui): save-this-search button", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 2, "missionPhaseLabel": "Product", "dependsOn": ["T3"], "outputRequirement": "pr_required", "creationSource": "mcp" },
+    { "key": "T5", "_idShort": "a1000006", "workspaceId": "ws", "missionId": "M1", "title": "feat(jobs): match new results against saved searches", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 2, "missionPhaseLabel": "Product", "dependsOn": ["T2"], "outputRequirement": "pr_required", "creationSource": "mcp" },
+    { "key": "T6", "_idShort": "a1000007", "workspaceId": "ws", "missionId": "M1", "title": "feat(email): digest of new matches", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 2, "missionPhaseLabel": "Product", "dependsOn": ["T5"], "outputRequirement": "pr_required", "creationSource": "mcp" },
+    { "key": "T7", "_idShort": "a1000008", "workspaceId": "ws", "missionId": "M1", "title": "feat(ui): manage saved searches page", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 2, "missionPhaseLabel": "Product", "dependsOn": ["T3"], "outputRequirement": "pr_required", "creationSource": "mcp" },
+    { "key": "T8", "_idShort": "a1000009", "workspaceId": "ws", "missionId": "M1", "title": "feat(notify): push notifications for matches", "roleSlug": "builder", "kind": "engineering", "missionPhaseIndex": 2, "missionPhaseLabel": "Product", "dependsOn": ["T5"], "outputRequirement": "pr_required", "creationSource": "mcp" }
+  ],
+  "workers": [
+    { "key": "w0", "taskId": "T0", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000001", "runner": "alpha", "branch": "buildd/a1000001-mission-saved-searches" },
+    { "key": "w1", "taskId": "T1", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000002", "runner": "beta", "branch": "buildd/a1000002-research-how-other-products-no" },
+    { "key": "w2", "taskId": "T2", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000003", "runner": "alpha", "branch": "buildd/a1000003-feat-db-saved-searches-table" },
+    { "key": "w3", "taskId": "T3", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000004", "runner": "alpha", "branch": "buildd/a1000004-feat-api-crud-endpoints-for-sa" },
+    { "key": "w5", "taskId": "T5", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000006", "runner": "beta", "branch": "buildd/a1000006-feat-jobs-match-new-results-ag" },
+    { "key": "w7", "taskId": "T7", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000008", "runner": "alpha", "branch": "buildd/a1000008-feat-ui-manage-saved-searches-p" },
+    { "key": "w8", "taskId": "T8", "workspaceId": "ws", "accountId": "acct_fleet", "name": "example-fleet-a1000009", "runner": "beta", "branch": "buildd/a1000009-feat-notify-push-notifications" }
+  ],
+  "missionNotes": [
+    { "key": "n_plan", "missionId": "M1", "taskId": "T0", "workerId": "w0", "authorType": "agent", "type": "decision", "title": "Plan: 2 phases, 8 tasks", "body": "Foundations first (schema, API, research), then the product surfaces.", "actorLabel": "Organizer" },
+    { "key": "n_q", "missionId": "M1", "taskId": "T8", "workerId": "w8", "authorType": "agent", "type": "question", "title": "Batch or instant?", "body": "Should push notifications go out instantly per match, or batched every 15 minutes?", "defaultChoice": "Batched every 15 minutes", "actorLabel": "Builder" }
+  ],
+  "memories": [
+    { "key": "mem1", "type": "pattern", "project": "web", "title": "Search params are the source of truth", "content": "Every search is fully described by its URL params, so a saved search is just a stored query string.", "tags": ["search"], "files": ["apps/web/src/lib/search.ts"], "source": "mission:B1" }
+  ],
+  "artifacts": [],
+  "timeline": [
+    { "t": 0, "op": "mission_create", "mission": "M1" },
+    { "t": 2, "op": "task_create", "task": "T0" },
+    { "t": 5, "op": "claim", "task": "T0", "worker": "w0", "runner": "alpha" },
+    { "t": 8, "op": "worker_status", "worker": "w0", "status": "running" },
+    { "t": 30, "op": "progress", "worker": "w0", "pct": 40, "message": "Reading the search module and the jobs runner" },
+    { "t": 70, "op": "progress", "worker": "w0", "pct": 80, "message": "Splitting into schema, API, UI and notification work" },
+    { "t": 90, "op": "task_create", "task": "T1" }, { "t": 90, "op": "task_create", "task": "T2" },
+    { "t": 90, "op": "task_create", "task": "T3" }, { "t": 90, "op": "task_create", "task": "T4" },
+    { "t": 90, "op": "task_create", "task": "T5" }, { "t": 90, "op": "task_create", "task": "T6" },
+    { "t": 90, "op": "task_create", "task": "T7" }, { "t": 90, "op": "task_create", "task": "T8" },
+    { "t": 92, "op": "mission_note", "note": "n_plan" },
+    { "t": 95, "op": "complete", "task": "T0", "worker": "w0", "summary": "Planned 8 tasks in 2 phases." },
+    { "t": 100, "op": "claim", "task": "T1", "worker": "w1", "runner": "beta" },
+    { "t": 101, "op": "claim", "task": "T2", "worker": "w2", "runner": "alpha" },
+    { "t": 104, "op": "worker_status", "worker": "w1", "status": "running" },
+    { "t": 105, "op": "worker_status", "worker": "w2", "status": "running" },
+    { "t": 150, "op": "progress", "worker": "w1", "pct": 30, "message": "Comparing digest vs instant notification patterns" },
+    { "t": 160, "op": "progress", "worker": "w2", "pct": 50, "message": "Migration: saved_searches with a unique (user_id, query) index" },
+    { "t": 300, "op": "pr_open", "worker": "w2", "prNumber": 110, "prUrl": "https://github.com/example/example-app/pull/110", "title": "feat(db): saved_searches table", "linesAdded": 92, "linesRemoved": 0, "filesChanged": 3, "commitCount": 1 },
+    { "t": 320, "op": "complete", "task": "T2", "worker": "w2", "summary": "Table + migration." },
+    { "t": 330, "op": "claim", "task": "T3", "worker": "w3", "runner": "alpha" },
+    { "t": 331, "op": "claim", "task": "T5", "worker": "w5", "runner": "beta" },
+    { "t": 334, "op": "worker_status", "worker": "w3", "status": "running" },
+    { "t": 335, "op": "worker_status", "worker": "w5", "status": "running" },
+    { "t": 360, "op": "ci", "worker": "w2", "prNumber": 110, "state": "ci_green" },
+    { "t": 380, "op": "merge", "worker": "w2", "prNumber": 110 },
+    { "t": 420, "op": "progress", "worker": "w3", "pct": 45, "message": "POST/GET/DELETE /api/saved-searches with ownership checks" },
+    { "t": 430, "op": "progress", "worker": "w5", "pct": 40, "message": "Matching job reuses the search query planner" },
+    { "t": 500, "op": "progress", "worker": "w1", "pct": 90, "message": "Writing recommendation" },
+    { "t": 600, "op": "claim", "task": "T7", "worker": "w7", "runner": "alpha" },
+    { "t": 603, "op": "worker_status", "worker": "w7", "status": "running" },
+    { "t": 640, "op": "progress", "worker": "w7", "pct": 35, "message": "Table of saved searches with rename and delete" },
+    { "t": 700, "op": "claim", "task": "T8", "worker": "w8", "runner": "beta" },
+    { "t": 703, "op": "worker_status", "worker": "w8", "status": "running" },
+    { "t": 760, "op": "progress", "worker": "w8", "pct": 30, "message": "Wiring the push provider behind a feature flag" },
+    { "t": 870, "op": "waiting_input", "worker": "w8", "task": "T8", "note": "n_q", "waitingFor": { "type": "question", "prompt": "Send push notifications instantly per match, or batched every 15 minutes?", "options": ["Batched every 15 minutes", "Instant per match"] } }
+  ]
+}

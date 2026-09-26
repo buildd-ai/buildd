@@ -4,6 +4,7 @@ import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { sql } from 'drizzle-orm';
 import { hostname } from 'os';
 import { config } from '../config';
+import { applyNeonLocalOverride } from './neon-local';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { planMigrations } from './migrate-plan';
@@ -81,6 +82,9 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
 
 async function main() {
   console.log('Running migrations from:', migrationsFolder);
+  if (applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl })) {
+    console.log('Using local Neon HTTP proxy:', process.env.NEON_LOCAL_FETCH_ENDPOINT);
+  }
 
   // Retry loop for Neon preview branch cold starts. The CI now extracts
   // the connection URI directly from the Neon API, so "password authentication

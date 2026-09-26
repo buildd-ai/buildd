@@ -124,12 +124,12 @@ export default function WorkerActivityTimeline({
   const checkpointCount = CHECKPOINT_ORDER.filter(e => checkpointEvents.has(e)).length;
 
   return (
-    <div className="mt-4">
+    <div className="mt-4" data-testid="worker-activity-timeline">
       <h4 className="text-sm font-medium text-text-secondary mb-2">Activity</h4>
 
       {/* Checkpoint progress boxes */}
       {checkpointCount > 0 && (
-        <div className="flex items-center gap-1 mb-3">
+        <div className="flex items-center gap-1 mb-3" data-testid="worker-progress-bar">
           {CHECKPOINT_ORDER.map(event => (
             <div
               key={event}

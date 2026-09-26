@@ -1,0 +1,111 @@
+# Key beats of the "one sentence -> a fleet ships it" demo.
+# Keys in {braces} are dataset keys from the story JSON (M1 = the mission, T8 = checkout task, ...).
+# Run:  DEMO_STORY=<story-data.json> bun run scripts/demo/run-storyboard.ts scripts/demo/storyboards/multi-currency.yaml
+story: ../stories/placeholder.json
+name: multi-currency
+viewport: { width: 1440, height: 900, scale: 2 }
+themes: [dark, light]
+steps:
+  - id: 01-home-fanout
+    advance: "2:20"
+    goto: /app/home
+    waitFor: home-right-now
+    highlight: [home-right-now, task-card]
+    caption: "Twelve tasks. Three phases. Dependencies worked out for you."
+
+  - id: 02-mission-fanout
+    goto: /app/missions/{M1}
+    waitFor: mission-detail
+    scrollTo: mission-feed-region
+    highlight: [mission-task-row, mission-phase-header]
+    caption: "Five agents, four machines, the same minute."
+
+  - id: 03-missions-list
+    advance: "11:50"
+    goto: /app/missions
+    waitFor: mission-card
+    highlight: [mission-card]
+    caption: "Six agents. Four machines. At the same time."
+
+  - id: 04-mission-peak
+    goto: /app/missions/{M1}
+    waitFor: mission-detail
+    scrollTo: mission-feed-region
+    highlight: [mission-task-row, mission-task-row-pr]
+    caption: "Six agents. Four machines. At the same time."
+    # Live take: the page stays open while the timeline advances; updates arrive over soketi.
+    record: { ms: 8000, advanceTo: "12:30", ticks: 8 }
+
+  - id: 05-task-live-activity
+    advance: "12:40"
+    goto: /app/tasks/{T7}
+    waitFor: worker-activity-timeline
+    scrollTo: worker-current-action
+    scrollOffset: 220
+    highlight: [worker-current-action, worker-progress-bar, worker-activity-timeline, worker-stats]
+    caption: "Every agent narrates what it's doing."
+
+  - id: 06-waiting-input
+    advance: "14:35"
+    goto: /app/tasks/{T8}
+    waitFor: worker-needs-input-banner
+    highlight: [global-needs-input-banner, worker-needs-input-banner, worker-needs-input-options]
+    caption: "When it matters, they ask."
+
+  - id: 07-waiting-input-banner
+    goto: /app/tasks/{T8}
+    waitFor: worker-needs-input-banner
+    scrollTo: worker-needs-input-banner
+    scrollOffset: 160
+    highlight: [worker-needs-input-banner, worker-needs-input-options]
+    caption: "The other five keep working."
+
+  - id: 08-home-waiting-on-you
+    goto: /app/home
+    waitFor: home-waiting-on-you
+    highlight: [home-waiting-on-you, home-right-now]
+    caption: "You answer from wherever you are."
+
+  - id: 09-ci-failure
+    advance: "18:40"
+    goto: /app/missions/{M1}
+    waitFor: mission-detail
+    scrollTo: mission-feed-region
+    highlight: [mission-task-row-pr, mission-task-row]
+    caption: "CI broke. Nobody noticed."
+
+  - id: 10-activity
+    advance: "21:45"
+    goto: /app/tasks
+    waitFor: task-card
+    highlight: [task-card]
+    caption: "It's fixed. And background work keeps ticking."
+
+  - id: 11-criteria-going-green
+    advance: "34:05"
+    goto: /app/missions/{M1}
+    waitFor: mission-detail
+    click: "text=Integrated"
+    scrollTo: mission-goal-criteria
+    highlight: [mission-goal-criteria, criterion-row]
+    caption: "Done means done: your criteria, verified."
+
+  - id: 12-mission-complete
+    advance: end
+    goto: /app/missions/{M1}
+    waitFor: mission-detail
+    click: "text=Integrated"
+    highlight: [mission-shipped-status, mission-delivery, mission-goal-criteria]
+    caption: "37 minutes."
+
+  - id: 13-missions-list-complete
+    goto: /app/missions
+    waitFor: mission-card
+    highlight: [mission-card]
+    caption: "It joins the missions you already shipped."
+
+  - id: 14-home-after
+    goto: /app/home
+    waitFor: home-activity
+    highlight: [home-activity, home-missions]
+    caption: "11 PRs merged. 1 CI failure fixed automatically. 1 decision from a human."
