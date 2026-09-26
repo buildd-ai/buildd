@@ -229,6 +229,51 @@ describe('the install gets the role env the agent gets', () => {
       restore();
     }
   });
+
+  test('claim-delivered roleEnvSecrets reach the install with no packaged roleConfig at all', async () => {
+    // An MCP-registered role (no R2 bundle) resolves no `roleConfig`, so there is
+    // no env-mapping.json on disk — but the server can still have resolved the
+    // role's `requiredEnvVars` against the `secrets` table and delivered the
+    // value inline. That value must not depend on a packaged bundle existing.
+    const CLAIM_SECRET = 'claim-delivered-secret-not-for-logs';
+    const lines: string[] = [];
+    const orig = { log: console.log, warn: console.warn, error: console.error };
+    const grab = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    console.log = grab; console.warn = grab; console.error = grab;
+    try {
+      const { start, milestones, updates } = harness({ roleEnvSecrets: { NODE_AUTH_TOKEN: CLAIM_SECRET } });
+      await start();
+      await settle();
+
+      expect(setup).toHaveBeenCalledTimes(1);
+      const installEnv = (setup.mock.calls[0] as unknown[])[6] as Record<string, string>;
+      expect(installEnv).toEqual({ NODE_AUTH_TOKEN: CLAIM_SECRET });
+
+      expect(lines.some(l => l.includes(CLAIM_SECRET))).toBe(false);
+      expect(JSON.stringify(milestones)).not.toContain(CLAIM_SECRET);
+      expect(JSON.stringify(updates)).not.toContain(CLAIM_SECRET);
+    } finally {
+      Object.assign(console, orig);
+      restore();
+    }
+  });
+
+  test('claim-delivered roleEnvSecrets are merged alongside (and can add to) the file-based mapping', async () => {
+    const CLAIM_SECRET = 'claim-delivered-secret-2';
+    try {
+      const { start } = harness({
+        roleConfig: { slug: 'builder', type: 'builder' },
+        roleEnvSecrets: { OTHER_TOKEN: CLAIM_SECRET },
+      });
+      await start();
+      await settle();
+
+      const installEnv = (setup.mock.calls[0] as unknown[])[6] as Record<string, string>;
+      expect(installEnv).toEqual({ NODE_AUTH_TOKEN: SECRET, OTHER_TOKEN: CLAIM_SECRET });
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe('no degradation when install was not required', () => {

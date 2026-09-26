@@ -51,6 +51,7 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
+import { attachRoleEnvSecrets } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachExternalContextProviders,
@@ -1941,6 +1942,7 @@ export async function POST(req: NextRequest) {
   // runs under (workspace override > team default). See ./skill-and-role-injection.
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
+  await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
 
   // Predict each task's file area from what similar COMPLETED tasks actually
   // touched, before any block is built — attachKnowledgeContext uses it as its

@@ -1391,6 +1391,16 @@ export interface ClaimTasksResponse {
     roleConfig?: RoleConfig;
     /** Role persona for the claimed task's assigned role — present whenever a role row resolves */
     roleInstructions?: RoleInstructions;
+    /**
+     * Decrypted secrets resolved against the role's (or workspace's) declared
+     * ENV_NAME → secret label mapping (purpose='role_env_secret'), keyed by the
+     * ENV_NAME the value should be injected under. Merged into the role env by
+     * the runner's `resolveWorkerRoleEnv`, alongside whatever the local
+     * env-mapping.json/process-env resolution already provides.
+     */
+    roleEnvSecrets?: Record<string, string>;
+    /** ENV_NAME keys declared in that mapping with no matching secrets row — surfaced as a degraded-role-env milestone. */
+    roleEnvMissing?: string[];
     /** Connectors that failed availability checks but are not hard-required (advisory mode only).
      *  Present when workspace.connectorAdvisoryMode=true and the task claimed despite connector failures. */
     degradedConnectors?: DegradedConnector[];
