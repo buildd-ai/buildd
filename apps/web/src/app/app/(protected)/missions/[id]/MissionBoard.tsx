@@ -36,6 +36,12 @@ export interface MissionBoardProps extends BoardLinkContext {
   completionText?: string | null;
   /** Anything the mission needs said that the band cannot (a decision gate). */
   notice?: ReactNode;
+  /**
+   * The narrow layout (the chat's docked pane and phone sheet): the band stays
+   * two-up, criteria are pips named on hover, phase headers wrap and tile
+   * titles wrap to two lines instead of truncating.
+   */
+  compact?: boolean;
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -46,7 +52,7 @@ const ORDER: Record<BoardStatus, number> = {
 /** The elapsed bar's full width: the longest live run, at least this. */
 const MIN_STRIP_SPAN_MS = 15 * 60_000;
 
-export default function MissionBoard({ model: serverModel, completionText, notice, ...link }: MissionBoardProps) {
+export default function MissionBoard({ model: serverModel, completionText, notice, compact = false, ...link }: MissionBoardProps) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
@@ -56,8 +62,8 @@ export default function MissionBoard({ model: serverModel, completionText, notic
   const lastCol = model.phases.length - 1;
 
   return (
-    <div data-testid="mission-board" className="flex flex-col">
-      <Band model={model} />
+    <div data-testid="mission-board" data-compact={compact ? 'true' : undefined} className="flex flex-col">
+      <Band model={model} compact={compact} />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -79,18 +85,23 @@ export default function MissionBoard({ model: serverModel, completionText, notic
           const landed = tasks.filter(t => BOARD_LANDED.has(t.status));
           return (
             <div key={p.key} data-testid="board-column" data-phase={p.key} className="flex min-w-0 flex-col gap-2.5">
-              <div className="flex items-center gap-2.5 border-b-2 border-border-strong pb-2">
+              <div className={`flex gap-2.5 border-b-2 border-border-strong pb-2 ${compact ? 'items-start' : 'items-center'}`}>
                 <span className="font-mono text-[11px] font-bold text-text-primary">{p.ordinal}</span>
-                <SectionLabel className="min-w-0 truncate !text-text-primary">{p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}</SectionLabel>
-                <span aria-hidden="true" className="ml-auto flex gap-0.5">
+                <SectionLabel
+                  data-testid="board-phase-label"
+                  className={`min-w-0 !text-text-primary ${compact ? 'flex-1 [overflow-wrap:anywhere]' : 'truncate'}`}
+                >
+                  {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
+                </SectionLabel>
+                <span aria-hidden="true" className={`ml-auto flex shrink-0 gap-0.5 ${compact ? 'mt-[3px]' : ''}`}>
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
                 </span>
-                <span className="font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => (
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} />
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} />
               ))}
               {landed.length > 0 && (
                 <div className="mt-0.5 border-t border-border-default">
@@ -109,27 +120,43 @@ export default function MissionBoard({ model: serverModel, completionText, notic
 
 // ── Band ─────────────────────────────────────────────────────────────────────
 
-function Band({ model }: { model: MissionBoardModel }) {
+function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }) {
   const needs = model.needsYou.length;
   const first = needs ? model.tasks[model.needsYou[0]] : null;
   const cell = 'flex min-w-0 flex-col gap-2.5 border-border-default px-[18px] pb-4 pt-3.5';
   return (
     <section
       data-testid="mission-band"
-      className="mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]"
+      className={`mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] ${compact ? '' : 'md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]'}`}
     >
-      <div data-testid="landed-band" className={`${cell} border-b md:border-b-0 md:border-r`}>
+      <div data-testid="landed-band" className={`${cell} border-b ${compact ? '' : 'md:border-b-0 md:border-r'}`}>
         <SectionLabel>Landed</SectionLabel>
         <Big n={model.landed.done} small={`of ${model.landed.total}`} />
-        <LandedMeter model={model} variant="band" />
+        <LandedMeter model={model} variant="band" compact={compact} />
       </div>
       <a
         href={`#${MISSION_CRITERIA_ANCHOR}`}
         data-testid="goal-band"
-        className={`${cell} border-b border-l md:border-b-0 md:border-l-0 md:border-r hover:bg-card-hover`}
+        className={`${cell} border-b border-l ${compact ? '' : 'md:border-b-0 md:border-l-0 md:border-r'} hover:bg-card-hover`}
       >
         <SectionLabel>{`Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`}</SectionLabel>
-        <div className="grid gap-[5px]">
+        {compact ? (
+          <div className="flex flex-wrap gap-1.5" role="list" aria-label="Goal criteria">
+            {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
+            {model.criteria.map((c, i) => (
+              <span
+                key={i}
+                role="listitem"
+                data-testid="goal-criterion-pip"
+                data-state={c.state}
+                title={`${c.label} · ${c.value}`}
+                aria-label={`${c.label} · ${c.value}`}
+              >
+                <CriterionBox c={c} size={16} />
+              </span>
+            ))}
+          </div>
+        ) : <div className="grid gap-[5px]">
           {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
           {model.criteria.map((c, i) => (
             <div key={i} data-testid="goal-criterion" data-state={c.state} className="flex min-w-0 items-center gap-2 font-mono text-[12px] text-text-secondary">
@@ -138,9 +165,9 @@ function Band({ model }: { model: MissionBoardModel }) {
               <span className={`ml-auto shrink-0 tabular-nums ${c.state === 'pending' ? 'font-medium text-text-muted' : 'font-semibold text-text-primary'}`}>{c.value}</span>
             </div>
           ))}
-        </div>
+        </div>}
       </a>
-      <div data-testid="fleet-band" className={`${cell} md:border-r`}>
+      <div data-testid="fleet-band" className={`${cell} ${compact ? '' : 'md:border-r'}`}>
         <SectionLabel>Fleet</SectionLabel>
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
         <div className="flex flex-wrap gap-3">
@@ -158,7 +185,7 @@ function Band({ model }: { model: MissionBoardModel }) {
           {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has picked up work yet.</span>}
         </div>
       </div>
-      <div data-testid="needs-you-cell" className={`${cell} border-l md:border-l-0 ${needs ? 'bg-accent-soft' : ''}`}>
+      <div data-testid="needs-you-cell" className={`${cell} border-l ${compact ? '' : 'md:border-l-0'} ${needs ? 'bg-accent-soft' : ''}`}>
         <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
         <span className={`font-mono text-[34px] font-semibold leading-none tracking-[-1px] tabular-nums ${needs ? 'text-accent-text' : 'text-[var(--fleet-faint)]'}`}>{needs}</span>
         <span className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
@@ -213,14 +240,20 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popLeft }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean }) {
+function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   const head = (
-    <div className="flex min-w-0 items-center gap-2">
+    <div className={`flex min-w-0 gap-2 ${compact ? 'items-start' : 'items-center'}`}>
       <RoleGlyph task={t} />
       <ScopeChip scope={t.scope} />
-      <span className={`min-w-0 truncate font-mono text-[14px] ${queued ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'}`}>{t.label}</span>
+      <span
+        data-testid="board-tile-label"
+        title={compact ? t.title : undefined}
+        className={`min-w-0 font-mono text-[14px] ${compact ? 'line-clamp-2 leading-snug [overflow-wrap:anywhere]' : 'truncate'} ${queued ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'}`}
+      >
+        {t.label}
+      </span>
       <span className="flex-1" />
       {t.attempt > 1 && (
         <span className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{`↻${t.attempt}`}</span>

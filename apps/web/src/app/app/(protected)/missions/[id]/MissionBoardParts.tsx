@@ -136,7 +136,7 @@ const METER_CLASS: Record<BoardStatus, string> = {
 };
 
 /** One square per deliverable, grouped by phase. */
-export function LandedMeter({ model, variant }: { model: MissionBoardModel; variant: 'band' | 'strip' }) {
+export function LandedMeter({ model, variant, compact = false }: { model: MissionBoardModel; variant: 'band' | 'strip'; compact?: boolean }) {
   if (variant === 'strip') {
     return (
       <span className="flex gap-[7px]">
@@ -164,16 +164,23 @@ export function LandedMeter({ model, variant }: { model: MissionBoardModel; vari
       </div>
       <div className="mt-[5px] grid gap-2.5 font-mono text-[11px] md:text-[10px] tracking-[1px] text-[var(--fleet-faint)]" style={{ gridTemplateColumns: cols }}>
         {model.phases.map(p => (
-          <span key={p.key} className="truncate uppercase">{`${p.ordinal} · ${p.done}/${p.total}`}</span>
+          <span
+            key={p.key}
+            data-testid="landed-phase-caption"
+            title={p.label ? `${p.ordinal} · ${p.label}` : undefined}
+            className={compact ? 'whitespace-nowrap tabular-nums' : 'truncate uppercase'}
+          >
+            {compact ? `${p.done}/${p.total}` : `${p.ordinal} · ${p.done}/${p.total}`}
+          </span>
         ))}
       </div>
     </div>
   );
 }
 
-export function SectionLabel({ children, className = '' }: { children: ReactNode; className?: string }) {
+export function SectionLabel({ children, className = '', 'data-testid': testId }: { children: ReactNode; className?: string; 'data-testid'?: string }) {
   return (
-    <span className={`font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.6px] text-text-muted ${className}`}>
+    <span data-testid={testId} className={`font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.6px] text-text-muted ${className}`}>
       {children}
     </span>
   );

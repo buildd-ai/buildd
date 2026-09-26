@@ -115,6 +115,8 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
     workspaceName: (mission as any).workspace?.name ?? null,
     conversationId: (m.conversationId as string | null | undefined) ?? null,
     board,
+    taskIds,
+    workerStatuses: Object.fromEntries((mission.tasks ?? []).flatMap(t => (t.workers ?? []).map(w => [w.id, w.status] as const))),
     renderedAt: now,
   };
 }

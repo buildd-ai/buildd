@@ -75,6 +75,27 @@ describe('approval card', () => {
     expect((q('[data-testid="approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  // On a phone the full draft was taller than the viewport: Confirm was in view
+  // but the header and Discard were not. Details fold behind a toggle there.
+  it('phone: details fold behind "Show details"; header and all actions stay in the card', async () => {
+    await render(fixtures.chatFixture('propose').messages as Msgs);
+    const details = q('[data-testid="approval-details"]')!;
+    const toggle = q('[data-testid="approval-details-toggle"]') as HTMLButtonElement;
+    expect(details.className).toContain('hidden');
+    expect(details.className).toContain('md:block');
+    expect(toggle.className).toContain('md:hidden');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('Show details');
+    expect(q('[data-testid="approval-draft-title"]')).not.toBeNull();
+    expect(details.contains(q('[data-testid="approval-draft-title"]'))).toBe(false);
+    expect(details.contains(q('[data-testid="approval-draft-criteria"]'))).toBe(true);
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toContain('Hide details');
+    expect(q('[data-testid="approval-details"]')!.className.split(/\s+/)).not.toContain('hidden');
+    for (const id of ['approval-confirm', 'approval-edit', 'approval-deny']) expect(q(`[data-testid="${id}"]`)).not.toBeNull();
+  });
+
   it('Discard answers false', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
     await act(async () => { q('[data-testid="approval-deny"]')!.click(); });
@@ -159,5 +180,22 @@ describe('model-authored text', () => {
     const link = text?.querySelector('a');
     expect(link?.getAttribute('href')).toBe('https://example.invalid/pixel.png?d=abc');
     expect(link?.textContent).toContain('status');
+  });
+});
+
+describe('mission pane', () => {
+  it('the docked pane and the phone sheet draw the Board in its compact layout', async () => {
+    const { MissionPane } = await import('./objects/MissionObject');
+    const view = fixtures.missionView('live');
+    for (const variant of ['pane', 'sheet'] as const) {
+      await act(async () => {
+        root.render(
+          <ObjectStoreProvider source={{ load: async () => view }}>
+            <MissionPane objRef={fixtures.missionRef} view={view} variant={variant} />
+          </ObjectStoreProvider>,
+        );
+      });
+      expect(q('[data-testid="mission-board"]')?.dataset.compact).toBe('true');
+    }
   });
 });

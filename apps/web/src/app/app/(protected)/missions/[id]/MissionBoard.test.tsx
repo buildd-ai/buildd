@@ -138,5 +138,50 @@ describe('MissionBoard — demo v5 polish', () => {
     for (const id of ['record-prs', 'record-lines', 'record-ci-fixes', 'record-decisions']) expect(stats).toContain(`data-testid="${id}"`);
     const section = html.match(/data-testid="mission-completion-record" class="([^"]*)"/)?.[1] ?? '';
     expect(section).not.toContain('repeat(4,');
+// The docked chat pane and the phone sheet are far narrower than the page:
+// criteria labels, phase headers, tile titles and the landed strip's captions
+// all truncated there. `compact` is the narrow layout.
+describe('MissionBoard — compact (docked pane / phone sheet)', () => {
+  const model = boardFixture('running');
+  const wide = render('running');
+  const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" compact />);
+
+  it('marks the board compact and keeps the band two-up at every width', () => {
+    expect(html).toContain('data-compact="true"');
+    expect(wide).not.toContain('data-compact');
+    const band = html.match(/<section data-testid="mission-band"[^>]*class="([^"]+)"/)![1];
+    expect(band).not.toContain('md:grid-cols-[');
+  });
+
+  it('draws goal criteria as pips, each named in its title, with no truncated label rows', () => {
+    expect(count(html, 'data-testid="goal-criterion-pip"')).toBe(model.criteria.length);
+    expect(html).not.toContain('data-testid="goal-criterion"');
+    for (const c of model.criteria) expect(html).toContain(`title="${c.label} · ${c.value}"`);
+  });
+
+  it('lets phase headers wrap instead of truncating', () => {
+    const labels = [...html.matchAll(/data-testid="board-phase-label"[^>]*class="([^"]+)"/g)].map(m => m[1]);
+    expect(labels.length).toBe(model.phases.length);
+    for (const cls of labels) expect(cls.split(/\s+/)).not.toContain('truncate');
+  });
+
+  it('tile titles use the short label, wrapped to two lines with the full title on hover', () => {
+    const titles = [...html.matchAll(/data-testid="board-tile-label"[^>]*class="([^"]+)"/g)].map(m => m[1]);
+    expect(titles.length).toBeGreaterThan(0);
+    for (const cls of titles) {
+      expect(cls).toContain('line-clamp-2');
+      expect(cls.split(/\s+/)).not.toContain('truncate');
+    }
+    const t = Object.values(model.tasks).find(x => x.status === 'running')!;
+    expect(html).toContain(`title="${t.title}"`);
+  });
+
+  it('the landed strip captions drop the ordinal and never truncate', () => {
+    const caps = [...html.matchAll(/data-testid="landed-phase-caption"[^>]*class="([^"]+)"[^>]*>([^<]+)</g)];
+    expect(caps.length).toBe(model.phases.length);
+    for (const [, cls, text] of caps) {
+      expect(cls.split(/\s+/)).not.toContain('truncate');
+      expect(text).toMatch(/^\d+\/\d+$/);
+    }
   });
 });

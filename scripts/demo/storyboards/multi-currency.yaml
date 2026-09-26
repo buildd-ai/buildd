@@ -56,9 +56,9 @@ steps:
     goto: /app/chat/{C1}
     viewports: [desktop, phone]
     waitFor: approval-card
-    # The card is taller than the chat on a phone: anchor its confirm button to
-    # the bottom edge (above the composer) so "Confirm & file" is in frame, as
-    # the chat's own scroll-to-bottom leaves it.
+    # On a phone the card folds its details behind "Show details", so its header
+    # and every action fit above the composer; anchoring Confirm to the bottom
+    # edge matches where the chat's own scroll-to-bottom leaves it.
     scrollTo: approval-confirm
     scrollAlign: end
     caption: "Ask first. \"Make it a mission\" — nothing is filed until you confirm."

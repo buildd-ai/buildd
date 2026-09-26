@@ -18,7 +18,7 @@ describe('taskCreatedPush', () => {
 describe('taskClaimedPush', () => {
   test('matches the claim route shape and refreshes the owning mission', () => {
     const [, event, data] = taskClaimedPush('workspace-w', task, { id: 'wk1', name: 'fleet-t1' });
-    expect(data).toEqual({ task: { id: 't1', title: 'feat: x', status: 'assigned', workspaceId: 'w' }, worker: { id: 'wk1', name: 'fleet-t1', status: 'idle' } });
+    expect(data).toEqual({ task: { id: 't1', title: 'feat: x', status: 'assigned', workspaceId: 'w', missionId: 'm1' }, worker: { id: 'wk1', name: 'fleet-t1', status: 'idle' } });
     expect(classifyMissionEvent(event, data, ctx()).kind).toBe('refresh');
   });
 });

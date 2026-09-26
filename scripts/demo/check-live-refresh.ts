@@ -4,6 +4,8 @@
  *
  *   bun run scripts/demo/check-live-refresh.ts [path] [from] [to]
  *   bun run demo:check-live                     # /app/home, t=30s → t=150s
+ *   DEMO_MARKER='[data-testid="chat-pane"] [data-testid="board-planning"]' \
+ *     bun run demo:check-live '/app/chat/{C1}' 0 12   # the docked mission pane
  *
  * Needs the demo stack up and served (demo:up, demo:seed, demo:serve). Opens
  * `path` at story time `from`, reads a marker element, replays the story to `to`
@@ -25,7 +27,7 @@ import { loadState, loadStory } from './lib/story';
 import { advanceTo } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
 
-const path = process.argv[2] ?? '/app/home';
+const rawPath = process.argv[2] ?? '/app/home';
 const from = Number(process.argv[3] ?? 30);
 const to = Number(process.argv[4] ?? 150);
 const marker = process.env.DEMO_MARKER ?? '[data-testid="home-headline"]';
@@ -36,6 +38,11 @@ await advanceTo(db, from, { quiet: true });
 const state = await loadState(db);
 const { story } = loadStory(state.storyPath);
 const user = story.users[0];
+// `{C1}` / `{M1}` = the seeded id of that dataset key, as in the storyboards.
+const path = rawPath.replace(/\{(\w+)\}/g, (_, k: string) => {
+  if (!state.ids[k]) throw new Error(`[check-live] no seeded id for {${k}}`);
+  return state.ids[k];
+});
 const token = await mintSessionToken({ id: state.ids[user.key], email: user.email, name: user.name });
 
 const browser = await chromium.launch({ headless: true });

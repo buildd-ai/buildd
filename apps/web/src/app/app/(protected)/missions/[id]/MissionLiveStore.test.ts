@@ -221,6 +221,13 @@ describe('hidden tab', () => {
 });
 
 describe('classifyMissionEvent', () => {
+
+  it('task:claimed for a task not yet seen refreshes when the claim names this mission', () => {
+    const c = { missionId: 'm1', taskIds: new Set<string>(), lastStatusByWorker: new Map<string, string>() };
+    expect(classifyMissionEvent('task:claimed', { task: { id: 'plan', missionId: 'm1' } }, c).kind).toBe('refresh');
+    expect(classifyMissionEvent('task:claimed', { task: { id: 'x', missionId: 'm2' } }, c).kind).toBe('ignore');
+    expect(classifyMissionEvent('task:claimed', { task: { id: 'x' } }, { ...c, missionId: '' }).kind).toBe('ignore');
+  });
   const ctx = () => ({ missionId: M, taskIds: new Set([T1]), lastStatusByWorker: new Map([[W1, 'running']]) });
 
   it('accepts the legacy {worker:{taskId}} shape', () => {
