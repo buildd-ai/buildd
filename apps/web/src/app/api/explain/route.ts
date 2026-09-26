@@ -4,7 +4,9 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
-import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
+import { resolveWorkerByPrNumber, resolveWorkerByPrNumberInWorkspaces } from '@/lib/pr-resolve';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { explainMission, explainTask, explainWorkspace, explainPr } from '@/lib/explain';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -27,6 +29,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * silently preferring one: "explain this" with two subjects is a caller bug,
  * and guessing which one they meant is how a confident wrong answer gets made.
  *
+ * Auth: an API key (scope = the key's team), or the dashboard session (scope =
+ * the user's teams; an optional `teamId` param pins it to one of them, and a
+ * pin outside them 404s). A key, when present, is authoritative and `teamId`
+ * is ignored on that path. Subjects outside the scope 404 on both paths.
+ *
  * Read-only. No model is invoked, no verification task is dispatched, no
  * merge is attempted — see the module note on `@/lib/explain`.
  */
@@ -34,10 +41,11 @@ export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
     const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') ?? null);
-    if (!account) {
+    const sessionUser = account ? null : await getCurrentUser();
+    if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    if (!account.teamId) {
+    if (account && !account.teamId) {
       return NextResponse.json({ error: 'No team associated with this account' }, { status: 400 });
     }
 
@@ -69,7 +77,19 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const teamWsIds = await getTeamWorkspaceIds(account.teamId);
+    let teamIds: string[];
+    let teamWsIds: string[];
+    if (account) {
+      teamIds = [account.teamId];
+      teamWsIds = await getTeamWorkspaceIds(account.teamId);
+    } else {
+      const sessionTeamIds = await resolveSessionTeamIds(sessionUser!.id, searchParams.get('teamId'));
+      if (!sessionTeamIds) {
+        return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+      }
+      teamIds = sessionTeamIds;
+      teamWsIds = await workspaceIdsForTeams(teamIds);
+    }
     if (teamWsIds.length === 0) {
       return NextResponse.json({ error: 'No workspaces found for account' }, { status: 403 });
     }
@@ -82,7 +102,9 @@ export async function GET(req: NextRequest) {
       }
       // The same resolver `get_pr` uses. A second one would eventually disagree
       // about which workspaces a team can see.
-      const resolved = await resolveWorkerByPrNumber(account, prNumber, workspaceId);
+      const resolved = account
+        ? await resolveWorkerByPrNumber(account, prNumber, workspaceId)
+        : await resolveWorkerByPrNumberInWorkspaces(teamWsIds, prNumber, workspaceId);
       if (typeof resolved.status === 'number') {
         return NextResponse.json(
           { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
@@ -160,7 +182,7 @@ export async function GET(req: NextRequest) {
       where: eq(workspaces.id, workspaceId!),
       columns: { id: true, teamId: true },
     });
-    if (!ws || ws.teamId !== account.teamId) {
+    if (!ws || !teamIds.includes(ws.teamId)) {
       return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
     }
     return NextResponse.json(await explainWorkspace(workspaceId!));

@@ -31,7 +31,13 @@ const insertCalls: Array<{ table: any; values: any }> = [];
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
-mock.module('@/lib/team-access', () => ({ getTeamWorkspaceIds: mockGetTeamWorkspaceIds }));
+const mockGetUserTeamIds = mock(async (_userId: string) => [] as string[]);
+mock.module('@/lib/team-access', () => ({
+  getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
+  getUserTeamIds: mockGetUserTeamIds,
+}));
+const mockGetCurrentUser = mock(async () => null as { id: string } | null);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/workspace-resolver', () => ({ resolveWorkspace: mockResolveWorkspace }));
 // resolvePriorVerdict stays REAL (bun merges an unstubbed named export from the
 // real module) — it is a pure extraction function, and the delta-vs-full
@@ -135,6 +141,10 @@ function get(query: string, headers: Record<string, string> = { authorization: '
 }
 
 beforeEach(() => {
+  mockGetCurrentUser.mockReset();
+  mockGetCurrentUser.mockResolvedValue(null);
+  mockGetUserTeamIds.mockReset();
+  mockGetUserTeamIds.mockResolvedValue([]);
   insertCalls.length = 0;
   mockAuthenticateApiKey.mockReset();
   mockAuthenticateApiKey.mockReturnValue(ACCOUNT);
@@ -542,5 +552,78 @@ describe('GET /api/github/pr/review', () => {
     const res = await GET(get('?prNumber=42&workspaceId=buildd'));
     expect((await res.json()).autoMergeExpected).toBe(false);
     expect(mockWaitForPrReviewStatus.mock.calls[0][0].autoMergeExpected).toBe(false);
+  });
+});
+
+describe('GET /api/github/pr/review — dashboard session', () => {
+  const noKey = {};
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    // user-1 is in team-1 (ws-1) and team-2 (ws-2).
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockGetTeamWorkspaceIds.mockImplementation(((teamId: string) => (teamId === 'team-1' ? ['ws-1'] : ['ws-2'])) as any);
+  });
+
+  it('reports review status for a workspace in the user teams', async () => {
+    const res = await GET(get('?prNumber=42&workspaceId=buildd', noKey));
+    expect(res.status).toBe(200);
+    expect(mockResolveWorkspace.mock.calls[0][1]).toEqual({ teamIds: ['team-1', 'team-2'] });
+    expect(mockWaitForPrReviewStatus.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', prNumber: 42 });
+  });
+
+  it('404s (not 403) a workspace outside the user teams', async () => {
+    mockResolveWorkspace.mockReturnValue({ ...WORKSPACE, teamId: 'team-9' });
+    const res = await GET(get('?prNumber=42&workspaceId=buildd', noKey));
+    expect(res.status).toBe(404);
+    expect(mockWaitForPrReviewStatus).not.toHaveBeenCalled();
+  });
+
+  it('without workspaceId, searches the workspaces of every user team', async () => {
+    mockWorkspacesFindMany.mockReturnValue([WORKSPACE]);
+    const res = await GET(get('?prNumber=42', noKey));
+    expect(res.status).toBe(200);
+    const ownerQuery = mockWorkersFindFirst.mock.calls[0][0] as any;
+    expect(ownerQuery.where.conditions[1].values).toEqual(['ws-1', 'ws-2']);
+  });
+
+  it('?teamId pins the search: team-2 workspaces are not considered under ?teamId=team-1', async () => {
+    mockWorkspacesFindMany.mockReturnValue([WORKSPACE]);
+    const res = await GET(get('?prNumber=42&teamId=team-1', noKey));
+    expect(res.status).toBe(200);
+    const ownerQuery = mockWorkersFindFirst.mock.calls[0][0] as any;
+    expect(ownerQuery.where.conditions[1].values).toEqual(['ws-1']);
+  });
+
+  it('?teamId bounds an explicit workspaceId to that team', async () => {
+    mockResolveWorkspace.mockReturnValue(null);
+    const res = await GET(get('?prNumber=42&workspaceId=other&teamId=team-1', noKey));
+    expect(res.status).toBe(404);
+    expect(mockResolveWorkspace.mock.calls[0][1]).toEqual({ teamIds: ['team-1'] });
+  });
+
+  it('404s a ?teamId pin to a team the user is not in', async () => {
+    const res = await GET(get('?prNumber=42&teamId=team-9', noKey));
+    expect(res.status).toBe(404);
+    expect(mockWaitForPrReviewStatus).not.toHaveBeenCalled();
+  });
+
+  it('401s with neither a session nor a key', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    expect((await GET(get('?prNumber=42', noKey))).status).toBe(401);
+  });
+
+  it('keeps a present key authoritative (403 out of team, no session lookup)', async () => {
+    mockAuthenticateApiKey.mockReturnValue(ACCOUNT);
+    mockResolveWorkspace.mockReturnValue({ ...WORKSPACE, teamId: 'team-2' });
+    const res = await GET(get('?prNumber=42&workspaceId=buildd'));
+    expect(res.status).toBe(403);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a session on POST', async () => {
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }, {}));
+    expect(res.status).toBe(401);
   });
 });
