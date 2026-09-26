@@ -428,18 +428,50 @@ jobs:
 
       - name: Integration tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.api
+        # One `bun test` process per file, and each must report at least one
+        # passing test. These files call process.exit(0) to "skip" (missing key,
+        # unreachable runner), and in a single shared process that exit ended
+        # the whole run with status 0: the runner-config file, listed even when
+        # no runner was started, exited on its first request, so this step
+        # reported success having run none of the API tests.
         run: |
-          bun test apps/web/tests/integration/concurrency.test.ts \
-               apps/web/tests/integration/worker-state-machine.test.ts \
-               apps/web/tests/integration/schedule-triggers.test.ts \
-               apps/web/tests/integration/artifacts.test.ts \
-               apps/web/tests/integration/missions-smoke.test.ts \
-               apps/runner/__tests__/integration-config.test.ts
+          files="apps/web/tests/integration/concurrency.test.ts
+          apps/web/tests/integration/worker-state-machine.test.ts
+          apps/web/tests/integration/schedule-triggers.test.ts
+          apps/web/tests/integration/artifacts.test.ts
+          apps/web/tests/integration/missions-smoke.test.ts"
+          # The runner-config tests need the preview runner, which only starts
+          # when runner code changed.
+          if [ "$RUNNER" = "true" ]; then
+            files="$files
+          apps/runner/__tests__/integration-config.test.ts"
+          fi
+          failed=0
+          for f in $files; do
+            echo "::group::$f"
+            set +e
+            bun test "$f" 2>&1 | tee /tmp/it-out.txt
+            code=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+            passed=$(grep -Eo '^ *[0-9]+ pass$' /tmp/it-out.txt | grep -Eo '[0-9]+' | tail -1)
+            if [ "$code" -ne 0 ]; then
+              echo "::error file=$f::exited $code"
+              failed=1
+            elif [ -z "$passed" ] || [ "$passed" -eq 0 ]; then
+              echo "::error file=$f::ran no tests (exited 0 without a pass count, i.e. it skipped itself)"
+              failed=1
+            else
+              echo "$f: $passed passed"
+            fi
+          done
+          exit $failed
         env:
           BUILDD_TEST_SERVER: http://${{ vars.TEST_MACHINE_HOST }}:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://${{ vars.TEST_MACHINE_HOST }}:8767
+          RUNNER: ${{ inputs.runner }}
 
       - name: E2E tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.e2e

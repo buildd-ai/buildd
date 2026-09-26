@@ -64,6 +64,19 @@ describe('prod server runtime', () => {
     expect(wf).toMatch(/PAGE_CODE/);
   });
 
+  it('the integration tests cannot pass having run nothing', () => {
+    const wf = read('.github/workflows/integration.yml');
+    const step = wf.slice(wf.indexOf('- name: Integration tests'), wf.indexOf('- name: E2E tests'));
+    // A multi-file `bun test` shares one process, so one file's
+    // process.exit(0) "skip" ends the run green for all of them.
+    expect(step).not.toMatch(/bun test \S+\.test\.ts\s*\\/);
+    expect(step).toContain('bun test "$f"');
+    expect(step).toContain('ran no tests');
+    // The runner-config file needs the preview runner; listing it when no
+    // runner started is what exited the whole run on its first request.
+    expect(step).toMatch(/if \[ "\$RUNNER" = "true" \][\s\S]*integration-config\.test\.ts/);
+  });
+
   it('the demo harness serves with node', () => {
     const sh = read('scripts/demo/serve.sh');
     expect(sh).toMatch(/NODE_BIN.*next\/dist\/bin\/next.*start/);
