@@ -132,7 +132,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           {deciding ? 'Confirmed' : 'Needs approval'}
         </span>
         <span className="font-mono text-[13px] font-semibold text-text-primary">{verb}</span>
-        <span className="border-[1.5px] border-border-strong px-1.5 py-px font-mono text-[11px] text-text-secondary">
+        <span className="hidden border-[1.5px] border-border-strong px-1.5 py-px font-mono text-[11px] text-text-secondary md:inline">
           {deciding ? (sent === 'deny' ? 'discarding…' : 'filing…') : 'not filed'}
         </span>
         {wsName && <span className="ml-auto font-mono text-[12px] text-text-muted">{wsName}</span>}
@@ -150,7 +150,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
               className={`${draft.kind === 'generic' ? '' : 'mt-2 '}flex min-h-9 w-full items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary md:hidden`}
             >
               <span aria-hidden="true">{detailsOpen ? '▾' : '▸'}</span>
-              <span className="font-semibold">{detailsOpen ? 'Hide details' : 'Show details'}</span>
+              <span className="shrink-0 whitespace-nowrap font-semibold">{detailsOpen ? 'Hide details' : 'Show details'}</span>
               <span className="min-w-0 truncate text-text-muted">{detailsSummary(draft)}</span>
             </button>
             <div
@@ -163,13 +163,13 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           </>
         )}
       </div>
-      <footer className="flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2.5 md:gap-2.5 md:px-5 md:py-3">
+      <footer className="flex flex-nowrap items-center gap-2 border-t border-border-default px-4 py-2.5 md:gap-2.5 md:px-5 md:py-3">
         <button
           type="button"
           data-testid="approval-confirm"
           disabled={deciding || !approvalId}
           onClick={() => { if (!approvalId) return; setSent('confirm'); actions.respondToApproval(approvalId, true); }}
-          className="min-h-11 border-2 border-[var(--on-accent)] bg-accent px-3.5 md:px-5 font-mono text-[13.5px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover disabled:opacity-60"
+          className="min-h-11 border-2 border-[var(--on-accent)] shrink-0 whitespace-nowrap bg-accent px-3 md:px-5 font-mono text-[13px] md:text-[13.5px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover disabled:opacity-60"
         >
           {sent === 'confirm' ? 'Filing…' : confirmLabel}
         </button>
@@ -178,7 +178,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           data-testid="approval-edit"
           disabled={deciding}
           onClick={() => actions.prefillComposer(isMission ? `Change the draft "${(draft as { title: string }).title}": ` : 'Change it: ')}
-          className="min-h-11 border-2 border-border-strong bg-surface-3 px-3 md:px-4 font-mono text-[13.5px] font-medium text-text-primary hover:bg-surface-4 disabled:opacity-60"
+          className="min-h-11 border-2 border-border-strong shrink-0 bg-surface-3 px-2.5 md:px-4 font-mono text-[13px] md:text-[13.5px] font-medium text-text-primary hover:bg-surface-4 disabled:opacity-60"
         >
           Edit
         </button>
@@ -187,11 +187,11 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           data-testid="approval-deny"
           disabled={deciding || !approvalId}
           onClick={() => { if (!approvalId) return; setSent('deny'); actions.respondToApproval(approvalId, false, 'Discarded by the user'); }}
-          className="min-h-11 px-2 md:px-3 font-mono text-[13.5px] font-medium text-text-secondary hover:text-text-primary disabled:opacity-60"
+          className="min-h-11 shrink-0 px-1.5 md:px-3 font-mono text-[13px] md:text-[13.5px] font-medium text-text-secondary hover:text-text-primary disabled:opacity-60"
         >
           Discard
         </button>
-        <span className="hidden font-mono text-[11.5px] text-text-muted md:inline">{`files through ${verb.split(' · ')[0]}`}</span>
+        <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-text-muted md:inline">{`files through ${verb.split(' · ')[0]}`}</span>
       </footer>
     </section>
   );

@@ -37,9 +37,9 @@ export interface MissionBoardProps extends BoardLinkContext {
   /** Anything the mission needs said that the band cannot (a decision gate). */
   notice?: ReactNode;
   /**
-   * The narrow layout (the chat's docked pane and phone sheet): the band stays
-   * two-up, criteria are pips named on hover, phase headers wrap and tile
-   * titles wrap to two lines instead of truncating.
+   * The narrow layout (the chat's docked pane and phone sheet): criteria are
+   * pips named on hover, phase headers wrap, tile titles wrap to two lines and
+   * the landed strip's captions drop the ordinal, instead of truncating.
    */
   compact?: boolean;
 }
@@ -127,9 +127,9 @@ function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }
   return (
     <section
       data-testid="mission-band"
-      className={`mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] ${compact ? '' : 'md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]'}`}
+      className="mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]"
     >
-      <div data-testid="landed-band" className={`${cell} border-b ${compact ? '' : 'md:border-b-0 md:border-r'}`}>
+      <div data-testid="landed-band" className={`${cell} border-b md:border-b-0 md:border-r`}>
         <SectionLabel>Landed</SectionLabel>
         <Big n={model.landed.done} small={`of ${model.landed.total}`} />
         <LandedMeter model={model} variant="band" compact={compact} />
@@ -137,7 +137,7 @@ function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }
       <a
         href={`#${MISSION_CRITERIA_ANCHOR}`}
         data-testid="goal-band"
-        className={`${cell} border-b border-l ${compact ? '' : 'md:border-b-0 md:border-l-0 md:border-r'} hover:bg-card-hover`}
+        className={`${cell} border-b border-l md:border-b-0 md:border-l-0 md:border-r hover:bg-card-hover`}
       >
         <SectionLabel>{`Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`}</SectionLabel>
         {compact ? (
@@ -167,7 +167,7 @@ function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }
           ))}
         </div>}
       </a>
-      <div data-testid="fleet-band" className={`${cell} ${compact ? '' : 'md:border-r'}`}>
+      <div data-testid="fleet-band" className={`${cell} md:border-r`}>
         <SectionLabel>Fleet</SectionLabel>
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
         <div className="flex flex-wrap gap-3">
@@ -185,7 +185,7 @@ function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }
           {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has picked up work yet.</span>}
         </div>
       </div>
-      <div data-testid="needs-you-cell" className={`${cell} border-l ${compact ? '' : 'md:border-l-0'} ${needs ? 'bg-accent-soft' : ''}`}>
+      <div data-testid="needs-you-cell" className={`${cell} border-l md:border-l-0 ${needs ? 'bg-accent-soft' : ''}`}>
         <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
         <span className={`font-mono text-[34px] font-semibold leading-none tracking-[-1px] tabular-nums ${needs ? 'text-accent-text' : 'text-[var(--fleet-faint)]'}`}>{needs}</span>
         <span className="font-mono text-[12px] md:text-[11.5px] text-text-muted">

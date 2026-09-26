@@ -32,6 +32,8 @@ const from = Number(process.argv[3] ?? 30);
 const to = Number(process.argv[4] ?? 150);
 const marker = process.env.DEMO_MARKER ?? '[data-testid="home-headline"]';
 const waitMs = Number(process.env.DEMO_WAIT_MS ?? 20_000);
+/** Quiet time after the last change before the live read counts (> the 3s refetch window). */
+const settleMs = Number(process.env.DEMO_SETTLE_MS ?? 5_000);
 
 const db = createLocalDb();
 await advanceTo(db, from, { quiet: true });
@@ -61,11 +63,17 @@ try {
   const before = await read();
 
   await advanceTo(db, to, { quiet: true });
+  // Wait for the marker to change AND settle: a live-store patch can move
+  // part of it (the action line) seconds before the throttled refetch lands
+  // the rest, and reloading on the first flicker misreads that as a miss.
   let live = before;
+  let changedAt = 0;
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline && live === before) {
+  while (Date.now() < deadline) {
     await page.waitForTimeout(500);
-    live = await read();
+    const next = await read();
+    if (next !== live) { live = next; changedAt = Date.now(); }
+    if (live !== before && Date.now() - changedAt >= settleMs) break;
   }
 
   await page.reload({ waitUntil: 'networkidle' });

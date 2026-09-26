@@ -146,11 +146,11 @@ describe('MissionBoard — compact (docked pane / phone sheet)', () => {
   const wide = render('running');
   const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" compact />);
 
-  it('marks the board compact and keeps the band two-up at every width', () => {
+  it('marks the board compact; the wide board is unchanged', () => {
     expect(html).toContain('data-compact="true"');
     expect(wide).not.toContain('data-compact');
-    const band = html.match(/<section data-testid="mission-band"[^>]*class="([^"]+)"/)![1];
-    expect(band).not.toContain('md:grid-cols-[');
+    expect(wide).toContain('data-testid="goal-criterion"');
+    expect(wide).not.toContain('data-testid="goal-criterion-pip"');
   });
 
   it('draws goal criteria as pips, each named in its title, with no truncated label rows', () => {
