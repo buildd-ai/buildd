@@ -475,7 +475,7 @@ export default function SchedulesUnified({
           </div>
           <h2 className="text-lg font-semibold text-text-primary mb-1">No automation yet</h2>
           <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
-            Set up heartbeats for periodic monitoring or schedule missions to run automatically on a cron.
+            Add a heartbeat for periodic checks, or put a mission on a cron.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
@@ -504,7 +504,7 @@ export default function SchedulesUnified({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Schedules</h1>
-          <p className="text-sm text-text-secondary mt-0.5">All automated task creation across your workspaces</p>
+          <p className="text-sm text-text-secondary mt-0.5">Heartbeats, mission crons and task schedules across your workspaces</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
@@ -666,7 +666,7 @@ export default function SchedulesUnified({
               </svg>
               Heartbeat
             </div>
-            Periodic awareness check. Runs with a checklist and suppresses output if nothing needs attention.
+            Periodic check against a checklist. Posts nothing when nothing needs attention.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-primary font-medium">
@@ -675,7 +675,7 @@ export default function SchedulesUnified({
               </svg>
               Mission
             </div>
-            Scheduled goal. Creates a planning task on each run to make progress toward the mission.
+            Scheduled goal. Each run creates a planning task for the mission.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-text-secondary font-medium">
@@ -684,7 +684,7 @@ export default function SchedulesUnified({
               </svg>
               Workspace schedule
             </div>
-            Cron-based task template. Creates a new task directly from a fixed template on each run.
+            Cron task template. Each run creates a task from a fixed template.
           </div>
         </div>
       </div>
@@ -701,7 +701,7 @@ export default function SchedulesUnified({
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
-            <p className="text-sm text-text-secondary mb-4">This is permanent and cannot be undone.</p>
+            <p className="text-sm text-text-secondary mb-4">You can&apos;t undo this.</p>
             <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
               <p className="text-sm font-medium text-text-primary truncate">{itemToDelete.name}</p>
               <code className="text-[11px] md:text-[10px] text-text-muted font-mono block">{itemToDelete.cronExpression}</code>

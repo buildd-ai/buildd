@@ -73,8 +73,8 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       action={<Link href="/app/accounts/new" className="btn btn-quiet">+ New token</Link>}
     >
       <p className="text-xs text-text-secondary mb-3">
-        Runner tokens authenticate your runner to buildd — they don&apos;t contain model credentials.
-        Set model credentials in Agent Backends.
+        A runner token signs your runner in to buildd. It holds no model credentials; set those in
+        Agent backends.
       </p>
 
       {accounts.length === 0 ? (
@@ -138,7 +138,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                       </div>
 
                       {hasWarning && (
-                        <p className="text-xs text-status-warning">No workspace linked — token can&apos;t claim or create tasks.</p>
+                        <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
                       )}
 
                       <div className="flex flex-wrap items-center gap-2">
@@ -165,8 +165,8 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       {/* Regenerate confirmation dialog */}
       <ConfirmDialog
         open={!!regenerateTarget}
-        title="Regenerate Runner Token?"
-        message={regenerateError || `This will invalidate the current token for "${regenerateTarget?.name}". Any runners using the old token will stop working immediately.`}
+        title="Regenerate runner token?"
+        message={regenerateError || `Invalidates the current token for "${regenerateTarget?.name}". Runners using the old token stop working right away.`}
         confirmLabel="Regenerate"
         variant="warning"
         loading={regenerating}

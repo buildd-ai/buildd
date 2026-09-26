@@ -21,13 +21,13 @@ const OPTIONS: Array<{ value: BranchStrategy; label: string; describe: (defaultB
     value: 'mission-branch',
     label: 'Mission branch',
     describe: (defaultBranch) =>
-      `Task PRs merge into a shared mission branch; the whole mission reaches ${defaultBranch} as one PR, reviewed once, revertable as one commit. The merge-policy tier applies once per mission.`,
+      `Task PRs merge into a shared mission branch. The mission reaches ${defaultBranch} as one PR: one review, one commit to revert. The merge policy applies once per mission.`,
   },
   {
     value: 'direct',
     label: 'Direct',
     describe: (defaultBranch) =>
-      `Every task PR merges into ${defaultBranch} on its own. The merge policy applies to each one.`,
+      `Each task PR merges into ${defaultBranch} on its own. The merge policy applies to each PR.`,
   },
 ];
 
@@ -66,8 +66,8 @@ export default function BranchStrategySection({ workspaceId, effectiveBranchStra
       <form onSubmit={handleSave} className="space-y-6">
         <div className="card p-4 space-y-3">
           <p className="text-xs text-text-muted">
-            Controls how a new mission's task PRs reach <code>{defaultBranch}</code>. Only applies to
-            missions created from now on — existing missions keep whatever they were created with.
+            Sets how a new mission&apos;s task PRs reach <code>{defaultBranch}</code>. Applies to new
+            missions only. Existing missions keep their strategy.
           </p>
           <div className="space-y-2">
             {OPTIONS.map((opt) => (

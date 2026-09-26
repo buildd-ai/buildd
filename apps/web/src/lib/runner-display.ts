@@ -49,7 +49,9 @@ const OS_NAME: Record<string, string> = { darwin: 'macOS', linux: 'Linux', win32
 /** A heartbeat's own identity: hostname label, else the URL host. */
 export function runnerIdentity(hb: Pick<RunnerHeartbeatLike, 'localUiUrl' | 'environment'>): { name: string; machine: string | null } {
   const labels = hb.environment?.labels ?? {};
-  const name = labels.hostname || runnerNameFromUrl(hb.localUiUrl);
+  // `quill-studio.local` names the machine as well as `quill-studio`, and the
+  // suffix costs a narrow runner column most of its width.
+  const name = (labels.hostname || '').replace(/\.(local|lan|home|localdomain)$/i, '') || runnerNameFromUrl(hb.localUiUrl);
   const machine = labels.machine
     || [labels.os ? OS_NAME[labels.os] ?? labels.os : null, labels.arch].filter(Boolean).join(' · ')
     || null;

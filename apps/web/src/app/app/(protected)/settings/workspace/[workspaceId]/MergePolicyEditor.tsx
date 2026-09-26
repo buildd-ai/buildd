@@ -33,17 +33,17 @@ const TIER_OPTIONS: { value: MergePolicyTier; label: string; hint: string }[] = 
   {
     value: 'auto-threshold',
     label: 'Auto-Threshold',
-    hint: 'Merge automatically when CI passes and PR is within the size limit.',
+    hint: 'Merges when CI passes and the PR is within the size limit.',
   },
   {
     value: 'agent-review',
     label: 'Agent Review',
-    hint: 'An agent reviewer judges the PR before it can merge.',
+    hint: 'An agent reviews the PR before it can merge.',
   },
   {
     value: 'human',
     label: 'Human Gate',
-    hint: 'A human must explicitly approve and merge every PR.',
+    hint: 'A person approves and merges each PR.',
   },
 ];
 
@@ -234,7 +234,7 @@ export default function MergePolicyEditor({
                 onChange={e => setReviewerRole(e.target.value)}
                 className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
               >
-                <option value="">— Select a role —</option>
+                <option value="">Select a role</option>
                 {roles.map(r => (
                   <option key={r.slug} value={r.slug}>{r.name}</option>
                 ))}
@@ -305,7 +305,7 @@ export default function MergePolicyEditor({
           <span className="text-sm text-text-muted">minutes</span>
         </div>
         <p className="text-xs text-text-muted">
-          Send a Pushover notification if a PR waits longer than this. Defaults to 30 min for human/agent-review, 5 min for auto.
+          buildd sends a Pushover notification when a PR waits longer than this. Default: 30 min for human and agent review, 5 min for auto.
         </p>
       </section>
 
@@ -413,7 +413,7 @@ export function DetectedPathsSection({
           <p className="mt-1 text-xs text-text-muted">
             Detected from the repo per risk class
             {policyConfig ? <> (preset <span className="text-text-secondary">{policyConfig.preset}</span>)</> : null}.
-            PRs touching them are escalated as the preset says.
+            buildd escalates PRs that touch them, per the preset.
           </p>
         </div>
         <button

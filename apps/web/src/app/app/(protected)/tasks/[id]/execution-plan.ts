@@ -47,6 +47,15 @@ export function partitionChildTasks<T extends AttemptProbe>(children: readonly T
   return { subtasks, attempts };
 }
 
+/**
+ * The attempts "Related tasks" may still list: those the PR history above does
+ * not already tell. A CI-fix attempt at this task's PR is a step there (with
+ * its runner, its commits and its status), so listing it again is a repeat.
+ */
+export function attemptsNotInPrHistory<T extends { id: string }>(attempts: readonly T[], inPrHistory: ReadonlySet<string>): T[] {
+  return attempts.filter(a => !inPrHistory.has(a.id));
+}
+
 const norm = (s: string) =>
   s.replace(/\r\n/g, '\n').replace(/^#+\s*summary\s*$/gim, '').replace(/\s+/g, ' ').trim().toLowerCase();
 

@@ -115,7 +115,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
   }
 
   async function deleteSchedule(id: string) {
-    if (!(await confirm({ title: 'Delete schedule?', message: 'Existing tasks will not be affected.', confirmLabel: 'Delete', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Delete schedule?', message: 'Tasks it already created stay as they are.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setDeleting(id);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/schedules/${id}`, {
@@ -136,7 +136,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
     return (
       <div className="text-center py-12 text-text-muted">
         <p className="text-lg mb-2">No schedules yet</p>
-        <p className="text-sm">Create a schedule to automatically run tasks on a cron cadence.</p>
+        <p className="text-sm">A schedule creates a task on a cron cadence.</p>
       </div>
     );
   }

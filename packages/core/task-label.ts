@@ -29,6 +29,9 @@ const TITLE_PREFIXES: Array<[RegExp, string | null]> = [
   [/^verify:\s*/i, 'verify'],
   [/^review:\s*/i, 'review'],
   [/^mission:\s*/i, null],
+  // Researcher titles ("RESEARCH: FX rate providers — …"): the prefix names
+  // the role, the subject names the task.
+  [/^research:\s*/i, null],
   [/^(?:ci\s+)?retry:\s*/i, null],
   [/^follow-?up:\s*/i, null],
 ];

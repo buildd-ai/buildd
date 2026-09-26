@@ -802,7 +802,7 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   refuses as `pending_deliverables` before `awaiting_merge` is reached. At task
   and PR scope, `explain` passes the newest open attempt to
   `deriveMissionStateView` as `openAttempt`, and that fact (rule 6½) outranks
-  the merge fact: the headline reads "waiting on fix N of M (queued — no worker
+  the merge fact: the headline reads "waiting on fix N of M (queued, no worker
   yet)" or "(in progress)", never "waiting on you to merge", while a fix is in
   flight.
 - **PR supersession** (task fcaf83d5) is the one sanctioned exception to

@@ -14,7 +14,7 @@ describe('buildLineage', () => {
     expect(l.steps.map(x => x.kind)).toEqual(['attempt', 'ci_failed', 'retry', 'attempt', 'ci_green', 'merged']);
     expect(l.steps[0]).toMatchObject({ title: 'Attempt 1', sub: 'Builder on cedar · 4 commits, PR opened', at: '8:26' });
     expect(l.steps[1]).toMatchObject({ title: 'CI failed', sub: 'unit · invoice.snapshot.test.tsx', at: '1:51 after push' });
-    expect(l.steps[2]).toMatchObject({ title: 'Retry sent', sub: 'Failure excerpt handed to a fresh builder' });
+    expect(l.steps[2]).toMatchObject({ title: 'Retry sent', sub: 'A new builder got the failure excerpt' });
     expect(l.steps[3]).toMatchObject({ title: 'Attempt 2', sub: 'Builder on birch · 1 commit, same branch', at: '3:11' });
     expect(l.steps[5]).toMatchObject({ title: 'Merged', at: '+0:20' });
     expect(l.totals).toEqual({ add: 425, rem: 70, files: 13, commits: 5, attempts: 2, claimToMerge: '13:54' });

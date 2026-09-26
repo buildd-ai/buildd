@@ -89,7 +89,7 @@ export default function TaskActionZone({
           {lastError ? (
             <p className="break-words font-mono text-[12px] leading-relaxed text-status-error">{lastError.excerpt}</p>
           ) : (
-            <p className="font-mono text-[12px] text-text-secondary">This task failed. Retry to run it again.</p>
+            <p className="font-mono text-[12px] text-text-secondary">This task failed.</p>
           )}
           <div className="flex flex-wrap items-center gap-2">
             {/* Single click retries on the backend it already ran on — the
@@ -129,10 +129,10 @@ export default function TaskActionZone({
       {isBlocked && (
         <div className="border border-status-warning p-4">
           <p className="font-mono text-[12px] font-medium text-status-warning">
-            Blocked — waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
+            Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
           </p>
           <p className="mt-1 font-mono text-[11px] text-text-muted">
-            This task will start automatically once its dependencies complete.
+            Starts when its dependencies complete.
           </p>
         </div>
       )}
@@ -140,7 +140,7 @@ export default function TaskActionZone({
       {/* Queued / pending → run now */}
       {isQueued && !isWaiting && !isBlocked && (
         <div className="flex items-center justify-between gap-3 border border-border-default p-4">
-          <span className="font-mono text-[12px] text-text-secondary">Waiting to be picked up by a runner.</span>
+          <span className="font-mono text-[12px] text-text-secondary">Waiting for a runner to claim it.</span>
           <button
             type="button"
             onClick={() => runAction(`/api/tasks/${taskId}/start`)}

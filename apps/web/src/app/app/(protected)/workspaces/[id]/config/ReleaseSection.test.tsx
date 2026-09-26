@@ -46,8 +46,8 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
       <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} />,
     );
     // Mission detail no longer carries the trigger (a release ships the workspace, not a mission).
-    expect(html).toContain('action on Home');
+    expect(html).toContain('on Home');
     expect(html).not.toContain('mission detail');
-    expect(html).toContain('trigger_release via MCP');
+    expect(html).toContain('trigger_release over MCP');
   });
 });

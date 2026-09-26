@@ -115,6 +115,8 @@ export interface Tape {
   ticks: Array<{ pos: number; kind: 'edit' | 'read' | 'run'; label: string }>;
   flags: Array<{ pos: number; pct: number; label: string; at: string }>;
   axis: string[];
+  /** The right edge's time: the whole span (the elapsed time on a live tape). */
+  end: string;
 }
 
 export function buildTape(milestones: Milestone[], { startMs, nowMs }: { startMs: number; nowMs: number }): Tape {
@@ -132,7 +134,7 @@ export function buildTape(milestones: Milestone[], { startMs, nowMs }: { startMs
     }
   }
   const axis = [0, 0.25, 0.5, 0.75].map(f => formatOffset(span * f));
-  return { ticks, flags, axis };
+  return { ticks, flags, axis, end: formatOffset(span) };
 }
 
 export type StepKey = 'started' | 'read' | 'edit' | 'commit' | 'pr' | 'done';

@@ -110,7 +110,7 @@ export default function TeamDetailClient({
   }
 
   async function handleDelete() {
-    if (!(await confirm({ title: 'Delete team?', message: 'This will also delete all associated workspaces and accounts. This cannot be undone.', confirmLabel: 'Delete team', variant: 'danger' }))) {
+    if (!(await confirm({ title: 'Delete team?', message: 'Deletes the team with its workspaces and accounts. You can’t undo this.', confirmLabel: 'Delete team', variant: 'danger' }))) {
       return;
     }
 

@@ -15,7 +15,7 @@ import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, ty
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
+import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary } from '@/lib/mission-steering-events';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
@@ -54,6 +54,7 @@ import MissionBoard from './MissionBoard';
 import MissionLanes from './MissionLanes';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
 import MissionDelivery from './MissionDelivery';
 import VisualReviewStrip from './VisualReviewStrip';
@@ -180,6 +181,7 @@ export default async function MissionDetailPage({
     workspaceForPolicy,
     missionFollowupTasks,
     runnerHeartbeats,
+    fleetCapacity,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -262,6 +264,10 @@ export default async function MissionDetailPage({
     }]),
     // Runner hostnames for the Board and Lanes (runner-display).
     loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
+    // The Lanes band's "LIVE n/N slots": N is the team's fleet capacity, the
+    // same number Home's "AGENTS LIVE n/N" prints (not the slots drawn here).
+    (async () => loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds: await getUserWorkspaceIds(user.id), now: Date.now() }))()
+      .catch(() => null),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -789,7 +795,7 @@ export default async function MissionDetailPage({
     steeringEvents,
   });
   const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
-  const orchestratorTicks = (mission.schedule as any)?.totalChecks ?? 0;
+  const orchestratorLabel = orchestratorSummary(orchestratorPlans, (mission.schedule as { totalRuns?: number | null; totalChecks?: number | null } | null) ?? null);
   const missionRecords = selectMissionRecords(allArtifacts);
 
   // Goal criteria — hoisted so the header's Verified pill and its bottom
@@ -921,6 +927,9 @@ export default async function MissionDetailPage({
   });
   const visualRun = visualReviewState?.run ?? [];
   const visualReview = visualReviewState?.summary ?? null;
+  // The Board and Lanes show the same run: shots under the auditor's row,
+  // screens reviewed in the completion record.
+  const boardVisual = visualRun.length > 0 ? { shots: visualRun, taskId: visualReviewState?.taskId ?? null } : null;
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
     // F3: Integrated counts what the header pulse counts (`pulseDoneCounts`).
@@ -958,10 +967,10 @@ export default async function MissionDetailPage({
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
-              ? `Every task PR under this mission merges into its integration branch. No PR from that branch into the target branch exists yet — so none of this mission's work has reached the target branch.`
+              ? `Task PRs merge into this mission's integration branch. No PR from that branch into the target branch exists yet, so none of this mission's work is on the target branch.`
               : missionIntegrationPr.state === 'merged'
                 ? `This mission's work reached the target branch through one PR from its integration branch.`
-                : `This is the mission's review gate: one PR from the integration branch into the target branch. The merge policy applies here, not to the task PRs that fed it.`}
+                : `The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only.`}
           </p>
         </div>
         {missionIntegrationPr.prUrl && (
@@ -1002,8 +1011,8 @@ export default async function MissionDetailPage({
     <div className="flex items-start justify-between gap-3">
       <p className="text-[12px] text-text-secondary">
         {spendUsd != null
-          ? `${formatEstimatedUsd(spendUsd, 4)} spent vs $${budgetUsd.toFixed(2)} budget — no new tasks will spawn.`
-          : `Budget of $${budgetUsd.toFixed(2)} reached — no new tasks will spawn.`}
+          ? `${formatEstimatedUsd(spendUsd, 4)} of $${budgetUsd.toFixed(2)} budget spent. No new tasks will start.`
+          : `Budget of $${budgetUsd.toFixed(2)} reached. No new tasks will start.`}
         {' '}Raise the budget to resume.
       </p>
       <div className="shrink-0">
@@ -1038,6 +1047,7 @@ export default async function MissionDetailPage({
     title: a.title ?? a.key ?? null,
     // Fetched when the Records sheet opens (AC-18).
     content: null,
+    storageKey: a.storageKey ?? null,
     shareToken: a.shareToken ?? null,
     visibility: (a.visibility as 'private' | 'public') ?? 'private',
     metadata: (a.metadata as Record<string, unknown>) ?? {},
@@ -1065,7 +1075,7 @@ export default async function MissionDetailPage({
           <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
             <div className="flex items-start gap-2">
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Waiting for human decision
+                Needs your decision
               </span>
               <span className="text-[12px] text-text-secondary">{readingCopy}</span>
             </div>
@@ -1103,7 +1113,7 @@ export default async function MissionDetailPage({
           (the explain read failed), so the gate is never silent. */}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-3 text-[12px] text-text-muted">
-          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified.
+          Completion waits on {countOf(missionCriteria!.length, 'unverified criterion', 'unverified criteria')}.
         </p>
       )}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
@@ -1227,7 +1237,7 @@ export default async function MissionDetailPage({
         <div>
           <h2 className="section-label mb-2">Agent backend</h2>
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-          <p className="text-[11px] text-text-muted mt-1.5">Default engine for tasks spawned by this mission. Auto inherits the role or workspace default.</p>
+          <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the role or workspace default.</p>
         </div>
       )}
 
@@ -1307,6 +1317,7 @@ export default async function MissionDetailPage({
   // folds and states them with the feed's own rules, so the counts agree.
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
+    fleetCapacity,
     tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
@@ -1384,7 +1395,7 @@ export default async function MissionDetailPage({
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
         <span aria-hidden="true" className="text-text-muted">─</span>
         <span className="flex-1">
-          {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
+          {orchestratorLabel}
         </span>
         <span aria-hidden="true" className="group-open:rotate-90">›</span>
       </summary>
@@ -1415,7 +1426,7 @@ export default async function MissionDetailPage({
       endedAt={boardModel.endedAt}
     >
       {content}
-      <div data-testid="mission-board-footer" className="mt-10 max-w-3xl">
+      <div data-testid="mission-board-footer" className="mt-10">
         {orchestratorRow}
         {footerRows}
       </div>
@@ -1448,8 +1459,8 @@ export default async function MissionDetailPage({
 
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} {...boardLink} />)}
-        lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} {...boardLink} />)}
+        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} />)}
+        lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} visual={boardVisual} {...boardLink} />)}
         feed={(
           <MissionDetailView
             missionId={id}

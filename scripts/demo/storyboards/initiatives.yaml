@@ -1,0 +1,29 @@
+# The Initiatives list and detail against one initiative per shape
+# (stories/initiatives.json): in flight with an ask and a hold, all missions done
+# with a failing KPI, done with a failed task, paused, planned, completed, empty.
+#
+#   bun run demo:shoot scripts/demo/storyboards/initiatives.yaml --out <dir>
+story: ../stories/initiatives.json
+name: initiatives
+viewport: { width: 1440, height: 900, scale: 1 }
+viewports: { phone: { width: 390, height: 844, scale: 2 } }
+themes: [dark, light]
+steps:
+  - id: list
+    goto: /app/initiatives
+    viewports: [desktop, phone]
+    waitFor: initiatives-headline
+    fullPage: true
+    caption: "Every initiative, what needs you first."
+  - id: detail-in-flight
+    goto: /app/initiatives/{I_api}
+    viewports: [desktop, phone]
+    waitFor: initiative-detail
+    fullPage: true
+    caption: "One initiative, its missions and the one ask."
+  - id: detail-all-done
+    goto: /app/initiatives/{I_checkout}
+    viewports: [desktop, phone]
+    waitFor: initiative-detail
+    fullPage: true
+    caption: "Every mission done: mark it completed."

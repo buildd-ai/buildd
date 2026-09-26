@@ -65,7 +65,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
           <p className="text-sm text-status-warning font-medium">
-            This key will not be shown again. Copy it now and store it securely.
+            You won't see this key again. Copy it now and store it somewhere safe.
           </p>
         </div>
 
@@ -132,7 +132,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
         {tab === 'mcp' && (
           <div className="space-y-4">
             <p className="text-xs text-text-secondary">
-              Run in your project directory to connect Claude Code to buildd:
+              Run this in your project directory to connect Claude Code to buildd:
             </p>
 
             {repos.length > 0 ? (
@@ -169,7 +169,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
             {/* .mcp.json alternative */}
             <details className="group">
               <summary className="text-xs font-medium text-text-secondary uppercase tracking-wide cursor-pointer hover:text-text-primary">
-                Or add to .mcp.json manually
+                Or add it to .mcp.json
               </summary>
               <div className="mt-3 relative group/block bg-surface-4 rounded-lg p-4">
                 <code className="text-xs font-mono text-text-primary break-all whitespace-pre-wrap block pr-14" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
@@ -211,7 +211,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
             className="w-4 h-4 rounded border-border-default accent-primary"
           />
           <span className="text-sm text-text-secondary">
-            I have saved this key securely
+            I saved this key
           </span>
         </label>
       </div>

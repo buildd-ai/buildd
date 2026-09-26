@@ -7,7 +7,7 @@ describe('CriteriaGraderControl', () => {
     const html = renderToStaticMarkup(<CriteriaGraderControl value="auto" onChange={() => {}} />);
     expect(html).toContain('Criteria grading');
     for (const label of ['>Auto<', '>API key<', '>Runner<']) expect(html).toContain(label);
-    expect(html).toContain('Auto uses your API key when one is set, otherwise a runner on your team&#x27;s seat.');
+    expect(html).toContain('Auto uses your API key if you set one. Otherwise a runner grades on your team&#x27;s seat.');
   });
 
   it('marks exactly the selected option checked', () => {

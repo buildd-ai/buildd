@@ -354,8 +354,8 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 onChange={(e) => setCorrectionsText(e.target.value)}
                 placeholder={
                   hasRecommendation
-                    ? "What should the agent do instead? (the reviewer's recommendation is still passed along as context)"
-                    : 'What should the agent do? (the reported defect is still passed along as context)'
+                    ? "What should the agent do instead? It also gets the reviewer's recommendation."
+                    : 'What should the agent do? It also gets the reported defect.'
                 }
                 className="w-full text-[12px] text-text-primary bg-surface-primary border border-border-default rounded p-2 min-h-[72px] resize-y"
               />
@@ -537,7 +537,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
-                <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
+                <span className="text-[11px] text-text-secondary">An agent is resolving the merge conflicts.</span>
               </div>
               <div className="flex items-center gap-3">
                 {conflictRetryTaskId && (
@@ -565,7 +565,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           {state === 'conflict_exhausted' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <p className="text-[11px] text-status-error mb-1.5">
-                Conflict resolution retries exhausted. Manual action required.
+                Agents ran out of conflict-resolution retries.
               </p>
               <div className="flex items-center gap-3">
                 {item.prUrl && (

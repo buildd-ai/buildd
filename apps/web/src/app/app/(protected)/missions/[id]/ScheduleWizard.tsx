@@ -103,7 +103,7 @@ export default function ScheduleWizard({
         <svg className="w-4 h-4 text-accent-text" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <h3 className="text-[13px] font-semibold text-text-primary">How often should this run?</h3>
+        <h3 className="text-[13px] font-semibold text-text-primary">Run frequency</h3>
       </div>
 
       {/* Preset buttons */}

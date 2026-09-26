@@ -176,7 +176,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
             </label>
             <span className="text-sm font-medium">Run once only</span>
             {oneShot && (
-              <span className="text-xs text-text-muted">Schedule will auto-disable after firing</span>
+              <span className="text-xs text-text-muted">Turns off after it runs</span>
             )}
           </div>
 
@@ -201,7 +201,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 />
               </div>
               <p className="text-xs text-text-muted mt-1">
-                Select the date and time to run the task (in selected timezone)
+                Date and time to run the task, in the timezone below
               </p>
             </div>
           ) : (
@@ -329,7 +329,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               />
               <p className="text-xs text-text-muted mt-1">
-                Skip creating new tasks if this many are already active. 0 = no limit.
+                Skips a run while this many of its tasks are active. 0 = no limit.
               </p>
             </div>
 
@@ -344,7 +344,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
               />
               <p className="text-xs text-text-muted mt-1">
-                Auto-disable schedule after this many consecutive failures. 0 = never pause.
+                Pauses the schedule after this many failures in a row. 0 = never pause.
               </p>
             </div>
           </div>

@@ -52,7 +52,7 @@ function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
       data-state={cell.state}
       data-task-id={cell.taskId}
       aria-label={`${cell.label}: ${CELL_STATE_LABEL[cell.state]}`}
-      title={`${cell.title} — ${CELL_STATE_LABEL[cell.state]}`}
+      title={`${cell.title} · ${CELL_STATE_LABEL[cell.state]}`}
       className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${CELL_BOX[cell.state]} hover:opacity-90`}
     >
       {cell.state === 'running' && (

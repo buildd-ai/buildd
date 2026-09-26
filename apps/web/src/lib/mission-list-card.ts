@@ -119,6 +119,8 @@ export interface MissionListCardModel {
   recurring: {
     cadence: string;
     nextMins: number | null;
+    /** Schedule `nextRunAt`, ISO — lets a far-off run read as a date. */
+    nextRunAt: string | null;
     runs: ListRun[];
     totalRuns: number;
     lastTickAt: string | null;
@@ -190,13 +192,14 @@ export function buildMissionListCard(
   let question: ListQuestion | null = null;
 
   for (const r of ordered) {
-    const fs = deriveFeedTaskState(r);
+    const fs = deriveFeedTaskState(r, { now });
     const source = byId.get(r.task.id)!;
     let state: ListCellState;
     let fill = 1;
     switch (fs.state) {
       case 'moving': {
-        const inCi = r.task.status === 'completed' && deriveFeedPrState(r.task.worker)?.state === 'checks_running';
+        // A completed row that is still moving is its PR in CI or mid-merge.
+        const inCi = r.task.status === 'completed' && !!deriveFeedPrState(r.task.worker);
         state = inCi ? 'in_ci' : 'running';
         if (!inCi) {
           const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
@@ -326,6 +329,7 @@ export function buildMissionListCard(
     recurring = {
       cadence: describeCadence(schedule.cronExpression),
       nextMins: summary.nextScanMins,
+      nextRunAt: summary.nextRunAt ?? null,
       runs,
       totalRuns: Math.max(schedule.totalRuns ?? 0, ticks.length),
       lastTickAt: isoOf(lastWorker?.completedAt ?? lastDone?.updatedAt ?? schedule.lastRunAt ?? null),
@@ -371,6 +375,36 @@ export function shortDuration(ms: number | null | undefined): string {
   const h = Math.round(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.round(h / 24)}d`;
+}
+
+/**
+ * "next 45m", "next 3h 20m", "in 5 days", "next Jan 15" — when a schedule runs
+ * next. Hours stop at two days (nobody reads "2664h"); past two weeks the date
+ * says more than a count. Null when nothing is scheduled.
+ */
+export function nextRunLabel(
+  mins: number | null | undefined,
+  nextRunAt: string | Date | null | undefined,
+  opts: { now?: number; timeZone?: string | null } = {},
+): { lead: string; value: string } | null {
+  if (mins == null || !Number.isFinite(mins)) return null;
+  if (mins <= 0) return { lead: '', value: 'due now' };
+  if (mins < 90) return { lead: 'next', value: `${mins}m` };
+  if (mins < 48 * 60) {
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return { lead: 'next', value: m ? `${h}h ${m}m` : `${h}h` };
+  }
+  const days = Math.round(mins / 1440);
+  if (days < 14 || !nextRunAt) return { lead: 'in', value: `${days} days` };
+  const now = opts.now ?? Date.now();
+  const at = new Date(nextRunAt);
+  let tz = opts.timeZone || undefined;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { tz = undefined; }
+  const year = (d: Date) => new Intl.DateTimeFormat('en-US', { year: 'numeric', timeZone: tz }).format(d);
+  const value = at.toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', ...(year(at) !== year(new Date(now)) ? { year: 'numeric' } : {}), timeZone: tz,
+  });
+  return { lead: 'next', value };
 }
 
 /** The list's sentence headline: "1 running · 6 agents on it", "1 shipped today. Nothing running." */

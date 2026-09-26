@@ -528,7 +528,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             </svg>
           </div>
           <h2 className="text-xl font-semibold text-text-primary mb-2">No activity yet</h2>
-          <p className="text-text-secondary mb-4">Tasks from your missions will appear here.</p>
+          <p className="text-text-secondary mb-4">Tasks from your missions show up here.</p>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Link
               href="/app/missions/new"

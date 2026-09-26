@@ -9,6 +9,12 @@ export interface ArtifactViewerItem {
   type: string; // 'content' | 'report' | 'summary' | 'data' | 'link' | 'file' | others
   title: string | null;
   content: string | null;
+  /**
+   * The object key, from the `artifacts.storage_key` column. upload-url
+   * writes it there, not into `metadata`; `metadata.storageKey` is read only
+   * as a fallback for older rows.
+   */
+  storageKey?: string | null;
   shareToken: string | null;
   visibility: 'private' | 'public';
   metadata: Record<string, unknown>;
@@ -38,6 +44,7 @@ const TYPE_LABELS: Record<string, string> = {
   link: 'Link',
   summary: 'Summary',
   file: 'File',
+  screenshot: 'Screenshot',
 };
 
 const MD_BREAKPOINT = 768; // Tailwind `md`
@@ -278,6 +285,7 @@ export default function ArtifactViewer({
     >
       <div
         ref={panelRef}
+        data-testid="artifact-viewer"
         role="dialog"
         aria-modal="true"
         aria-label={active.title || 'Artifact'}
@@ -400,7 +408,8 @@ function ArtifactBody({ artifact }: { artifact: ArtifactViewerItem }) {
   const { type, content, metadata } = artifact;
   const url = metadata?.url as string | undefined;
   const mimeType = metadata?.mimeType as string | undefined;
-  const storageKey = metadata?.storageKey as string | undefined;
+  const storageKey =
+    artifact.storageKey || (typeof metadata?.storageKey === 'string' ? metadata.storageKey : undefined);
   const fileName = metadata?.filename as string | undefined;
   const sizeBytes = metadata?.sizeBytes as number | undefined;
 

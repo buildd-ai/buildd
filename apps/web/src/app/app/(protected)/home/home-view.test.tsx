@@ -15,6 +15,9 @@ import {
   stageChipShowsPrNumber,
   recordBestEffort,
   homeSubheading,
+  groupInFlight,
+  homeAudience,
+  homeChatPlacement,
 } from './home-view';
 
 const item = (chip: ActionQueueItem['chip'], key: string) => ({ chip, subjectKey: key }) as ActionQueueItem;
@@ -57,7 +60,7 @@ describe('homeSubheading — the greeting and the Waiting-on-You header say the 
     expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 needs you');
     expect(homeSubheading(null, 2)).toBe('2 need you');
     expect(homeSubheading('1 ship overnight', 0)).toBe('1 ship overnight');
-    expect(homeSubheading(null, 0)).toBe('Your agents are standing by');
+    expect(homeSubheading(null, 0)).toBe('Nothing waiting on you');
   });
 
   it('matches the header summary for the same (initiative-filtered) queue', () => {
@@ -137,5 +140,70 @@ describe('recordBestEffort — a failing render-time write never blanks Home', (
     await new Promise((r) => setTimeout(r, 0));
     expect(ran).toBe(true);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('groupInFlight', () => {
+  const docFix = (key: string, over: Partial<ActionQueueItem> = {}) => ({
+    chip: 'FIXING_SPEC', subjectKey: key, specPath: `docs/specs/${key}.md`, docFixTaskId: `t-${key}`,
+    docFixTaskStatus: 'completed', docFixPrLifecycleStatus: 'merged', ...over,
+  }) as ActionQueueItem;
+
+  it('folds repeated doc fixes waiting on the same re-run into one group', () => {
+    const out = groupInFlight([docFix('a'), docFix('b'), docFix('c'), item('CI_RUNNING', 'pr1')]);
+    expect(out.map(g => g.kind)).toEqual(['single', 'group']);
+    const g = out[1];
+    expect(g.kind === 'group' && g.items.map(i => i.subjectKey)).toEqual(['a', 'b', 'c']);
+    expect(g.kind === 'group' && g.key).toBe('docfix-rerun');
+  });
+
+  it('a kind that appears once stays a plain card', () => {
+    const out = groupInFlight([docFix('a'), item('CI_RUNNING', 'pr1')]);
+    expect(out.every(g => g.kind === 'single')).toBe(true);
+  });
+
+  it('what a human can still move (an open doc-fix PR) sorts before passive waits', () => {
+    const out = groupInFlight([
+      docFix('a'), docFix('b'),
+      docFix('c', { docFixPrLifecycleStatus: 'open' }),
+      item('AUTO_MERGE', 'pr9'),
+    ]);
+    const keys = out.map(g => (g.kind === 'single' ? g.item.subjectKey : g.key));
+    expect(keys).toEqual(['c', 'pr9', 'docfix-rerun']);
+  });
+
+  it('keeps every item: the grouped view never drops one', () => {
+    const items = [docFix('a'), docFix('b'), item('FIXING_CI', 'x'), item('FIXING_CI', 'y'), item('RESOLVING', 'z')];
+    const n = groupInFlight(items).reduce((acc, g) => acc + (g.kind === 'single' ? 1 : g.items.length), 0);
+    expect(n).toBe(items.length);
+  });
+});
+
+describe('homeAudience', () => {
+  it('owners and admins are operators; members are not', () => {
+    expect(homeAudience('owner')).toBe('operator');
+    expect(homeAudience('admin')).toBe('operator');
+    expect(homeAudience('member')).toBe('member');
+  });
+  it('an unknown role reads as a member (the lighter layout)', () => {
+    expect(homeAudience(null)).toBe('member');
+  });
+});
+
+describe('homeChatPlacement — chat on Home, and the fallback', () => {
+  const on = { available: true, reason: null, canManageTeamKeys: false };
+  it('available: a member opens on chat; an operator keeps the fleet first', () => {
+    expect(homeChatPlacement('member', on)).toEqual({ kind: 'member-first' });
+    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'operator-after-fleet' });
+  });
+  it('capability off (every team by default): Home is unchanged for everyone, admins included', () => {
+    const off = { available: false, reason: 'capability_disabled', canManageTeamKeys: true };
+    expect(homeChatPlacement('operator', off)).toEqual({ kind: 'none' });
+    expect(homeChatPlacement('member', { ...off, canManageTeamKeys: false })).toEqual({ kind: 'none' });
+    expect(homeChatPlacement('operator', null)).toEqual({ kind: 'none' });
+  });
+  it('turned on but no key (an OAuth-only team): the admin gets the setup card, a member gets nothing', () => {
+    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true })).toEqual({ kind: 'setup', reason: 'no_key' });
+    expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false })).toEqual({ kind: 'none' });
   });
 });

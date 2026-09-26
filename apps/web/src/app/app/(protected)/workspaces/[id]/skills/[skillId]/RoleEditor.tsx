@@ -324,7 +324,7 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
       )}
       {!searched && !loading && (
         <div className="px-3 py-3 text-[11px] text-text-muted">
-          Search the official MCP Registry for servers like &quot;github&quot;, &quot;slack&quot;, &quot;postgres&quot;...
+          Search the official MCP Registry, for example &quot;github&quot; or &quot;postgres&quot;.
         </div>
       )}
     </div>
@@ -557,7 +557,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   }
 
   async function handleDelete() {
-    if (!(await confirm({ title: `Delete role "${skill.name}"?`, message: 'This cannot be undone.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
+    if (!(await confirm({ title: `Delete role "${skill.name}"?`, message: 'You can\'t undo this.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/skills/${skill.id}`, {
@@ -631,17 +631,17 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                   A team-level role <strong>{conflictInfo.name}</strong> (<code>{conflictInfo.slug}</code>) already exists for this team.
                 </p>
                 <p className="text-text-secondary">
-                  Options:
+                  You can:
                 </p>
                 <ul className="list-disc list-inside space-y-0.5 text-text-secondary">
                   <li>
                     <Link href={conflictInfo.editPath} className="text-accent-text hover:underline">
                       Edit the existing team default
                     </Link>{' '}
-                    to incorporate your changes there.
+                    and make your changes there.
                   </li>
                   <li>
-                    Keep this role as a <strong>workspace override</strong> — change &ldquo;Applies to&rdquo; back to &ldquo;One workspace&rdquo; and save to keep it scoped to {workspaceName}.
+                    Keep this role as a <strong>workspace override</strong>: set &ldquo;Applies to&rdquo; back to &ldquo;One workspace&rdquo; and save. It stays scoped to {workspaceName}.
                   </li>
                 </ul>
               </div>
@@ -661,7 +661,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           />
           {scope === 'team' && (
             <p className="text-xs text-text-muted mt-3">
-              Saving will promote this role to team-level, making it the default for all workspaces.
+              Saving makes this a team-level role and the default for every workspace.
             </p>
           )}
         </div>
@@ -688,7 +688,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
-                placeholder="Describe this role's core purpose (one sentence)"
+                placeholder="This role's purpose, in one sentence"
               />
               <p className="text-xs text-text-muted mt-1">Shown on the Team page and in task routing.</p>
             </div>
@@ -702,7 +702,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
-              <p className="text-xs text-text-muted mt-1">Full SKILL.md content. This becomes the agent&apos;s system prompt.</p>
+              <p className="text-xs text-text-muted mt-1">The full SKILL.md, used as the agent&apos;s system prompt.</p>
             </div>
           </div>
 
@@ -719,7 +719,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               <label className="block text-sm font-medium text-text-primary mb-2">Agent backend</label>
               <BackendSelect value={defaultBackend} onChange={setDefaultBackend} inheritLabel="Inherit" />
               <p className="text-xs text-text-muted mt-1.5">
-                Default backend for tasks routed to this role. Requires that backend&apos;s credentials in Settings.
+                Backend for tasks routed to this role. Add that backend&apos;s credentials in Settings.
               </p>
             </div>
 
@@ -791,7 +791,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 )}
                 {!connectorsLoading && teamConnectors.length === 0 && (
                   <p className="text-[12px] text-text-muted">
-                    No team connectors yet. Browse the registry above or add one in Settings → Connectors.
+                    No team connectors yet. Browse the registry above, or add one in Settings → Connectors.
                   </p>
                 )}
                 {teamConnectors.map((connector) => {
@@ -833,7 +833,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           )}
                           {/* Scope label — mirrors the connector-add ScopeSelector vocab */}
                           <span className={`text-[11px] md:text-[10px] font-medium ${enabledHere ? 'text-status-success' : 'text-text-muted'}`}>
-                            {enabledHere ? 'Enabled for this workspace' : 'Not yet enabled for this workspace'}
+                            {enabledHere ? 'Enabled for this workspace' : 'Not enabled for this workspace'}
                           </span>
                         </div>
                         <div className="flex-shrink-0 flex items-center gap-1.5">
@@ -931,7 +931,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       ]}
                       size="sm"
                     />
-                    <p className="text-[11px] text-text-muted mt-1">Link to a workspace for builder roles</p>
+                    <p className="text-[11px] text-text-muted mt-1">Link a workspace for builder roles</p>
                   </div>
                 )}
 

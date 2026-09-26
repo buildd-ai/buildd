@@ -196,7 +196,7 @@ export function mapProseOutcome(
   if (status !== 'completed') {
     return {
       verdict: 'NOT_EVALUATED',
-      evidence: `Verification task ${short(taskId)} ${status} on the runner before returning a verdict (infra, not a judgment) — re-graded on a later round`,
+      evidence: `Verification task ${short(taskId)} ${status} on the runner before returning a verdict (an infrastructure failure). A later round re-grades it.`,
     };
   }
   const out = structuredOutput && typeof structuredOutput === 'object' ? structuredOutput as Record<string, unknown> : null;
@@ -205,7 +205,7 @@ export function mapProseOutcome(
   if (!out || !['pass', 'fail', 'unsure'].includes(verdict as string) || !reason) {
     return {
       verdict: 'NOT_EVALUATED',
-      evidence: `Verification task ${short(taskId)} finished with no usable structured verdict — re-graded on a later round`,
+      evidence: `Verification task ${short(taskId)} finished with no usable structured verdict. A later round re-grades it.`,
     };
   }
   const pointers = Array.isArray(out.evidence)
@@ -248,7 +248,7 @@ export async function resolveProseCriterion(opts: ProseCriterionInput): Promise<
   if (!(await hasAgentBackendCredential(mission.teamId))) {
     return {
       kind: 'unavailable',
-      evidence: 'Prose criterion cannot be verified on a runner: no agent backend credential is connected — connect one in Settings → Agent Backends',
+      evidence: 'Prose criterion cannot be verified on a runner: no agent backend credential is connected. Connect one in Settings → Agent Backends.',
     };
   }
 
@@ -262,7 +262,7 @@ export async function resolveProseCriterion(opts: ProseCriterionInput): Promise<
         taskId: existing.id,
         awaitingRunner,
         evidence: awaitingRunner
-          ? `Waiting for a runner to verify ${quote(text)} — task ${short(existing.id)} unclaimed for ${Math.round(queuedMs / 60000)}m`
+          ? `Waiting for a runner to verify ${quote(text)} · task ${short(existing.id)} unclaimed for ${Math.round(queuedMs / 60000)}m`
           : `Verifying on runner… (task ${short(existing.id)}, ${existing.status})`,
       };
     }
@@ -452,7 +452,7 @@ export async function handleProseEvalOutcome(
     );
     if (cs.workerTaskId === task.id || cs.verdict === 'PENDING') {
       cs.verdict = 'NOT_EVALUATED';
-      cs.evidence = 'Criterion was edited while it was being verified — re-graded on the next round';
+      cs.evidence = 'Someone edited the criterion during verification. The next round re-grades it.';
       delete cs.awaitingRunner;
     }
   } else {

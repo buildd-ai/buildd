@@ -13,9 +13,9 @@ import { computeMissionProgress, isWork, isBookkeeping, isAttempt, attachAttempt
 //     (i.e. used as an exclusion predicate passed to filter, not found inside a filter callback)
 //   - title.startsWith: requires a .filter( on the same line before the startsWith call
 //   - deriveTaskType compared to null: BOTH directions. The gate originally
-//     covered only `!== null`, while the live violation in initiative-pulse.ts
-//     was written `=== null` + `continue` — so the one call site that changed a
-//     rendered verdict was outside the pattern it was written for.
+//     covered only `!== null`, while a live violation (since removed) was
+//     written `=== null` + `continue`, so the one call site that changed a
+//     rendered state was outside the pattern it was written for.
 
 /**
  * A deliberate title-classifier use, permitted only for rows that pre-date the
@@ -29,9 +29,9 @@ import { computeMissionProgress, isWork, isBookkeeping, isAttempt, attachAttempt
 const FALLBACK_MARKER = 'taskclass:pre-backfill-fallback';
 
 /** Files permitted to carry {@link FALLBACK_MARKER}, relative to the repo root. */
-const EXPECTED_FALLBACK_FILES = [
-  'apps/web/src/lib/initiative-pulse.ts',
-];
+// Empty since the initiative verdict (its only user) was removed. A new use has
+// to add its file here, in review.
+const EXPECTED_FALLBACK_FILES: string[] = [];
 
 const BANNED_PATTERNS: Array<{ label: string; re: RegExp; sample: string }> = [
   // .filter(t => !t.parentTaskId) — raw root/child split
@@ -82,10 +82,10 @@ const uiFiles = collectTsFiles(appDir).filter(f =>
   f.endsWith('/page.tsx') || f.endsWith('/route.ts') || f.endsWith('/TaskGrid.tsx'),
 );
 
-// ...and ALL of apps/web/src/lib. The classifier that decides a rendered
-// initiative verdict lives there (`initiative-pulse.ts`), so scoping the gate to
-// route/page files left the highest-consequence read site unguarded: a stale
-// classifier there miscounted every conflict retry and flipped the verdict.
+// ...and ALL of apps/web/src/lib. Rendered classifications live there (the
+// mission card model, for one), so scoping the gate to route/page files left
+// the highest-consequence read sites unguarded: a stale classifier in a lib
+// once miscounted every conflict retry and flipped a rendered state.
 const libDir = join(repoRoot, 'apps/web/src/lib');
 const libFiles = collectTsFiles(libDir).filter(f => !f.endsWith('.test.ts') && !f.endsWith('.test.tsx'));
 
@@ -98,7 +98,7 @@ describe('banned predicate enforcement (A.5.i)', () => {
   it('scans a non-empty set covering both app and lib', () => {
     expect(uiFiles.length).toBeGreaterThan(0);
     expect(libFiles.length).toBeGreaterThan(0);
-    expect(scannedFiles.some(f => f.endsWith('apps/web/src/lib/initiative-pulse.ts'))).toBe(true);
+    expect(scannedFiles.some(f => f.endsWith('apps/web/src/lib/mission-card-view.ts'))).toBe(true);
   });
 
   // Every pattern must match its own canonical old form. Without this a typo in

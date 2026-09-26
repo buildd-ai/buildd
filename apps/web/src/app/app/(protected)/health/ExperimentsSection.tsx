@@ -98,7 +98,7 @@ function Readout({ readout }: { readout: ExperimentReadout }) {
         >
           {VERDICT_LABEL[readout.verdict]}
           {insufficient && (
-            <span className="font-normal"> — needs {readout.minSamplePerArm} resolved per arm</span>
+            <span className="font-normal"> · needs {readout.minSamplePerArm} resolved per arm</span>
           )}
         </span>
       </div>
@@ -144,7 +144,7 @@ function ExperimentCard({ item, canManage }: { item: HealthExperimentItem; canMa
         <Readout readout={readout} />
       ) : (
         <p className="text-xs text-text-muted">
-          {e.status === 'draft' ? 'Not started — nothing enrolls until it is started.' : 'Readout unavailable.'}
+          {e.status === 'draft' ? 'Not started. No tasks enroll until you start it.' : 'Readout unavailable.'}
         </p>
       )}
 
@@ -159,7 +159,7 @@ function ExperimentCard({ item, canManage }: { item: HealthExperimentItem; canMa
                 disabled={busy}
                 onClick={() => patch({ status: 'running' })}
                 className={`${btn} text-status-success border-status-success/40`}
-                title="From the next claim, eligible tasks are randomly split between control and treatment"
+                title="From the next claim, buildd splits eligible tasks at random between control and treatment"
               >
                 {e.status === 'draft' ? 'Start' : 'Resume'}
               </button>
@@ -184,7 +184,7 @@ function ExperimentCard({ item, canManage }: { item: HealthExperimentItem; canMa
                 value={decision}
                 onChange={ev => setDecision(ev.target.value)}
                 rows={2}
-                placeholder="What was decided, and why. Concluding is final."
+                placeholder="The decision and the reason. You can't undo concluding."
                 className="w-full px-3 py-2 text-base md:text-sm border border-border-default rounded-md bg-surface-1"
               />
               <button
@@ -254,7 +254,7 @@ function CreateExperimentForm() {
   return (
     <form onSubmit={submit} className="card px-4 py-3 space-y-2" data-testid="experiment-create-form">
       <p className="text-[11px] text-text-muted">
-        Model routing: eligible standard-tier tasks are split between the routed model and the premium tier. Created as a draft — nothing enrolls until started.
+        Model routing: buildd splits eligible standard-tier tasks between the routed model and the premium tier. The experiment starts as a draft. No tasks enroll until you start it.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <label className="block text-xs text-text-secondary">

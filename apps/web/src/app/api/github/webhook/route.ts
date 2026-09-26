@@ -2809,7 +2809,7 @@ async function advanceReleaseStateFromWorkflowRun(
   // "no workflow_run ever arrived, dispatch outcome unknown" — no longer true
   // once dispatch has succeeded. `pending_external` already means "known
   // in-flight, waiting on something outside buildd's control" everywhere else
-  // it's read (see initiative-metric-registry.ts), which is exactly this.
+  // it's read, which is exactly this.
   const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
 
   // A gated row already in `deploying` got there from its release PR merging

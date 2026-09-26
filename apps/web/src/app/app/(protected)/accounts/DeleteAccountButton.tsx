@@ -44,7 +44,7 @@ export default function DeleteAccountButton({ accountId, accountName }: { accoun
       <ConfirmDialog
         open={showConfirm}
         title={`Delete "${accountName}"?`}
-        message={error || "This will revoke the API key and cannot be undone."}
+        message={error || "Revokes the API key. You can't undo this."}
         confirmLabel="Delete"
         variant="danger"
         loading={deleting}

@@ -1102,6 +1102,11 @@ describe('selectMissionCompletionSummary (D3)', () => {
 });
 
 describe('deriveVerificationNeighbour (D2: no contradictory neighbour beside the state chip)', () => {
+  it('says nothing about verification before anything has evaluated the criteria (a planning or running mission)', async () => {
+    const { deriveVerificationNeighbour } = await import('./mission-helpers');
+    expect(deriveVerificationNeighbour({ missionStatus: 'active', criteriaCount: 4, overall: null })).toBeNull();
+  });
+
   const VERDICTS = ['pass', 'fail', 'UNVERIFIED', 'NOT_EVALUATED', 'PENDING', null] as const;
 
   it('a completed, archived or cancelled mission never renders a verification pill beside its chip, whatever the verdict', async () => {
@@ -1124,9 +1129,9 @@ describe('deriveVerificationNeighbour (D2: no contradictory neighbour beside the
     expect(at('pass')).toMatchObject({ icon: '✓', text: 'Verified' });
     expect(at('fail')).toMatchObject({ icon: '✗', text: 'Not met' });
     expect(at('UNVERIFIED')).toMatchObject({ icon: '?', text: 'Needs verification' });
-    expect(at(null)).toMatchObject({ text: 'Needs verification' });
+    expect(at(null)).toBeNull();
     expect(at('NOT_EVALUATED')).toMatchObject({ text: 'No evaluator' });
     expect(at('PENDING')).toMatchObject({ text: 'Evaluating' });
-    for (const v of VERDICTS) expect(at(v)!.cls).not.toMatch(/#[0-9a-f]{3,6}\b/i);
+    for (const v of VERDICTS) if (v !== null) expect(at(v)!.cls).not.toMatch(/#[0-9a-f]{3,6}\b/i);
   });
 });

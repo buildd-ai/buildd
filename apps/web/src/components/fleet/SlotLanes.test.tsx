@@ -90,6 +90,128 @@ describe('SlotLanes', () => {
     expect(count(html, 'data-testid="slot-lane-row"')).toBe(1);
   });
 
+  it('a live bar that just started puts its label left of it, never out into the future hatch past NOW', () => {
+    const fresh: SlotLane[] = [{
+      id: 'alpha', label: 'alpha',
+      bars: [
+        { id: 'old', start: m(0), end: m(4), tone: 'done', label: 'schema' },
+        { id: 'new', start: m(10), end: null, tone: 'live', scope: 'checkout', label: 'CI fix' },
+      ],
+    }];
+    const html = renderToStaticMarkup(<SlotLanes lanes={fresh} from={m(0)} to={m(20)} now={m(11.2)} />);
+    const outside = html.match(/<span class="pointer-events-none absolute[^"]*" style="([^"]*)"[^>]*>(?:(?!<\/span><\/span>).)*checkout/)?.[1] ?? '';
+    expect(outside).not.toBe('');
+    // Anchored by its right edge at the bar's start, capped to the gap since the previous bar.
+    expect(outside).toContain('right:calc(50% + 8px)');
+    expect(outside).toContain('max-width:calc(30% - 16px)');
+    expect(outside).not.toContain('left:');
+  });
+
+  it('with no room before it, a short live bar is a titled marker: no clipped "mon"/"rese" label, never spilling past NOW', () => {
+    const packed: SlotLane[] = [{
+      id: 'alpha', label: 'alpha',
+      bars: [
+        { id: 'old', start: m(0), end: m(10), tone: 'done', label: 'schema' },
+        { id: 'new', start: m(10), end: null, tone: 'live', scope: 'checkout', label: 'CI fix' },
+      ],
+    }];
+    const html = renderToStaticMarkup(<SlotLanes lanes={packed} from={m(0)} to={m(20)} now={m(11.5)} />);
+    expect(html).not.toContain('pointer-events-none absolute top-[9px] flex h-8');
+    const tag = html.match(/<[a-z]+ [^>]*data-bar-id="new"[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('data-shape="short"');
+    expect(tag).toContain('title="checkout CI fix"');
+    expect(html).not.toMatch(/data-bar-id="new"[^>]*>(?:(?!<\/a>|<\/span><\/span>).)*CI fix/);
+  });
+
+  it('a bar narrower than its label box (a fresh claim) keeps its label out of the box, even with a little room', () => {
+    // 1.1m of a 12m axis (past the claimed minute): a live bar ~9% wide used to draw "mon"/"rese" inside.
+    const html = renderToStaticMarkup(
+      <SlotLanes lanes={[{ id: 'a', label: 'a', bars: [{ id: 'fresh', start: m(9.9), end: null, tone: 'live', scope: 'money', label: 'formatMoney' }] }]} from={m(0)} to={m(12)} now={m(11)} />,
+    );
+    const tag = html.match(/<[a-z]+ [^>]*data-bar-id="fresh"[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('data-shape="short"');
+    // The gap before it is wide, so the label is drawn beside it, left of the bar.
+    expect(html).toMatch(/pointer-events-none absolute top-\[9px\][^>]*>(?:(?!<\/span><\/span>).)*formatMoney/);
+  });
+
+  it('a just-claimed bar is a marker at NOW with a "claimed" label: visible beside the NOW line, never a floating label with no bar', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes lanes={[{ id: 'a', label: 'a', bars: [
+        { id: 'old', start: m(0), end: m(3), tone: 'done', label: 'schema' },
+        { id: 'j', start: m(9.95), end: null, tone: 'live', scope: 'checkout', label: 'Stripe in currency' },
+      ] }]} from={m(0)} to={m(20)} now={m(10)} />,
+    );
+    const tag = html.match(/<[a-z]+ [^>]*data-bar-id="j"[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('data-shape="claimed"');
+    // Anchored by its right edge just left of NOW (the NOW line would hide a 6px sliver).
+    const style = tag.match(/style="([^"]*)"/)?.[1] ?? '';
+    expect(style).toContain('right:calc(50% + ');
+    expect(style).not.toContain('left:');
+    expect(html).toMatch(/data-testid="lane-claimed-label"[^>]*>(?:(?!<\/span><\/span>).)*Stripe in currency/);
+    expect(html).toMatch(/data-testid="lane-claimed-label"[^>]*>(?:(?!<\/span><\/span>).)*claimed/);
+  });
+
+  it('a claim older than a minute is a normal short live bar again', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes lanes={[{ id: 'a', label: 'a', bars: [{ id: 'j', start: m(8.5), end: null, tone: 'live', label: 'checkout' }] }]} from={m(0)} to={m(20)} now={m(10)} />,
+    );
+    expect(html.match(/<[a-z]+ [^>]*data-bar-id="j"[^>]*>/)?.[0]).toContain('data-shape="short"');
+    expect(html).not.toContain('lane-claimed-label');
+  });
+
+  it('a finished bar narrower than its label box is the short-run marker: no empty box, no clipped check', () => {
+    // The organizer's plan: ~5% of the axis used to draw a box with a clipped check in it.
+    const html = renderToStaticMarkup(
+      <SlotLanes lanes={[{ id: 'a', label: 'a', bars: [
+        { id: 'plan', start: m(1), end: m(2), tone: 'plan', label: 'plan', endMark: 'ok' },
+        { id: 'db', start: m(2), end: m(9), tone: 'done', scope: 'db', label: 'currency columns', endMark: 'ok' },
+      ] }]} from={m(0)} to={m(20)} now={m(19)} />,
+    );
+    const tag = html.match(/<[a-z]+ [^>]*data-bar-id="plan"[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('data-shape="short"');
+    expect(tag).toContain('title="plan"');
+    // No content inside the marker: it closes straight away.
+    expect(html).toMatch(/data-bar-id="plan"[^>]*><\/span>/);
+    // A solid tick at its own start (it is not at NOW), label in the tooltip only.
+    expect(tag).toContain('style="left:5%"');
+    expect(tag).toContain('bg-status-success');
+    expect(html).not.toContain('pointer-events-none absolute top-[9px] flex h-8');
+    expect(html.match(/<[a-z]+ [^>]*data-bar-id="db"[^>]*>/)?.[0]).not.toContain('data-shape');
+  });
+
+  it('a finished bar too short to hold its label draws as a titled marker, not an empty box', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes
+        lanes={[{ id: 'q', label: 'q', bars: [
+          { id: 'tiny', start: m(0), end: m(0.2), tone: 'done', label: 'verify goal', endMark: 'ok', title: 'Verify goal criterion: all merged' },
+          { id: 'wide', start: m(5), end: m(15), tone: 'done', label: 'export csv', endMark: 'ok' },
+        ] }]}
+        from={m(0)} to={m(60)} now={m(59)}
+      />,
+    );
+    const tiny = html.match(/<[a-z]+ [^>]*data-bar-id="tiny"[^>]*>/)?.[0] ?? '';
+    expect(tiny).toContain('data-shape="short"');
+    // Hover names it: the tooltip carries the label.
+    expect(tiny).toContain('title="verify goal · Verify goal criterion: all merged"');
+    const wide = html.match(/<[a-z]+ [^>]*data-bar-id="wide"[^>]*>/)?.[0] ?? '';
+    expect(wide).not.toContain('data-shape');
+  });
+
+  it('a lane with pre-assigned rows draws exactly those rows (a caller folded some away)', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes
+        lanes={[{ id: 'q', label: 'q', bars: [], rows: [
+          [{ id: 'r1', start: m(0), end: m(30), tone: 'done', label: 'one' }],
+          [{ id: 'r2', start: m(1), end: m(20), tone: 'done', label: 'two' }],
+          [],
+        ] }]}
+        from={m(0)} to={m(60)} now={m(59)}
+      />,
+    );
+    expect(count(html, 'data-testid="slot-lane-row"')).toBe(3);
+    expect(html).toContain('data-bar-id="r2"');
+  });
+
   it('imports nothing mission-specific, so other surfaces can reuse it', () => {
     const src = readFileSync(join(import.meta.dir, 'SlotLanes.tsx'), 'utf8');
     const imports = [...src.matchAll(/from '([^']+)'/g)].map(x => x[1]);

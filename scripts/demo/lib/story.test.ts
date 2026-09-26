@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { scheduleBaseline, SCHEDULE_INTERVAL_MS, type Story } from './story';
+import { relFuture, scheduleBaseline, SCHEDULE_INTERVAL_MS, type Story } from './story';
 
 const anchor = Date.UTC(2026, 0, 1, 12, 0, 0);
 
@@ -28,5 +28,20 @@ describe('scheduleBaseline', () => {
     const { lastRunAt, nextRunAt } = scheduleBaseline({ timeline: [] }, 'S9', anchor, 3_600_000);
     expect(nextRunAt.getTime()).toBe(anchor);
     expect(lastRunAt.getTime()).toBe(anchor - 3_600_000);
+  });
+
+  test('a far-future schedule honours _nextRunIn / _lastRunAgo', () => {
+    const story: Story = { timeline: [], taskSchedules: [{ key: 'Q', _nextRunIn: '111d', _lastRunAgo: '20d' }] };
+    const { lastRunAt, nextRunAt } = scheduleBaseline(story, 'Q', anchor);
+    expect(nextRunAt.getTime()).toBe(anchor + 111 * 86_400_000);
+    expect(lastRunAt.getTime()).toBe(anchor - 20 * 86_400_000);
+  });
+});
+
+describe('relFuture', () => {
+  test('parses the same units forward from the anchor', () => {
+    expect(relFuture(anchor, '90m').getTime()).toBe(anchor + 90 * 60_000);
+    expect(relFuture(anchor, '+2h').getTime()).toBe(anchor + 2 * 3_600_000);
+    expect(relFuture(anchor, undefined, 5).getTime()).toBe(anchor + 5);
   });
 });

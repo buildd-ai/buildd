@@ -393,7 +393,7 @@ export async function evaluateCriteriaNow(
       // criteria at their current verdict rather than clearing them.
       for (const cs of workerBound) {
         if (cs.verdict === 'NOT_EVALUATED') {
-          cs.evidence = 'Command criterion requires worker task dispatch — this run does not dispatch evaluation tasks';
+          cs.evidence = 'Command criterion needs a dispatched worker task. This run does not dispatch evaluation tasks.';
         }
       }
     } else {
@@ -556,7 +556,7 @@ export async function evaluateCriteriaNow(
           }
           cs.verdict = 'NOT_EVALUATED';
           cs.evidence = noPath
-            ? `Not graded: grader is "api" but ${describeInferenceError(inferenceError)} — connect an API key, or set grader "runner" (or "auto") to grade on a runner`
+            ? `Not graded: grader is "api" but ${describeInferenceError(inferenceError)}. Connect an API key, or set grader "runner" (or "auto") to grade on a runner`
             : `Not graded: ${describeInferenceError(inferenceError)}`;
           fireNotEvaluated(cs.index, inferenceError.kind);
         }

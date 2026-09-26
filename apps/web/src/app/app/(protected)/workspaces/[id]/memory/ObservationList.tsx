@@ -136,7 +136,7 @@ export default function ObservationList({
   }
 
   async function handleDelete(obsId: string) {
-    if (!(await confirm({ title: 'Delete memory?', message: 'This memory will be removed from the workspace.', confirmLabel: 'Delete', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Delete memory?', message: 'Removes this memory from the workspace.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     const res = await fetch(`/api/workspaces/${workspaceId}/memory/${obsId}`, {
       method: 'DELETE',
     });
@@ -409,7 +409,7 @@ export default function ObservationList({
         <div className="text-center py-8 text-text-muted">Loading…</div>
       ) : observations.length === 0 ? (
         <div className="text-center py-8 text-text-muted">
-          No observations yet. Add observations manually or let workers record them as they complete tasks.
+          No observations yet. Add one here, or workers record them as they finish tasks.
         </div>
       ) : viewMode === 'list' ? (
         <div className="space-y-3">

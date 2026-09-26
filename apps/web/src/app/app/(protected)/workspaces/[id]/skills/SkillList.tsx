@@ -66,7 +66,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
   }
 
   async function deleteSkill(id: string) {
-    if (!(await confirm({ title: 'Delete skill?', message: 'This cannot be undone.', confirmLabel: 'Delete', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Delete skill?', message: 'You can\'t undo this.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setDeleting(id);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/skills/${id}`, {
@@ -87,7 +87,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
     return (
       <div className="text-center py-12 text-text-muted">
         <p className="text-lg mb-2">No roles yet</p>
-        <p className="text-sm mb-3">Create roles to define agent personas with specific models, tools, and delegation rules.</p>
+        <p className="text-sm mb-3">A role sets an agent&apos;s model, tools, and who it can delegate to.</p>
         <a
           href="https://docs.buildd.dev/docs/features/skills"
           target="_blank"

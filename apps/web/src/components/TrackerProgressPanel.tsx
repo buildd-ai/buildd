@@ -101,7 +101,7 @@ export function TrackerCard({
       </div>
 
       {items.length === 0 ? (
-        <p className="text-[12px] text-text-muted italic">No tracked items yet.</p>
+        <p className="text-[12px] text-text-muted italic">No tracked items.</p>
       ) : (
         <ul className="space-y-3">
           {items.map((item) => {

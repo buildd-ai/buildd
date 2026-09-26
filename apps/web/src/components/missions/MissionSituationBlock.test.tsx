@@ -68,7 +68,7 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     const { view, html } = render({ ...missionPrOpen, activeAgents: 1 });
 
     expect(view.kind).toBe('running');
-    expect(html).toContain('Running (1 agent) — but waiting on you to merge the mission PR #4242.');
+    expect(html).toContain('Running (1 agent). Waiting on you to merge the mission PR #4242.');
     expect(html).toContain('data-testid="mission-primary-action"');
   });
 
@@ -93,7 +93,7 @@ describe('mission header — genuinely mid-flight, nothing outstanding', () => {
   it('says running and offers no action at all', () => {
     const { html } = render({ ...base, activeAgents: 3 });
 
-    expect(html).toContain('Running — 3 agents in flight, nothing outstanding.');
+    expect(html).toContain('Running: 3 agents in flight, nothing outstanding.');
     expect(html).not.toContain('data-testid="mission-primary-action"');
     expect(html).not.toContain('data-testid="mission-also-outstanding"');
   });
@@ -101,7 +101,7 @@ describe('mission header — genuinely mid-flight, nothing outstanding', () => {
   it('says nothing-to-do plainly when idle', () => {
     const { html } = render(base);
 
-    expect(html).toContain('Nothing to do — no source reports anything outstanding.');
+    expect(html).toContain('Nothing to do. No source reports outstanding work.');
     expect(html).not.toContain('data-testid="mission-primary-action"');
   });
 });
@@ -153,7 +153,7 @@ describe('F2: a failing criterion is said once, and names what holds it', () => 
 
   it('stale verdict: headline plus the re-run instruction, no restated causal claim', () => {
     const { html, view } = render({ ...failing, openTasks: [] });
-    expect(html).toContain('no task is open now');
+    expect(html).toContain('no task is open.');
     expect(html).toContain(view.situation.nextAction!);
     expect(html).not.toContain('returned a failing verdict');
     expect(html.split('no open tasks').length - 1).toBe(1);

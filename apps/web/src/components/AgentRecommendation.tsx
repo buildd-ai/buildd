@@ -22,7 +22,7 @@ export function AgentRecommendation({ recommendation, expected = false, tone = '
   if (!expected) return null;
   return (
     <p className="text-[11px] text-text-muted mt-1.5 italic">
-      No handoff recommendation recorded by the last attempt.
+      The last attempt left no handoff recommendation.
     </p>
   );
 }

@@ -45,6 +45,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -1041,6 +1042,14 @@ export async function PATCH(
       urlTitle: 'Respond',
       priority: 0,
     });
+    // Agent chat: a mission filed from a conversation gets the question posted
+    // back into it. Lazy + best-effort: never on this PATCH's critical path.
+    if (worker.taskId) {
+      const taskId = worker.taskId;
+      void import('@/lib/chat/mission-events')
+        .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
+        .catch(() => {});
+    }
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
@@ -3558,6 +3567,13 @@ export async function PATCH(
             });
           } else {
             // Sensitive: send a redacted stub — event type only, no task title/workspace prose
+            if (isDone) {
+              // Agent chat: "plan ready" for a chat-filed mission, posted back
+              // into its conversation. Lazy + best-effort.
+              void import('@/lib/chat/mission-events')
+                .then(m => m.postTaskCompletedEvent({ taskId }))
+                .catch(() => {});
+            }
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: isSensitive
@@ -4531,7 +4547,7 @@ async function handleReviewerOutcomeIfNeeded(
             taskId: originalTaskId,
             authorType: 'system',
             type: 'reviewer_approved',
-            title: `PR #${prNumber} approved — awaiting human merge`,
+            title: approvedAwaitingMergeTitle(prNumber),
             body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
             status: 'open',
           });

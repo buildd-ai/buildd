@@ -31,6 +31,7 @@
 
 import { derivePrReviewStatus } from './pr-review-status';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
+import { isGreenAutoMergePending } from './auto-merge-grace';
 
 /**
  * Who owns the next move on this PR.
@@ -109,8 +110,9 @@ export interface ReviewerGateInput {
   prLifecycleUpdatedAt?: Date | null;
 }
 
-/** How long a `ci_green` auto-threshold PR may stay open before it counts as held. */
-const AUTO_MERGE_GREEN_GRACE_MS = 5 * 60_000;
+// The grace window and its predicate live in a pure module: the mission pulse
+// (client-bundled) reads the same one, and this file reaches the db.
+export { AUTO_MERGE_GREEN_GRACE_MS, isGreenAutoMergePending } from './auto-merge-grace';
 
 export interface ReviewerGateResult {
   actor: ReviewerGateActor;
@@ -170,7 +172,7 @@ function stallReason(input: ReviewerGateInput): string {
   // A stamp is historical evidence, not a new pre-filter evaluation. Preserve
   // the exact reason and its observation time instead of asserting it still holds.
   parts.push(typeof reason === 'string' && reason.length > 0
-    ? `claimable: last attempt no — ${reason} (${typeof stampedAt === 'string' ? stampedAt : 'time unknown'})`
+    ? `claimable: last attempt no, ${reason} (${typeof stampedAt === 'string' ? stampedAt : 'time unknown'})`
     : 'claimable: not yet diagnosed');
   return parts.join(' · ');
 }
@@ -180,7 +182,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
 
   // Tier is a hard human gate regardless of review state.
   if (input.policyTier === 'human') {
-    return { actor: 'human', reason: 'Human Gate — manual merge required' };
+    return { actor: 'human', reason: 'Human Gate · manual merge required' };
   }
 
   // The agent already handed this back explicitly — trust its verdict over
@@ -189,7 +191,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
     return { actor: 'human', reason: input.escalationReason };
   }
   if (input.approvalSummary != null) {
-    return { actor: 'human', reason: 'Reviewer approved — awaiting human merge' };
+    return { actor: 'human', reason: 'Reviewer approved · awaiting your merge' };
   }
 
   // Option A′: a task PR based on the mission's integration branch. It resolved
@@ -210,7 +212,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   if (input.isMissionIntegrationTaskPr) {
     return {
       actor: 'platform',
-      reason: 'Merges into the mission integration branch — the mission PR is the review gate',
+      reason: 'Merges into the mission integration branch. The mission PR is the review gate.',
     };
   }
 
@@ -235,27 +237,24 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
         return { actor: 'platform', platformState: 'auto_merge', reason: 'Auto-merges when CI passes' };
       }
       if (input.prLifecycleStatus === 'ci_green') {
-        const greenFor = input.prLifecycleUpdatedAt
-          ? input.now.getTime() - input.prLifecycleUpdatedAt.getTime()
-          : Number.POSITIVE_INFINITY;
-        if (greenFor < AUTO_MERGE_GREEN_GRACE_MS) {
-          return { actor: 'platform', platformState: 'auto_merge', reason: 'CI passed — merging' };
+        if (isGreenAutoMergePending(input.prLifecycleStatus, input.prLifecycleUpdatedAt, input.now)) {
+          return { actor: 'platform', platformState: 'auto_merge', reason: 'CI passed · merging' };
         }
-        return { actor: 'human', reason: 'CI passed but auto-merge did not land it — a merge rail held it' };
+        return { actor: 'human', reason: 'CI passed, but a merge rail held the auto-merge' };
       }
       if (input.prLifecycleStatus === 'ci_failed') {
-        return { actor: 'human', reason: 'CI failing — auto-merge waits for green' };
+        return { actor: 'human', reason: 'CI failing · auto-merge waits for green' };
       }
       if (input.prLifecycleStatus === 'conflict') {
-        return { actor: 'human', reason: 'Branch has conflicts — auto-merge cannot land it' };
+        return { actor: 'human', reason: 'Branch has conflicts · auto-merge blocked' };
       }
     }
     // No reviewer task, and this policy tier will never create one.
-    return { actor: 'human', reason: 'No reviewer will run for this PR — manual merge required' };
+    return { actor: 'human', reason: 'No reviewer runs for this PR · manual merge required' };
   }
 
   if (rt.status === 'failed' || rt.status === 'cancelled') {
-    return { actor: 'human', reason: `Reviewer task ${rt.status} — needs human review` };
+    return { actor: 'human', reason: `Reviewer task ${rt.status} · needs your review` };
   }
 
   if (rt.hasLiveWorker) {
@@ -277,7 +276,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   // human rather than silently stranding it.
   return {
     actor: 'human',
-    reason: 'Review completed without a recorded verdict — needs human review',
+    reason: 'Review finished with no recorded verdict · needs your review',
   };
 }
 
@@ -324,7 +323,7 @@ export function deriveStoredVerdictFallback(
     return { escalationReason: verdictGate.reason ?? null, approvalSummary: null };
   }
   if (status.state === 'approved') {
-    return { escalationReason: null, approvalSummary: status.summary ?? 'Reviewer approved — awaiting human merge' };
+    return { escalationReason: null, approvalSummary: status.summary ?? 'Reviewer approved · awaiting your merge' };
   }
   return { escalationReason: null, approvalSummary: null };
 }

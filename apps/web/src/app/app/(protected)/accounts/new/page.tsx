@@ -152,7 +152,7 @@ export default function NewAccountPage() {
                 }))}
               />
               <p className="text-xs text-text-secondary mt-1">
-                Which team owns this account
+                The team that owns this account
               </p>
             </div>
           )}
@@ -181,7 +181,7 @@ export default function NewAccountPage() {
                 value={selectedWorkspaceId}
                 onChange={setSelectedWorkspaceId}
                 options={[
-                  { value: '', label: 'None — link later' },
+                  { value: '', label: 'None · link later' },
                   ...workspaces.map((ws) => ({
                     value: ws.id,
                     label: ws.name + (ws.repo ? ` (${ws.repo})` : ''),
@@ -189,7 +189,7 @@ export default function NewAccountPage() {
                 ]}
               />
               <p className="text-xs text-text-secondary mt-1">
-                Auto-link this account to a workspace so the API key works immediately
+                Links this account to a workspace so the API key works right away
               </p>
             </div>
           )}
@@ -228,9 +228,9 @@ export default function NewAccountPage() {
                       value={accountType}
                       onChange={setAccountType}
                       options={[
-                        { value: 'user', label: 'User - Personal laptop/workstation' },
-                        { value: 'service', label: 'Service - Always-on server/VM' },
-                        { value: 'action', label: 'Action - GitHub Actions runner' },
+                        { value: 'user', label: 'User · personal laptop or workstation' },
+                        { value: 'service', label: 'Service · always-on server or VM' },
+                        { value: 'action', label: 'Action · GitHub Actions runner' },
                       ]}
                     />
                     <p className="text-xs text-text-secondary mt-1">
@@ -248,9 +248,9 @@ export default function NewAccountPage() {
                     value={tokenLevel}
                     onChange={handleTokenLevelChange}
                     options={[
-                      { value: 'trigger', label: 'Trigger - Can create tasks and artifacts only' },
-                      { value: 'worker', label: 'Worker - Can claim and execute tasks' },
-                      { value: 'admin', label: 'Admin - Can also reassign and manage tasks' },
+                      { value: 'trigger', label: 'Trigger · create tasks and artifacts only' },
+                      { value: 'worker', label: 'Worker · claim and run tasks' },
+                      { value: 'admin', label: 'Admin · also reassign and manage tasks' },
                     ]}
                   />
                   <p className="text-xs text-text-secondary mt-1">

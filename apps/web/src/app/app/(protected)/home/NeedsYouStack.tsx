@@ -18,6 +18,8 @@ export interface HomeShippedMission {
   fixes: number;
   durationMs: number | null;
   criteria: { passed: number; total: number } | null;
+  /** The mission's latest visual review, when it had one. */
+  screens?: { shots: number; ok: number; issues: number; unsure: number } | null;
 }
 
 function hhmm(iso: string, tz?: string | null): string {
@@ -25,10 +27,15 @@ function hhmm(iso: string, tz?: string | null): string {
 }
 
 function ShippedCard({ m, timeZone }: { m: HomeShippedMission; timeZone?: string | null }) {
+  // What happened, not a CI tally: "0 auto-fixes" is not an outcome.
+  const screens = m.screens && m.screens.shots > 0 ? m.screens : null;
   const facts: Array<[string | number, string]> = [
     [m.prs, m.prs === 1 ? 'PR merged' : 'PRs merged'],
     [shortDuration(m.durationMs), 'wall clock'],
-    [m.fixes, m.fixes === 1 ? 'auto-fix' : 'auto-fixes'],
+    ...(m.fixes > 0 ? [[m.fixes, m.fixes === 1 ? 'auto-fix' : 'auto-fixes'] as [number, string]] : []),
+    ...(screens
+      ? [[`${screens.ok}/${screens.shots}`, 'screens ok'] as [string, string]]
+      : []),
   ];
   return (
     <article data-testid="needs-you-card" data-kind="shipped" className="card border-l-[6px] border-l-status-success px-4 py-4 md:px-6">
@@ -44,7 +51,7 @@ function ShippedCard({ m, timeZone }: { m: HomeShippedMission; timeZone?: string
         )}
       </div>
       <h3 className="truncate font-mono text-[15px] font-semibold text-text-primary">{m.title}</h3>
-      <dl className="mt-3.5 grid grid-cols-3 gap-3 border-t border-border-default pt-3.5">
+      <dl className={`mt-3.5 grid gap-3 border-t border-border-default pt-3.5 ${facts.length > 3 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'}`}>
         {facts.map(([v, k]) => (
           <div key={k}>
             <dt className="sr-only">{k}</dt>
@@ -79,7 +86,12 @@ export function NeedsYouStack({
   // `[false, false]` — truthy. `Children.toArray` drops false/null/undefined,
   // which is the question that matters: will anything render under the heading?
   const hasChildren = Children.toArray(children).length > 0;
-  const empty = questions.length === 0 && held.length === 0 && shipped.length === 0 && !hasChildren;
+  // Children are not all asks: the action queue also carries IN FLIGHT cards
+  // (the platform's next move, not yours). So "nothing needs you" is the count
+  // — the same number as the headline and the stat — not "no children".
+  // Without this the heading sat over nothing but "IN FLIGHT 1".
+  const nothingNeedsYou = count === 0 && questions.length === 0 && held.length === 0;
+  const empty = nothingNeedsYou && shipped.length === 0 && !hasChildren;
   return (
     <section data-testid="home-waiting-on-you" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -94,10 +106,10 @@ export function NeedsYouStack({
         {shipped.map(m => <ShippedCard key={m.id} m={m} timeZone={timeZone} />)}
         {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
         {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
-        {children}
-        {empty && (
-          <p className="font-mono text-[13px] text-text-muted">Nothing needs you. The fleet is on it.</p>
+        {(empty || (nothingNeedsYou && hasChildren)) && (
+          <p data-testid="needs-you-empty" className="font-mono text-[13px] text-text-muted">Nothing waiting on you.</p>
         )}
+        {children}
       </div>
     </section>
   );

@@ -72,10 +72,10 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
             const data = await res.json();
             setTestResult({
                 ok: res.ok,
-                message: data.message || (res.ok ? 'Connection successful' : 'Connection failed'),
+                message: data.message || (res.ok ? 'Connected' : 'Connection failed'),
             });
         } catch {
-            setTestResult({ ok: false, message: 'Failed to reach test endpoint' });
+            setTestResult({ ok: false, message: 'Couldn\'t reach the test endpoint' });
         } finally {
             setTesting(false);
         }
@@ -144,8 +144,8 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
             {enabled && url.trim() && (
                 <div className="bg-primary/10 border border-primary/30 rounded-lg p-4">
                     <p className="text-sm text-primary">
-                        When enabled, new tasks created in this workspace will be sent to the webhook.
-                        The agent receives the task description and can report progress back via the buildd API.
+                        buildd sends each new task in this workspace to the webhook. The agent gets the
+                        task description and reports progress through the buildd API.
                     </p>
                 </div>
             )}

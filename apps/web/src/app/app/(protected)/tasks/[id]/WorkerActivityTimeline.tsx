@@ -206,7 +206,12 @@ export function ActivityTape({
         {tape.axis.map((a, i) => (
           <span key={i} className="absolute" style={{ left: `${i * 25}%` }}>{a}</span>
         ))}
-        {live && <span className="absolute right-0 text-accent-text">now</span>}
+        {/* The right edge prints the time it stands for, so the axis visibly
+            reaches ELAPSED instead of stopping at the last labelled quarter. */}
+        <span data-testid="worker-activity-axis-end" className="absolute right-0 flex gap-1.5">
+          <span>{tape.end}</span>
+          {live && <span className="text-accent-text">now</span>}
+        </span>
       </div>
     </div>
   );

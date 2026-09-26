@@ -103,7 +103,7 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
           )}
           {openPrCount > 0 && (
             <p className="text-[12px] text-status-warning">
-              {openPrCount} PR{openPrCount !== 1 ? 's' : ''} not yet merged —{' '}
+              {openPrCount} PR{openPrCount !== 1 ? 's' : ''} not yet merged ·{' '}
               <Link href={`/app/missions/${missionId}`} className="hover:underline">view timeline</Link>
             </p>
           )}

@@ -79,6 +79,20 @@ describe('MissionVerifiedPill — criteria panel URL sync and hash-based opening
     expect(html).toContain('Verified');
   });
 
+  it('before any evaluation, names the criteria without a verification verdict and keeps the anchor', () => {
+    const html = renderPill({ overall: null, criteriaState: null });
+    expect(html).not.toContain('Needs verification');
+    expect(html).not.toContain('?');
+    expect(html).toContain('1 criterion');
+    expect(html).toContain('id="mission-criteria"');
+    const four = renderPill({ overall: null, criteriaState: null, criteria: Array.from({ length: 4 }, (_, i) => ({ type: 'all_prs_merged', label: `c${i}` })) as GoalCriterion[] });
+    expect(four).toContain('4 criteria');
+  });
+
+  it('says Needs verification once an evaluation left the criteria unverified', () => {
+    expect(renderPill({ overall: 'UNVERIFIED' })).toContain('Needs verification');
+  });
+
   it('renders the + Criteria button when criteria is empty', () => {
     const html = renderPill({ criteria: [] });
     expect(html).toContain('+ Criteria');

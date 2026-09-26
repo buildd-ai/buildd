@@ -50,6 +50,15 @@ describe('taskDisplayLabel — heuristic', () => {
       .toEqual({ scope: null, label: 'verify all PRs merged' });
   });
 
+  // Regression: a researcher title labelled as the bare prefix "RESEARCH", so
+  // the task page's "Also running" drew it in raw caps beside short labels.
+  it('"RESEARCH:" titles label the research subject, not the prefix', () => {
+    expect(taskDisplayLabel({ title: "RESEARCH: FX rate providers — freshness, cost, and what breaks when they're down" }))
+      .toEqual({ scope: null, label: 'FX rate providers' });
+    expect(taskDisplayLabel({ title: 'research: where PDF render time goes' }).label)
+      .not.toMatch(/^research$/i);
+  });
+
   it('keeps acronyms and code identifiers verbatim', () => {
     expect(taskDisplayLabel({ title: 'fix(api): MCP create_task rejects label' }).label)
       .toBe('MCP create_task rejects label');

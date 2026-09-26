@@ -53,7 +53,7 @@ describe('all work merged, mission PR open', () => {
     expect(view.kind).toBe('awaiting_merge');
     expect(view.situation.headline).toBe('Waiting on you to merge the mission PR #4242.');
     expect(view.situation.focus?.kind).toBe('merge');
-    expect(view.situation.nextAction).toContain('Land the mission PR');
+    expect(view.situation.nextAction).toContain('Merge the mission PR');
   });
 
   it('carries the PR href, so the affordance has somewhere to go', () => {
@@ -87,8 +87,8 @@ describe('Part 2 — guidance survives a wrong state read', () => {
     const merge = factOfKind(view.outstanding, 'merge');
     if (merge.kind !== 'merge') throw new Error('unreachable');
     expect(merge.missionPr).toBe(true);
-    expect(view.situation.headline).toBe('Running (1 agent) — but waiting on you to merge the mission PR #4242.');
-    expect(view.situation.nextAction).toContain('Land the mission PR');
+    expect(view.situation.headline).toBe('Running (1 agent). Waiting on you to merge the mission PR #4242.');
+    expect(view.situation.nextAction).toContain('Merge the mission PR');
   });
 
   it('states an unmet goal criterion even when state reads running', () => {
@@ -240,7 +240,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
     expect(view.outstanding).toEqual([]);
     expect(view.situation.focus).toBeNull();
     expect(view.situation.nextAction).toBeNull();
-    expect(view.situation.headline).toBe('Running — 3 agents in flight, nothing outstanding.');
+    expect(view.situation.headline).toBe('Running: 3 agents in flight, nothing outstanding.');
   });
 
   it('says so plainly when idle, rather than falling back to a menu', () => {
@@ -248,7 +248,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
 
     expect(view.kind).toBe('idle');
     expect(view.situation.nextAction).toBeNull();
-    expect(view.situation.headline).toBe('Nothing to do — no source reports anything outstanding.');
+    expect(view.situation.headline).toBe('Nothing to do. No source reports outstanding work.');
   });
 
   it('reports nothing outstanding for a completed mission', () => {
@@ -259,7 +259,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
 
     expect(view.kind).toBe('complete');
     expect(view.outstanding).toEqual([]);
-    expect(view.situation.headline).toBe('Complete — nothing outstanding.');
+    expect(view.situation.headline).toBe('Complete. Nothing outstanding.');
   });
 });
 

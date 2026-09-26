@@ -8,7 +8,7 @@ import Link from 'next/link';
 import PhaseBar from '@/components/missions/PhaseBar';
 import { StatusWord } from '@/components/missions/MissionListCards';
 import type { MissionCardView } from '@/lib/mission-card-view';
-import { shortDuration, type MissionListCardModel } from '@/lib/mission-list-card';
+import { nextRunLabel, shortDuration, type MissionListCardModel } from '@/lib/mission-list-card';
 
 export interface HomeMissionRow {
   view: MissionCardView;
@@ -22,13 +22,7 @@ const RUN_PIP: Record<'ok' | 'fail' | 'live' | 'pending', string> = {
   pending: 'border-border-strong',
 };
 
-function nextLabel(mins: number | null): string | null {
-  if (mins == null) return null;
-  if (mins <= 0) return 'due now';
-  return mins >= 90 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
-}
-
-function Row({ view, model }: HomeMissionRow) {
+function Row({ view, model, timeZone }: HomeMissionRow & { timeZone?: string | null }) {
   const r = model.recurring;
   const status = r ? { label: 'Recurring', tone: 'muted' as const } : model.kind === 'done'
     ? { label: model.done?.durationMs != null ? `Done · ${shortDuration(model.done.durationMs)}` : 'Done', tone: 'success' as const }
@@ -58,7 +52,10 @@ function Row({ view, model }: HomeMissionRow) {
       )}
       <div className="flex items-center justify-start gap-3 whitespace-nowrap font-mono text-[12px] text-text-secondary md:justify-end">
         {r ? (
-          nextLabel(r.nextMins) && <span>{r.nextMins! > 0 && 'next '}<b className="text-text-primary">{nextLabel(r.nextMins)}</b></span>
+          (() => {
+            const next = nextRunLabel(r.nextMins, r.nextRunAt, { timeZone });
+            return next && <span data-testid="home-mission-next">{next.lead && `${next.lead} `}<b className="text-text-primary">{next.value}</b></span>;
+          })()
         ) : (
           <>
             {model.live.count > 0 && (
@@ -74,7 +71,7 @@ function Row({ view, model }: HomeMissionRow) {
               </span>
             )}
             {model.counts.total > 0 && <span><b className="text-text-primary">{model.counts.done}</b>/{model.counts.total}</span>}
-            {model.elapsedMin != null && <span className="text-text-muted">{model.elapsedMin}m</span>}
+            {model.elapsedMin != null && <span className="text-text-muted">{shortDuration(model.elapsedMin * 60_000)}</span>}
           </>
         )}
       </div>
@@ -82,7 +79,7 @@ function Row({ view, model }: HomeMissionRow) {
   );
 }
 
-export function HomeMissionsSummary({ rows, total, shippedToday }: { rows: readonly HomeMissionRow[]; total: number; shippedToday: number }) {
+export function HomeMissionsSummary({ rows, total, shippedToday, timeZone }: { rows: readonly HomeMissionRow[]; total: number; shippedToday: number; timeZone?: string | null }) {
   return (
     <section data-testid="home-missions" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -97,7 +94,7 @@ export function HomeMissionsSummary({ rows, total, shippedToday }: { rows: reado
         </div>
       ) : (
         <div className="card p-0">
-          {rows.map(r => <Row key={r.view.id} {...r} />)}
+          {rows.map(r => <Row key={r.view.id} {...r} timeZone={timeZone} />)}
         </div>
       )}
     </section>

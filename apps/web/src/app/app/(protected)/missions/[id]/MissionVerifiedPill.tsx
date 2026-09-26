@@ -119,10 +119,16 @@ function MissionVerifiedPillInner({
   let title = 'Goal criteria set but not yet verified';
   let toneClass = CRITERIA_GATE_TONE_CLASS.warning;
 
-  if (overall === 'NOT_EVALUATED') {
+  if (overall == null) {
+    // Nothing has evaluated the criteria yet: name them, claim no verdict.
+    icon = '';
+    text = `${criteriaCount} ${criteriaCount === 1 ? 'criterion' : 'criteria'}`;
+    title = 'Goal criteria, not evaluated yet';
+    toneClass = CRITERIA_GATE_TONE_CLASS.neutral;
+  } else if (overall === 'NOT_EVALUATED') {
     icon = '–';
     text = 'No evaluator';
-    title = 'Criteria set — no evaluator available';
+    title = 'Criteria set, no evaluator available';
     toneClass = 'text-text-muted/60 border-border-default';
   } else if (overall === 'PENDING') {
     icon = '⋯';
@@ -148,7 +154,7 @@ function MissionVerifiedPillInner({
         title={title}
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[11px] md:text-[10px] rounded-sm transition-opacity hover:opacity-80 ${toneClass}`}
       >
-        {icon} {text}
+        {icon ? `${icon} ${text}` : text}
       </button>
       <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
         <MissionGoalCriteria

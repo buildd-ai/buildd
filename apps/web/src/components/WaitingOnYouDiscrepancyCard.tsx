@@ -12,9 +12,9 @@ interface WaitingOnYouDiscrepancyCardProps {
 type Mode = 'idle' | 'accepting' | 'flipping' | 'error';
 
 const DIRECTION_LABEL: Record<DiscrepancyDirection, string> = {
-  contradicted: 'Contradicted — needs a call',
-  spec_ahead: 'Spec ahead — unbuilt work',
-  code_ahead: 'Code ahead — doc fix',
+  contradicted: 'Contradicted · needs your call',
+  spec_ahead: 'Spec ahead · unbuilt work',
+  code_ahead: 'Code ahead · doc fix',
 };
 
 function ageLabel(hours: number | null | undefined): string | null {
@@ -287,9 +287,9 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
           >
             {docFixPrOpen
-              ? 'Doc fix PR open — merge to continue →'
+              ? 'Doc fix PR open. Merge it to continue →'
               : docFixShipped
-                ? 'Doc fix shipped — awaiting the conformance re-run →'
+                ? 'Doc fix shipped. Waiting on the conformance re-run →'
                 : 'Fix in flight →'}
           </Link>
         )}
@@ -297,15 +297,15 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
         {/* The decision is the Accept button below; this link only opens the
             task, so it says so rather than naming the decision. */}
         {mergedFixTaskId && (
-          <div>
-            <p className="text-[12px] text-text-secondary">Doc fix merged, but the gap is still open.</p>
+          <p data-testid="discrepancy-decision" className="text-[12px] text-text-secondary">
+            The doc fix merged and the re-run still finds the gap. Accept it as-is, or change the spec yourself.{' '}
             <Link
               href={`/app/tasks/${mergedFixTaskId}`}
-              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
+              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-secondary"
             >
-              Open the doc-fix task →
+              See the doc fix
             </Link>
-          </div>
+          </p>
         )}
       </div>
 
@@ -338,13 +338,16 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
               Flip direction
             </button>
           )}
+          {/* When Accept is the only decision left, it is THE action: primary,
+              and named for what it does. */}
           <button
             type="button"
             onClick={() => setMode('accepting')}
             disabled={busy}
-            className={SECONDARY_BTN}
+            data-testid="discrepancy-accept"
+            className={mergedFixTaskId ? PRIMARY_BTN : SECONDARY_BTN}
           >
-            Accept
+            {mergedFixTaskId ? 'Accept the gap' : 'Accept'}
           </button>
         </div>
       )}

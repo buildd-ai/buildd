@@ -24,8 +24,11 @@ const CEILINGS: Record<string, number> = {
   // navigation: user -> { teams, workspace ids, active-team scope }. The scope
   // resolver's own depth (two rounds, timezone included) is pinned in
   // lib/team-access.test.ts; the guard below keeps the layout from chaining a
-  // third lookup onto it.
-  'layout.tsx': 2,
+  // third lookup onto it. The third wait is chat availability (nav): it needs
+  // the resolved team, and for a team without the `chat` capability — the
+  // default — it is one column read (lib/chat-availability.ts), run alongside
+  // the role lookup.
+  'layout.tsx': 3,
   'missions/page.tsx': 11,
   'missions/[id]/page.tsx': 15,
   'tasks/[id]/page.tsx': 19,

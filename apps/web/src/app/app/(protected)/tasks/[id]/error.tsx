@@ -5,7 +5,7 @@ export default function TaskError({ error, reset }: { error: Error & { digest?: 
     <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
       <div className="text-text-muted font-mono text-xs uppercase tracking-widest">Task Error</div>
       <p className="text-text-secondary text-sm max-w-md text-center">
-        {error.message || 'Failed to load task details.'}
+        {error.message || 'Could not load this task.'}
       </p>
       {(error.digest || error.stack) && (
         <details className="max-w-lg w-full text-left">

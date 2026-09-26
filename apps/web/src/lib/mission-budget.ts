@@ -43,14 +43,14 @@ export async function exhaustMissionBudget(
     authorType: 'system',
     type: 'warning',
     title: 'Budget exhausted',
-    body: `$${spendStr} spent vs $${budgetStr} budget — no new tasks will be spawned. Raise costBudgetUsd to resume.`,
+    body: `$${spendStr} spent of the $${budgetStr} budget, so buildd stopped spawning new tasks. Raise costBudgetUsd to resume.`,
     status: 'open',
   }).catch(e => console.error('[mission-budget] Failed to insert note:', e));
 
   notify({
     app: 'tasks',
     title: `Budget exhausted: ${missionTitle}`,
-    message: `$${spendStr} spent vs $${budgetStr} budget — spawning paused. Raise the budget to resume.`,
+    message: `$${spendStr} spent of the $${budgetStr} budget. Spawning paused; raise the budget to resume.`,
     priority: 0,
   });
 }

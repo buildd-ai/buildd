@@ -97,6 +97,14 @@ describe('buildTape', () => {
     expect(tape.axis).toEqual(['0:00', '0:25', '0:50', '1:15']);
   });
 
+  // Regression (demo capture, live task): the axis's last printed time was the
+  // 75% tick (3:16) and the right edge read only "now", so the tape looked like
+  // it stopped at the last flag (3:41) while ELAPSED said 4:21.
+  test('names the right edge: the full span, i.e. the elapsed time', () => {
+    const tape = buildTape([], { startMs: T0, nowMs: T0 + 261_000 });
+    expect(tape.end).toBe('4:21');
+  });
+
   test('clamps out-of-range timestamps', () => {
     const tape = buildTape([{ type: 'action', label: 'Edited b', ts: T0 - 5 }], { startMs: T0, nowMs: T0 + 10 });
     expect(tape.ticks[0].pos).toBe(0);

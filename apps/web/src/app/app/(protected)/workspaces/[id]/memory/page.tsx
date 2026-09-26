@@ -47,7 +47,7 @@ export default async function WorkspaceMemoryPage({
     return (
       <main className="min-h-screen p-8">
         <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode - no database</p>
+          <p className="text-text-muted">Development mode · no database</p>
         </div>
       </main>
     );

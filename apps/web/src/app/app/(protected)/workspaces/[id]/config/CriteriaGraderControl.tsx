@@ -55,7 +55,7 @@ export function CriteriaGraderControl({
                 })}
             </div>
             <p className="text-xs text-text-muted mt-1">
-                Auto uses your API key when one is set, otherwise a runner on your team&apos;s seat.
+                Auto uses your API key if you set one. Otherwise a runner grades on your team&apos;s seat.
             </p>
         </div>
     );

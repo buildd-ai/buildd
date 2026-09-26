@@ -44,7 +44,7 @@ describe('LoopStatusChip', () => {
 describe('LoopHistory', () => {
   it('renders the empty loop state', () => {
     const html = renderToStaticMarkup(<LoopHistory entries={[]} loopState="running" maxLoops={5} />);
-    expect(html).toContain('No iterations evaluated yet');
+    expect(html).toContain('No iterations evaluated.');
   });
 
   it('renders one iteration with outcome, evidence excerpt, and duration', () => {

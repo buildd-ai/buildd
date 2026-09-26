@@ -244,13 +244,13 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               onChange={(e) => setStrategy(e.target.value as StrategyOption)}
               className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             >
-              <option value="none">None — releases not configured</option>
+              <option value="none">None · releases off</option>
               <option value="branch_merge">Branch merge (merge source → production)</option>
               <option value="workflow_dispatch">Workflow dispatch (trigger GitHub Actions)</option>
-              <option value="script" disabled>Script — coming soon</option>
+              <option value="script" disabled>Script · coming soon</option>
             </select>
             {strategy === 'none' && (
-              <p className="text-xs text-text-muted mt-1">No automatic or manual releases will run for this workspace.</p>
+              <p className="text-xs text-text-muted mt-1">buildd won&apos;t run releases for this workspace.</p>
             )}
           </div>
 
@@ -317,7 +317,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       value: 'on_mission_complete' as ReleaseTrigger,
                       label: 'When mission completes',
                       badge: 'recommended',
-                      help: 'Releases once after all tasks in a mission finish. Batches your work into one ship.',
+                      help: 'Releases once after every task in a mission finishes, as one ship.',
                     },
                     {
                       value: 'every_merge' as ReleaseTrigger,
@@ -327,13 +327,13 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     {
                       value: 'manual' as ReleaseTrigger,
                       label: 'Manual only',
-                      help: "Nothing releases automatically. Use the 'Release now' action on Home, or trigger_release via MCP.",
+                      help: "You release by hand: 'Release now' on Home, or trigger_release over MCP.",
                     },
                     {
                       value: 'scheduled' as ReleaseTrigger,
                       label: 'Scheduled',
                       disabled: true,
-                      help: 'Phase 2 — coming soon. Nightly or periodic releases on a cron schedule.',
+                      help: 'Not available yet. Releases on a cron schedule, such as nightly.',
                     },
                   ] as Array<{
                     value: ReleaseTrigger;
@@ -383,7 +383,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               </div>
               {trigger === 'on_mission_complete' && (
                 <p className="text-xs text-text-muted mt-2">
-                  Note: tasks not in a mission will not trigger a release with this setting.
+                  Tasks outside a mission don&apos;t trigger a release with this setting.
                 </p>
               )}
             </div>
@@ -398,7 +398,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               <span className="text-status-success font-medium">Configured ✓</span>
             ) : (
               <span className="text-amber-600 font-medium">
-                Not configured —{' '}
+                Not configured ·{' '}
                 <Link href="/app/settings" className="underline hover:no-underline">
                   Configure in Connections →
                 </Link>

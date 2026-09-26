@@ -1900,7 +1900,7 @@ export async function POST(req: NextRequest) {
         channels.workspace(claimedTask.workspaceId),
         events.TASK_CLAIMED,
         {
-          task: { id: claimedTask.id, title: claimedTask.title, status: 'assigned', workspaceId: claimedTask.workspaceId },
+          task: { id: claimedTask.id, title: claimedTask.title, status: 'assigned', workspaceId: claimedTask.workspaceId, missionId: claimedTask.missionId ?? null },
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );

@@ -128,3 +128,22 @@ export function formatAxisMinutes(min: number): string {
   }
   return `${Math.round(min / 1440)}d`;
 }
+
+export interface EdgeRect { left: number; right: number; top: number; bottom: number }
+
+/**
+ * The hover edge from a dependency's bar to the bar that waited on it, in
+ * chart coordinates. The dependent bar's label may sit beside it (a short
+ * live bar's label goes left of it, into the gap), so the edge never runs
+ * along the bar's own band: it leaves the source at its vertical middle, drops
+ * into the free strip under the target's bar, runs across there, and enters
+ * the target from beneath.
+ */
+export function dependencyEdge(src: EdgeRect, target: EdgeRect): { d: string; x: number; y: number } {
+  const x1 = src.right;
+  const y1 = src.top + (src.bottom - src.top) / 2;
+  const xm = Math.min(x1 + 10, target.left - 6);
+  const under = target.bottom + 4;
+  const xEnd = Math.min(target.left + 5, target.left + (target.right - target.left) / 2);
+  return { d: `M${x1} ${y1} H${xm} V${under} H${xEnd} V${target.bottom}`, x: xEnd, y: target.bottom };
+}

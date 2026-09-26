@@ -23,7 +23,7 @@ export function taskCreatedPush(workspaceChannel: string, task: TaskLike): Push 
 /** `task:claimed` as the claim route publishes it. */
 export function taskClaimedPush(workspaceChannel: string, task: TaskLike, worker: { id: string; name: string }): Push {
   return [workspaceChannel, 'task:claimed', {
-    task: { id: task.id, title: task.title, status: 'assigned', workspaceId: task.workspaceId },
+    task: { id: task.id, title: task.title, status: 'assigned', workspaceId: task.workspaceId, missionId: task.missionId ?? null },
     worker: { id: worker.id, name: worker.name, status: 'idle' },
   }];
 }

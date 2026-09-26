@@ -151,7 +151,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
   };
 
   const confirmMsg = item.unblockCount
-    ? `Merging will unblock ${item.unblockCount} queued task${item.unblockCount === 1 ? '' : 's'}.`
+    ? `Merge unblocks ${item.unblockCount} queued task${item.unblockCount === 1 ? '' : 's'}.`
     : 'Confirm merge?';
 
   if (cardState === 'merged_resolved') {
@@ -171,7 +171,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             <span className="font-medium text-text-primary">PR #{item.prNumber}</span>
           )}
           <span className="text-text-secondary">
-            merged —{' '}
+            merged ·{' '}
             {item.unblockCount != null && item.unblockCount > 0
               ? `${item.unblockCount} task${item.unblockCount !== 1 ? 's' : ''} starting`
               : 'tasks starting'}
@@ -429,7 +429,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
         <div className="mt-2 pt-2 border-t border-primary/20">
           <div className="flex items-center gap-1.5 mb-1.5">
             <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
-            <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
+            <span className="text-[11px] text-text-secondary">An agent is resolving the merge conflicts.</span>
           </div>
           <div className="flex items-center gap-3">
             {optimistic.taskId && (
@@ -458,7 +458,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       {optimistic?.kind === 'conflict_exhausted' && (
         <div className="mt-2 pt-2 border-t border-status-error/20">
           <p className="text-[11px] text-status-error mb-1.5">
-            Conflict resolution retries exhausted. Manual action required.
+            Agents ran out of conflict-resolution retries.
           </p>
           <div className="flex items-center gap-3">
             {item.prUrl && (

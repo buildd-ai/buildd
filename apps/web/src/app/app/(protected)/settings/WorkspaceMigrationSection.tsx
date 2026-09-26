@@ -32,7 +32,7 @@ export default function WorkspaceMigrationSection({
           <div className="text-sm font-medium text-text-primary mb-1">Migrate workspace</div>
           <p className="text-xs text-text-secondary">
             Move a workspace to another team. Tasks, workers, artifacts and schedules move with it.
-            Workspace-scoped secrets are deleted and connectors must be re-authorized in the
+            buildd deletes workspace-scoped secrets, and you re-authorize connectors in the
             destination team.
           </p>
         </div>

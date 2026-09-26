@@ -91,13 +91,13 @@ export function resolveRejectOutcome(data: {
   if (!data.taskId) {
     return {
       text:
-        'Proposal rejected — the reason is kept on the discrepancy it was about, ' +
-        'and the documentation fix already shipped is unaffected.',
+        'Proposal rejected. The reason stays on its discrepancy, and the ' +
+        'shipped documentation fix is unchanged.',
       navigateTo: null,
     };
   }
   return {
-    text: 'Plan rejected, revised task created. Redirecting...',
+    text: 'Plan rejected. Opening the revised task…',
     navigateTo: data.taskId,
   };
 }
@@ -272,12 +272,12 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
       {showRejectForm && (
         <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-[10px]">
           <label className="block text-sm text-text-secondary mb-2">
-            Provide feedback for revision (required)
+            What should change? (required)
           </label>
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Describe what should be changed in the plan…"
+            placeholder="Describe the changes you want…"
             className="w-full px-3 py-2 text-sm bg-surface-1 border border-border-default rounded-[6px] text-text-primary placeholder:text-text-muted resize-y min-h-[80px] focus:outline-none focus:border-primary"
             rows={3}
             disabled={rejecting}

@@ -590,7 +590,7 @@ function resolve(input: MissionStateInput): Resolution {
   if (isHeld) {
     return {
       kind: 'held',
-      waitingOn: { kind: 'human_decision', tone: 'info', label: 'Held — arm the mission to start work', detail: null },
+      waitingOn: { kind: 'human_decision', tone: 'info', label: 'Held until you arm the mission', detail: null },
       displayState: 'held',
       source: 'mission.startMode',
     };
@@ -624,7 +624,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'human_decision',
         tone: 'warning',
-        label: 'Goal criteria escalated — the owner must decide',
+        label: 'Goal criteria escalated for your decision',
         detail: input.escalationDetail ?? null,
       },
       displayState: 'waiting_decision',
@@ -670,7 +670,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'self_resolving_wait',
         tone: 'neutral',
-        label: `Waiting — ${wait.reason}`,
+        label: `Waiting: ${wait.reason}`,
         reason: wait.reason,
         waitUntil: toIso(wait.waitUntil),
       },
@@ -688,7 +688,7 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'self_resolving_wait',
         tone: 'neutral',
-        label: 'Waiting — the heartbeat is deliberately holding this cycle',
+        label: 'Waiting: the heartbeat is holding this cycle',
         reason: 'heartbeat wait',
         waitUntil: null,
       },
@@ -782,7 +782,7 @@ function attemptFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'task',
       tone: 'neutral',
-      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued — no worker yet'}`,
+      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued, no worker yet'}`,
       count: 1,
       taskIds: [a.taskId],
       byStatus: { [a.status]: 1 },
@@ -822,7 +822,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
         kind: 'merge',
         tone: 'warning',
         label: missionPr
-          ? 'The mission PR has not merged — the work is not on trunk'
+          ? 'The mission PR has not merged, so the work is not on trunk'
           : `${completion.awaitingMerge ?? details.length} completed task(s) have an unmerged PR`,
         count: completion.awaitingMerge ?? details.length,
         prNumbers,
@@ -867,7 +867,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
         kind: 'merge',
         tone: 'warning',
         label: missionPr
-          ? 'The mission PR has not merged — the work is not on trunk'
+          ? 'The mission PR has not merged, so the work is not on trunk'
           : `${rowPrs.length} completed task(s) have an unmerged PR`,
         count: missionPr ? 1 : rowPrs.length,
         prNumbers: missionPr
@@ -1071,8 +1071,8 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
         // attempted and held — only then is a missing verdict newsworthy.
         tone: refused ? 'warning' : 'neutral',
         label: count === 1
-          ? '1 criterion not yet verified — run verification'
-          : `${count} criteria not yet verified — run verification`,
+          ? '1 criterion not verified yet · run verification'
+          : `${count} criteria not verified yet · run verification`,
         count,
         criteria: nonPass,
       },
@@ -1089,7 +1089,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
       kind: 'awaiting_verification',
       waitingOn: failing
         ? { kind: 'criterion_failing', tone: 'warning', label: 'Goal criteria failed', count: 1, criteria: [], refused: true }
-        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria not yet verified — run verification', count: 1, criteria: [] },
+        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria not verified yet · run verification', count: 1, criteria: [] },
       displayState: 'awaiting_verification',
       source: 'canCompleteMission',
     };
@@ -1109,7 +1109,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
  */
 /** The gate reason, plus the PR it waits on when the ledger named one. */
 function deferralReasonText(d: { reason: string; blockedByPr?: number | null }): string {
-  return typeof d.blockedByPr === 'number' ? `${d.reason} — blocked by PR #${d.blockedByPr}` : d.reason;
+  return typeof d.blockedByPr === 'number' ? `${d.reason}, blocked by PR #${d.blockedByPr}` : d.reason;
 }
 
 function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
@@ -1122,8 +1122,8 @@ function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
     kind: 'claim_deferral',
     tone: 'warning',
     label: stuck.length === 1
-      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${reason}`
-      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${reason})`,
+      ? `The claim loop deferred a task ${worst.consecutiveDeferrals} times in a row: ${reason}`
+      : `The claim loop is deferring ${stuck.length} tasks (worst: ${worst.consecutiveDeferrals} in a row, ${reason})`,
     count: stuck.length,
     reason: worst.reason,
     consecutiveDeferrals: worst.consecutiveDeferrals,
@@ -1205,7 +1205,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'task':
       if (d.attempt) {
         const fix = fixLabel(d.attempt).toLowerCase();
-        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued — no worker yet)`;
+        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, no worker yet)`;
       }
       return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
     case 'task_failed':
@@ -1227,11 +1227,11 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'criterion_failing': {
       const named = d.count === 1 && d.criteria[0] ? `"${d.criteria[0]}"` : `${d.count} goal criteria`;
       if (d.stale) {
-        return `waiting on you to re-run verification — ${named} failed when last checked, but no task is open now`;
+        return `waiting on you to re-run verification: ${named} failed at the last check and no task is open`;
       }
       // While work is in flight a failing criterion is the work not being
       // finished yet, not an ask (`missionNeedsYou`), so it is stated as fact.
-      const ask = opts.running ? '' : 'waiting on you — ';
+      const ask = opts.running ? '' : 'waiting on you: ';
       const n = d.blockers?.length ?? 0;
       if (n > 0) {
         return `${ask}${named} ${d.count === 1 ? 'is' : 'are'} failing on ${n === 1 ? '1 task' : `${n} tasks`}`;
@@ -1247,20 +1247,20 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
           : `waiting for a runner to verify ${d.awaitingRunner.length} goal criteria`;
       }
       return d.count === 1
-        ? 'waiting on goal-criteria verification — 1 criterion has no verdict yet'
-        : `waiting on goal-criteria verification — ${d.count} criteria have no verdict yet`;
+        ? 'waiting on goal-criteria verification: 1 criterion has no verdict'
+        : `waiting on goal-criteria verification: ${d.count} criteria have no verdict`;
     case 'human_decision':
-      // These labels already read as statements ("Held — arm the mission to
-      // start work"), so they are quoted, not re-worded.
+      // These labels already read as statements ("Held until you arm the
+      // mission"), so they are quoted, not re-worded.
       return `waiting on you: ${d.label}`;
     case 'self_resolving_wait':
       return d.waitUntil
-        ? `waiting on ${d.reason} — resumes on its own at ${d.waitUntil}`
-        : `waiting on ${d.reason} — resumes on its own`;
+        ? `waiting (${d.reason}) until ${d.waitUntil}`
+        : `waiting (${d.reason})`;
     case 'claim_deferral':
       return d.count === 1
-        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${deferralReasonText(d)}`
-        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${deferralReasonText(d)}`;
+        ? `the claim loop has turned away an agent ${d.consecutiveDeferrals} times in a row: ${deferralReasonText(d)}`
+        : `the claim loop is turning away ${d.count} agents (worst: ${d.consecutiveDeferrals} in a row, ${deferralReasonText(d)})`;
   }
 }
 
@@ -1288,7 +1288,7 @@ function deriveSituation(
 
   if (resolved.kind === 'complete') {
     return {
-      headline: 'Complete — nothing outstanding.',
+      headline: 'Complete. Nothing outstanding.',
       tone: 'neutral',
       focus: null,
       nextAction: null,
@@ -1301,8 +1301,8 @@ function deriveSituation(
     // Every source that could contradict this was consulted and had nothing to
     // say. Say THAT, rather than falling back to a row of buttons.
     const headline = resolved.kind === 'running'
-      ? `Running — ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
-      : 'Nothing to do — no source reports anything outstanding.';
+      ? `Running: ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
+      : 'Nothing to do. No source reports outstanding work.';
     return {
       headline,
       tone: 'neutral',
@@ -1315,7 +1315,7 @@ function deriveSituation(
 
   const phrase = situationPhrase(focus, { running: resolved.kind === 'running' });
   const headline = resolved.kind === 'running'
-    ? `Running (${countAgents(input.activeAgents)}) — but ${phrase}.`
+    ? `Running (${countAgents(input.activeAgents)}). ${capitalize(phrase)}.`
     : `${capitalize(phrase)}.`;
 
   return {
@@ -1344,18 +1344,18 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'task':
       if (waitingOn.attempt) {
         return waitingOn.attempt.claimed
-          ? 'Nothing to do yet — the fix is in progress; review runs again after it pushes.'
-          : 'Nothing to do yet — the fix is queued for the next free worker. Cancel it if the work is no longer wanted.';
+          ? 'Nothing to do yet. The reviewer runs again after the fix pushes.'
+          : 'Nothing to do yet. The fix is queued for the next free worker; cancel it if you no longer want the work.';
       }
-      return 'Dispatch a worker for the open task(s), or cancel them if the work is no longer wanted.';
+      return 'Dispatch a worker for the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':
       return waitingOn.infra
-        ? 'Investigate the infrastructure failure and re-run the task; retries are already exhausted.'
+        ? 'Retries are exhausted. Investigate the infrastructure failure and re-run the task.'
         : 'Read the failure and either retry the task or change its scope.';
     case 'merge':
       return waitingOn.missionPr
-        ? 'Land the mission PR — the work is on the integration branch, not on trunk.'
-        : 'Resolve and merge the open PR(s); a completed task with an unmerged PR has not shipped.';
+        ? 'Merge the mission PR to move the work from the integration branch to trunk.'
+        : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';
@@ -1366,17 +1366,17 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       return 'File work against the failing criterion, or correct the criterion if it no longer describes the goal.';
     case 'criterion_unverified':
       if (waitingOn.awaitingRunner && waitingOn.awaitingRunner.length > 0) {
-        return 'Start or free up a runner for this workspace — the verification task is queued with none to claim it.';
+        return 'Start or free up a runner for this workspace. No runner has claimed the queued verification task.';
       }
       return 'Run goal-criteria verification to produce a verdict.';
     case 'human_decision':
-      return 'An owner decision is required; nothing automated will move this.';
+      return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':
       return waitingOn.waitUntil
-        ? `Nothing to do — this resumes on its own at ${waitingOn.waitUntil}.`
-        : 'Nothing to do — this resumes on its own.';
+        ? `Nothing to do. Work resumes at ${waitingOn.waitUntil}.`
+        : 'Nothing to do. Work resumes when the wait ends.';
     case 'claim_deferral':
-      return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}) — clear that gate, or cancel the task if the work is no longer wanted.`;
+      return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}). Clear that gate, or cancel the task if you no longer want the work.`;
   }
 }
 

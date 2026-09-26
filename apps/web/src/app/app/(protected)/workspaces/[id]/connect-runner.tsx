@@ -117,7 +117,7 @@ The workflow should:
       {/* Live connected runners */}
       {loadingRunners ? (
         <div className="border border-border-default rounded-[10px] p-4 mb-4">
-          <span className="text-[12px] text-text-muted font-mono">checking runners...</span>
+          <span className="text-[12px] text-text-muted font-mono">Checking runners…</span>
         </div>
       ) : liveRunners.length > 0 ? (
         <div className="border border-border-default rounded-[10px] divide-y divide-border-default mb-6">
@@ -151,7 +151,7 @@ The workflow should:
       ) : (
         <div className="border border-dashed border-border-default rounded-[10px] p-4 mb-6">
           <p className="text-[13px] text-text-secondary">No runners connected.</p>
-          <p className="text-[12px] text-text-muted mt-0.5">Connect a runner below to start processing tasks.</p>
+          <p className="text-[12px] text-text-muted mt-0.5">Connect one below and it starts claiming this workspace&apos;s tasks.</p>
         </div>
       )}
 
@@ -199,14 +199,14 @@ The workflow should:
                 Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Action - GitHub Actions runner&quot; as the type.
               </p>
               <p className="text-sm text-text-secondary">
-                You&apos;ll also need a <code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription for the official <code className="bg-surface-4 px-1 rounded">claude-code-action</code>.
+The official <code className="bg-surface-4 px-1 rounded">claude-code-action</code> also needs a <code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> from your Claude Pro/Max subscription.
               </p>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Step 2: Connect account to this workspace</div>
               <p className="text-sm text-text-secondary mb-2">
-                After creating the account, use the API to connect it to this workspace:
+                Connect the new account to this workspace through the API:
               </p>
               <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
 {`curl -X POST https://buildd.dev/api/workspaces/${workspaceId}/accounts \\
@@ -282,8 +282,8 @@ jobs:
                 In your GitHub repo, go to Settings &rarr; Secrets &rarr; Actions and add:
               </p>
               <ul className="text-sm text-text-secondary list-disc list-inside mt-1">
-                <li><code className="bg-surface-4 px-1 rounded">BUILDD_API_KEY</code> - Your action account API key (for task claim/report)</li>
-                <li><code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code> - Claude Pro/Max OAuth token (for running Claude Code)</li>
+                <li><code className="bg-surface-4 px-1 rounded">BUILDD_API_KEY</code>: your Action account&apos;s API key, to claim and report tasks</li>
+                <li><code className="bg-surface-4 px-1 rounded">CLAUDE_CODE_OAUTH_TOKEN</code>: your Claude Pro/Max OAuth token, to run Claude Code</li>
               </ul>
             </div>
 
@@ -298,7 +298,7 @@ jobs:
                   disabled={creatingTask}
                   className="px-4 py-2 bg-primary text-white rounded-[10px] hover:bg-primary-hover disabled:opacity-50 text-sm"
                 >
-                  {creatingTask ? 'Creating…' : 'Create setup task for an agent to help'}
+                  {creatingTask ? 'Creating…' : 'Create a setup task for an agent'}
                 </button>
               )}
             </div>
@@ -336,7 +336,7 @@ buildd`}
             </div>
 
             <div>
-              <div className="text-sm font-medium mb-2">Or use systemd for persistent running:</div>
+              <div className="text-sm font-medium mb-2">Or run it as a systemd service:</div>
               <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
 {`# /etc/systemd/system/buildd.service
 [Unit]

@@ -29,3 +29,7 @@ __pycache__/
 
 # scripts/demo storyboard captures
 scripts/demo/out/
+
+# Local labelled examples for scripts/decision-benchmark.ts. Real task text;
+# never commit it (this repo is public).
+.decision-data/

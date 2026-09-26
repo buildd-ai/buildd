@@ -246,6 +246,30 @@
       "contentHash": "<sha256 of content>",
       "workspaceId": "ws",
       "allowedTools": []
+    },
+    {
+      "key": "visual-auditor",
+      "slug": "visual-auditor",
+      "name": "Visual Auditor",
+      "color": "#14B8A6",
+      "model": "sonnet",
+      "canDelegateTo": [],
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "AskUserQuestion",
+        "mcp__buildd__buildd"
+      ],
+      "description": "Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Visual Auditor\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws"
     }
   ],
   "missions": [
@@ -272,7 +296,7 @@
       "integrationBranchEnabled": false,
       "workingBranch": null,
       "autoVerify": true,
-      "autoSurfaceAudit": false,
+      "autoSurfaceAudit": true,
       "scheduleId": null,
       "_heartbeat": "none — created from the dashboard (UI-created missions run once, no heartbeat schedule)",
       "goalCriteria": [
@@ -813,43 +837,42 @@
       "label": "admin guide"
     },
     {
-      "key": "T7a",
+      "key": "VA",
       "table": "tasks",
       "workspaceId": "ws",
       "missionId": "M1",
-      "title": "[builder · after CI #1] feat(invoices): render invoices in the customer's currency with a base-currency footnote",
-      "description": "CI failed on PR #416. Fix on the same branch.",
+      "title": "Visual review: invoices in EUR and JPY, desktop + phone",
+      "description": "Required routes: `/invoices/:id`, `/pay/:invoiceId`. Capture each at desktop (1280x900) and phone (390x844), EUR and JPY invoices, judge every shot, and file a fix task for anything broken. Read-only: no edits, no PR.",
       "status": "pending",
       "_statusAtEnd": "completed",
-      "priority": 7,
+      "priority": 0,
       "mode": "execution",
-      "roleSlug": "builder",
-      "kind": "engineering",
+      "roleSlug": "visual-auditor",
+      "kind": null,
       "complexity": "normal",
-      "missionPhaseIndex": 2,
-      "missionPhaseLabel": "Currency through the product",
-      "dependsOn": [],
-      "outputRequirement": "pr_required",
-      "creationSource": "mcp",
+      "missionPhaseIndex": 3,
+      "missionPhaseLabel": "Prove it",
+      "dependsOn": [
+        "T7",
+        "T8"
+      ],
+      "outputRequirement": "artifact_required",
+      "creationSource": "orchestrator",
       "createdByWorkerId": null,
-      "taskClass": "attempt",
+      "taskClass": "work",
       "backend": "claude",
       "project": "web",
       "pathManifest": null,
-      "_idShort": "0c95e3b4",
-      "parentTaskId": "T7",
-      "ciRetryPrNumber": 416,
-      "ciRetryHeadSha": "9e41c07",
+      "_idShort": "e4b7c2a1",
       "context": {
-        "ciRetryPrNumber": 416,
-        "iteration": 1,
-        "failureContext": {
-          "job": "unit",
-          "test": "packages/pdf/src/invoice.snapshot.test.tsx",
-          "excerpt": "Expected \"1.234,50 €\" — received \"1,234.50 €\" (locale de-DE)"
+        "visualQa": {
+          "requiredRoutes": [
+            "/invoices/:id",
+            "/pay/:invoiceId"
+          ]
         }
       },
-      "label": "fix PDF locale"
+      "label": "visual review"
     },
     {
       "key": "V1",
@@ -1185,8 +1208,7 @@
         "linesRemoved": 61,
         "filesChanged": 11,
         "commitCount": 4,
-        "prLifecycleStatus": "ci_failed",
-        "_note": "w7 ends completed with PR #416 ci_failed; mergedAt is stamped on w7 (PR owner) when #416 merges after w7a's fix"
+        "prLifecycleStatus": "merged"
       }
     },
     {
@@ -1298,14 +1320,14 @@
       }
     },
     {
-      "key": "w7a",
+      "key": "wva",
       "table": "workers",
-      "taskId": "T7a",
+      "taskId": "VA",
       "workspaceId": "ws",
       "accountId": "acct_fleet",
-      "name": "harborline-fleet-0c95e3b4",
+      "name": "harborline-fleet-e4b7c2a1",
       "runner": "birch",
-      "branch": "buildd/b62f0a57-feat-invoices-render-invoices-",
+      "branch": "buildd/e4b7c2a1-visual-review-invoices-in-eur-",
       "status": "idle",
       "_statusAtEnd": "completed",
       "waitingFor": null,
@@ -1322,16 +1344,7 @@
       "costUsd": "0",
       "inputTokens": 0,
       "outputTokens": 0,
-      "turns": 0,
-      "_final": {
-        "prNumber": 416,
-        "prUrl": "https://github.com/harborline/billing-web/pull/416",
-        "linesAdded": 23,
-        "linesRemoved": 9,
-        "filesChanged": 2,
-        "commitCount": 1,
-        "prLifecycleStatus": "merged"
-      }
+      "turns": 0
     },
     {
       "key": "w11",
@@ -1518,11 +1531,167 @@
       "missionId": "M1",
       "type": "summary",
       "title": "Multi-currency invoices — shipped",
-      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; the export reconciles to base currency.\n\n11 PRs merged · 1 CI failure fixed automatically · 1 decision from a human.",
+      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · 1 decision from a human.",
       "visibility": "private",
       "metadata": {},
       "key": "a_summary",
       "artifactKey": "mission-summary",
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "wva",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "screenshot",
+      "title": "invoices-eur-desktop.png",
+      "content": null,
+      "visibility": "private",
+      "_file": "shots/invoices-eur-desktop.png",
+      "metadata": {
+        "qa": {
+          "runKey": "harborline-currency-r1",
+          "route": "/invoices/:id",
+          "viewport": "desktop",
+          "finding": "EUR invoice: amounts use de-DE separators (1.234,50 €), totals line up in one column, and the base-currency footnote names the rate.",
+          "verdict": "ok"
+        },
+        "filename": "invoices-eur-desktop.png",
+        "mimeType": "image/png",
+        "sizeBytes": 81410
+      },
+      "key": "a_shot1",
+      "artifactKey": null,
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "wva",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "screenshot",
+      "title": "invoices-eur-mobile.png",
+      "content": null,
+      "visibility": "private",
+      "_file": "shots/invoices-eur-mobile.png",
+      "metadata": {
+        "qa": {
+          "runKey": "harborline-currency-r1",
+          "route": "/invoices/:id",
+          "viewport": "mobile",
+          "finding": "EUR invoice at 390px: line items stack, nothing clips or scrolls sideways, and Pay stays a full-width button.",
+          "verdict": "ok"
+        },
+        "filename": "invoices-eur-mobile.png",
+        "mimeType": "image/png",
+        "sizeBytes": 153333
+      },
+      "key": "a_shot2",
+      "artifactKey": null,
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "wva",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "screenshot",
+      "title": "invoices-jpy-desktop.png",
+      "content": null,
+      "visibility": "private",
+      "_file": "shots/invoices-jpy-desktop.png",
+      "metadata": {
+        "qa": {
+          "runKey": "harborline-currency-r1",
+          "route": "/invoices/:id",
+          "viewport": "desktop",
+          "finding": "JPY invoice: no decimals anywhere, yen symbol on every amount, tax and total add up to the line items.",
+          "verdict": "ok"
+        },
+        "filename": "invoices-jpy-desktop.png",
+        "mimeType": "image/png",
+        "sizeBytes": 75781
+      },
+      "key": "a_shot3",
+      "artifactKey": null,
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "wva",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "screenshot",
+      "title": "invoices-jpy-mobile.png",
+      "content": null,
+      "visibility": "private",
+      "_file": "shots/invoices-jpy-mobile.png",
+      "metadata": {
+        "qa": {
+          "runKey": "harborline-currency-r1",
+          "route": "/invoices/:id",
+          "viewport": "mobile",
+          "finding": "JPY invoice at 390px: the footnote wraps cleanly and the total reads without scrolling past the items.",
+          "verdict": "ok"
+        },
+        "filename": "invoices-jpy-mobile.png",
+        "mimeType": "image/png",
+        "sizeBytes": 140411
+      },
+      "key": "a_shot4",
+      "artifactKey": null,
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "wva",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "screenshot",
+      "title": "pay-jpy-desktop.png",
+      "content": null,
+      "visibility": "private",
+      "_file": "shots/pay-jpy-desktop.png",
+      "metadata": {
+        "qa": {
+          "runKey": "harborline-currency-r1",
+          "route": "/pay/:invoiceId",
+          "viewport": "desktop",
+          "finding": "JPY checkout: the charge matches the invoice total exactly, with no decimals, and the card form is complete.",
+          "verdict": "ok"
+        },
+        "filename": "pay-jpy-desktop.png",
+        "mimeType": "image/png",
+        "sizeBytes": 49116
+      },
+      "key": "a_shot5",
+      "artifactKey": null,
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "wva",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "screenshot",
+      "title": "pay-jpy-mobile.png",
+      "content": null,
+      "visibility": "private",
+      "_file": "shots/pay-jpy-mobile.png",
+      "metadata": {
+        "qa": {
+          "runKey": "harborline-currency-r1",
+          "route": "/pay/:invoiceId",
+          "viewport": "mobile",
+          "finding": "JPY checkout at 390px: amount first, card fields full width, Pay button visible without zooming.",
+          "verdict": "ok"
+        },
+        "filename": "pay-jpy-mobile.png",
+        "mimeType": "image/png",
+        "sizeBytes": 87866
+      },
+      "key": "a_shot6",
+      "artifactKey": null,
       "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
     }
   ],
@@ -1570,16 +1739,16 @@
       "status": "open"
     },
     {
-      "key": "n_ci",
+      "key": "n_visual",
       "table": "mission_notes",
       "missionId": "M1",
-      "taskId": "T7a",
-      "workerId": null,
-      "authorType": "system",
+      "taskId": "VA",
+      "workerId": "wva",
+      "authorType": "agent",
       "type": "update",
-      "title": "CI failed on #416 — fix dispatched",
-      "body": "Invoice PDF snapshot: de-DE rendered `1,234.50 €`, expected `1.234,50 €`. A builder picked it up on the same branch.",
-      "actorLabel": "buildd",
+      "title": "Visual review: 6 of 6 shots ok",
+      "body": "Checked `/invoices/:id` in EUR and JPY and `/pay/:invoiceId` in JPY, at desktop and phone width. Separators and symbols follow each currency's locale, JPY shows no decimals, the base-currency footnote wraps cleanly at 390px, and the pay button stays on the first screen. Nothing to fix.",
+      "actorLabel": "Visual Auditor",
       "status": "open"
     },
     {
@@ -1625,13 +1794,12 @@
       "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale) — never toLocaleString() with the process default.",
       "tags": [
         "pdf",
-        "i18n",
-        "ci"
+        "i18n"
       ],
       "files": [
         "packages/pdf/src/invoice.snapshot.test.tsx"
       ],
-      "source": "task:T7a"
+      "source": "task:T7"
     },
     {
       "key": "mem3",
@@ -2102,6 +2270,177 @@
       ]
     }
   ],
+  "chat": {
+    "capabilities": [
+      "chat"
+    ],
+    "providerKey": {
+      "provider": "anthropic",
+      "value": "sk-ant-demo-000000000000000000000000-not-a-real-key"
+    },
+    "conversations": [
+      {
+        "key": "C1",
+        "table": "conversations",
+        "workspaceId": "ws",
+        "createdByUserId": "u_maya",
+        "title": "Multi-currency invoices",
+        "titleSource": "auto",
+        "agentRoleSlug": "organizer",
+        "_createdAgo": "-5m",
+        "messages": [
+          {
+            "key": "C1m1",
+            "role": "user",
+            "_at": "-5m",
+            "parts": [
+              {
+                "type": "text",
+                "text": "What would it take to bill customers in their own currency?"
+              }
+            ]
+          },
+          {
+            "key": "C1m2",
+            "role": "assistant",
+            "_at": "-5m",
+            "tier": "standard",
+            "parts": [
+              {
+                "type": "step-start"
+              },
+              {
+                "type": "tool-manage_missions",
+                "toolCallId": "call_demo_list",
+                "state": "output-available",
+                "input": {
+                  "action": "list",
+                  "workspace": "billing-web"
+                },
+                "output": {
+                  "data": "3 open, none touch currency",
+                  "objects": [],
+                  "summary": "3 open, none touch currency"
+                }
+              },
+              {
+                "type": "tool-recall",
+                "toolCallId": "call_demo_recall",
+                "state": "output-available",
+                "input": {
+                  "query": "currency money rounding"
+                },
+                "output": {
+                  "data": "1 recalled: money is integer minor units",
+                  "objects": [],
+                  "summary": "1 recalled: money is integer minor units"
+                }
+              },
+              {
+                "type": "tool-list_tasks",
+                "toolCallId": "call_demo_tasks",
+                "state": "output-available",
+                "input": {
+                  "workspace": "billing-web",
+                  "status": "in_progress"
+                },
+                "output": {
+                  "data": "nothing in flight touches currency",
+                  "objects": [],
+                  "summary": "nothing in flight touches currency"
+                }
+              },
+              {
+                "type": "text",
+                "text": "Nothing in flight touches currency. Amounts are integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."
+              }
+            ]
+          },
+          {
+            "key": "C1m3",
+            "role": "user",
+            "_at": "-2m",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Make it a mission. Keep the public API backward compatible."
+              }
+            ]
+          },
+          {
+            "key": "C1m4",
+            "role": "assistant",
+            "_at": "-2m",
+            "tier": "standard",
+            "parts": [
+              {
+                "type": "step-start"
+              },
+              {
+                "type": "text",
+                "text": "Here's a draft. I won't file it until you confirm."
+              },
+              {
+                "type": "tool-manage_missions",
+                "toolCallId": "call_demo_create",
+                "state": "approval-requested",
+                "input": {
+                  "action": "create",
+                  "workspaceId": "{{ws}}",
+                  "title": "Multi-currency invoices",
+                  "description": "Let customers see, pay, and get receipts for invoices in their own currency.\n\nConstraints:\n- Invoices API changes are additive (v2-safe). FX rate is snapshotted at issue.",
+                  "goalCriteria": [
+                    {
+                      "type": "all_prs_merged",
+                      "label": "every task PR merged"
+                    },
+                    {
+                      "type": "no_open_tasks",
+                      "label": "no open tasks"
+                    },
+                    {
+                      "type": "command",
+                      "command": "pnpm test --filter @harborline/money --filter web -- currency",
+                      "label": "currency suite green"
+                    },
+                    {
+                      "type": "artifact_exists",
+                      "key": "fx-rounding-decision",
+                      "label": "rounding policy recorded"
+                    }
+                  ],
+                  "maxConcurrentTasks": 6
+                },
+                "approval": {
+                  "id": "demo-approval-m1"
+                }
+              }
+            ]
+          }
+        ],
+        "approval": {
+          "messageKey": "C1m4",
+          "toolCallId": "call_demo_create",
+          "approvalId": "demo-approval-m1",
+          "toolName": "manage_missions"
+        },
+        "_onConfirm": {
+          "summary": "filed \"Multi-currency invoices\"",
+          "data": "Mission created: Multi-currency invoices. The Organizer is planning it.",
+          "objects": [
+            {
+              "kind": "mission",
+              "id": "{{M1}}",
+              "workspaceId": "{{ws}}",
+              "title": "Multi-currency invoices",
+              "fallbackText": "Mission: Multi-currency invoices"
+            }
+          ],
+          "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks."
+        }
+      }
+    ]
+  },
   "timeline": [
     {
       "t": 0,
@@ -2109,9 +2448,10 @@
       "mission": "M1",
       "title": "Multi-currency invoices",
       "description": "Let customers see, pay, and get receipts for invoices in their own currency.",
-      "api": "POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
-      "db": "INSERT missions",
-      "beat": "The one-sentence goal"
+      "conversation": "C1",
+      "api": "chat approval confirmed → manage_missions create → POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
+      "db": "INSERT missions (conversationId); the proposing tool part turns output-available with the mission ref",
+      "beat": "Make it a mission"
     },
     {
       "t": 2,
@@ -3552,6 +3892,13 @@
       "rem": 3
     },
     {
+      "t": 985,
+      "op": "memory",
+      "memory": "mem2",
+      "api": "MCP learn {type:'gotcha'}",
+      "db": "INSERT memories"
+    },
+    {
       "t": 990,
       "op": "pr_open",
       "worker": "w7",
@@ -3683,80 +4030,21 @@
       "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
     },
     {
-      "t": 1108,
+      "t": 1095,
       "op": "ci",
       "worker": "w7",
       "prNumber": 416,
-      "state": "ci_failed",
-      "failure": {
-        "job": "unit",
-        "test": "packages/pdf/src/invoice.snapshot.test.tsx",
-        "excerpt": "Expected \"1.234,50 €\" — received \"1,234.50 €\" (locale de-DE)"
-      },
-      "api": "GitHub webhook check_suite(failure) → POST /api/github/webhook",
-      "db": "workers.prLifecycleStatus=ci_failed, prCheckFailureCount=1",
-      "beat": "CI goes red"
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
     },
     {
-      "t": 1110,
-      "op": "task_create",
-      "task": "T7a",
-      "api": "webhook → buildCIRetryTask()",
-      "db": "INSERT tasks(taskClass=attempt, parentTaskId=T7, ciRetryPrNumber=416, priority=7)"
-    },
-    {
-      "t": 1111,
-      "op": "mission_note",
-      "note": "n_ci",
-      "api": "(system)",
-      "db": "INSERT mission_notes"
-    },
-    {
-      "t": 1116,
-      "op": "claim",
-      "task": "T7a",
-      "worker": "w7a",
-      "runner": "birch",
-      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
-      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
-    },
-    {
-      "t": 1119,
-      "op": "worker_status",
-      "worker": "w7a",
-      "status": "running",
-      "api": "PATCH /api/workers/w7a {status:'running'}",
-      "db": "workers.status=running, startedAt; tasks.status=in_progress"
-    },
-    {
-      "t": 1121,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Read",
-      "path": "packages/pdf/src/invoice.snapshot.test.tsx"
-    },
-    {
-      "t": 1127,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Read",
-      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx"
-    },
-    {
-      "t": 1130,
-      "op": "progress",
-      "worker": "w7a",
-      "pct": 20,
-      "message": "Reading CI log: de-DE snapshot uses the process locale",
-      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
-      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
-    },
-    {
-      "t": 1134,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Read",
-      "path": "packages/money/src/formatMoney.ts"
+      "t": 1120,
+      "op": "merge",
+      "worker": "w7",
+      "prNumber": 416,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
     },
     {
       "t": 1150,
@@ -3771,13 +4059,6 @@
       "commitCount": 3,
       "api": "MCP buildd create_pr {title, head, lede}",
       "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
-    },
-    {
-      "t": 1150,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Read",
-      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx"
     },
     {
       "t": 1160,
@@ -3798,40 +4079,6 @@
       "db": "workers.prLifecycleStatus=ci_running"
     },
     {
-      "t": 1170,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Edit",
-      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
-      "add": 14,
-      "rem": 7
-    },
-    {
-      "t": 1176,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Edit",
-      "path": "packages/pdf/src/invoice.snapshot.test.tsx",
-      "add": 9,
-      "rem": 2
-    },
-    {
-      "t": 1180,
-      "op": "progress",
-      "worker": "w7a",
-      "pct": 60,
-      "message": "PDF footnote was calling toLocaleString() — routed it through formatMoney(locale)",
-      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
-      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
-    },
-    {
-      "t": 1190,
-      "op": "tool",
-      "worker": "w7a",
-      "tool": "Bash",
-      "cmd": "pnpm --filter @harborline/pdf test invoice.snapshot"
-    },
-    {
       "t": 1200,
       "op": "progress",
       "worker": "w8",
@@ -3839,31 +4086,6 @@
       "message": "Stripe test mode: EUR, GBP, JPY (zero-decimal) all charge the invoice total exactly",
       "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
       "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
-    },
-    {
-      "t": 1215,
-      "op": "memory",
-      "memory": "mem2",
-      "api": "MCP learn {type:'gotcha'}",
-      "db": "INSERT memories"
-    },
-    {
-      "t": 1222,
-      "op": "push_commit",
-      "worker": "w7a",
-      "prNumber": 416,
-      "sha": "c3d8e21",
-      "api": "git push (same branch)",
-      "db": "workers.lastCommitSha, commitCount"
-    },
-    {
-      "t": 1225,
-      "op": "ci",
-      "worker": "w7",
-      "prNumber": 416,
-      "state": "ci_running",
-      "api": "GitHub webhook check_suite → POST /api/github/webhook",
-      "db": "workers.prLifecycleStatus=ci_running"
     },
     {
       "t": 1245,
@@ -3918,25 +4140,6 @@
       "db": "workers.milestones"
     },
     {
-      "t": 1300,
-      "op": "ci",
-      "worker": "w7",
-      "prNumber": 416,
-      "state": "ci_green",
-      "api": "GitHub webhook (check_suite on the PR owner row)",
-      "db": "workers(w7).prLifecycleStatus=ci_green",
-      "beat": "CI heals itself"
-    },
-    {
-      "t": 1310,
-      "op": "complete",
-      "task": "T7a",
-      "worker": "w7a",
-      "summary": "Fixed locale-sensitive PDF footnote; CI green on #416.",
-      "api": "MCP buildd complete_task {summary}",
-      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
-    },
-    {
       "t": 1330,
       "op": "complete",
       "task": "H1",
@@ -3944,14 +4147,6 @@
       "summary": "Merged 2 patch bumps. No majors pending. Next tick in 6h.",
       "api": "complete_task",
       "db": "tasks.status=completed"
-    },
-    {
-      "t": 1330,
-      "op": "merge",
-      "worker": "w7",
-      "prNumber": 416,
-      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
-      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
     },
     {
       "t": 1340,
@@ -4097,6 +4292,138 @@
       "db": "workers.mergedAt=now, prLifecycleStatus=merged"
     },
     {
+      "t": 1476,
+      "op": "task_create",
+      "task": "VA",
+      "api": "mission surface audit (ensureMissionSurfaceAudit) → INSERT tasks(roleSlug=visual-auditor)",
+      "db": "INSERT tasks (roleSlug=visual-auditor, outputRequirement=artifact_required, context.visualQa.requiredRoutes)",
+      "beat": "Then it looks at what it built"
+    },
+    {
+      "t": 1478,
+      "op": "claim",
+      "task": "VA",
+      "worker": "wva",
+      "runner": "birch",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 1481,
+      "op": "worker_status",
+      "worker": "wva",
+      "status": "running",
+      "api": "PATCH /api/workers/wva {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 1484,
+      "op": "progress",
+      "worker": "wva",
+      "pct": 10,
+      "message": "Required routes from the merged PRs: /invoices/:id, /pay/:invoiceId",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1486,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Bash",
+      "cmd": "QA_VIEWPORT=mobile scripts/qa/shoot.sh /invoices/inv_eur /invoices/inv_jpy /pay/inv_jpy"
+    },
+    {
+      "t": 1494,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Bash",
+      "cmd": "scripts/qa/shoot.sh /invoices/inv_eur /invoices/inv_jpy /pay/inv_jpy"
+    },
+    {
+      "t": 1500,
+      "op": "progress",
+      "worker": "wva",
+      "pct": 35,
+      "message": "Captured 6 shots: EUR and JPY invoices, JPY checkout, at desktop and phone width",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1502,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Read",
+      "path": "/tmp/qa/screenshots/invoices-eur-desktop.png"
+    },
+    {
+      "t": 1504,
+      "op": "artifact",
+      "artifact": "a_shot1",
+      "worker": "wva",
+      "api": "MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+      "db": "INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)"
+    },
+    {
+      "t": 1506,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Read",
+      "path": "/tmp/qa/screenshots/invoices-eur-mobile.png"
+    },
+    {
+      "t": 1508,
+      "op": "artifact",
+      "artifact": "a_shot2",
+      "worker": "wva",
+      "api": "MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+      "db": "INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)"
+    },
+    {
+      "t": 1510,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Read",
+      "path": "/tmp/qa/screenshots/invoices-jpy-desktop.png"
+    },
+    {
+      "t": 1512,
+      "op": "artifact",
+      "artifact": "a_shot3",
+      "worker": "wva",
+      "api": "MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+      "db": "INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)"
+    },
+    {
+      "t": 1514,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Read",
+      "path": "/tmp/qa/screenshots/invoices-jpy-mobile.png"
+    },
+    {
+      "t": 1516,
+      "op": "artifact",
+      "artifact": "a_shot4",
+      "worker": "wva",
+      "api": "MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+      "db": "INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)"
+    },
+    {
+      "t": 1518,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Read",
+      "path": "/tmp/qa/screenshots/pay-jpy-desktop.png"
+    },
+    {
+      "t": 1520,
+      "op": "artifact",
+      "artifact": "a_shot5",
+      "worker": "wva",
+      "api": "MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+      "db": "INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)"
+    },
+    {
       "t": 1520,
       "op": "ci",
       "worker": "w10",
@@ -4104,6 +4431,46 @@
       "state": "ci_green",
       "api": "GitHub webhook check_suite → POST /api/github/webhook",
       "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 1522,
+      "op": "tool",
+      "worker": "wva",
+      "tool": "Read",
+      "path": "/tmp/qa/screenshots/pay-jpy-mobile.png"
+    },
+    {
+      "t": 1524,
+      "op": "artifact",
+      "artifact": "a_shot6",
+      "worker": "wva",
+      "api": "MCP buildd upload_artifact {type:'screenshot', missionId, metadata.qa} + PUT the bytes",
+      "db": "INSERT artifacts(type=screenshot, storageKey=qa/<ws>/<id>/<name>, metadata.qa)"
+    },
+    {
+      "t": 1528,
+      "op": "progress",
+      "worker": "wva",
+      "pct": 90,
+      "message": "All 6 shots ok: separators, symbols, no JPY decimals, nothing clipped at 390px",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1531,
+      "op": "mission_note",
+      "note": "n_visual",
+      "api": "MCP buildd post_note {type:'update'}",
+      "db": "INSERT mission_notes"
+    },
+    {
+      "t": 1534,
+      "op": "complete",
+      "task": "VA",
+      "worker": "wva",
+      "summary": "Visual review passed: 6 of 6 shots ok. EUR and JPY invoices and JPY checkout, at desktop and phone width.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
     },
     {
       "t": 1545,

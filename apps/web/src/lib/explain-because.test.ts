@@ -175,7 +175,7 @@ describe('buildStateBecause', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });
     expect(chain).toHaveLength(1);
-    expect(chain[0].claim).toContain('no source reports anything outstanding');
+    expect(chain[0].claim).toContain('No source reports outstanding work');
   });
 });
 

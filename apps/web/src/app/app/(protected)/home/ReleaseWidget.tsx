@@ -39,7 +39,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       </span>
                     )}
                     <span className="text-[13px] text-text-secondary">
-                      Queue depth doesn&apos;t reconcile with the last dispatch — release baseline may be broken
+                      Queue depth doesn&apos;t match the last dispatch. The release baseline may be broken.
                     </span>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">

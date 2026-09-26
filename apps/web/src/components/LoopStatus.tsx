@@ -91,11 +91,11 @@ export function LoopHistory({
       {loopState === 'exhausted' && (
         <div className="mb-3 rounded-[8px] border border-status-error/30 bg-status-error/10 p-3 text-sm text-status-error">
           <span className="font-semibold">Condition unmet after {entries.length || maxLoops} attempts.</span>
-          {' '}The task failed after exhausting its verification loop; the evidence from every attempt is preserved below.
+          {' '}The task failed. Evidence from each attempt is below.
         </div>
       )}
       {entries.length === 0 ? (
-        <div className="card p-4 text-sm text-text-muted">No iterations evaluated yet.</div>
+        <div className="card p-4 text-sm text-text-muted">No iterations evaluated.</div>
       ) : (
         <div className="card divide-y divide-border-default">
           {entries.map((entry) => {

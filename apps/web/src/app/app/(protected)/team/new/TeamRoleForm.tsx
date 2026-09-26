@@ -173,7 +173,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
 
         {scope === 'team' && (
           <p className="text-xs text-text-muted mt-2">
-            This role will be the default for all workspaces in your team. Individual workspaces can add overrides.
+            Every workspace in your team gets this role by default. A workspace can add an override.
           </p>
         )}
 
@@ -186,7 +186,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
               size="sm"
             />
             <p className="text-xs text-text-muted mt-1">
-              This role will only be available in the selected workspace.
+              Only the selected workspace gets this role.
             </p>
           </div>
         )}

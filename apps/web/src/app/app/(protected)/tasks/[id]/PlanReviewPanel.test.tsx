@@ -21,7 +21,7 @@ describe('resolveRejectOutcome', () => {
   it('sends an ordinary rejection to the revised planning task it just created', () => {
     const outcome = resolveRejectOutcome({ taskId: 'task-revised' });
     expect(outcome.navigateTo).toBe('task-revised');
-    expect(outcome.text).toContain('revised task created');
+    expect(outcome.text).toContain('revised task');
   });
 
   it('reports a rejected proposal as closed, retained, and navigates nowhere', () => {
@@ -29,7 +29,7 @@ describe('resolveRejectOutcome', () => {
     expect(outcome.navigateTo).toBeNull();
     expect(outcome.text).not.toContain('revised task');
     // The two facts a human needs: the reason is kept, and the docs PR stands.
-    expect(outcome.text).toContain('reason is kept');
+    expect(outcome.text).toContain('reason stays');
     expect(outcome.text).toContain('documentation');
   });
 

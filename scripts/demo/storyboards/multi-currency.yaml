@@ -3,7 +3,8 @@
 # outcome, phone answer page).
 #
 # Keys in {braces} are dataset keys from the story JSON: M1 = the mission,
-# T7 = invoice render (CI red -> self-healed -> merged), T8 = checkout (asks the question).
+# T7 = invoice render, T8 = checkout (asks the question), VA = the visual review
+# of both (screenshots at desktop + phone, all ok).
 #
 #   bun run demo:shoot scripts/demo/storyboards/multi-currency.yaml --out <dir>
 #
@@ -20,6 +21,7 @@ themes: [dark, light]
 highlight:
   - home-stat-strip
   - home-fleet
+  - fleet-summary # the one-line fleet once every slot is idle (30-home-end)
   - fleet-slot
   - fleet-runner
   - needs-you-card
@@ -34,11 +36,65 @@ highlight:
   - respond-question-hero
   - question-option
   - worker-now-strip
+  - approval-card
+  - approval-confirm
+  - tool-call-row
+  - object-card
+  - chat-pane
+  - chat-object-sheet
   - worker-stats
   - worker-touched-row
   - pr-outcome
   - pr-lineage
+  - visual-review-strip
+  - visual-review-thumb
+  - artifact-card
 steps:
+  # ── chat opener ────────────────────────────────────────────────────────────
+  # The demo opens in the chat (docs/design/agent-chat.md): the goal asked as a
+  # question, the agent's read-only tool rows, "Make it a mission", and the
+  # approval card. C1 is seeded with the card open (story `chat`, lib/chat.ts);
+  # the t=0 mission_create event is the confirm — the card folds to its row and
+  # the live mission docks beside the chat. No model call anywhere.
+  - id: c0-chat-propose
+    goto: /app/chat/{C1}
+    viewports: [desktop, phone]
+    waitFor: approval-card
+    # On a phone the card folds its details behind "Show details", so its header
+    # and every action fit above the composer; anchoring Confirm to the bottom
+    # edge matches where the chat's own scroll-to-bottom leaves it.
+    scrollTo: approval-confirm
+    scrollAlign: end
+    caption: "Ask first. \"Make it a mission\" — nothing is filed until you confirm."
+    # Live take: the confirm lands (t=0) and the mission docks in the pane, planning.
+    record: { ms: 9000, advanceTo: "0:12", ticks: 3 }
+
+  - id: c1-chat-filed
+    advance: "0:12"
+    goto: /app/chat/{C1}
+    waitFor: [chat-pane, object-card]
+    scrollTo: object-card
+    scrollOffset: 0
+    caption: "Confirmed. The card is now the live mission, docked beside the chat."
+
+  - id: c2-chat-phone-card
+    advance: "0:12"
+    goto: /app/chat/{C1}
+    viewports: [phone]
+    waitFor: object-card
+    scrollTo: object-card
+    scrollOffset: 0
+    caption: "On the phone the mission is a card in the conversation."
+
+  - id: c3-chat-phone-sheet
+    advance: "0:12"
+    goto: /app/chat/{C1}
+    viewports: [phone]
+    waitFor: object-expand
+    click: object-expand
+    hold: 700
+    caption: "Tap it: the board opens as a sheet over the chat."
+
   # ── fan-out ────────────────────────────────────────────────────────────────
   # Live take: the Board stays open 0:40 -> 1:00 while the organizer plans: twelve
   # tiles appear across three phases, all over soketi pushes. Each tick is a full
@@ -57,6 +113,14 @@ steps:
     waitFor: mission-board
     fullPage: true
     caption: "One sentence in. Twelve tasks, three phases, dependencies worked out."
+
+  - id: c4-chat-pane-planned
+    advance: "1:00"
+    goto: /app/chat/{C1}
+    waitFor: chat-pane
+    scrollTo: object-card
+    scrollOffset: 0
+    caption: "The pane follows the mission: twelve tasks, three phases."
 
   - id: 02-home-fanout
     advance: "2:00"
@@ -100,6 +164,14 @@ steps:
     fullPage: true
     caption: "Phase 2 starts before phase 1 finishes."
 
+  # Live take: Home 10:00 -> 12:00 — the fleet fills to peak over soketi pushes.
+  - id: 07b-home-fleet-live
+    advance: "10:00"
+    goto: /app/home
+    waitFor: home-fleet
+    shot: false
+    record: { ms: 20000, advanceTo: "12:00", ticks: 10 }
+
   # ── peak ───────────────────────────────────────────────────────────────────
   - id: 08-home-peak
     advance: "11:50"
@@ -141,10 +213,12 @@ steps:
     waitFor: worker-question-hero
     caption: "When it matters, they ask."
 
+  # The mission came from a chat, so /respond redirects into it: the question
+  # opens as a sheet over the conversation (?focus=question).
   - id: 15-respond-phone
     goto: /app/tasks/{T8}/respond
     viewports: [phone]
-    waitFor: respond-question-hero
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
     caption: "You answer from wherever you are."
 
   - id: 16-home-question
@@ -160,47 +234,62 @@ steps:
     fullPage: true
     caption: "The question and its answers, right on the mission."
 
-  # ── CI red, self-healed ────────────────────────────────────────────────────
-  - id: 18-board-ci-red
-    advance: "18:40"
-    goto: /app/missions/{M1}
-    waitFor: mission-board
-    fullPage: true
-    caption: "CI broke. A fix is already running."
+  # ── visual review ──────────────────────────────────────────────────────────
+  # Once the invoice (#416) and checkout (#418) PRs merge, a visual-auditor
+  # screenshots what they changed at desktop and phone width, judges every shot
+  # and posts the verdict (story task VA, 24:36 -> 25:34). The mission's
+  # Delivery line gains "Visual review", which expands into the shots strip.
+  - id: 18-mission-visual-review
+    advance: "25:40"
+    # The full strip (captions, legend) is the Feed layout's Delivery line; the
+    # Board shows the same run compactly under the auditor's row (24, 27).
+    goto: /app/missions/{M1}?layout=feed
+    viewports: [desktop, phone]
+    waitFor: mission-delivery
+    click: mission-delivery-summary
+    # The step row, not the strip, so its "Visual review" label clears the
+    # sticky phone header.
+    scrollTo: '[data-testid="mission-delivery-step"][data-step="visual"]'
+    scrollOffset: 240
+    highlight: [visual-review-strip, visual-review-count, visual-review-thumb]
+    hold: 900
+    caption: "Then it looks at what it built. Six screens, desktop and phone, all ok."
 
-  - id: 19-lanes-ci-red
-    goto: /app/missions/{M1}?layout=lanes
-    waitFor: mission-lanes
-    fullPage: true
-    caption: "CI broke. A fix is already running."
+  - id: 19-mission-visual-shot
+    goto: /app/missions/{M1}?layout=feed
+    viewports: [desktop, phone]
+    waitFor: mission-delivery
+    click: [mission-delivery-summary, visual-review-thumb]
+    highlight: [visual-review-lightbox-route]
+    hold: 900
+    caption: "Every shot comes with what the reviewer checked."
 
-  # Live take: Board 18:40 -> 20:00 (retry working on the red PR).
-  - id: 20-board-retry-live
-    goto: /app/missions/{M1}
-    waitFor: mission-board
-    shot: false
-    record: { ms: 18000, advanceTo: "20:00", ticks: 9 }
+  - id: 20-task-visual-review
+    goto: /app/tasks/{VA}
+    viewports: [desktop, phone]
+    waitFor: task-visual-shots
+    scrollTo: task-artifacts
+    highlight: [task-visual-shots, visual-review-thumb, visual-review-finding]
+    hold: 900
+    caption: "The reviewer's own page: the shots it took, the verdict it posted."
 
-  - id: 21-task-ci-retry
-    advance: "20:00"
-    goto: /app/tasks/{T7}
-    waitFor: pr-outcome
-    fullPage: true
-    caption: "Red, retried on the same branch."
+  - id: 21-task-visual-shot
+    goto: /app/tasks/{VA}
+    viewports: [desktop, phone]
+    waitFor: task-visual-shots
+    click: '[data-testid="task-visual-shots"] [data-testid="visual-review-thumb"]'
+    highlight: [visual-review-lightbox-route]
+    hold: 900
+    caption: "Open any shot from the task."
 
-  - id: 22-home-self-healed
-    advance: "22:00"
-    goto: /app/home
-    waitFor: home-stat-strip
-    fullPage: true
-    caption: "Self-healed. Nobody touched it."
-
-  - id: 23-task-merged
-    advance: "22:30"
-    goto: /app/tasks/{T7}
-    waitFor: pr-outcome
-    fullPage: true
-    caption: "Red, retried, green, merged."
+  # A shared ?artifact= link opens the artifact viewer on the uploaded image.
+  - id: 21b-task-artifact-link
+    goto: /app/tasks/{VA}?artifact={a_shot3}
+    viewports: [desktop, phone]
+    waitFor: artifact-viewer
+    highlight: [artifact-viewer]
+    hold: 900
+    caption: "A link to one shot opens it directly."
 
   # ── prove it, done ─────────────────────────────────────────────────────────
   - id: 24-board-2600
@@ -247,4 +336,4 @@ steps:
     goto: /app/home
     waitFor: home-fleet
     fullPage: true
-    caption: "11 PRs merged. 1 CI failure fixed automatically. 1 decision from a human."
+    caption: "11 PRs merged. 6 screens reviewed. 1 decision from a human."

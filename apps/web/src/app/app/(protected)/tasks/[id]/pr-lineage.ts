@@ -104,7 +104,7 @@ export function buildLineage({
       steps.push({
         kind: 'retry',
         title: 'Retry sent',
-        sub: 'Failure excerpt handed to a fresh builder',
+        sub: 'A new builder got the failure excerpt',
         at: next?.startedAt != null ? `+${formatOffset(next.startedAt - retry.createdAt)}` : null,
       });
       commit(retry.headSha ?? a.headSha, 'failed', retry.failure);

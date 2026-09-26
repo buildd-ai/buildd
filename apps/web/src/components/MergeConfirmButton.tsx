@@ -73,7 +73,7 @@ export default function MergeConfirmButton({
 
   if (state === 'confirming') {
     const confirmMsg = queuedTaskCount
-      ? `Merging will unblock ${queuedTaskCount} queued task${queuedTaskCount === 1 ? '' : 's'}.`
+      ? `Merging unblocks ${queuedTaskCount} queued task${queuedTaskCount === 1 ? '' : 's'}.`
       : 'Confirm merge?';
     return (
       <span className="inline-flex items-center gap-2 flex-wrap">

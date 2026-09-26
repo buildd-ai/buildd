@@ -59,7 +59,7 @@ function NameModal({
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-semibold">Workspace Name</h2>
-        <p className="text-sm text-text-muted">Choose how to name this workspace</p>
+        <p className="text-sm text-text-muted">Pick a name for this workspace.</p>
 
         <div className="space-y-2">
           {repo && (
@@ -325,7 +325,7 @@ export default function NewWorkspacePage() {
         return;
       }
       if (!selectedInstallation) {
-        setError('Select a GitHub account to create the repository under');
+        setError('Select the GitHub account that will own the repository');
         setLoading(false);
         return;
       }
@@ -530,7 +530,7 @@ export default function NewWorkspacePage() {
               }`}
             >
               <div className="font-medium">Create new repo</div>
-              <div className="text-xs text-text-muted mt-0.5">Make a fresh GitHub repo</div>
+              <div className="text-xs text-text-muted mt-0.5">Create a GitHub repo</div>
             </button>
           </div>
 
@@ -549,7 +549,7 @@ export default function NewWorkspacePage() {
                 }))}
               />
               <p className="text-xs text-text-muted mt-1">
-                Which team owns this workspace
+                The team that owns this workspace
               </p>
             </div>
           )}
@@ -601,7 +601,7 @@ export default function NewWorkspacePage() {
                 onClick={() => setUseManual(true)}
                 className="text-sm text-primary hover:underline"
               >
-                Or enter repository URL manually
+                Or enter a repository URL
               </button>
             </>
           )}
@@ -638,7 +638,7 @@ export default function NewWorkspacePage() {
                   placeholder="org/repo or https://github.com/org/repo"
                   className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-base md:text-sm"
                 />
-                <p className="text-xs text-text-muted mt-1">Optional - agents will clone this repo</p>
+                <p className="text-xs text-text-muted mt-1">Optional. Agents clone this repo.</p>
               </div>
 
               {!githubConfigured && (
@@ -647,7 +647,7 @@ export default function NewWorkspacePage() {
                     <a href="/api/github/install" className="font-medium hover:underline">
                       Connect GitHub
                     </a>
-                    {' '}to auto-discover repositories and enable issue sync.
+                    {' '}to list your repositories and sync issues.
                   </p>
                 </div>
               )}
@@ -672,7 +672,7 @@ export default function NewWorkspacePage() {
                   Edit
                 </button>
               </div>
-              <p className="text-xs text-text-muted mt-1">Auto-derived from repository</p>
+              <p className="text-xs text-text-muted mt-1">Taken from the repository name</p>
             </div>
           )}
 
@@ -680,7 +680,7 @@ export default function NewWorkspacePage() {
           {mode === 'connect' && selectedRepos.length > 1 && !useManual && (
             <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg">
               <p className="text-sm font-medium">{selectedRepos.length} repositories selected</p>
-              <p className="text-xs text-text-muted mt-1">Each workspace will be named after its repository</p>
+              <p className="text-xs text-text-muted mt-1">Each workspace takes its repository&apos;s name</p>
             </div>
           )}
 
@@ -717,7 +717,7 @@ export default function NewWorkspacePage() {
                           </button>
                         ))}
                       </div>
-                      <p className="text-xs text-text-muted mt-1">The org or user the new repo is created under</p>
+                      <p className="text-xs text-text-muted mt-1">The org or user that owns the new repo</p>
                     </div>
                   )}
 
@@ -736,7 +736,7 @@ export default function NewWorkspacePage() {
                     <p className="text-xs text-text-muted mt-1">
                       {selectedInstallation
                         ? `Creates ${installations.find((i) => i.id === selectedInstallation)?.accountLogin}/${newRepoName || 'name'}`
-                        : 'The workspace will be named after the repo'}
+                        : 'The workspace takes the repo\'s name'}
                     </p>
                   </div>
 
@@ -840,7 +840,7 @@ export default function NewWorkspacePage() {
                 />
                 <div>
                   <span className="text-sm font-medium">Restricted</span>
-                  <p className="text-xs text-text-muted mt-0.5">Only accounts you explicitly link can claim tasks</p>
+                  <p className="text-xs text-text-muted mt-0.5">Only accounts you link can claim tasks</p>
                 </div>
               </label>
             </div>

@@ -135,7 +135,7 @@ export default function ConnectionsClient({
   // Show toast on OAuth redirect params
   useEffect(() => {
     if (connectedId) {
-      setMessage({ type: 'success', text: 'Connection established successfully.' });
+      setMessage({ type: 'success', text: 'Connected.' });
     } else if (errorMsg) {
       setMessage({ type: 'error', text: `OAuth error: ${errorMsg.replace(/_/g, ' ')}` });
     }
@@ -494,7 +494,7 @@ export default function ConnectionsClient({
         >
           <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-sm p-6">
             <h2 className="text-base font-semibold text-text-primary mb-4">
-              Set API key — {editingHeaderConnector.name}
+              Set API key · {editingHeaderConnector.name}
             </h2>
             <input
               type="password"
@@ -527,7 +527,7 @@ export default function ConnectionsClient({
       <ConfirmDialog
         open={!!disconnecting}
         title={`Disconnect ${disconnecting?.name}?`}
-        message="This will remove the stored token. You can reconnect at any time."
+        message="Removes the stored token. You can reconnect later."
         confirmLabel="Disconnect"
         variant="warning"
         loading={disconnectLoading}
@@ -542,11 +542,11 @@ export default function ConnectionsClient({
         >
           <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-md p-6">
             <h2 className="text-base font-semibold text-text-primary mb-1">
-              Sharing — {sharingConnector.name}
+              Sharing · {sharingConnector.name}
             </h2>
             <p className="text-xs text-text-muted mb-4">
               Grantee teams use this connector with your team&apos;s credential. They can
-              enable it per workspace and opt roles in, but cannot edit or reconnect it.
+              enable it per workspace and opt roles in. They can&apos;t edit or reconnect it.
             </p>
 
             {shareError && (
@@ -626,7 +626,7 @@ export default function ConnectionsClient({
                 </button>
               </div>
               <p className="mt-2 text-xs text-text-muted">
-                Moves the connector and its credential to the selected team. Existing shares are preserved.
+                Moves the connector and its credential to the selected team. Existing shares stay.
               </p>
             </div>
 
@@ -645,7 +645,7 @@ export default function ConnectionsClient({
       <ConfirmDialog
         open={confirmingTransfer}
         title={`Transfer ${sharingConnector?.name ?? 'connector'}?`}
-        message={`Ownership moves to ${teams.find(t => t.id === transferTeamId)?.name ?? 'the selected team'}. That team's admins will control this connector and its credential. Existing shares are preserved; your team keeps access only if it is shared back.`}
+        message={`Ownership moves to ${teams.find(t => t.id === transferTeamId)?.name ?? 'the selected team'}. That team's admins will control this connector and its credential. Existing shares stay. Your team keeps access only if the new owner shares it back.`}
         confirmLabel="Transfer ownership"
         variant="danger"
         loading={transferLoading}
@@ -656,7 +656,7 @@ export default function ConnectionsClient({
       <ConfirmDialog
         open={!!deleting}
         title={`Delete ${deleting?.name}?`}
-        message="This will permanently remove the connector and any stored credentials."
+        message="Permanently deletes the connector and its stored credentials."
         confirmLabel="Delete"
         variant="danger"
         loading={deleteLoading}

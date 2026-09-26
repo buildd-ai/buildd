@@ -191,7 +191,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
                 </div>
               )}
               <p className="text-[12px] text-text-secondary mt-0.5">
-                {item.escalationReason ?? 'Conflict-resolution retries exhausted — manual intervention required'}
+                {item.escalationReason ?? 'Agents ran out of conflict-resolution retries. Resolve the conflict yourself.'}
               </p>
               {/* The human is being asked to decide something an
                   agent already failed at — lead with what that

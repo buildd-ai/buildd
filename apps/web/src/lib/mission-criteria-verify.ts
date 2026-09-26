@@ -110,7 +110,7 @@ export async function resolveCommandCriterion(opts: {
   if (typeof command !== 'string' || command.trim() === '') {
     return {
       kind: 'unavailable',
-      evidence: 'Command criterion has no command to run — edit the criterion to supply one',
+      evidence: 'Command criterion has no command to run. Edit the criterion to add one.',
     };
   }
 
@@ -129,7 +129,7 @@ export async function resolveCommandCriterion(opts: {
         // A verification task nothing ever claims would otherwise read as a
         // normal "in flight" forever, holding the mission open with no clue why.
         evidence: stalled
-          ? `Verification task ${existing.id.slice(0, 8)} has been ${existing.status} for ${Math.round(waitedMs / 60000)}m — no runner has claimed it: ${shortCommand(command)}`
+          ? `Verification task ${existing.id.slice(0, 8)} has been ${existing.status} for ${Math.round(waitedMs / 60000)}m with no runner claiming it: ${shortCommand(command)}`
           : `Verification task ${existing.id.slice(0, 8)} is ${existing.status}: ${shortCommand(command)}`,
       };
     }
@@ -212,9 +212,9 @@ function verdictEvidence(
   const summary = typeof last?.summary === 'string' ? last.summary : null;
   if (verdict === 'pass') return `\`${shortCommand(command)}\` exited 0${summary ? ` (${summary})` : ''}`;
   if (verdict === 'UNVERIFIED') {
-    return `\`${shortCommand(command)}\` could not be evaluated (environment error, not a code failure)${summary ? ` — ${summary}` : ''}`;
+    return `\`${shortCommand(command)}\` could not be evaluated because of an environment error${summary ? `: ${summary}` : ''}`;
   }
-  return `\`${shortCommand(command)}\` did not pass${summary ? ` — ${summary}` : ''}`;
+  return `\`${shortCommand(command)}\` did not pass${summary ? `: ${summary}` : ''}`;
 }
 
 /**

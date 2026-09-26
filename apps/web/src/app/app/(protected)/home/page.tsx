@@ -8,8 +8,9 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { resolveActiveTeamScope } from '@/lib/team-access';
-import { splitWaitingOnYou, rightNowState, recordBestEffort } from './home-view';
+import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
+import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
+import { InFlightGroupCard } from './InFlightGroupCard';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { noRowOfPrMerged, oneRowPerPr } from '@/lib/pr-merge-stamp';
@@ -39,23 +40,7 @@ import { InterruptReviewButton } from './InterruptReviewButton';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
-import { sortInitiatives } from '@/lib/initiative-presentation';
-import {
-  loadInitiativeEffort,
-  loadInitiativeVerdictInputs,
-  deriveInitiativeVerdict,
-  derivePendingCounts,
-  countBlockedByPR,
-  emptyVerdictRollup,
-  zeroEffortWindow,
-  noPendingCounts,
-  type EffortDay,
-  type VerdictRollup,
-  type BlockingTask,
-} from '@/lib/initiative-pulse';
-import type { PulseLineItem } from '@/lib/initiative-pulse-line';
-import { InitiativePulseLine } from './InitiativePulseLine';
-import { loadShippedMissionIds } from '@/lib/mission-ship-state';
+import type { BlockingTask } from '@/lib/mission-card-view';
 
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
@@ -76,6 +61,8 @@ import { StatStrip } from './StatStrip';
 import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
 import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
+import { MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from '../missions/[id]/mission-page-query';
+import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/mission-visual-review';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
 import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
@@ -83,6 +70,11 @@ import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
 import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
+import { getChatAvailability } from '@/lib/chat-availability';
+import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
+import HomeChatCard from '@/components/chat/HomeChatCard';
+import ChatSetupCard from '@/components/chat/ChatSetupCard';
+import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 
 // --- Helpers ---
 
@@ -168,10 +160,6 @@ export default async function HomePage({
   let actionQueueInitiatives: Array<{ id: string; title: string }> = [];
   // Arc headline: an initiative that crossed a milestone since this user's last visit.
   let arcHeadline: string | null = null;
-  // One verdict per initiative, feeding the one-line initiative pulse (§2 of
-  // docs/specs/surface-ia-home-missions-initiatives.md). Stays empty when every
-  // arc is winning/dormant/empty, and the line then renders as absence.
-  let pulseItems: PulseLineItem[] = [];
 
   const waitingOnYou: WaitingOnYouRawItem[] = [];
 
@@ -262,6 +250,12 @@ export default async function HomePage({
   let shippedToday = 0;
   let teamName: string | null = null;
   let teamTz: string | null = null;
+  // Owners/admins run the fleet; members see their asks and missions first.
+  let audience: HomeAudience = 'operator';
+  // Agent chat on Home (docs/design/agent-chat.md, "Who sees what first").
+  let chatPlacement: HomeChatPlacement = { kind: 'none' };
+  let chatRecent: ConversationListItem[] = [];
+  let chatTeamId: string | null = null;
   const renderNow = Date.now();
 
   // Build a roles map for display
@@ -280,6 +274,19 @@ export default async function HomePage({
       const scope = await resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value);
       const activeTeamId = scope.teamId;
       teamWorkspaces = scope.workspaces;
+      if (activeTeamId) {
+        // Role and chat availability are independent: one wait. Availability
+        // stops at one column read for a team that hasn't turned chat on.
+        const [role, chatAvail, recent] = await Promise.all([
+          getUserTeamRole(user.id, activeTeamId).catch(() => null),
+          getChatAvailability(user.id, activeTeamId).catch(() => null),
+          listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
+        ]);
+        audience = homeAudience(role);
+        chatPlacement = homeChatPlacement(audience, chatAvail);
+        chatRecent = recent;
+        chatTeamId = activeTeamId;
+      }
       const teamWsIds = scope.workspaces.map((w) => w.id);
       // Narrow to selected workspace if filter is set (must belong to team)
       const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
@@ -292,36 +299,30 @@ export default async function HomePage({
       // Feeds the arc headline and the queue scoping chips; the 160px card rail
       // it used to feed is MUST NOT on Home (surface-IA spec §1, §2.1, AC-6).
       const initiativeTeamIds = activeTeamId ? [activeTeamId] : [];
-      const sortedInitiatives = sortInitiatives(
-        await loadInitiativeList({
-          teamIds: initiativeTeamIds,
-          workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
-          // The pulse line's `stuck` clause needs held / blocked / awaiting-merge
-          // counts, which `derivePendingCounts` reads off these mission rows. No
-          // extra round trip — the same relational query carries the columns.
-          pendingSignals: true,
-        }),
-      );
+      const teamInitiatives = await loadInitiativeList({
+        teamIds: initiativeTeamIds,
+        workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
+      });
       // Map every child mission → its initiative, for the queue scoping chips.
       const missionToInitiative = new Map<string, { id: string; title: string }>();
-      for (const ini of sortedInitiatives) {
+      for (const ini of teamInitiatives) {
         for (const m of ini.missions) missionToInitiative.set(m.id, { id: ini.id, title: ini.title });
       }
 
       // Arc headline — detect a milestone crossing since this user's last visit,
       // then refresh the per-user snapshot to current. A first-ever view seeds the
       // baseline silently (no snapshot ⇒ no headline).
-      if (sortedInitiatives.length > 0) {
+      if (teamInitiatives.length > 0) {
         const seenRows = await db
           .select({ initiativeId: initiativeProgressSeen.initiativeId, lastProgress: initiativeProgressSeen.lastProgress })
           .from(initiativeProgressSeen)
           .where(and(
             eq(initiativeProgressSeen.userId, user.id),
-            inArray(initiativeProgressSeen.initiativeId, sortedInitiatives.map((i) => i.id)),
+            inArray(initiativeProgressSeen.initiativeId, teamInitiatives.map((i) => i.id)),
           ));
         const seenMap = new Map(seenRows.map((r) => [r.initiativeId, r.lastProgress]));
         let best: { title: string; milestone: number } | null = null;
-        for (const ini of sortedInitiatives) {
+        for (const ini of teamInitiatives) {
           const prev = seenMap.get(ini.id);
           if (prev === undefined) continue; // first view → baseline only
           const m = crossedMilestone(prev, ini.progress.progress);
@@ -332,7 +333,7 @@ export default async function HomePage({
         // Bookkeeping, not rendering: runs after the response via after(), and
         // a failure only costs the next visit its headline. Awaited here it
         // could throw and skip every query below, blanking Home.
-        const seenValues = sortedInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress }));
+        const seenValues = teamInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress }));
         recordBestEffort('initiative-progress-seen', () => db
           .insert(initiativeProgressSeen)
           .values(seenValues)
@@ -340,60 +341,6 @@ export default async function HomePage({
             target: [initiativeProgressSeen.userId, initiativeProgressSeen.initiativeId],
             set: { lastProgress: sql`excluded.last_progress`, updatedAt: sql`now()` },
           }));
-      }
-
-      // Initiative pulse line (§2.2): one verdict per arc, from the shared
-      // loader — never a second query of our own, and never a call per
-      // initiative (§2.4, §6.2). Effort and verdict evidence are team-scoped on
-      // purpose (§6.5): a workspace-narrowed window would let the sidebar filter
-      // flip an arc's verdict.
-      if (sortedInitiatives.length > 0) {
-        const effortByInitiative = new Map<string, EffortDay[]>();
-        const rollupByInitiative = new Map<string, VerdictRollup>();
-        await Promise.all(
-          initiativeTeamIds.map(async (teamId) => {
-            const [effort, rollups] = await Promise.all([
-              loadInitiativeEffort({ teamId }),
-              loadInitiativeVerdictInputs({ teamId }),
-            ]);
-            for (const [id, days] of effort) effortByInitiative.set(id, days);
-            for (const [id, rollup] of rollups) rollupByInitiative.set(id, rollup);
-          }),
-        );
-
-        // `dependsOn` crosses mission boundaries, so the blocking index spans
-        // every mission loaded rather than being rebuilt per initiative.
-        const blockingIndex = new Map<string, BlockingTask>();
-        for (const ini of sortedInitiatives) {
-          for (const mission of ini.missions) {
-            for (const task of mission.tasks ?? []) blockingIndex.set(task.id, task);
-          }
-        }
-
-        // Ship state, not the mission.status row transition (docs/design/mission-delivery-arc.md,
-        // "The missing dimension: ship state") — one batched query for every
-        // mission on the page, not one per mission.
-        const allMissionIds = sortedInitiatives.flatMap((ini) => ini.missions.map((m) => m.id));
-        const shippedMissionIds = await loadShippedMissionIds(allMissionIds);
-
-        pulseItems = sortedInitiatives.map((ini) => {
-          const rollup = rollupByInitiative.get(ini.id) ?? emptyVerdictRollup(ini.status);
-          const effortDays = effortByInitiative.get(ini.id) ?? zeroEffortWindow();
-          const counts =
-            derivePendingCounts(
-              ini.missions.map((mission) => ({
-                initiativeId: ini.id,
-                isHeld: mission.isHeld,
-                shipped: shippedMissionIds.has(mission.id),
-                lastActivityAt: mission.updatedAt,
-                blockedPRCount: countBlockedByPR(mission.tasks ?? [], blockingIndex),
-                tasks: mission.tasks ?? [],
-              })),
-            ).get(ini.id) ?? noPendingCounts();
-
-          const { verdict } = deriveInitiativeVerdict({ rollup, effortDays, counts });
-          return { id: ini.id, title: ini.title, verdict };
-        });
       }
 
       if (wsIds.length > 0) {
@@ -644,6 +591,21 @@ export default async function HomePage({
               prs: model.done?.prs ?? 0, fixes: model.done?.fixes ?? 0, durationMs: model.done?.durationMs ?? null,
               criteria: model.criteria,
             }));
+          // The shipped card (and the stat strip) say what the mission's visual
+          // review found, the same latest auditor run its mission page shows.
+          if (shippedMissions[0]) {
+            const shotRows = await db.query.artifacts.findMany({
+              where: missionVisualShotsWhere(shippedMissions[0].id),
+              columns: MISSION_VISUAL_SHOT_COLUMNS,
+              orderBy: MISSION_VISUAL_SHOTS_ORDER,
+              limit: MISSION_VISUAL_SHOTS_LIMIT,
+            });
+            const run = selectLatestRun(toVisualShots(shotRows));
+            if (run.length > 0) {
+              const { shots, ok, issues, unsure } = summarizeVisualRun(run);
+              shippedMissions[0] = { ...shippedMissions[0], screens: { shots, ok, issues, unsure } };
+            }
+          }
         }
 
         // Schedules with pending agent suggestions
@@ -1244,7 +1206,7 @@ export default async function HomePage({
                     : (w.taskId ? reviewerRecommendationMap.get(w.taskId) ?? null : null),
                   leaseState,
                   escalationReason: deadZoneInfo
-                    ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
+                    ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
                     : (gate?.reason ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
@@ -1756,7 +1718,7 @@ export default async function HomePage({
         const presentInitiativeIds = new Set(
           actionQueue.map((i) => i.initiativeId).filter(Boolean) as string[],
         );
-        actionQueueInitiatives = sortedInitiatives
+        actionQueueInitiatives = teamInitiatives
           .filter((i) => presentInitiativeIds.has(i.id))
           .map((i) => ({ id: i.id, title: i.title }));
 
@@ -1919,10 +1881,6 @@ export default async function HomePage({
           </div>
         </header>
 
-        {/* Initiative pulse — at most one line, and nothing at all when
-            every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
-        <InitiativePulseLine items={pulseItems} />
-
         {rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
           <StatStrip
             live={live}
@@ -1934,7 +1892,13 @@ export default async function HomePage({
             mergedDetail={stats && stats.mergedPrNumbers.length > 0 ? stats.mergedPrNumbers.slice(0, 4).map(n => `#${n}`).join(' ') : null}
             prsInCi={stats?.prsInCi ?? []}
             selfHealed={stats?.selfHealed ?? 0}
+            screensReviewed={shippedMissions[0]?.screens ?? null}
           />
+        )}
+
+        {/* A member's home opens on the conversation; the fleet is one line further down. */}
+        {chatPlacement.kind === 'member-first' && chatTeamId && (
+          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} />
         )}
 
         {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
@@ -1948,7 +1912,7 @@ export default async function HomePage({
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
-                    This team doesn&rsquo;t have a workspace yet. Connect a GitHub repo to start running agents here.
+                    This team has no workspace. Connect a GitHub repo to run agents.
                   </p>
                   <Link
                     href="/app/workspaces/new"
@@ -2003,7 +1967,16 @@ export default async function HomePage({
                 </div>
               ) : (
                 <>
-                  {fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
+                  {/* Operators get the fleet near the top; a member gets their
+                      missions first and the fleet as one expandable line below.
+                      A member with chat gets the chat card above all of this. */}
+                  {audience === 'operator' && fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
+                  {chatPlacement.kind === 'operator-after-fleet' && chatTeamId && (
+                    <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact />
+                  )}
+                  {chatPlacement.kind === 'setup' && (
+                    <div className="mb-8"><ChatSetupCard reason={chatPlacement.reason} canManage /></div>
+                  )}
                   {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
                     <div className="mb-8 space-y-2">
             {/* Agent-reviewing PR cards — ambient presence, not actionable */}
@@ -2099,7 +2072,10 @@ export default async function HomePage({
               )}
             </div>
 
-            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} />
+            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} timeZone={teamTz} />
+            {audience === 'member' && fleetData && rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
+              <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} compact />
+            )}
 
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (
@@ -2136,7 +2112,11 @@ export default async function HomePage({
             <ReleaseWidget items={releaseReadinessItems} />
           </div>
 
-          <div className="order-first min-w-0 xl:order-none">
+          {/* Below xl this column dissolves (display: contents) so its two
+              parts order independently: what needs you first, the ticker last —
+              not wedged between the asks and the fleet. */}
+          <div className="contents min-w-0 xl:block">
+            <div className="order-first min-w-0 xl:order-none">
             <NeedsYouStack
               count={needsYouCount}
               questions={questions}
@@ -2167,7 +2147,10 @@ export default async function HomePage({
                         <span className="text-[11px] text-text-muted font-mono">{inFlightItems.length}</span>
                       </div>
                       <div className="space-y-2">
-                        {inFlightItems.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
+                        {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
+                        {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
+                          ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
+                          : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
                       </div>
                     </div>
                   )}
@@ -2184,7 +2167,10 @@ export default async function HomePage({
               {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
             </NeedsYouStack>
 
-            <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
+            </div>
+            <div className="order-last min-w-0 xl:order-none">
+              <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
+            </div>
           </div>
         </div>
       </div>

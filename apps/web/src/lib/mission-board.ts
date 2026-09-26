@@ -47,6 +47,8 @@ export interface BoardWorkerInput {
   accountId?: string | null;
   localUiUrl?: string | null;
   startedAt: number | null;
+  /** When the claim inserted the row: where a claimed, not-yet-started worker's bar begins. */
+  createdAt?: number | null;
   completedAt: number | null;
   updatedAt: number | null;
   mergedAt: number | null;
@@ -107,6 +109,11 @@ export interface MissionBoardInput {
   humanTouches?: readonly number[];
   /** Heartbeats of the runners these workers ran on, for hostnames (`resolveRunnerDisplay`). */
   runnerHeartbeats?: readonly RunnerHeartbeatLike[];
+  /**
+   * The team's fleet capacity (`fleetCapacity` over fresh heartbeats) — the
+   * same denominator Home prints. Absent: the slots this mission's bars drew.
+   */
+  fleetCapacity?: number | null;
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -228,6 +235,24 @@ export interface MissionLaneBar {
   deps: string[];
 }
 
+/**
+ * The orchestrator's planning run, while it is the only thing on the mission:
+ * the Board draws this instead of an empty column until the plan lands.
+ */
+export interface BoardPlanning {
+  taskId: string;
+  /** The planning task's role name (`workspaceSkills.name`), else "Organizer". */
+  roleName: string;
+  roleColor: string | null;
+  /** A worker is live on it right now. */
+  live: boolean;
+  /** Runner display name of the latest worker. */
+  runner: string | null;
+  startedAt: number | null;
+  currentAction: string | null;
+  lastMilestone: string | null;
+}
+
 export interface MissionBoardModel {
   now: number;
   startedAt: number;
@@ -238,6 +263,8 @@ export interface MissionBoardModel {
   clockLabel: string;
   clockPrefix: 'T+' | 'took';
   phases: BoardPhase[];
+  /** Set only while no deliverable exists yet and a planning task does. */
+  planning: BoardPlanning | null;
   tasks: Record<string, BoardTask>;
   landed: { done: number; total: number };
   criteria: BoardCriterion[];
@@ -331,6 +358,7 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     accountId: str(w.accountId),
     localUiUrl: str(w.localUiUrl),
     startedAt: epoch(w.startedAt),
+    createdAt: epoch(w.createdAt),
     completedAt: epoch(w.completedAt),
     updatedAt: epoch(w.updatedAt),
     mergedAt: epoch(w.mergedAt),
@@ -559,9 +587,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     for (const d of bt.deps) tasks[d.id]?.unblocks.push({ id: bt.id, scope: bt.scope, label: bt.label });
   }
 
-  // Phases, in pulse order.
+  // Phases, in pulse order. No deliverables yet → no columns (an empty group
+  // would draw a bare "1 TASKS 0/0"); the planning placeholder stands in.
   const rows = ordered.filter(r => !skipped.has(r.task.id));
-  const phases: BoardPhase[] = groupTasksByPhase(rows.map(r => r.task)).map((g, i) => {
+  const phases: BoardPhase[] = (rows.length === 0 ? [] : groupTasksByPhase(rows.map(r => r.task))).map((g, i) => {
     const ids = g.tasks.map(t => t.id);
     return {
       key: g.index != null ? `p${g.index}` : 'none',
@@ -591,9 +620,13 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     const lbl = labelOf.get(t.id)!;
     // Oldest first so the newest span wins its slot's later position.
     for (const w of [...t.workers].reverse()) {
-      if (w.startedAt == null || !w.runner) continue;
       const live = isLiveWorker(w);
-      const end = live ? null : w.completedAt ?? w.updatedAt ?? w.startedAt;
+      // A claim inserts the worker (idle) before the runner stamps startedAt;
+      // the tile already shows it on its runner, so the lane and the fleet
+      // band count it from the claim.
+      const start = w.startedAt ?? (live ? w.createdAt ?? w.updatedAt ?? now : null);
+      if (start == null || !w.runner) continue;
+      const end = live ? null : w.completedAt ?? w.updatedAt ?? start;
       const rowMerged = (rowId ? tasks[rowId] : undefined)?.status === 'merged';
       const endGlyph: MissionLaneBar['endMark'] = live || isPlan
         ? null
@@ -609,7 +642,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
         taskId: rowId ?? t.id,
         runner: displayOf(w)?.name ?? w.runner,
         runnerId: runnerKey(w) ?? w.runner,
-        start: w.startedAt,
+        start,
         end,
         tone: w.status === 'waiting_input' ? 'waiting' : live ? 'live' : isPlan ? 'plan' : 'done',
         scope: retry ? labelOf.get(rowId!)?.scope ?? lbl.scope : isPlan && t.mode === 'planning' ? null : lbl.scope,
@@ -721,6 +754,29 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   }
   const lineRows = rows.map(r => tasks[r.task.id].lines).filter((l): l is NonNullable<typeof l> => !!l);
 
+  // Before the plan lands: the newest planning task and its live state.
+  let planning: BoardPlanning | null = null;
+  if (rows.length === 0 && !complete) {
+    const plan = [...input.tasks]
+      .filter(t => t.mode === 'planning')
+      .sort((a, b) => (epoch(b.createdAt) ?? 0) - (epoch(a.createdAt) ?? 0))[0];
+    if (plan) {
+      const w = plan.workers[0] ?? null;
+      const role = plan.roleSlug ? roles.get(plan.roleSlug) : undefined;
+      const live = isLiveWorker(w);
+      planning = {
+        taskId: plan.id,
+        roleName: role?.name ?? 'Organizer',
+        roleColor: role?.color ?? null,
+        live,
+        runner: w ? displayOf(w)?.name ?? null : null,
+        startedAt: w?.startedAt ?? null,
+        currentAction: live ? w?.currentAction ?? null : null,
+        lastMilestone: w?.milestones.length ? w.milestones[w.milestones.length - 1].label : null,
+      };
+    }
+  }
+
   return {
     now,
     startedAt,
@@ -729,13 +785,16 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     clockLabel: formatClock(endAt - startedAt),
     clockPrefix: complete ? 'took' : 'T+',
     phases,
+    planning,
     tasks,
     landed: { done: landedN, total: all.length },
     criteria,
     criteriaPassed: criteria.filter(c => c.state === 'pass').length,
     runners,
     live,
-    capacity: runners.reduce((n, r) => n + r.capacity, 0),
+    capacity: input.fleetCapacity != null && input.fleetCapacity > 0
+      ? Math.max(input.fleetCapacity, live)
+      : runners.reduce((n, r) => n + r.capacity, 0),
     needsYou,
     inReview,
     upNext,

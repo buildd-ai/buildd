@@ -57,7 +57,7 @@ export default function GitHubSection() {
         setMessage({
           type: isWarning ? 'info' : 'success',
           text: isWarning
-            ? `${summary} — check workspace repo URLs or installation scope`
+            ? `${summary}. Check workspace repo URLs or the installation scope.`
             : summary,
         });
         loadInstallations();
@@ -119,7 +119,7 @@ export default function GitHubSection() {
             href="/api/github/install"
             className="btn btn-primary"
           >
-            Connect your first org
+            Connect an org
           </a>
         </div>
       ) : (
@@ -182,7 +182,7 @@ export default function GitHubSection() {
       <ConfirmDialog
         open={!!disconnecting}
         title={`Disconnect ${disconnecting?.login}?`}
-        message="This will remove all synced repos from buildd (not from GitHub)."
+        message="Removes the synced repos from buildd. GitHub keeps them."
         confirmLabel="Disconnect"
         variant="warning"
         loading={disconnectLoading}

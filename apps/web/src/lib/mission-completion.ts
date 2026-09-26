@@ -432,7 +432,7 @@ export async function canCompleteMission(
     const named = base.awaitingMergeDetails
       .map(d => {
         const label = `"${d.title}"${d.prNumber ? ` (PR #${d.prNumber})` : ''}`;
-        return d.closedUnsuperseded ? `${label} — closed unmerged, no supersession recorded` : `${label} — PR not merged`;
+        return d.closedUnsuperseded ? `${label} · closed unmerged, no supersession recorded` : `${label} · PR not merged`;
       })
       .join(', ');
     return {
@@ -478,7 +478,7 @@ export async function canCompleteMission(
           code: 'awaiting_mission_pr',
           reason:
             `This mission uses an integration branch (\`${mission.workingBranch}\`) and its work has not `
-            + `reached trunk yet — the mission PR has not been opened.`,
+            + `reached trunk. The mission PR is not open yet.`,
         };
       }
       if (owner.state === 'closed') {
@@ -489,7 +489,7 @@ export async function canCompleteMission(
           reason:
             `Mission PR${owner.prNumber ? ` #${owner.prNumber}` : ''} was closed without merging, so the `
             + `mission's work is still only on \`${mission.workingBranch}\`. Reopen it or land the work `
-            + `another way — this will not resolve on its own.`,
+            + `another way. This will not resolve on its own.`,
         };
       }
       if (owner.state === 'open') {
@@ -505,8 +505,8 @@ export async function canCompleteMission(
           ok: false,
           code: 'awaiting_mission_pr',
           reason:
-            `Mission PR${owner.prNumber ? ` #${owner.prNumber}` : ''} is open and unmerged — `
-            + `the mission's work is on \`${mission.workingBranch}\`, not on trunk.`,
+            `Mission PR${owner.prNumber ? ` #${owner.prNumber}` : ''} is open and unmerged. `
+            + `The mission's work is on \`${mission.workingBranch}\` and has not reached trunk.`,
         };
       }
     }
@@ -538,16 +538,16 @@ export async function canCompleteMission(
     : 'no criteria state stored';
 
   if (state?.overall === 'fail') {
-    return { ...base, ok: false, code: 'criteria_failed', reason: `Goal criteria failed — ${detail}` };
+    return { ...base, ok: false, code: 'criteria_failed', reason: `Goal criteria failed: ${detail}` };
   }
   if (nonPass.some(c => c.verdict === 'PENDING')) {
-    return { ...base, ok: false, code: 'criteria_pending', reason: `Goal criteria verification in flight — ${detail}` };
+    return { ...base, ok: false, code: 'criteria_pending', reason: `Goal criteria verification in flight: ${detail}` };
   }
   return {
     ...base,
     ok: false,
     code: 'criteria_unverified',
-    reason: `Goal criteria not verified (overall: ${state?.overall ?? 'not evaluated'}) — ${detail}`,
+    reason: `Goal criteria not verified (overall: ${state?.overall ?? 'not evaluated'}): ${detail}`,
   };
 }
 

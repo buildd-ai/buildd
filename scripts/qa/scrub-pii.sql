@@ -201,6 +201,11 @@ $f$;
 -- ---------------------------------------------------------------------------
 
 DELETE FROM secrets;             -- cascades credential_leases
+-- Agent chat: every message part is tenant-authored text or tool output over
+-- it. Chat renders from fixtures in QA; missions.conversation_id sets null.
+DELETE FROM conversation_approvals;
+DELETE FROM conversation_messages;
+DELETE FROM conversations;
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;

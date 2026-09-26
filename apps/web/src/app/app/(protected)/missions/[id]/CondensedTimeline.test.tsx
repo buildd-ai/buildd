@@ -294,7 +294,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(html).toContain('0.92');
     // Full verdict prose should NOT appear (collapsed)
     expect(html).not.toContain('Looks good');
-    expect(html).not.toContain('Merging automatically');
+    expect(html).not.toContain('Auto-merging');
   });
 
   it('suppresses PR status line for approved verdicts (chip is the only affordance)', () => {
@@ -334,7 +334,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(desktopTree(html)).not.toContain('#42');
   });
 
-  it('names the successor PR on a closed PR recorded as superseded, instead of "closed — not merged" (task fcaf83d5)', () => {
+  it('names the successor PR on a closed PR recorded as superseded, instead of "closed · not merged" (task fcaf83d5)', () => {
     const supersededTask = makeTask('t-superseded', {
       status: 'completed',
       latestWorker: {
@@ -365,10 +365,10 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     );
     expect(desktopTree(html)).toContain('landed as');
     expect(desktopTree(html)).toContain('#2293');
-    expect(desktopTree(html)).not.toContain('closed — not merged');
+    expect(desktopTree(html)).not.toContain('closed · not merged');
   });
 
-  it('still renders "closed — not merged" for a closed PR with no supersession recorded', () => {
+  it('still renders "closed · not merged" for a closed PR with no supersession recorded', () => {
     const closedTask = makeTask('t-closed', {
       status: 'completed',
       latestWorker: {
@@ -394,7 +394,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
         allTasksCount={1}
       />,
     );
-    expect(desktopTree(html)).toContain('closed — not merged');
+    expect(desktopTree(html)).toContain('closed · not merged');
     expect(desktopTree(html)).not.toContain('landed as');
   });
 
