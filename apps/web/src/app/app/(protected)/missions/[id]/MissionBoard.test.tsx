@@ -138,6 +138,9 @@ describe('MissionBoard — demo v5 polish', () => {
     for (const id of ['record-prs', 'record-lines', 'record-ci-fixes', 'record-decisions']) expect(stats).toContain(`data-testid="${id}"`);
     const section = html.match(/data-testid="mission-completion-record" class="([^"]*)"/)?.[1] ?? '';
     expect(section).not.toContain('repeat(4,');
+  });
+});
+
 // The docked chat pane and the phone sheet are far narrower than the page:
 // criteria labels, phase headers, tile titles and the landed strip's captions
 // all truncated there. `compact` is the narrow layout.
