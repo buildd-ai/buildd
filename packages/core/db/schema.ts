@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -1019,6 +1019,10 @@ export const tasks = pgTable('tasks', {
   externalIssueId: text('external_issue_id'),
   externalIssueUrl: text('external_issue_url'),
   title: text('title').notNull(),
+  // Short 2–4 word display label (scope chip + label). Supplied by whoever files
+  // the task, else filled by the creation-time classifier. NULL on legacy rows —
+  // read it through taskDisplayLabel (packages/core/task-label.ts), never raw.
+  label: varchar('label', { length: 48 }),
   description: text('description'),
   context: jsonb('context').default({}).$type<Record<string, unknown>>(),
   status: text('status').default('pending').notNull(),

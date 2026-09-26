@@ -42,6 +42,13 @@ describe('planningOutputSchema — agent-facing guidance', () => {
     expect(stepProps.ref.description.length).toBeGreaterThan(0);
   });
 
+  it('asks the planner for a short 2–4 word label (optional, so old plans stay valid)', () => {
+    expect(stepProps.label.type).toBe('string');
+    expect(stepProps.label.description).toMatch(/2–4 word/);
+    const required: string[] = (planningOutputSchema as any).properties.plan.items.required;
+    expect(required).not.toContain('label');
+  });
+
   it('keeps dependsOn an array of strings', () => {
     // Guard the shape the two-pass ref resolution in approve-plan relies on.
     expect(stepProps.dependsOn.type).toBe('array');

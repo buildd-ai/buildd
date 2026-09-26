@@ -240,7 +240,15 @@ describe('DEFAULT_ROLES', () => {
       for (const step of plan) {
         expect(typeof step.ref).toBe('string');
         expect(step.outputRequirement).toBe('pr_required');
+        // Every plan step carries a 2–4 word display label.
+        const words = String(step.label ?? '').trim().split(/\s+/).filter(Boolean);
+        expect(words.length).toBeGreaterThanOrEqual(2);
+        expect(words.length).toBeLessThanOrEqual(4);
       }
+    });
+
+    it('asks for a short 2–4 word label on every plan step', () => {
+      expect(c()).toMatch(/`label` — .*2–4 word/);
     });
   });
 

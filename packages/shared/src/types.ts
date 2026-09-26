@@ -664,6 +664,10 @@ export interface Task {
   externalId: string | null;
   externalUrl: string | null;
   title: string;
+  /** Short 2–4 word display label (≤48 chars). Supplied by the creator or the
+   * creation-time classifier; NULL on legacy rows. Draw it via
+   * `taskDisplayLabel` (`@buildd/core/task-label`), which falls back to the title. */
+  label?: string | null;
   description: string | null;
   context: Record<string, unknown>;
   status: TaskStatusType;
@@ -1083,6 +1087,9 @@ export interface CreateTaskInput {
   externalId?: string;
   externalUrl?: string;
   title: string;
+  /** Optional short 2–4 word display label (≤48 chars, e.g. "rates service").
+   * Omit it and the server derives one from the title. */
+  label?: string;
   description?: string;
   context?: Record<string, unknown>;
   priority?: number;
