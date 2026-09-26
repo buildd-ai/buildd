@@ -43,4 +43,13 @@ describe('routeTurn', () => {
     expect((await routeTurn(input, { decide: answer(['standard', 0.9], ['needs_tools', 0.6]) })).allowWrites).toBe(true);
     expect((await routeTurn(input, { decide: answer(['standard', 0.9], ['file_work', 0.99]) })).allowWrites).toBe(true);
   });
+
+  it('reports the decision call\'s usage so the turn can meter it', async () => {
+    const decide = async () => ({
+      ok: true as const,
+      answers: { complexity: { choice: 'simple', confidence: 0.95 }, intent: { choice: 'answer', confidence: 0.95 } },
+      usage: { inputTokens: 40, outputTokens: 4, costUsd: 0.0007 },
+    }) as any;
+    expect((await routeTurn(input, { decide })).usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
+  });
 });

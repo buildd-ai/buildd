@@ -101,3 +101,41 @@ describe('GET /api/teams/[id] — response columns', () => {
     principal = null;
   });
 });
+
+describe('PATCH /api/teams/[id] — chat budgets', () => {
+  it('an admin can raise the team and per-person daily chat budgets', async () => {
+    const res = await PATCH(patchReq({ chatDailyBudgetUsd: 150, chatUserDailyBudgetUsd: 40.5 }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ chatDailyBudgetUsd: '150.00', chatUserDailyBudgetUsd: '40.50' });
+  });
+
+  it('null reverts to the defaults', async () => {
+    const res = await PATCH(patchReq({ chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null });
+  });
+
+  it('rejects negative, non-numeric or absurd values', async () => {
+    for (const v of [-1, 'lots', Number.MAX_SAFE_INTEGER]) {
+      const res = await PATCH(patchReq({ chatDailyBudgetUsd: v }), ctx);
+      expect(res.status).toBe(400);
+    }
+    expect((await PATCH(patchReq({ chatUserDailyBudgetUsd: -5 }), ctx)).status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('a member cannot change them', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    const res = await PATCH(patchReq({ chatDailyBudgetUsd: 1000 }), ctx);
+    expect(res.status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('GET returns both, so a settings page can show them', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true });
+    principal = null;
+  });
+});

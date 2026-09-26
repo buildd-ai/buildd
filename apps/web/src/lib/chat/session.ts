@@ -35,12 +35,14 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { enabledInferenceCapabilities: true, timezone: true, chatDailyBudgetUsd: true },
+    columns: { enabledInferenceCapabilities: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
   });
   return {
     chatEnabled: isInferenceEnabled('chat', team?.enabledInferenceCapabilities ?? null),
     timezone: team?.timezone ?? null,
+    // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
+    userDailyBudgetUsd: team?.chatUserDailyBudgetUsd != null ? Number(team.chatUserDailyBudgetUsd) : null,
   };
 }
 

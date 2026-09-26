@@ -10,7 +10,7 @@ const titles: Array<[string, string, string]> = [];
 
 mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => ({ caller: { user: { id: 'u-1', name: 'Sam', timezone: null }, teamIds: ['t-1'] } }),
-  loadTeamChatSettings: async () => ({ chatEnabled: true, timezone: 'Pacific/Auckland', dailyBudgetUsd: null }),
+  loadTeamChatSettings: async () => ({ chatEnabled: true, timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null }),
   turnUserFor: async () => ({ id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' }),
   workspaceForConversation: async () => null,
   linkMissionToConversation: async () => {},
@@ -30,7 +30,8 @@ mock.module('@/lib/chat/store', () => ({
 mock.module('@/lib/chat/turn', () => ({
   runChatTurn: async (args: any) => { turnCalls.push(args); return new Response('stream', { status: 200 }); },
 }));
-mock.module('@/lib/chat/limits', () => ({ evaluateLimits: () => ({ ok: true }), loadLimitInputs: async () => ({}) }));
+const limitCalls: any[] = [];
+mock.module('@/lib/chat/limits', () => ({ checkChatLimits: async (a: any) => { limitCalls.push(a); return { ok: true, budgetWarning: false }; } }));
 mock.module('@/lib/chat/in-process-api', () => ({ createInProcessApi: (o: any) => { apiOpts.push(o); return async () => ({}); } }));
 mock.module('@/lib/chat/reach', () => ({
   loadChatReach: async (teamId: string) => ({ teamId, workspaceIds: new Set(['ws-ok']), ownerOf: async () => null }),
@@ -73,6 +74,14 @@ describe('/api/chat/[id]', () => {
     expect(turnCalls[0].body).toEqual(body);
     expect(await turnCalls[0].deps.actionContext.getLevel()).toBe('admin');
     expect(turnCalls[0].deps.actionContext.authType).toBe('oauth');
+  });
+
+  it('POST wires the team\'s budget settings into the limit check', async () => {
+    const body = { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } };
+    await POST(req('POST', body), ctx('c-1'));
+    limitCalls.length = 0;
+    await turnCalls.at(-1).deps.limits({ teamId: 't-1', userId: 'u-1', now: new Date() });
+    expect(limitCalls[0]).toMatchObject({ teamId: 't-1', userId: 'u-1', settings: { timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null } });
   });
 
   it('404s the caller\'s own conversation in a team they no longer belong to, for every method', async () => {

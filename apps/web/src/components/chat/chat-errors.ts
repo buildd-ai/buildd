@@ -18,6 +18,7 @@ export function parseChatUnavailable(err: unknown): ChatUnavailableResponse | nu
       message: typeof v.message === 'string' ? v.message : '',
       ...(typeof v.canManageTeamKeys === 'boolean' ? { canManageTeamKeys: v.canManageTeamKeys } : {}),
       ...(typeof v.retryAfterSeconds === 'number' ? { retryAfterSeconds: v.retryAfterSeconds } : {}),
+      ...(v.scope === 'team' || v.scope === 'user' ? { scope: v.scope } : {}),
     };
   } catch {
     return null;

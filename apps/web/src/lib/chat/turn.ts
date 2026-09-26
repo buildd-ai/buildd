@@ -36,7 +36,7 @@ import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
 import { resolveChatModel, turnCostUsd, type ChatTier, type ResolvedChatModel } from './models';
 import { buildChatTools } from './tools';
-import { evaluateLimits, loadLimitInputs, type LimitVerdict } from './limits';
+import type { LimitVerdict } from './limits';
 import type { ApiCall } from './in-process-api';
 import {
   HISTORY_LIMIT,
@@ -62,7 +62,11 @@ export interface TurnUser {
 export interface TurnDeps {
   now?: () => Date;
   chatEnabled: (teamId: string) => Promise<boolean>;
-  limits?: (args: { teamId: string; userId: string; now: Date; timeZone: string }) => Promise<LimitVerdict>;
+  /**
+   * Budget and rate limits (limits.checkChatLimits). Required: a turn that
+   * passes has been admitted and counted, so there is no unmetered default.
+   */
+  limits: (args: { teamId: string; userId: string; now: Date }) => Promise<LimitVerdict>;
   route?: (input: Parameters<typeof routeTurn>[0]) => Promise<TurnRoute>;
   resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string }) => Promise<ResolvedChatModel>;
   makeApi: (onCall: (c: ApiCall) => void) => ApiFn;
@@ -81,7 +85,7 @@ export function unavailable(reason: ChatUnavailableReason, status: number, extra
   const message: Record<ChatUnavailableReason, string> = {
     capability_disabled: 'Chat is not enabled for this team.',
     no_key: 'No provider key is connected for chat. An admin can add a team key, or you can use your own.',
-    budget_exhausted: 'The team has used today\'s chat budget. Chat resumes tomorrow; the mission form still works.',
+    budget_exhausted: 'Today\'s chat budget is used up. It resets at midnight in the team\'s timezone, and a team owner or admin can raise it. The mission form still works.',
     rate_limited: 'Too many chat turns in the last few minutes. Try again shortly.',
   };
   return Response.json({ error: reason, message: message[reason], ...extra }, { status });
@@ -126,25 +130,27 @@ export async function runChatTurn(args: {
     return Response.json({ error: 'message with role and parts is required' }, { status: 400 });
   }
 
-  // Routing, limits and history run in parallel: all three sit in front of the
-  // first token. (A turn refused by a limit may still have spent one decision
-  // call — a fraction of a cent — never a generative one.)
   const text = message.role === 'user' ? userText(message) : null;
   if (message.role === 'user' && !text) {
     return Response.json({ error: `a text message of 1–${MAX_USER_TEXT} characters is required` }, { status: 400 });
   }
-  const routePromise = text
-    ? (deps.route ?? routeTurn)({ teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, message: text })
-    : null;
+  // Limits (budget, then atomic admission) and history load in parallel. Routing
+  // waits for the verdict: its decision call is metered spend too, so a refused
+  // turn spends nothing.
   const [verdict, stored] = await Promise.all([
-    (deps.limits ?? (async a => evaluateLimits({
-      ...a, ...(await loadLimitInputs(a)), dailyBudgetUsd: null,
-    })))({ teamId: conv.teamId, userId: user.id, now, timeZone: user.timeZone }),
+    deps.limits({ teamId: conv.teamId, userId: user.id, now }),
     loadMessages(conv.id),
   ]);
   if (!verdict.ok) {
-    return unavailable(verdict.reason, 429, { retryAfterSeconds: verdict.retryAfterSeconds });
+    return unavailable(verdict.reason, 429, {
+      message: verdict.message,
+      retryAfterSeconds: verdict.retryAfterSeconds,
+      ...(verdict.scope ? { scope: verdict.scope } : {}),
+    });
   }
+  const routePromise = text
+    ? (deps.route ?? routeTurn)({ teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, message: text })
+    : null;
 
   const history = toUiHistory(stored);
   const resolveModel = deps.resolveModel ?? resolveChatModel;
@@ -179,6 +185,8 @@ export async function runChatTurn(args: {
     const saved = await insertMessage({
       conversationId: conv.id, role: 'user', authorUserId: user.id,
       parts: [{ type: 'text', text: text! }],
+      // The routing decision call's spend, so the daily budget counts it.
+      usage: route.usage ?? null,
     });
     void pingConversation(conv.id, 'message', saved.id);
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: text! }] }];

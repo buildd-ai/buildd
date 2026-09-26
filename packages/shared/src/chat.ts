@@ -406,6 +406,8 @@ export interface ChatUnavailableResponse {
   /** Whether the caller can fix it themselves (admin: add a team key). */
   canManageTeamKeys?: boolean;
   retryAfterSeconds?: number;
+  /** For budget_exhausted: the team's daily budget ran out, or this person's share of it. */
+  scope?: 'team' | 'user';
 }
 
 /** `GET /api/chat/availability?teamId=` — should the UI show a Chat entry point? */
