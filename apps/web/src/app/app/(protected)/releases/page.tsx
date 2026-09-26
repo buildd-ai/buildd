@@ -81,7 +81,7 @@ export default async function ReleasesPage({
         </div>
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No releases.</p>
-          <p className="text-xs text-text-muted">Releases will appear here when workspaces are configured and releases are dispatched.</p>
+          <p className="text-xs text-text-muted">Configure releases on a workspace and dispatch one to see it here.</p>
         </div>
       </div>
     );
@@ -135,7 +135,7 @@ export default async function ReleasesPage({
       {allReleases.length === 0 ? (
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No releases found.</p>
-          <p className="text-xs text-text-muted">Releases will appear here when they are dispatched.</p>
+          <p className="text-xs text-text-muted">Dispatched releases show here.</p>
         </div>
       ) : (
         <div className="space-y-2">

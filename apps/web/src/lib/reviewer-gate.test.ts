@@ -123,7 +123,7 @@ describe('resolveReviewerGate — under-fire direction (human genuinely owns the
       }),
     );
     expect(result.actor).toBe('human');
-    expect(result.reason).toBe('Human Gate — manual merge required');
+    expect(result.reason).toBe('Human Gate · manual merge required');
   });
 
   it('no reviewer task and tier will never create one (auto-threshold) → human', () => {
@@ -348,7 +348,7 @@ describe('resolveReviewerGate — Option A′ integration-branch task PRs', () =
       baseInput({ policyTier: 'human', isMissionIntegrationTaskPr: true }),
     );
     expect(gate.actor).toBe('human');
-    expect(gate.reason).toBe('Human Gate — manual merge required');
+    expect(gate.reason).toBe('Human Gate · manual merge required');
   });
 
   it('an explicit reviewer escalation on a quarantined PR still reaches the human', () => {
@@ -469,7 +469,7 @@ describe('reviewer stall facts', () => {
     expect(result.reason).toContain('Pending · task age 47m');
     expect(result.reason).toContain('seats 0/4');
     expect(result.reason).toContain('no recorded budget pause');
-    expect(result.reason).toContain('claimable: last attempt no — no_pending_tasks');
+    expect(result.reason).toContain('claimable: last attempt no, no_pending_tasks');
     expect(result.reason).toContain('2026-09-01T11:58:00Z');
     expect(result.reason).not.toMatch(/contention|backoff|likely/i);
   });
@@ -616,7 +616,7 @@ describe('deriveStoredVerdictFallback — the mission-less "no recorded verdict"
       reviewerTask: { status: 'completed', hasLiveWorker: false, createdAt: NOW },
     }));
     expect(gate.actor).toBe('human');
-    expect(gate.reason).toBe('Review completed without a recorded verdict — needs human review');
+    expect(gate.reason).toBe('Review finished with no recorded verdict · needs your review');
   });
 
   it('an existing note wins outright — the fallback never overrides real note evidence', () => {

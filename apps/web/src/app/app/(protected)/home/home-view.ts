@@ -21,6 +21,90 @@ export function splitWaitingOnYou<T extends Pick<ActionQueueItem, 'chip'>>(queue
   return { needsYou, inFlight };
 }
 
+export type InFlightKind =
+  | 'docfix-pr-open' | 'fixing-ci' | 'resolving' | 'docfix-running'
+  | 'ci-running' | 'auto-merge' | 'docfix-rerun' | 'other';
+
+/** What an in-flight card is waiting on — the key repeated cards fold by. */
+export function inFlightKind(item: Pick<ActionQueueItem, 'chip' | 'docFixTaskStatus' | 'docFixPrLifecycleStatus'>): InFlightKind {
+  switch (item.chip) {
+    case 'FIXING_SPEC':
+      if (item.docFixTaskStatus !== 'completed') return 'docfix-running';
+      // Same test as the card: only a known-merged PR is "awaiting the re-run".
+      if (item.docFixPrLifecycleStatus === 'merged' || item.docFixPrLifecycleStatus == null) return 'docfix-rerun';
+      return 'docfix-pr-open';
+    case 'FIXING_CI': return 'fixing-ci';
+    case 'RESOLVING': return 'resolving';
+    case 'CI_RUNNING': return 'ci-running';
+    case 'AUTO_MERGE': return 'auto-merge';
+    default: return 'other';
+  }
+}
+
+/**
+ * Order: something a human can still move (an open doc-fix PR to merge)
+ * first, then agents actively working, then bounded waits nobody can speed
+ * up (a merged doc fix waiting on the next checker run).
+ */
+const IN_FLIGHT_RANK: Record<InFlightKind, number> = {
+  'docfix-pr-open': 0, 'fixing-ci': 1, resolving: 1, 'docfix-running': 2,
+  'ci-running': 3, 'auto-merge': 3, other: 3, 'docfix-rerun': 4,
+};
+
+export const IN_FLIGHT_GROUP_COPY: Record<InFlightKind, { chip: string; detail: string }> = {
+  'docfix-pr-open': { chip: 'Doc fix PRs open', detail: 'Merge them to continue' },
+  'fixing-ci': { chip: 'Fixing CI', detail: 'Agents are fixing red checks' },
+  resolving: { chip: 'Resolving conflicts', detail: 'Agents are rebasing these PRs' },
+  'docfix-running': { chip: 'Doc fixes', detail: 'Agents are rewriting these specs' },
+  'ci-running': { chip: 'CI running', detail: 'Waiting on checks' },
+  'auto-merge': { chip: 'Auto-merging', detail: 'Merges when checks pass' },
+  'docfix-rerun': { chip: 'Doc fixes shipped', detail: 'Waiting on the conformance re-run' },
+  other: { chip: 'In flight', detail: '' },
+};
+
+export type InFlightEntry<T> =
+  | { kind: 'single'; item: T }
+  | { kind: 'group'; key: InFlightKind; items: T[] };
+
+/**
+ * Fold the In-flight column's repeated kinds into one card each. Six doc
+ * fixes that all shipped and all wait on the same re-run are one fact, not
+ * six. A kind seen once stays a plain card; nothing is dropped.
+ */
+export function groupInFlight<T extends Pick<ActionQueueItem, 'chip' | 'docFixTaskStatus' | 'docFixPrLifecycleStatus'>>(
+  items: readonly T[],
+  opts: { minGroup?: number } = {},
+): InFlightEntry<T>[] {
+  const minGroup = opts.minGroup ?? 2;
+  const byKind = new Map<InFlightKind, T[]>();
+  for (const it of items) {
+    const k = inFlightKind(it);
+    byKind.set(k, [...(byKind.get(k) ?? []), it]);
+  }
+  const entries: Array<{ rank: number; first: number; entry: InFlightEntry<T> }> = [];
+  for (const [key, group] of byKind) {
+    const rank = IN_FLIGHT_RANK[key];
+    if (key !== 'other' && group.length >= minGroup) {
+      entries.push({ rank, first: items.indexOf(group[0]), entry: { kind: 'group', key, items: group } });
+    } else {
+      for (const it of group) entries.push({ rank, first: items.indexOf(it), entry: { kind: 'single', item: it } });
+    }
+  }
+  return entries.sort((a, b) => a.rank - b.rank || a.first - b.first).map(e => e.entry);
+}
+
+export type HomeAudience = 'operator' | 'member';
+
+/**
+ * Who Home is laid out for. Owners and admins run the fleet, so the fleet
+ * panel sits near the top; members get what needs them and their missions
+ * first, and the fleet as one expandable line. A personal team resolves to
+ * `owner` (getUserTeamRole), which covers a solo user and their own runners.
+ */
+export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined): HomeAudience {
+  return role === 'owner' || role === 'admin' ? 'operator' : 'member';
+}
+
 /** "1 needs you · 4 in flight" — null when both halves are empty. */
 export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number): string | null {
   const parts: string[] = [];
@@ -36,7 +120,7 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
  */
 export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
   const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
-  return parts.length > 0 ? parts.join(' · ') : 'Your agents are standing by';
+  return parts.length > 0 ? parts.join(' · ') : 'Nothing waiting on you';
 }
 
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';

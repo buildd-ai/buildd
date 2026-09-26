@@ -57,7 +57,7 @@ export function StatStrip(p: StatStripProps) {
         </Stat>
       ) : (
         <Stat testId="stat-self-healed" label="Self-healed" value={p.selfHealed}>
-          <span className="truncate">{p.selfHealed > 0 ? 'fixed without you today' : 'nothing broke today'}</span>
+          <span className="truncate">{p.selfHealed > 0 ? 'fixed by agents today' : 'no failures today'}</span>
         </Stat>
       )}
     </section>

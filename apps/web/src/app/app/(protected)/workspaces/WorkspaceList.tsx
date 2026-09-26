@@ -72,7 +72,7 @@ export default function WorkspaceList({
             router.refresh();
         } catch (e) {
             console.error(e);
-            setMoveError({ workspaceId, message: 'Failed to move workspace. You might not have the correct permissions.' });
+            setMoveError({ workspaceId, message: 'Couldn\'t move the workspace. You may not have permission.' });
         } finally {
             setMovingWorkspaceId(null);
         }
@@ -85,7 +85,7 @@ export default function WorkspaceList({
         const targetName = target?.name ?? 'another team';
         const ok = await confirm({
             title: `Move workspace to ${targetName}?`,
-            message: `"${workspace.name}" will leave ${workspace.teamName ?? 'its current team'}. Members of ${targetName} get access, and its tasks will run with ${targetName}'s credentials, roles and connectors.\n\nFor a dry run of what moves, use Move to team… on the workspace's config page.`,
+            message: `"${workspace.name}" will leave ${workspace.teamName ?? 'its current team'}. Members of ${targetName} get access, and its tasks run with ${targetName}'s credentials, roles and connectors.\n\nTo preview what moves first, use Move to team… on the workspace's config page.`,
             confirmLabel: 'Move workspace',
             variant: 'warning',
         });
@@ -124,7 +124,7 @@ export default function WorkspaceList({
                     </div>
                     <h2 className="text-[15px] font-semibold mb-1">No workspaces yet</h2>
                     <p className="text-[13px] text-text-muted mb-5">
-                        Workspaces map to repositories. Create one to organize tasks and let agents know where to work.
+                        A workspace maps to a repository. Agents work on its tasks in that repo.
                     </p>
                     <Link
                         href="/app/workspaces/new"

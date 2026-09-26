@@ -163,7 +163,7 @@ function StructureNodeView({
       role="button"
       tabIndex={0}
       aria-selected={isSelected}
-      aria-label={`${node.label} — ${node.stage}`}
+      aria-label={`${node.label}, ${node.stage}`}
       className={containerCls}
       style={{
         left: node.x,
@@ -461,7 +461,7 @@ export default function StructureView<T extends StructureTask>({
                   markerEnd={edge.class === 'dependsOn' ? 'url(#arrow-depends)' : undefined}
                 >
                   {edge.class === 'contention' && edge.contentionPaths && (
-                    <title>File conflict detected — both tasks touched {edge.contentionPaths.join(', ')}</title>
+                    <title>File conflict: both tasks touched {edge.contentionPaths.join(', ')}</title>
                   )}
                 </path>
               );

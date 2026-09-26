@@ -543,7 +543,7 @@ export default function NewTaskPage() {
               </div>
               {mode === 'planning' && (
                 <p className="text-xs text-text-secondary mt-2">
-                  Agent will create a structured plan for review instead of executing directly
+                  The agent writes a plan for your review before it changes any code.
                 </p>
               )}
             </div>
@@ -584,7 +584,7 @@ export default function NewTaskPage() {
                     ) : !isConfigured ? (
                       <span className="inline-flex items-center gap-1 text-xs text-status-warning">
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-                        No PR target branch set — will use repo default
+                        No PR target branch set. PRs target the repo default.
                         <Link href={`/app/workspaces/${ws.id}/config`} className="text-primary hover:underline ml-1">configure</Link>
                       </span>
                     ) : null}
@@ -634,7 +634,7 @@ export default function NewTaskPage() {
               {/* Legibility hint when description is collapsed and title is short */}
               {!showDescription && titleValue.length > 0 && titleValue.length < 40 && (
                 <p className="text-text-muted text-xs mt-1">
-                  Tip: be descriptive — the agent only sees this title
+                  Be descriptive: the agent sees only this title.
                 </p>
               )}
             </div>
@@ -655,8 +655,8 @@ export default function NewTaskPage() {
                   selectedSlugs={selectedSkillSlugs}
                   onSelectSkill={handleSlashSelectSkill}
                   placeholder={recurring
-                    ? "Instructions for each run. Agents receive this every time the schedule fires."
-                    : "Describe what needs to be done. Type / to add skills. Paste images here."
+                    ? "Instructions the agent gets on every run."
+                    : "Describe the work. Type / to add skills. Paste images here."
                   }
                   rows={recurring ? 4 : 6}
                   className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
@@ -877,7 +877,7 @@ export default function NewTaskPage() {
                         <div>
                           <span className="text-sm font-medium">Require structured output</span>
                           <p className="text-xs text-text-secondary mt-0.5">
-                            Agent will return validated JSON matching a schema you define
+                            The agent returns JSON that matches your schema.
                           </p>
                         </div>
                       </label>
@@ -932,7 +932,7 @@ export default function NewTaskPage() {
                         placeholder="e.g. release/1.0, hotfix, main"
                         className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"
                       />
-                      <p className="text-xs text-text-secondary mt-1">Override workspace default for this task only. PRs will target this branch.</p>
+                      <p className="text-xs text-text-secondary mt-1">PRs for this task target this branch instead of the workspace default.</p>
                     </div>
                   )}
 
@@ -976,7 +976,7 @@ export default function NewTaskPage() {
                               Required connectors <span className="text-text-muted font-normal">(optional)</span>
                             </label>
                             <p className="text-xs text-text-secondary mb-2">
-                              Connectors this task must have available to run. Missing required connectors block claiming.
+                              Runners can claim this task only when these connectors are available.
                             </p>
                             <div className="space-y-1.5">
                               {roleConnectors.map(c => (

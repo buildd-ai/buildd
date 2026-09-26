@@ -61,6 +61,51 @@ describe('FleetStrip', () => {
   });
 });
 
+describe('FleetStrip on a real-shaped fleet (1 runner x 10 slots)', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://q.local:1', maxConcurrentWorkers: 10, lastHeartbeatAt: new Date(NOW),
+    environment: { labels: { hostname: 'quill-studio-workstation', machine: 'Mac mini' } } };
+  const done = (id: string, ago: number, title: string) => ({
+    id, accountId: 'a', runner: 'http://q.local:1', status: 'completed', startedAt: min(ago + 2), completedAt: min(ago), prNumber: 900,
+    task: { id: `t-${id}`, title, roleSlug: 'builder', missionId: 'm1' },
+  });
+  const idleFleet = buildFleetSnapshot([hb], [done('d1', 25, 'fix(pr): keep the PR body in sync after a force-push')], { now: NOW });
+  const busyFleet = buildFleetSnapshot([hb], [
+    done('d1', 25, 'fix(pr): keep the PR body in sync after a force-push'),
+    { id: 'w1', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(30), progress: 55, task: { id: 't1', title: 'feat(onboarding): checklist survives reload', roleSlug: 'builder', missionId: 'm1' } },
+  ], { now: NOW });
+
+  it('a fully idle fleet is one summary line naming the last run, not ten idle rows', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={idleFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).toContain('data-testid="fleet-summary"');
+    expect(html).toContain('all 10 slots idle');
+    expect(html).toContain('keep PR body');
+    expect(html).not.toContain('last pr');
+    // Collapsed: the table is behind the summary, and never ten rows of "idle".
+    expect((html.match(/data-testid="fleet-slot"/g) ?? []).length).toBeLessThanOrEqual(3);
+  });
+
+  it('with work running, the busy slot gets a row and the quiet ones fold into a count', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).not.toContain('data-testid="fleet-summary"');
+    expect(html).toContain('data-busy="true"');
+    expect(html).toContain('data-testid="fleet-idle-slots"');
+    expect(html).toContain('8 idle slots');
+    // Chart rows line up with the table: running + recent + folded row.
+    expect(html.match(/data-testid="slot-lane-row"/g)?.length).toBe(html.match(/data-testid="fleet-slot"|data-testid="fleet-idle-slots"/g)?.length);
+  });
+
+  it('the runner name is never cut without its full form in a title', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).toContain('title="quill-studio-workstation"');
+  });
+
+  it('compact mode (a member Home) folds even a busy fleet into the summary line', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" compact />);
+    expect(html).toContain('data-testid="fleet-summary"');
+    expect(html).toContain('1 of 10 slots busy');
+  });
+});
+
 describe('NeedsYouStack', () => {
   const html = renderToStaticMarkup(
     <NeedsYouStack
@@ -87,7 +132,7 @@ describe('NeedsYouStack', () => {
         {null}
       </NeedsYouStack>,
     );
-    expect(empty).toContain('Nothing needs you');
+    expect(empty).toContain('Nothing waiting on you');
     expect(empty).not.toContain('data-testid="needs-you-count"');
   });
   it('does not show the empty state when the action queue renders', () => {
@@ -97,7 +142,7 @@ describe('NeedsYouStack', () => {
         {false}
       </NeedsYouStack>,
     );
-    expect(withQueue).not.toContain('Nothing needs you');
+    expect(withQueue).not.toContain('Nothing waiting on you');
   });
   it('splits an option into its answer and its reason', () => {
     expect(splitOption('Per line — match Stripe')).toEqual({ main: 'Per line', sub: 'match Stripe' });

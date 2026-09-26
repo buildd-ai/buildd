@@ -447,7 +447,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   }
 
   async function handleDelete() {
-    if (!(await confirm({ title: `Delete role "${role.name}"?`, message: 'This will also remove all workspace overrides and cannot be undone.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
+    if (!(await confirm({ title: `Delete role "${role.name}"?`, message: 'Deletes the role and its workspace overrides. You can’t undo this.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/roles/${role.id}`, { method: 'DELETE' });
@@ -475,7 +475,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   }
 
   async function handleDeleteOverride(overrideId: string) {
-    if (!(await confirm({ title: 'Remove workspace override?', message: 'The workspace will use the team default instead.', confirmLabel: 'Remove override', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Remove workspace override?', message: 'The workspace goes back to the team default.', confirmLabel: 'Remove override', variant: 'danger' }))) return;
     const res = await fetch(`/api/roles/${overrideId}`, { method: 'DELETE' });
     if (res.ok) {
       setOverrideList(prev => prev.filter(o => o.id !== overrideId));
@@ -585,7 +585,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
           {scope === 'team' && (
             <p className="text-xs text-text-muted mt-2">
-              This role is the default for all workspaces in your team. Individual workspaces can add overrides.
+              Every workspace in your team gets this role by default. A workspace can add an override.
             </p>
           )}
 
@@ -598,10 +598,10 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 size="sm"
               />
               <p className="text-xs text-text-muted mt-1">
-                Saving will move this role to the selected workspace.
+                Saving moves this role to the selected workspace.
                 {overrideList.length > 0 && (
                   <span className="text-status-warning ml-1">
-                    {overrideList.length} workspace override{overrideList.length !== 1 ? 's' : ''} will become standalone roles.
+                    {overrideList.length} workspace override{overrideList.length !== 1 ? 's' : ''} become standalone roles.
                   </span>
                 )}
               </p>
@@ -643,7 +643,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
-              <p className="text-xs text-text-muted mt-1">Full system prompt for this role. Individual workspaces can override this.</p>
+              <p className="text-xs text-text-muted mt-1">The full system prompt for this role. A workspace can override it.</p>
             </div>
           </div>
 
@@ -782,7 +782,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             <div className="min-w-0">
               <h2 className="text-[15px] font-semibold text-text-primary">Workspace Overrides</h2>
               <p className="text-[12px] text-text-muted mt-0.5">
-                Individual workspaces can override specific fields. Non-overridden fields inherit the team default above.
+                A workspace can override single fields. The rest inherit the team default above.
               </p>
             </div>
             {availableForOverride.length > 0 && (
@@ -824,7 +824,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 </button>
               </div>
               <p className="text-[11px] text-text-muted mt-2">
-                The override starts as a copy of the team default. You can then customize specific fields for this workspace.
+                The override starts as a copy of the team default. Change the fields you need for this workspace.
               </p>
             </div>
           )}

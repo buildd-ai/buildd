@@ -78,7 +78,7 @@ export default function InitiativeKPIPanel({ initiativeId, kpis, kpiState: initi
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd. KPIs were not evaluated.');
+      setRunError('Could not reach buildd. No KPIs evaluated.');
     } finally {
       setIsRunning(false);
     }
@@ -208,7 +208,7 @@ export default function InitiativeKPIPanel({ initiativeId, kpis, kpiState: initi
       <div className="mt-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <span className="text-[12px] text-text-secondary">Auto-evaluate on mission completion</span>
-          <p className="text-[11px] text-text-muted mt-0.5">Re-check KPIs automatically when all child missions complete.</p>
+          <p className="text-[11px] text-text-muted mt-0.5">Re-check KPIs once all child missions complete.</p>
         </div>
         <Switch
           checked={autoVerify}

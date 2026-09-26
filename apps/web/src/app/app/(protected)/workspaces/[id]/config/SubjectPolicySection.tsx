@@ -51,7 +51,7 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
       if (!res.ok) throw new Error('Failed to save');
       setMessage({ type: 'success', text: 'Subject policy saved.' });
     } catch {
-      setMessage({ type: 'error', text: 'Failed to save subject policy.' });
+      setMessage({ type: 'error', text: 'Couldn\'t save subject policy.' });
     } finally {
       setSaving(false);
     }
@@ -61,9 +61,8 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
     <div className="mt-8 border border-border-subtle rounded-lg p-6">
       <h2 className="text-lg font-semibold mb-1">Subject Anchor Policy</h2>
       <p className="text-sm text-text-muted mb-5">
-        Controls how buildd tracks, deduplicates, and surfaces context for tasks anchored to a
-        shared subject (a PR, a recurring error, or a mission). Safe defaults ship observe-only
-        and can be tightened per workspace.
+        Sets how buildd tracks and deduplicates tasks anchored to a shared subject (a PR, a
+        recurring error, or a mission), and what context it gives them. Defaults are observe-only.
       </p>
 
       <div className="space-y-5">
@@ -78,9 +77,8 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
           <span>
             <span className="block text-sm font-medium">Prior-work injection</span>
             <span className="block text-xs text-text-muted mt-0.5">
-              When a worker is claimed for a task anchored to an existing subject (PR or error),
-              inject a summary of prior tasks, branches, and PR lifecycle into the agent&apos;s
-              context. Enabled by default.
+              A worker that claims a task anchored to an existing subject (PR or error) gets a
+              summary of prior tasks, branches, and PR history in its context. On by default.
             </span>
           </span>
         </label>
@@ -99,9 +97,9 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
               <span className="text-xs text-text-muted font-normal">(default OFF)</span>
             </span>
             <span className="block text-xs text-text-muted mt-0.5">
-              When a successor PR merges, automatically close other open PRs authored by buildd
-              for the same subject. Only buildd-authored PRs (verified via worker records) are
-              eligible. Human-authored PRs are never auto-closed.
+              When a successor PR merges, buildd closes its other open PRs for the same subject.
+              buildd checks worker records to confirm authorship and never closes PRs a person
+              opened.
             </span>
           </span>
         </label>
@@ -122,8 +120,8 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
               onChange={e => setConflictDays(e.target.value)}
             />
             <p className="mt-1 text-xs text-text-muted">
-              A PR in merge conflict with no green successor is closed automatically only after
-              this many days. Defaults to 7.
+              buildd waits this many days before closing a PR that has merge conflicts and no
+              green successor. Default: 7.
             </p>
           </div>
         )}

@@ -106,13 +106,13 @@ export function HomeMissions({
       {missions.length === 0 ? (
         <div className="border border-dashed border-border-default p-6">
           <p className="text-[14px] text-text-secondary">
-            No missions yet. <Link href="/app/missions/new" className="text-accent-text hover:underline">Create one</Link> to organize your work.
+            No missions yet. <Link href="/app/missions/new" className="text-accent-text hover:underline">Create one</Link>.
           </p>
         </div>
       ) : views.length === 0 ? (
         <div className="border border-dashed border-border-default p-4">
           <p className="text-[13px] text-text-secondary">
-            No active missions right now.{' '}
+            No active missions.{' '}
             <Link href="/app/missions" className="text-text-muted hover:text-text-secondary underline underline-offset-2">
               View all {missions.length}
             </Link>

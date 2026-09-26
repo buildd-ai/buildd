@@ -119,6 +119,8 @@ export interface MissionListCardModel {
   recurring: {
     cadence: string;
     nextMins: number | null;
+    /** Schedule `nextRunAt`, ISO — lets a far-off run read as a date. */
+    nextRunAt: string | null;
     runs: ListRun[];
     totalRuns: number;
     lastTickAt: string | null;
@@ -326,6 +328,7 @@ export function buildMissionListCard(
     recurring = {
       cadence: describeCadence(schedule.cronExpression),
       nextMins: summary.nextScanMins,
+      nextRunAt: summary.nextRunAt ?? null,
       runs,
       totalRuns: Math.max(schedule.totalRuns ?? 0, ticks.length),
       lastTickAt: isoOf(lastWorker?.completedAt ?? lastDone?.updatedAt ?? schedule.lastRunAt ?? null),
@@ -371,6 +374,36 @@ export function shortDuration(ms: number | null | undefined): string {
   const h = Math.round(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.round(h / 24)}d`;
+}
+
+/**
+ * "next 45m", "next 3h 20m", "in 5 days", "next Jan 15" — when a schedule runs
+ * next. Hours stop at two days (nobody reads "2664h"); past two weeks the date
+ * says more than a count. Null when nothing is scheduled.
+ */
+export function nextRunLabel(
+  mins: number | null | undefined,
+  nextRunAt: string | Date | null | undefined,
+  opts: { now?: number; timeZone?: string | null } = {},
+): { lead: string; value: string } | null {
+  if (mins == null || !Number.isFinite(mins)) return null;
+  if (mins <= 0) return { lead: '', value: 'due now' };
+  if (mins < 90) return { lead: 'next', value: `${mins}m` };
+  if (mins < 48 * 60) {
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return { lead: 'next', value: m ? `${h}h ${m}m` : `${h}h` };
+  }
+  const days = Math.round(mins / 1440);
+  if (days < 14 || !nextRunAt) return { lead: 'in', value: `${days} days` };
+  const now = opts.now ?? Date.now();
+  const at = new Date(nextRunAt);
+  let tz = opts.timeZone || undefined;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { tz = undefined; }
+  const year = (d: Date) => new Intl.DateTimeFormat('en-US', { year: 'numeric', timeZone: tz }).format(d);
+  const value = at.toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', ...(year(at) !== year(new Date(now)) ? { year: 'numeric' } : {}), timeZone: tz,
+  });
+  return { lead: 'next', value };
 }
 
 /** The list's sentence headline: "1 running · 6 agents on it", "1 shipped today. Nothing running." */

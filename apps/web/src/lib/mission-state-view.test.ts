@@ -179,7 +179,7 @@ describe('deriveMissionStateView — blocked by an unverified criterion', () => 
     expect(waiting.kind).toBe('criterion_unverified');
     // The whole point: neutral, not warning, not error.
     expect(waiting.tone).toBe('neutral');
-    expect(waiting.label).toBe('1 criterion not yet verified — run verification');
+    expect(waiting.label).toBe('1 criterion not verified yet · run verification');
     expect(view.nextAction).toBe('Run goal-criteria verification to produce a verdict.');
   });
 
@@ -285,7 +285,7 @@ describe('deriveMissionStateView — self-resolving wait', () => {
     expect(waiting.waitUntil).toBe('2026-01-01T12:00:00.000Z');
     expect(waiting.tone).toBe('neutral');
     expect(view.derivedFrom.kind).toBe('classifyMissionWait');
-    expect(view.nextAction).toContain('resumes on its own');
+    expect(view.nextAction).toContain('Work resumes at');
   });
 
   it('reports a heartbeat wait with no known resume time as waiting, not blocked', () => {
@@ -416,7 +416,7 @@ describe('deriveMissionStateView — precedence chain', () => {
     if (waiting.kind !== 'task_failed') throw new Error('unreachable');
     expect(waiting.infra).toBe(true);
     expect(waiting.taskIds).toEqual(['task-f']);
-    expect(view.nextAction).toContain('retries are already exhausted');
+    expect(view.nextAction).toContain('Retries are exhausted');
   });
 });
 

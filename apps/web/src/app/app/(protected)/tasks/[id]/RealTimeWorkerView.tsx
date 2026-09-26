@@ -301,14 +301,14 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
             question={question}
             askerLabel={asker}
             askedAgo={askedTs != null ? `${ageLabel(nowMs - askedTs)} ago` : null}
-            stateNote="paused, holding its place"
+            stateNote="paused"
             onAnswer={handleAnswer}
             sending={answerSending}
             enableKeys
             error={answerError && (
               <>
                 {answerError.message}
-                {answerError.credentialRevoked && ' Your answer was not lost — retry once the credential is reconnected.'}
+                {answerError.credentialRevoked && ' Your answer is saved. Reconnect the credential, then retry.'}
               </>
             )}
             sent={answerSent ? (

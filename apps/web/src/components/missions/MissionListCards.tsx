@@ -16,7 +16,7 @@ import Link from 'next/link';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { MissionCardView } from '@/lib/mission-card-view';
-import { shortAgo, shortDuration, type ListTone, type MissionListCardModel } from '@/lib/mission-list-card';
+import { nextRunLabel, shortAgo, shortDuration, type ListTone, type MissionListCardModel } from '@/lib/mission-list-card';
 import { timeAgo } from '@/lib/mission-helpers';
 import PhaseBar, { CELL_BOX } from './PhaseBar';
 
@@ -181,7 +181,7 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
               <span><b className="text-text-primary">{model.live.count}</b> live</span>
             </>
           )}
-          {model.elapsedMin != null && <span className="text-text-muted">· {model.elapsedMin}m</span>}
+          {model.elapsedMin != null && <span className="text-text-muted">· {shortDuration(model.elapsedMin * 60_000)}</span>}
         </div>
       </div>
       {(model.sentence || workspaceName) && (
@@ -251,7 +251,7 @@ export function ArmButton({ missionId }: { missionId: string }) {
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleArm(); }}
       disabled={isPending || busy}
       className="inline-flex min-h-11 items-center gap-1 border-2 border-primary bg-primary px-3.5 font-mono text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50 md:min-h-9"
-      aria-label="Arm this mission — release its tasks for workers to claim"
+      aria-label="Arm this mission: release its tasks for workers to claim"
     >
       {isPending || busy ? 'Arming…' : 'Arm →'}
     </button>
@@ -311,9 +311,10 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
             </span>
             {r.nextMins != null && (
               <span>
-                {r.nextMins <= 0
-                  ? <b className="text-text-primary">due now</b>
-                  : <>next <b className="text-text-primary">{r.nextMins >= 90 ? `${Math.floor(r.nextMins / 60)}h ${r.nextMins % 60}m` : `${r.nextMins}m`}</b></>}
+                {(() => {
+                  const next = nextRunLabel(r.nextMins, r.nextRunAt);
+                  return next && <>{next.lead && `${next.lead} `}<b className="text-text-primary">{next.value}</b></>;
+                })()}
               </span>
             )}
           </>

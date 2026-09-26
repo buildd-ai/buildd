@@ -102,7 +102,7 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
       <div className="flex items-center gap-1.5 mt-1.5">
         <span className="w-1.5 h-1.5 rounded-full bg-status-warning shrink-0" />
         <span className="text-xs text-status-warning">
-          Token expired —{' '}
+          Token expired:{' '}
           <Link href="/app/settings" className="underline">refresh in Settings</Link>
         </span>
       </div>
@@ -113,7 +113,7 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
     <div className="flex items-center gap-1.5 mt-1.5">
       <span className="w-1.5 h-1.5 rounded-full bg-text-muted shrink-0" />
       <span className="text-xs text-text-muted">
-        Not configured —{' '}
+        Not configured:{' '}
         <Link href="/app/settings" className="underline hover:text-text-secondary">
           add credentials in Settings
         </Link>
@@ -513,7 +513,7 @@ export default function NewMissionForm({
           <textarea
             value={description}
             onChange={e => setDescription(e.target.value)}
-            placeholder="Add more context about what this mission should accomplish…"
+            placeholder="Goal, scope, constraints, links…"
             rows={3}
             className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-base md:text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors resize-none"
             data-testid="mission-description-input"
@@ -637,7 +637,7 @@ export default function NewMissionForm({
 
               {!cronExpression && (
                 <p className="text-xs text-text-muted mb-3">
-                  Add a schedule to run this mission periodically.
+                  Run this mission on a schedule.
                 </p>
               )}
 

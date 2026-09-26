@@ -197,7 +197,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
         </svg>
         <p className="text-lg mb-2">No artifacts yet</p>
         <p className="text-sm">
-          Artifacts are created by agents for non-code deliverables like reports, articles, and analysis.
+          Agents create artifacts for non-code deliverables: reports, articles, analysis.
         </p>
       </div>
     );

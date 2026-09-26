@@ -12,6 +12,7 @@
  *   fired and did nothing".
  */
 import type { FlightStripSteeringEvent } from '@buildd/core/mission-helpers';
+import { countOf } from './plural';
 
 export interface SteeringTaskInput {
   id: string;
@@ -51,4 +52,22 @@ export function buildSteeringEvents(
  * read off the already-computed rail so the UI never re-derives the cap/cluster logic. */
 export function countOrchestratorPlans(rail: { marks: Array<{ kind: 'human' | 'orchestrator'; count: number }> }): number {
   return rail.marks.filter(m => m.kind === 'orchestrator').reduce((sum, m) => sum + m.count, 0);
+}
+
+/**
+ * The Orchestrator row's summary. A tick is one time the mission's schedule
+ * fired, including fires the heartbeat prepass skipped without a model. The
+ * cron bumps `totalRuns` on every claimed fire; `totalChecks` moves only for
+ * URL-trigger schedules (which check more often than they fire), so the larger
+ * of the two is the tick count. A mission with no schedule never ticks, and
+ * the row says nothing about ticks for it.
+ */
+export function orchestratorSummary(
+  plans: number,
+  schedule: { totalRuns?: number | null; totalChecks?: number | null } | null | undefined,
+): string {
+  const head = `Orchestrator · ${countOf(plans, 'plan', 'plans')}`;
+  if (!schedule) return head;
+  const ticks = Math.max(schedule.totalRuns ?? 0, schedule.totalChecks ?? 0);
+  return `${head}, ${countOf(ticks, 'tick', 'ticks')}`;
 }

@@ -99,9 +99,10 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
           )}
         </div>
         {now.pct != null && (
-          <div data-testid="worker-now-pct" className="shrink-0 font-mono font-semibold leading-none tracking-[-1px] text-[34px] md:text-[44px] tabular-nums">
-            {now.pct}
-            <sup className="text-[16px] md:text-[18px] text-text-muted font-medium align-top ml-0.5">%</sup>
+          // Flex, not <sup>: preflight gives <sup> `top: -0.5em`, which on top of
+          // align-top lifted the sign above the digits.
+          <div data-testid="worker-now-pct" className="shrink-0 flex items-start font-mono font-semibold leading-none tracking-[-1px] text-[34px] md:text-[44px] tabular-nums">
+            <span>{now.pct}</span><span className="ml-0.5 mt-[0.1em] text-[16px] md:text-[18px] text-text-muted font-medium">%</span>
           </div>
         )}
       </div>

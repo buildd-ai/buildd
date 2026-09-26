@@ -97,7 +97,7 @@ describe('F2: a failing verdict that the live rows contradict says so', () => {
     const focus = view.situation.focus;
     if (!focus || focus.kind !== 'criterion_failing') throw new Error('expected criterion focus');
     expect(focus.stale).toBe(true);
-    expect(view.situation.headline).toContain('no task is open now');
+    expect(view.situation.headline).toContain('no task is open.');
     expect(view.situation.headline).not.toContain('is failing');
     expect(view.situation.nextAction).toMatch(/re-run/i);
   });

@@ -51,7 +51,7 @@ describe('MissionDecisionSheet', () => {
     );
     // The destructive/committing actions only exist behind an explicit click,
     // which static rendering can never trigger — so they must not appear yet.
-    expect(html).not.toContain('Confirm — mark complete');
+    expect(html).not.toContain('Mark complete');
     expect(html).not.toContain('Save & re-run');
   });
 

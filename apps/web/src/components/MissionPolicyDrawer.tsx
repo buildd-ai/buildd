@@ -12,22 +12,22 @@ const TIER_OPTIONS: { value: MergePolicyTier | 'inherit'; label: string; hint: s
   {
     value: 'inherit',
     label: 'Inherit',
-    hint: 'Use the workspace default policy. No mission-level override.',
+    hint: 'Use the workspace default policy.',
   },
   {
     value: 'auto-threshold',
     label: 'Auto-Threshold',
-    hint: 'Merge automatically when CI passes and PR is within the size limit.',
+    hint: 'Merge when CI passes and the PR is within the size limit.',
   },
   {
     value: 'agent-review',
     label: 'Agent Review',
-    hint: 'An agent reviewer judges the PR before it can merge.',
+    hint: 'An agent reviewer approves the PR before it merges.',
   },
   {
     value: 'human',
     label: 'Human Gate',
-    hint: 'A human must explicitly approve and merge every PR.',
+    hint: 'A person approves and merges every PR.',
   },
 ];
 
@@ -161,7 +161,7 @@ export default function MissionPolicyDrawer({
                     onChange={e => setReviewerRole(e.target.value)}
                     className="mt-1 w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
                   >
-                    <option value="">— Select a role —</option>
+                    <option value="">Select a role</option>
                     {roles.map(r => (
                       <option key={r.slug} value={r.slug}>{r.name}</option>
                     ))}
@@ -211,8 +211,8 @@ export default function MissionPolicyDrawer({
 function DetectedPathsNote() {
   return (
     <p className="text-xs text-text-muted leading-relaxed" data-testid="mission-policy-detected-paths-note">
-      Protected paths are detected from the repo by the workspace risk-class policy — use
-      Re-scan repo on the workspace Merge Policy page to refresh them.
+      The workspace risk-class policy sets protected paths from the repo. To refresh them, use
+      Re-scan repo on the workspace Merge Policy page.
     </p>
   );
 }

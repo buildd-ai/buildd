@@ -96,7 +96,7 @@ export function NeedsYouStack({
         {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
         {children}
         {empty && (
-          <p className="font-mono text-[13px] text-text-muted">Nothing needs you. The fleet is on it.</p>
+          <p className="font-mono text-[13px] text-text-muted">Nothing waiting on you.</p>
         )}
       </div>
     </section>

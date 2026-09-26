@@ -171,7 +171,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                             placeholder="main"
                         />
-                        <p className="text-xs text-text-muted mt-1">The base branch for worktrees and new feature branches (e.g. <code>dev</code> or <code>main</code>).</p>
+                        <p className="text-xs text-text-muted mt-1">Base branch for worktrees and new feature branches, such as <code>dev</code> or <code>main</code>.</p>
                     </div>
 
                     <div>
@@ -198,7 +198,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
                             placeholder="feature/"
                         />
-                        <p className="text-xs text-text-muted mt-1">Leave empty to let agent follow project conventions</p>
+                        <p className="text-xs text-text-muted mt-1">Leave empty and the agent follows project conventions.</p>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -262,12 +262,12 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             placeholder={defaultBranch || 'main'}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Where agent PRs are opened against. For example, set to <code>dev</code>{' '}if you merge features into dev before releasing to main.
-                            Falls back to Default Branch above if empty, then the GitHub repo&apos;s default branch.
+                            Branch agents open PRs against. Set <code>dev</code>{' '}if you merge features into dev before releasing to main.
+                            If empty, buildd uses Default Branch above, then the GitHub repo&apos;s default branch.
                         </p>
                         {!targetBranch && (
                             <p className="text-xs text-status-warning mt-1">
-                                Not set — PRs will target <code>{defaultBranch || 'main'}</code> (from Default Branch above).
+                                Not set. PRs target <code>{defaultBranch || 'main'}</code> (from Default Branch above).
                             </p>
                         )}
                     </div>
@@ -301,10 +301,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        When enabled, PRs are automatically merged and released when all CI checks pass. Turn off to require manual review for all PRs.
+                        buildd merges and releases a PR once all CI checks pass. Turn off to review every PR yourself.
                     </p>
                     <p className="text-xs text-text-secondary -mt-1 bg-surface-3/60 border border-border-default rounded px-2.5 py-1.5">
-                        Override per-task or per-mission using the <code className="font-mono">requiresReview</code> flag.
+                        Override per task or mission with the <code className="font-mono">requiresReview</code> flag.
                     </p>
                 </div>
             </div>
@@ -353,7 +353,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Allow agents to run bash commands without approval. Dangerous commands (sudo, rm -rf /, etc.) are always blocked.
+                        Agents run bash commands without asking. buildd still blocks dangerous commands such as sudo and rm -rf /.
                     </p>
                 </div>
             </div>
@@ -376,7 +376,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             placeholder="premium-plus · premium · standard · budget · or an exact model id"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Model to use if the primary model fails (e.g., rate limited or unavailable). Can be overridden per-task via <code>context.fallbackModel</code>.
+                            Model to use when the primary model fails, such as on a rate limit. Override per task with <code>context.fallbackModel</code>.
                         </p>
                     </div>
                 </div>
@@ -400,7 +400,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Restrict worker file and network access using the SDK sandbox. Prevents workers from accessing unauthorized resources.
+                        The SDK sandbox limits which files and network hosts workers can reach.
                     </p>
 
                     {sandboxEnabled && (
@@ -418,7 +418,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 </label>
                             </div>
                             <p className="text-xs text-text-muted -mt-2">
-                                Skip bash permission prompts since the sandbox restricts what commands can do.
+                                Skips bash permission prompts. The sandbox limits what commands can do.
                             </p>
 
                             <div>
@@ -433,7 +433,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                     placeholder={"api.github.com\nnpm.pkg.github.com\nregistry.npmjs.org"}
                                 />
                                 <p className="text-xs text-text-muted mt-1">
-                                    Network domains workers are allowed to access. Leave empty to block all outbound network.
+                                    Domains workers can reach. Leave empty to block all outbound traffic.
                                 </p>
                             </div>
 
@@ -450,7 +450,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 </label>
                             </div>
                             <p className="text-xs text-text-muted -mt-2">
-                                Allow workers to start local dev servers (e.g., for running tests that need a server).
+                                Lets workers start local dev servers, such as for tests that need one.
                             </p>
 
                             <div>
@@ -465,7 +465,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                     placeholder={"docker\nkubectl\nssh"}
                                 />
                                 <p className="text-xs text-text-muted mt-1">
-                                    Commands excluded from sandbox restrictions (run outside the sandbox).
+                                    These commands run outside the sandbox.
                                 </p>
                             </div>
                         </div>
@@ -491,7 +491,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Outputs verbose SDK debug information to stderr. Useful for troubleshooting worker issues.
+                        Writes verbose SDK debug output to stderr, for troubleshooting workers.
                     </p>
 
                     <div>
@@ -507,7 +507,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             placeholder="/tmp/buildd-debug.log"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            File path to write SDK debug logs to. When set, debug output goes to this file instead of stderr.
+                            Writes SDK debug logs to this file instead of stderr.
                         </p>
                     </div>
                 </div>
@@ -517,8 +517,8 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
             <div className="border border-border-default rounded-lg p-4">
                 <h3 className="font-medium mb-4">Thinking &amp; Effort</h3>
                 <p className="text-xs text-text-muted mb-4">
-                    Not all models support these features. Workers will automatically detect model capabilities
-                    at startup and skip unsupported options. Check worker logs for capability warnings.
+                    Some models don&apos;t support these options. Workers check model capabilities at startup
+                    and skip what the model can&apos;t use. Worker logs show a warning when they skip one.
                 </p>
 
                 <div className="space-y-4">
@@ -535,7 +535,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             ]}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Controls extended thinking / chain-of-thought reasoning. Can be overridden per-task via task context.
+                            Sets extended thinking. Override per task in task context.
                         </p>
                     </div>
 
@@ -554,7 +554,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 placeholder="10000"
                             />
                             <p className="text-xs text-text-muted mt-1">
-                                Maximum tokens the model can use for thinking. Higher values allow deeper reasoning at higher cost.
+                                Most tokens the model can spend thinking. More tokens cost more.
                             </p>
                         </div>
                     )}
@@ -566,14 +566,14 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             onChange={(v) => setEffort(v as typeof effort)}
                             options={[
                                 { value: 'none', label: 'Default (no override)' },
-                                { value: 'low', label: 'Low (faster, cheaper — simple tasks)' },
+                                { value: 'low', label: 'Low (faster, cheaper · simple tasks)' },
                                 { value: 'medium', label: 'Medium (balanced)' },
                                 { value: 'high', label: 'High (thorough)' },
-                                { value: 'max', label: 'Max (most thorough — complex architecture)' },
+                                { value: 'max', label: 'Max (most thorough · complex architecture)' },
                             ]}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Controls how much effort the model puts into responses. Can be overridden per-task via task context.
+                            Sets how much effort the model spends per response. Override per task in task context.
                         </p>
                     </div>
                 </div>
@@ -597,7 +597,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             ]}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Default runner preference for new tasks in this workspace. Only runners matching this type can claim tasks. Can be overridden per-task.
+                            Applies to new tasks in this workspace. Only runners of this type can claim them. Override per task.
                         </p>
                     </div>
 
@@ -613,7 +613,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                             ]}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Default agent engine for new tasks in this workspace. Resolution order: per-task <code>backend</code> → role default → this workspace default → Claude. Codex tasks require a connected ChatGPT/OpenAI credential.
+                            Agent engine for new tasks in this workspace. Order: per-task <code>backend</code> → role default → this workspace default → Claude. Codex tasks need a connected ChatGPT/OpenAI credential.
                         </p>
                     </div>
                 </div>

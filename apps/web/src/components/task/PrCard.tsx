@@ -84,6 +84,23 @@ const isPassingRun = (r: CiCheckRun) =>
   r.status === 'completed' && (r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
 
 /**
+ * A PR whose checks are red: merging is not the next action, reading the
+ * failing checks is. Either the stored lifecycle says so or GitHub reported a
+ * failed run on the head commit.
+ */
+export function isCiRed(prLifecycleStatus: string | null | undefined, ciChecks: PrCardProps['ciChecks']): boolean {
+  if (isPrMerged(prLifecycleStatus)) return false;
+  return prLifecycleStatus === 'ci_failed' || (ciChecks?.failed ?? 0) > 0;
+}
+
+/** The card's primary link: label and target. */
+function primaryAction(prUrl: string, prLifecycleStatus: string | null | undefined, ciChecks: PrCardProps['ciChecks']) {
+  if (isPrMerged(prLifecycleStatus)) return { label: 'Open PR', href: prUrl };
+  if (isCiRed(prLifecycleStatus, ciChecks)) return { label: 'View failing checks', href: `${prUrl.replace(/\/+$/, '')}/checks` };
+  return { label: 'Review & merge', href: prUrl };
+}
+
+/**
  * Canonical pull-request card. One renderer for every surface that shows a
  * worker's PR — task detail page, mission task drawer, timeline. Lifecycle
  * label/colour and the "View PR" vs "Review & merge" verb come from the shared
@@ -111,6 +128,7 @@ export default function PrCard(props: PrCardProps) {
 
   const isMerged = isPrMerged(prLifecycleStatus);
   const failingRuns = ciChecks?.runs.filter(isFailingRun) ?? [];
+  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks);
 
   const reviewLine = reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
@@ -203,12 +221,12 @@ export default function PrCard(props: PrCardProps) {
       )}
 
       <a
-        href={prUrl}
+        href={action.href}
         target="_blank"
         rel="noopener noreferrer"
         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-surface-3 text-text-primary hover:bg-card-hover transition-colors"
       >
-        {isMerged ? 'View PR' : 'Review & merge'} #{prNumber} on GitHub
+        {isMerged ? 'View PR' : action.label} #{prNumber} on GitHub
         <ExternalIcon />
       </a>
     </div>
@@ -315,12 +333,55 @@ export function CommitChecksList({ commits }: { commits: PrCommitChecks[] }) {
   );
 }
 
+/**
+ * The diff split by attempt. Attempt identity and +/- colour are separate
+ * channels: each attempt is its own group (width by its share of changed
+ * lines) holding its own green/red segments, with a neutral bracket and number
+ * under it. A running attempt with nothing pushed yet gets a hatched
+ * placeholder group, so its label never sits under another attempt's segment.
+ */
+function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
+  return (
+    <div className="mt-6">
+      <div data-testid="pr-diff-bar" className="flex gap-2">
+        {attempts.map((a, i) => {
+          const lines = a.add + a.rem;
+          const pending = lines === 0;
+          return (
+            <div
+              key={i}
+              data-testid="pr-diff-attempt"
+              data-attempt={i + 1}
+              className="min-w-0"
+              style={{ flexGrow: pending ? 0 : lines, flexBasis: 0, minWidth: pending ? 36 : 12 }}
+            ><div className="flex h-[18px] gap-[3px]">
+                {a.add > 0 && <span data-sign="add" className="bg-status-success" style={{ flexGrow: a.add, flexBasis: 0 }} title={`Attempt ${i + 1}: +${a.add}`} />}
+                {a.rem > 0 && <span data-sign="rem" className="bg-status-error" style={{ flexGrow: a.rem, flexBasis: 0, minWidth: 4 }} title={`Attempt ${i + 1}: −${a.rem}`} />}
+                {pending && <span data-sign="pending" className="flex-1 border-2 border-dashed border-text-muted" title={`Attempt ${i + 1}: ${a.running ? 'in progress' : 'no changes'}`} />}
+              </div><div data-testid="pr-diff-attempt-marker" aria-hidden="true" className="mt-1 h-[6px] border-x-2 border-b-2 border-text-muted" />
+              <div className="mt-1 font-mono text-[11px] font-semibold text-text-muted">{i + 1}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 font-mono text-[12px] text-text-muted tabular-nums">
+        {attempts.map((a, i) => (
+          <span key={i}>
+            <span className="font-semibold text-text-secondary">{i + 1}</span> Attempt {i + 1}{i > 0 ? ' (fix)' : ''} · {a.running && a.add + a.rem === 0 ? 'in progress' : `+${a.add} −${a.rem} · ${a.files} file${a.files === 1 ? '' : 's'}`}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable, mergeableState, reviews, outcome }: PrCardProps & { outcome: PrOutcome }) {
   const lifecycle = derivePrLifecycle(prLifecycleStatus, true);
   const merged = isPrMerged(prLifecycleStatus);
+  const ciRed = isCiRed(prLifecycleStatus, ciChecks);
+  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks);
   const { totals, attempts } = outcome;
   const total = attempts.reduce((s, a) => s + a.add + a.rem, 0);
-  const last = attempts.length - 1;
   const reviewLine = reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0
     ? [
         reviews.approved > 0 ? `${reviews.approved} approved` : null,
@@ -344,12 +405,13 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable
             {outcome.summary && <p className="mt-2 text-[14px] md:text-[16px] text-text-primary leading-relaxed [overflow-wrap:anywhere]">{outcome.summary}</p>}
           </div>
           <a
-            href={prUrl}
+            href={action.href}
             target="_blank"
             rel="noopener noreferrer"
-            className="shrink-0 inline-flex items-center gap-1.5 min-h-11 px-4 border-2 border-border-strong text-[13px] font-medium text-text-primary hover:bg-surface-3"
+            data-testid="pr-outcome-action"
+            className={`shrink-0 inline-flex items-center gap-1.5 min-h-11 px-4 border-2 text-[13px] font-medium hover:bg-surface-3 ${ciRed ? 'border-status-error text-status-error' : 'border-border-strong text-text-primary'}`}
           >
-            {merged ? 'Open PR' : 'Review & merge'} <ExternalIcon />
+            {action.label} <ExternalIcon />
           </a>
         </div>
 
@@ -366,29 +428,13 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable
           )}
         </div>
 
-        {total > 0 && (
-          <div className="mt-6">
-            <div data-testid="pr-diff-bar" className="flex h-[18px] gap-[3px]">
-              {attempts.flatMap((a, i) => [
-                a.add > 0 && <span key={`a${i}`} className={`bg-status-success ${i > 0 ? 'opacity-70' : ''}`} style={{ flexGrow: a.add, flexBasis: 0 }} title={`Attempt ${i + 1}: +${a.add}`} />,
-                a.rem > 0 && <span key={`r${i}`} className={`bg-status-error ${i > 0 ? 'opacity-70' : ''}`} style={{ flexGrow: a.rem, flexBasis: 0, minWidth: 4 }} title={`Attempt ${i + 1}: −${a.rem}`} />,
-              ])}
-            </div>
-            <div className="mt-2 flex flex-wrap justify-between gap-2 font-mono text-[12px] text-text-muted tabular-nums">
-              {attempts.map((a, i) => (
-                <span key={i} className={i === last && i > 0 ? 'text-right' : ''}>
-                  Attempt {i + 1}{i > 0 ? ' (fix)' : ''} · {a.running && a.add + a.rem === 0 ? 'in progress' : `+${a.add} −${a.rem} · ${a.files} file${a.files === 1 ? '' : 's'}`}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        {total > 0 && <DiffBar attempts={attempts} />}
       </section>
 
       {outcome.lineage.length > 0 && (
         <section>
           <div className="flex items-baseline justify-between border-b border-border-default pb-2 mb-5">
-            <span className="section-label">How it landed</span>
+            <span className="section-label">PR history</span>
           </div>
           <LineageChain steps={outcome.lineage} />
         </section>

@@ -44,7 +44,7 @@ export default function DeleteWorkspaceButton({ workspaceId, workspaceName }: { 
       <ConfirmDialog
         open={showConfirm}
         title={`Delete "${workspaceName}"?`}
-        message={error || "This will also delete all tasks and workers in this workspace. This cannot be undone."}
+        message={error || "Deletes every task and worker in this workspace. You can't undo this."}
         confirmLabel="Delete"
         variant="danger"
         loading={deleting}

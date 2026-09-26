@@ -64,9 +64,10 @@ import { findTaskRole } from './role-lookup';
 import { taskHeading } from './task-header';
 import { linkQuestionNote } from './question-hero';
 import { buildLineage } from './pr-lineage';
+import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
+import { sidePanelPeers } from './also-running';
 import { loadAlsoRunningWorkers } from './also-running-loader';
 import type { PrOutcome } from '@/components/task/PrCard';
-import type { WorkerMilestone } from '@buildd/core/db/schema';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -309,11 +310,12 @@ export default async function TaskDetailPage({
     prWorker?.prNumber
       ? db.query.tasks.findMany({
           where: and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha)),
-          columns: { id: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
+          columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
+            // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
-              columns: { runner: true, accountId: true, localUiUrl: true, commitCount: true, linesAdded: true, linesRemoved: true, filesChanged: true, createdAt: true, startedAt: true, completedAt: true, lastCommitSha: true },
               orderBy: desc(workers.createdAt),
+              with: { account: { columns: { name: true, authType: true } } },
             },
           },
           orderBy: asc(tasks.createdAt),
@@ -511,11 +513,20 @@ export default async function TaskDetailPage({
   });
 
   // Override to "Waiting on you" when a non-mission task has open question notes
-  const displayStatus = openQuestionCount > 0 && !isTerminal
+  const ownDisplayStatus = openQuestionCount > 0 && !isTerminal
     ? 'waiting_on_you'
     : subjectDead && !activeWorker
       ? 'subject_dead'
       : baseDisplayStatus;
+  // The lineage decides: a completed task whose PR a CI-fix attempt is still
+  // working reads "Fixing CI", not "Completed".
+  const displayStatus = lineageDisplayStatus({
+    displayStatus: ownDisplayStatus,
+    taskStatus: task.status,
+    prMerged: !!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
+    prClosed: prWorker?.prLifecycleStatus === 'closed',
+    attemptStatuses: ciAttemptTasks.map(t => t.status),
+  });
 
   const initiative = task.mission?.initiative ?? null;
 
@@ -661,24 +672,11 @@ export default async function TaskDetailPage({
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
   const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
 
-  const latestPct = (ms: unknown): number | null => {
-    const list = Array.isArray(ms) ? (ms as WorkerMilestone[]) : [];
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.type === 'status' && typeof m.progress === 'number') return m.progress;
-    }
-    return null;
-  };
-  const peers: PeerTask[] = peerWorkers
-    .filter(w => w.task && (task.missionId ? w.task.missionId === task.missionId : true))
-    .map(w => ({
-      taskId: w.task!.id,
-      title: w.task!.title.replace(/^\s*\[[^\]]*\]\s*/, ''),
-      pct: latestPct(w.milestones),
-      href: taskPageHref({ taskId: w.task!.id, missionId: w.task!.missionId }),
-      waiting: w.status === 'waiting_input',
-    }))
-    .filter((p, i, all) => all.findIndex(q => q.taskId === p.taskId) === i);
+  // A task listed under "Unblocked by this" is not repeated under "Also running".
+  const peers: PeerTask[] = sidePanelPeers(peerWorkers, {
+    missionId: task.missionId ?? null,
+    excludeTaskIds: new Set(dependentTasks.map(d => d.id)),
+  });
 
   let prOutcome: PrOutcome | null = null;
   if (prWorker) {
@@ -765,6 +763,8 @@ export default async function TaskDetailPage({
   const unresolvedDepIds = new Set(unresolvedDeps.map(d => d.id));
   const pathManifest = Array.isArray(task.pathManifest) ? (task.pathManifest as string[]) : [];
   const ciAttemptWorkers = ciAttemptTasks.flatMap(t => t.workers.slice(0, 1));
+  // Every worker on this task's PR, the CI-fix attempts' included.
+  const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
   const factRows: FactRow[] = [
     ...(prOutcome && prWorker && isTerminal
       ? [{
@@ -969,7 +969,7 @@ export default async function TaskDetailPage({
               <a
                 href="#agent-error-traces"
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
-                title="Pattern-matched errors caught from agent tool output. Click to see details."
+                title="Pattern-matched errors from agent tool output"
                 data-testid="task-error-count"
               >
                 {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
@@ -1079,7 +1079,7 @@ export default async function TaskDetailPage({
                 <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Blocked — waiting on {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
+                Blocked by {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
               </div>
               <div className="space-y-1.5 ml-6">
                 {prBlockers.map(({ dep, w }) => {
@@ -1126,7 +1126,7 @@ export default async function TaskDetailPage({
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
               </svg>
-              Mission budget exhausted — no worker can claim this task
+              Mission budget spent. No worker can claim this task.
             </div>
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
@@ -1135,7 +1135,7 @@ export default async function TaskDetailPage({
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
-              is held until its cost budget is raised. Raise the mission budget to release them all, or force-start this one task.
+              is on hold. Raise the mission budget to release them, or force-start this task.
             </p>
           </div>
         )}
@@ -1180,7 +1180,7 @@ export default async function TaskDetailPage({
               </summary>
               <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
                 <p className="text-xs text-text-muted mb-2">
-                  Pattern-matched errors caught by the runner from agent tool output. Throttled at 1 per pattern per 60s.
+                  The runner matched these errors in agent tool output. At most 1 per pattern per 60s.
                 </p>
                 {errorTraces.map((t) => (
                   <div key={t.id} className="flex items-start gap-2 text-sm">
@@ -1297,7 +1297,7 @@ export default async function TaskDetailPage({
                   <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Plan approved — {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
+                  Plan approved · {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
                 </div>
               </div>
             );
@@ -1308,7 +1308,7 @@ export default async function TaskDetailPage({
               <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">
                   <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
-                  Agent is generating a plan…
+                  The agent is writing a plan…
                 </div>
               </div>
             );
@@ -1321,7 +1321,7 @@ export default async function TaskDetailPage({
                   <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                   </svg>
-                  Planning agent will create a structured plan
+                  A planning agent will write a plan for your review
                 </div>
               </div>
             );
@@ -1559,13 +1559,13 @@ export default async function TaskDetailPage({
         )}
 
         {/* Worker History */}
-        {taskWorkers.length > 0 && (
-          <div>
+        {workerHistory.length > 0 && (
+          <div data-testid="task-worker-history">
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               Worker History
             </div>
             <div className="border border-border-default overflow-hidden">
-              {taskWorkers.map((worker) => {
+              {workerHistory.map(({ worker, attemptLabel }) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
@@ -1576,7 +1576,10 @@ export default async function TaskDetailPage({
                       {iconStyle.icon}
                     </div>
                     <div className="flex-1 min-w-0 basis-[calc(100%-2.75rem)] md:basis-0">
-                      <div className="text-[13px] font-medium text-text-primary truncate">{worker.name}</div>
+                      <div className="text-[13px] font-medium text-text-primary truncate" title={worker.name}>
+                        {runnerLabel(worker) ?? worker.name}
+                        {attemptLabel && <span className="font-normal text-text-muted"> · {attemptLabel}</span>}
+                      </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
                         {worker.branch}
                         {worker.account && ` \u00B7 ${worker.account.name}`}
@@ -1586,7 +1589,7 @@ export default async function TaskDetailPage({
                       )}
                       {worker.status === 'superseded' && (
                         <p className="text-[11px] text-text-muted mt-0.5">
-                          Session ended after the question was answered.{' '}
+                          Session ended after you answered the question.{' '}
                           {worker.continuationTaskId ? (
                             <a href={taskPageHref({ taskId: worker.continuationTaskId, missionId: task.missionId })} className="text-status-info hover:underline">
                               Continued in a new task →
@@ -1616,7 +1619,7 @@ export default async function TaskDetailPage({
                         return (
                           <div className="mt-1 border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
                             <p className="font-mono text-[11px] md:text-[10px] uppercase tracking-wide text-status-warning">
-                              ⚠ Rejected deliverable — not a satisfied outcome
+                              ⚠ Deliverable rejected
                               {rejected.reason ? ` (${rejected.reason})` : ''}
                             </p>
                             {rejected.summary && (
@@ -1717,16 +1720,16 @@ export default async function TaskDetailPage({
           <div className="border border-dashed border-border-default p-8 text-center">
             {isBlocked ? (
               <>
-                <p className="text-text-secondary mb-2">This task is waiting for dependencies to complete</p>
+                <p className="text-text-secondary mb-2">Waiting on dependencies</p>
                 <p className="text-sm text-text-muted">
-                  {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} must finish before this task can start.
+                  {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} must finish first.
                 </p>
               </>
             ) : (
               <>
-                <p className="text-text-secondary mb-2">This task is waiting to be started</p>
+                <p className="text-text-secondary mb-2">Not started</p>
                 <p className="text-sm text-text-muted">
-                  Start it above to assign it to a worker, or wait for a worker to claim it automatically.
+                  Start it above, or a worker will claim it from the queue.
                 </p>
               </>
             )}

@@ -59,8 +59,8 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
       setMsg({
         type: 'success',
         text: value
-          ? 'Green CI enforced — PR tasks will loop until checks pass.'
-          : 'Green CI enforcement disabled.',
+          ? 'Green CI required. PR tasks loop until checks pass.'
+          : 'Green CI no longer required.',
       });
     } catch (e) {
       setState({ enforceGreenCI: prev }); // rollback
@@ -77,7 +77,7 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
   return (
     <SettingsSection title="Workspace CI policy">
         <p className="text-sm text-text-secondary">
-          Per-workspace settings that govern how tasks interact with CI.
+          Per-workspace rules for how tasks treat CI.
         </p>
 
         {workspaces.length > 1 && (
@@ -100,7 +100,7 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
             <div className="text-sm font-medium text-text-primary">Require green CI before task completion</div>
             <div className="text-xs text-text-secondary">
               Tasks with <code className="bg-surface-3 px-1 rounded text-[11px]">pr_required</code> output that don&apos;t
-              already have a loop config will automatically loop until PR checks pass (max 3 retries).
+              already have a loop config loop until PR checks pass (max 3 retries).
             </div>
           </div>
           <Switch

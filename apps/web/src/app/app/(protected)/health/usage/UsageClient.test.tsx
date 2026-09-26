@@ -326,7 +326,7 @@ describe('UsageClient — buildd action breakdown', () => {
   it('says counts are floors when the row cap was hit', () => {
     const many = Array.from({ length: 20 }, () => ({ workerId: 'w1', action: 'claim_task' }));
     const html = render({ actions: actionPanel({ rows: many, rowLimit: 20 }) });
-    expect(html).toContain('counts are floors');
+    expect(html).toContain('Counts are floors');
   });
 
   it('still declines to invent the runtime/work split', () => {

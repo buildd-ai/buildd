@@ -87,7 +87,7 @@ describe('F1: waiting on you is active, whatever the health says', () => {
 
   it('the stale verdict reads as stale on the card: nothing is open now', () => {
     const v = view(mission({ status: 'paused', tasks: doneWork(), ...failingNoOpenTasks }));
-    expect(v.situation.headline).toContain('no task is open now');
+    expect(v.situation.headline).toContain('no task is open.');
   });
 });
 

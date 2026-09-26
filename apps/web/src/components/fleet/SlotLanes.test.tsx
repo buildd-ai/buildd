@@ -90,6 +90,69 @@ describe('SlotLanes', () => {
     expect(count(html, 'data-testid="slot-lane-row"')).toBe(1);
   });
 
+  it('a live bar that just started puts its label left of it, never out into the future hatch past NOW', () => {
+    const fresh: SlotLane[] = [{
+      id: 'alpha', label: 'alpha',
+      bars: [
+        { id: 'old', start: m(0), end: m(4), tone: 'done', label: 'schema' },
+        { id: 'new', start: m(10), end: null, tone: 'live', scope: 'checkout', label: 'CI fix' },
+      ],
+    }];
+    const html = renderToStaticMarkup(<SlotLanes lanes={fresh} from={m(0)} to={m(20)} now={m(10)} />);
+    const outside = html.match(/<span class="pointer-events-none absolute[^"]*" style="([^"]*)"[^>]*>(?:(?!<\/span><\/span>).)*checkout/)?.[1] ?? '';
+    expect(outside).not.toBe('');
+    // Anchored by its right edge at the bar's start, capped to the gap since the previous bar.
+    expect(outside).toContain('right:calc(50% + 8px)');
+    expect(outside).toContain('max-width:calc(30% - 16px)');
+    expect(outside).not.toContain('left:');
+  });
+
+  it('with no room before it, a short live bar keeps its label inside rather than spilling past NOW', () => {
+    const packed: SlotLane[] = [{
+      id: 'alpha', label: 'alpha',
+      bars: [
+        { id: 'old', start: m(0), end: m(10), tone: 'done', label: 'schema' },
+        { id: 'new', start: m(10), end: null, tone: 'live', scope: 'checkout', label: 'CI fix' },
+      ],
+    }];
+    const html = renderToStaticMarkup(<SlotLanes lanes={packed} from={m(0)} to={m(20)} now={m(10)} />);
+    expect(html).not.toContain('pointer-events-none absolute top-[9px] flex h-8');
+    expect(html).toMatch(/data-bar-id="new"[^>]*>(?:(?!<\/a>|<\/span><\/span>).)*CI fix/);
+  });
+
+  it('a finished bar too short to hold its label draws as a titled marker, not an empty box', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes
+        lanes={[{ id: 'q', label: 'q', bars: [
+          { id: 'tiny', start: m(0), end: m(0.2), tone: 'done', label: 'verify goal', endMark: 'ok', title: 'Verify goal criterion: all merged' },
+          { id: 'wide', start: m(5), end: m(15), tone: 'done', label: 'export csv', endMark: 'ok' },
+        ] }]}
+        from={m(0)} to={m(60)} now={m(59)}
+      />,
+    );
+    const tiny = html.match(/<[a-z]+ [^>]*data-bar-id="tiny"[^>]*>/)?.[0] ?? '';
+    expect(tiny).toContain('data-shape="dot"');
+    // Hover names it: the tooltip carries the label.
+    expect(tiny).toContain('title="verify goal · Verify goal criterion: all merged"');
+    const wide = html.match(/<[a-z]+ [^>]*data-bar-id="wide"[^>]*>/)?.[0] ?? '';
+    expect(wide).not.toContain('data-shape="dot"');
+  });
+
+  it('a lane with pre-assigned rows draws exactly those rows (a caller folded some away)', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes
+        lanes={[{ id: 'q', label: 'q', bars: [], rows: [
+          [{ id: 'r1', start: m(0), end: m(30), tone: 'done', label: 'one' }],
+          [{ id: 'r2', start: m(1), end: m(20), tone: 'done', label: 'two' }],
+          [],
+        ] }]}
+        from={m(0)} to={m(60)} now={m(59)}
+      />,
+    );
+    expect(count(html, 'data-testid="slot-lane-row"')).toBe(3);
+    expect(html).toContain('data-bar-id="r2"');
+  });
+
   it('imports nothing mission-specific, so other surfaces can reuse it', () => {
     const src = readFileSync(join(import.meta.dir, 'SlotLanes.tsx'), 'utf8');
     const imports = [...src.matchAll(/from '([^']+)'/g)].map(x => x[1]);

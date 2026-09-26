@@ -15,7 +15,7 @@ import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, ty
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
+import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary } from '@/lib/mission-steering-events';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
@@ -789,7 +789,7 @@ export default async function MissionDetailPage({
     steeringEvents,
   });
   const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
-  const orchestratorTicks = (mission.schedule as any)?.totalChecks ?? 0;
+  const orchestratorLabel = orchestratorSummary(orchestratorPlans, (mission.schedule as { totalRuns?: number | null; totalChecks?: number | null } | null) ?? null);
   const missionRecords = selectMissionRecords(allArtifacts);
 
   // Goal criteria — hoisted so the header's Verified pill and its bottom
@@ -958,10 +958,10 @@ export default async function MissionDetailPage({
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
-              ? `Every task PR under this mission merges into its integration branch. No PR from that branch into the target branch exists yet — so none of this mission's work has reached the target branch.`
+              ? `Task PRs merge into this mission's integration branch. No PR from that branch into the target branch exists yet, so none of this mission's work is on the target branch.`
               : missionIntegrationPr.state === 'merged'
                 ? `This mission's work reached the target branch through one PR from its integration branch.`
-                : `This is the mission's review gate: one PR from the integration branch into the target branch. The merge policy applies here, not to the task PRs that fed it.`}
+                : `The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only.`}
           </p>
         </div>
         {missionIntegrationPr.prUrl && (
@@ -1002,8 +1002,8 @@ export default async function MissionDetailPage({
     <div className="flex items-start justify-between gap-3">
       <p className="text-[12px] text-text-secondary">
         {spendUsd != null
-          ? `${formatEstimatedUsd(spendUsd, 4)} spent vs $${budgetUsd.toFixed(2)} budget — no new tasks will spawn.`
-          : `Budget of $${budgetUsd.toFixed(2)} reached — no new tasks will spawn.`}
+          ? `${formatEstimatedUsd(spendUsd, 4)} of $${budgetUsd.toFixed(2)} budget spent. No new tasks will start.`
+          : `Budget of $${budgetUsd.toFixed(2)} reached. No new tasks will start.`}
         {' '}Raise the budget to resume.
       </p>
       <div className="shrink-0">
@@ -1065,7 +1065,7 @@ export default async function MissionDetailPage({
           <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
             <div className="flex items-start gap-2">
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Waiting for human decision
+                Needs your decision
               </span>
               <span className="text-[12px] text-text-secondary">{readingCopy}</span>
             </div>
@@ -1103,7 +1103,7 @@ export default async function MissionDetailPage({
           (the explain read failed), so the gate is never silent. */}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-3 text-[12px] text-text-muted">
-          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified.
+          Completion waits on {countOf(missionCriteria!.length, 'unverified criterion', 'unverified criteria')}.
         </p>
       )}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
@@ -1227,7 +1227,7 @@ export default async function MissionDetailPage({
         <div>
           <h2 className="section-label mb-2">Agent backend</h2>
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-          <p className="text-[11px] text-text-muted mt-1.5">Default engine for tasks spawned by this mission. Auto inherits the role or workspace default.</p>
+          <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the role or workspace default.</p>
         </div>
       )}
 
@@ -1384,7 +1384,7 @@ export default async function MissionDetailPage({
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
         <span aria-hidden="true" className="text-text-muted">─</span>
         <span className="flex-1">
-          {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
+          {orchestratorLabel}
         </span>
         <span aria-hidden="true" className="group-open:rotate-90">›</span>
       </summary>
