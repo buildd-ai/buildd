@@ -74,6 +74,7 @@ import { getChatAvailability } from '@/lib/chat-availability';
 import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
 import HomeChatCard from '@/components/chat/HomeChatCard';
 import ChatSetupCard from '@/components/chat/ChatSetupCard';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 
 // --- Helpers ---
@@ -1601,6 +1602,7 @@ export default async function HomePage({
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
               docFixTaskId: true, lastCheckedAt: true,
+              recheckRequestedAt: true, autoFollowUpTaskId: true, evidence: true,
             },
           });
           if (discrepancyRows.length > 0) {
@@ -1661,6 +1663,9 @@ export default async function HomePage({
                   docFixTaskStatus: r.docFixTaskId ? docFixStatusById.get(r.docFixTaskId) ?? null : null,
                   docFixPrLifecycleStatus: docFixWorker?.prLifecycleStatus ?? null,
                   docFixMergedAt: docFixWorker?.mergedAt ?? null,
+                  recheckRequestedAt: r.recheckRequestedAt,
+                  autoFollowUpTaskId: r.autoFollowUpTaskId,
+                  declaredStatus: typeof r.evidence?.declaredStatus === 'string' ? r.evidence.declaredStatus : null,
                 };
               }),
             );
@@ -1872,14 +1877,26 @@ export default async function HomePage({
                 <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />
               </span>
             )}
-            <Link
-              href="/app/missions/new"
+            <NewWorkLink
+              kind="mission"
+              workspaceId={wsFilter ?? null}
+              testId="home-new-mission"
               className="hidden min-h-9 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm hover:bg-primary-hover md:inline-flex"
             >
               + Mission
-            </Link>
+            </NewWorkLink>
           </div>
         </header>
+
+        {/* Chat is how work starts: the composer is the first thing on Home for
+            everyone, with the fleet directly under it. No key yet: an admin
+            gets the connect-a-provider card here instead. */}
+        {chatPlacement.kind === 'chat' && chatTeamId && (
+          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
+        )}
+        {chatPlacement.kind === 'setup' && (
+          <div className="mb-6"><ChatSetupCard reason={chatPlacement.reason} canManage /></div>
+        )}
 
         {rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
           <StatStrip
@@ -1894,11 +1911,6 @@ export default async function HomePage({
             selfHealed={stats?.selfHealed ?? 0}
             screensReviewed={shippedMissions[0]?.screens ?? null}
           />
-        )}
-
-        {/* A member's home opens on the conversation; the fleet is one line further down. */}
-        {chatPlacement.kind === 'member-first' && chatTeamId && (
-          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} />
         )}
 
         {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
@@ -1953,7 +1965,7 @@ export default async function HomePage({
                       </div>
                       <div className="min-w-0">
                         <div className="text-[13px] text-text-primary">
-                          <Link href="/app/tasks/new" className="text-accent-text hover:underline">Create a task</Link>
+                          <NewWorkLink kind="task" className="text-accent-text hover:underline">Create a task</NewWorkLink>
                           {' '}or start the runner
                         </div>
                         <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
@@ -1969,14 +1981,8 @@ export default async function HomePage({
                 <>
                   {/* Operators get the fleet near the top; a member gets their
                       missions first and the fleet as one expandable line below.
-                      A member with chat gets the chat card above all of this. */}
+                      Chat, when available, sits above all of this. */}
                   {audience === 'operator' && fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
-                  {chatPlacement.kind === 'operator-after-fleet' && chatTeamId && (
-                    <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact />
-                  )}
-                  {chatPlacement.kind === 'setup' && (
-                    <div className="mb-8"><ChatSetupCard reason={chatPlacement.reason} canManage /></div>
-                  )}
                   {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
                     <div className="mb-8 space-y-2">
             {/* Agent-reviewing PR cards — ambient presence, not actionable */}

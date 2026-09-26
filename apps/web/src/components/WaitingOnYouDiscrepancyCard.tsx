@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { ActionQueueItem, DiscrepancyDirection } from '@/lib/action-queue';
+import type { ActionQueueItem, DiscrepancyDirection, DocFixAutomation } from '@/lib/action-queue';
 
 interface WaitingOnYouDiscrepancyCardProps {
   item: ActionQueueItem;
@@ -23,6 +23,34 @@ function ageLabel(hours: number | null | undefined): string | null {
   if (days <= 0) return 'today';
   return days === 1 ? '1 day old' : `${days} days old`;
 }
+
+function agoLabel(minutes: number | null | undefined): string {
+  if (minutes == null) return '';
+  if (minutes < 1) return ' just now';
+  if (minutes < 60) return ` ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? ` ${hours}h ago` : ` ${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * The automation state the server derived (deriveDocFixAutomation). Items
+ * built without it — older callers, fixtures — fall back to the same reading
+ * from the raw claim fields, so the card never guesses more than they say.
+ */
+function automationOf(item: ActionQueueItem): DocFixAutomation | null {
+  if (item.docFixAutomation !== undefined) return item.docFixAutomation;
+  if (item.docFixTaskId) {
+    if (item.docFixTaskStatus !== 'completed') return 'fix_running';
+    if (item.docFixPrLifecycleStatus == null) return 'pr_unknown';
+    if (item.docFixPrLifecycleStatus !== 'merged') return 'pr_open';
+    return 'recheck_queued';
+  }
+  return item.mergedDocFixTaskId ? 'needs_owner' : null;
+}
+
+const AGENT_HANDLED: ReadonlySet<DocFixAutomation> = new Set<DocFixAutomation>([
+  'fix_running', 'follow_up_running', 'pr_open', 'pr_unknown', 'recheck_dispatched', 'recheck_queued', 'follow_up_queued',
+]);
 
 const PRIMARY_BTN =
   'inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
@@ -212,30 +240,78 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
   const direction = item.direction ?? 'code_ahead';
   const age = ageLabel(item.cardAgeHours);
   const claimCount = assertionIds.length || rowIds.length;
-  const inFlight = Boolean(item.docFixTaskId);
-  // The fix has been written and the rows are waiting on the checker. Nothing
-  // is running any more, so the card owes the human an exit again — see the
-  // note on Accept at the top of this file.
-  const docFixShipped = inFlight && item.docFixTaskStatus === 'completed';
-  // A completed task's PR may not have merged yet — completion just means the
-  // agent's session ended, not that the fix landed (workers.mergedAt is the
-  // authoritative merge signal). Only a KNOWN-unmerged PR gets the "PR open"
-  // copy; an unknown lifecycle (older rows, or the caller not supplying it)
-  // falls back to the existing "awaiting the conformance re-run" reading
-  // rather than asserting something the server never confirmed.
-  const docFixPrOpen = docFixShipped && item.docFixPrLifecycleStatus != null && item.docFixPrLifecycleStatus !== 'merged';
-  // A KNOWN merge is a bounded wait, not a stuck one: the next checker run
-  // either resolves the row or (isDocFixClaimStale, lib/action-queue.ts)
-  // finds it still open and releases the claim back to the live CTA set. So
-  // this substate gets no decision CTA at all — Accept here would let a human
-  // launder a pending automatic re-run into an "accepted" row before the
-  // checker ever ran. An UNKNOWN lifecycle has no such backstop (staleness
-  // requires a known merge timestamp to compare against) and keeps Accept as
-  // the last-resort exit below.
-  const docFixPrMerged = docFixShipped && item.docFixPrLifecycleStatus === 'merged';
-  // A doc fix merged and the re-run still finds the gap: the owner's call now,
-  // never a second dispatch (see the header note).
-  const mergedFixTaskId = !inFlight ? item.mergedDocFixTaskId ?? null : null;
+  const automation = automationOf(item);
+  // Agents still own the card: Home files it under the collapsed in-flight
+  // list, and it carries no decision. Anything else is the owner's.
+  const inFlight = automation != null && AGENT_HANDLED.has(automation);
+  // The task a status link opens: the live claim, else the merged fix the
+  // re-run found wanting.
+  const taskLink = item.docFixTaskId ?? item.mergedDocFixTaskId ?? null;
+  const claimsWord = `${claimCount} claim${claimCount === 1 ? '' : 's'}`;
+
+  // One status line per state, each naming what the server can actually
+  // observe. "Re-run dispatched" appears only when one was (recheck_requested_at
+  // after the merge, inside the in-flight window) — never as a default.
+  let status: { text: string; link?: string } | null = null;
+  switch (automation) {
+    case 'fix_running':
+      status = { text: '', link: 'Fix in flight →' };
+      break;
+    case 'follow_up_running':
+      status = { text: '', link: 'Follow-up doc fix in flight →' };
+      break;
+    case 'pr_open':
+      status = { text: '', link: 'Doc fix PR open. Merge it to continue →' };
+      break;
+    case 'pr_unknown':
+      status = { text: '', link: "Doc fix done. Its PR state isn't known yet →" };
+      break;
+    case 'recheck_dispatched':
+      status = { text: '', link: `Doc fix merged. Conformance re-run dispatched${agoLabel(item.recheckDispatchedMinutesAgo)} →` };
+      break;
+    case 'recheck_queued':
+      status = { text: '', link: 'Doc fix merged. A conformance re-run is dispatched within the hour →' };
+      break;
+    case 'follow_up_queued':
+      status = { text: '', link: 'Doc fix merged, gap still open. Filing one follow-up fix →' };
+      break;
+    case 'recheck_stalled':
+      status = {
+        text:
+          `Doc fix merged${item.docFixMergedHoursAgo != null ? ` ${item.docFixMergedHoursAgo}h ago` : ''}, and no conformance ` +
+          're-run has checked it since. Check the Spec Discrepancy Ledger workflow.',
+        link: 'Open the doc-fix task →',
+      };
+      break;
+    case 'needs_owner':
+      status = {
+        text:
+          `A doc fix${item.docFixFollowUpTaskId ? ' and one automatic follow-up' : ''} merged. The re-run` +
+          `${item.lastCheckedHoursAgo != null ? ` ${item.lastCheckedHoursAgo}h ago` : ''} still finds ${claimsWord} ` +
+          `passing while the doc declares ${item.declaredStatus ? `'${item.declaredStatus}'` : 'no recognised status'}. ` +
+          'Promote the status, correct the assertion, or add skip_until — or accept it.',
+        link: 'See the doc fix',
+      };
+      break;
+    default:
+      status = null;
+  }
+
+  // CTAs, derived from the state rather than from what looks tidy:
+  //  - null: the normal set for the direction (Dispatch doc fix / Promote / Flip, plus Accept).
+  //  - pr_open / pr_unknown: Accept only, the last-resort exit when the fix
+  //    has not landed (or cannot be seen to have).
+  //  - needs_owner: Accept, beside the evidence above.
+  //  - every other state: none. A pending automatic re-run or follow-up is a
+  //    bounded wait, and a stalled re-run is fixed at the workflow, not by
+  //    laundering the row into "accepted".
+  const showNormalCtas = automation == null;
+  const showAccept =
+    showNormalCtas || automation === 'pr_open' || automation === 'pr_unknown'
+    || automation === 'needs_owner';
+  // needs_owner is the one state where Accept is the only decision left, so it
+  // is THE action: primary, and named for what it does.
+  const decision = automation === 'needs_owner';
   const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
@@ -268,7 +344,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
           <details className="mb-2">
             <summary className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-text-secondary cursor-pointer list-none marker:content-none">
               <span className="underline decoration-dotted underline-offset-2">
-                {claimCount} claim{claimCount === 1 ? '' : 's'}
+                {claimsWord}
               </span>
             </summary>
             <ul className="mt-1 space-y-0.5">
@@ -281,42 +357,46 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
           </details>
         )}
 
-        {inFlight && (
-          <Link
-            href={`/app/tasks/${item.docFixTaskId}`}
-            className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
-          >
-            {docFixPrOpen
-              ? 'Doc fix PR open. Merge it to continue →'
-              : docFixShipped
-                ? 'Doc fix shipped. Waiting on the conformance re-run →'
-                : 'Fix in flight →'}
-          </Link>
-        )}
-
-        {/* The decision is the Accept button below; this link only opens the
-            task, so it says so rather than naming the decision. */}
-        {mergedFixTaskId && (
+        {/* The decision, where there is one, is the Accept button below; the
+            link only opens the task, so it says so rather than naming it. On
+            needs_owner the link is a quiet reference beside the evidence, so it
+            never out-shouts the button that carries the decision. */}
+        {status && decision && (
           <p data-testid="discrepancy-decision" className="text-[12px] text-text-secondary">
-            The doc fix merged and the re-run still finds the gap. Accept it as-is, or change the spec yourself.{' '}
-            <Link
-              href={`/app/tasks/${mergedFixTaskId}`}
-              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-secondary"
-            >
-              See the doc fix
-            </Link>
+            {status.text}{' '}
+            {taskLink && (
+              <Link
+                href={`/app/tasks/${taskLink}`}
+                className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-secondary"
+              >
+                {status.link}
+              </Link>
+            )}
           </p>
+        )}
+        {status && !decision && (
+          <div>
+            {status.text && <p className="text-[12px] text-text-secondary">{status.text}</p>}
+            {status.link && taskLink && (
+              <Link
+                href={`/app/tasks/${taskLink}`}
+                className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
+              >
+                {status.link}
+              </Link>
+            )}
+          </div>
         )}
       </div>
 
-      {(!inFlight || (docFixShipped && !docFixPrMerged)) && mode === 'idle' && (
-        <div className={`flex items-center gap-2 flex-wrap${docFixShipped || mergedFixTaskId ? ' mt-2' : ''}`}>
-          {!inFlight && !mergedFixTaskId && direction === 'code_ahead' && (
+      {showAccept && mode === 'idle' && (
+        <div className={`flex items-center gap-2 flex-wrap${status ? ' mt-2' : ''}`}>
+          {showNormalCtas && direction === 'code_ahead' && (
             <button type="button" onClick={dispatchDocFix} disabled={busy} className={PRIMARY_BTN}>
               {busy ? 'Dispatching…' : 'Dispatch doc fix'}
             </button>
           )}
-          {inFlight ? null : item.promotedMissionId ? (
+          {!showNormalCtas ? null : item.promotedMissionId ? (
             <Link
               href={`/app/missions/${item.promotedMissionId}`}
               className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline whitespace-nowrap"
@@ -328,7 +408,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
               {busy ? 'Promoting…' : 'Promote'}
             </button>
           ) : null}
-          {!inFlight && direction === 'contradicted' && (
+          {showNormalCtas && direction === 'contradicted' && (
             <button
               type="button"
               onClick={() => setMode('flipping')}
@@ -345,9 +425,9 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             onClick={() => setMode('accepting')}
             disabled={busy}
             data-testid="discrepancy-accept"
-            className={mergedFixTaskId ? PRIMARY_BTN : SECONDARY_BTN}
+            className={decision ? PRIMARY_BTN : SECONDARY_BTN}
           >
-            {mergedFixTaskId ? 'Accept the gap' : 'Accept'}
+            {decision ? 'Accept the gap' : 'Accept'}
           </button>
         </div>
       )}

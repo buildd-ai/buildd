@@ -26,9 +26,18 @@ export type InFlightKind =
   | 'ci-running' | 'auto-merge' | 'docfix-rerun' | 'other';
 
 /** What an in-flight card is waiting on — the key repeated cards fold by. */
-export function inFlightKind(item: Pick<ActionQueueItem, 'chip' | 'docFixTaskStatus' | 'docFixPrLifecycleStatus'>): InFlightKind {
+export function inFlightKind(
+  item: Pick<ActionQueueItem, 'chip' | 'docFixTaskStatus' | 'docFixPrLifecycleStatus' | 'docFixAutomation'>,
+): InFlightKind {
   switch (item.chip) {
     case 'FIXING_SPEC':
+      // The server-derived state wins when there is one: once a doc fix has
+      // merged the claim moves on, and the raw task/PR fields go empty.
+      switch (item.docFixAutomation) {
+        case 'fix_running': case 'follow_up_running': case 'follow_up_queued': return 'docfix-running';
+        case 'pr_open': return 'docfix-pr-open';
+        case 'pr_unknown': case 'recheck_dispatched': case 'recheck_queued': return 'docfix-rerun';
+      }
       if (item.docFixTaskStatus !== 'completed') return 'docfix-running';
       // Same test as the card: only a known-merged PR is "awaiting the re-run".
       if (item.docFixPrLifecycleStatus === 'merged' || item.docFixPrLifecycleStatus == null) return 'docfix-rerun';
@@ -107,23 +116,21 @@ export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefin
 
 export type HomeChatPlacement =
   | { kind: 'none' }
-  | { kind: 'member-first' }
-  | { kind: 'operator-after-fleet' }
+  | { kind: 'chat' }
   | { kind: 'setup'; reason: 'no_key' };
 
 /**
- * Where chat sits on Home. Available: a member's home opens on it, an
- * operator's keeps the fleet first with chat under it. Unavailable: nothing —
- * except an admin whose team turned chat on and has no key yet, who gets the
- * setup card. A team that never turned chat on sees today's Home, unchanged
- * (the capability is off by default, and turning it on is the opt-in).
+ * Where chat sits on Home. Available: the composer is the first thing on the
+ * page for everyone; operators get the fleet directly under it. Unavailable
+ * for want of a key: an admin gets the connect-a-provider card in its place.
+ * A team that switched chat off sees today's Home, unchanged.
  */
 export function homeChatPlacement(
-  audience: HomeAudience,
+  _audience: HomeAudience,
   avail: { available: boolean; reason: string | null; canManageTeamKeys: boolean } | null,
 ): HomeChatPlacement {
   if (!avail) return { kind: 'none' };
-  if (avail.available) return audience === 'member' ? { kind: 'member-first' } : { kind: 'operator-after-fleet' };
+  if (avail.available) return { kind: 'chat' };
   if (avail.reason === 'no_key' && avail.canManageTeamKeys) return { kind: 'setup', reason: 'no_key' };
   return { kind: 'none' };
 }

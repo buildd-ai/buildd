@@ -25,9 +25,9 @@ export function chatSetupCopy(reason: ChatSetupReason, canManage: boolean): { ti
           secondary: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Provider keys' },
         }
       : {
-          title: 'Add a team key to use chat',
-          body: 'Chat needs an Anthropic, OpenAI or OpenRouter API key. Subscription seats can’t run chat turns.',
-          cta: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Add a team key' },
+          title: 'Connect a model provider',
+          body: 'Chat is where your team starts missions and asks about the fleet. It runs on an Anthropic, OpenAI or OpenRouter API key, billed per token. Subscription seats can’t run chat turns.',
+          cta: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Connect a provider' },
           secondary: null,
         };
   }

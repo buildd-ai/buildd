@@ -11,6 +11,7 @@
  * Release Queue widget below this section (D6).
  */
 import Link from 'next/link';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import MissionCard from '@/components/missions/MissionCard';
 import type { MissionCardView } from '@/lib/mission-card-view';
 import { countActiveMissions, MISSION_CARD_VIEW_CAP } from '@/lib/mission-card-view';
@@ -106,7 +107,7 @@ export function HomeMissions({
       {missions.length === 0 ? (
         <div className="border border-dashed border-border-default p-6">
           <p className="text-[14px] text-text-secondary">
-            No missions yet. <Link href="/app/missions/new" className="text-accent-text hover:underline">Create one</Link>.
+            No missions yet. <NewWorkLink kind="mission" className="text-accent-text hover:underline">Create one</NewWorkLink>.
           </p>
         </div>
       ) : views.length === 0 ? (
@@ -140,9 +141,9 @@ export function HomeMissions({
             <Link href="/app/missions" className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-text-secondary min-w-0 [overflow-wrap:anywhere]">
               {homeMissionsMoreLabel(selection)}
             </Link>
-            <Link href="/app/missions/new" className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-accent-text shrink-0 pl-2">
+            <NewWorkLink kind="mission" className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-accent-text shrink-0 pl-2">
               + New Mission
-            </Link>
+            </NewWorkLink>
           </div>
         </div>
       )}

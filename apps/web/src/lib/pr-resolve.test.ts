@@ -32,7 +32,34 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
 }));
 
-const { resolveOpenWorkerForUser } = await import('./pr-resolve');
+const { resolveOpenWorkerForUser, resolveWorkerByPrNumberInWorkspaces } = await import('./pr-resolve');
+
+describe('resolveWorkerByPrNumberInWorkspaces', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindMany.mockReset();
+  });
+
+  it('403s an empty workspace set without querying workers', async () => {
+    const r = await resolveWorkerByPrNumberInWorkspaces([], 7, null);
+    expect(r).toEqual({ error: 'No workspaces found for account', status: 403 });
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
+
+  it('searches only the given workspaces', async () => {
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w', workspaceId: 'ws-a', status: 'completed' }]);
+    const r = await resolveWorkerByPrNumberInWorkspaces(['ws-a'], 7, null);
+    expect((r as any).id).toBe('w');
+    const where = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    expect(where.args[0]).toEqual({ type: 'inArray', a: 'workspaceId', b: ['ws-a'] });
+  });
+
+  it('404s a workspaceId outside the given set', async () => {
+    mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-a', name: 'a', repo: null }]);
+    const r = await resolveWorkerByPrNumberInWorkspaces(['ws-a'], 7, 'ws-b');
+    expect((r as any).status).toBe(404);
+  });
+});
 
 describe('resolveOpenWorkerForUser', () => {
   beforeEach(() => {

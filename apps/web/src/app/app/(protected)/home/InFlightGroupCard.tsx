@@ -11,7 +11,8 @@ import { IN_FLIGHT_GROUP_COPY, type InFlightKind } from './home-view';
 
 function entry(item: ActionQueueItem): { text: string; href: string | null } {
   if (item.chip === 'FIXING_SPEC' || item.chip === 'DISCREPANCY') {
-    return { text: item.specPath ?? item.taskTitle ?? 'spec', href: item.docFixTaskId ? `/app/tasks/${item.docFixTaskId}` : null };
+    return { text: item.specPath ?? item.taskTitle ?? 'spec', href: (item.docFixTaskId ?? item.mergedDocFixTaskId)
+      ? `/app/tasks/${item.docFixTaskId ?? item.mergedDocFixTaskId}` : null };
   }
   const text = item.taskTitle ?? (item.prNumber ? `PR #${item.prNumber}` : 'task');
   return { text, href: item.taskId ? actionCardTaskLink(item) : item.prUrl ?? null };

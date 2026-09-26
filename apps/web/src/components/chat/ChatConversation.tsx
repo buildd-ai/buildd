@@ -31,6 +31,7 @@ import ChatSetupCard from './ChatSetupCard';
 import { chatErrorLine, parseChatUnavailable } from './chat-errors';
 import { ObjectStoreProvider } from './objects/ObjectStoreProvider';
 import { parkPending, takePending } from './pending-message';
+import { composerHint, conversationHref, EMPTY_CHAT_ENTRY, type ChatEntry } from '@/lib/chat/entry-points';
 
 export { PENDING_KEY } from './pending-message';
 
@@ -50,6 +51,10 @@ export interface ChatConversationProps {
   aside?: ReactNode;
   emptyState?: ReactNode;
   focusRef?: BuilddObjectRef | null;
+  /** How the chat was opened (+ Mission, New task, Ask about…). Sent with every turn. */
+  entry?: ChatEntry;
+  /** "Fill in a form instead", until the first message. */
+  formFallbackHref?: string | null;
 }
 
 /** A saved message (DTO) → the UIMessage `useChat` holds. Pure. */
@@ -65,7 +70,7 @@ export function dtoToMessage(m: GetConversationResponse['messages'][number], vie
 export default function ChatConversation(props: ChatConversationProps) {
   const {
     conversationId, teamId, teamName, initialMessages, tier: initialTier, agent, workspaces, viewerName,
-    canManageTeamKeys, aside, emptyState, focusRef,
+    canManageTeamKeys, aside, emptyState, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null,
   } = props;
   const router = useRouter();
   const [title, setTitle] = useState(props.title);
@@ -78,8 +83,13 @@ export default function ChatConversation(props: ChatConversationProps) {
   const transport = useMemo(() => new DefaultChatTransport<UIMessage>({
     api: `/api/chat/${conversationId ?? 'new'}`,
     credentials: 'include',
-    prepareSendMessagesRequest: ({ messages }) => ({ body: { message: messages[messages.length - 1] } }),
-  }), [conversationId]);
+    prepareSendMessagesRequest: ({ messages }) => ({
+      body: {
+        message: messages[messages.length - 1],
+        ...(entry.intent || entry.about ? { entry: { intent: entry.intent, about: entry.about } } : {}),
+      },
+    }),
+  }), [conversationId, entry.intent, entry.about]);
 
   const { messages, sendMessage, status, error, stop, addToolApprovalResponse, setMessages, clearError } = useChat<UIMessage>({
     id: conversationId ?? undefined,
@@ -150,12 +160,12 @@ export default function ChatConversation(props: ChatConversationProps) {
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
       parkPending(conversation.id, text);
-      router.push(`/app/chat/${conversation.id}`);
+      router.push(conversationHref(conversation.id, entry));
     } catch (e) {
       setCreateError(chatErrorLine(e));
       setCreating(false);
     }
-  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router]);
+  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router, entry]);
 
   const onApproval = useCallback((id: string, approved: boolean, reason?: string) => {
     void addToolApprovalResponse({ id, approved, reason });
@@ -188,6 +198,10 @@ export default function ChatConversation(props: ChatConversationProps) {
         aside={aside}
         emptyState={emptyState}
         focusRef={focusRef}
+        focusOpensSheet={!entry.about}
+        composerPlaceholder={messages.length === 0 ? composerHint(entry) : undefined}
+        autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
+        formFallbackHref={formFallbackHref}
       />
     </ObjectStoreProvider>
   );

@@ -16,6 +16,7 @@ import {
   recordBestEffort,
   homeSubheading,
   groupInFlight,
+  inFlightKind,
   homeAudience,
   homeChatPlacement,
 } from './home-view';
@@ -172,6 +173,21 @@ describe('groupInFlight', () => {
     expect(keys).toEqual(['c', 'pr9', 'docfix-rerun']);
   });
 
+  it('groups by the server-derived automation state when there is one, not the raw task/PR fields', () => {
+    // The raw fields are empty for every one of these once the claim has
+    // moved on (docFixTaskId null), which would read them all as
+    // "Agents are rewriting these specs".
+    const auto = (key: string, docFixAutomation: ActionQueueItem['docFixAutomation']) =>
+      docFix(key, { docFixAutomation, docFixTaskId: null, docFixTaskStatus: null, docFixPrLifecycleStatus: null });
+    expect(inFlightKind(auto('a', 'recheck_dispatched'))).toBe('docfix-rerun');
+    expect(inFlightKind(auto('b', 'recheck_queued'))).toBe('docfix-rerun');
+    expect(inFlightKind(auto('c', 'follow_up_queued'))).toBe('docfix-running');
+    expect(inFlightKind(auto('d', 'follow_up_running'))).toBe('docfix-running');
+    expect(inFlightKind(auto('e', 'fix_running'))).toBe('docfix-running');
+    expect(inFlightKind(auto('f', 'pr_open'))).toBe('docfix-pr-open');
+    expect(inFlightKind(auto('g', 'pr_unknown'))).toBe('docfix-rerun');
+  });
+
   it('keeps every item: the grouped view never drops one', () => {
     const items = [docFix('a'), docFix('b'), item('FIXING_CI', 'x'), item('FIXING_CI', 'y'), item('RESOLVING', 'z')];
     const n = groupInFlight(items).reduce((acc, g) => acc + (g.kind === 'single' ? 1 : g.items.length), 0);
@@ -190,19 +206,19 @@ describe('homeAudience', () => {
   });
 });
 
-describe('homeChatPlacement — chat on Home, and the fallback', () => {
+describe('homeChatPlacement — chat first on Home, and the fallback', () => {
   const on = { available: true, reason: null, canManageTeamKeys: false };
-  it('available: a member opens on chat; an operator keeps the fleet first', () => {
-    expect(homeChatPlacement('member', on)).toEqual({ kind: 'member-first' });
-    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'operator-after-fleet' });
+  it('available: the composer is the first thing on Home for members and operators alike', () => {
+    expect(homeChatPlacement('member', on)).toEqual({ kind: 'chat' });
+    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'chat' });
   });
-  it('capability off (every team by default): Home is unchanged for everyone, admins included', () => {
+  it('switched off: Home is unchanged for everyone, admins included (they chose it)', () => {
     const off = { available: false, reason: 'capability_disabled', canManageTeamKeys: true };
     expect(homeChatPlacement('operator', off)).toEqual({ kind: 'none' });
     expect(homeChatPlacement('member', { ...off, canManageTeamKeys: false })).toEqual({ kind: 'none' });
     expect(homeChatPlacement('operator', null)).toEqual({ kind: 'none' });
   });
-  it('turned on but no key (an OAuth-only team): the admin gets the setup card, a member gets nothing', () => {
+  it('no key resolves: the admin gets the connect-a-provider card in place of chat, a member gets nothing', () => {
     expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true })).toEqual({ kind: 'setup', reason: 'no_key' });
     expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false })).toEqual({ kind: 'none' });
   });

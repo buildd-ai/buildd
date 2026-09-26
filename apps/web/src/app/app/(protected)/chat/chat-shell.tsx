@@ -18,6 +18,10 @@ import { homeAudience } from '../home/home-view';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { isUuid } from '@/lib/uuid';
 import type { BuilddObjectRef } from '@/components/chat/chat-contract';
+import { eq } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
+import { missions, tasks } from '@buildd/core/db/schema';
+import type { ChatAbout } from '@/lib/chat/entry-points';
 
 export interface ChatShellData {
   user: { id: string; name: string | null; email: string | null };
@@ -62,12 +66,12 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean }) {
+export function ChatUnavailable({ reason, canManage, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
       <ChatSetupCard reason={reason} canManage={canManage} />
-      <Link href="/app/missions/new" className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
-        File a mission instead →
+      <Link href={formHref} className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
+        {formHref.startsWith('/app/tasks/new') ? 'File a task instead →' : 'File a mission instead →'}
       </Link>
     </div>
   );
@@ -121,6 +125,31 @@ export function ConversationList({ items, currentId }: { items: readonly Convers
       </ul>
     </nav>
   );
+}
+
+/**
+ * "Ask about this mission/task": the object to dock, if it's in this team and
+ * one of its workspaces. Anything else docks nothing (the chat still opens).
+ */
+export async function loadAboutRef(
+  about: ChatAbout | null,
+  scope: { teamId: string; workspaceIds: readonly string[] },
+): Promise<BuilddObjectRef | null> {
+  if (!about) return null;
+  try {
+    if (about.kind === 'mission') {
+      const [m] = await db.select({ id: missions.id, title: missions.title, teamId: missions.teamId, workspaceId: missions.workspaceId })
+        .from(missions).where(eq(missions.id, about.id)).limit(1);
+      if (!m || m.teamId !== scope.teamId || (m.workspaceId && !scope.workspaceIds.includes(m.workspaceId))) return null;
+      return { kind: 'mission', id: m.id, workspaceId: m.workspaceId, title: m.title, fallbackText: `Mission: ${m.title}` };
+    }
+    const [t] = await db.select({ id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId })
+      .from(tasks).where(eq(tasks.id, about.id)).limit(1);
+    if (!t || !scope.workspaceIds.includes(t.workspaceId)) return null;
+    return { kind: 'task', id: t.id, workspaceId: t.workspaceId, title: t.title, fallbackText: `Task: ${t.title}` };
+  } catch {
+    return null;
+  }
 }
 
 /**
