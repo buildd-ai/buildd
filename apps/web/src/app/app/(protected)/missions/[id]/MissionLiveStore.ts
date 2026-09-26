@@ -37,13 +37,29 @@ export const MISSION_REFRESH_WINDOW_MS = 3_000;
 
 // ── Store ────────────────────────────────────────────────────────────────────
 
+export interface LiveMilestone {
+  label: string;
+  /** Epoch ms. */
+  ts: number;
+}
+
 export interface LiveTaskPatch {
   workerId: string | null;
   status: string | null;
   currentAction: string | null;
   /** The worker row's `updatedAt`, as published. */
   updatedAt: string | null;
+  /**
+   * One entry per distinct current action seen live, oldest first — the
+   * Board's milestone notches between server renders. The worker:progress
+   * payload carries no milestone list (it is capped for Pusher), so each new
+   * action line is the notch. A new worker on the task starts a fresh list.
+   */
+  milestones: readonly LiveMilestone[];
 }
+
+/** Live milestones kept per task; a fresh render supersedes them anyway. */
+export const LIVE_MILESTONES_MAX = 40;
 
 export type LiveSnapshot = Readonly<Record<string, LiveTaskPatch>>;
 
@@ -51,12 +67,13 @@ export interface MissionLiveStore {
   getSnapshot(): LiveSnapshot;
   subscribe(listener: () => void): () => void;
   /** Merge a patch for one task. Absent fields keep their previous value. */
-  patch(taskId: string, patch: Partial<LiveTaskPatch>): void;
+  patch(taskId: string, patch: Partial<Omit<LiveTaskPatch, 'milestones'>>): void;
   /** Drop every patch: a fresh server render supersedes them. */
   reset(): void;
 }
 
 const EMPTY: LiveSnapshot = Object.freeze({});
+const NO_MILESTONES: readonly LiveMilestone[] = Object.freeze([]);
 
 export function createMissionLiveStore(): MissionLiveStore {
   let snapshot: LiveSnapshot = EMPTY;
@@ -69,12 +86,22 @@ export function createMissionLiveStore(): MissionLiveStore {
       return () => { listeners.delete(listener); };
     },
     patch(taskId, p) {
-      const prev = snapshot[taskId] ?? { workerId: null, status: null, currentAction: null, updatedAt: null };
+      const prev = snapshot[taskId] ?? { workerId: null, status: null, currentAction: null, updatedAt: null, milestones: NO_MILESTONES };
+      const workerId = p.workerId !== undefined ? p.workerId : prev.workerId;
+      const currentAction = p.currentAction !== undefined ? p.currentAction : prev.currentAction;
+      const updatedAt = p.updatedAt !== undefined ? p.updatedAt : prev.updatedAt;
+      const sameWorker = !prev.workerId || !workerId || prev.workerId === workerId;
+      let milestones = sameWorker ? prev.milestones : NO_MILESTONES;
+      if (currentAction && (currentAction !== prev.currentAction || !sameWorker)) {
+        const ts = updatedAt ? Date.parse(updatedAt) : NaN;
+        milestones = [...milestones, { label: currentAction, ts: Number.isFinite(ts) ? ts : Date.now() }].slice(-LIVE_MILESTONES_MAX);
+      }
       const next: LiveTaskPatch = {
-        workerId: p.workerId !== undefined ? p.workerId : prev.workerId,
+        workerId,
         status: p.status !== undefined ? p.status : prev.status,
-        currentAction: p.currentAction !== undefined ? p.currentAction : prev.currentAction,
-        updatedAt: p.updatedAt !== undefined ? p.updatedAt : prev.updatedAt,
+        currentAction,
+        updatedAt,
+        milestones,
       };
       if (
         next.workerId === prev.workerId && next.status === prev.status
@@ -111,8 +138,8 @@ const asPayload = (data: unknown): EventPayload => (data && typeof data === 'obj
 
 export type MissionEventDecision =
   | { kind: 'ignore' }
-  | { kind: 'patch'; taskId: string; patch: Partial<LiveTaskPatch> }
-  | { kind: 'refresh'; taskId?: string; patch?: Partial<LiveTaskPatch> };
+  | { kind: 'patch'; taskId: string; patch: Partial<Omit<LiveTaskPatch, 'milestones'>> }
+  | { kind: 'refresh'; taskId?: string; patch?: Partial<Omit<LiveTaskPatch, 'milestones'>> };
 
 export interface MissionEventContext {
   missionId: string;
@@ -159,7 +186,7 @@ export function classifyMissionEvent(event: string, data: unknown, ctx: MissionE
       // row's PR state changed, which the store does not carry.
       if (!p.workerId) return { kind: 'refresh', taskId };
       const status = p.status ?? p.worker?.status ?? null;
-      const patch: Partial<LiveTaskPatch> = { workerId: p.workerId };
+      const patch: Partial<Omit<LiveTaskPatch, 'milestones'>> = { workerId: p.workerId };
       if (status) patch.status = status;
       if (typeof p.currentAction === 'string') patch.currentAction = p.currentAction;
       if (p.updatedAt !== undefined) patch.updatedAt = p.updatedAt ? String(p.updatedAt) : null;

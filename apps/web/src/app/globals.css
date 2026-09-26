@@ -560,3 +560,26 @@ select {
 [data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }
 [data-theme="light"] .glow-dot-error { --glow-color: rgba(192, 82, 74, 0.25); }
 [data-theme="light"] .glow-dot-info { --glow-color: rgba(80, 136, 176, 0.25); }
+
+/* ── Fleet surfaces: the mission Board and Lanes, and SlotLanes wherever it
+ * is reused. Every value derives from the tokens above; the hatching marks
+ * queued work and future time, never decoration. */
+:root, [data-theme="dark"] {
+  --fleet-border-mid: color-mix(in srgb, var(--text-primary) 28%, transparent);
+  --fleet-hatch: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+[data-theme="light"] {
+  --fleet-border-mid: color-mix(in srgb, var(--border-strong) 42%, transparent);
+  --fleet-hatch: color-mix(in srgb, var(--border-strong) 8%, transparent);
+}
+:root {
+  --fleet-faint: color-mix(in srgb, var(--text-muted) 70%, var(--surface-1));
+  --fleet-ok-soft: color-mix(in srgb, var(--status-success) 14%, transparent);
+  --fleet-err-soft: color-mix(in srgb, var(--status-error) 16%, transparent);
+}
+@layer components {
+  .fleet-hatch { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 2px, transparent 2px 6px); }
+  .fleet-hatch-future { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 1px, transparent 1px 7px); }
+  .fleet-hatch-accent { background-image: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 4px); }
+  .fleet-hatch-ok { background-image: repeating-linear-gradient(90deg, var(--fleet-ok-soft) 0 3px, transparent 3px 5px); }
+}
