@@ -80,7 +80,8 @@ export function refsFromCall(call: ApiCall): BuilddObjectRef[] {
   const p = call.path;
   const out: Array<BuilddObjectRef | null> = [];
 
-  if (p === '/api/tasks') out.push(...listOf(call.body, 'tasks').map(taskRef));
+  if (p === '/api/tasks' && call.method === 'POST' && isObj(call.body)) out.push(taskRef(call.body));
+  else if (p === '/api/tasks') out.push(...listOf(call.body, 'tasks').map(taskRef));
   else if (/^\/api\/tasks\/[^/]+$/.test(p) && isObj(call.body)) {
     const task = isObj(call.body.task) ? call.body.task : call.body;
     out.push(...questionRefsFromWorkers(task), taskRef(task), ...prRefsFromWorkers(task));

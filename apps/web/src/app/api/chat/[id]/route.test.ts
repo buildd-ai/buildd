@@ -17,6 +17,7 @@ mock.module('@/lib/chat/session', () => ({
   turnUserFor: async () => ({ id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' }),
   workspaceForConversation: async () => null,
   linkMissionToConversation: async () => {},
+  linkedMissionFor: async () => null,
 }));
 mock.module('@/lib/chat/store', () => ({
   // Conversations are personal: anyone else's id resolves to nothing.

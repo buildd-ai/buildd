@@ -1446,6 +1446,50 @@ describe('PATCH /api/tasks/[id]', () => {
     expect((await response.json()).error).toContain('existing looped task');
   });
 
+  describe('hold / resume (held)', () => {
+    const openTask = (context: Record<string, unknown> = { model: 'x' }) => ({
+      id: TASK_ID, title: 'checkout', status: 'assigned', workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, context,
+    });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
+    it('held: true stamps context.heldBy (who, when, why) and keeps the rest of the context', async () => {
+      mockTasksFindFirst.mockResolvedValue(openTask());
+      const sets = capture();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: true, heldReason: 'until the rounding decision' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBe('x');
+      expect(sets[0].context.heldBy).toMatchObject({ userId: 'user-123', reason: 'until the rounding decision' });
+      expect(typeof sets[0].context.heldBy.at).toBe('string');
+    });
+
+    it('held: false removes the hold', async () => {
+      mockTasksFindFirst.mockResolvedValue(openTask({ model: 'x', heldBy: { at: 'then', userId: 'u' } }));
+      const sets = capture();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: false } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0].context).toEqual({ model: 'x' });
+    });
+
+    it('refuses a non-boolean, and holding a finished task', async () => {
+      mockTasksFindFirst.mockResolvedValue(openTask());
+      capture();
+      expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: 'yes' } }), TASK_ID)).status).toBe(400);
+      mockTasksFindFirst.mockResolvedValue({ ...openTask(), status: 'completed' });
+      expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: true } }), TASK_ID)).status).toBe(400);
+    });
+  });
+
   describe('resultSummary correction', () => {
     it('corrects the stored summary on a completed task and stamps an audit trail', async () => {
       const mockTask = {

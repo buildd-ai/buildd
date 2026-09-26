@@ -238,8 +238,94 @@ export const CHAT_READ_OPS: Readonly<Record<string, readonly string[]>> = {
  * `''` is the single op of a tool without sub-actions.
  */
 export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  manage_missions: ['create'],
+  create_task: [''],
+  update_task: [''],
+  correct_task_result: [''],
+  approve_plan: [''],
+  reject_plan: [''],
+  manage_missions: ['create', 'update', 'arm', 'link_task', 'unlink_task', 'evaluate', 'delete'],
+  manage_initiatives: ['create', 'update', 'link_mission', 'unlink_mission', 'delete'],
+  link_tracker: [''],
+  adjudicate_discrepancy: [''],
+  promote_discrepancy: [''],
+  send_agent_message: [''],
+  trigger_release: [''],
+  consolidate_knowledge: [''],
+  memory_delete: [''],
+  create_schedule: [''],
+  update_schedule: [''],
+  pause_schedules: [''],
+  delete_schedule: [''],
+  create_artifact: [''],
+  manage_workspaces: ['create', 'update', 'create_repo', 'init'],
+  manage_watched_projects: ['create', 'update', 'run', 'delete'],
+  register_skill: [''],
+  update_skill: [''],
+  delete_skill: [''],
+  manage_experiments: ['create', 'update', 'start', 'pause', 'conclude'],
+  answer_question: [''],
+  hold_task: [''],
+  learn: [''],
 };
+
+/**
+ * What an approval card shows for a proposed write: exactly what changes, as
+ * before → after. Built on the server from the target's current state (never
+ * from the model's prose) and carried in the approval request's reason
+ * (`approval.requestReason` on the part, prefixed with CHAT_PREVIEW_PREFIX).
+ * The stored copy is what the write is checked against: if the target's
+ * before-state no longer matches `fingerprint` when the approval arrives,
+ * nothing runs.
+ */
+export interface ChatApprovalPreview {
+  v: 1;
+  /** "Hold task", "Message the agent on", "Edit mission" */
+  verb: string;
+  target: {
+    kind: string;
+    id: string;
+    /** "checkout · Stripe in currency" */
+    label: string;
+    /** "running on dune", "waiting for input", "held" */
+    detail?: string;
+    workspaceId?: string | null;
+  };
+  /** `before: null` = added; `after: null` = removed. */
+  changes: Array<{ label: string; before: string | null; after: string | null }>;
+  /** One line on side effects: "The running agent is told to stop at a safe point." */
+  note?: string;
+  /** Admin writes: the user must type this (the target's name) to confirm. */
+  confirmText?: string;
+  fingerprint: string;
+}
+
+export const CHAT_PREVIEW_PREFIX = 'buildd-preview:';
+
+export function encodeApprovalPreview(p: ChatApprovalPreview): string {
+  return `${CHAT_PREVIEW_PREFIX}${JSON.stringify(p)}`;
+}
+
+export function parseApprovalPreview(reason: unknown): ChatApprovalPreview | null {
+  if (typeof reason !== 'string' || !reason.startsWith(CHAT_PREVIEW_PREFIX)) return null;
+  try {
+    const p = JSON.parse(reason.slice(CHAT_PREVIEW_PREFIX.length)) as ChatApprovalPreview;
+    return p && p.v === 1 && typeof p.verb === 'string' && p.target && Array.isArray(p.changes) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** "Hold task: checkout · Stripe in currency (running on dune)" */
+export function approvalHeadline(p: ChatApprovalPreview): string {
+  return `${p.verb}: ${p.target.label}${p.target.detail ? ` (${p.target.detail})` : ''}`;
+}
+
+/** "Goal criteria: + JPY e2e passes", "Status: running → cancelled" */
+export function approvalChangeLine(c: ChatApprovalPreview['changes'][number]): string {
+  if (c.before === null && c.after !== null) return `${c.label}: + ${c.after}`;
+  if (c.after === null && c.before !== null) return `${c.label}: − ${c.before}`;
+  return `${c.label}: ${c.before ?? '—'} → ${c.after ?? '—'}`;
+}
 
 /** Is this tool call a read (runs at once, grouped as a read-only row)? */
 export function chatToolIsRead(tool: string, input: unknown): boolean {

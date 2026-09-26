@@ -12,6 +12,7 @@ import {
 } from '@/lib/chat/store';
 import {
   linkMissionToConversation,
+  linkedMissionFor,
   loadTeamChatSettings,
   requireChatCaller,
   turnUserFor,
@@ -122,6 +123,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         getWorkspaceId: async () => defaultWorkspaceId,
         knowledgeStore,
         embedder,
+        // Admin knowledge ops (memory_delete, consolidate_knowledge) act on the
+        // default workspace's team store, and only while it's in reach.
+        getMemoryClient: async () => (defaultWorkspaceId ? getMemoryStoreForTeam(defaultWorkspaceId, conv.teamId) : null),
         // Level gates are token-scoped; the routes enforce the user's real
         // authorization, the chat allowlist bounds the actions, and `reach`
         // bounds the workspaces (this team's, never a sensitive one).
@@ -129,6 +133,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         appBaseUrl: req.nextUrl.origin,
       },
       linkMission: missionId => linkMissionToConversation(missionId, conv.id, conv.teamId),
+      linkedMissionId: () => linkedMissionFor(conv.id, conv.teamId),
       later: fn => after(fn),
       autoTitle: (c, messages) => autoTitleConversation(c, messages, user.id),
     },
