@@ -1422,7 +1422,7 @@ export default async function MissionDetailPage({
       endedAt={boardModel.endedAt}
     >
       {content}
-      <div data-testid="mission-board-footer" className="mt-10 max-w-3xl">
+      <div data-testid="mission-board-footer" className="mt-10">
         {orchestratorRow}
         {footerRows}
       </div>

@@ -188,6 +188,29 @@ describe('FleetStrip — demo polish regressions', () => {
   });
 });
 
+describe('FleetStrip — a just-claimed slot', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://dune.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) };
+  const f = buildFleetSnapshot([hb], [
+    { id: 'c', accountId: 'a', runner: 'http://dune.local:1', status: 'running', startedAt: new Date(NOW - 10_000), task: { id: 'tc', title: 'feat(checkout): Stripe in currency', missionId: 'm1' } },
+    { id: 'd', accountId: 'a', runner: 'http://dune.local:1', status: 'running', startedAt: min(6), task: { id: 'td', title: 'feat(settings): currency picker', missionId: 'm1' } },
+  ], { now: NOW });
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+  const slots = html.split('data-testid="fleet-slot"').slice(1);
+
+  it('says "claimed", not "— · 0m", and draws no empty progress track', () => {
+    const claimed = slots.find(s => s.includes('checkout')) ?? '';
+    expect(claimed).toContain('data-testid="fleet-slot-claimed"');
+    expect(claimed).not.toContain('—');
+    expect(claimed).not.toContain('max-w-[150px]');
+  });
+
+  it('with no progress reported, shows only the elapsed time', () => {
+    const running = slots.find(s => s.includes('currency picker')) ?? '';
+    expect(running).toContain('>6m<');
+    expect(running).not.toContain('—');
+  });
+});
+
 describe('NeedsYouStack — nothing needs you, but work is in flight', () => {
   // Regression: the stack's only child was the action queue holding IN FLIGHT
   // cards, so `hasChildren` suppressed the empty state and the NEEDS YOU

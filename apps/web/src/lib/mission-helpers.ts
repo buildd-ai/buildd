@@ -1,4 +1,5 @@
 import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
+import { STATUS_TONE_CHIP, missionStateTone } from './status-tone';
 
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
@@ -343,27 +344,28 @@ export function deriveMissionDisplayState(opts: {
   return 'active';
 }
 
+const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
+  held: 'HELD',
+  blocked: 'BLOCKED',
+  // "STALLED", not "IDLE" (docs/design/mission-feed-mobile-continuity.md, one
+  // vocabulary): the Home/list health chip already said STALLED for the same
+  // condition — open work, no live worker — so the detail header reading IDLE
+  // made one mission look like two states. `MissionHealth`'s scheduling
+  // `stalled` never renders as this chip, so the word no longer collides.
+  stalled: 'STALLED',
+  running: 'RUNNING',
+  failed: 'FAILED',
+  review: 'READY FOR REVIEW',
+  awaiting_verification: 'AWAITING VERIFICATION',
+  waiting_decision: 'AWAITING DECISION',
+  manual: 'MANUAL',
+  complete: 'COMPLETE',
+  active: 'AUTO',
+};
+
+/** Label + chip classes. The colour comes from the one mapping (`status-tone.ts`): RUNNING is orange everywhere. */
 export function getMissionStateChip(state: MissionDisplayState): { label: string; cls: string } {
-  switch (state) {
-    case 'held':    return { label: 'HELD',             cls: 'border-status-warning text-status-warning' };
-    case 'blocked': return { label: 'BLOCKED',          cls: 'border-status-error text-status-error' };
-    // "STALLED", not "IDLE" (docs/design/mission-feed-mobile-continuity.md, one
-    // vocabulary): the Home/list health chip already said STALLED for the same
-    // condition — open work, no live worker — so the detail header reading IDLE
-    // made one mission look like two states. `MissionHealth`'s scheduling
-    // `stalled` never renders as this chip, so the word no longer collides.
-    case 'stalled': return { label: 'STALLED',          cls: 'border-status-warning text-status-warning' };
-    case 'running': return { label: 'RUNNING',          cls: 'border-status-success text-status-success' };
-    case 'failed':  return { label: 'FAILED',           cls: 'border-status-error text-status-error' };
-    case 'review':  return { label: 'READY FOR REVIEW', cls: 'border-status-success text-status-success' };
-    case 'awaiting_verification':
-                    return { label: 'AWAITING VERIFICATION', cls: 'border-status-warning text-status-warning' };
-    case 'waiting_decision':
-                    return { label: 'AWAITING DECISION', cls: 'border-status-warning text-status-warning' };
-    case 'manual':  return { label: 'MANUAL',           cls: 'border-border-default text-text-muted' };
-    case 'complete':return { label: 'COMPLETE',         cls: 'border-border-default text-text-muted' };
-    case 'active':  return { label: 'AUTO',             cls: 'border-status-info text-status-info' };
-  }
+  return { label: MISSION_STATE_LABEL[state], cls: STATUS_TONE_CHIP[missionStateTone(state)] };
 }
 
 /**

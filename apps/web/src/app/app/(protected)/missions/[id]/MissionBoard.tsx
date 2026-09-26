@@ -262,14 +262,25 @@ function Tile({ task: t, model, now, span, link, popLeft }: { task: BoardTask; m
       </div>
     );
   } else {
-    const showStrip = t.status === 'running' || t.status === 'fixing';
-    body = (
-      <div className="flex min-h-[18px] items-center gap-2.5 font-mono text-[12px] md:text-[11.5px] text-text-muted">
-        {showStrip ? <ElapsedStrip task={t} now={now} span={span} /> : <span className="flex-1" />}
-        {t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null}
-        {showStrip && t.startedAt != null && <span className="font-medium tabular-nums text-text-secondary">{formatAge(now - t.startedAt)}</span>}
+    const live = t.status === 'running' || t.status === 'fixing';
+    const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
+    // A live tile says what it is doing (the current action, else the elapsed
+    // strip) and for how long — or nothing: no empty second line under the title.
+    const lead = live && t.currentAction
+      ? <span data-testid="board-tile-action" className="min-w-0 flex-1 truncate text-text-secondary">{t.currentAction}</span>
+      : live && t.startedAt != null
+        ? <ElapsedStrip task={t} now={now} span={span} />
+        : null;
+    const elapsed = live && t.startedAt != null
+      ? <span className="font-medium tabular-nums text-text-secondary">{formatAge(now - t.startedAt)}</span>
+      : null;
+    body = lead || chip || elapsed || !live ? (
+      <div data-testid="board-tile-body" className="flex min-h-[18px] items-center gap-2.5 font-mono text-[12px] md:text-[11.5px] text-text-muted">
+        {lead ?? <span className="flex-1" />}
+        {chip}
+        {elapsed}
       </div>
-    );
+    ) : null;
   }
 
   return (
@@ -464,22 +475,30 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 
 function CompletionRecord({ model, text }: { model: MissionBoardModel; text: string | null }) {
   const r = model.record;
-  const stat = (label: string, value: string, testId: string) => (
-    <div data-testid={testId} className="border-border-default px-[18px] py-3.5 md:border-l">
+  // The numbers sit in one 2×2 block beside the prose, so each tile is about
+  // half the prose's height instead of a full-height column with a big empty
+  // area under a single number.
+  const stat = (label: string, value: string, testId: string, i: number) => (
+    <div
+      data-testid={testId}
+      className={`flex flex-col justify-center gap-2 border-border-default px-[18px] py-3 ${i % 2 ? 'border-l' : ''} ${i >= 2 ? 'border-t' : ''}`}
+    >
       <SectionLabel>{label}</SectionLabel>
-      <div className="mt-2.5 font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{value}</div>
+      <div className="font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{value}</div>
     </div>
   );
   return (
-    <section data-testid="mission-completion-record" className="mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.4fr_repeat(4,0.5fr)]">
-      <div className="col-span-2 px-[18px] py-3.5 md:col-span-1">
+    <section data-testid="mission-completion-record" className="mt-[18px] grid grid-cols-1 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.4fr_1fr]">
+      <div className="px-[18px] py-3.5">
         <SectionLabel className="!text-status-success">Completion record</SectionLabel>
         {text && <p className="mt-2 font-mono text-[12.5px] leading-[1.55] text-text-secondary whitespace-pre-line">{text}</p>}
       </div>
-      {stat('PRs merged', String(r.prsMerged), 'record-prs')}
-      {stat('Lines', `+${r.linesAdded.toLocaleString()}`, 'record-lines')}
-      {stat('CI auto-fix', String(r.ciFixes), 'record-ci-fixes')}
-      {stat('Your decisions', String(r.decisions), 'record-decisions')}
+      <div data-testid="record-stats" className="grid grid-cols-2 border-t border-border-default md:border-l md:border-t-0">
+        {stat('PRs merged', String(r.prsMerged), 'record-prs', 0)}
+        {stat('Lines', `+${r.linesAdded.toLocaleString()}`, 'record-lines', 1)}
+        {stat('CI auto-fix', String(r.ciFixes), 'record-ci-fixes', 2)}
+        {stat('Your decisions', String(r.decisions), 'record-decisions', 3)}
+      </div>
     </section>
   );
 }

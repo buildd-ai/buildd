@@ -99,18 +99,20 @@ const ROW_PX = SLOT_LANE_ROW_PX;
 /** Below this share of the axis a live bar's label goes beside it. */
 const OUTSIDE_LABEL_FRACTION = 0.06;
 /**
- * Below this share of the axis an open bar cannot hold its label box (chip +
- * a word + padding) without clipping it to "mon" / "rese". It draws as a
- * short marker ending at NOW; the label goes beside it when there is room,
- * else into its tooltip — the same marker/hover rule as a finished `dot`.
+ * Below this share of the axis a bar cannot hold its label box (chip + a word
+ * + padding) without clipping it to "mon" / "rese", or — finished — to an
+ * empty box with half a tick in it. It draws as the short-run marker: a thin
+ * bar with no content (an open one ends at NOW, a finished one sits at its own
+ * start). The label goes beside it, left, when there is room, else into its
+ * tooltip.
  */
-const SHORT_LIVE_FRACTION = 0.1;
+const SHORT_FRACTION = 0.1;
 /**
- * Below this share of the axis a finished bar has no room for a single
- * character, so it draws as a marker (label in its tooltip) instead of an
- * empty box with a tick in it.
+ * An open bar younger than this is a claim the runner has not really started:
+ * as a bar it would be a sliver under the NOW line with its label floating
+ * beside nothing. It draws as a marker just left of NOW, labelled "claimed".
  */
-const DOT_FRACTION = 0.03;
+const CLAIMED_MS = 60_000;
 
 const TONE_CLASS: Record<SlotLaneTone, string> = {
   live: 'border-accent bg-accent-soft',
@@ -254,37 +256,51 @@ export default function SlotLanes({
               // inside the bar and truncates.
               const prevEnd = bars.slice(0, bi).reduce((mx, p) => Math.max(mx, drawEnd(p)), from);
               const gap = startFrac - axisFraction(prevEnd, from, to);
-              const short = b.end == null && frac < SHORT_LIVE_FRACTION;
-              const outside = short && gap >= OUTSIDE_LABEL_FRACTION;
-              const dot = b.end != null && frac < DOT_FRACTION;
+              const claimed = b.end == null && b.tone === 'live' && end - b.start < CLAIMED_MS;
+              const short = !claimed && frac < SHORT_FRACTION;
+              // A finished marker's label stays in its tooltip: squeezed into the
+              // gap before it, it read as a clipped "pla…" beside an empty box.
+              const outside = short && b.end == null && gap >= OUTSIDE_LABEL_FRACTION;
+              const tick = short && b.end != null;
               const tooltip = [b.label, b.title && b.title !== b.label ? b.title : null].filter(Boolean).join(' · ');
-              const shortTitle = [b.prefix, b.scope, b.label].filter(Boolean).join(' ');
+              const shortTitle = b.end == null
+                ? [b.prefix, b.scope, b.label].filter(Boolean).join(' ')
+                : tooltip;
               const isActive = active?.id === b.id || (!!b.group && activeGroups.has(b.group));
-              const content = dot || short ? null : (
+              const content = short || claimed ? null : (
                 <>
                   <BarLabel bar={b} />
                   {b.endMark && <span className={`ml-auto shrink-0 text-[11px] font-bold ${END_MARK[b.endMark].cls}`}>{END_MARK[b.endMark].glyph}</span>}
                 </>
               );
-              const cls = dot
-                ? `absolute top-[20px] z-[1] block h-2.5 w-2.5 -translate-x-1/2 border-[1.5px] ${b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-border-strong bg-surface-3'} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
-                : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
-              // A short open bar is anchored by its right edge at NOW: a box
-              // has a minimum drawn width, and anchored at its start a
-              // just-claimed bar poked past the NOW line into the future.
-              const style = dot
-                ? { left: pct((b.start + end) / 2) }
-                : short
-                  ? { right: `${(1 - axisFraction(end, from, to)) * 100}%`, width: `max(calc(${width(b.start, end)} - 2px), 6px)` }
-                  : { left: pct(b.start), width: `calc(${width(b.start, end)} - 2px)` };
+              const tickTone = b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted';
+              const cls = claimed
+                ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${isActive ? 'shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`
+                : tick
+                  // The short-run marker: a solid tick at the run's start, never an empty box.
+                  ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
+                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
+              const nowRight = (1 - axisFraction(end, from, to)) * 100;
+              // An open bar is anchored by its right edge at NOW: a box has a
+              // minimum drawn width, and anchored at its start a fresh bar
+              // poked past the NOW line into the future. A claim sits just left
+              // of the line, which would otherwise cover it.
+              const style = claimed
+                ? { right: `calc(${nowRight}% + 4px)` }
+                : short && b.end == null
+                  ? { right: `${nowRight}%`, width: `max(calc(${width(b.start, end)} - 2px), 6px)` }
+                  : tick
+                    ? { left: pct(b.start) }
+                    : { left: pct(b.start), width: `calc(${width(b.start, end)} - 2px)` };
+              const claimedTitle = `${[b.prefix, b.scope, b.label].filter(Boolean).join(' ')} · claimed`;
               const common = {
                 'data-testid': 'lane-bar',
                 'data-bar-id': b.id,
                 'data-bar-group': b.group ?? b.id,
                 'data-tone': b.tone,
-                ...(dot ? { 'data-shape': 'dot', 'aria-label': tooltip } : {}),
                 ...(short ? { 'data-shape': 'short', 'aria-label': shortTitle } : {}),
-                title: dot ? tooltip : short ? shortTitle : b.title,
+                ...(claimed ? { 'data-shape': 'claimed', 'aria-label': claimedTitle } : {}),
+                title: claimed ? claimedTitle : short ? shortTitle : b.title,
                 className: cls,
                 style,
                 onMouseEnter: () => hover(b),
@@ -297,8 +313,20 @@ export default function SlotLanes({
                   ) : (
                     <span {...common}>{content}</span>
                   )}
-                  {b.end == null && b.tone === 'live' && (
+                  {b.end == null && b.tone === 'live' && !claimed && (
                     <span aria-hidden="true" className="absolute top-[7px] z-[2] h-9 w-1 animate-status-pulse bg-accent" style={{ left: `calc(${pct(end)} - 4px)` }} />
+                  )}
+                  {claimed && (
+                    // Beside the marker: the full label when the slot was free
+                    // long enough to hold it, else just the word.
+                    <span
+                      data-testid="lane-claimed-label"
+                      className="pointer-events-none absolute top-[9px] z-[7] flex h-8 items-center justify-end gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[11.5px]"
+                      style={{ right: `calc(${nowRight}% + 18px)`, ...(gap >= OUTSIDE_LABEL_FRACTION ? { maxWidth: `calc(${gap * 100}% - 24px)` } : {}) }}
+                    >
+                      {gap >= OUTSIDE_LABEL_FRACTION && <BarLabel bar={b} />}
+                      <span className="shrink-0 bg-card px-1 text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</span>
+                    </span>
                   )}
                   {b.tone === 'waiting' && (
                     <span aria-hidden="true" className="absolute top-[9px] z-[5] grid h-8 w-[22px] place-items-center bg-accent text-[13px] font-bold text-white" style={{ left: `calc(${pct(end)} - 22px)` }}>?</span>
