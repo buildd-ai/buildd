@@ -299,6 +299,7 @@ jobs:
             docker exec ${{ vars.TEST_MACHINE_CONTAINER }} bash -c '
               export PATH=$HOME/.local/bin:$HOME/.bun/bin:$PATH
               screen -X -S buildd-web quit 2>/dev/null || true
+              : > /tmp/buildd-web.log
               screen -dmS buildd-web bash -c "
                 export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
                 set -a; source /tmp/buildd-ci/.env.test; set +a

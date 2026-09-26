@@ -7,7 +7,7 @@
     "build": "bun run db:migrate && next build",
     "build:only": "next build",
     "db:migrate": "bun run ../../packages/core/db/migrate.ts",
-    "start": "bun --bun next start",
+    "start": "next start",
     "lint": "next lint",
     "doctor": "bun run scripts/doctor.ts",
     "doctor:vercel": "bun run scripts/doctor.ts --vercel",
