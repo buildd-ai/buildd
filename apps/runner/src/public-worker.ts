@@ -71,6 +71,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   subagentTasks: true,
   subagentTasksObservedCount: true,
   worktreePath: true,
+  sessionCwd: true,
   worktreeBaseRef: true,
   envDegraded: true,
   checkpoints: true,

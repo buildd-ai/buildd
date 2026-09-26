@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -1019,6 +1019,10 @@ export const tasks = pgTable('tasks', {
   externalIssueId: text('external_issue_id'),
   externalIssueUrl: text('external_issue_url'),
   title: text('title').notNull(),
+  // Short 2–4 word display label (scope chip + label). Supplied by whoever files
+  // the task, else filled by the creation-time classifier. NULL on legacy rows —
+  // read it through taskDisplayLabel (packages/core/task-label.ts), never raw.
+  label: varchar('label', { length: 48 }),
   description: text('description'),
   context: jsonb('context').default({}).$type<Record<string, unknown>>(),
   status: text('status').default('pending').notNull(),
@@ -1347,6 +1351,42 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   specPathIdx: index('spec_discrepancies_spec_path_idx').on(t.workspaceId, t.specPath),
 }));
 
+/**
+ * One answer choice on a worker's open question. The runner forwards the SDK's
+ * AskUserQuestion options as objects; older rows and hand-written callers still
+ * send bare strings, so readers must accept both.
+ */
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean };
+
+export type WorkerWaitingFor = {
+  type: string;
+  prompt: string;
+  options?: WaitingForOption[];
+  toolUseId?: string;
+};
+
+/**
+ * One entry of `workers.milestones`, as the runner and the progress API write it.
+ * `label` is optional because sensitive workspaces strip it server-side. Action
+ * milestones may carry structured tool data (runner >= structured-milestones);
+ * older rows carry only the label, so readers must degrade to parsing it.
+ */
+export type WorkerMilestone =
+  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: string; label?: string; ts: number }
+  | {
+      type: 'action';
+      label?: string;
+      ts: number;
+      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+      path?: string;
+      add?: number;
+      rem?: number;
+      cmd?: string;
+      count?: number;
+    };
+
 export const workers = pgTable('workers', {
   id: uuid('id').primaryKey().defaultRandom(),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
@@ -1356,7 +1396,7 @@ export const workers = pgTable('workers', {
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
   status: text('status').default('idle').notNull(),
-  waitingFor: jsonb('waiting_for').$type<{ type: string; prompt: string; options?: string[] } | null>(),
+  waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
@@ -1381,7 +1421,7 @@ export const workers = pgTable('workers', {
   // Current action/status line from runner
   currentAction: text('current_action'),
   // Milestones stored as JSON array
-  milestones: jsonb('milestones').default([]).$type<Array<{ label: string; timestamp: number }>>(),
+  milestones: jsonb('milestones').default([]).$type<WorkerMilestone[]>(),
   // PR tracking
   prUrl: text('pr_url'),
   prNumber: integer('pr_number'),
@@ -1997,6 +2037,22 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // from a merged PR alone, instead of requiring SSH into the host.
   runnerCommit: text('runner_commit'),
   runnerVersion: text('runner_version'),
+  // The same live update-state the runner reports on its own local
+  // /api/version — currentCommit is the commit the RUNNING process loaded
+  // (cached at boot / last successful self-update), diskCommit is a fresh
+  // `git rev-parse HEAD` read at heartbeat time; a mismatch (commitDrift)
+  // means something rewrote the on-disk tree without restarting the runner.
+  // All nullable: absent on a runner build that predates this field, or on a
+  // heartbeat whose disk read failed — null means "unknown", not "clean".
+  currentCommit: text('current_commit'),
+  diskCommit: text('disk_commit'),
+  commitDrift: boolean('commit_drift'),
+  updating: boolean('updating'),
+  updateAvailable: boolean('update_available'),
+  // The branch this install tracks (BUILDD_BRANCH) — already sent on every
+  // heartbeat to resolve latestCommit (see the heartbeat route), but not
+  // persisted until now, so GET /api/workers/active can show it per runner.
+  trackedBranch: text('tracked_branch'),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

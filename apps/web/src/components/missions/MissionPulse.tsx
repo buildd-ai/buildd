@@ -30,11 +30,13 @@ export const PULSE_VARIANT: Record<PulseVariant, { band: string; bar: string }> 
   context: { band: '', bar: 'h-2' },
 };
 
-type Token = (typeof PULSE_STATE_TOKEN)[PulseState];
+/** Pulse-state tokens plus `info`, which PR-state glyphs beside the pulse use (`PR_STATE_TOKEN`). */
+type Token = (typeof PULSE_STATE_TOKEN)[PulseState] | 'info';
 
 /** Token → fill class. The only place pulse colour is spelled. */
 export const PULSE_TOKEN_BG: Record<Token, string> = {
   accent: 'bg-accent',
+  warning: 'bg-status-warning',
   info: 'bg-status-info',
   border: 'bg-border-default',
   success: 'bg-status-success',
@@ -44,6 +46,7 @@ export const PULSE_TOKEN_BG: Record<Token, string> = {
 /** Token → text class, for glyphs that sit beside the pulse (rows, captions). */
 export const PULSE_TOKEN_TEXT: Record<Token, string> = {
   accent: 'text-accent-text',
+  warning: 'text-status-warning',
   info: 'text-status-info',
   border: 'text-text-muted',
   success: 'text-status-success',
@@ -176,6 +179,7 @@ export interface MissionPulseProps {
 const PULSE_TOKEN_TRACK: Record<Token, string> = {
   accent: 'bg-accent/30',
   info: 'bg-status-info/30',
+  warning: 'bg-status-warning/30',
   border: 'bg-border-default',
   success: 'bg-status-success/30',
   error: 'bg-status-error/30',
@@ -290,7 +294,7 @@ export default function MissionPulse({
               <span
                 data-testid="mission-pulse-ghost"
                 aria-hidden="true"
-                className="absolute inset-y-0 right-0 w-1/3 bg-status-info animate-pulse motion-reduce:animate-none"
+                className={`absolute inset-y-0 right-0 w-1/3 ${PULSE_TOKEN_BG[PULSE_STATE_TOKEN.moving]} animate-pulse motion-reduce:animate-none`}
               />
             )}
             {inView && <span aria-hidden="true" className="absolute inset-x-0 -bottom-1 h-0.5 bg-text-primary" />}

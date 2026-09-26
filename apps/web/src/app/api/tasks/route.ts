@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, artifacts } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
@@ -15,6 +15,7 @@ import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
+import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
@@ -45,6 +46,7 @@ import {
 // registry in here would add a DB dependency to task creation for a constant.
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
+import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -185,6 +187,7 @@ export async function GET(req: NextRequest) {
           id: tasks.id,
           workspaceId: tasks.workspaceId,
           title: tasks.title,
+          label: tasks.label,
           status: tasks.status,
           priority: tasks.priority,
           category: tasks.category,
@@ -192,22 +195,7 @@ export async function GET(req: NextRequest) {
           // Deliverable attribution — only worth the extra columns/join in audit
           // mode, where the whole point is telling a real completion from a
           // fallback summary with nothing shipped.
-          ...(isTerminalAudit ? {
-            updatedAt: tasks.updatedAt,
-            summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
-            // Audit mode reaches the entire terminal history, unbounded by the
-            // 24h window every other query path stays inside — including tasks
-            // completed before this field's shape was settled. A bare ::int
-            // cast throws and kills the whole query the moment one historical
-            // row has a non-numeric value here, so guard it instead of trusting
-            // the shape.
-            prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
-            hasArtifact: sql<boolean>`EXISTS (
-              SELECT 1 FROM ${workers} w
-              JOIN ${artifacts} a ON a.worker_id = w.id
-              WHERE w.task_id = ${tasks.id}
-            )`,
-          } : {}),
+          ...(isTerminalAudit ? terminalAuditFields : {}),
         })
         .from(tasks)
         .where(where)
@@ -289,6 +277,7 @@ export async function GET(req: NextRequest) {
             creationSource: true,
             parentTaskId: true,
             category: true,
+            label: true,
             project: true,
             outputRequirement: true,
             missionId: true,
@@ -379,6 +368,8 @@ export async function POST(req: NextRequest) {
     const {
       workspaceId: rawWorkspaceId,
       title,
+      // Short 2–4 word display label; the classifier below fills it when omitted.
+      label: rawLabel,
       description,
       priority,
       runnerPreference,
@@ -445,6 +436,10 @@ export async function POST(req: NextRequest) {
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    if (rawLabel !== undefined && rawLabel !== null && typeof rawLabel !== 'string') {
+      return NextResponse.json({ error: 'label must be a string (2–4 words, max 48 chars)' }, { status: 400 });
     }
 
     // Routing inputs. Same vocabulary as tasks.kind / tasks.complexity in the
@@ -951,6 +946,11 @@ export async function POST(req: NextRequest) {
       category = classifyTask(title, description) as CategoryType | null;
     }
 
+    // Short display label: whoever files the task may supply one; otherwise the
+    // classifier derives it from the title. Pure and synchronous — never blocks
+    // or fails creation.
+    const label = normalizeTaskLabel(rawLabel) ?? heuristicTaskLabel(title).label;
+
     // Validate outputRequirement if provided
     const validOutputRequirements = ['pr_required', 'artifact_required', 'none', 'auto'];
     const explicitOutputRequirement = rawOutputRequirement && validOutputRequirements.includes(rawOutputRequirement)
@@ -1155,6 +1155,7 @@ export async function POST(req: NextRequest) {
         id: subjectOverrides.id,
         workspaceId,
         title,
+        label,
         description: description || null,
         priority: priority || 0,
         status: 'pending',

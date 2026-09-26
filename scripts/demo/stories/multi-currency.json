@@ -1,0 +1,4379 @@
+{
+  "_meta": {
+    "purpose": "Synthetic dataset for the buildd product demo video. All names, ids, repos, people and numbers are fictional.",
+    "wallClockSeconds": 2220,
+    "conventions": {
+      "keys": "Every entity has a `key` (e.g. 'T3', 'w3'); cross-references use keys. The seed script mints UUIDs and maps keys → ids.",
+      "idShort": "Tasks/missions carry `_idShort`: force the first 8 hex chars of the minted UUID to this so branch names (`buildd/<id8>-<slug>`) match.",
+      "fieldNames": "Drizzle property names (camelCase) from packages/core/db/schema.ts. `table` is the SQL table name.",
+      "underscoreFields": "Fields starting with `_` are NOT columns — notes, end-state targets, or display hints.",
+      "timeline": "t = seconds from mission creation. Rows in entity lists are the INITIAL state; the timeline mutates them. `_statusAtEnd`/`_final` give the target end state for a static (non-replay) seed.",
+      "relativeTimes": "'-3d' style values are relative to demo start."
+    }
+  },
+  "team": {
+    "key": "team",
+    "table": "teams",
+    "name": "Harborline",
+    "slug": "harborline",
+    "timezone": "America/Chicago"
+  },
+  "users": [
+    {
+      "key": "u_maya",
+      "table": "users",
+      "name": "Maya Okafor",
+      "email": "maya@harborline.example",
+      "_note": "fictional eng lead; the human who answers the question from her phone"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "acct_fleet",
+      "table": "accounts",
+      "type": "user",
+      "level": "worker",
+      "name": "harborline-fleet",
+      "authType": "oauth",
+      "maxConcurrentWorkers": 8,
+      "apiKey": "bld_demo_0000000000000000000000000000",
+      "apiKeyPrefix": "bld_demo",
+      "_note": "one account, four runner hosts; worker.name = `${account.name}-${taskId[0:8]}` (claim route)"
+    }
+  ],
+  "runners": [
+    {
+      "key": "atlas",
+      "table": "worker_heartbeats",
+      "runner": "atlas",
+      "localUiUrl": "http://atlas.local:8766",
+      "maxConcurrentWorkers": 2,
+      "_display": "atlas · Mac Studio"
+    },
+    {
+      "key": "birch",
+      "table": "worker_heartbeats",
+      "runner": "birch",
+      "localUiUrl": "http://birch.local:8766",
+      "maxConcurrentWorkers": 2,
+      "_display": "birch · Linux box"
+    },
+    {
+      "key": "cedar",
+      "table": "worker_heartbeats",
+      "runner": "cedar",
+      "localUiUrl": "http://cedar.local:8766",
+      "maxConcurrentWorkers": 2,
+      "_display": "cedar · cloud VM"
+    },
+    {
+      "key": "dune",
+      "table": "worker_heartbeats",
+      "runner": "dune",
+      "localUiUrl": "http://dune.local:8766",
+      "maxConcurrentWorkers": 2,
+      "_display": "dune · cloud VM"
+    }
+  ],
+  "workspace": {
+    "key": "ws",
+    "table": "workspaces",
+    "name": "billing-web",
+    "repo": "https://github.com/harborline/billing-web",
+    "accessMode": "restricted",
+    "dataClass": "standard",
+    "maxConcurrentTasks": 3,
+    "configStatus": "admin_confirmed",
+    "projects": [
+      {
+        "name": "web",
+        "path": "apps/web",
+        "description": "Customer portal + admin (Next.js)",
+        "color": "#D4724A"
+      },
+      {
+        "name": "api",
+        "path": "apps/api",
+        "description": "Public Invoices API",
+        "color": "#0EA5E9"
+      },
+      {
+        "name": "money",
+        "path": "packages/money",
+        "description": "Money, FX, rounding",
+        "color": "#D97706"
+      }
+    ],
+    "gitConfig": {
+      "defaultBranch": "main",
+      "branchingStrategy": "trunk",
+      "useBuildBranch": true,
+      "branchStrategy": "direct",
+      "commitStyle": "conventional",
+      "requiresPR": true,
+      "targetBranch": "main",
+      "autoCreatePR": true,
+      "useClaudeMd": true,
+      "criteriaGrader": "runner"
+    },
+    "_github": {
+      "table": "github_repos",
+      "fullName": "harborline/billing-web",
+      "_note": "repo identity should come from githubRepoId FK, not the free-text repo column"
+    }
+  },
+  "roles": [
+    {
+      "key": "organizer",
+      "slug": "organizer",
+      "name": "Organizer",
+      "color": "#6366F1",
+      "model": "sonnet",
+      "canDelegateTo": [
+        "builder",
+        "researcher",
+        "writer",
+        "analyst"
+      ],
+      "description": "Plans missions into phased tasks and keeps them moving",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Organizer\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws",
+      "allowedTools": []
+    },
+    {
+      "key": "builder",
+      "slug": "builder",
+      "name": "Builder",
+      "color": "#0C72CB",
+      "model": "opus",
+      "canDelegateTo": [
+        "researcher"
+      ],
+      "description": "Writes code, opens PRs, fixes its own CI",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Builder\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws",
+      "allowedTools": []
+    },
+    {
+      "key": "researcher",
+      "slug": "researcher",
+      "name": "Researcher",
+      "color": "#B24C9C",
+      "model": "sonnet",
+      "canDelegateTo": [
+        "builder"
+      ],
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "WebSearch",
+        "WebFetch",
+        "Agent"
+      ],
+      "description": "Reads, compares, reports — never edits",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Researcher\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws"
+    },
+    {
+      "key": "writer",
+      "slug": "writer",
+      "name": "Writer",
+      "color": "#0EA5E9",
+      "model": "sonnet",
+      "canDelegateTo": [
+        "researcher"
+      ],
+      "description": "Docs and customer-facing prose",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Writer\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws",
+      "allowedTools": []
+    },
+    {
+      "key": "analyst",
+      "slug": "analyst",
+      "name": "Analyst",
+      "color": "#A855F7",
+      "model": "sonnet",
+      "canDelegateTo": [
+        "researcher",
+        "writer"
+      ],
+      "description": "Derives judgments from data",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Analyst\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws",
+      "allowedTools": []
+    },
+    {
+      "key": "reviewer",
+      "slug": "reviewer",
+      "name": "Reviewer",
+      "color": "#6366f1",
+      "model": "sonnet",
+      "canDelegateTo": [],
+      "description": "Reviews PRs against the task (used by background missions only)",
+      "_note": "stock reviewer color equals organizer's (#6366f1). For video legibility consider #14B8A6 — cosmetic, demo-only.",
+      "table": "workspace_skills",
+      "isRole": true,
+      "enabled": true,
+      "origin": "manual",
+      "content": "# Reviewer\n\n(Seed with the stock body from apps/web/src/lib/default-roles.ts.)\n",
+      "contentHash": "<sha256 of content>",
+      "workspaceId": "ws",
+      "allowedTools": []
+    }
+  ],
+  "missions": [
+    {
+      "key": "M1",
+      "table": "missions",
+      "workspaceId": "ws",
+      "createdByUserId": "u_maya",
+      "title": "Multi-currency invoices",
+      "description": "Let customers see, pay, and get receipts for invoices in their own currency.",
+      "status": "active",
+      "_statusAtEnd": "completed",
+      "priority": 5,
+      "orchestrationMode": "auto",
+      "maxConcurrentTasks": 6,
+      "defaultOutputRequirement": "pr_required",
+      "pacingMode": "eager",
+      "mergePolicy": {
+        "tier": "auto-threshold",
+        "threshold": {
+          "maxLines": 800
+        }
+      },
+      "integrationBranchEnabled": false,
+      "workingBranch": null,
+      "autoVerify": true,
+      "autoSurfaceAudit": false,
+      "scheduleId": null,
+      "_heartbeat": "none — created from the dashboard (UI-created missions run once, no heartbeat schedule)",
+      "goalCriteria": [
+        {
+          "type": "all_prs_merged",
+          "label": "every task PR merged"
+        },
+        {
+          "type": "no_open_tasks",
+          "label": "no open tasks"
+        },
+        {
+          "type": "command",
+          "command": "pnpm test --filter @harborline/money --filter web -- currency",
+          "label": "currency suite green"
+        },
+        {
+          "type": "artifact_exists",
+          "key": "fx-rounding-decision",
+          "label": "rounding policy recorded"
+        }
+      ],
+      "goalCriteriaState": null,
+      "_idShort": "4d2e8b17"
+    },
+    {
+      "key": "M2",
+      "table": "missions",
+      "workspaceId": "ws",
+      "title": "Keep dependencies current",
+      "description": "Every 6 hours: review open dependency PRs, merge the safe ones when CI is green, file a task for anything that needs code changes.",
+      "status": "active",
+      "orchestrationMode": "auto",
+      "priority": 1,
+      "defaultOutputRequirement": "auto",
+      "scheduleId": "S2",
+      "goalCriteria": null,
+      "_createdAgo": "-12d"
+    },
+    {
+      "key": "B1",
+      "table": "missions",
+      "workspaceId": "ws",
+      "title": "Dark mode for the customer portal",
+      "description": "Portal and PDFs respect the customer's theme preference.",
+      "status": "completed",
+      "_createdAgo": "-4d",
+      "_completedAgo": "-3d",
+      "goalCriteria": [
+        {
+          "type": "all_prs_merged"
+        },
+        {
+          "type": "no_open_tasks"
+        }
+      ],
+      "goalCriteriaState": {
+        "overall": "pass"
+      }
+    },
+    {
+      "key": "B2",
+      "table": "missions",
+      "workspaceId": "ws",
+      "title": "Cut invoice PDF render time in half",
+      "description": "Month-end invoice runs shouldn't queue.",
+      "status": "completed",
+      "_createdAgo": "-7d",
+      "_completedAgo": "-6d",
+      "goalCriteria": [
+        {
+          "type": "command",
+          "command": "pnpm bench:pdf --assert-p50-under 400",
+          "label": "p50 under 400ms"
+        },
+        {
+          "type": "all_prs_merged"
+        }
+      ],
+      "goalCriteriaState": {
+        "overall": "pass"
+      }
+    },
+    {
+      "key": "B3",
+      "table": "missions",
+      "workspaceId": "ws",
+      "title": "Audit log for every admin action",
+      "description": "Every admin mutation is recorded, searchable, and exportable.",
+      "status": "completed",
+      "_createdAgo": "-11d",
+      "_completedAgo": "-10d",
+      "goalCriteria": [
+        {
+          "type": "all_prs_merged"
+        },
+        {
+          "type": "artifact_exists",
+          "key": "audit-coverage-report"
+        }
+      ],
+      "goalCriteriaState": {
+        "overall": "pass"
+      }
+    },
+    {
+      "key": "B4",
+      "table": "missions",
+      "workspaceId": "ws",
+      "title": "Usage-based pricing — spec first",
+      "description": "Write the spec and pricing-page copy before any code.",
+      "status": "paused",
+      "isHeld": false,
+      "_createdAgo": "-1d",
+      "_note": "one non-completed row so the list isn't uniformly green"
+    }
+  ],
+  "taskSchedules": [
+    {
+      "key": "S2",
+      "table": "task_schedules",
+      "workspaceId": "ws",
+      "name": "Mission: Keep dependencies current",
+      "cronExpression": "0 */6 * * *",
+      "timezone": "America/Chicago",
+      "enabled": true,
+      "maxConcurrentFromSchedule": 1,
+      "taskTemplate": {
+        "title": "Mission: Keep dependencies current",
+        "mode": "planning",
+        "context": {
+          "missionId": "M2",
+          "heartbeat": true,
+          "heartbeatChecklist": "- [ ] Any open dependency PRs with green CI? Merge patch/minor.\n- [ ] Any major bumps? File a builder task with the changelog link.\n- [ ] Nothing changed since last tick? Report OK and stop."
+        }
+      },
+      "totalRuns": 47,
+      "consecutiveFailures": 0,
+      "_lastRunAt": "fires at t=1260 during the demo",
+      "_nextRunAt": "t=1260 + 6h",
+      "_note": "totalRuns is fictional"
+    }
+  ],
+  "tasks": [
+    {
+      "key": "T0",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "Mission: Multi-currency invoices",
+      "description": "Plan the mission into phased tasks with dependsOn edges and concrete pathManifests.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "planning",
+      "roleSlug": "organizer",
+      "kind": "coordination",
+      "complexity": "normal",
+      "missionPhaseIndex": null,
+      "missionPhaseLabel": null,
+      "dependsOn": [],
+      "outputRequirement": "none",
+      "creationSource": "orchestrator",
+      "createdByWorkerId": null,
+      "taskClass": "bookkeeping",
+      "backend": "claude",
+      "project": null,
+      "pathManifest": null,
+      "_idShort": "a3f09c12",
+      "label": "plan the mission"
+    },
+    {
+      "key": "T1",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "RESEARCH: FX rate providers — freshness, cost, and what breaks when they're down",
+      "description": "Compare three rate providers on update cadence, pricing model, and outage behaviour. Recommend one plus a fallback. No code.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "researcher",
+      "kind": "research",
+      "complexity": "normal",
+      "missionPhaseIndex": 1,
+      "missionPhaseLabel": "Foundations",
+      "dependsOn": [],
+      "outputRequirement": "artifact_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": null,
+      "pathManifest": null,
+      "_idShort": "5be71d40",
+      "label": "FX providers"
+    },
+    {
+      "key": "T2",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(db): currency and fx_rate_snapshot on invoices and line items",
+      "description": "Additive migration: invoices.currency, invoices.fx_rate_snapshot, line_items.amount_presentment. Default to account base currency.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 1,
+      "missionPhaseLabel": "Foundations",
+      "dependsOn": [],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "packages/db/schema.ts",
+        "packages/db/migrations/"
+      ],
+      "_idShort": "c80e2a9f",
+      "label": "currency columns"
+    },
+    {
+      "key": "T3",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(fx): rates service with a 15-minute cache and stale-rate fallback",
+      "description": "Fetch, cache, and serve rates. When the provider is down, serve the last good rate and flag it stale; never block checkout.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 1,
+      "missionPhaseLabel": "Foundations",
+      "dependsOn": [],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "money",
+      "pathManifest": [
+        "packages/money/src/fx/"
+      ],
+      "_idShort": "1d4c7b63",
+      "label": "rates service"
+    },
+    {
+      "key": "T4",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(settings): customers can pick a billing currency",
+      "description": "Currency picker on the billing settings page, persisted per customer.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 1,
+      "missionPhaseLabel": "Foundations",
+      "dependsOn": [],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "apps/web/src/app/settings/billing/"
+      ],
+      "_idShort": "e9a25f08",
+      "label": "currency picker"
+    },
+    {
+      "key": "T5",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "refactor(money): one locale-aware formatMoney, replace ad-hoc toFixed(2)",
+      "description": "Single Intl.NumberFormat-backed helper. Replace hand-rolled formatting across the portal.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "simple",
+      "missionPhaseIndex": 1,
+      "missionPhaseLabel": "Foundations",
+      "dependsOn": [],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "money",
+      "pathManifest": [
+        "packages/money/src/format.ts",
+        "apps/web/src/components/Amount.tsx"
+      ],
+      "_idShort": "7f31c6d2",
+      "label": "formatMoney"
+    },
+    {
+      "key": "T6",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(api): currency on the public Invoices API (additive, v2-safe)",
+      "description": "Expose currency + presentment amounts. Additive fields only; existing clients unaffected.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 2,
+      "missionPhaseLabel": "Currency through the product",
+      "dependsOn": [
+        "T2"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "api",
+      "pathManifest": [
+        "apps/api/src/routes/invoices/"
+      ],
+      "_idShort": "40bd98e1",
+      "label": "currency on API"
+    },
+    {
+      "key": "T7",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(invoices): render invoices in the customer's currency with a base-currency footnote",
+      "description": "Web view and PDF. Footnote shows base amount and the rate used.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 2,
+      "missionPhaseLabel": "Currency through the product",
+      "dependsOn": [
+        "T2",
+        "T5"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "apps/web/src/app/invoices/[id]/",
+        "packages/pdf/src/invoice.tsx"
+      ],
+      "_idShort": "b62f0a57",
+      "label": "render in currency"
+    },
+    {
+      "key": "T8",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(checkout): pay in the presentment currency via Stripe",
+      "description": "Create PaymentIntents in the customer currency using the snapshotted rate.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "complex",
+      "missionPhaseIndex": 2,
+      "missionPhaseLabel": "Currency through the product",
+      "dependsOn": [
+        "T2",
+        "T3"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "apps/web/src/app/pay/",
+        "packages/payments/src/stripe.ts"
+      ],
+      "_idShort": "d17a4c9e",
+      "label": "Stripe in currency"
+    },
+    {
+      "key": "T9",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(export): accounting CSV carries both currencies and the rate used",
+      "description": "Add currency, presentment amount, base amount, fx_rate columns to the ledger export.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 2,
+      "missionPhaseLabel": "Currency through the product",
+      "dependsOn": [
+        "T2"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "apps/web/src/lib/export/"
+      ],
+      "_idShort": "3e8b51f6",
+      "label": "dual-currency CSV"
+    },
+    {
+      "key": "T10",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "feat(email): receipts show the paid currency and rate",
+      "description": "Receipt email mirrors the invoice footnote.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "simple",
+      "missionPhaseIndex": 2,
+      "missionPhaseLabel": "Currency through the product",
+      "dependsOn": [
+        "T7"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "packages/email/templates/receipt.tsx"
+      ],
+      "_idShort": "9a06d7c3",
+      "label": "receipt currency"
+    },
+    {
+      "key": "T11",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "test(e2e): pay a EUR invoice end to end",
+      "description": "Create EUR customer → invoice → pay with test card → receipt → export row.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 3,
+      "missionPhaseLabel": "Prove it",
+      "dependsOn": [
+        "T7",
+        "T8"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "tests/e2e/multi-currency.spec.ts"
+      ],
+      "_idShort": "f24c8e1a",
+      "label": "pay a EUR invoice"
+    },
+    {
+      "key": "T12",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "docs: multi-currency billing guide for account admins",
+      "description": "How to enable, what customers see, how rounding works, how exports reconcile.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "execution",
+      "roleSlug": "writer",
+      "kind": "writing",
+      "complexity": "normal",
+      "missionPhaseIndex": 3,
+      "missionPhaseLabel": "Prove it",
+      "dependsOn": [
+        "T7",
+        "T8"
+      ],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": "w0",
+      "taskClass": "work",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": [
+        "docs/billing/multi-currency.md"
+      ],
+      "_idShort": "6b5d2f90",
+      "label": "admin guide"
+    },
+    {
+      "key": "T7a",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "[builder · after CI #1] feat(invoices): render invoices in the customer's currency with a base-currency footnote",
+      "description": "CI failed on PR #416. Fix on the same branch.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 7,
+      "mode": "execution",
+      "roleSlug": "builder",
+      "kind": "engineering",
+      "complexity": "normal",
+      "missionPhaseIndex": 2,
+      "missionPhaseLabel": "Currency through the product",
+      "dependsOn": [],
+      "outputRequirement": "pr_required",
+      "creationSource": "mcp",
+      "createdByWorkerId": null,
+      "taskClass": "attempt",
+      "backend": "claude",
+      "project": "web",
+      "pathManifest": null,
+      "_idShort": "0c95e3b4",
+      "parentTaskId": "T7",
+      "ciRetryPrNumber": 416,
+      "ciRetryHeadSha": "9e41c07",
+      "context": {
+        "ciRetryPrNumber": 416,
+        "iteration": 1,
+        "failureContext": {
+          "job": "unit",
+          "test": "packages/pdf/src/invoice.snapshot.test.tsx",
+          "excerpt": "Expected \"1.234,50 €\" — received \"1,234.50 €\" (locale de-DE)"
+        }
+      },
+      "label": "fix PDF locale"
+    },
+    {
+      "key": "V1",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "Verify goal criterion: currency suite green",
+      "description": "Run the command and report. Do not change code.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 2,
+      "mode": "execution",
+      "roleSlug": null,
+      "kind": "observation",
+      "complexity": "normal",
+      "missionPhaseIndex": null,
+      "missionPhaseLabel": null,
+      "dependsOn": [],
+      "outputRequirement": "none",
+      "creationSource": "orchestrator",
+      "createdByWorkerId": null,
+      "taskClass": "bookkeeping",
+      "backend": "claude",
+      "project": null,
+      "pathManifest": null,
+      "_idShort": "8c1e4a7d",
+      "tier": "budget",
+      "loopConfig": {
+        "exitCondition": {
+          "type": "command",
+          "command": "pnpm test --filter @harborline/money --filter web -- currency"
+        },
+        "maxLoops": 1
+      },
+      "_kindNote": "real verify tasks set no kind; 'observation' is a demo choice for the glyph",
+      "label": "verify currency suite"
+    },
+    {
+      "key": "H1",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M2",
+      "title": "Mission: Keep dependencies current",
+      "description": "Heartbeat tick.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 0,
+      "mode": "planning",
+      "roleSlug": "organizer",
+      "kind": "coordination",
+      "complexity": "normal",
+      "missionPhaseIndex": null,
+      "missionPhaseLabel": null,
+      "dependsOn": [],
+      "outputRequirement": "none",
+      "creationSource": "schedule",
+      "createdByWorkerId": null,
+      "taskClass": "work",
+      "backend": "claude",
+      "project": null,
+      "pathManifest": null,
+      "_idShort": "2f7a9b3c",
+      "scheduleId": "S2",
+      "heartbeatTickAnchor": "<ISO of tick>",
+      "label": "dependency sweep"
+    }
+  ],
+  "workers": [
+    {
+      "key": "w0",
+      "table": "workers",
+      "taskId": "T0",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-a3f09c12",
+      "runner": "atlas",
+      "branch": "buildd/a3f09c12-mission-multi-currency-invoice",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0
+    },
+    {
+      "key": "w1",
+      "table": "workers",
+      "taskId": "T1",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-5be71d40",
+      "runner": "birch",
+      "branch": "buildd/5be71d40-research-fx-rate-providers-fre",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0
+    },
+    {
+      "key": "w2",
+      "table": "workers",
+      "taskId": "T2",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-c80e2a9f",
+      "runner": "atlas",
+      "branch": "buildd/c80e2a9f-feat-db-currency-and-fx-rate-s",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 411,
+        "prUrl": "https://github.com/harborline/billing-web/pull/411",
+        "linesAdded": 186,
+        "linesRemoved": 4,
+        "filesChanged": 5,
+        "commitCount": 2,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w3",
+      "table": "workers",
+      "taskId": "T3",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-1d4c7b63",
+      "runner": "cedar",
+      "branch": "buildd/1d4c7b63-feat-fx-rates-service-with-a-1",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 413,
+        "prUrl": "https://github.com/harborline/billing-web/pull/413",
+        "linesAdded": 318,
+        "linesRemoved": 0,
+        "filesChanged": 7,
+        "commitCount": 4,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w4",
+      "table": "workers",
+      "taskId": "T4",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-e9a25f08",
+      "runner": "dune",
+      "branch": "buildd/e9a25f08-feat-settings-customers-can-pi",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 414,
+        "prUrl": "https://github.com/harborline/billing-web/pull/414",
+        "linesAdded": 211,
+        "linesRemoved": 12,
+        "filesChanged": 6,
+        "commitCount": 2,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w5",
+      "table": "workers",
+      "taskId": "T5",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-7f31c6d2",
+      "runner": "atlas",
+      "branch": "buildd/7f31c6d2-refactor-money-one-locale-awar",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 412,
+        "prUrl": "https://github.com/harborline/billing-web/pull/412",
+        "linesAdded": 142,
+        "linesRemoved": 97,
+        "filesChanged": 14,
+        "commitCount": 3,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w6",
+      "table": "workers",
+      "taskId": "T6",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-40bd98e1",
+      "runner": "birch",
+      "branch": "buildd/40bd98e1-feat-api-currency-on-the-publi",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 415,
+        "prUrl": "https://github.com/harborline/billing-web/pull/415",
+        "linesAdded": 164,
+        "linesRemoved": 8,
+        "filesChanged": 5,
+        "commitCount": 2,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w7",
+      "table": "workers",
+      "taskId": "T7",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-b62f0a57",
+      "runner": "cedar",
+      "branch": "buildd/b62f0a57-feat-invoices-render-invoices-",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 416,
+        "prUrl": "https://github.com/harborline/billing-web/pull/416",
+        "linesAdded": 402,
+        "linesRemoved": 61,
+        "filesChanged": 11,
+        "commitCount": 4,
+        "prLifecycleStatus": "ci_failed",
+        "_note": "w7 ends completed with PR #416 ci_failed; mergedAt is stamped on w7 (PR owner) when #416 merges after w7a's fix"
+      }
+    },
+    {
+      "key": "w8",
+      "table": "workers",
+      "taskId": "T8",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-d17a4c9e",
+      "runner": "dune",
+      "branch": "buildd/d17a4c9e-feat-checkout-pay-in-the-prese",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 418,
+        "prUrl": "https://github.com/harborline/billing-web/pull/418",
+        "linesAdded": 537,
+        "linesRemoved": 44,
+        "filesChanged": 12,
+        "commitCount": 6,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w9",
+      "table": "workers",
+      "taskId": "T9",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-3e8b51f6",
+      "runner": "atlas",
+      "branch": "buildd/3e8b51f6-feat-export-accounting-csv-car",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 417,
+        "prUrl": "https://github.com/harborline/billing-web/pull/417",
+        "linesAdded": 229,
+        "linesRemoved": 18,
+        "filesChanged": 5,
+        "commitCount": 3,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w10",
+      "table": "workers",
+      "taskId": "T10",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-9a06d7c3",
+      "runner": "birch",
+      "branch": "buildd/9a06d7c3-feat-email-receipts-show-the-p",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 419,
+        "prUrl": "https://github.com/harborline/billing-web/pull/419",
+        "linesAdded": 96,
+        "linesRemoved": 21,
+        "filesChanged": 3,
+        "commitCount": 1,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w7a",
+      "table": "workers",
+      "taskId": "T7a",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-0c95e3b4",
+      "runner": "birch",
+      "branch": "buildd/b62f0a57-feat-invoices-render-invoices-",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 416,
+        "prUrl": "https://github.com/harborline/billing-web/pull/416",
+        "linesAdded": 23,
+        "linesRemoved": 9,
+        "filesChanged": 2,
+        "commitCount": 1,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w11",
+      "table": "workers",
+      "taskId": "T11",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-f24c8e1a",
+      "runner": "cedar",
+      "branch": "buildd/f24c8e1a-test-e2e-pay-a-eur-invoice-end",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 420,
+        "prUrl": "https://github.com/harborline/billing-web/pull/420",
+        "linesAdded": 274,
+        "linesRemoved": 0,
+        "filesChanged": 2,
+        "commitCount": 2,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "w12",
+      "table": "workers",
+      "taskId": "T12",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-6b5d2f90",
+      "runner": "dune",
+      "branch": "buildd/6b5d2f90-docs-multi-currency-billing-gu",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0,
+      "_final": {
+        "prNumber": 421,
+        "prUrl": "https://github.com/harborline/billing-web/pull/421",
+        "linesAdded": 188,
+        "linesRemoved": 0,
+        "filesChanged": 2,
+        "commitCount": 1,
+        "prLifecycleStatus": "merged"
+      }
+    },
+    {
+      "key": "wv1",
+      "table": "workers",
+      "taskId": "V1",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-8c1e4a7d",
+      "runner": "cedar",
+      "branch": "buildd/8c1e4a7d-verify-goal-criterion-currency",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0
+    },
+    {
+      "key": "wh1",
+      "table": "workers",
+      "taskId": "H1",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-2f7a9b3c",
+      "runner": "dune",
+      "branch": "buildd/2f7a9b3c-mission-keep-dependencies-curr",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0
+    }
+  ],
+  "artifacts": [
+    {
+      "table": "artifacts",
+      "workerId": "w1",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "report",
+      "title": "FX rate providers compared",
+      "content": "## Recommendation\nPrimary: Provider B (hourly mid-market, flat monthly). Fallback: central-bank daily reference rates.\n\n## Why\n- A updates every minute but bills per call; our read pattern is bursty around invoice runs.\n- B's hourly cadence is well inside a 15-minute cache + snapshot-at-issue design.\n- C had no documented behaviour during outages.\n\n## What breaks when rates are down\nNothing customer-facing if we snapshot the rate on the invoice at issue time. Checkout reads the snapshot, not a live rate.",
+      "visibility": "private",
+      "metadata": {
+        "sources": 9
+      },
+      "key": "a_fx_report",
+      "artifactKey": "fx-provider-comparison",
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "w8",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "content",
+      "title": "Decision: round converted amounts per line",
+      "content": "Converted invoices round **each line** to the customer currency's minor unit. The total is the sum of rounded lines, so it always equals what Stripe charges. The ledger export carries a `rounding_delta` column so finance can reconcile to base currency.\n\n_Decided by Maya Okafor via the mission feed._",
+      "visibility": "private",
+      "metadata": {
+        "decidedBy": "u_maya",
+        "source": "waiting_input"
+      },
+      "key": "a_rounding",
+      "artifactKey": "fx-rounding-decision",
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": "w11",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "recording",
+      "title": "E2E: EUR invoice paid end to end",
+      "content": null,
+      "storageKey": "demo/e2e-eur-invoice.webm",
+      "visibility": "private",
+      "metadata": {
+        "durationSec": 38
+      },
+      "key": "a_e2e_video",
+      "artifactKey": null,
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    },
+    {
+      "table": "artifacts",
+      "workerId": null,
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "type": "summary",
+      "title": "Multi-currency invoices — shipped",
+      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; the export reconciles to base currency.\n\n11 PRs merged · 1 CI failure fixed automatically · 1 decision from a human.",
+      "visibility": "private",
+      "metadata": {},
+      "key": "a_summary",
+      "artifactKey": "mission-summary",
+      "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
+    }
+  ],
+  "missionNotes": [
+    {
+      "key": "n_plan",
+      "table": "mission_notes",
+      "missionId": "M1",
+      "taskId": "T0",
+      "workerId": "w0",
+      "authorType": "agent",
+      "type": "decision",
+      "title": "Plan: 3 phases, 12 tasks",
+      "body": "**Foundations** (5, parallel): schema, FX service, currency picker, formatMoney, provider research.\n**Currency through the product** (5): API, invoice render, checkout, export, receipts.\n**Prove it** (2): EUR end-to-end test, admin guide.\n\nRates are snapshotted at invoice issue so checkout never waits on a live rate.",
+      "actorLabel": "Organizer",
+      "status": "open"
+    },
+    {
+      "key": "n_q",
+      "table": "mission_notes",
+      "missionId": "M1",
+      "taskId": "T8",
+      "workerId": "w8",
+      "authorType": "agent",
+      "type": "question",
+      "title": "Round per line, or only the total?",
+      "body": "Converting a multi-line invoice, rounding each line to cents can differ from rounding the total by up to one minor unit per line. Per line: the total equals exactly what Stripe charges the card. Total only: matches the base-currency ledger, but the card charge can be off by a cent or two. Which should be the source of truth?",
+      "defaultChoice": "Per line — match Stripe",
+      "actorLabel": "Builder",
+      "status": "open",
+      "_statusAtEnd": "answered"
+    },
+    {
+      "key": "n_reply",
+      "table": "mission_notes",
+      "missionId": "M1",
+      "taskId": "T8",
+      "workerId": "w8",
+      "authorType": "user",
+      "type": "reply",
+      "replyTo": "n_q",
+      "title": "Per line",
+      "body": "Per line. The card charge is what customers see. Put the delta in the export so finance can reconcile.",
+      "actorLabel": "Maya Okafor",
+      "status": "open"
+    },
+    {
+      "key": "n_ci",
+      "table": "mission_notes",
+      "missionId": "M1",
+      "taskId": "T7a",
+      "workerId": null,
+      "authorType": "system",
+      "type": "update",
+      "title": "CI failed on #416 — fix dispatched",
+      "body": "Invoice PDF snapshot: de-DE rendered `1,234.50 €`, expected `1.234,50 €`. A builder picked it up on the same branch.",
+      "actorLabel": "buildd",
+      "status": "open"
+    },
+    {
+      "key": "n_done",
+      "table": "mission_notes",
+      "missionId": "M1",
+      "taskId": null,
+      "workerId": null,
+      "authorType": "system",
+      "type": "update",
+      "title": "All 4 goal criteria pass — mission complete",
+      "body": null,
+      "actorLabel": "buildd",
+      "status": "open"
+    }
+  ],
+  "memories": [
+    {
+      "key": "mem1",
+      "table": "memories",
+      "teamId": "team",
+      "type": "decision",
+      "project": "money",
+      "title": "Converted amounts round per line, never on the total",
+      "content": "Line-level rounding keeps the invoice total equal to the card charge. Reconcile to base currency via export.rounding_delta.",
+      "tags": [
+        "fx",
+        "rounding",
+        "stripe"
+      ],
+      "files": [
+        "packages/money/src/fx/convert.ts"
+      ],
+      "source": "task:T8"
+    },
+    {
+      "key": "mem2",
+      "table": "memories",
+      "teamId": "team",
+      "type": "gotcha",
+      "project": "pdf",
+      "title": "Invoice PDF snapshots are locale-sensitive",
+      "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale) — never toLocaleString() with the process default.",
+      "tags": [
+        "pdf",
+        "i18n",
+        "ci"
+      ],
+      "files": [
+        "packages/pdf/src/invoice.snapshot.test.tsx"
+      ],
+      "source": "task:T7a"
+    },
+    {
+      "key": "mem3",
+      "table": "memories",
+      "teamId": "team",
+      "type": "pattern",
+      "project": "money",
+      "title": "Snapshot the FX rate at invoice issue",
+      "content": "Store fx_rate_snapshot on the invoice. Anything downstream (checkout, receipt, export) reads the snapshot so a provider outage can't change what a customer owes.",
+      "tags": [
+        "fx",
+        "architecture"
+      ],
+      "files": [
+        "packages/db/schema.ts"
+      ],
+      "source": "task:T1"
+    },
+    {
+      "key": "mem4",
+      "table": "memories",
+      "teamId": "team",
+      "type": "architecture",
+      "project": "web",
+      "title": "Dark mode tokens live in one CSS layer",
+      "content": "All color tokens come from styles/tokens.css; components never hardcode hex. Portal and admin share the layer.",
+      "tags": [
+        "ui",
+        "theming"
+      ],
+      "files": [
+        "apps/web/src/styles/tokens.css"
+      ],
+      "source": "mission:B1"
+    },
+    {
+      "key": "mem5",
+      "table": "memories",
+      "teamId": "team",
+      "type": "discovery",
+      "project": "pdf",
+      "title": "PDF render time was dominated by font loading",
+      "content": "Embedding a subset font and reusing one renderer instance per worker process removed most of the per-invoice cost.",
+      "tags": [
+        "pdf",
+        "performance"
+      ],
+      "files": [
+        "packages/pdf/src/renderer.ts"
+      ],
+      "source": "mission:B2"
+    }
+  ],
+  "heartbeatPastTicks": [
+    {
+      "agoHours": 6,
+      "summary": "Merged 2 patch bumps (CI green). No majors."
+    },
+    {
+      "agoHours": 12,
+      "summary": "OK — nothing new."
+    },
+    {
+      "agoHours": 18,
+      "summary": "Filed builder task: date library major bump needs a codemod."
+    }
+  ],
+  "backgroundMissions": [
+    {
+      "missionKey": "B1",
+      "tasks": [
+        {
+          "key": "B1_t0",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B1",
+          "title": "Mission: Dark mode for the customer portal",
+          "label": "plan the mission",
+          "mode": "planning",
+          "roleSlug": "organizer",
+          "kind": "coordination",
+          "status": "completed",
+          "taskClass": "bookkeeping",
+          "outputRequirement": "none",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed"
+          }
+        },
+        {
+          "key": "B1_t1",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B1",
+          "title": "refactor(ui): move every color to design tokens",
+          "label": "design tokens",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "cedar",
+            "status": "completed",
+            "prNumber": 388,
+            "prUrl": "https://github.com/harborline/billing-web/pull/388",
+            "linesAdded": 612,
+            "linesRemoved": 540,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B1_t2",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B1",
+          "title": "feat(ui): theme toggle with system default",
+          "label": "theme toggle",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed",
+            "prNumber": 389,
+            "prUrl": "https://github.com/harborline/billing-web/pull/389",
+            "linesAdded": 144,
+            "linesRemoved": 12,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B1_t3",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B1",
+          "title": "fix(pdf): invoices stay light regardless of theme",
+          "label": "light PDFs",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "dune",
+            "status": "completed",
+            "prNumber": 390,
+            "prUrl": "https://github.com/harborline/billing-web/pull/390",
+            "linesAdded": 38,
+            "linesRemoved": 6,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B1_t4",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B1",
+          "title": "[builder · after CI #1] feat(ui): theme toggle with system default",
+          "label": "fix theme toggle",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "attempt",
+          "outputRequirement": "artifact_required",
+          "_worker": {
+            "runner": "birch",
+            "status": "completed"
+          }
+        },
+        {
+          "key": "B1_t5",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B1",
+          "title": "docs: theming for embedded portal hosts",
+          "label": "theming docs",
+          "roleSlug": "writer",
+          "kind": "writing",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "birch",
+            "status": "completed",
+            "prNumber": 392,
+            "prUrl": "https://github.com/harborline/billing-web/pull/392",
+            "linesAdded": 71,
+            "linesRemoved": 0,
+            "prLifecycleStatus": "merged"
+          }
+        }
+      ]
+    },
+    {
+      "missionKey": "B2",
+      "tasks": [
+        {
+          "key": "B2_t0",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B2",
+          "title": "Mission: Cut invoice PDF render time in half",
+          "label": "plan the mission",
+          "mode": "planning",
+          "roleSlug": "organizer",
+          "kind": "coordination",
+          "status": "completed",
+          "taskClass": "bookkeeping",
+          "outputRequirement": "none",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed"
+          }
+        },
+        {
+          "key": "B2_t1",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B2",
+          "title": "RESEARCH: where PDF render time goes (profile a month-end run)",
+          "label": "profile PDF render",
+          "roleSlug": "researcher",
+          "kind": "research",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "artifact_required",
+          "_worker": {
+            "runner": "birch",
+            "status": "completed"
+          }
+        },
+        {
+          "key": "B2_t2",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B2",
+          "title": "perf(pdf): subset-embed fonts, reuse one renderer per process",
+          "label": "subset fonts",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed",
+            "prNumber": 371,
+            "prUrl": "https://github.com/harborline/billing-web/pull/371",
+            "linesAdded": 206,
+            "linesRemoved": 88,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B2_t3",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B2",
+          "title": "perf(pdf): stream pages instead of buffering the whole document",
+          "label": "stream PDF pages",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "cedar",
+            "status": "completed",
+            "prNumber": 372,
+            "prUrl": "https://github.com/harborline/billing-web/pull/372",
+            "linesAdded": 163,
+            "linesRemoved": 71,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B2_t4",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B2",
+          "title": "test(bench): p50/p95 PDF render benchmark in CI",
+          "label": "render benchmark",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "dune",
+            "status": "completed",
+            "prNumber": 374,
+            "prUrl": "https://github.com/harborline/billing-web/pull/374",
+            "linesAdded": 118,
+            "linesRemoved": 0,
+            "prLifecycleStatus": "merged"
+          }
+        }
+      ]
+    },
+    {
+      "missionKey": "B3",
+      "tasks": [
+        {
+          "key": "B3_t0",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "Mission: Audit log for every admin action",
+          "label": "plan the mission",
+          "mode": "planning",
+          "roleSlug": "organizer",
+          "kind": "coordination",
+          "status": "completed",
+          "taskClass": "bookkeeping",
+          "outputRequirement": "none",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed"
+          }
+        },
+        {
+          "key": "B3_t1",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "ANALYSIS: which admin routes mutate state today",
+          "label": "mutating admin routes",
+          "roleSlug": "analyst",
+          "kind": "analysis",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "artifact_required",
+          "_worker": {
+            "runner": "birch",
+            "status": "completed"
+          }
+        },
+        {
+          "key": "B3_t2",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "feat(db): audit_events table with actor, target, diff",
+          "label": "audit events table",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed",
+            "prNumber": 351,
+            "prUrl": "https://github.com/harborline/billing-web/pull/351",
+            "linesAdded": 142,
+            "linesRemoved": 0,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B3_t3",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "feat(api): record an audit event from every admin mutation",
+          "label": "audit every mutation",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "cedar",
+            "status": "completed",
+            "prNumber": 353,
+            "prUrl": "https://github.com/harborline/billing-web/pull/353",
+            "linesAdded": 489,
+            "linesRemoved": 77,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B3_t4",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "feat(admin): searchable audit log page with CSV export",
+          "label": "audit log page",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "dune",
+            "status": "completed",
+            "prNumber": 354,
+            "prUrl": "https://github.com/harborline/billing-web/pull/354",
+            "linesAdded": 377,
+            "linesRemoved": 15,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B3_t5",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "fix(api): bulk-refund route skipped the audit hook",
+          "label": "bulk-refund audit",
+          "roleSlug": "builder",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "pr_required",
+          "_worker": {
+            "runner": "atlas",
+            "status": "completed",
+            "prNumber": 356,
+            "prUrl": "https://github.com/harborline/billing-web/pull/356",
+            "linesAdded": 29,
+            "linesRemoved": 3,
+            "prLifecycleStatus": "merged"
+          }
+        },
+        {
+          "key": "B3_t6",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B3",
+          "title": "[reviewer] PR #353: feat(api): record an audit event from every admin mutation",
+          "label": "review audit PR",
+          "roleSlug": "reviewer",
+          "kind": "engineering",
+          "status": "completed",
+          "taskClass": "work",
+          "outputRequirement": "artifact_required",
+          "_worker": {
+            "runner": "birch",
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "missionKey": "B4",
+      "tasks": [
+        {
+          "key": "B4_t0",
+          "table": "tasks",
+          "workspaceId": "ws",
+          "missionId": "B4",
+          "title": "SPEC: metering, invoicing, and proration for usage-based plans",
+          "label": "usage pricing spec",
+          "roleSlug": "writer",
+          "kind": "writing",
+          "status": "pending",
+          "taskClass": "work",
+          "outputRequirement": "artifact_required",
+          "_worker": {
+            "runner": "atlas",
+            "status": "error"
+          }
+        }
+      ]
+    }
+  ],
+  "timeline": [
+    {
+      "t": 0,
+      "op": "mission_create",
+      "mission": "M1",
+      "title": "Multi-currency invoices",
+      "description": "Let customers see, pay, and get receipts for invoices in their own currency.",
+      "api": "POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
+      "db": "INSERT missions",
+      "beat": "The one-sentence goal"
+    },
+    {
+      "t": 2,
+      "op": "task_create",
+      "task": "T0",
+      "api": "(mission create auto-starts the organizer)",
+      "db": "INSERT tasks (mode=planning, roleSlug=organizer)"
+    },
+    {
+      "t": 5,
+      "op": "claim",
+      "task": "T0",
+      "worker": "w0",
+      "runner": "atlas",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 8,
+      "op": "worker_status",
+      "worker": "w0",
+      "status": "running",
+      "api": "PATCH /api/workers/w0 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 8,
+      "op": "progress",
+      "worker": "w0",
+      "pct": 10,
+      "message": "Reading the repo: apps/web, apps/api, packages/money",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 20,
+      "op": "progress",
+      "worker": "w0",
+      "pct": 35,
+      "message": "Found money formatted by hand in many places — one helper first, then everything else",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 31,
+      "op": "progress",
+      "worker": "w0",
+      "pct": 60,
+      "message": "Snapshot rates at invoice issue so checkout never waits on a live rate",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 40,
+      "op": "progress",
+      "worker": "w0",
+      "pct": 85,
+      "message": "Drafting plan: 3 phases, 12 tasks, dependencies from path manifests",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 44,
+      "op": "task_create",
+      "task": "T1",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)",
+      "beat": "Fan-out"
+    },
+    {
+      "t": 45,
+      "op": "task_create",
+      "task": "T2",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 46,
+      "op": "task_create",
+      "task": "T3",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 47,
+      "op": "task_create",
+      "task": "T4",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 48,
+      "op": "task_create",
+      "task": "T5",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 49,
+      "op": "task_create",
+      "task": "T6",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 50,
+      "op": "task_create",
+      "task": "T7",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 51,
+      "op": "task_create",
+      "task": "T8",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 52,
+      "op": "task_create",
+      "task": "T9",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 53,
+      "op": "task_create",
+      "task": "T10",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 54,
+      "op": "task_create",
+      "task": "T11",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 55,
+      "op": "task_create",
+      "task": "T12",
+      "api": "MCP buildd create_task {title, description, roleSlug, kind, dependsOn, pathManifest, missionId}",
+      "db": "INSERT tasks (status=pending)"
+    },
+    {
+      "t": 56,
+      "op": "mission_note",
+      "note": "n_plan",
+      "api": "MCP buildd post_note {type:'decision'}",
+      "db": "INSERT mission_notes"
+    },
+    {
+      "t": 58,
+      "op": "complete",
+      "task": "T0",
+      "worker": "w0",
+      "summary": "Planned 12 tasks in 3 phases. Five can start now.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 59,
+      "op": "claim",
+      "task": "T1",
+      "worker": "w1",
+      "runner": "birch",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 60,
+      "op": "claim",
+      "task": "T2",
+      "worker": "w2",
+      "runner": "atlas",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 61,
+      "op": "claim",
+      "task": "T3",
+      "worker": "w3",
+      "runner": "cedar",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 62,
+      "op": "worker_status",
+      "worker": "w1",
+      "status": "running",
+      "api": "PATCH /api/workers/w1 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 62,
+      "op": "claim",
+      "task": "T4",
+      "worker": "w4",
+      "runner": "dune",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 63,
+      "op": "worker_status",
+      "worker": "w2",
+      "status": "running",
+      "api": "PATCH /api/workers/w2 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 63,
+      "op": "claim",
+      "task": "T5",
+      "worker": "w5",
+      "runner": "atlas",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)",
+      "beat": "Five agents, four machines, same minute"
+    },
+    {
+      "t": 64,
+      "op": "worker_status",
+      "worker": "w3",
+      "status": "running",
+      "api": "PATCH /api/workers/w3 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 65,
+      "op": "worker_status",
+      "worker": "w4",
+      "status": "running",
+      "api": "PATCH /api/workers/w4 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 66,
+      "op": "worker_status",
+      "worker": "w5",
+      "status": "running",
+      "api": "PATCH /api/workers/w5 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 140,
+      "op": "progress",
+      "worker": "w1",
+      "pct": 15,
+      "message": "Reading three providers' docs and status-page history",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 150,
+      "op": "progress",
+      "worker": "w2",
+      "pct": 20,
+      "message": "Writing migration: invoices.currency, fx_rate_snapshot",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 158,
+      "op": "progress",
+      "worker": "w3",
+      "pct": 15,
+      "message": "Sketching cache: 15-min TTL, last-good-rate fallback",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 165,
+      "op": "progress",
+      "worker": "w4",
+      "pct": 20,
+      "message": "Adding currency picker to billing settings",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 170,
+      "op": "progress",
+      "worker": "w5",
+      "pct": 25,
+      "message": "Replacing toFixed(2) with formatMoney across the portal",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 230,
+      "op": "progress",
+      "worker": "w2",
+      "pct": 55,
+      "message": "Migration applies cleanly on a fresh database and on a copy with existing invoices",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 260,
+      "op": "progress",
+      "worker": "w5",
+      "pct": 60,
+      "message": "Amount component now takes currency + locale",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 290,
+      "op": "progress",
+      "worker": "w3",
+      "pct": 40,
+      "message": "Provider client with retries and a circuit breaker",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 320,
+      "op": "progress",
+      "worker": "w4",
+      "pct": 45,
+      "message": "Persisting preference; defaulting to account base currency",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 340,
+      "op": "progress",
+      "worker": "w1",
+      "pct": 45,
+      "message": "Provider C has no documented outage behaviour — ruling it out",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 380,
+      "op": "progress",
+      "worker": "w2",
+      "pct": 85,
+      "message": "Tests pass; backfill defaults verified",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 420,
+      "op": "pr_open",
+      "worker": "w2",
+      "prNumber": 411,
+      "prUrl": "https://github.com/harborline/billing-web/pull/411",
+      "title": "feat(db): currency and fx_rate_snapshot on invoices and line items",
+      "linesAdded": 186,
+      "linesRemoved": 4,
+      "filesChanged": 5,
+      "commitCount": 2,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 430,
+      "op": "complete",
+      "task": "T2",
+      "worker": "w2",
+      "summary": "Additive migration for currency and rate snapshot; defaults backfilled.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 436,
+      "op": "claim",
+      "task": "T6",
+      "worker": "w6",
+      "runner": "birch",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 439,
+      "op": "worker_status",
+      "worker": "w6",
+      "status": "running",
+      "api": "PATCH /api/workers/w6 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 440,
+      "op": "claim",
+      "task": "T9",
+      "worker": "w9",
+      "runner": "atlas",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 443,
+      "op": "worker_status",
+      "worker": "w9",
+      "status": "running",
+      "api": "PATCH /api/workers/w9 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 450,
+      "op": "progress",
+      "worker": "w5",
+      "pct": 90,
+      "message": "Snapshot tests updated for the new helper",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 480,
+      "op": "pr_open",
+      "worker": "w5",
+      "prNumber": 412,
+      "prUrl": "https://github.com/harborline/billing-web/pull/412",
+      "title": "refactor(money): one locale-aware formatMoney, replace ad-hoc toFixed(2)",
+      "linesAdded": 142,
+      "linesRemoved": 97,
+      "filesChanged": 14,
+      "commitCount": 3,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 490,
+      "op": "complete",
+      "task": "T5",
+      "worker": "w5",
+      "summary": "One formatMoney helper; ad-hoc formatting removed.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 496,
+      "op": "claim",
+      "task": "T7",
+      "worker": "w7",
+      "runner": "cedar",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)",
+      "beat": "Phase 2 starts before phase 1 finishes"
+    },
+    {
+      "t": 499,
+      "op": "worker_status",
+      "worker": "w7",
+      "status": "running",
+      "api": "PATCH /api/workers/w7 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 500,
+      "op": "ci",
+      "worker": "w2",
+      "prNumber": 411,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 501,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/invoice.tsx"
+    },
+    {
+      "t": 505,
+      "op": "ci",
+      "worker": "w5",
+      "prNumber": 412,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 508,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/fx/convert.ts"
+    },
+    {
+      "t": 510,
+      "op": "progress",
+      "worker": "w6",
+      "pct": 30,
+      "message": "Adding currency + presentment fields to the Invoices API, additive only",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 513,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 520,
+      "op": "ci",
+      "worker": "w2",
+      "prNumber": 411,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 526,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 530,
+      "op": "progress",
+      "worker": "w9",
+      "pct": 25,
+      "message": "Export: adding currency and fx_rate columns",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 536,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/db/src/schema/invoices.ts"
+    },
+    {
+      "t": 541,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/db/src/schema/invoices.ts"
+    },
+    {
+      "t": 545,
+      "op": "merge",
+      "worker": "w2",
+      "prNumber": 411,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 549,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 555,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/fx/convert.ts"
+    },
+    {
+      "t": 560,
+      "op": "progress",
+      "worker": "w3",
+      "pct": 70,
+      "message": "Stale-rate path: serves last good rate and flags it; checkout never blocks",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 566,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 572,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 9,
+      "rem": 3
+    },
+    {
+      "t": 574,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 575,
+      "op": "progress",
+      "worker": "w7",
+      "pct": 20,
+      "message": "Invoice page reads presentment amounts",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 580,
+      "op": "ci",
+      "worker": "w5",
+      "prNumber": 412,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 587,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/fx/convert.ts"
+    },
+    {
+      "t": 590,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 14,
+      "rem": 4
+    },
+    {
+      "t": 592,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/LineItems.tsx"
+    },
+    {
+      "t": 598,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx"
+    },
+    {
+      "t": 600,
+      "op": "merge",
+      "worker": "w5",
+      "prNumber": 412,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 603,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/db/src/schema/invoices.ts"
+    },
+    {
+      "t": 614,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 620,
+      "op": "progress",
+      "worker": "w4",
+      "pct": 70,
+      "message": "Settings page e2e-tested in three locales",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 622,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 628,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 12,
+      "rem": 2
+    },
+    {
+      "t": 635,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/LineItems.tsx"
+    },
+    {
+      "t": 640,
+      "op": "progress",
+      "worker": "w1",
+      "pct": 75,
+      "message": "Writing recommendation",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 642,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/invoice.tsx"
+    },
+    {
+      "t": 653,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx"
+    },
+    {
+      "t": 660,
+      "op": "progress",
+      "worker": "w6",
+      "pct": 65,
+      "message": "OpenAPI schema updated; old clients unaffected",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 660,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 13,
+      "rem": 3
+    },
+    {
+      "t": 666,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 675,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/db/src/schema/invoices.ts"
+    },
+    {
+      "t": 682,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 690,
+      "op": "pr_open",
+      "worker": "w3",
+      "prNumber": 413,
+      "prUrl": "https://github.com/harborline/billing-web/pull/413",
+      "title": "feat(fx): rates service with a 15-minute cache and stale-rate fallback",
+      "linesAdded": 318,
+      "linesRemoved": 0,
+      "filesChanged": 7,
+      "commitCount": 4,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 696,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Bash",
+      "cmd": "pnpm --filter @harborline/money test format"
+    },
+    {
+      "t": 700,
+      "op": "complete",
+      "task": "T3",
+      "worker": "w3",
+      "summary": "Rates service with 15-min cache and stale-rate fallback.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 700,
+      "op": "ci",
+      "worker": "w3",
+      "prNumber": 413,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 706,
+      "op": "claim",
+      "task": "T8",
+      "worker": "w8",
+      "runner": "dune",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)",
+      "beat": "Six agents running at once (mission cap)"
+    },
+    {
+      "t": 709,
+      "op": "worker_status",
+      "worker": "w8",
+      "status": "running",
+      "api": "PATCH /api/workers/w8 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 711,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/payments/src/intents.ts"
+    },
+    {
+      "t": 718,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/invoice.tsx",
+      "add": 11,
+      "rem": 2
+    },
+    {
+      "t": 719,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/money/src/fx/snapshot.ts"
+    },
+    {
+      "t": 720,
+      "op": "progress",
+      "worker": "w7",
+      "pct": 45,
+      "message": "PDF footnote: base amount and the rate used",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 726,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/invoice.tsx",
+      "add": 9,
+      "rem": 2
+    },
+    {
+      "t": 728,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/money/src/fx/snapshot.ts"
+    },
+    {
+      "t": 733,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/invoice.tsx",
+      "add": 11,
+      "rem": 2
+    },
+    {
+      "t": 735,
+      "op": "progress",
+      "worker": "w9",
+      "pct": 50,
+      "message": "Reconciling presentment vs base in the export",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 735,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "apps/web/src/app/pay/[invoiceId]/page.tsx"
+    },
+    {
+      "t": 740,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "apps/web/src/app/pay/[invoiceId]/page.tsx"
+    },
+    {
+      "t": 741,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Write",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 30,
+      "rem": 0
+    },
+    {
+      "t": 744,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 3,
+      "rem": 0
+    },
+    {
+      "t": 745,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 746,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "apps/web/src/app/pay/[invoiceId]/page.tsx"
+    },
+    {
+      "t": 747,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 2,
+      "rem": 0
+    },
+    {
+      "t": 750,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 2,
+      "rem": 0
+    },
+    {
+      "t": 753,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 3,
+      "rem": 0
+    },
+    {
+      "t": 753,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/payments/src/stripe.ts"
+    },
+    {
+      "t": 756,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 1,
+      "rem": 0
+    },
+    {
+      "t": 758,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 1,
+      "rem": 0
+    },
+    {
+      "t": 760,
+      "op": "progress",
+      "worker": "w8",
+      "pct": 20,
+      "message": "Creating PaymentIntents in the customer currency from the snapshotted rate",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 764,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/payments/src/intents.ts"
+    },
+    {
+      "t": 770,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/money/src/fx/convert.ts"
+    },
+    {
+      "t": 778,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/payments/src/stripe.ts"
+    },
+    {
+      "t": 784,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/money/src/fx/snapshot.ts"
+    },
+    {
+      "t": 790,
+      "op": "ci",
+      "worker": "w3",
+      "prNumber": 413,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 793,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/payments/src/intents.ts"
+    },
+    {
+      "t": 800,
+      "op": "pr_open",
+      "worker": "w6",
+      "prNumber": 415,
+      "prUrl": "https://github.com/harborline/billing-web/pull/415",
+      "title": "feat(api): currency on the public Invoices API (additive, v2-safe)",
+      "linesAdded": 164,
+      "linesRemoved": 8,
+      "filesChanged": 5,
+      "commitCount": 2,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 800,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 10,
+      "rem": 0
+    },
+    {
+      "t": 802,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Edit",
+      "path": "packages/payments/src/stripe.ts",
+      "add": 18,
+      "rem": 4
+    },
+    {
+      "t": 809,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts",
+      "add": 11,
+      "rem": 1
+    },
+    {
+      "t": 815,
+      "op": "merge",
+      "worker": "w3",
+      "prNumber": 413,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 815,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Edit",
+      "path": "packages/payments/src/stripe.ts",
+      "add": 14,
+      "rem": 2
+    },
+    {
+      "t": 818,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/LineItems.tsx",
+      "add": 7,
+      "rem": 3
+    },
+    {
+      "t": 820,
+      "op": "complete",
+      "task": "T6",
+      "worker": "w6",
+      "summary": "Invoices API exposes currency and presentment amounts, additively.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 826,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Edit",
+      "path": "apps/web/src/app/pay/[invoiceId]/page.tsx",
+      "add": 21,
+      "rem": 2
+    },
+    {
+      "t": 827,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 7,
+      "rem": 2
+    },
+    {
+      "t": 830,
+      "op": "ci",
+      "worker": "w6",
+      "prNumber": 415,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 836,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/invoice.tsx",
+      "add": 5,
+      "rem": 0
+    },
+    {
+      "t": 838,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Edit",
+      "path": "apps/web/src/app/pay/[invoiceId]/page.tsx",
+      "add": 11,
+      "rem": 1
+    },
+    {
+      "t": 840,
+      "op": "progress",
+      "worker": "w8",
+      "pct": 40,
+      "message": "Line items convert cleanly — but rounding per line vs total gives different card charges",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 845,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/db/src/schema/invoices.ts",
+      "add": 10,
+      "rem": 3
+    },
+    {
+      "t": 850,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Bash",
+      "cmd": "pnpm --filter @harborline/payments test convert"
+    },
+    {
+      "t": 854,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 6,
+      "rem": 4
+    },
+    {
+      "t": 858,
+      "op": "tool",
+      "worker": "w8",
+      "tool": "Read",
+      "path": "packages/money/src/fx/convert.ts"
+    },
+    {
+      "t": 863,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 10,
+      "rem": 3
+    },
+    {
+      "t": 868,
+      "op": "waiting_input",
+      "worker": "w8",
+      "task": "T8",
+      "note": "n_q",
+      "waitingFor": {
+        "type": "question",
+        "prompt": "Round converted amounts per line (matches the Stripe charge) or only on the total (matches the base ledger)?",
+        "options": [
+          "Per line — match Stripe",
+          "Total only — match the ledger"
+        ]
+      },
+      "api": "PATCH /api/workers/w8 {status:'waiting_input', waitingFor} + MCP post_note {type:'question'}",
+      "db": "workers.status=waiting_input, waitingFor; INSERT mission_notes(type=question); push notification 'Agent needs your input'",
+      "beat": "One agent asks a sharp question"
+    },
+    {
+      "t": 872,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/pdf/src/layout.tsx",
+      "add": 4,
+      "rem": 3
+    },
+    {
+      "t": 880,
+      "op": "pr_open",
+      "worker": "w4",
+      "prNumber": 414,
+      "prUrl": "https://github.com/harborline/billing-web/pull/414",
+      "title": "feat(settings): customers can pick a billing currency",
+      "linesAdded": 211,
+      "linesRemoved": 12,
+      "filesChanged": 6,
+      "commitCount": 2,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 881,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts",
+      "add": 12,
+      "rem": 0
+    },
+    {
+      "t": 890,
+      "op": "complete",
+      "task": "T4",
+      "worker": "w4",
+      "summary": "Customers can choose a billing currency.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 890,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/layout.tsx",
+      "add": 7,
+      "rem": 2
+    },
+    {
+      "t": 895,
+      "op": "ci",
+      "worker": "w4",
+      "prNumber": 414,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 899,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 11,
+      "rem": 3
+    },
+    {
+      "t": 905,
+      "op": "artifact",
+      "artifact": "a_fx_report",
+      "worker": "w1",
+      "api": "MCP buildd create_artifact {type:'report', key:'fx-provider-comparison'}",
+      "db": "INSERT artifacts"
+    },
+    {
+      "t": 905,
+      "op": "ci",
+      "worker": "w6",
+      "prNumber": 415,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 908,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 6,
+      "rem": 3
+    },
+    {
+      "t": 915,
+      "op": "complete",
+      "task": "T1",
+      "worker": "w1",
+      "summary": "Recommend Provider B with central-bank fallback; snapshot at issue makes outages harmless.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 917,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 2,
+      "rem": 2
+    },
+    {
+      "t": 926,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 6,
+      "rem": 3
+    },
+    {
+      "t": 930,
+      "op": "merge",
+      "worker": "w6",
+      "prNumber": 415,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 935,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/layout.tsx",
+      "add": 2,
+      "rem": 3
+    },
+    {
+      "t": 940,
+      "op": "progress",
+      "worker": "w7",
+      "pct": 80,
+      "message": "Web view and PDF in customer currency",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 944,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/pdf/src/invoice.tsx",
+      "add": 11,
+      "rem": 0
+    },
+    {
+      "t": 953,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts",
+      "add": 5,
+      "rem": 2
+    },
+    {
+      "t": 960,
+      "op": "progress",
+      "worker": "w9",
+      "pct": 70,
+      "message": "Export columns: currency, presentment_amount, base_amount, fx_rate",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 960,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Bash",
+      "cmd": "pnpm --filter @harborline/pdf test"
+    },
+    {
+      "t": 962,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Edit",
+      "path": "packages/money/src/fx/convert.ts",
+      "add": 8,
+      "rem": 3
+    },
+    {
+      "t": 971,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "apps/web/src/app/invoices/[id]/page.tsx",
+      "add": 4,
+      "rem": 3
+    },
+    {
+      "t": 975,
+      "op": "ci",
+      "worker": "w4",
+      "prNumber": 414,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 980,
+      "op": "tool",
+      "worker": "w7",
+      "tool": "Read",
+      "path": "packages/db/src/schema/invoices.ts",
+      "add": 4,
+      "rem": 3
+    },
+    {
+      "t": 990,
+      "op": "pr_open",
+      "worker": "w7",
+      "prNumber": 416,
+      "prUrl": "https://github.com/harborline/billing-web/pull/416",
+      "title": "feat(invoices): render invoices in the customer's currency with a base-currency footnote",
+      "linesAdded": 402,
+      "linesRemoved": 61,
+      "filesChanged": 11,
+      "commitCount": 4,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 995,
+      "op": "merge",
+      "worker": "w4",
+      "prNumber": 414,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 1005,
+      "op": "complete",
+      "task": "T7",
+      "worker": "w7",
+      "summary": "Invoices render in customer currency with a base-currency footnote.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1010,
+      "op": "claim",
+      "task": "T10",
+      "worker": "w10",
+      "runner": "birch",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 1010,
+      "op": "ci",
+      "worker": "w7",
+      "prNumber": 416,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 1013,
+      "op": "worker_status",
+      "worker": "w10",
+      "status": "running",
+      "api": "PATCH /api/workers/w10 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 1014,
+      "op": "human_reply",
+      "worker": "w8",
+      "task": "T8",
+      "note": "n_reply",
+      "channel": "phone",
+      "message": "Per line. The card charge is what customers see. Put the delta in the export so finance can reconcile.",
+      "api": "POST /api/workers/w8/respond {message}  (+ mission_notes reply)",
+      "db": "INSERT mission_notes(type=reply, replyTo=n_q); n_q.status=answered; worker resumes",
+      "beat": "Human answers from her phone — 2m 26s after the question",
+      "from": "u_maya"
+    },
+    {
+      "t": 1018,
+      "op": "worker_status",
+      "worker": "w8",
+      "status": "running",
+      "api": "PATCH /api/workers/w8 {status:'running'}",
+      "db": "workers.status=running, waitingFor=null"
+    },
+    {
+      "t": 1024,
+      "op": "artifact",
+      "artifact": "a_rounding",
+      "worker": "w8",
+      "api": "MCP buildd create_artifact {key:'fx-rounding-decision'}",
+      "db": "INSERT artifacts"
+    },
+    {
+      "t": 1028,
+      "op": "memory",
+      "memory": "mem1",
+      "api": "MCP learn {type:'decision', title, content}",
+      "db": "INSERT memories"
+    },
+    {
+      "t": 1032,
+      "op": "agent_message",
+      "fromWorker": "w8",
+      "toTask": "T9",
+      "toWorker": "w9",
+      "message": "Rounding is per line (see fx-rounding-decision). Please add a rounding_delta column to the export.",
+      "api": "agent-to-agent message (delivered on w9's next update_progress)",
+      "db": "workers.pendingInstructions / instructionHistory on w9",
+      "beat": "Agents coordinate with each other"
+    },
+    {
+      "t": 1040,
+      "op": "progress",
+      "worker": "w9",
+      "pct": 80,
+      "message": "Added rounding_delta column per the rounding decision",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1050,
+      "op": "progress",
+      "worker": "w8",
+      "pct": 60,
+      "message": "Per-line rounding in convert(); totals now equal the charge",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1070,
+      "op": "progress",
+      "worker": "w10",
+      "pct": 40,
+      "message": "Receipt template mirrors the invoice footnote",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1108,
+      "op": "ci",
+      "worker": "w7",
+      "prNumber": 416,
+      "state": "ci_failed",
+      "failure": {
+        "job": "unit",
+        "test": "packages/pdf/src/invoice.snapshot.test.tsx",
+        "excerpt": "Expected \"1.234,50 €\" — received \"1,234.50 €\" (locale de-DE)"
+      },
+      "api": "GitHub webhook check_suite(failure) → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_failed, prCheckFailureCount=1",
+      "beat": "CI goes red"
+    },
+    {
+      "t": 1110,
+      "op": "task_create",
+      "task": "T7a",
+      "api": "webhook → buildCIRetryTask()",
+      "db": "INSERT tasks(taskClass=attempt, parentTaskId=T7, ciRetryPrNumber=416, priority=7)"
+    },
+    {
+      "t": 1111,
+      "op": "mission_note",
+      "note": "n_ci",
+      "api": "(system)",
+      "db": "INSERT mission_notes"
+    },
+    {
+      "t": 1116,
+      "op": "claim",
+      "task": "T7a",
+      "worker": "w7a",
+      "runner": "birch",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 1119,
+      "op": "worker_status",
+      "worker": "w7a",
+      "status": "running",
+      "api": "PATCH /api/workers/w7a {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 1121,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Read",
+      "path": "packages/pdf/src/invoice.snapshot.test.tsx"
+    },
+    {
+      "t": 1127,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Read",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx"
+    },
+    {
+      "t": 1130,
+      "op": "progress",
+      "worker": "w7a",
+      "pct": 20,
+      "message": "Reading CI log: de-DE snapshot uses the process locale",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1134,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Read",
+      "path": "packages/money/src/formatMoney.ts"
+    },
+    {
+      "t": 1150,
+      "op": "pr_open",
+      "worker": "w9",
+      "prNumber": 417,
+      "prUrl": "https://github.com/harborline/billing-web/pull/417",
+      "title": "feat(export): accounting CSV carries both currencies and the rate used",
+      "linesAdded": 229,
+      "linesRemoved": 18,
+      "filesChanged": 5,
+      "commitCount": 3,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 1150,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Read",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx"
+    },
+    {
+      "t": 1160,
+      "op": "complete",
+      "task": "T9",
+      "worker": "w9",
+      "summary": "Ledger export carries both currencies, the rate, and a rounding delta.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1165,
+      "op": "ci",
+      "worker": "w9",
+      "prNumber": 417,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 1170,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Edit",
+      "path": "packages/pdf/src/BaseCurrencyFootnote.tsx",
+      "add": 14,
+      "rem": 7
+    },
+    {
+      "t": 1176,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Edit",
+      "path": "packages/pdf/src/invoice.snapshot.test.tsx",
+      "add": 9,
+      "rem": 2
+    },
+    {
+      "t": 1180,
+      "op": "progress",
+      "worker": "w7a",
+      "pct": 60,
+      "message": "PDF footnote was calling toLocaleString() — routed it through formatMoney(locale)",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1190,
+      "op": "tool",
+      "worker": "w7a",
+      "tool": "Bash",
+      "cmd": "pnpm --filter @harborline/pdf test invoice.snapshot"
+    },
+    {
+      "t": 1200,
+      "op": "progress",
+      "worker": "w8",
+      "pct": 80,
+      "message": "Stripe test mode: EUR, GBP, JPY (zero-decimal) all charge the invoice total exactly",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1215,
+      "op": "memory",
+      "memory": "mem2",
+      "api": "MCP learn {type:'gotcha'}",
+      "db": "INSERT memories"
+    },
+    {
+      "t": 1222,
+      "op": "push_commit",
+      "worker": "w7a",
+      "prNumber": 416,
+      "sha": "c3d8e21",
+      "api": "git push (same branch)",
+      "db": "workers.lastCommitSha, commitCount"
+    },
+    {
+      "t": 1225,
+      "op": "ci",
+      "worker": "w7",
+      "prNumber": 416,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 1245,
+      "op": "ci",
+      "worker": "w9",
+      "prNumber": 417,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 1260,
+      "op": "schedule_fire",
+      "schedule": "S2",
+      "task": "H1",
+      "api": "cron → /api/cron/schedules",
+      "db": "INSERT tasks(H1, creationSource=schedule); task_schedules.lastRunAt, totalRuns+1",
+      "beat": "Meanwhile, the recurring mission ticks"
+    },
+    {
+      "t": 1263,
+      "op": "claim",
+      "task": "H1",
+      "worker": "wh1",
+      "runner": "dune",
+      "api": "POST /api/workers/claim",
+      "db": "INSERT workers"
+    },
+    {
+      "t": 1266,
+      "op": "worker_status",
+      "worker": "wh1",
+      "status": "running",
+      "api": "PATCH /api/workers/wh1",
+      "db": "workers.status=running"
+    },
+    {
+      "t": 1270,
+      "op": "merge",
+      "worker": "w9",
+      "prNumber": 417,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 1300,
+      "op": "progress",
+      "worker": "wh1",
+      "pct": 60,
+      "message": "Two patch bumps with green CI — merging",
+      "api": "update_progress",
+      "db": "workers.milestones"
+    },
+    {
+      "t": 1300,
+      "op": "ci",
+      "worker": "w7",
+      "prNumber": 416,
+      "state": "ci_green",
+      "api": "GitHub webhook (check_suite on the PR owner row)",
+      "db": "workers(w7).prLifecycleStatus=ci_green",
+      "beat": "CI heals itself"
+    },
+    {
+      "t": 1310,
+      "op": "complete",
+      "task": "T7a",
+      "worker": "w7a",
+      "summary": "Fixed locale-sensitive PDF footnote; CI green on #416.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1330,
+      "op": "complete",
+      "task": "H1",
+      "worker": "wh1",
+      "summary": "Merged 2 patch bumps. No majors pending. Next tick in 6h.",
+      "api": "complete_task",
+      "db": "tasks.status=completed"
+    },
+    {
+      "t": 1330,
+      "op": "merge",
+      "worker": "w7",
+      "prNumber": 416,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 1340,
+      "op": "pr_open",
+      "worker": "w8",
+      "prNumber": 418,
+      "prUrl": "https://github.com/harborline/billing-web/pull/418",
+      "title": "feat(checkout): pay in the presentment currency via Stripe",
+      "linesAdded": 537,
+      "linesRemoved": 44,
+      "filesChanged": 12,
+      "commitCount": 6,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 1352,
+      "op": "complete",
+      "task": "T8",
+      "worker": "w8",
+      "summary": "Checkout charges in the customer's currency; per-line rounding matches Stripe exactly.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1355,
+      "op": "ci",
+      "worker": "w8",
+      "prNumber": 418,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 1358,
+      "op": "claim",
+      "task": "T11",
+      "worker": "w11",
+      "runner": "cedar",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 1361,
+      "op": "worker_status",
+      "worker": "w11",
+      "status": "running",
+      "api": "PATCH /api/workers/w11 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 1362,
+      "op": "claim",
+      "task": "T12",
+      "worker": "w12",
+      "runner": "dune",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)",
+      "beat": "Phase 3: prove it"
+    },
+    {
+      "t": 1365,
+      "op": "worker_status",
+      "worker": "w12",
+      "status": "running",
+      "api": "PATCH /api/workers/w12 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 1380,
+      "op": "progress",
+      "worker": "w10",
+      "pct": 85,
+      "message": "Receipt preview in EUR and JPY",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1420,
+      "op": "pr_open",
+      "worker": "w10",
+      "prNumber": 419,
+      "prUrl": "https://github.com/harborline/billing-web/pull/419",
+      "title": "feat(email): receipts show the paid currency and rate",
+      "linesAdded": 96,
+      "linesRemoved": 21,
+      "filesChanged": 3,
+      "commitCount": 1,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 1430,
+      "op": "complete",
+      "task": "T10",
+      "worker": "w10",
+      "summary": "Receipts show paid currency and the rate used.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1435,
+      "op": "ci",
+      "worker": "w10",
+      "prNumber": 419,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 1440,
+      "op": "progress",
+      "worker": "w11",
+      "pct": 25,
+      "message": "Seeding a EUR customer and invoice",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1450,
+      "op": "ci",
+      "worker": "w8",
+      "prNumber": 418,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 1470,
+      "op": "progress",
+      "worker": "w12",
+      "pct": 35,
+      "message": "Drafting: enabling currencies, what customers see",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1475,
+      "op": "merge",
+      "worker": "w8",
+      "prNumber": 418,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 1520,
+      "op": "ci",
+      "worker": "w10",
+      "prNumber": 419,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 1545,
+      "op": "merge",
+      "worker": "w10",
+      "prNumber": 419,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 1560,
+      "op": "progress",
+      "worker": "w11",
+      "pct": 55,
+      "message": "Paying with a test card in EUR; asserting receipt and export row",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1600,
+      "op": "progress",
+      "worker": "w12",
+      "pct": 70,
+      "message": "Rounding section links the recorded decision",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1690,
+      "op": "pr_open",
+      "worker": "w12",
+      "prNumber": 421,
+      "prUrl": "https://github.com/harborline/billing-web/pull/421",
+      "title": "docs: multi-currency billing guide for account admins",
+      "linesAdded": 188,
+      "linesRemoved": 0,
+      "filesChanged": 2,
+      "commitCount": 1,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 1700,
+      "op": "complete",
+      "task": "T12",
+      "worker": "w12",
+      "summary": "Admin guide for multi-currency billing.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1705,
+      "op": "ci",
+      "worker": "w12",
+      "prNumber": 421,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 1720,
+      "op": "progress",
+      "worker": "w11",
+      "pct": 85,
+      "message": "Green three runs in a row; recording the run",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 1770,
+      "op": "ci",
+      "worker": "w12",
+      "prNumber": 421,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 1790,
+      "op": "merge",
+      "worker": "w12",
+      "prNumber": 421,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged"
+    },
+    {
+      "t": 1850,
+      "op": "artifact",
+      "artifact": "a_e2e_video",
+      "worker": "w11",
+      "api": "MCP buildd upload_artifact {type:'recording'}",
+      "db": "INSERT artifacts"
+    },
+    {
+      "t": 1870,
+      "op": "pr_open",
+      "worker": "w11",
+      "prNumber": 420,
+      "prUrl": "https://github.com/harborline/billing-web/pull/420",
+      "title": "test(e2e): pay a EUR invoice end to end",
+      "linesAdded": 274,
+      "linesRemoved": 0,
+      "filesChanged": 2,
+      "commitCount": 2,
+      "api": "MCP buildd create_pr {title, head, lede}",
+      "db": "workers.prUrl, prNumber, prLifecycleStatus=pr_open, linesAdded/Removed, filesChanged, commitCount"
+    },
+    {
+      "t": 1885,
+      "op": "complete",
+      "task": "T11",
+      "worker": "w11",
+      "summary": "EUR invoice paid end to end: invoice → card → receipt → export.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 1890,
+      "op": "ci",
+      "worker": "w11",
+      "prNumber": 420,
+      "state": "ci_running",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_running"
+    },
+    {
+      "t": 2010,
+      "op": "ci",
+      "worker": "w11",
+      "prNumber": 420,
+      "state": "ci_green",
+      "api": "GitHub webhook check_suite → POST /api/github/webhook",
+      "db": "workers.prLifecycleStatus=ci_green"
+    },
+    {
+      "t": 2035,
+      "op": "merge",
+      "worker": "w11",
+      "prNumber": 420,
+      "api": "auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
+      "db": "workers.mergedAt=now, prLifecycleStatus=merged",
+      "beat": "Last PR lands"
+    },
+    {
+      "t": 2040,
+      "op": "criteria_eval",
+      "mission": "M1",
+      "state": {
+        "overall": "PENDING",
+        "criteria": [
+          {
+            "index": 0,
+            "type": "all_prs_merged",
+            "label": "every task PR merged",
+            "verdict": "pass",
+            "evidence": "11 task PRs merged into main"
+          },
+          {
+            "index": 1,
+            "type": "no_open_tasks",
+            "label": "no open tasks",
+            "verdict": "pass",
+            "evidence": "All deliverable tasks closed"
+          },
+          {
+            "index": 2,
+            "type": "command",
+            "label": "currency suite green",
+            "verdict": "PENDING",
+            "evidence": "verifying on runner…",
+            "workerTaskId": "V1"
+          },
+          {
+            "index": 3,
+            "type": "artifact_exists",
+            "label": "rounding policy recorded",
+            "verdict": "pass",
+            "evidence": "artifact fx-rounding-decision"
+          }
+        ]
+      },
+      "api": "mission evaluate (auto on last task close) → missions.goalCriteriaState",
+      "db": "UPDATE missions.goalCriteriaState; INSERT tasks(V1, taskClass=bookkeeping)",
+      "beat": "Goal criteria go green one by one"
+    },
+    {
+      "t": 2046,
+      "op": "claim",
+      "task": "V1",
+      "worker": "wv1",
+      "runner": "cedar",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
+      "t": 2049,
+      "op": "worker_status",
+      "worker": "wv1",
+      "status": "running",
+      "api": "PATCH /api/workers/wv1 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
+      "t": 2080,
+      "op": "progress",
+      "worker": "wv1",
+      "pct": 50,
+      "message": "Running: pnpm test --filter @harborline/money --filter web -- currency",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 2200,
+      "op": "complete",
+      "task": "V1",
+      "worker": "wv1",
+      "summary": "Command exited 0.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 2205,
+      "op": "criteria_eval",
+      "mission": "M1",
+      "state": {
+        "overall": "pass",
+        "criteria": [
+          {
+            "index": 0,
+            "verdict": "pass"
+          },
+          {
+            "index": 1,
+            "verdict": "pass"
+          },
+          {
+            "index": 2,
+            "verdict": "pass",
+            "evidence": "Command exited with code 0"
+          },
+          {
+            "index": 3,
+            "verdict": "pass"
+          }
+        ]
+      },
+      "api": "verification task result → missions.goalCriteriaState",
+      "db": "UPDATE missions.goalCriteriaState.overall=pass"
+    },
+    {
+      "t": 2212,
+      "op": "artifact",
+      "artifact": "a_summary",
+      "api": "mission completion",
+      "db": "INSERT artifacts(key=mission-summary)"
+    },
+    {
+      "t": 2215,
+      "op": "mission_note",
+      "note": "n_done",
+      "api": "(system)",
+      "db": "INSERT mission_notes"
+    },
+    {
+      "t": 2220,
+      "op": "mission_complete",
+      "mission": "M1",
+      "api": "canCompleteMission → missions.status=completed",
+      "db": "missions.status=completed, completedAt",
+      "beat": "Mission complete — 37 minutes"
+    }
+  ]
+}

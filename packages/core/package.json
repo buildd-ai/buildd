@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.229.0",
+  "version": "0.230.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -55,6 +55,7 @@
     "./task-area-readout": "./task-area-readout.ts",
     "./task-area-readout-source": "./task-area-readout-source.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./task-label": "./task-label.ts",
     "./pr-shipped": "./pr-shipped.ts",
     "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",

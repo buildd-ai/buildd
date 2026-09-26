@@ -19,6 +19,10 @@ const FILES = [
   './AgentHandledCard.tsx',
   '../app/app/(protected)/home/page.tsx',
   '../app/app/(protected)/home/HomeMissions.tsx',
+  '../app/app/(protected)/home/ActionQueueCard.tsx',
+  '../app/app/(protected)/home/NeedsYouStack.tsx',
+  '../app/app/(protected)/home/NeedsYouCards.tsx',
+  '../app/app/(protected)/home/StatStrip.tsx',
 ];
 
 const sources = await Promise.all(

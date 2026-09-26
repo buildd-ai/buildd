@@ -269,6 +269,39 @@ describe('affordanceFor', () => {
     expect(affordanceFor(stalled.situation.focus, { missionId: 'm-1' })?.label).toBe('Open the blocking task');
   });
 
+  // Regression: a stalled mission offered "Open the blocking task" on a task
+  // that was only waiting on its dependency — the one row that cannot be
+  // blocking anything.
+  it('never cites a dependency-blocked task as the blocker', () => {
+    const stalled = deriveMissionStateView({
+      ...base,
+      health: 'STALLED',
+      openTasks: [
+        { id: 't-dep', status: 'pending', title: 'Second step', waitingOnTaskIds: ['t-first'] },
+        { id: 't-first', status: 'pending', title: 'First step' },
+      ],
+    });
+    const focus = stalled.situation.focus;
+    if (focus?.kind !== 'task') throw new Error('expected a task focus');
+    expect(focus.taskIds[0]).toBe('t-first');
+    expect(focus.taskIds).not.toContain('t-dep');
+    expect(affordanceFor(focus, { missionId: 'm-1' })).toMatchObject({ taskId: 't-first' });
+  });
+
+  it('cites the unmet dependency when every open row is waiting on one', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      health: 'NOMINAL',
+      completion: { ok: false, code: 'pending_deliverables', reason: '1 open', pendingDeliverables: 1, pendingByStatus: { pending: 1 } },
+      openTasks: [{ id: 't-dep', status: 'pending', title: 'Second step', waitingOnTaskIds: ['t-first'] }],
+    });
+    const focus = view.situation.focus;
+    if (focus?.kind !== 'task') throw new Error('expected a task focus');
+    expect(focus.taskIds).toEqual(['t-first']);
+    expect(focus.tone).not.toBe('warning');
+    expect(affordanceFor(focus, { missionId: 'm-1' })?.label).not.toBe('Open the blocking task');
+  });
+
   it("opens a mission task in the sheet over the mission, never a bare task-page push", () => {
     const failed = { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] };
     expect(affordanceFor(failed, { missionId: 'm-1' })).toEqual({

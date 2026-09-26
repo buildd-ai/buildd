@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/neon-http';
 import { neon, NeonQueryFunction } from '@neondatabase/serverless';
 import * as schema from './schema';
 import { config } from '../config';
+import { applyNeonLocalOverride } from './neon-local';
 
 // Lazy initialization to avoid errors during build
 let _sql: NeonQueryFunction<false, false> | null = null;
@@ -13,6 +14,9 @@ function getSql() {
     if (!config.databaseUrl) {
       throw new Error('DATABASE_URL is required');
     }
+    // Opt-in local Postgres via a Neon HTTP proxy (scripts/demo). No-op unless
+    // NEON_LOCAL_FETCH_ENDPOINT is set; throws if DATABASE_URL is not loopback.
+    applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl });
     _sql = neon(config.databaseUrl);
   }
   return _sql;

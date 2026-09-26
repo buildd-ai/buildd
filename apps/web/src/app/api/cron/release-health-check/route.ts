@@ -31,13 +31,22 @@
 // the row's sha; if one does, the merge event was missed and the row is
 // healed to `deploying` instead.
 //
-// Also sweeps `degraded` releases whose failure reason is a sha mismatch:
-// main advances continuously, so a later legitimate merge can land on top of
-// a release's own headSha during the watch window, making the deploy-identity
-// endpoint report a *newer* sha and tripping the mismatch check even though
-// production is fine. probeAndDegrade checks GitHub ancestry before degrading
-// to stop new false positives; this sweep re-checks ancestry for rows that
-// already degraded and heals them back to `healthy` once confirmed.
+// Also sweeps `degraded` releases whose failure reason is either a sha
+// mismatch or an HTTP/network error on the verification probe itself:
+// - sha mismatch: main advances continuously, so a later legitimate merge can
+//   land on top of a release's own headSha during the watch window, making
+//   the deploy-identity endpoint report a *newer* sha and tripping the
+//   mismatch check even though production is fine. probeAndDegrade checks
+//   GitHub ancestry before degrading to stop new false positives; this sweep
+//   re-checks ancestry for rows that already degraded and heals them back to
+//   `healthy` once confirmed (healSupersededRelease).
+// - HTTP/network error: the probe itself failed (a 502, a timeout) for a
+//   reason unrelated to what's deployed — e.g. a cold instance whose GitHub
+//   lookup failed before /api/version split `deployed` from
+//   `latestAvailable`. healHttpErrorRelease re-runs the probe fresh; a row
+//   that degraded before the underlying endpoint bug was fixed never
+//   self-heals on its own otherwise, since nothing else revisits a `degraded`
+//   release once the platform issue underneath it is gone.
 //
 // Trigger: cron-manifest.json (external scheduler). Vercel-native crons do not
 // fire in this project, so nothing may be parked in vercel.json.
@@ -46,8 +55,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { releases, workspaces } from '@buildd/core/db/schema';
-import { eq, and, gte, lt, sql } from 'drizzle-orm';
-import { probeAndDegrade, healSupersededRelease, type RepoIdentity } from '@/lib/release-health-watcher';
+import { eq, and, or, gte, lt, sql } from 'drizzle-orm';
+import { probeAndDegrade, healSupersededRelease, healHttpErrorRelease, type RepoIdentity } from '@/lib/release-health-watcher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -327,16 +336,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
-  // Self-heal sweep: a release degraded on a sha mismatch can be a false
-  // positive — a later legitimate merge landed on top of it mid-watch-window,
-  // and the mismatch is really "production moved forward", not "production
-  // broke". probeAndDegrade's own ancestry check (above) prevents new false
-  // positives, but this covers rows that already degraded before that check
-  // existed, or before a supersession could be confirmed at the time. Scoped
-  // to the same hard-fail lookback as the sweeps above so it doesn't rescan
-  // ancient degraded rows on every tick, and to the sha-mismatch reason
-  // specifically — an HTTP-error or network-error degradation describes the
-  // endpoint itself failing, which no sha comparison can exonerate.
+  // Self-heal sweep — see file header for the two reason families this
+  // covers. Scoped to the same hard-fail lookback as the sweeps above so it
+  // doesn't rescan ancient degraded rows on every tick.
+  const SHA_MISMATCH_REASON = sql`${releases.failureReason} LIKE 'deployed sha % does not match release head sha %'`;
+  const HTTP_ERROR_REASON = sql`(${releases.failureReason} LIKE 'health check returned HTTP %' OR ${releases.failureReason} LIKE 'health check failed:%')`;
   const healableDegraded = await db
     .select({
       id: releases.id,
@@ -345,6 +349,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       deployUrl: releases.deployUrl,
       headSha: releases.headSha,
       healthyAt: releases.healthyAt,
+      failureReason: releases.failureReason,
       verificationUrl: sql<string | null>`${workspaces.releaseConfig}->>'verificationUrl'`,
     })
     .from(releases)
@@ -354,7 +359,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         eq(releases.state, 'degraded'),
         eq(releases.verificationStrategy, 'http'),
         gte(releases.healthyAt, hardFailCutoff),
-        sql`${releases.failureReason} LIKE 'deployed sha % does not match release head sha %'`,
+        or(SHA_MISMATCH_REASON, HTTP_ERROR_REASON),
       ),
     );
 
@@ -362,19 +367,19 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   for (const row of healableDegraded) {
     if (!row.verificationUrl) continue;
     const repoIdentity = await resolveRepoIdentity(row.workspaceId);
-    const outcome = await healSupersededRelease(
-      {
-        id: row.id,
-        workspaceId: row.workspaceId,
-        verificationStrategy: row.verificationStrategy,
-        deployUrl: row.deployUrl,
-        headSha: row.headSha,
-        healthyAt: row.healthyAt,
-      },
-      row.verificationUrl,
-      db,
-      repoIdentity,
-    );
+    const releaseArg = {
+      id: row.id,
+      workspaceId: row.workspaceId,
+      verificationStrategy: row.verificationStrategy,
+      deployUrl: row.deployUrl,
+      headSha: row.headSha,
+      healthyAt: row.healthyAt,
+    };
+    const isHttpError = row.failureReason?.startsWith('health check returned HTTP')
+      || row.failureReason?.startsWith('health check failed:');
+    const outcome = isHttpError
+      ? await healHttpErrorRelease(releaseArg, row.verificationUrl, db, repoIdentity)
+      : await healSupersededRelease(releaseArg, row.verificationUrl, db, repoIdentity);
     if (outcome === 'healed') healed++;
   }
 

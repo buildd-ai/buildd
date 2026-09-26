@@ -23,6 +23,7 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
 import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memory-excludes';
@@ -46,13 +47,14 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
+import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
-import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
+import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
@@ -982,7 +984,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot());
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1913,6 +1915,19 @@ export class WorkerManager {
       setupsInFlight.set(workspacePath, (setupsInFlight.get(workspacePath) ?? 0) + 1);
       let setupResult: Awaited<ReturnType<typeof setupWorktree>>;
       try {
+        // The tolerant install for an undeclared repo runs inside setupWorktree,
+        // long before cleanEnv exists. Hand it the same role env the agent will
+        // get, so a private registry token mapped on the role reaches `bun
+        // install` instead of only the host container env. (Declared repos
+        // install in the provision gate, against cleanEnv itself.) Deliberately
+        // role env only: LLM creds and connector bearers have no business in a
+        // package manager's postinstall scripts.
+        let installEnv: Record<string, string> | undefined;
+        try {
+          installEnv = (await this.resolveWorkerRoleEnv(worker)).resolved;
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] Could not resolve role env for install (continuing without): ${err instanceof Error ? err.message : String(err)}`);
+        }
         setupResult = await setupWorktree(
           workspacePath,
           claimedWorker.branch,
@@ -1922,6 +1937,7 @@ export class WorkerManager {
           // Live-worker view: a path another running session owns must never be
           // reclaimed, not even when its tree reads clean (committed-but-unpushed).
           this.workers,
+          installEnv,
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -1970,13 +1986,14 @@ export class WorkerManager {
         // false-alarm noise.
         const install = setupResult.install;
         if (install?.status === 'failed') {
-          const label = `Dependency install failed (${install.failure}) at ${install.dir} — imports may fail`;
+          const where = formatInstallDir(install.dir);
+          const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
           console.warn(`[Worker ${worker.id}] ${label}`);
           this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           this.buildd.updateWorker(worker.id, {
             appendErrorTraces: [{
               pattern: 'worktree_install_failed',
-              excerpt: `${install.failure} installing at "${install.dir}": ${install.message}`,
+              excerpt: `${install.failure} installing at ${where}: ${install.message}`,
               source: 'git-operations',
             }],
           }).catch(() => {});
@@ -1989,7 +2006,9 @@ export class WorkerManager {
             // host fault instead of one per worker. Raised through the
             // session-start boundary below so it gets the same server report
             // and worktree cleanup as any other start failure.
-            installBlock = `Provision failed: dependency install (${install.failure}) at ${install.dir}`;
+            // registry-auth names host, package and the env var the repo's
+            // registry config reads, so the fix is readable off the task card.
+            installBlock = describeInstallFailure(install);
           } else {
             // Drift / timeout / unknown: proceed, but visibly. The banner goes
             // in the prompt (see startSession) and the flag rides the worker
@@ -2511,8 +2530,19 @@ export class WorkerManager {
    * the main session already produced, so the closing turn's completion
    * payload still carries it even if the resumed turn emits none.
    */
+  /**
+   * The role's env (secret labels → values). One resolver for both consumers —
+   * the worktree dependency install and the agent's cleanEnv — so the install
+   * can never see a different set of secrets from the agent.
+   */
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    if (!worker.roleConfig) return { resolved: {}, missing: [] };
+    return resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>);
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
+    worker.sessionCwd = cwd;
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
@@ -2759,7 +2789,7 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + [
           '## ⚠ Degraded Environment — Dependencies NOT Installed',
           '',
-          `Dependency install failed in this worktree (\`${failure}\` at \`${dir}\`).`,
+          `Dependency install failed in this worktree (\`${failure}\` at ${formatInstallDir(dir)}).`,
           '`node_modules` is absent or incomplete, so workspace imports and any',
           'command that needs them will fail.',
           '',
@@ -3205,10 +3235,7 @@ export class WorkerManager {
       // Resolve role env vars (secret labels → actual values)
       if (worker.roleConfig) {
         try {
-          const { resolved: roleEnv, missing } = await resolveRoleEnv(
-            getRoleDir(worker.roleConfig.slug),
-            process.env as Record<string, string>,
-          );
+          const { resolved: roleEnv, missing } = await this.resolveWorkerRoleEnv(worker);
           Object.assign(cleanEnv, roleEnv);
           console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
           if (missing.length > 0) {
@@ -5551,18 +5578,10 @@ export class WorkerManager {
             this.addCheckpoint(worker, CheckpointEvent.FIRST_EDIT);
           }
 
-          // Emit action milestones for notable tool calls (Edit, Write, Bash)
-          if (toolName === 'Edit' || toolName === 'Write') {
-            const filePath = input.file_path as string;
-            const shortPath = filePath ? filePath.split('/').pop() || filePath : 'file';
-            this.addMilestone(worker, { type: 'action', label: `${toolName === 'Edit' ? 'Edited' : 'Wrote'} ${shortPath}`, ts: Date.now() });
-          } else if (toolName === 'Bash') {
-            const cmd = (input.command as string) || '';
-            // Only emit for notable bash commands, skip trivial ones
-            if (cmd.includes('git commit') || cmd.includes('npm') || cmd.includes('bun') || cmd.includes('test') || cmd.includes('build')) {
-              this.addMilestone(worker, { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts: Date.now() });
-            }
-          }
+          // Emit structured action milestones for tool calls (Edit, Write,
+          // MultiEdit, Read, notable Bash) — see tool-milestones.ts.
+          const actionMilestone = toolActionMilestone(toolName, input, worker.sessionCwd ?? worker.worktreePath);
+          if (actionMilestone) this.addMilestone(worker, actionMilestone);
 
           // Update currentAction (still useful for live display)
           const redactAction = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
@@ -6063,17 +6082,18 @@ export class WorkerManager {
     if (redact && 'label' in milestone && typeof milestone.label === 'string') {
       milestone = { ...milestone, label: redact(milestone.label) };
     }
-    worker.milestones.push(milestone);
-    // Keep last 50 milestones; prioritize phases/checkpoints over actions when trimming
-    if (worker.milestones.length > 50) {
-      const actionIdx = worker.milestones.findIndex(m => m.type === 'action');
-      if (actionIdx >= 0) {
-        worker.milestones.splice(actionIdx, 1);
-      } else {
-        worker.milestones.shift();
-      }
+    if (redact && milestone.type === 'action') {
+      if (typeof milestone.cmd === 'string') milestone = { ...milestone, cmd: redact(milestone.cmd) };
+      if (typeof milestone.path === 'string') milestone = { ...milestone, path: redact(milestone.path) };
     }
-    this.emit({ type: 'milestone', workerId: worker.id, milestone });
+    // Cap 100; same-path consecutive Reads fold; trims Reads, then other
+    // actions, then oldest (see appendMilestone).
+    const { folded } = appendMilestone(worker.milestones, milestone);
+    if (!folded) this.emit({ type: 'milestone', workerId: worker.id, milestone });
+
+    // Reads are high-frequency — leave them to the 10s periodic sync rather
+    // than PATCHing on every file read.
+    if (milestone.type === 'action' && milestone.tool === 'Read') return;
 
     // Sync this worker immediately so web dashboard sees milestones right away
     if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {

@@ -87,6 +87,29 @@ describe('buildStateBecause', () => {
       expect(chain[0].claim).toBe('Task "Build the page" is in_progress with no live worker.');
     });
 
+    it('names the unmet dependency, never "no live worker", for a dependency-blocked row', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        health: 'STALLED',
+        openTasks: [
+          { id: 'task-dep', status: 'pending', title: 'Second step', waitingOnTaskIds: ['task-first'] },
+          { id: 'task-first', status: 'pending', title: 'First step' },
+        ],
+      });
+      const chain = buildStateBecause(view, { missionId: 'm' }, {
+        openTasks: [
+          { id: 'task-dep', title: 'Second step', status: 'pending', live: false, waitingOn: [{ id: 'task-first', title: 'First step' }] },
+          { id: 'task-first', title: 'First step', status: 'pending', live: false },
+        ],
+      });
+      expect(chain[0].refs.taskId).toBe('task-first');
+      const depLink = chain.find(l => l.claim.includes('Second step'));
+      expect(depLink).toBeDefined();
+      expect(depLink!.claim).not.toContain('no live worker');
+      expect(depLink!.claim).toContain('First step');
+      expect(depLink!.refs.taskId).toBe('task-first');
+    });
+
     it('treats unknown liveness on a stalled mission as orphaned', () => {
       const view = deriveMissionStateView({
         ...base,

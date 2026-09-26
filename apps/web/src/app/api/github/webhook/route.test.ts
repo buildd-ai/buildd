@@ -40,7 +40,7 @@ const mockMissionsFindFirst = mock(() => null as any);
 // Track DB operations for assertions
 let insertCalls: Array<{ table: any; values: any; conflict: string | null }> = [];
 let deleteCalls: Array<{ table: any }> = [];
-let updateCalls: Array<{ table: any; setValues: any }> = [];
+let updateCalls: Array<{ table: any; setValues: any; condition?: any }> = [];
 // Captured `db.select().from(t).where(cond)` predicates, so a test can assert
 // the SHAPE of a query and not just its result (see the workflow_run runId
 // lookup: the danger there is the SQL it emits, not what it returns).
@@ -140,7 +140,8 @@ mock.module('@buildd/core/db', () => ({
     }),
     update: (table: any) => ({
       set: (values: any) => {
-        updateCalls.push({ table, setValues: values });
+        const call: { table: any; setValues: any; condition?: any } = { table, setValues: values };
+        updateCalls.push(call);
         if (failUpdateMatching?.(values)) {
           return {
             where: (_condition: any) => {
@@ -151,7 +152,7 @@ mock.module('@buildd/core/db', () => ({
           };
         }
         return {
-          where: (condition: any) => ({
+          where: (condition: any) => (call.condition = condition, {
             returning: () =>
               Promise.resolve(updateReturningByStatus[values?.status] ?? [{ id: 'row-1' }]),
             then: (resolve: any) => resolve(undefined),
@@ -201,7 +202,7 @@ const schemaMock = {
     id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status',
     releaseResult: 'release_result', missionId: 'mission_id', workspaceId: 'workspace_id',
   },
-  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef' },
+  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef', mergedAt: 'mergedAt', taskId: 'taskId' },
   workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
   // headSha and createdAt are load-bearing for the sha-fallback lookup: a column
@@ -2552,6 +2553,50 @@ describe('POST /api/github/webhook', () => {
         (c) => (c.setValues as any).mergedAt instanceof Date,
       );
       expect(workerUpdate).toBeDefined();
+    });
+
+    it('stamps mergedAt on EVERY worker row carrying the PR, not just the findFirst one', async () => {
+      // A CI-retry attempt pushes to its parent's branch and adopts the PR
+      // number, so two rows carry one PR. Stamping only the row findFirst
+      // returned left the other reading as an open PR, and Home kept a
+      // "Merge PR #N" card after the merge.
+      resetAll();
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 57,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/abc12345-fix', sha: 'sha-57' },
+          html_url: 'https://github.com/test-org/test-repo/pull/57',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'worker-pr-owner',
+        prUrl: 'https://github.com/test-org/test-repo/pull/57',
+        prNumber: 57,
+        task: { id: 'task-pr-owner', status: 'completed', workspaceId: 'ws1', release: 'false', missionId: null },
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const mergeUpdate = updateCalls.find(
+        (c) => (c.setValues as any).mergedAt instanceof Date && (c.setValues as any).prLifecycleStatus === 'merged',
+      );
+      expect(mergeUpdate).toBeDefined();
+      // Scoped to the PR's identity (url + number) and to rows still unmerged,
+      // never to the single worker id findFirst returned.
+      const cond = mergeUpdate!.condition;
+      expect(cond).toEqual({
+        type: 'and',
+        conditions: [
+          { type: 'workerOwnsPrUrl', prUrl: 'https://github.com/test-org/test-repo/pull/57', prNumber: 57 },
+          { field: schemaMock.workers.mergedAt, type: 'isNull' },
+        ],
+      });
     });
 
     it('enqueues a knowledge diff ingest job per bound workspace on merged PR', async () => {

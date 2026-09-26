@@ -48,7 +48,18 @@ export interface StateBecauseExtras {
    * worker" is only true of the latter. Omitted = unknown; see
    * `openTaskLinks`.
    */
-  openTasks?: Array<{ id: string; title: string | null; status: string; live?: boolean }>;
+  openTasks?: Array<{
+    id: string;
+    title: string | null;
+    status: string;
+    live?: boolean;
+    /**
+     * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
+     * is described as waiting on them (and ref'd to the first), never as
+     * orphaned — and it never leads the chain.
+     */
+    waitingOn?: Array<{ id: string; title: string | null }>;
+  }>;
   /** Failed rows with the signature their failure was bucketed under. */
   failedTasks?: Array<{ id: string; title: string | null; errorSignature?: string | null }>;
   /** Unmerged PRs holding completion. */
@@ -153,10 +164,22 @@ function openTaskLinks(
   extra: StateBecauseExtras,
 ): Link[] {
   const nothingLive = w.tone === 'warning';
-  const orphaned = (t: { live?: boolean }) => (t.live === undefined ? nothingLive : !t.live);
-  const rows = [...(extra.openTasks ?? [])].sort((a, b) => Number(orphaned(b)) - Number(orphaned(a)));
-  return rows.slice(0, 10).map(t =>
-    link(
+  type Row = NonNullable<StateBecauseExtras['openTasks']>[number];
+  const depBlocked = (t: Row) => (t.waitingOn?.length ?? 0) > 0;
+  const orphaned = (t: Row) => !depBlocked(t) && (t.live === undefined ? nothingLive : !t.live);
+  const rank = (t: Row) => (orphaned(t) ? 0 : depBlocked(t) ? 2 : 1);
+  const rows = [...(extra.openTasks ?? [])].sort((a, b) => rank(a) - rank(b));
+  return rows.slice(0, 10).map(t => {
+    if (depBlocked(t)) {
+      const deps = t.waitingOn!;
+      const named = deps.map(d => `"${d.title ?? d.id}"`).join(', ');
+      return link(
+        `Task "${t.title ?? t.id}" is waiting on ${deps.length === 1 ? 'its dependency' : 'its dependencies'} ${named}.`,
+        'tasks.dependsOn',
+        { ...base, taskId: deps[0].id },
+      );
+    }
+    return link(
       orphaned(t)
         ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`
         : t.live
@@ -164,8 +187,8 @@ function openTaskLinks(
           : `Task "${t.title ?? t.id}" is ${t.status} and not finished yet.`,
       'tasks.status + workers.status',
       { ...base, taskId: t.id },
-    ),
-  );
+    );
+  });
 }
 
 function causeLinksFor(

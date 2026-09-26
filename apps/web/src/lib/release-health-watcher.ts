@@ -270,3 +270,55 @@ export async function healSupersededRelease(
   await markHealthy(release, db);
   return 'healed';
 }
+
+// Re-check a release degraded on an HTTP-error or network-error verification
+// failure — e.g. a cold instance whose GitHub lookup failed and (before
+// /api/version split `deployed` from `latestAvailable`) turned that into a
+// 502 for the whole endpoint, even though the right code was live the entire
+// time. Unlike healSupersededRelease above, the ORIGINAL probe never
+// succeeded, so this re-runs it fresh rather than assuming it's still good.
+// A release with no recorded head sha heals on the probe alone (that was the
+// entire signal it degraded on); one with a head sha still needs the same
+// sha/descendant confirmation as the sha-mismatch path, so a genuinely broken
+// deploy that also happens to answer 200 does not heal on HTTP status alone.
+export async function healHttpErrorRelease(
+  release: WatchedRelease,
+  verificationUrl: string,
+  db: DB,
+  repoIdentity: RepoIdentity,
+): Promise<'healed' | 'unresolved'> {
+  try {
+    const res = await fetch(verificationUrl, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    if (!res.ok) return 'unresolved';
+  } catch {
+    return 'unresolved';
+  }
+
+  if (!release.headSha) {
+    await markHealthy(release, db);
+    return 'healed';
+  }
+
+  const deployedSha = await fetchDeployedSha(verificationUrl);
+  if (!deployedSha) return 'unresolved';
+
+  if (deployedSha === release.headSha) {
+    await markHealthy(release, db);
+    return 'healed';
+  }
+
+  if (repoIdentity.installationId && repoIdentity.fullName) {
+    const isSuperseded = await isDeployedShaDescendant(
+      repoIdentity.installationId,
+      repoIdentity.fullName,
+      release.headSha,
+      deployedSha,
+    );
+    if (isSuperseded === true) {
+      await markHealthy(release, db);
+      return 'healed';
+    }
+  }
+
+  return 'unresolved';
+}

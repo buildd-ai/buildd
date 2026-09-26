@@ -383,6 +383,188 @@ describe('GET /api/workers/active', () => {
     expect(data.activeLocalUis[0].runnerVersion).toBeNull();
   });
 
+  it('includes the runner update-snapshot fields and computes upToDateWithDeployed for a main-tracking runner', async () => {
+    const originalSha = process.env.VERCEL_GIT_COMMIT_SHA;
+    process.env.VERCEL_GIT_COMMIT_SHA = 'deployed-sha';
+    try {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkspacesFindMany
+        .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+      ]);
+
+      mockHeartbeatsFindMany.mockResolvedValue([
+        {
+          localUiUrl: 'http://localhost:8766',
+          viewerToken: 'token-1',
+          accountId: 'account-1',
+          maxConcurrentWorkers: 3,
+          activeWorkerCount: 1,
+          workspaceIds: ['ws-1'],
+          environment: null,
+          currentCommit: 'deployed-sha',
+          diskCommit: 'deployed-sha',
+          commitDrift: false,
+          updating: false,
+          updateAvailable: false,
+          trackedBranch: 'main',
+          lastHeartbeatAt: new Date(),
+          account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+        },
+      ]);
+
+      const req = createMockRequest();
+      const res = await GET(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      const row = data.activeLocalUis[0];
+      expect(row.currentCommit).toBe('deployed-sha');
+      expect(row.diskCommit).toBe('deployed-sha');
+      expect(row.commitDrift).toBe(false);
+      expect(row.updating).toBe(false);
+      expect(row.updateAvailable).toBe(false);
+      expect(row.trackedBranch).toBe('main');
+      expect(row.upToDateWithDeployed).toBe(true);
+    } finally {
+      process.env.VERCEL_GIT_COMMIT_SHA = originalSha;
+    }
+  });
+
+  it('reports upToDateWithDeployed: false for a main-tracking runner whose disk commit differs from the deployed sha', async () => {
+    const originalSha = process.env.VERCEL_GIT_COMMIT_SHA;
+    process.env.VERCEL_GIT_COMMIT_SHA = 'deployed-sha';
+    try {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkspacesFindMany
+        .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+      ]);
+
+      mockHeartbeatsFindMany.mockResolvedValue([
+        {
+          localUiUrl: 'http://localhost:8766',
+          viewerToken: 'token-1',
+          accountId: 'account-1',
+          maxConcurrentWorkers: 3,
+          activeWorkerCount: 1,
+          workspaceIds: ['ws-1'],
+          environment: null,
+          currentCommit: 'stale-sha',
+          diskCommit: 'stale-sha',
+          commitDrift: false,
+          updating: false,
+          updateAvailable: true,
+          trackedBranch: 'main',
+          lastHeartbeatAt: new Date(),
+          account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+        },
+      ]);
+
+      const req = createMockRequest();
+      const res = await GET(req);
+      const data = await res.json();
+      expect(data.activeLocalUis[0].upToDateWithDeployed).toBe(false);
+    } finally {
+      process.env.VERCEL_GIT_COMMIT_SHA = originalSha;
+    }
+  });
+
+  it('reports upToDateWithDeployed: null for a dev-tracking runner (dev is never deployed)', async () => {
+    const originalSha = process.env.VERCEL_GIT_COMMIT_SHA;
+    process.env.VERCEL_GIT_COMMIT_SHA = 'deployed-sha';
+    try {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkspacesFindMany
+        .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+      ]);
+
+      mockHeartbeatsFindMany.mockResolvedValue([
+        {
+          localUiUrl: 'http://localhost:8766',
+          viewerToken: 'token-1',
+          accountId: 'account-1',
+          maxConcurrentWorkers: 3,
+          activeWorkerCount: 1,
+          workspaceIds: ['ws-1'],
+          environment: null,
+          currentCommit: 'deployed-sha',
+          diskCommit: 'deployed-sha',
+          commitDrift: false,
+          updating: false,
+          updateAvailable: false,
+          trackedBranch: 'dev',
+          lastHeartbeatAt: new Date(),
+          account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+        },
+      ]);
+
+      const req = createMockRequest();
+      const res = await GET(req);
+      const data = await res.json();
+      expect(data.activeLocalUis[0].upToDateWithDeployed).toBeNull();
+    } finally {
+      process.env.VERCEL_GIT_COMMIT_SHA = originalSha;
+    }
+  });
+
+  it('returns nulls for the update-snapshot fields when absent (legacy runner)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+    ]);
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      {
+        localUiUrl: 'http://localhost:8766',
+        viewerToken: 'token-1',
+        accountId: 'account-1',
+        maxConcurrentWorkers: 3,
+        activeWorkerCount: 0,
+        workspaceIds: ['ws-1'],
+        environment: null,
+        currentCommit: null,
+        diskCommit: null,
+        commitDrift: null,
+        updating: null,
+        updateAvailable: null,
+        trackedBranch: null,
+        lastHeartbeatAt: new Date(),
+        account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+      },
+    ]);
+
+    const req = createMockRequest();
+    const res = await GET(req);
+    const data = await res.json();
+    const row = data.activeLocalUis[0];
+    expect(row.currentCommit).toBeNull();
+    expect(row.diskCommit).toBeNull();
+    expect(row.commitDrift).toBeNull();
+    expect(row.updating).toBeNull();
+    expect(row.updateAvailable).toBeNull();
+    expect(row.trackedBranch).toBeNull();
+    expect(row.upToDateWithDeployed).toBeNull();
+  });
+
   it('supports API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });

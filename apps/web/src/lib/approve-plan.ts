@@ -3,6 +3,7 @@ import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
+import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import type { PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
@@ -276,6 +277,8 @@ export async function approvePlan(
       .values({
         workspaceId: task.workspaceId,
         title: step.title,
+        // The planner is asked for a 2–4 word label; the title heuristic fills it otherwise.
+        label: normalizeTaskLabel(step.label) ?? heuristicTaskLabel(step.title).label,
         description: step.description || null,
         parentTaskId: planningTaskId,
         missionId: task.missionId,

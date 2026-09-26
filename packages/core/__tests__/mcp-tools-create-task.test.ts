@@ -861,3 +861,50 @@ describe('create_task — emitsPlan (spec-to-build)', () => {
     expect(description).toContain('requiresPlanApproval: true');
   });
 });
+
+describe('create_task — short display label', () => {
+  let mockApi: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockApi = mock();
+    mockApi.mockResolvedValue({ id: 'task-new', title: 'Test Task', priority: 5 });
+  });
+
+  it('passes a creator-supplied label through to task intake', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'feat(fx): rates service with a 15-minute cache', description: 'd', label: 'rates service' },
+      createMockContext(),
+    );
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.label).toBe('rates service');
+  });
+
+  it('omits label when not provided so the server classifier fills it', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'feat(fx): rates service', description: 'd' },
+      createMockContext(),
+    );
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect('label' in body).toBe(false);
+  });
+
+  it('rejects a non-string label instead of dropping it', async () => {
+    await expect(
+      handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'create_task',
+        { title: 't', description: 'd', label: 42 },
+        createMockContext(),
+      ),
+    ).rejects.toThrow(/label/);
+    expect(mockApi).not.toHaveBeenCalled();
+  });
+
+  it('documents label in the create_task params description', () => {
+    expect(buildParamsDescription(['create_task'])).toContain('label?');
+  });
+});

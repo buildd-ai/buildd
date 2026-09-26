@@ -7,6 +7,7 @@ import {
   selectRelevantRunnerAccounts,
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
+import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its
@@ -93,4 +94,34 @@ export async function getRunnerHeartbeats(
       // capability only. See deriveSandboxPosture.
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
     }));
+}
+
+/**
+ * The heartbeats `resolveRunnerDisplay` names runners from, for workers a page
+ * already holds (mission Board/Lanes, task page): every runner of those
+ * workers' own accounts, so a CI-retry worker read later in the same render on
+ * a sibling runner still resolves. Never another account's: a `localhost` URL
+ * is shared by every team's runners, and a hostname label must not cross.
+ * Best-effort: on any failure the page falls back to the URL's host.
+ */
+export async function loadRunnerHeartbeats(workerRows: readonly RunnerWorkerLike[]): Promise<RunnerHeartbeatLike[]> {
+  const accountIds = heartbeatAccountIds(workerRows);
+  if (accountIds.length === 0) return [];
+  try {
+    const rows = await db
+      .select({
+        accountId: workerHeartbeats.accountId,
+        localUiUrl: workerHeartbeats.localUiUrl,
+        environment: workerHeartbeats.environment,
+      })
+      .from(workerHeartbeats)
+      .where(inArray(workerHeartbeats.accountId, accountIds));
+    return rows.map(r => ({
+      accountId: r.accountId,
+      localUiUrl: r.localUiUrl,
+      environment: { labels: (r.environment as { labels?: Record<string, string> | null } | null)?.labels ?? null },
+    }));
+  } catch {
+    return [];
+  }
 }

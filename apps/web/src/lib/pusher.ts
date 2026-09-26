@@ -21,12 +21,16 @@ function getPusher(): Pusher | null {
     return null; // Pusher not configured
   }
 
+  // PUSHER_HOST points at a self-hosted Pusher-protocol server (e.g. soketi in
+  // scripts/demo). Unset = Pusher's hosted cluster, exactly as before.
+  const host = process.env.PUSHER_HOST;
   pusher = new Pusher({
     appId,
     key,
     secret,
     cluster,
-    useTLS: true,
+    useTLS: host ? process.env.PUSHER_USE_TLS === 'true' : true,
+    ...(host ? { host, port: process.env.PUSHER_PORT } : {}),
   });
 
   return pusher;

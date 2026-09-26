@@ -339,7 +339,7 @@ export function TaskCard({
     const prStatusCls   = prLifecycleStatus === 'merged' ? 'text-status-success' : 'text-text-muted';
 
     return (
-      <div className="relative group flex items-center gap-2 py-1.5 min-w-0">
+      <div className="relative group flex items-center gap-2 py-1.5 min-w-0" data-testid="task-card" data-status={displayStatus}>
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -405,7 +405,7 @@ export function TaskCard({
   // Tiers 1–4, sparkline optional.
   if (density === 'row') {
     return (
-      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors">
+      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -502,7 +502,7 @@ export function TaskCard({
   // ─── FULL density — Home Right Now ───────────────────────────────────────
   // All tiers.
   return (
-    <div className="relative group border-l-2 border-accent bg-card-rightnow px-4 py-3 min-w-0 hover:bg-surface-3 transition-colors">
+    <div className="relative group border-l-2 border-accent bg-card-rightnow px-4 py-3 min-w-0 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
       {/* Link overlay */}
       <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 

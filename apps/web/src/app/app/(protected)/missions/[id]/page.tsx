@@ -49,6 +49,12 @@ import { parseMissionListView, missionListViewOpensDisclosure } from '@/lib/miss
 import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
+import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
+import MissionBoard from './MissionBoard';
+import MissionLanes from './MissionLanes';
+import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { parseMissionLayout } from '@/lib/mission-layout';
 import MissionDelivery from './MissionDelivery';
 import VisualReviewStrip from './VisualReviewStrip';
 import { missionVisualReview } from '@/lib/mission-visual-review';
@@ -94,10 +100,10 @@ export default async function MissionDetailPage({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -173,6 +179,7 @@ export default async function MissionDetailPage({
     humanSteeringNotes,
     workspaceForPolicy,
     missionFollowupTasks,
+    runnerHeartbeats,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -253,6 +260,8 @@ export default async function MissionDetailPage({
       completedAt: (mission as any).completedAt ?? null,
       taskIds: (mission.tasks || []).map(t => t.id),
     }]),
+    // Runner hostnames for the Board and Lanes (runner-display).
+    loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -1038,25 +1047,7 @@ export default async function MissionDetailPage({
   const recordIds = new Set(missionRecords.map(a => a.id));
   const recordItems = artifactItems.filter(a => recordIds.has(a.id));
 
-  const situation = (
-    <>
-      {/* ── The situation — what this mission is waiting on, and the one
-          action that advances it. Rendered from `explain`'s answer, the shared
-          accessor; the mission card renders the same sentence. */}
-      {missionAnswer && !situationRepeatsCompletion(missionAnswer.state, completionPick != null) && (
-        <MissionSituationBlock
-          missionId={id}
-          situation={missionAnswer.situation}
-          because={missionAnswer.because}
-          criteriaReachable={criteriaReachable}
-        />
-      )}
-
-      {/* ── Waiting on: owner decision — one owner for mission state. Naming
-          which remedy the cycle history supports (inferCriteriaFailureReading)
-          is the difference between an owner editing one line and an owner
-          filing a phantom task. */}
-      {displayState === 'waiting_decision' && (() => {
+  const decisionBlock = displayState === 'waiting_decision' && (() => {
         const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
         const readingCopy = describeCriteriaFailureReading(reading);
         // First non-passing criterion, by its stable `index` — not array
@@ -1086,7 +1077,27 @@ export default async function MissionDetailPage({
             />
           </div>
         );
-      })()}
+      })();
+
+  const situation = (
+    <>
+      {/* ── The situation — what this mission is waiting on, and the one
+          action that advances it. Rendered from `explain`'s answer, the shared
+          accessor; the mission card renders the same sentence. */}
+      {missionAnswer && !situationRepeatsCompletion(missionAnswer.state, completionPick != null) && (
+        <MissionSituationBlock
+          missionId={id}
+          situation={missionAnswer.situation}
+          because={missionAnswer.because}
+          criteriaReachable={criteriaReachable}
+        />
+      )}
+
+      {/* ── Waiting on: owner decision — one owner for mission state. Naming
+          which remedy the cycle history supports (inferCriteriaFailureReading)
+          is the difference between an owner editing one line and an owner
+          filing a phantom task. */}
+      {decisionBlock}
 
       {/* ── Criteria gate, only for a caller the accessor could not answer for
           (the explain read failed), so the gate is never silent. */}
@@ -1291,6 +1302,126 @@ export default async function MissionDetailPage({
     </MissionSecondaryPanel>
   );
 
+  // ── Board / Lanes (MissionBoard, MissionLanes) ────────────────────────────
+  // One model for both, from the same rows the feed reads; `buildMissionBoard`
+  // folds and states them with the feed's own rules, so the counts agree.
+  const boardModel = buildMissionBoard({
+    runnerHeartbeats,
+    tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    roles,
+    now: renderedAt,
+    missionCreatedAt: new Date((mission as any).createdAt).getTime(),
+    missionCompletedAt: (mission as any).completedAt ? new Date((mission as any).completedAt).getTime() : null,
+    missionStatus: mission.status,
+    criteria: goalCriteria as Array<{ type: string; label?: string; key?: string; artifactType?: string }>,
+    criteriaState: goalCriteriaStateFull?.criteria ?? [],
+    artifacts: allArtifacts.map(a => ({ key: a.key ?? null, type: a.type ?? null })),
+    humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
+  });
+  const completionText = completionPick
+    ? (completionPick.source === 'completion_record' ? formatCompletionRecord(completionPick.text) : completionPick.text)
+    : null;
+  // The band says running / needs-you / done by itself. Anything else the
+  // mission is waiting on (a decision gate, a block, a stall) still gets its
+  // one sentence and its one action above the columns.
+  const boardNotice = ['running', 'active', 'complete'].includes(displayState) ? null : (
+    <>
+      {missionAnswer && (
+        <MissionSituationBlock
+          missionId={id}
+          situation={missionAnswer.situation}
+          because={missionAnswer.because}
+          criteriaReachable={criteriaReachable}
+        />
+      )}
+      {decisionBlock}
+      {budgetUsd != null && mission.status === 'budget_exhausted' && budgetDetail}
+    </>
+  );
+  const boardLink = { missionId: id, from: parseMissionOrigin(from), initiativeId: initiativeId ?? null };
+  const verifiedPill = showVerifiedPill ? (
+    <MissionVerifiedPill
+      missionId={id}
+      criteria={goalCriteria}
+      criteriaState={goalCriteriaStateFull}
+      autoVerify={autoVerifyFlag}
+      readonly={isTerminal}
+      failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+      overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
+    />
+  ) : undefined;
+  const overflowMenu = (
+    <MissionOverflowMenu
+      missionId={id}
+      currentStatus={mission.status}
+      cronExpression={scheduleCron}
+      workspaceId={mission.workspaceId}
+      roles={roles}
+      hasSchedule={!!scheduleCron}
+      orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
+      isHeld={isHeld}
+      displayState={displayState}
+      hasPrimaryAction={hasPrimaryAction}
+    />
+  );
+  const back = mastheadBack(from, breadcrumb.links);
+  const goalLine = (mission.description ?? '').split(/\n\s*\n/)[0].replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim() || null;
+  const footerRows = (
+    <>
+      <MissionRecordsSheet
+        missionId={id}
+        baseUrl={baseUrl}
+        records={recordItems}
+        allArtifacts={artifactItems}
+        initialArtifactId={initialOpenArtifactId ?? null}
+      />
+      <MissionNotesSheet missionId={id} />
+      {settings}
+    </>
+  );
+  const orchestratorRow = (orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
+    <details data-testid="mission-orchestrator-row" className="group border-t border-border-default">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
+        <span aria-hidden="true" className="text-text-muted">─</span>
+        <span className="flex-1">
+          {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
+        </span>
+        <span aria-hidden="true" className="group-open:rotate-90">›</span>
+      </summary>
+      <ul className="pb-2">
+        {bookkeepingTasks.map(t => (
+          <li key={t.id}>
+            <Link
+              href={taskPageHref({ taskId: t.id, missionId: id })}
+              className="flex min-h-11 items-center gap-2 pl-5 font-mono text-[11px] text-text-secondary hover:text-text-primary"
+            >
+              <span className="min-w-0 truncate">{t.title}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </details>
+  ) : undefined;
+  const boardHeader = (content: React.ReactNode) => (
+    <MissionBoardHeader
+      back={back}
+      title={mission.title}
+      chip={stateChip}
+      verified={verifiedPill}
+      actions={overflowMenu}
+      goal={goalLine}
+      serverNow={renderedAt}
+      startedAt={boardModel.startedAt}
+      endedAt={boardModel.endedAt}
+    >
+      {content}
+      <div data-testid="mission-board-footer" className="mt-10 max-w-3xl">
+        {orchestratorRow}
+        {footerRows}
+      </div>
+    </MissionBoardHeader>
+  );
+
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <SwipeProvider>
@@ -1315,113 +1446,63 @@ export default async function MissionDetailPage({
       >
       <MissionReconcileOnOpen missionId={id} />
 
-      <MissionDetailView
-        missionId={id}
-        title={mission.title}
-        chip={stateChip}
-        segments={pulseSegments}
-        segmentLabels={segmentLabels}
-        caption={pulseCaption}
-        back={mastheadBack(from, breadcrumb.links)}
-        verified={showVerifiedPill ? (
-          <MissionVerifiedPill
+      <MissionLayoutShell
+        initial={parseMissionLayout(layoutParam, listViewParam)}
+        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} {...boardLink} />)}
+        lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} {...boardLink} />)}
+        feed={(
+          <MissionDetailView
             missionId={id}
-            criteria={goalCriteria}
-            criteriaState={goalCriteriaStateFull}
-            autoVerify={autoVerifyFlag}
-            readonly={isTerminal}
-            failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
-            overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
-          />
-        ) : undefined}
-        actions={(
-          <MissionOverflowMenu
-            missionId={id}
-            currentStatus={mission.status}
-            cronExpression={scheduleCron}
-            workspaceId={mission.workspaceId}
-            roles={roles}
-            hasSchedule={!!scheduleCron}
-            orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
-            isHeld={isHeld}
-            displayState={displayState}
-            hasPrimaryAction={hasPrimaryAction}
-          />
-        )}
-        expand={<MissionStripExpand data={flightStripData} missionId={id} missionTitle={mission.title} />}
-        desktopStrip={<MissionFlightStripInline data={flightStripData} />}
-        description={<MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} />}
-        situation={situation}
-        delivery={delivery}
-        feed={{
-          tasks: feedTasks,
-          now: renderedAt,
-          from: parseMissionOrigin(from),
-          initiativeId: initiativeId ?? null,
-          recordsCountByTask,
-          liveLines,
-        }}
-        desktopListOpen={missionListViewOpensDisclosure(listViewParam)}
-        desktopList={(
-          <MissionTabs
-            initialView={parseMissionListView(listViewParam)}
-            timelineContent={(
-              <CondensedTimeline
-                groups={timelineGroups}
-                segments={segments}
-                effectivePolicyTier={effectivePolicy.tier}
-                policyLabel={policyLabel}
-                missionId={id}
-                allTasksCount={allTasksCount}
-                missionCompleted={mission.status === 'completed'}
-                bookkeepingTasks={bookkeepingTasks}
+            title={mission.title}
+            chip={stateChip}
+            segments={pulseSegments}
+            segmentLabels={segmentLabels}
+            caption={pulseCaption}
+            back={back}
+            verified={verifiedPill}
+            actions={<><MissionLayoutTabs />{overflowMenu}</>}
+            expand={<MissionStripExpand data={flightStripData} missionId={id} missionTitle={mission.title} />}
+            desktopStrip={<MissionFlightStripInline data={flightStripData} />}
+            description={<MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} />}
+            situation={situation}
+            delivery={delivery}
+            feed={{
+              tasks: feedTasks,
+              now: renderedAt,
+              from: parseMissionOrigin(from),
+              initiativeId: initiativeId ?? null,
+              recordsCountByTask,
+              liveLines,
+            }}
+            desktopListOpen={missionListViewOpensDisclosure(listViewParam)}
+            desktopList={(
+              <MissionTabs
+                initialView={parseMissionListView(listViewParam)}
+                timelineContent={(
+                  <CondensedTimeline
+                    groups={timelineGroups}
+                    segments={segments}
+                    effectivePolicyTier={effectivePolicy.tier}
+                    policyLabel={policyLabel}
+                    missionId={id}
+                    allTasksCount={allTasksCount}
+                    missionCompleted={mission.status === 'completed'}
+                    bookkeepingTasks={bookkeepingTasks}
+                  />
+                )}
+                structureContent={allChains.length > 0 ? (
+                  <StructureView
+                    chains={allChains}
+                    taskMap={condensedTaskMapForGrouping}
+                    missionId={id}
+                    retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
+                  />
+                ) : undefined}
               />
             )}
-            structureContent={allChains.length > 0 ? (
-              <StructureView
-                chains={allChains}
-                taskMap={condensedTaskMapForGrouping}
-                missionId={id}
-                retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
-              />
-            ) : undefined}
+            orchestratorRow={orchestratorRow}
+            footer={footerRows}
           />
-        )}
-        orchestratorRow={(orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
-          <details data-testid="mission-orchestrator-row" className="group border-t border-border-default">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
-              <span aria-hidden="true" className="text-text-muted">─</span>
-              <span className="flex-1">
-                {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
-              </span>
-              <span aria-hidden="true" className="group-open:rotate-90">›</span>
-            </summary>
-            <ul className="pb-2">
-              {bookkeepingTasks.map(t => (
-                <li key={t.id}>
-                  <Link
-                    href={taskPageHref({ taskId: t.id, missionId: id })}
-                    className="flex min-h-11 items-center gap-2 pl-5 font-mono text-[11px] text-text-secondary hover:text-text-primary"
-                  >
-                    <span className="min-w-0 truncate">{t.title}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </details>
-        ) : undefined}
-        footer={(
-          <>
-            <MissionRecordsSheet
-              missionId={id}
-              baseUrl={baseUrl}
-              records={recordItems}
-              allArtifacts={artifactItems}
-              initialArtifactId={initialOpenArtifactId ?? null}
-            />
-            <MissionNotesSheet missionId={id} />
-            {settings}
-          </>
         )}
       />
       </MissionAutoRefresh>

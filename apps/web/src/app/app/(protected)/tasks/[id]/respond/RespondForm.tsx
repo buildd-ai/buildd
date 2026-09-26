@@ -2,19 +2,24 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import NeedsInputAnswerBox from '../NeedsInputAnswerBox';
+import QuestionHero from '../QuestionHero';
+import type { UnifiedQuestion } from '../question-hero';
 import { respondRedirectHref } from './respond-links';
-
-type Option = string | { label: string; description?: string; recommended?: boolean };
 
 interface Props {
   workerId: string;
+  taskId: string;
   /** The task's mission: an answered mission task returns to its row there. */
   missionId?: string | null;
-  options: Option[];
+  question: UnifiedQuestion;
+  askerLabel: string;
 }
 
-export default function RespondForm({ workerId, missionId, options }: Props) {
+/**
+ * The push-notification landing's answer surface — the same QuestionHero the
+ * task page renders, so a question reads and answers identically on the phone.
+ */
+export default function RespondForm({ workerId, taskId, missionId, question, askerLabel }: Props) {
   const router = useRouter();
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +36,15 @@ export default function RespondForm({ workerId, missionId, options }: Props) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to send answer');
+      // The same ask recorded as a question note is marked answered too.
+      if (question.noteId) {
+        await fetch(`/api/tasks/${taskId}/notes/${question.noteId}/reply`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: message }),
+        }).catch(() => {});
+      }
       // On a resume this is the SAME task (the resumed worker continues under
       // it); on a cold continuation it is the new one. Either way it is where
       // the work now is. A task-less worker returns null — stay put rather than
@@ -46,39 +60,14 @@ export default function RespondForm({ workerId, missionId, options }: Props) {
   }
 
   return (
-    <div className="mt-5 flex flex-col gap-2">
-      {options.map((opt, i) => {
-        const label = typeof opt === 'string' ? opt : opt.label;
-        const description = typeof opt === 'string' ? undefined : opt.description;
-        const recommended = typeof opt === 'string' ? false : opt.recommended;
-        const isSending = sending === label;
-        return (
-          <button
-            key={i}
-            onClick={() => submit(label)}
-            disabled={sending !== null}
-            className="text-left px-4 py-3 text-sm bg-surface-3 text-text-primary rounded-md border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            <span className="flex items-center gap-2">
-              <span className="font-medium">{isSending ? 'Sending…' : label}</span>
-              {recommended && (
-                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">
-                  Recommended
-                </span>
-              )}
-            </span>
-            {description && (
-              <span className="block mt-0.5 text-xs text-text-muted">{description}</span>
-            )}
-          </button>
-        );
-      })}
-
-      <NeedsInputAnswerBox onSubmit={submit} sending={sending !== null} />
-
-      {error && (
-        <p className="mt-1 text-xs text-status-error">{error}</p>
-      )}
-    </div>
+    <QuestionHero
+      testId="respond-question-hero"
+      question={question}
+      askerLabel={askerLabel}
+      onAnswer={submit}
+      sending={sending}
+      error={error}
+      enableKeys
+    />
   );
 }

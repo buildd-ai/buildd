@@ -383,8 +383,12 @@ export interface MissionStateInput {
   wait?: { reason: string; waitUntil: Date | string } | null;
   /** From `evaluateMissionWorkState`, when a caller ran it. */
   workState?: { complete: boolean; reason: string; unfinishedTaskCount: number; unmergedPrCount: number } | null;
-  /** Open deliverable rows, for naming which tasks are holding. */
-  openTasks?: Array<{ id: string; status: string; title?: string | null }>;
+  /**
+   * Open deliverable rows, for naming which tasks are holding.
+   * `waitingOnTaskIds`: unmet `dependsOn` entries of a pending row. Such a row
+   * cannot be claimed, so it is never named as the blocker — its dependency is.
+   */
+  openTasks?: Array<{ id: string; status: string; title?: string | null; waitingOnTaskIds?: string[] }>;
   /** Failed deliverable rows, for naming which tasks failed. */
   failedTasks?: Array<{ id: string; title?: string | null; infra?: boolean }>;
   /**
@@ -905,6 +909,31 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       return acc;
     }, {});
   const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(', ');
+
+  // Never cite a row that is only waiting on its dependency: it cannot be
+  // claimed, so it is not what is holding the mission. Claimable rows lead;
+  // when there are none, the unmet dependencies are the honest answer, and
+  // the reading is a wait on the DAG rather than a stall.
+  const claimable = openTasks.filter(t => !(t.waitingOnTaskIds?.length));
+  const depOnly = !live && openTasks.length > 0 && claimable.length === 0;
+  if (depOnly) {
+    const depIds = [...new Set(openTasks.flatMap(t => t.waitingOnTaskIds ?? []))];
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'task',
+        tone: 'neutral',
+        label: `${pendingCount} task(s) waiting on ${depIds.length === 1 ? 'an unmet dependency' : `${depIds.length} unmet dependencies`}`,
+        count: pendingCount,
+        taskIds: depIds,
+        byStatus,
+      },
+      displayState: 'active',
+      source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+    };
+  }
+  const citedIds = (live ? openTasks : claimable).map(t => t.id);
+
   return {
     kind: live ? 'running' : 'blocked',
     waitingOn: {
@@ -918,7 +947,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
           ? `${pendingCount} task(s) open with no live worker (${breakdown})`
           : `${pendingCount} task(s) open with no live worker`,
       count: pendingCount,
-      taskIds: openTasks.map(t => t.id),
+      taskIds: citedIds,
       byStatus,
     },
     displayState: live ? 'running' : 'stalled',

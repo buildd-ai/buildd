@@ -23,7 +23,9 @@
  */
 
 import { describe, expect, mock, test, beforeEach } from 'bun:test';
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { runProvisionGate, clearProvisionGateCache } from '../../src/env-verify';
 
 const BRANCH = 'buildd/0000abcd-slug';
@@ -55,7 +57,7 @@ const { WorkerManager } = await import('../../src/workers');
 
 type Update = { id: string; payload: any };
 
-function harness() {
+function harness(claimExtras: Record<string, unknown> = {}) {
   const updates: Update[] = [];
   const milestones: any[] = [];
   const manager = Object.create(WorkerManager.prototype) as any;
@@ -69,7 +71,7 @@ function harness() {
     startSession: mock(async () => {}),
   });
   const start = () => manager.startFromClaim(
-    { id: 'worker-test', branch: BRANCH },
+    { id: 'worker-test', branch: BRANCH, ...claimExtras },
     {
       id: 'task-test', title: 'Example', workspaceId: 'workspace-test',
       workspace: { name: 'Example', repo: 'https://github.com/example/repo', gitConfig: { defaultBranch: 'dev' } },
@@ -148,6 +150,85 @@ describe('fail-fast (structural host fault)', () => {
       expect(traceOf(updates, 'worktree_install_failed')).toBeTruthy();
     });
   }
+});
+
+describe('registry-auth block is actionable from the task card', () => {
+  test('names the registry host, the package, the expected env var and the repo root', async () => {
+    installOutcome = {
+      status: 'failed', dir: '.', failure: 'registry-auth',
+      message: 'error: GET https://npm.pkg.github.com/download/@acme/private-lib/0.2.0/x - 401',
+      registry: { host: 'npm.pkg.github.com', pkg: '@acme/private-lib', envVar: 'NODE_AUTH_TOKEN', source: '.npmrc', envVarSet: false },
+    };
+    const { manager, start, updates, milestones } = harness();
+
+    await start();
+    await settle();
+
+    const error = String(manager.workers.get('worker-test').error);
+    expect(error).toContain('npm.pkg.github.com');
+    expect(error).toContain('@acme/private-lib');
+    expect(error).toContain('NODE_AUTH_TOKEN');
+    expect(error).toContain('repo root');
+    expect(error).not.toMatch(/ at \.(\s|:|$)/);
+    // The milestone and trace read the same way.
+    expect(milestones.some(m => String(m.label).includes('at repo root'))).toBe(true);
+    expect(traceOf(updates, 'worktree_install_failed')!.excerpt).toContain('at repo root');
+  });
+});
+
+describe('the install gets the role env the agent gets', () => {
+  const SECRET = 'role-secret-value-not-for-logs';
+  const LABEL = 'EXAMPLE_REGISTRY_TOKEN_LABEL';
+  let saved: { home?: string; label?: string };
+
+  beforeEach(() => {
+    saved = { home: process.env.BUILDD_HOME, label: process.env[LABEL] };
+    const home = mkdtempSync(join(tmpdir(), 'buildd-install-env-'));
+    mkdirSync(join(home, 'roles', 'builder'), { recursive: true });
+    writeFileSync(join(home, 'roles', 'builder', 'env-mapping.json'), JSON.stringify({ NODE_AUTH_TOKEN: LABEL }));
+    process.env.BUILDD_HOME = home;
+    process.env[LABEL] = SECRET;
+  });
+
+  const restore = () => {
+    if (saved.home === undefined) delete process.env.BUILDD_HOME; else process.env.BUILDD_HOME = saved.home;
+    if (saved.label === undefined) delete process.env[LABEL]; else process.env[LABEL] = saved.label;
+  };
+
+  test('setupWorktree is handed the resolved role env, and the value is never logged or traced', async () => {
+    const lines: string[] = [];
+    const orig = { log: console.log, warn: console.warn, error: console.error };
+    const grab = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    console.log = grab; console.warn = grab; console.error = grab;
+    try {
+      const { start, updates, milestones } = harness({ roleConfig: { slug: 'builder', type: 'builder' } });
+      await start();
+      await settle();
+
+      expect(setup).toHaveBeenCalledTimes(1);
+      const installEnv = (setup.mock.calls[0] as unknown[])[6] as Record<string, string>;
+      expect(installEnv).toEqual({ NODE_AUTH_TOKEN: SECRET });
+
+      expect(lines.some(l => l.includes(SECRET))).toBe(false);
+      expect(JSON.stringify(milestones)).not.toContain(SECRET);
+      expect(JSON.stringify(updates)).not.toContain(SECRET);
+    } finally {
+      Object.assign(console, orig);
+      restore();
+    }
+  });
+
+  test('no role: the install gets an empty overlay, i.e. unchanged behaviour', async () => {
+    try {
+      const { start } = harness();
+      await start();
+      await settle();
+
+      expect((setup.mock.calls[0] as unknown[])[6]).toEqual({});
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe('no degradation when install was not required', () => {

@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { asc, desc, type SQL } from 'drizzle-orm';
+import { mapColumnsInSQLToAlias } from 'drizzle-orm/alias';
 import { artifacts } from '@buildd/core/db/schema';
 import { selectMissionCompletionSummary } from '@/lib/mission-helpers';
 import { getHeartbeatStatus } from '@/lib/heartbeat-helpers';
@@ -18,6 +19,7 @@ import {
   MISSION_ARTIFACT_COLUMNS,
   MISSION_DETAIL_WITH,
   MISSION_TASK_COLUMNS,
+  MISSION_WORKER_COLUMNS,
   MISSION_TASKS_WITH,
   RESULT_DIGEST_SQL,
   CONTEXT_DIGEST_SQL,
@@ -40,6 +42,16 @@ describe('AC-18: mission page query shape', () => {
     expect(Object.keys(MISSION_TASK_COLUMNS)).not.toContain('context');
     // The probe can fail: a column the page does read is present.
     expect(MISSION_TASK_COLUMNS.status).toBe(true);
+  });
+
+  it('worker columns carry what the Board and Lanes draw', () => {
+    // runner → lanes and fleet slots; milestones → tile notches;
+    // lines → the landed rows and the completion record.
+    for (const k of ['runner', 'milestones', 'linesAdded', 'linesRemoved', 'waitingFor', 'startedAt', 'completedAt'] as const) {
+      expect(MISSION_WORKER_COLUMNS[k]).toBe(true);
+    }
+    expect(MISSION_TASK_COLUMNS.outputRequirement).toBe(true);
+    expect(MISSION_TASK_COLUMNS.label).toBe(true);
   });
 
   it('artifact columns do not select content', () => {
@@ -102,9 +114,21 @@ describe('visual review shots query', () => {
     const q = dialect.sqlToQuery(missionVisualShotsWhere('mission-1'));
     const text = q.sql.replace(/\s+/g, ' ');
     expect(text).toMatch(
-      /"artifacts"\."worker_id" in \(select "workers"\."id" from "workers" inner join "tasks" on "tasks"\."id" = "workers"\."task_id" where "tasks"\."mission_id" = \$3 and "tasks"\."role_slug" = \$4\)/,
+      /"artifacts"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = \$3 and "t"\."role_slug" = \$4\)/,
     );
     expect(q.params[3]).toBe('visual-auditor');
+  });
+
+  // The relational query (`db.query.artifacts.findMany({ where })`) re-aliases
+  // EVERY column in a raw `where` to the queried table. A subquery written with
+  // workers/tasks column objects became `select "artifacts"."id" from "workers"
+  // … "artifacts"."task_id"` and failed on every mission page render.
+  it('survives the relational query aliasing its where to the artifacts table', () => {
+    const aliased = mapColumnsInSQLToAlias(missionVisualShotsWhere('mission-1'), 'artifacts');
+    const text = dialect.sqlToQuery(aliased).sql.replace(/\s+/g, ' ');
+    expect(text).not.toContain('"artifacts"."task_id"');
+    expect(text).not.toContain('"artifacts"."role_slug"');
+    expect(text).toMatch(/"artifacts"\."worker_id" in \(select /);
   });
 
   it('selects no content, carries the worker, and holds up to three 40-shot runs', () => {

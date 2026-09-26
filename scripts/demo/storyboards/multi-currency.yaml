@@ -1,0 +1,250 @@
+# "One sentence -> a fleet ships it", shot against the fleet UI (home stat strip
+# + runners x slots, mission Board / Lanes, task Now strip / question hero / PR
+# outcome, phone answer page).
+#
+# Keys in {braces} are dataset keys from the story JSON: M1 = the mission,
+# T7 = invoice render (CI red -> self-healed -> merged), T8 = checkout (asks the question).
+#
+#   bun run demo:shoot scripts/demo/storyboards/multi-currency.yaml --out <dir>
+#
+# Steps are in story-time order: going backwards re-seeds and replays, which is
+# correct but slower. `record` steps leave the timeline at their advanceTo, so
+# each one ends where the next shot begins.
+story: ../stories/multi-currency.json
+name: multi-currency
+viewport: { width: 1440, height: 900, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark, light]
+# Close-up targets: boxes (+ data-status/state/kind and text) recorded on every
+# shot where the element exists.
+highlight:
+  - home-stat-strip
+  - home-fleet
+  - fleet-slot
+  - fleet-runner
+  - needs-you-card
+  - mission-band
+  - goal-band
+  - goal-criterion
+  - fleet-band
+  - needs-you-band
+  - board-tile
+  - lane-bar
+  - worker-question-hero
+  - respond-question-hero
+  - question-option
+  - worker-now-strip
+  - worker-stats
+  - worker-touched-row
+  - pr-outcome
+  - pr-lineage
+steps:
+  # ── fan-out ────────────────────────────────────────────────────────────────
+  # Live take: the Board stays open 0:40 -> 1:00 while the organizer plans: twelve
+  # tiles appear across three phases, all over soketi pushes. Each tick is a full
+  # advance (a few seconds), so the webm runs longer than `ms`; manifest
+  # record.leadInMs is the blank/skeleton lead-in to trim.
+  - id: 00-board-planning-live
+    advance: "0:40"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    shot: false
+    record: { ms: 14000, advanceTo: "1:00", ticks: 7 }
+
+  - id: 01-board-planned
+    advance: "1:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "One sentence in. Twelve tasks, three phases, dependencies worked out."
+
+  - id: 02-home-fanout
+    advance: "2:00"
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+    caption: "Five agents, four machines, the same minute."
+
+  - id: 03-board-phase1
+    advance: "4:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "Phase 1 in flight, every agent reporting."
+
+  - id: 04-home-0600
+    advance: "6:00"
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+    caption: "The fleet fills up."
+
+  - id: 05-lanes-0600
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    fullPage: true
+    caption: "Every agent on its runner, on one clock."
+
+  # Live take: Lanes 6:30 -> 8:00 — a PR opens, bars land, phase 2 claims.
+  - id: 05b-lanes-live
+    advance: "6:30"
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    shot: false
+    record: { ms: 18000, advanceTo: "8:00", ticks: 9 }
+
+  - id: 06-board-0800
+    advance: "8:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "Phase 2 starts before phase 1 finishes."
+
+  # ── peak ───────────────────────────────────────────────────────────────────
+  - id: 08-home-peak
+    advance: "11:50"
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+    caption: "Six agents. Four machines. At the same time."
+
+  - id: 09-missions-peak
+    goto: /app/missions
+    waitFor: mission-card
+    fullPage: true
+    caption: "Six agents. Four machines. At the same time."
+
+  - id: 10-board-peak
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "Six agents. Four machines. At the same time."
+
+  - id: 11-lanes-peak
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    fullPage: true
+    caption: "Six agents. Four machines. At the same time."
+
+  - id: 13-task-live
+    advance: "12:40"
+    goto: /app/tasks/{T7}
+    waitFor: worker-now-strip
+    fullPage: true
+    caption: "Every agent narrates what it's doing."
+
+  # ── the question ───────────────────────────────────────────────────────────
+  - id: 14-task-question
+    advance: "14:35"
+    goto: /app/tasks/{T8}
+    viewports: [desktop, phone]
+    waitFor: worker-question-hero
+    caption: "When it matters, they ask."
+
+  - id: 15-respond-phone
+    goto: /app/tasks/{T8}/respond
+    viewports: [phone]
+    waitFor: respond-question-hero
+    caption: "You answer from wherever you are."
+
+  - id: 16-home-question
+    goto: /app/home
+    viewports: [desktop, phone]
+    waitFor: home-waiting-on-you
+    caption: "One tap from home. The other five keep working."
+
+  - id: 17-board-question
+    advance: "14:40"
+    goto: /app/missions/{M1}
+    waitFor: needs-you-band
+    fullPage: true
+    caption: "The question and its answers, right on the mission."
+
+  # ── CI red, self-healed ────────────────────────────────────────────────────
+  - id: 18-board-ci-red
+    advance: "18:40"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "CI broke. A fix is already running."
+
+  - id: 19-lanes-ci-red
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    fullPage: true
+    caption: "CI broke. A fix is already running."
+
+  # Live take: Board 18:40 -> 20:00 (retry working on the red PR).
+  - id: 20-board-retry-live
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    shot: false
+    record: { ms: 18000, advanceTo: "20:00", ticks: 9 }
+
+  - id: 21-task-ci-retry
+    advance: "20:00"
+    goto: /app/tasks/{T7}
+    waitFor: pr-outcome
+    fullPage: true
+    caption: "Red, retried on the same branch."
+
+  - id: 22-home-self-healed
+    advance: "22:00"
+    goto: /app/home
+    waitFor: home-stat-strip
+    fullPage: true
+    caption: "Self-healed. Nobody touched it."
+
+  - id: 23-task-merged
+    advance: "22:30"
+    goto: /app/tasks/{T7}
+    waitFor: pr-outcome
+    fullPage: true
+    caption: "Red, retried, green, merged."
+
+  # ── prove it, done ─────────────────────────────────────────────────────────
+  - id: 24-board-2600
+    advance: "26:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "Phase 3: prove it."
+
+  - id: 25-lanes-3000
+    advance: "30:00"
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    fullPage: true
+    caption: "Prove it: an end-to-end run and a guide."
+
+  - id: 26-board-3300
+    advance: "33:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "Last PR lands. Criteria are checked, not assumed."
+
+  - id: 27-board-complete
+    advance: end
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+    fullPage: true
+    caption: "Done means done: your criteria, verified."
+
+  - id: 28-lanes-complete
+    goto: /app/missions/{M1}?layout=lanes
+    waitFor: mission-lanes
+    fullPage: true
+    caption: "37 minutes, start to finish."
+
+  - id: 29-missions-complete
+    goto: /app/missions
+    waitFor: mission-card
+    fullPage: true
+    caption: "It joins the missions you already shipped."
+
+  - id: 30-home-end
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+    caption: "11 PRs merged. 1 CI failure fixed automatically. 1 decision from a human."
