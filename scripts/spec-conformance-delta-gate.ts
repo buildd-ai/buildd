@@ -36,6 +36,7 @@
  * Usage:
  *   bun run scripts/spec-conformance-delta-gate.ts check --workspace-id <uuid>
  *   bun run scripts/spec-conformance-delta-gate.ts record --workspace-id <uuid> [--sha <sha>]
+ *   (either subcommand) --key <artifact-key>   default: spec-conformance-last-sha
  *
  * Env: BUILDD_API_KEY (required for either subcommand to do anything but
  * fail open / no-op), BUILDD_SERVER (default https://buildd.dev).
@@ -50,12 +51,17 @@ import { computeWatchSet, isWatched, resolveConformanceConfig } from '../package
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = join(__dirname, '..');
 
-const ARTIFACT_KEY = 'spec-conformance-last-sha';
-
 function argValue(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
   return idx !== -1 ? process.argv[idx + 1] : undefined;
 }
+
+// Each consumer keeps its OWN pointer. The ledger writer used to share this
+// key with the blocking checker: whichever workflow finished first advanced
+// it, so the other could diff HEAD against HEAD, see nothing watched, and skip
+// a commit it never evaluated. `--key` lets the ledger workflow read and write
+// `spec-discrepancy-ledger-last-sha` instead.
+const ARTIFACT_KEY = argValue('--key') ?? 'spec-conformance-last-sha';
 
 // Overridable for tests only — every real CI invocation runs against the
 // actual checkout, same as check-spec-conformance.ts and

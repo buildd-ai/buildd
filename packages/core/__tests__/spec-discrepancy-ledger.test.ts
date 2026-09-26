@@ -12,6 +12,7 @@ import {
   writeLedgerFromEvaluations,
   summarizeClassifications,
   planAdjudication,
+  skipDisposition,
   type Direction,
 } from '../spec-discrepancy-ledger';
 import type { AssertionResult, DocEvaluation } from '../spec-conformance';
@@ -463,6 +464,106 @@ describe('writeLedgerFromEvaluations', () => {
     const row = [...store.values()][0];
     expect(row.status).toBe('resolved');
     expect(row.lastCheckedAt).toEqual(initialRun); // unchanged
+  });
+});
+
+// ─── Skipped rows must not strand (the doc-fix re-run that never landed) ────
+
+describe('skipDisposition', () => {
+  test('suppressed wins over any status', () => {
+    expect(skipDisposition('superseded', result({ id: 'a', outcome: 'suppressed' }))).toBe('suppressed');
+  });
+  test("'superseded' is retired", () => {
+    expect(skipDisposition('superseded', result({ id: 'a', outcome: 'pass' }))).toBe('retired');
+    expect(skipDisposition('Superseded', result({ id: 'a', outcome: 'fail' }))).toBe('retired');
+  });
+  test('an unset or unknown status is unrecognized', () => {
+    expect(skipDisposition(null, result({ id: 'a', outcome: 'pass' }))).toBe('unrecognized');
+    expect(skipDisposition('shipped', result({ id: 'a', outcome: 'pass' }))).toBe('unrecognized');
+  });
+});
+
+describe('writeLedgerFromEvaluations — rows a doc fix moved out of the classifiable sets', () => {
+  beforeEach(() => resetStore());
+
+  const before = new Date('2026-09-01T00:00:00Z');
+  const run = new Date('2026-09-20T00:00:00Z');
+
+  function openRow(specPath: string, assertionId: string) {
+    store.set(`ws-1::${specPath}::${assertionId}`, {
+      workspaceId: 'ws-1',
+      specPath,
+      assertionId,
+      direction: 'code_ahead',
+      status: 'open',
+      firstSeenAt: before,
+      lastCheckedAt: before,
+      docFixTaskId: 'fix-task',
+    });
+  }
+
+  test('a doc fix that marks the doc superseded resolves its open rows on the next run', async () => {
+    // The live shape: the fix retired the doc, and every later run counted
+    // the row as `skipped` without touching it, so last_checked_at stayed
+    // older than the merge and the card waited on a re-run forever.
+    openRow('docs/design/retired.md', 'old-claim');
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [doc({ path: 'docs/design/retired.md', declaredStatus: 'superseded', results: [result({ id: 'old-claim' })] })],
+      run,
+    );
+    expect(summary.resolved).toBe(1);
+    const row = store.get('ws-1::docs/design/retired.md::old-claim');
+    expect(row.status).toBe('resolved');
+    expect(row.lastCheckedAt).toEqual(run);
+    expect(row.evidence.skipDisposition).toBe('retired');
+  });
+
+  test('a status outside every set is rechecked (last_checked_at moves) but stays open', async () => {
+    openRow('docs/design/typo.md', 'claim');
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [doc({ path: 'docs/design/typo.md', declaredStatus: 'shipped', results: [result({ id: 'claim' })] })],
+      run,
+    );
+    expect(summary.rechecked).toBe(1);
+    expect(summary.resolved).toBe(0);
+    const row = store.get('ws-1::docs/design/typo.md::claim');
+    expect(row.status).toBe('open');
+    expect(row.lastCheckedAt).toEqual(run);
+    expect(row.evidence.declaredStatus).toBe('shipped');
+    expect(row.evidence.skipDisposition).toBe('unrecognized');
+  });
+
+  test('an unrecognized status never INSERTS a row', async () => {
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [doc({ path: 'docs/design/typo.md', declaredStatus: 'shipped', results: [result({ id: 'claim' })] })],
+      run,
+    );
+    expect(summary.rechecked).toBe(0);
+    expect(store.size).toBe(0);
+  });
+
+  test('resolveUnasserted: a row whose assertion is no longer declared resolves', async () => {
+    openRow('docs/design/renamed.md', 'old-id');
+    openRow('docs/design/deleted.md', 'gone');
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [doc({ path: 'docs/design/renamed.md', declaredStatus: 'implemented', results: [result({ id: 'new-id' })] })],
+      run,
+      { resolveUnasserted: true },
+    );
+    expect(summary.unasserted).toBe(2);
+    expect(store.get('ws-1::docs/design/renamed.md::old-id').status).toBe('resolved');
+    expect(store.get('ws-1::docs/design/deleted.md::gone').evidence.outcome).toBe('not_asserted');
+  });
+
+  test('without resolveUnasserted (a partial run) unseen rows are left alone', async () => {
+    openRow('docs/design/elsewhere.md', 'claim');
+    const summary = await writeLedgerFromEvaluations('ws-1', [], run);
+    expect(summary.unasserted).toBe(0);
+    expect(store.get('ws-1::docs/design/elsewhere.md::claim').status).toBe('open');
   });
 });
 
