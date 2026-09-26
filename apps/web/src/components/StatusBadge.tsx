@@ -2,6 +2,8 @@ const STATUS_LABELS: Record<string, string> = {
   pending: 'Pending',
   assigned: 'Assigned',
   running: 'Running',
+  // A task row claimed and being worked (`tasks.status`); same word the task header uses.
+  in_progress: 'Running',
   starting: 'Starting',
   waiting_input: 'Needs Input',
   waiting_on_you: 'Waiting on you',
@@ -25,6 +27,7 @@ const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> =
   assigned:               { dot: 'bg-status-info',                           bg: 'bg-status-info/10',    text: 'text-status-info' },
   running:                { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
   starting:               { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
+  in_progress:            { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
   waiting_input:          { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
   waiting_on_you:         { dot: 'bg-[#D97706] animate-status-pulse',        bg: 'bg-[#D97706]/10',      text: 'text-[#D97706]' },
   subject_dead:           { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },

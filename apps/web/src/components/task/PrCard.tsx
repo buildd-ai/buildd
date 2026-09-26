@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { derivePrLifecycle, isPrMerged } from '@/lib/pr-presentation';
 import { countOf } from '@/lib/plural';
 
@@ -253,6 +254,17 @@ const STEP_STYLE: Record<PrLineageStep['kind'], { box: string; glyph: (n?: numbe
   merged: { box: 'bg-status-success text-surface-1 border-status-success', glyph: () => '↳', title: 'text-status-success' },
 };
 
+/**
+ * Break opportunities after every "/" and "." (path and file-name boundaries),
+ * so a narrow step column wraps "invoice.snapshot.test.tsx" between segments
+ * instead of mid-word the way overflow-wrap:anywhere did.
+ */
+export function withPathBreaks(text: string): React.ReactNode {
+  const parts = text.split(/(?<=[/.])(?=\S)/);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) => <Fragment key={i}>{i > 0 && <wbr />}{p}</Fragment>);
+}
+
 export function LineageChain({ steps }: { steps: PrLineageStep[] }) {
   return (
     <ol data-testid="pr-lineage" className="grid gap-y-5 grid-cols-2 sm:grid-cols-3 md:[grid-template-columns:repeat(var(--steps),minmax(0,1fr))]" style={{ ['--steps' as string]: steps.length }}>
@@ -263,7 +275,7 @@ export function LineageChain({ steps }: { steps: PrLineageStep[] }) {
             {i < steps.length - 1 && <span aria-hidden="true" className="hidden md:block absolute top-[11px] left-[26px] right-0 h-[2px] bg-border-strong" />}
             <span className={`relative grid place-items-center w-6 h-6 border-2 font-mono text-[12px] font-bold ${st.box}`}>{st.glyph(s.n)}</span>
             <div className={`mt-3 font-mono text-[11px] uppercase tracking-[2px] font-semibold ${st.title}`}>{s.title}</div>
-            <div className="mt-1 text-[13px] leading-snug text-text-secondary [overflow-wrap:anywhere]">{s.sub}</div>
+            <div className="mt-1 text-[13px] leading-snug text-text-secondary break-words">{withPathBreaks(s.sub)}</div>
             {s.at && <div className="mt-1 font-mono text-[12px] text-text-muted tabular-nums">{s.at}</div>}
           </li>
         );

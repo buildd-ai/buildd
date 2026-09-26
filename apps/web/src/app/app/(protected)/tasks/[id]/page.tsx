@@ -35,6 +35,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
@@ -1227,9 +1228,7 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
-                    {task.parentTask.status}
-                  </span>
+                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
               )}
               {([
@@ -1247,9 +1246,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
-                          {sub.status}
-                        </span>
+                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
                       </div>
                     ))}
                   </div>
@@ -1581,7 +1578,8 @@ export default async function TaskDetailPage({
                         {attemptLabel && <span className="font-normal text-text-muted"> · {attemptLabel}</span>}
                       </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
-                        {worker.branch}
+                        {/* Generated names are capped mid-slug; cut at a token, full name on hover. */}
+                        <span title={worker.branch}>{displayBranchName(worker.branch)}</span>
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
                       {worker.error && (
