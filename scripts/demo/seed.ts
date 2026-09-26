@@ -140,8 +140,6 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
       createdAt: at(ini._createdAgo, 30 * 86_400_000), updatedAt: at(ini._updatedAgo, 86_400_000),
       // `_targetIn: '+18d'` → a calendar date that many days from story now.
       targetDate: ini._targetIn ? relFuture(anchorMs, ini._targetIn).toISOString().slice(0, 10) : null,
-      // A KPI verdict is a snapshot; date it relative to story now.
-      kpiState: ini.kpiState ? { ...ini.kpiState, evaluatedAt: at(ini._kpiEvaluatedAgo, 86_400_000).toISOString() } : null,
     }) as any);
   }
 

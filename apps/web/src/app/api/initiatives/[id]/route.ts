@@ -42,6 +42,13 @@ export async function GET(
 
     const initiative = await db.query.initiatives.findFirst({
       where: eq(initiatives.id, id),
+      // Explicit columns: kpis / kpi_state / auto_verify / progress_cache are
+      // deprecated and scheduled for drop, so nothing reads them.
+      columns: {
+        id: true, teamId: true, workspaceId: true, title: true, description: true, status: true,
+        priority: true, ownerUserId: true, targetDate: true, contextArtifactIds: true,
+        createdByUserId: true, createdAt: true, updatedAt: true,
+      },
       with: {
         workspace: { columns: { id: true, name: true } },
         missions: {
@@ -116,7 +123,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, workspaceId, contextArtifactIds, targetDate, ownerUserId, kpis, autoVerify } = body;
+    const { title, description, status, priority, workspaceId, contextArtifactIds, targetDate, ownerUserId } = body;
 
     const updateData: Partial<typeof initiatives.$inferInsert> = { updatedAt: new Date() };
 
@@ -145,18 +152,6 @@ export async function PATCH(
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
     if (contextArtifactIds !== undefined) updateData.contextArtifactIds = contextArtifactIds || [];
-
-    // DEPRECATED: kpis / autoVerify are still stored for API compatibility but
-    // no surface renders or evaluates them for the initiative any more.
-    if (kpis !== undefined) {
-      if (kpis !== null && !Array.isArray(kpis)) {
-        return NextResponse.json({ error: 'kpis must be an array' }, { status: 400 });
-      }
-      updateData.kpis = kpis ?? null;
-    }
-    if (autoVerify !== undefined) {
-      updateData.autoVerify = autoVerify === true ? true : autoVerify === false ? false : null;
-    }
 
     const [updated] = await db
       .update(initiatives)

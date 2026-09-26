@@ -68,9 +68,11 @@ as an empty progress bar beside `100%`. See
 - The list and the page read one loader, `loadInitiativeCards`, and each
   mission through the Missions tab's card model (`buildMissionListCard`), so a
   mission's status word and n/N match the Missions tab.
-- Initiative KPIs (`kpis`, `kpiState`, `autoVerify`, `POST /api/initiatives/[id]/evaluate`,
-  MCP `evaluate` / `get_kpi_state`) are deprecated. They still work through the
-  API and MCP, no surface renders them, and agent prompts do not carry them.
+- Initiatives carry no KPIs. The API ignores `kpis` / `autoVerify` in a request
+  body, `GET /api/initiatives/[id]` does not return them, and MCP
+  `manage_initiatives` has no `evaluate` or `get_kpi_state` action. The
+  `kpis`, `kpi_state`, `auto_verify` and `progress_cache` columns are unread
+  and unwritten until a later release drops them.
 
 **Acceptance criteria**
 
@@ -98,6 +100,10 @@ as an empty progress bar beside `100%`. See
   member of the initiative's team, THEN it rejects with HTTP 400.
 - AC-9: WHEN `POST /api/initiatives` omits `ownerUserId`, THEN the owner is the
   creating user.
+- AC-11: WHEN `PATCH /api/initiatives/[id]` receives `kpis` or `autoVerify`,
+  THEN neither is written.
+- AC-12: WHEN MCP `manage_initiatives` is called with `action: "evaluate"`, THEN
+  it fails with an unknown-action error and calls no route.
 - AC-10: GIVEN a target date 6 days past on an active initiative, WHEN the card
   renders, THEN it reads `6d overdue`; on a completed initiative it reads
   `Target <date>` and is never overdue.
@@ -124,5 +130,5 @@ as an empty progress bar beside `100%`. See
 
 - Initiative updates (Linear's periodic status posts). Not built.
 - A declared health (`On track` / `At risk`). Not built; status is lifecycle only.
-- Removing the deprecated KPI fields and the `progress_cache` column. A later
-  release drops them under the schema-change skill's drop protocol.
+- Dropping the four unread columns. A later release drops them under the
+  schema-change skill's drop protocol, once this code has shipped.
