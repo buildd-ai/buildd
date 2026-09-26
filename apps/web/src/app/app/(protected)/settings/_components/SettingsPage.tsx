@@ -15,7 +15,7 @@ export default function SettingsPage({
   wide?: boolean;
 }) {
   return (
-    <div className="pt-14 px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+    <div className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
       <div className={`${wide ? 'max-w-5xl' : 'max-w-2xl'} space-y-8`}>
         <header>
           <h1 className="hidden md:block text-xl font-semibold text-text-primary">{title}</h1>

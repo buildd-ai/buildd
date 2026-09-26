@@ -73,8 +73,8 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       action={<Link href="/app/accounts/new" className="btn btn-quiet">+ New token</Link>}
     >
       <p className="text-xs text-text-secondary mb-3">
-        A runner token signs your runner in to buildd. It holds no model credentials; set those in
-        Agent backends.
+        A runner token signs your runner in to buildd. It holds no model credentials. Those go in
+        Agent backends above.
       </p>
 
       {accounts.length === 0 ? (

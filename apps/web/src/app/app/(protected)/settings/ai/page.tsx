@@ -5,13 +5,13 @@ import { loadSettingsContext } from '../_lib/settings-context';
 
 export const dynamic = 'force-dynamic';
 
-/** Settings → AI → Chat and model features (was /app/settings#inference-spending). */
+/** Settings → AI → AI features (was /app/settings#inference-spending). */
 export default async function AiSettingsPage() {
   const { currentTeam, isTeamAdmin } = await loadSettingsContext();
 
   return (
     <SettingsPage
-      title="Chat and model features"
+      title="AI features"
       description={<>These call a model with your team&apos;s provider key. <Link href="/app/settings/models" className="underline hover:text-text-primary">Model tiers</Link> decide which model answers.</>}
     >
       {currentTeam ? (

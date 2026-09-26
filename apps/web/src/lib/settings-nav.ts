@@ -100,7 +100,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
     items: [
       {
         id: 'ai',
-        label: 'Chat and model features',
+        label: 'AI features',
         href: '/app/settings/ai',
         description: 'Turn chat on, and pick which features call a model directly.',
       },

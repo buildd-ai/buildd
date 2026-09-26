@@ -6,7 +6,32 @@ import {
   tierBandLabel,
   tierSourceState,
   tierSuggestions,
+  tierUsedBy,
+  suggestionFor,
 } from './tier-mapping';
+
+describe('tierUsedBy', () => {
+  it('says which surfaces can run a tier, from its provider', () => {
+    expect(tierUsedBy('anthropic')).toBe('agent runs, chat');
+    expect(tierUsedBy('openrouter')).toBe('agent runs, chat');
+    // A Codex seat only signs in a runner; an OpenAI API key only serves chat.
+    expect(tierUsedBy('openai-codex')).toBe('agent runs only');
+    expect(tierUsedBy('openai')).toBe('chat only');
+  });
+});
+
+describe('suggestionFor', () => {
+  it('picks the catalog note for one tier, newer before missing', () => {
+    const list = [
+      { tier: 'standard', kind: 'missing' as const, model: 'a' },
+      { tier: 'standard', kind: 'newer' as const, model: 'a', newer: 'b' },
+      { tier: 'budget', kind: 'missing' as const, model: 'c' },
+    ];
+    expect(suggestionFor(list, 'standard')).toEqual({ tier: 'standard', kind: 'newer', model: 'a', newer: 'b' });
+    expect(suggestionFor(list, 'budget')?.kind).toBe('missing');
+    expect(suggestionFor(list, 'premium')).toBeNull();
+  });
+});
 
 // Illustrative catalog; ids mirror the public OpenRouter shape.
 const MODELS = [

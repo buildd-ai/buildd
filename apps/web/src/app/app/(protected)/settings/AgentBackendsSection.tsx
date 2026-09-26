@@ -246,8 +246,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
     <SettingsSection title="Agent backends" id="agent-backends">
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
-          Your runners sign in to Claude or Codex with these. One credential covers
-          every workspace in the team. You can narrow it to one workspace{multiTeam ? <> or copy it to all {teamTargets.length} teams you manage</> : null}.
+          One credential covers every workspace in the team. You can narrow it to one workspace{multiTeam ? <> or copy it to all {teamTargets.length} teams you manage</> : null}.
         </p>
 
         {/* Team provider routing toggle (reversible mask over the resolution chain) */}

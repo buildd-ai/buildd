@@ -27,7 +27,7 @@ export default async function SettingsIndexPage({
   if (legacy) redirect(legacy);
 
   return (
-    <div className="pt-14 px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+    <div className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
       <LegacyAnchorRedirect />
       <div className="max-w-2xl space-y-7">
         <h1 className="hidden md:block text-xl font-semibold text-text-primary">Settings</h1>
