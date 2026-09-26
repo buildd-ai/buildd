@@ -54,6 +54,8 @@ export const MISSION_WORKER_COLUMNS = {
   turns: true,
   completedAt: true,
   startedAt: true,
+  // A claimed worker's lane starts at the claim until the runner stamps startedAt.
+  createdAt: true,
   updatedAt: true,
   exitCause: true,
   currentAction: true,

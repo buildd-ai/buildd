@@ -15,7 +15,7 @@ import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, ty
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
+import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary } from '@/lib/mission-steering-events';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
@@ -789,7 +789,7 @@ export default async function MissionDetailPage({
     steeringEvents,
   });
   const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
-  const orchestratorTicks = (mission.schedule as any)?.totalChecks ?? 0;
+  const orchestratorLabel = orchestratorSummary(orchestratorPlans, (mission.schedule as { totalRuns?: number | null; totalChecks?: number | null } | null) ?? null);
   const missionRecords = selectMissionRecords(allArtifacts);
 
   // Goal criteria — hoisted so the header's Verified pill and its bottom
@@ -1384,7 +1384,7 @@ export default async function MissionDetailPage({
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
         <span aria-hidden="true" className="text-text-muted">─</span>
         <span className="flex-1">
-          {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
+          {orchestratorLabel}
         </span>
         <span aria-hidden="true" className="group-open:rotate-90">›</span>
       </summary>
