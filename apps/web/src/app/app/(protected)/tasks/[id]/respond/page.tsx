@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import RespondForm from './RespondForm';
+import RespondHeading from './RespondHeading';
 import { respondBackLink } from './respond-links';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { linkQuestionNote, unifyWorkerQuestion } from '../question-hero';
@@ -86,12 +87,7 @@ export default async function RespondPage({
           ← {back.label}
         </Link>
 
-        <h1 className="mt-3 text-[20px] font-semibold text-text-primary leading-snug">
-          {heading.eyebrow.length > 0 && (
-            <span className="mr-2 font-mono text-[11px] uppercase tracking-[2px] text-text-muted align-middle">{heading.eyebrow.join(' · ')}</span>
-          )}
-          {heading.heading}
-        </h1>
+        <RespondHeading eyebrow={heading.eyebrow} heading={heading.heading} />
 
         <div className="mt-6">
           <RespondForm workerId={pending.id} taskId={id} missionId={task.missionId} question={question} askerLabel={asker} />

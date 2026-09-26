@@ -155,6 +155,20 @@ describe('size="micro" (W4/W6)', () => {
     expect(html).toContain('href="/app/missions/m1#t-b"');
   });
 
+  it('never squeezes the pulse under the position text (phone: the ringed segment painted over "8 / 12")', () => {
+    // Regression: the pulse was `flex-1` beside a `shrink-0` "n / N · phase"
+    // span, so a long phase label collapsed it to ~0px and the ringed
+    // segment's outline landed on the count. The pulse keeps a floor width
+    // and the position text is the one that gives way (truncates).
+    const pulse = html.match(/<div[^>]*data-testid="mission-pulse"[^>]*>/)?.[0] ?? '';
+    expect(pulse).toContain('flex-[1_0_5rem]');
+    const pos = html.match(/<span[^>]*>2 \/ 3 · BUILD<\/span>/)?.[0] ?? '';
+    expect(pos).not.toBe('');
+    expect(pos).not.toContain('shrink-0');
+    expect(pos).toContain('truncate');
+    expect(pos).toContain('min-w-0');
+  });
+
   it('gives the title up-link a 44px tap target', () => {
     const up = html.match(/<a[^>]*href="\/app\/missions\/m1#t-b"[^>]*>/)?.[0] ?? '';
     expect(up).toContain('min-h-11');

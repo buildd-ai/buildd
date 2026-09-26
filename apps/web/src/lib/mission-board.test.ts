@@ -79,6 +79,35 @@ function board(tasks: BoardTaskInput[], over: Partial<MissionBoardInput> = {}) {
   });
 }
 
+describe('buildMissionBoard — before the plan lands', () => {
+  // Regression: with only the orchestrator's planning task, the Board drew one
+  // empty "1 TASKS 0/0" column. No deliverables means no columns; the model
+  // carries the planning task's live state for a placeholder instead.
+  const plan = task('plan', {
+    title: 'Mission: Example goal', taskClass: 'bookkeeping', mode: 'planning', status: 'in_progress', roleSlug: 'organizer',
+    missionPhaseIndex: null, missionPhaseLabel: null,
+    workers: [worker({ runner: 'atlas', startedAt: min(0), currentAction: 'Reading the schema', milestones: [{ ts: min(1), label: 'Mapped the invoice tables' }] })],
+  });
+  const m = board([plan], { roles: [{ slug: 'organizer', name: 'Organizer', color: 'var(--test-role)' }] });
+
+  it('draws no phase columns', () => {
+    expect(m.phases).toEqual([]);
+  });
+
+  it('exposes the planning task and its live worker state', () => {
+    expect(m.planning).toMatchObject({
+      taskId: 'plan', roleName: 'Organizer', live: true, runner: 'atlas',
+      startedAt: min(0), currentAction: 'Reading the schema', lastMilestone: 'Mapped the invoice tables',
+    });
+  });
+
+  it('drops the placeholder once deliverables exist', () => {
+    const withWork = board([plan, task('db')], { roles: [{ slug: 'organizer', name: 'Organizer', color: 'var(--test-role)' }] });
+    expect(withWork.planning).toBeNull();
+    expect(withWork.phases.length).toBe(1);
+  });
+});
+
 describe('buildMissionBoard — tile states', () => {
   it('refines the feed state into what a tile draws', () => {
     const merged = task('db', { status: 'completed', workers: [worker({ status: 'completed', completedAt: min(5), prNumber: 11, mergedAt: min(6), prLifecycleStatus: 'merged' })] });

@@ -235,6 +235,24 @@ export interface MissionLaneBar {
   deps: string[];
 }
 
+/**
+ * The orchestrator's planning run, while it is the only thing on the mission:
+ * the Board draws this instead of an empty column until the plan lands.
+ */
+export interface BoardPlanning {
+  taskId: string;
+  /** The planning task's role name (`workspaceSkills.name`), else "Organizer". */
+  roleName: string;
+  roleColor: string | null;
+  /** A worker is live on it right now. */
+  live: boolean;
+  /** Runner display name of the latest worker. */
+  runner: string | null;
+  startedAt: number | null;
+  currentAction: string | null;
+  lastMilestone: string | null;
+}
+
 export interface MissionBoardModel {
   now: number;
   startedAt: number;
@@ -245,6 +263,8 @@ export interface MissionBoardModel {
   clockLabel: string;
   clockPrefix: 'T+' | 'took';
   phases: BoardPhase[];
+  /** Set only while no deliverable exists yet and a planning task does. */
+  planning: BoardPlanning | null;
   tasks: Record<string, BoardTask>;
   landed: { done: number; total: number };
   criteria: BoardCriterion[];
@@ -567,9 +587,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     for (const d of bt.deps) tasks[d.id]?.unblocks.push({ id: bt.id, scope: bt.scope, label: bt.label });
   }
 
-  // Phases, in pulse order.
+  // Phases, in pulse order. No deliverables yet → no columns (an empty group
+  // would draw a bare "1 TASKS 0/0"); the planning placeholder stands in.
   const rows = ordered.filter(r => !skipped.has(r.task.id));
-  const phases: BoardPhase[] = groupTasksByPhase(rows.map(r => r.task)).map((g, i) => {
+  const phases: BoardPhase[] = (rows.length === 0 ? [] : groupTasksByPhase(rows.map(r => r.task))).map((g, i) => {
     const ids = g.tasks.map(t => t.id);
     return {
       key: g.index != null ? `p${g.index}` : 'none',
@@ -733,6 +754,29 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   }
   const lineRows = rows.map(r => tasks[r.task.id].lines).filter((l): l is NonNullable<typeof l> => !!l);
 
+  // Before the plan lands: the newest planning task and its live state.
+  let planning: BoardPlanning | null = null;
+  if (rows.length === 0 && !complete) {
+    const plan = [...input.tasks]
+      .filter(t => t.mode === 'planning')
+      .sort((a, b) => (epoch(b.createdAt) ?? 0) - (epoch(a.createdAt) ?? 0))[0];
+    if (plan) {
+      const w = plan.workers[0] ?? null;
+      const role = plan.roleSlug ? roles.get(plan.roleSlug) : undefined;
+      const live = isLiveWorker(w);
+      planning = {
+        taskId: plan.id,
+        roleName: role?.name ?? 'Organizer',
+        roleColor: role?.color ?? null,
+        live,
+        runner: w ? displayOf(w)?.name ?? null : null,
+        startedAt: w?.startedAt ?? null,
+        currentAction: live ? w?.currentAction ?? null : null,
+        lastMilestone: w?.milestones.length ? w.milestones[w.milestones.length - 1].label : null,
+      };
+    }
+  }
+
   return {
     now,
     startedAt,
@@ -741,6 +785,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     clockLabel: formatClock(endAt - startedAt),
     clockPrefix: complete ? 'took' : 'T+',
     phases,
+    planning,
     tasks,
     landed: { done: landedN, total: all.length },
     criteria,
