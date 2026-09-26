@@ -23,6 +23,7 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
 import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memory-excludes';
@@ -1914,6 +1915,19 @@ export class WorkerManager {
       setupsInFlight.set(workspacePath, (setupsInFlight.get(workspacePath) ?? 0) + 1);
       let setupResult: Awaited<ReturnType<typeof setupWorktree>>;
       try {
+        // The tolerant install for an undeclared repo runs inside setupWorktree,
+        // long before cleanEnv exists. Hand it the same role env the agent will
+        // get, so a private registry token mapped on the role reaches `bun
+        // install` instead of only the host container env. (Declared repos
+        // install in the provision gate, against cleanEnv itself.) Deliberately
+        // role env only: LLM creds and connector bearers have no business in a
+        // package manager's postinstall scripts.
+        let installEnv: Record<string, string> | undefined;
+        try {
+          installEnv = (await this.resolveWorkerRoleEnv(worker)).resolved;
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] Could not resolve role env for install (continuing without): ${err instanceof Error ? err.message : String(err)}`);
+        }
         setupResult = await setupWorktree(
           workspacePath,
           claimedWorker.branch,
@@ -1923,6 +1937,7 @@ export class WorkerManager {
           // Live-worker view: a path another running session owns must never be
           // reclaimed, not even when its tree reads clean (committed-but-unpushed).
           this.workers,
+          installEnv,
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -1971,13 +1986,14 @@ export class WorkerManager {
         // false-alarm noise.
         const install = setupResult.install;
         if (install?.status === 'failed') {
-          const label = `Dependency install failed (${install.failure}) at ${install.dir} — imports may fail`;
+          const where = formatInstallDir(install.dir);
+          const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
           console.warn(`[Worker ${worker.id}] ${label}`);
           this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           this.buildd.updateWorker(worker.id, {
             appendErrorTraces: [{
               pattern: 'worktree_install_failed',
-              excerpt: `${install.failure} installing at "${install.dir}": ${install.message}`,
+              excerpt: `${install.failure} installing at ${where}: ${install.message}`,
               source: 'git-operations',
             }],
           }).catch(() => {});
@@ -1990,7 +2006,9 @@ export class WorkerManager {
             // host fault instead of one per worker. Raised through the
             // session-start boundary below so it gets the same server report
             // and worktree cleanup as any other start failure.
-            installBlock = `Provision failed: dependency install (${install.failure}) at ${install.dir}`;
+            // registry-auth names host, package and the env var the repo's
+            // registry config reads, so the fix is readable off the task card.
+            installBlock = describeInstallFailure(install);
           } else {
             // Drift / timeout / unknown: proceed, but visibly. The banner goes
             // in the prompt (see startSession) and the flag rides the worker
@@ -2512,6 +2530,16 @@ export class WorkerManager {
    * the main session already produced, so the closing turn's completion
    * payload still carries it even if the resumed turn emits none.
    */
+  /**
+   * The role's env (secret labels → values). One resolver for both consumers —
+   * the worktree dependency install and the agent's cleanEnv — so the install
+   * can never see a different set of secrets from the agent.
+   */
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    if (!worker.roleConfig) return { resolved: {}, missing: [] };
+    return resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>);
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
     worker.sessionCwd = cwd;
@@ -2761,7 +2789,7 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + [
           '## ⚠ Degraded Environment — Dependencies NOT Installed',
           '',
-          `Dependency install failed in this worktree (\`${failure}\` at \`${dir}\`).`,
+          `Dependency install failed in this worktree (\`${failure}\` at ${formatInstallDir(dir)}).`,
           '`node_modules` is absent or incomplete, so workspace imports and any',
           'command that needs them will fail.',
           '',
@@ -3207,10 +3235,7 @@ export class WorkerManager {
       // Resolve role env vars (secret labels → actual values)
       if (worker.roleConfig) {
         try {
-          const { resolved: roleEnv, missing } = await resolveRoleEnv(
-            getRoleDir(worker.roleConfig.slug),
-            process.env as Record<string, string>,
-          );
+          const { resolved: roleEnv, missing } = await this.resolveWorkerRoleEnv(worker);
           Object.assign(cleanEnv, roleEnv);
           console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
           if (missing.length > 0) {
