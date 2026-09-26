@@ -1685,7 +1685,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; skillBundles?: SkillBundle[] },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[] },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1850,6 +1850,13 @@ export class WorkerManager {
     if (claimedWorker.roleInstructions?.content) {
       worker.roleInstructions = claimedWorker.roleInstructions;
       console.log(`[Worker ${claimedWorker.id}] Received role persona: ${claimedWorker.roleInstructions.slug} (${claimedWorker.roleInstructions.content.length} chars)`);
+    }
+    if (claimedWorker.roleEnvSecrets && Object.keys(claimedWorker.roleEnvSecrets).length > 0) {
+      worker.roleEnvSecrets = claimedWorker.roleEnvSecrets;
+      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.roleEnvSecrets).length} role env secret(s): ${Object.keys(claimedWorker.roleEnvSecrets).join(', ')}`);
+    }
+    if (claimedWorker.roleEnvMissing && claimedWorker.roleEnvMissing.length > 0) {
+      worker.roleEnvMissing = claimedWorker.roleEnvMissing;
     }
     if (claimedWorker.skillBundles && claimedWorker.skillBundles.length > 0) {
       worker.skillBundles = claimedWorker.skillBundles;
@@ -2534,10 +2541,22 @@ export class WorkerManager {
    * The role's env (secret labels → values). One resolver for both consumers —
    * the worktree dependency install and the agent's cleanEnv — so the install
    * can never see a different set of secrets from the agent.
+   *
+   * Two sources, merged: the local env-mapping.json resolved against process
+   * env (file-based, requires a packaged `roleConfig` bundle — today always
+   * empty, see roles.ts), and `roleEnvSecrets`/`roleEnvMissing` delivered
+   * inline at claim time against the `secrets` table (role-env-injection.ts on
+   * the server). The claim-delivered source is independent of `roleConfig` so
+   * an MCP-registered role with no R2 bundle still gets its declared vars.
    */
-  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
-    if (!worker.roleConfig) return { resolved: {}, missing: [] };
-    return resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>);
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    const fileBased = worker.roleConfig
+      ? await resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>)
+      : { resolved: {}, missing: [] };
+    return {
+      resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
+      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? [])],
+    };
   }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
@@ -2552,6 +2571,7 @@ export class WorkerManager {
     const secretValues = [
       { label: 'BUILDD_API_KEY', value: this.config.apiKey },
       ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
+      ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
     ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
@@ -3232,18 +3252,21 @@ export class WorkerManager {
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
-      // Resolve role env vars (secret labels → actual values)
-      if (worker.roleConfig) {
+      // Resolve role env vars (secret labels → actual values). Not gated on
+      // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
+      // independently of the packaged R2 bundle (see resolveWorkerRoleEnv).
+      if (worker.roleConfig || worker.roleEnvSecrets || worker.roleEnvMissing) {
         try {
           const { resolved: roleEnv, missing } = await this.resolveWorkerRoleEnv(worker);
           Object.assign(cleanEnv, roleEnv);
-          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
+          const roleLabel = worker.roleConfig?.slug ?? worker.roleInstructions?.slug ?? 'role';
+          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${roleLabel}`);
           if (missing.length > 0) {
             // A role that declares a requirement and loses it is worse than one
             // that declares nothing — record it as a visible degraded milestone
             // instead of letting the session start looking identical to a role
             // with no requirements at all.
-            const label = `Role env degraded: ${worker.roleConfig.slug} missing ${missing.join(', ')}`;
+            const label = `Role env degraded: ${roleLabel} missing ${missing.join(', ')}`;
             console.warn(`[Worker ${worker.id}] ${label}`);
             this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           }
