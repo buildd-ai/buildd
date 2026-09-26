@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import type { Clock } from '@/lib/realtime-throttle';
 import type { BuilddObjectRef } from '../chat-contract';
-import { createObjectStore, type ObjectSource } from './object-store';
-import type { TaskObjectView } from './object-views';
+import { createObjectStore, watchedTaskIds, type ObjectSource } from './object-store';
+import type { MissionObjectView, TaskObjectView } from './object-views';
 
 function fakeClock(): Clock & { advance(ms: number): void } {
   let t = 0;
@@ -97,5 +97,71 @@ describe('object store', () => {
     await flush();
     expect(store.get(ref).view?.status).toBe('pending');
     expect(store.get(ref).error).toBe('404');
+  });
+
+  // The docked pane sat on "waiting for a runner" after a confirm: the planning
+  // task is not a Board row, so its claim and worker events were dropped.
+  describe('mission: every event for the mission, not just Board rows', () => {
+    const mref: BuilddObjectRef = { kind: 'mission', id: 'm1', workspaceId: 'ws', fallbackText: 'mission' };
+    const planningView = (live: boolean, workerStatuses: Record<string, string> = {}): MissionObjectView => ({
+      kind: 'mission', id: 'm1', workspaceId: 'ws', title: 'm', goal: null, status: 'active', stateLabel: live ? 'Running' : 'Planning',
+      workspaceName: null, renderedAt: 0, taskIds: ['plan'], workerStatuses,
+      board: { tasks: {}, phases: [], planning: { taskId: 'plan', roleName: 'Organizer', roleColor: null, live, runner: null, startedAt: null, currentAction: null, lastMilestone: null } } as unknown as MissionObjectView['board'],
+    });
+    function mharness(first: MissionObjectView) {
+      let loads = 0;
+      let next = first;
+      let emit: ((e: string, d: unknown) => void) | null = null;
+      const clock = fakeClock();
+      const store = createObjectStore({
+        load: async () => { loads += 1; return next; },
+        watch: (_r, _v, e) => { emit = e; return () => { emit = null; }; },
+      }, { clock, windowMs: 1000 });
+      return {
+        store, clock,
+        get loads() { return loads; },
+        setNext(v: MissionObjectView) { next = v; },
+        emit: (e: string, d: unknown) => emit?.(e, d),
+      };
+    }
+
+    it('watches the planning task and every mission task, not only Board rows', () => {
+      expect(watchedTaskIds(planningView(false)).sort()).toEqual(['plan']);
+      const noList = { ...planningView(false), taskIds: undefined };
+      expect(watchedTaskIds(noList)).toEqual(['plan']);
+    });
+
+    it('the planning task being claimed refetches the pane', async () => {
+      const h = mharness(planningView(false));
+      h.store.subscribe(mref, () => {});
+      await flush();
+      h.setNext(planningView(true, { w1: 'idle' }));
+      h.emit('task:claimed', { task: { id: 'plan' }, worker: { id: 'w1', status: 'idle' } });
+      h.clock.advance(1000);
+      await flush();
+      expect(h.loads).toBe(2);
+      expect(h.store.get(mref).view?.kind === 'mission' && h.store.get(mref).view).toMatchObject({ stateLabel: 'Running' });
+    });
+
+    it("a worker's first status change after load refetches (baseline comes from the view)", async () => {
+      const h = mharness(planningView(true, { w1: 'idle' }));
+      h.store.subscribe(mref, () => {});
+      await flush();
+      h.emit('worker:progress', { taskId: 'plan', workerId: 'w1', status: 'running', currentAction: 'Reading the repo' });
+      h.clock.advance(1000);
+      await flush();
+      expect(h.loads).toBe(2);
+    });
+
+    it('a claim naming the mission refetches even for a task the view has not seen', async () => {
+      const h = mharness(planningView(false));
+      h.store.subscribe(mref, () => {});
+      await flush();
+      h.emit('task:claimed', { task: { id: 'fresh', missionId: 'm1' }, worker: { id: 'w2', status: 'idle' } });
+      h.emit('task:claimed', { task: { id: 'elsewhere', missionId: 'm9' }, worker: { id: 'w3', status: 'idle' } });
+      h.clock.advance(1000);
+      await flush();
+      expect(h.loads).toBe(2);
+    });
   });
 });

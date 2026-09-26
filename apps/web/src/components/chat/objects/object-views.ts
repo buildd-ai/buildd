@@ -21,6 +21,13 @@ export interface MissionObjectView {
   /** The conversation the mission was filed from, when it was. */
   conversationId?: string | null;
   board: MissionBoardModel;
+  /**
+   * Every task on the mission, the planning task included. The Board only
+   * draws deliverables, so realtime filtering must not key on its rows alone.
+   */
+  taskIds?: string[];
+  /** workerId → status as built: the baseline a live status change is measured against. */
+  workerStatuses?: Record<string, string>;
   /** Server clock at build time. */
   renderedAt: number;
 }
