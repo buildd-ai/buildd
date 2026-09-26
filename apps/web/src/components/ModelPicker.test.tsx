@@ -143,3 +143,15 @@ describe('ModelPicker (SSR)', () => {
     expect(disabledCount).toBeGreaterThanOrEqual(4);
   });
 });
+
+describe('detectStalePin — alias vs dated snapshot', () => {
+  it('an undated pin is live when the catalog lists its dated snapshot', () => {
+    expect(detectStalePin('claude-haiku-4-5', ['claude-haiku-4-5-20251001'])).toBe(false);
+  });
+  it('a dated pin is live when the catalog lists the undated alias', () => {
+    expect(detectStalePin('claude-haiku-4-5-20251001', ['claude-haiku-4-5'])).toBe(false);
+  });
+  it('a retired model is still stale', () => {
+    expect(detectStalePin('claude-haiku-3-5', ['claude-haiku-4-5-20251001'])).toBe(true);
+  });
+});

@@ -73,3 +73,34 @@ describe('auditTierModels', () => {
 });
 
 // Alias/tier agreement is already pinned by model-aliases-surface.test.ts (#1988).
+
+// Anthropic's /v1/models lists dated snapshots (`claude-haiku-4-5-20251001`)
+// while a pin can hold the undated alias (`claude-haiku-4-5`), and the reverse.
+// Both name the same model, so neither side may be reported as missing.
+describe('auditTierModels — alias vs dated snapshot', () => {
+  const at = (id: string): LiveModel => ({ id } as LiveModel);
+
+  test('an undated alias pin matches a dated snapshot in the catalog', () => {
+    const audit = auditTierModels(
+      { budget: { provider: 'anthropic', model: 'claude-haiku-4-5' } },
+      [at('claude-haiku-4-5-20251001'), at('claude-sonnet-5')],
+    );
+    expect(audit.unknown).toEqual([]);
+  });
+
+  test('a dated pin matches an undated alias in the catalog', () => {
+    const audit = auditTierModels(
+      { budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' } },
+      [at('claude-haiku-4-5'), at('claude-sonnet-5')],
+    );
+    expect(audit.unknown).toEqual([]);
+  });
+
+  test('a genuinely retired model is still reported', () => {
+    const audit = auditTierModels(
+      { budget: { provider: 'anthropic', model: 'claude-haiku-3-5' } },
+      [at('claude-haiku-4-5-20251001'), at('claude-sonnet-5')],
+    );
+    expect(audit.unknown).toEqual([{ tier: 'budget', model: 'claude-haiku-3-5' }]);
+  });
+});
