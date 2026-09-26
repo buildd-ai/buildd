@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
 async function hasInitiativeAccess(initiative: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
@@ -115,7 +116,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, workspaceId, contextArtifactIds, kpis, autoVerify } = body;
+    const { title, description, status, priority, workspaceId, contextArtifactIds, targetDate, ownerUserId, kpis, autoVerify } = body;
 
     const updateData: Partial<typeof initiatives.$inferInsert> = { updatedAt: new Date() };
 
@@ -127,16 +128,26 @@ export async function PATCH(
     }
     if (description !== undefined) updateData.description = description || null;
     if (status !== undefined) {
-      const validStatuses = ['active', 'paused', 'completed', 'archived'];
-      if (!validStatuses.includes(status)) {
-        return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
-      }
-      updateData.status = status;
+      const parsed = parseInitiativeStatus(status);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      updateData.status = parsed.value;
+    }
+    if (targetDate !== undefined) {
+      const parsed = parseTargetDate(targetDate);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      updateData.targetDate = parsed.value;
+    }
+    if (ownerUserId !== undefined) {
+      const parsed = await parseOwnerUserId(ownerUserId, existing.teamId);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      updateData.ownerUserId = parsed.value;
     }
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
     if (contextArtifactIds !== undefined) updateData.contextArtifactIds = contextArtifactIds || [];
 
+    // DEPRECATED: kpis / autoVerify are still stored for API compatibility but
+    // no surface renders or evaluates them for the initiative any more.
     if (kpis !== undefined) {
       if (kpis !== null && !Array.isArray(kpis)) {
         return NextResponse.json({ error: 'kpis must be an array' }, { status: 400 });

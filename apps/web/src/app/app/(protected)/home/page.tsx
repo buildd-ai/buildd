@@ -40,23 +40,7 @@ import { InterruptReviewButton } from './InterruptReviewButton';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
-import { sortInitiatives } from '@/lib/initiative-presentation';
-import {
-  loadInitiativeEffort,
-  loadInitiativeVerdictInputs,
-  deriveInitiativeVerdict,
-  derivePendingCounts,
-  countBlockedByPR,
-  emptyVerdictRollup,
-  zeroEffortWindow,
-  noPendingCounts,
-  type EffortDay,
-  type VerdictRollup,
-  type BlockingTask,
-} from '@/lib/initiative-pulse';
-import type { PulseLineItem } from '@/lib/initiative-pulse-line';
-import { InitiativePulseLine } from './InitiativePulseLine';
-import { loadShippedMissionIds } from '@/lib/mission-ship-state';
+import type { BlockingTask } from '@/lib/mission-card-view';
 
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
@@ -174,10 +158,6 @@ export default async function HomePage({
   let actionQueueInitiatives: Array<{ id: string; title: string }> = [];
   // Arc headline: an initiative that crossed a milestone since this user's last visit.
   let arcHeadline: string | null = null;
-  // One verdict per initiative, feeding the one-line initiative pulse (§2 of
-  // docs/specs/surface-ia-home-missions-initiatives.md). Stays empty when every
-  // arc is winning/dormant/empty, and the line then renders as absence.
-  let pulseItems: PulseLineItem[] = [];
 
   const waitingOnYou: WaitingOnYouRawItem[] = [];
 
@@ -317,36 +297,30 @@ export default async function HomePage({
       // Feeds the arc headline and the queue scoping chips; the 160px card rail
       // it used to feed is MUST NOT on Home (surface-IA spec §1, §2.1, AC-6).
       const initiativeTeamIds = activeTeamId ? [activeTeamId] : [];
-      const sortedInitiatives = sortInitiatives(
-        await loadInitiativeList({
-          teamIds: initiativeTeamIds,
-          workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
-          // The pulse line's `stuck` clause needs held / blocked / awaiting-merge
-          // counts, which `derivePendingCounts` reads off these mission rows. No
-          // extra round trip — the same relational query carries the columns.
-          pendingSignals: true,
-        }),
-      );
+      const teamInitiatives = await loadInitiativeList({
+        teamIds: initiativeTeamIds,
+        workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
+      });
       // Map every child mission → its initiative, for the queue scoping chips.
       const missionToInitiative = new Map<string, { id: string; title: string }>();
-      for (const ini of sortedInitiatives) {
+      for (const ini of teamInitiatives) {
         for (const m of ini.missions) missionToInitiative.set(m.id, { id: ini.id, title: ini.title });
       }
 
       // Arc headline — detect a milestone crossing since this user's last visit,
       // then refresh the per-user snapshot to current. A first-ever view seeds the
       // baseline silently (no snapshot ⇒ no headline).
-      if (sortedInitiatives.length > 0) {
+      if (teamInitiatives.length > 0) {
         const seenRows = await db
           .select({ initiativeId: initiativeProgressSeen.initiativeId, lastProgress: initiativeProgressSeen.lastProgress })
           .from(initiativeProgressSeen)
           .where(and(
             eq(initiativeProgressSeen.userId, user.id),
-            inArray(initiativeProgressSeen.initiativeId, sortedInitiatives.map((i) => i.id)),
+            inArray(initiativeProgressSeen.initiativeId, teamInitiatives.map((i) => i.id)),
           ));
         const seenMap = new Map(seenRows.map((r) => [r.initiativeId, r.lastProgress]));
         let best: { title: string; milestone: number } | null = null;
-        for (const ini of sortedInitiatives) {
+        for (const ini of teamInitiatives) {
           const prev = seenMap.get(ini.id);
           if (prev === undefined) continue; // first view → baseline only
           const m = crossedMilestone(prev, ini.progress.progress);
@@ -357,7 +331,7 @@ export default async function HomePage({
         // Bookkeeping, not rendering: runs after the response via after(), and
         // a failure only costs the next visit its headline. Awaited here it
         // could throw and skip every query below, blanking Home.
-        const seenValues = sortedInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress }));
+        const seenValues = teamInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress }));
         recordBestEffort('initiative-progress-seen', () => db
           .insert(initiativeProgressSeen)
           .values(seenValues)
@@ -365,60 +339,6 @@ export default async function HomePage({
             target: [initiativeProgressSeen.userId, initiativeProgressSeen.initiativeId],
             set: { lastProgress: sql`excluded.last_progress`, updatedAt: sql`now()` },
           }));
-      }
-
-      // Initiative pulse line (§2.2): one verdict per arc, from the shared
-      // loader — never a second query of our own, and never a call per
-      // initiative (§2.4, §6.2). Effort and verdict evidence are team-scoped on
-      // purpose (§6.5): a workspace-narrowed window would let the sidebar filter
-      // flip an arc's verdict.
-      if (sortedInitiatives.length > 0) {
-        const effortByInitiative = new Map<string, EffortDay[]>();
-        const rollupByInitiative = new Map<string, VerdictRollup>();
-        await Promise.all(
-          initiativeTeamIds.map(async (teamId) => {
-            const [effort, rollups] = await Promise.all([
-              loadInitiativeEffort({ teamId }),
-              loadInitiativeVerdictInputs({ teamId }),
-            ]);
-            for (const [id, days] of effort) effortByInitiative.set(id, days);
-            for (const [id, rollup] of rollups) rollupByInitiative.set(id, rollup);
-          }),
-        );
-
-        // `dependsOn` crosses mission boundaries, so the blocking index spans
-        // every mission loaded rather than being rebuilt per initiative.
-        const blockingIndex = new Map<string, BlockingTask>();
-        for (const ini of sortedInitiatives) {
-          for (const mission of ini.missions) {
-            for (const task of mission.tasks ?? []) blockingIndex.set(task.id, task);
-          }
-        }
-
-        // Ship state, not the mission.status row transition (docs/design/mission-delivery-arc.md,
-        // "The missing dimension: ship state") — one batched query for every
-        // mission on the page, not one per mission.
-        const allMissionIds = sortedInitiatives.flatMap((ini) => ini.missions.map((m) => m.id));
-        const shippedMissionIds = await loadShippedMissionIds(allMissionIds);
-
-        pulseItems = sortedInitiatives.map((ini) => {
-          const rollup = rollupByInitiative.get(ini.id) ?? emptyVerdictRollup(ini.status);
-          const effortDays = effortByInitiative.get(ini.id) ?? zeroEffortWindow();
-          const counts =
-            derivePendingCounts(
-              ini.missions.map((mission) => ({
-                initiativeId: ini.id,
-                isHeld: mission.isHeld,
-                shipped: shippedMissionIds.has(mission.id),
-                lastActivityAt: mission.updatedAt,
-                blockedPRCount: countBlockedByPR(mission.tasks ?? [], blockingIndex),
-                tasks: mission.tasks ?? [],
-              })),
-            ).get(ini.id) ?? noPendingCounts();
-
-          const { verdict } = deriveInitiativeVerdict({ rollup, effortDays, counts });
-          return { id: ini.id, title: ini.title, verdict };
-        });
       }
 
       if (wsIds.length > 0) {
@@ -1781,7 +1701,7 @@ export default async function HomePage({
         const presentInitiativeIds = new Set(
           actionQueue.map((i) => i.initiativeId).filter(Boolean) as string[],
         );
-        actionQueueInitiatives = sortedInitiatives
+        actionQueueInitiatives = teamInitiatives
           .filter((i) => presentInitiativeIds.has(i.id))
           .map((i) => ({ id: i.id, title: i.title }));
 
@@ -1924,9 +1844,6 @@ export default async function HomePage({
               ))}
             </h1>
             {arcHeadline && <p className="mt-1 font-mono text-[13px] text-text-secondary">{arcHeadline}</p>}
-            {/* Initiative pulse — a link chip under the headline, and nothing
-                at all when every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
-            {pulseItems.length > 0 && <div className="mt-2.5"><InitiativePulseLine items={pulseItems} /></div>}
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="hidden min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-[12.5px] text-text-secondary md:flex">

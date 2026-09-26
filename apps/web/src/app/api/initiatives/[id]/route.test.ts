@@ -7,6 +7,7 @@ const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as strin
 const mockInitiativesFindFirst = mock(() => ({ id: 'init-1', teamId: 'team-1', workspaceId: null }) as any);
 const mockArtifactsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockTeamMembersFindFirst = mock(() => ({ userId: 'user-2' }) as any);
 let updatedValues: any = null;
 let deleteCalled = false;
 const mockUpdate = mock(() => ({
@@ -33,6 +34,7 @@ mock.module('@buildd/core/db', () => ({
       initiatives: { findFirst: mockInitiativesFindFirst },
       artifacts: { findMany: mockArtifactsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      teamMembers: { findFirst: mockTeamMembersFindFirst },
     },
     update: () => mockUpdate(),
     delete: () => mockDelete(),
@@ -47,6 +49,7 @@ mock.module('@buildd/core/db/schema', () => ({
   initiatives: { id: 'id' },
   artifacts: { initiativeId: 'initiativeId' },
   workspaces: { id: 'id' },
+  teamMembers: { teamId: 'teamId', userId: 'userId' },
 }));
 
 import { GET, PATCH, DELETE } from './route';
@@ -130,6 +133,52 @@ describe('PATCH /api/initiatives/[id]', () => {
       method: 'PATCH', body: JSON.stringify({ status: 'bogus' }),
     }), ctx('init-1'));
     expect(res.status).toBe(400);
+  });
+
+  it('accepts the planned status', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-1', workspaceId: null });
+    const res = await PATCH(new NextRequest('http://localhost/api/initiatives/init-1', {
+      method: 'PATCH', body: JSON.stringify({ status: 'planned' }),
+    }), ctx('init-1'));
+    expect(res.status).toBe(200);
+    expect(updatedValues.status).toBe('planned');
+  });
+
+  it('sets and clears the target date, and rejects anything but YYYY-MM-DD', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-1', workspaceId: null });
+    const patch = (body: unknown) => PATCH(new NextRequest('http://localhost/api/initiatives/init-1', {
+      method: 'PATCH', body: JSON.stringify(body),
+    }), ctx('init-1'));
+
+    expect((await patch({ targetDate: '2026-11-01' })).status).toBe(200);
+    expect(updatedValues.targetDate).toBe('2026-11-01');
+
+    expect((await patch({ targetDate: null })).status).toBe(200);
+    expect(updatedValues.targetDate).toBeNull();
+
+    updatedValues = null;
+    expect((await patch({ targetDate: 'next week' })).status).toBe(400);
+    expect((await patch({ targetDate: '2026-02-30' })).status).toBe(400);
+    expect(updatedValues).toBeNull();
+  });
+
+  it('sets an owner who belongs to the team, and refuses one who does not', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-1', workspaceId: null });
+    const patch = (body: unknown) => PATCH(new NextRequest('http://localhost/api/initiatives/init-1', {
+      method: 'PATCH', body: JSON.stringify(body),
+    }), ctx('init-1'));
+
+    mockTeamMembersFindFirst.mockResolvedValue({ userId: 'user-2' });
+    expect((await patch({ ownerUserId: 'user-2' })).status).toBe(200);
+    expect(updatedValues.ownerUserId).toBe('user-2');
+
+    updatedValues = null;
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    expect((await patch({ ownerUserId: 'user-9' })).status).toBe(400);
+    expect(updatedValues).toBeNull();
+
+    expect((await patch({ ownerUserId: null })).status).toBe(200);
+    expect(updatedValues.ownerUserId).toBeNull();
   });
 
   it('403 for non-admin API key', async () => {
