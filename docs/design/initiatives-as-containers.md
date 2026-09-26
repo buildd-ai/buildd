@@ -1,3 +1,24 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "initiative-card-builder"
+    type: "symbol"
+    name: "buildInitiativeCard"
+    path: "apps/web/src/lib/initiative-view.ts"
+  - id: "initiative-card-loader"
+    type: "symbol"
+    name: "loadInitiativeCards"
+    path: "apps/web/src/lib/initiative-cards.ts"
+  - id: "initiative-card-component"
+    type: "symbol"
+    name: "InitiativeCard"
+    path: "apps/web/src/components/initiatives/InitiativeCard.tsx"
+  - id: "initiative-card-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/initiative-view.test.ts"
+---
+
 # Initiatives as containers
 
 **Status:** Implemented
