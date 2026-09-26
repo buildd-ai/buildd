@@ -44,12 +44,15 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
   return (
     <div className="space-y-8">
       {status && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" data-testid="chat-status" data-tone={status.tone}>
-          <span aria-hidden className={`w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[status.tone]}`} />
-          <span className="text-text-primary">{status.text}</span>
-          {status.action && (
-            <Link href={status.action.href} className="underline text-accent-text hover:no-underline">{status.action.label}</Link>
-          )}
+        <div className="flex items-start gap-3 text-sm" data-testid="chat-status" data-tone={status.tone}>
+          {/* mt-1.5 sits the square on the first line's middle, however the text wraps. */}
+          <span aria-hidden className={`mt-1.5 w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[status.tone]}`} />
+          <span className="min-w-0">
+            <span className="text-text-primary">{status.text}</span>
+            {status.action && (
+              <> <Link href={status.action.href} className="underline text-accent-text hover:no-underline">{status.action.label}</Link></>
+            )}
+          </span>
         </div>
       )}
 
