@@ -46,6 +46,13 @@ describe('AgentHandledCard', () => {
     expect(html).not.toContain('manual merge');
   });
 
+  it("an auto-merge PR whose CI just passed says it is merging (the gate's reason)", () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'AUTO_MERGE', ciGate: null, escalationReason: 'CI passed — merging' })} />,
+    );
+    expect(html).toContain('CI passed — merging');
+  });
+
   it('a long title gets two lines, not a one-line ellipsis, and the PR link is a real tap target on a phone', () => {
     const html = renderToStaticMarkup(
       <AgentHandledCard item={item({ chip: 'CI_RUNNING', ciGate: { kind: 'running', label: 'CI running' } })} />,

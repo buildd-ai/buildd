@@ -13,7 +13,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   const gate = item.ciGate;
   const label = gate && gate.kind !== 'blocked'
     ? gate.label
-    : item.chip === 'AUTO_MERGE' ? 'Auto-merges when CI passes' : 'Agent working';
+    : item.chip === 'AUTO_MERGE' ? (item.escalationReason ?? 'Auto-merges when CI passes') : 'Agent working';
   const fixTaskId = gate?.kind === 'fixing' ? gate.taskId : null;
   const spinning = gate?.kind === 'fixing';
 
