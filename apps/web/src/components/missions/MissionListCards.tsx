@@ -251,7 +251,7 @@ export function ArmButton({ missionId }: { missionId: string }) {
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleArm(); }}
       disabled={isPending || busy}
       className="inline-flex min-h-11 items-center gap-1 border-2 border-primary bg-primary px-3.5 font-mono text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50 md:min-h-9"
-      aria-label="Arm this mission — release its tasks for workers to claim"
+      aria-label="Arm this mission: release its tasks for workers to claim"
     >
       {isPending || busy ? 'Arming…' : 'Arm →'}
     </button>

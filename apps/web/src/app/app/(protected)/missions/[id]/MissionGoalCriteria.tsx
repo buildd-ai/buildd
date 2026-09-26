@@ -129,7 +129,7 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
           <option value="all_prs_merged">All PRs merged</option>
           <option value="no_open_tasks">No open tasks</option>
           <option value="artifact_exists">Artifact exists</option>
-          <option value="description">Description (LLM-graded — last resort)</option>
+          <option value="description">Description (LLM-graded, last resort)</option>
         </select>
       </div>
 
@@ -315,7 +315,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd. Criteria were not evaluated.');
+      setRunError('Could not reach buildd to evaluate criteria.');
     } finally {
       setIsRunning(false);
     }
@@ -342,7 +342,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd. Criteria were not saved.');
+      setRunError('Could not reach buildd to save criteria.');
       setCriteria(criteria);
     } finally {
       setSavingCriteria(false);
@@ -437,7 +437,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
 
       {/* Criteria list */}
       {criteria.length === 0 ? (
-        <p className="text-[13px] text-text-muted mb-3">No criteria set. Add one to gate mission completion on measurable outcomes.</p>
+        <p className="text-[13px] text-text-muted mb-3">No criteria. Add one to gate completion on a measurable outcome.</p>
       ) : (
         <div className="space-y-2 mb-3">
           {criteria.map((c, i) => {
@@ -477,7 +477,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                   {/* Inline CI-block annotation for all_prs_merged — derived from live worker state */}
                   {c.type === 'all_prs_merged' && failingCiPrNumbers && failingCiPrNumbers.length > 0 && verdict !== 'pass' && (
                     <p className="text-[11px] text-status-error mt-0.5 leading-snug font-mono">
-                      blocked — {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
+                      blocked: {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
                       {failingCiPrNumbers.map((n, idx) => (
                         <span key={n}>
                           {idx > 0 && ', '}
@@ -561,7 +561,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         <div className="mt-3 pt-3 border-t border-border-default flex items-center justify-between gap-3">
           <div className="min-w-0">
             <span className="text-[12px] text-text-secondary">Auto-verify on completion</span>
-            <p className="text-[11px] text-text-muted mt-0.5">Automatically check criteria when the mission completes.</p>
+            <p className="text-[11px] text-text-muted mt-0.5">Check criteria when the mission completes.</p>
           </div>
           <Switch
             checked={autoVerify}

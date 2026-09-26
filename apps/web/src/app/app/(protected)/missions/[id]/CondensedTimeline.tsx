@@ -177,7 +177,7 @@ function PrStatusLine({
             ) : `#${lw.supersededByPrNumber}`}
           </span>
         ) : (
-          <span className="text-[11px] md:text-[10px] text-status-error">closed — not merged</span>
+          <span className="text-[11px] md:text-[10px] text-status-error">closed · not merged</span>
         )}
       </div>
     );
@@ -244,7 +244,7 @@ function ApprovedVerdictChip({
           type="button"
           onClick={() => setExpanded(true)}
           className="inline-flex items-center gap-1 text-[11px] md:text-[10px] text-status-success font-mono hover:underline"
-          title="Tap to expand approved verdict"
+          title="Expand approved verdict"
         >
           <span>✓</span>
           {confidence && <span>{confidence}</span>}
@@ -272,7 +272,7 @@ function ApprovedVerdictChip({
           </button>
         </div>
         <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={note.body ?? note.title}>{note.body ?? note.title}</p>
-        <p className="text-[11px] md:text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Merging automatically…'}</p>
+        <p className="text-[11px] md:text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Auto-merging…'}</p>
       </div>
     </div>
   );
@@ -401,7 +401,7 @@ function TaskRow({
             if (retryTask.status === 'completed') {
               retryLine = (
                 <p className="text-[11px] md:text-[10px] text-status-success mt-0.5">
-                  → {taskLink} done{retryTask.prNumber ? ` — pushed to #${retryTask.prNumber}` : ''}
+                  → {taskLink} done{retryTask.prNumber ? ` · pushed to #${retryTask.prNumber}` : ''}
                 </p>
               );
             } else if (retryTask.status === 'failed') {
@@ -479,7 +479,7 @@ function TaskRow({
                       closed
                       {note.status === 'superseded' && successorPrNumber && (
                         <>
-                          {' — superseded by '}
+                          {' · superseded by '}
                           {successorUrl ? (
                             <ExternalLink href={successorUrl} className="text-accent-text hover:underline">
                               #{successorPrNumber} →

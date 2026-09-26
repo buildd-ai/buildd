@@ -119,8 +119,8 @@ export function buildStateBecause(
     links.push(
       link(
         t.supersedingTaskId
-          ? `Task "${t.title ?? t.id}" failed, but sibling task "${t.supersedingTaskId}" completed the same work via merged PR #${t.prNumber} — not counted as a mission failure.`
-          : `Task "${t.title ?? t.id}" failed, but its target PR #${t.prNumber} merged anyway — not counted as a mission failure.`,
+          ? `Task "${t.title ?? t.id}" failed, but sibling task "${t.supersedingTaskId}" completed the same work via merged PR #${t.prNumber}, so it does not count as a mission failure.`
+          : `Task "${t.title ?? t.id}" failed, but its target PR #${t.prNumber} merged, so it does not count as a mission failure.`,
         'tasks.subjectPrNumber + workers.mergedAt',
         { ...base, taskId: t.id, prNumber: t.prNumber },
       ),
@@ -135,7 +135,7 @@ export function buildStateBecause(
     ? `State is ${view.kind} because ${w.label}.`
     : view.outstanding.length > 0
       ? `State is ${view.kind}, but ${view.outstanding.length} fact(s) are still outstanding: ${view.outstanding.map(o => o.label).join('; ')}.`
-      : `State is ${view.kind}: no source reports anything outstanding.`;
+      : `State is ${view.kind}. No source reports outstanding work.`;
   links.push(link(closing, view.derivedFrom.kind, base));
 
   return orderChain(links);
@@ -183,7 +183,7 @@ function openTaskLinks(
       orphaned(t)
         ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`
         : t.live
-          ? `Task "${t.title ?? t.id}" is ${t.status} — a worker is running it.`
+          ? `Task "${t.title ?? t.id}" is ${t.status}. A worker is running it.`
           : `Task "${t.title ?? t.id}" is ${t.status} and not finished yet.`,
       'tasks.status + workers.status',
       { ...base, taskId: t.id },
@@ -215,7 +215,7 @@ function causeLinksFor(
         return [
           link(
             w.attempt.claimed
-              ? `Fix attempt ${name} is ${t?.status ?? 'open'} — a worker has it.`
+              ? `Fix attempt ${name} is ${t?.status ?? 'open'}. A worker has claimed it.`
               : `Fix attempt ${name} is queued with no worker yet.`,
             'tasks.status + workers.status',
             { ...base, taskId: w.taskIds[0] },
@@ -244,7 +244,7 @@ function causeLinksFor(
         link(
           p.closedUnsuperseded
             ? `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
-              + 'work shipped elsewhere — record_pr_supersession is the remedy if it did.'
+              + 'work shipped elsewhere. If it did, record it with record_pr_supersession.'
             : `Task "${p.title}" is completed but its PR has not merged.`,
           p.closedUnsuperseded ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber' : 'workers.mergedAt',
           {
@@ -285,7 +285,7 @@ function causeLinksFor(
       return [
         link(
           w.waitUntil
-            ? `Every open task is on a known self-resolving wait (${w.reason}); it resumes at ${w.waitUntil}.`
+            ? `Every open task is on a known self-resolving wait (${w.reason}) until ${w.waitUntil}.`
             : `Every open task is on a known self-resolving wait (${w.reason}).`,
           'classifyMissionWait',
           base,
@@ -296,7 +296,7 @@ function causeLinksFor(
       return w.taskIds.slice(0, 10).map(taskId =>
         link(
           `The claim loop refused this task ${w.consecutiveDeferrals} consecutive polls for the same reason (${w.reason})`
-          + `${w.firstDeferredAt ? `, first at ${w.firstDeferredAt}` : ''} — it has not been allowed to start.`,
+          + `${w.firstDeferredAt ? `, first at ${w.firstDeferredAt}` : ''}. The task has not started.`,
           'gate_events.detail.consecutiveDeferrals',
           { ...base, taskId },
         ),
@@ -430,7 +430,7 @@ export function buildConflictBecause(
   } else if (baseSide.length > 0) {
     links.push(
       link(
-        `No stored touch set for those merges overlaps PR #${subject.prNumber}'s — the conflict is in files neither side declared.`,
+        `No stored touch set for those merges overlaps PR #${subject.prNumber}'s. The conflict is in files neither side declared.`,
         'workers.observedTouches ∪ tasks.pathManifest (no intersection)',
         refs,
       ),

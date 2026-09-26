@@ -176,7 +176,7 @@ function Big({ n, small }: { n: number; small: string }) {
 // ── Needs you ────────────────────────────────────────────────────────────────
 
 function AskBanner({ task, now }: { task: BoardTask; now: number }) {
-  const prompt = task.waitingFor?.prompt ?? 'This agent is waiting on you.';
+  const prompt = task.waitingFor?.prompt ?? 'Waiting on you.';
   return (
     <section
       data-testid="needs-you-band"

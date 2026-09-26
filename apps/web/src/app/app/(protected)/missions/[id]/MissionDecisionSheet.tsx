@@ -56,7 +56,7 @@ export default function MissionDecisionSheet({ missionId, goalCriteria, failingC
       setFixOpen(false);
       router.refresh();
     } catch {
-      setFixError('Could not reach buildd. Criterion was not saved.');
+      setFixError('Could not reach buildd. Criterion not saved.');
     } finally {
       setFixSaving(false);
     }
@@ -78,7 +78,7 @@ export default function MissionDecisionSheet({ missionId, goalCriteria, failingC
       }
       router.refresh();
     } catch {
-      setWaiveError('Could not reach buildd. Mission was not completed.');
+      setWaiveError('Could not reach buildd. Mission not completed.');
     } finally {
       setWaiving(false);
     }
@@ -127,8 +127,8 @@ export default function MissionDecisionSheet({ missionId, goalCriteria, failingC
       {waiveOpen && (
         <div className="mt-2 border border-status-warning/30 bg-status-warning/5 rounded-sm p-3">
           <p className="text-[12px] text-text-secondary">
-            This marks the mission complete even though its goal criteria have not passed.
-            The override is recorded on the mission feed.
+            Marks the mission complete with its goal criteria unmet.
+            The mission feed records the override.
           </p>
           <div className="flex items-center gap-2 mt-2">
             <button
@@ -145,7 +145,7 @@ export default function MissionDecisionSheet({ missionId, goalCriteria, failingC
               disabled={waiving}
               className="text-[12px] font-medium text-white bg-status-warning hover:bg-status-warning/90 rounded-md px-2.5 py-1 disabled:opacity-50"
             >
-              {waiving ? 'Completing…' : 'Confirm — mark complete'}
+              {waiving ? 'Completing…' : 'Mark complete'}
             </button>
           </div>
           {waiveError && <p role="alert" className="text-[11px] text-status-error mt-1.5">{waiveError}</p>}

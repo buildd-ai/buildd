@@ -382,8 +382,8 @@ export default async function ReleaseDetailPage({
         <div className="card p-6 text-center">
           <p className="text-sm text-text-secondary">Attribution hasn&apos;t run for this release yet.</p>
           <p className="text-[11px] text-text-muted mt-1">
-            The commit range is missing or incomplete, so tasks can&apos;t be matched. This is normal shortly after
-            dispatch — check back once the range resolves.
+            The commit range is missing or incomplete, so buildd can&apos;t match tasks yet. Expected right after
+            dispatch. Check back once the range resolves.
           </p>
         </div>
       )}
@@ -392,8 +392,8 @@ export default async function ReleaseDetailPage({
         <div className="card p-6 text-center">
           <p className="text-sm text-text-secondary">Attribution ran but matched no tasks.</p>
           <p className="text-[11px] text-text-muted mt-1">
-            This release has a valid commit range, so a blank result likely means the matcher missed the commits in
-            this range — worth investigating.
+            The commit range is valid, so the matcher likely missed these commits.
+            Check the matcher.
           </p>
         </div>
       )}

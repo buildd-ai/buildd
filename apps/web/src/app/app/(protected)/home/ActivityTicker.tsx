@@ -28,7 +28,7 @@ export function ActivityTicker({ events, timeZone }: { events: readonly TickerEv
         </Link>
       </div>
       {events.length === 0 ? (
-        <p className="font-mono text-[13px] text-text-secondary">Nothing has happened in the last few hours.</p>
+        <p className="font-mono text-[13px] text-text-secondary">No activity in the last few hours.</p>
       ) : (
         <ol data-testid="home-activity" className="card p-0">
           {events.map((e, i) => {

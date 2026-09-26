@@ -82,7 +82,7 @@ export default function QuietHoursConfig({
       </div>
 
       <p className="text-[11px] text-text-secondary mt-1">
-        When enabled, this mission pauses during these hours.
+        The mission pauses during these hours.
       </p>
 
       {enabled && (

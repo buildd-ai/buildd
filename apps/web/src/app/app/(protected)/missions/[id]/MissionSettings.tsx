@@ -375,7 +375,7 @@ export default function MissionSettings({
                 <button
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
-                  title="Tick the orchestrator now instead of waiting for the schedule"
+                  title="Run the orchestrator now, ahead of the schedule"
                   className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
                 >
                   {manualRunLoading ? '…' : 'Plan now'}
@@ -392,7 +392,7 @@ export default function MissionSettings({
                   onClick={handleToggleOrchestrationMode}
                   disabled={modeLoading}
                   className="inline-flex min-h-11 items-center md:min-h-0 text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
-                  title="Stop the orchestrator from ticking itself; you drive it with Plan now"
+                  title="Stop scheduled runs. You run the orchestrator with Plan now."
                 >
                   {modeLoading ? '…' : 'Disarm'}
                 </button>
@@ -613,8 +613,7 @@ function RunOutcomeStrip({
         <>
           {spinner}
           <span>
-            Planning{outcome.turns ? ` · ${outcome.turns} turn${outcome.turns === 1 ? '' : 's'}` : ''} — it
-            decides what to run next, which can take a few minutes.
+            Planning{outcome.turns ? ` · ${outcome.turns} turn${outcome.turns === 1 ? '' : 's'}` : ''}. The planning agent is choosing the next tasks. This can take a few minutes.
           </span>
           {taskLink(outcome.taskId, 'View organizer →')}
         </>,
@@ -625,7 +624,7 @@ function RunOutcomeStrip({
         'border-card-border bg-surface-3 text-text-secondary',
         <>
           {spinner}
-          <span>Already planning — nothing new was started.</span>
+          <span>Already planning. No new run started.</span>
           {taskLink(outcome.taskId, 'View organizer →')}
         </>,
       );
@@ -653,7 +652,7 @@ function RunOutcomeStrip({
         'border-status-error/30 bg-status-error/5 text-text-secondary',
         <>
           <span className="text-status-error font-mono">✕</span>
-          <span>Cost budget exhausted — raise it to keep planning.</span>
+          <span>Cost budget spent. Raise it to keep planning.</span>
         </>,
       );
 

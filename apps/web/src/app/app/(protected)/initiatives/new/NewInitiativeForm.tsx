@@ -55,8 +55,8 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
 
       <h1 className="text-xl font-semibold text-text-primary font-sans mb-1">New Initiative</h1>
       <p className="text-sm text-text-secondary mb-6">
-        An initiative groups related missions under one goal. It has no schedule or
-        budget of its own — missions under it do the work.
+        An initiative groups related missions under one goal. Its missions carry
+        the schedules, budgets and work.
       </p>
 
       <div className="flex flex-col gap-4">
@@ -77,7 +77,7 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="What is this initiative trying to achieve?"
+            placeholder="The outcome this initiative should deliver"
             rows={4}
             className="input resize-y"
           />
@@ -85,7 +85,7 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
 
         {workspaces.length > 0 && (
           <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-text-secondary">Workspace <span className="text-text-muted">(optional — leave empty to span repos)</span></span>
+            <span className="text-xs font-medium text-text-secondary">Workspace <span className="text-text-muted">(optional: leave empty to span repos)</span></span>
             <select value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} className="input">
               <option value="">Team-wide (no workspace)</option>
               {workspaces.map((w) => (

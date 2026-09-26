@@ -1168,7 +1168,7 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
 
     const d = await canCompleteMission('m1', { path: 'dormancy' });
     expect(d.code).toBe('awaiting_mission_pr');
-    expect(d.reason).toContain('has not been opened');
+    expect(d.reason).toContain('The mission PR is not open yet');
   });
 
   it('refuses, and says it will not self-resolve, when the mission PR was closed', async () => {

@@ -45,7 +45,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
   it('renders the spec path, direction label and age', () => {
     const html = renderToStaticMarkup(<WaitingOnYouDiscrepancyCard item={item()} />);
     expect(html).toContain('docs/design/spec-conformance.md');
-    expect(html).toContain('Code ahead — doc fix');
+    expect(html).toContain('Code ahead · doc fix');
     expect(html).toContain('2 days old');
   });
 
@@ -86,7 +86,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
   it('CTA set — contradicted: Flip direction and Accept, unchanged', () => {
     const html = renderToStaticMarkup(<WaitingOnYouDiscrepancyCard item={item({ direction: 'contradicted' })} />);
     expect(ctas(html)).toEqual(['Flip direction', 'Accept']);
-    expect(html).toContain('Contradicted — needs a call');
+    expect(html).toContain('Contradicted · needs your call');
   });
 
   it('CTA set — spec_ahead already promoted: the mission link replaces Promote', () => {
@@ -114,7 +114,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
         item={item({ chip: 'FIXING_SPEC', docFixTaskId: 'task-7', docFixTaskStatus: 'completed' })}
       />,
     );
-    expect(html).toContain('awaiting the conformance re-run');
+    expect(html).toContain('Waiting on the conformance re-run');
     // Nothing is running any more, and closure is still the checker's word — so
     // the card must not offer a second dispatch, and must not pretend the
     // finding is settled. But a docs PR that never merged would otherwise leave
@@ -134,7 +134,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
         })}
       />,
     );
-    expect(html).toContain('awaiting the conformance re-run');
+    expect(html).toContain('Waiting on the conformance re-run');
     // A known merge either resolves on the next checker run or, if it finds
     // the row still open, releases the claim back to the live CTA set
     // (isDocFixClaimStale) — so Accept must not be offered as a way to park
@@ -153,7 +153,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
         })}
       />,
     );
-    expect(html).not.toContain('awaiting the conformance re-run');
+    expect(html).not.toContain('Waiting on the conformance re-run');
     expect(html).toContain('Doc fix PR open');
   });
 
@@ -165,7 +165,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
       <WaitingOnYouDiscrepancyCard item={item({ chip: 'DISCREPANCY', direction: 'code_ahead' })} />,
     );
     expect(ctas(html)).toEqual(['Dispatch doc fix', 'Accept']);
-    expect(html).not.toContain('awaiting the conformance re-run');
+    expect(html).not.toContain('Waiting on the conformance re-run');
   });
 
   it('CTA set — a doc fix already merged and the gap is still open: Accept only, never a second Dispatch', () => {
