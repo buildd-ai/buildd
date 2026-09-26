@@ -98,7 +98,7 @@ export async function POST(
   const task = (worker as any).task;
   const isSensitive = (worker as any).workspace?.dataClass === 'sensitive';
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
-  const milestones = (worker.milestones as Array<{ type?: string; label?: string; timestamp: number }>) || [];
+  const milestones = (worker.milestones as unknown as Array<{ type?: string; label?: string; timestamp: number }>) || [];
   const question = (worker.waitingFor as { prompt: string }).prompt;
 
   // ── The decision ──────────────────────────────────────────────────────────

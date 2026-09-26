@@ -223,6 +223,22 @@ async function main() {
       entry.highlights[theme] = await boxes(page, step.highlight ?? []);
       if (step.shot !== false) {
         const file = `${step.id}-${theme}.png`;
+        // The app scrolls inside <main>, not the window, so fullPage alone stops
+        // at the viewport: unclip inner scroll containers (as scripts/qa/capture.ts does).
+        if (step.fullPage) {
+          await page.evaluate(() => {
+            for (const el of Array.from(document.querySelectorAll<HTMLElement>('body *'))) {
+              const style = getComputedStyle(el);
+              if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
+                for (let n: HTMLElement | null = el; n && n !== document.body; n = n.parentElement) {
+                  n.style.setProperty('height', 'auto', 'important');
+                  n.style.setProperty('max-height', 'none', 'important');
+                  n.style.setProperty('overflow', 'visible', 'important');
+                }
+              }
+            }
+          });
+        }
         await page.screenshot({ path: join(outDir, file), fullPage: step.fullPage ?? false, animations: 'disabled' });
         entry.files[theme] = file;
       }

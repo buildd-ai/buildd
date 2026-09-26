@@ -4,7 +4,26 @@
  * question asked while the page is open never appears until a reload.
  */
 import { describe, expect, it } from 'bun:test';
-import { questionFeedChannels } from './TaskQuestionFeed';
+import { questionFeedChannels, partitionQuestionNotes } from './TaskQuestionFeed';
+
+describe('partitionQuestionNotes', () => {
+  const notes = [
+    { id: 'a', type: 'question', status: 'open' },
+    { id: 'b', type: 'question', status: 'answered' },
+    { id: 'c', type: 'decision', status: 'open' },
+    { id: 'd', type: 'question', status: 'open' },
+  ] as any[];
+
+  it('skips the question the live worker view already shows (one question, one surface)', () => {
+    const { open, answered } = partitionQuestionNotes(notes, 'a');
+    expect(open.map(n => n.id)).toEqual(['d']);
+    expect(answered.map(n => n.id)).toEqual(['b']);
+  });
+
+  it('shows every open question when nothing is linked', () => {
+    expect(partitionQuestionNotes(notes, null).open.map(n => n.id)).toEqual(['a', 'd']);
+  });
+});
 
 describe('questionFeedChannels', () => {
   it('listens on the task channel alone for a non-mission task', () => {

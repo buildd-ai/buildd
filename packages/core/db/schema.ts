@@ -1351,6 +1351,42 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   specPathIdx: index('spec_discrepancies_spec_path_idx').on(t.workspaceId, t.specPath),
 }));
 
+/**
+ * One answer choice on a worker's open question. The runner forwards the SDK's
+ * AskUserQuestion options as objects; older rows and hand-written callers still
+ * send bare strings, so readers must accept both.
+ */
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean };
+
+export type WorkerWaitingFor = {
+  type: string;
+  prompt: string;
+  options?: WaitingForOption[];
+  toolUseId?: string;
+};
+
+/**
+ * One entry of `workers.milestones`, as the runner and the progress API write it.
+ * `label` is optional because sensitive workspaces strip it server-side. Action
+ * milestones may carry structured tool data (runner >= structured-milestones);
+ * older rows carry only the label, so readers must degrade to parsing it.
+ */
+export type WorkerMilestone =
+  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: string; label?: string; ts: number }
+  | {
+      type: 'action';
+      label?: string;
+      ts: number;
+      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+      path?: string;
+      add?: number;
+      rem?: number;
+      cmd?: string;
+      count?: number;
+    };
+
 export const workers = pgTable('workers', {
   id: uuid('id').primaryKey().defaultRandom(),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
@@ -1360,7 +1396,7 @@ export const workers = pgTable('workers', {
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
   status: text('status').default('idle').notNull(),
-  waitingFor: jsonb('waiting_for').$type<{ type: string; prompt: string; options?: string[] } | null>(),
+  waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
@@ -1385,7 +1421,7 @@ export const workers = pgTable('workers', {
   // Current action/status line from runner
   currentAction: text('current_action'),
   // Milestones stored as JSON array
-  milestones: jsonb('milestones').default([]).$type<Array<{ label: string; timestamp: number }>>(),
+  milestones: jsonb('milestones').default([]).$type<WorkerMilestone[]>(),
   // PR tracking
   prUrl: text('pr_url'),
   prNumber: integer('pr_number'),

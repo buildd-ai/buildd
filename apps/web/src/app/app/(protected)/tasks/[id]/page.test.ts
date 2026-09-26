@@ -118,8 +118,26 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(feed).toBeLessThan(description);
   });
 
-  it('the error-count chip keeps the chip radius of its neighbours', () => {
-    expect(pageSource).toMatch(/className="[^"]*\brounded\b[^"]*"\n\s*title="Pattern-matched errors/);
+  it('the error-count chip is square like its neighbours (brutalist: no radius)', () => {
+    expect(pageSource).toMatch(/className="[^"]*"\n\s*title="Pattern-matched errors/);
+    expect(pageSource).not.toMatch(/className="[^"]*\brounded[^"]*"\n\s*title="Pattern-matched errors/);
+  });
+
+  it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
+    const main = pageSource.indexOf('data-testid="task-main"');
+    const worker = pageSource.indexOf('data-testid="task-active-worker"');
+    const aside = pageSource.indexOf('data-testid="task-side-panel"');
+    expect(main).toBeGreaterThan(0);
+    expect(worker).toBeGreaterThan(main);
+    expect(aside).toBeGreaterThan(worker);
+    // The worker view leads the main column at every width.
+    expect(pageSource).toContain('<div className="mb-8 order-first" data-testid="task-active-worker">');
+  });
+
+  it('one question, one surface: the worker view gets the linked note and the feed skips it', () => {
+    expect(pageSource).toContain('linkQuestionNote(openQuestionRows, activeWorker.id)');
+    expect(pageSource).toContain('questionNote={questionNote}');
+    expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
 
   it('passes the failed phase a truncated error excerpt, not the full worker error', () => {
