@@ -29,6 +29,8 @@ import {
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
+import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
+import BoardVisualShots from './BoardVisualShots';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -42,6 +44,12 @@ export interface MissionBoardProps extends BoardLinkContext {
    * the landed strip's captions drop the ordinal, instead of truncating.
    */
   compact?: boolean;
+  /**
+   * The latest visual-review run and the auditor task it belongs to. The
+   * shots show under that task's row (else under the columns), and the
+   * completion record counts the screens reviewed.
+   */
+  visual?: { shots: readonly VisualShot[]; taskId: string | null } | null;
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -52,7 +60,7 @@ const ORDER: Record<BoardStatus, number> = {
 /** The elapsed bar's full width: the longest live run, at least this. */
 const MIN_STRIP_SPAN_MS = 15 * 60_000;
 
-export default function MissionBoard({ model: serverModel, completionText, notice, compact = false, ...link }: MissionBoardProps) {
+export default function MissionBoard({ model: serverModel, completionText, notice, compact = false, visual = null, ...link }: MissionBoardProps) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
@@ -60,6 +68,13 @@ export default function MissionBoard({ model: serverModel, completionText, notic
     .map(t => (t.startedAt != null ? now - t.startedAt : 0));
   const stripSpan = Math.max(MIN_STRIP_SPAN_MS, ...liveSpans);
   const lastCol = model.phases.length - 1;
+  const visualShots = visual && visual.shots.length > 0 ? visual.shots : null;
+  const visualTaskOnBoard = !!visualShots && !!visual?.taskId
+    && model.phases.some(p => p.taskIds.includes(visual.taskId!));
+  const shotsFor = (taskId: string) =>
+    visualShots && visualTaskOnBoard && visual?.taskId === taskId
+      ? <BoardVisualShots key={`${taskId}:shots`} shots={visualShots} missionId={link.missionId} />
+      : null;
 
   return (
     <div data-testid="mission-board" data-compact={compact ? 'true' : undefined} className="flex flex-col">
@@ -68,7 +83,7 @@ export default function MissionBoard({ model: serverModel, completionText, notic
       {model.needsYou.map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
       ))}
-      {model.complete && <CompletionRecord model={model} text={completionText ?? null} />}
+      {model.complete && <CompletionRecord model={model} text={completionText ?? null} shots={visualShots} />}
 
       {model.phases.length === 0 && model.planning && (
         <PlanningPlaceholder planning={model.planning} now={now} link={link} />
@@ -100,18 +115,25 @@ export default function MissionBoard({ model: serverModel, completionText, notic
                 </span>
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
-              {active.map(t => (
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} />
-              ))}
+              {active.map(t => [
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} />,
+                shotsFor(t.id),
+              ])}
               {landed.length > 0 && (
                 <div className="mt-0.5 border-t border-border-default">
-                  {landed.map(t => <LandedRow key={t.id} task={t} link={link} complete={model.complete} />)}
+                  {landed.map(t => [<LandedRow key={t.id} task={t} link={link} complete={model.complete} />, shotsFor(t.id)])}
                 </div>
               )}
             </div>
           );
         })}
       </section>}
+
+      {visualShots && !visualTaskOnBoard && (
+        <section className="mt-[22px] border-t-2 border-border-strong">
+          <BoardVisualShots shots={visualShots} missionId={link.missionId} />
+        </section>
+      )}
 
       {model.complete ? <Concurrency model={model} /> : <Ticker model={model} now={now} link={link} />}
     </div>
@@ -506,20 +528,21 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 
 // ── Completion ───────────────────────────────────────────────────────────────
 
-function CompletionRecord({ model, text }: { model: MissionBoardModel; text: string | null }) {
+function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; text: string | null; shots: readonly VisualShot[] | null }) {
   const r = model.record;
-  // The numbers sit in one 2×2 block beside the prose, so each tile is about
-  // half the prose's height instead of a full-height column with a big empty
-  // area under a single number.
-  const stat = (label: string, value: string, testId: string, i: number) => (
-    <div
-      data-testid={testId}
-      className={`flex flex-col justify-center gap-2 border-border-default px-[18px] py-3 ${i % 2 ? 'border-l' : ''} ${i >= 2 ? 'border-t' : ''}`}
-    >
-      <SectionLabel>{label}</SectionLabel>
-      <div className="font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{value}</div>
-    </div>
-  );
+  const review = shots ? summarizeVisualRun(shots) : null;
+  // Only what happened: a CI auto-fix count of 0 is not an outcome, and a
+  // visual review is. The numbers sit in one 2-column block beside the prose,
+  // so each tile is about half the prose's height; an odd last tile spans both.
+  const stats: Array<{ label: string; value: string; testId: string; sub?: string }> = [
+    { label: 'PRs merged', value: String(r.prsMerged), testId: 'record-prs' },
+    { label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' },
+    ...(r.ciFixes > 0 ? [{ label: 'CI auto-fix', value: String(r.ciFixes), testId: 'record-ci-fixes' }] : []),
+    ...(review && review.shots > 0
+      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review) }]
+      : []),
+    { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
+  ];
   return (
     <section data-testid="mission-completion-record" className="mt-[18px] grid grid-cols-1 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.4fr_1fr]">
       <div className="px-[18px] py-3.5">
@@ -527,10 +550,19 @@ function CompletionRecord({ model, text }: { model: MissionBoardModel; text: str
         {text && <p className="mt-2 font-mono text-[12.5px] leading-[1.55] text-text-secondary whitespace-pre-line">{text}</p>}
       </div>
       <div data-testid="record-stats" className="grid grid-cols-2 border-t border-border-default md:border-l md:border-t-0">
-        {stat('PRs merged', String(r.prsMerged), 'record-prs', 0)}
-        {stat('Lines', `+${r.linesAdded.toLocaleString()}`, 'record-lines', 1)}
-        {stat('CI auto-fix', String(r.ciFixes), 'record-ci-fixes', 2)}
-        {stat('Your decisions', String(r.decisions), 'record-decisions', 3)}
+        {stats.map((st, i) => (
+          <div
+            key={st.testId}
+            data-testid={st.testId}
+            className={`flex flex-col justify-center gap-2 border-border-default px-[18px] py-3 ${i % 2 ? 'border-l' : ''} ${i >= 2 ? 'border-t' : ''} ${i === stats.length - 1 && i % 2 === 0 ? 'col-span-2' : ''}`}
+          >
+            <SectionLabel>{st.label}</SectionLabel>
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{st.value}</span>
+              {st.sub && <span className={`font-mono text-[12px] ${st.sub === 'all ok' ? 'text-status-success' : 'text-text-secondary'}`}>{st.sub}</span>}
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );

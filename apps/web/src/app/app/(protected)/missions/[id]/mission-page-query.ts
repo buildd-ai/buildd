@@ -35,6 +35,8 @@ export const MISSION_ARTIFACT_COLUMNS = {
   shareToken: true,
   visibility: true,
   metadata: true,
+  // The object key for uploads (upload-url writes the column, not metadata).
+  storageKey: true,
   createdAt: true,
 } as const;
 
@@ -151,6 +153,9 @@ export const MISSION_DETAIL_WITH = {
 export const MISSION_VISUAL_SHOT_COLUMNS = {
   id: true,
   workerId: true,
+  // The filename by default: the caption's variant when two shots share a
+  // route and viewport (`withVariants`).
+  title: true,
   type: true,
   metadata: true,
   createdAt: true,

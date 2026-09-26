@@ -61,6 +61,8 @@ import { StatStrip } from './StatStrip';
 import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
 import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
+import { MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from '../missions/[id]/mission-page-query';
+import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/mission-visual-review';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
 import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
@@ -589,6 +591,21 @@ export default async function HomePage({
               prs: model.done?.prs ?? 0, fixes: model.done?.fixes ?? 0, durationMs: model.done?.durationMs ?? null,
               criteria: model.criteria,
             }));
+          // The shipped card (and the stat strip) say what the mission's visual
+          // review found, the same latest auditor run its mission page shows.
+          if (shippedMissions[0]) {
+            const shotRows = await db.query.artifacts.findMany({
+              where: missionVisualShotsWhere(shippedMissions[0].id),
+              columns: MISSION_VISUAL_SHOT_COLUMNS,
+              orderBy: MISSION_VISUAL_SHOTS_ORDER,
+              limit: MISSION_VISUAL_SHOTS_LIMIT,
+            });
+            const run = selectLatestRun(toVisualShots(shotRows));
+            if (run.length > 0) {
+              const { shots, ok, issues, unsure } = summarizeVisualRun(run);
+              shippedMissions[0] = { ...shippedMissions[0], screens: { shots, ok, issues, unsure } };
+            }
+          }
         }
 
         // Schedules with pending agent suggestions
@@ -1584,6 +1601,7 @@ export default async function HomePage({
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
               docFixTaskId: true, lastCheckedAt: true,
+              recheckRequestedAt: true, autoFollowUpTaskId: true, evidence: true,
             },
           });
           if (discrepancyRows.length > 0) {
@@ -1644,6 +1662,9 @@ export default async function HomePage({
                   docFixTaskStatus: r.docFixTaskId ? docFixStatusById.get(r.docFixTaskId) ?? null : null,
                   docFixPrLifecycleStatus: docFixWorker?.prLifecycleStatus ?? null,
                   docFixMergedAt: docFixWorker?.mergedAt ?? null,
+                  recheckRequestedAt: r.recheckRequestedAt,
+                  autoFollowUpTaskId: r.autoFollowUpTaskId,
+                  declaredStatus: typeof r.evidence?.declaredStatus === 'string' ? r.evidence.declaredStatus : null,
                 };
               }),
             );
@@ -1875,6 +1896,7 @@ export default async function HomePage({
             mergedDetail={stats && stats.mergedPrNumbers.length > 0 ? stats.mergedPrNumbers.slice(0, 4).map(n => `#${n}`).join(' ') : null}
             prsInCi={stats?.prsInCi ?? []}
             selfHealed={stats?.selfHealed ?? 0}
+            screensReviewed={shippedMissions[0]?.screens ?? null}
           />
         )}
 

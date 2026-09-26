@@ -16,6 +16,7 @@ import {
   recordBestEffort,
   homeSubheading,
   groupInFlight,
+  inFlightKind,
   homeAudience,
   homeChatPlacement,
 } from './home-view';
@@ -170,6 +171,21 @@ describe('groupInFlight', () => {
     ]);
     const keys = out.map(g => (g.kind === 'single' ? g.item.subjectKey : g.key));
     expect(keys).toEqual(['c', 'pr9', 'docfix-rerun']);
+  });
+
+  it('groups by the server-derived automation state when there is one, not the raw task/PR fields', () => {
+    // The raw fields are empty for every one of these once the claim has
+    // moved on (docFixTaskId null), which would read them all as
+    // "Agents are rewriting these specs".
+    const auto = (key: string, docFixAutomation: ActionQueueItem['docFixAutomation']) =>
+      docFix(key, { docFixAutomation, docFixTaskId: null, docFixTaskStatus: null, docFixPrLifecycleStatus: null });
+    expect(inFlightKind(auto('a', 'recheck_dispatched'))).toBe('docfix-rerun');
+    expect(inFlightKind(auto('b', 'recheck_queued'))).toBe('docfix-rerun');
+    expect(inFlightKind(auto('c', 'follow_up_queued'))).toBe('docfix-running');
+    expect(inFlightKind(auto('d', 'follow_up_running'))).toBe('docfix-running');
+    expect(inFlightKind(auto('e', 'fix_running'))).toBe('docfix-running');
+    expect(inFlightKind(auto('f', 'pr_open'))).toBe('docfix-pr-open');
+    expect(inFlightKind(auto('g', 'pr_unknown'))).toBe('docfix-rerun');
   });
 
   it('keeps every item: the grouped view never drops one', () => {

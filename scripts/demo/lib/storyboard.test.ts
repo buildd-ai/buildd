@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports } from './storyboard';
+import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -79,5 +79,17 @@ describe('scrollPlan', () => {
 
   test('rejects an unknown alignment instead of silently using start', () => {
     expect(() => scrollPlan({ scrollAlign: 'middle' as any })).toThrow(/scrollAlign/);
+  });
+});
+
+describe('clickTargets', () => {
+  test('none, one, or several in order', () => {
+    expect(clickTargets({})).toEqual([]);
+    expect(clickTargets({ click: 'mission-delivery-summary' })).toEqual(['mission-delivery-summary']);
+    expect(clickTargets({ click: ['mission-delivery-summary', 'visual-review-thumb'] })).toEqual(['mission-delivery-summary', 'visual-review-thumb']);
+  });
+  test('an empty target is an error, not a skipped click', () => {
+    expect(() => clickTargets({ click: ['mission-delivery-summary', ''] })).toThrow(/non-empty/);
+    expect(() => clickTargets({ click: ' ' })).toThrow(/non-empty/);
   });
 });

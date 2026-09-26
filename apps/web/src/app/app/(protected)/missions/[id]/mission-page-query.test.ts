@@ -59,6 +59,11 @@ describe('AC-18: mission page query shape', () => {
     expect(MISSION_ARTIFACT_COLUMNS.title).toBe(true);
   });
 
+  it('artifact columns select storageKey, which the Records viewer needs to show an upload', () => {
+    // upload-url keeps the object key in the column, not in metadata.
+    expect(MISSION_ARTIFACT_COLUMNS.storageKey).toBe(true);
+  });
+
   it('the nested with-tree carries the trimmed column sets', () => {
     expect(MISSION_DETAIL_WITH.tasks).toBe(MISSION_TASKS_WITH);
     expect(MISSION_TASKS_WITH.columns).toBe(MISSION_TASK_COLUMNS);
@@ -132,7 +137,7 @@ describe('visual review shots query', () => {
   });
 
   it('selects no content, carries the worker, and holds up to three 40-shot runs', () => {
-    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'type', 'workerId']);
+    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'title', 'type', 'workerId']);
     expect(MISSION_VISUAL_SHOTS_LIMIT).toBeGreaterThanOrEqual(120);
   });
 

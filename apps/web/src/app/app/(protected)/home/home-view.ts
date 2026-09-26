@@ -26,9 +26,18 @@ export type InFlightKind =
   | 'ci-running' | 'auto-merge' | 'docfix-rerun' | 'other';
 
 /** What an in-flight card is waiting on — the key repeated cards fold by. */
-export function inFlightKind(item: Pick<ActionQueueItem, 'chip' | 'docFixTaskStatus' | 'docFixPrLifecycleStatus'>): InFlightKind {
+export function inFlightKind(
+  item: Pick<ActionQueueItem, 'chip' | 'docFixTaskStatus' | 'docFixPrLifecycleStatus' | 'docFixAutomation'>,
+): InFlightKind {
   switch (item.chip) {
     case 'FIXING_SPEC':
+      // The server-derived state wins when there is one: once a doc fix has
+      // merged the claim moves on, and the raw task/PR fields go empty.
+      switch (item.docFixAutomation) {
+        case 'fix_running': case 'follow_up_running': case 'follow_up_queued': return 'docfix-running';
+        case 'pr_open': return 'docfix-pr-open';
+        case 'pr_unknown': case 'recheck_dispatched': case 'recheck_queued': return 'docfix-rerun';
+      }
       if (item.docFixTaskStatus !== 'completed') return 'docfix-running';
       // Same test as the card: only a known-merged PR is "awaiting the re-run".
       if (item.docFixPrLifecycleStatus === 'merged' || item.docFixPrLifecycleStatus == null) return 'docfix-rerun';

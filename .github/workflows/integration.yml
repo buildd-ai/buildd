@@ -288,37 +288,94 @@ jobs:
 
       - name: Start preview server
         if: steps.sync.outputs.machine_online != 'false'
+        # `next start` runs under Node (apps/web `start` script), as on Vercel.
+        # It ran under Bun until Next 16.3, whose compiled server runtime Bun
+        # 1.3.x cannot load: the server printed "Ready" and then answered every
+        # request with a 500 ("Failed to load external module ...
+        # app-page-turbo.runtime.prod.js: Expected CommonJS module to have a
+        # function wrapper"). The test machine's Bun is not pinned, unlike this
+        # job's setup-bun. scripts/prod-server-runtime.test.ts keeps it on Node.
         run: |
-          # Pipe env vars to a file on the remote — avoids all escaping issues
-          printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
+          # Pipe env vars to a file on the remote, shell-quoted (%q): the file is
+          # `source`d, and an unquoted Neon URL's `&channel_binding=...` made
+          # bash background the assignment, so the server ran with no
+          # DATABASE_URL and every authed route returned 500. That stayed
+          # hidden while the API tests were silently not running (see below).
+          printf 'DATABASE_URL=%q\nAUTH_SECRET=%q\n' "$DATABASE_URL" "$AUTH_SECRET" | \
             tailscale ssh "$TEST_USER@$TEST_HOST" \
               "docker exec -i $TEST_CONTAINER bash -c 'cat > /tmp/buildd-ci/.env.test'"
 
-          # Start Next.js server with real env vars
-          tailscale ssh "$TEST_USER@$TEST_HOST" << 'SCRIPT'
-            docker exec ${{ vars.TEST_MACHINE_CONTAINER }} bash -c '
-              export PATH=$HOME/.local/bin:$HOME/.bun/bin:$PATH
-              screen -X -S buildd-web quit 2>/dev/null || true
-              screen -dmS buildd-web bash -c "
-                export PATH=\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH
-                set -a; source /tmp/buildd-ci/.env.test; set +a
-                export PORT=3333
-                cd /tmp/buildd-ci/apps/web && bun run start >> /tmp/buildd-web.log 2>&1
-              "
-            '
-          SCRIPT
+          # Resolve node (fetch a pinned LTS into /tmp if the machine has none
+          # or an old one), write a launcher, and start it in screen. Piped to
+          # `bash -s` so nothing below needs escaping twice.
+          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER'
+          set -euo pipefail
+          export PATH=$HOME/.local/bin:$HOME/.bun/bin:/tmp/buildd-node/bin:$PATH
+          # 0 when `node` is really Bun (images and `bun run` shim node -> bun).
+          node_major() { node -p 'process.versions.bun ? 0 : process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+          if ! command -v node >/dev/null 2>&1 || [ "$(node_major)" -lt 20 ]; then
+            case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; x86_64) arch=x64 ;; *) arch=unknown ;; esac
+            echo "node >= 20 not found on the test machine; fetching Node 22 LTS (linux-$arch) into /tmp/buildd-node"
+            base=https://nodejs.org/dist/latest-v22.x
+            file=$(curl -fsSL "$base/SHASUMS256.txt" | grep -o "node-v[0-9.]*-linux-$arch.tar.gz" | head -1) || true
+            if [ -z "$file" ]; then
+              echo "::error::No node on the test machine and could not fetch one for linux-$arch. next start must run under Node (see scripts/prod-server-runtime.test.ts)."
+              exit 1
+            fi
+            rm -rf /tmp/buildd-node && mkdir -p /tmp/buildd-node
+            curl -fsSL "$base/$file" | tar -xz -C /tmp/buildd-node --strip-components=1
+          fi
+          echo "server runtime: node $(node --version) at $(command -v node); bun $(bun --version)"
+          if ! ( set -a; source /tmp/buildd-ci/.env.test; [ -n "${DATABASE_URL:-}" ] && [ -n "${AUTH_SECRET:-}" ] ); then
+            echo "::error::/tmp/buildd-ci/.env.test does not yield DATABASE_URL and AUTH_SECRET when sourced; the server would 500 every authed route."
+            exit 1
+          fi
 
-          # Wait for server
+          cat > /tmp/buildd-ci/start-web.sh << 'LAUNCH'
+          export PATH=$HOME/.local/bin:$HOME/.bun/bin:/tmp/buildd-node/bin:$PATH
+          set -a; source /tmp/buildd-ci/.env.test; set +a
+          export PORT=3333
+          cd /tmp/buildd-ci/apps/web && exec bun run start
+          LAUNCH
+          screen -X -S buildd-web quit 2>/dev/null || true
+          # Truncate, don't append: a stale log from an earlier run made the
+          # failure dump below show crashes from other Next versions.
+          : > /tmp/buildd-web.log
+          screen -dmS buildd-web bash -c 'bash /tmp/buildd-ci/start-web.sh >> /tmp/buildd-web.log 2>&1'
+          INNER
+
+          dump_log() {
+            echo "--- /tmp/buildd-web.log ---"
+            tailscale ssh "$TEST_USER@$TEST_HOST" \
+              "docker exec $TEST_CONTAINER tail -80 /tmp/buildd-web.log 2>/dev/null" || true
+          }
+
+          # Ready = /api/version returns JSON AND a page route renders below 500.
+          # "Ready in Nms" in the log proves nothing: the Bun failure printed it
+          # and then 500'd every request. The page check matters because API
+          # routes and pages load different compiled runtimes.
+          BASE="http://$TEST_HOST:3333"
           for i in $(seq 1 30); do
-            if curl -s http://${{ vars.TEST_MACHINE_HOST }}:3333/api/version 2>/dev/null | jq -e . >/dev/null 2>&1; then
-              echo "Server ready"
-              break
+            if curl -s "$BASE/api/version" 2>/dev/null | jq -e . >/dev/null 2>&1; then
+              PAGE_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/" || echo 000)
+              if [ "$PAGE_CODE" -ge 200 ] && [ "$PAGE_CODE" -lt 500 ]; then
+                echo "Server ready: /api/version ok, / -> $PAGE_CODE"
+                break
+              fi
+              echo "::error::Preview server answers /api/version but / returned $PAGE_CODE"
+              dump_log
+              exit 1
+            fi
+            # Fail fast on a known crash instead of waiting out the timeout.
+            if tailscale ssh "$TEST_USER@$TEST_HOST" \
+                "docker exec $TEST_CONTAINER grep -q -e 'Failed to load external module' -e 'command not found' /tmp/buildd-web.log" 2>/dev/null; then
+              echo "::error::Preview server is up but cannot serve requests (see log). NO integration tests ran."
+              dump_log
+              exit 1
             fi
             if [ "$i" -eq 30 ]; then
-              echo "::error::Preview server failed to start after 150s"
-              echo "--- /tmp/buildd-web.log ---"
-              tailscale ssh "$TEST_USER@$TEST_HOST" \
-                "docker exec $TEST_CONTAINER cat /tmp/buildd-web.log 2>/dev/null" || true
+              echo "::error::Preview server failed to start after 150s. NO integration tests ran."
+              dump_log
               exit 1
             fi
             echo "Waiting for server... (attempt $i)"
@@ -379,18 +436,50 @@ jobs:
 
       - name: Integration tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.api
+        # One `bun test` process per file, and each must report at least one
+        # passing test. These files call process.exit(0) to "skip" (missing key,
+        # unreachable runner), and in a single shared process that exit ended
+        # the whole run with status 0: the runner-config file, listed even when
+        # no runner was started, exited on its first request, so this step
+        # reported success having run none of the API tests.
         run: |
-          bun test apps/web/tests/integration/concurrency.test.ts \
-               apps/web/tests/integration/worker-state-machine.test.ts \
-               apps/web/tests/integration/schedule-triggers.test.ts \
-               apps/web/tests/integration/artifacts.test.ts \
-               apps/web/tests/integration/missions-smoke.test.ts \
-               apps/runner/__tests__/integration-config.test.ts
+          files="apps/web/tests/integration/concurrency.test.ts
+          apps/web/tests/integration/worker-state-machine.test.ts
+          apps/web/tests/integration/schedule-triggers.test.ts
+          apps/web/tests/integration/artifacts.test.ts
+          apps/web/tests/integration/missions-smoke.test.ts"
+          # The runner-config tests need the preview runner, which only starts
+          # when runner code changed.
+          if [ "$RUNNER" = "true" ]; then
+            files="$files
+          apps/runner/__tests__/integration-config.test.ts"
+          fi
+          failed=0
+          for f in $files; do
+            echo "::group::$f"
+            set +e
+            bun test "$f" 2>&1 | tee /tmp/it-out.txt
+            code=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+            passed=$(grep -Eo '^ *[0-9]+ pass$' /tmp/it-out.txt | grep -Eo '[0-9]+' | tail -1)
+            if [ "$code" -ne 0 ]; then
+              echo "::error file=$f::exited $code"
+              failed=1
+            elif [ -z "$passed" ] || [ "$passed" -eq 0 ]; then
+              echo "::error file=$f::ran no tests (exited 0 without a pass count, i.e. it skipped itself)"
+              failed=1
+            else
+              echo "$f: $passed passed"
+            fi
+          done
+          exit $failed
         env:
           BUILDD_TEST_SERVER: http://${{ vars.TEST_MACHINE_HOST }}:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
           LOCAL_UI_URL: http://${{ vars.TEST_MACHINE_HOST }}:8767
+          RUNNER: ${{ inputs.runner }}
 
       - name: E2E tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.e2e

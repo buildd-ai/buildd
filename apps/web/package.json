@@ -1,13 +1,13 @@
 {
   "name": "@buildd/web",
-  "version": "0.231.0",
+  "version": "0.232.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
     "build": "bun run db:migrate && next build",
     "build:only": "next build",
     "db:migrate": "bun run ../../packages/core/db/migrate.ts",
-    "start": "bun --bun next start",
+    "start": "node node_modules/next/dist/bin/next start",
     "lint": "next lint",
     "doctor": "bun run scripts/doctor.ts",
     "doctor:vercel": "bun run scripts/doctor.ts --vercel",

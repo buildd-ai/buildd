@@ -84,7 +84,7 @@ export default function VisualReviewLightbox({
           // eslint-disable-next-line @next/next/no-img-element -- signed R2 redirect; next/image would proxy it
           <img
             src={shot.src}
-            alt={`${qa.route} at ${qa.viewport}`}
+            alt={`${[qa.route, shot.variant].filter(Boolean).join(' ')} at ${qa.viewport}`}
             onError={() => onExpired(shot.id)}
             // Capped lower on phones so the finding and its fix-task link stay above the fold.
             className="block max-h-[42vh] max-w-full border-2 border-border-strong shadow-lg md:max-h-[66vh]"
@@ -108,6 +108,12 @@ export default function VisualReviewLightbox({
           {qa.route}
         </h2>
         <dl className="grid grid-cols-[88px_1fr] gap-x-2.5 gap-y-1.5 font-mono text-[12px]">
+          {shot.variant && (
+            <>
+              <dt className="pt-px text-[11px] md:text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Variant</dt>
+              <dd data-testid="visual-review-lightbox-variant" className="text-text-primary">{shot.variant}</dd>
+            </>
+          )}
           <dt className="pt-px text-[11px] md:text-[10.5px] uppercase tracking-[1.5px] text-text-muted">Viewport</dt>
           <dd className="text-text-primary">{qa.viewport}</dd>
           {qa.theme && (

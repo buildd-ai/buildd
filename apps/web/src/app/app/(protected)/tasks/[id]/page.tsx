@@ -40,6 +40,8 @@ import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
+import { toTaskArtifactItem } from './task-artifact-items';
+import { hasCodeDeliverables as hasTaskCodeDeliverables } from './deliverables';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
@@ -1440,7 +1442,7 @@ export default async function TaskDetailPage({
         {(task.result as any) && (
           (() => {
             const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
-            const hasCodeDeliverables = (result.commits ?? 0) > 0 || !!result.prUrl || !!result.branch;
+            const hasCodeDeliverables = hasTaskCodeDeliverables(result);
             const isFallbackSummary = result.summarySource === 'fallback';
             // The PR outcome card already carries the code deliverables and summary.
             if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
@@ -1551,19 +1553,11 @@ export default async function TaskDetailPage({
         {/* Artifacts */}
         {visibleArtifacts.length > 0 && (
           <TaskArtifactsSection
-            artifacts={visibleArtifacts.map(a => ({
-              id: a.id,
-              type: a.type,
-              title: a.title,
-              content: a.content,
-              shareToken: a.shareToken,
-              visibility: (a.visibility as 'private' | 'public') ?? 'private',
-              metadata: (a.metadata as Record<string, unknown>) ?? {},
-              createdAt: a.createdAt.toISOString(),
-            }))}
+            artifacts={visibleArtifacts.map(toTaskArtifactItem)}
             taskId={task.id}
             baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
             initialOpenArtifactId={initialOpenArtifactId}
+            missionId={task.missionId ?? null}
           />
         )}
 

@@ -157,6 +157,18 @@ export interface WaitingOnYouRawItem {
    * owns the group. The card offers the owner's exits, never a second fix.
    */
   mergedDocFixTaskId?: string | null;
+  /** kind === 'discrepancy' — see deriveDocFixAutomation. Decides the chip, copy and CTA set. */
+  docFixAutomation?: DocFixAutomation | null;
+  /** kind === 'discrepancy' — the one automatic follow-up task, once filed. */
+  docFixFollowUpTaskId?: string | null;
+  /** kind === 'discrepancy' — minutes since the latest forced ledger re-run was dispatched. */
+  recheckDispatchedMinutesAgo?: number | null;
+  /** kind === 'discrepancy' — hours since the doc-fix PR merged. */
+  docFixMergedHoursAgo?: number | null;
+  /** kind === 'discrepancy' — hours since the checker last evaluated the rows. */
+  lastCheckedHoursAgo?: number | null;
+  /** kind === 'discrepancy' — the doc status the checker last read (evidence). */
+  declaredStatus?: string | null;
   /** kind === 'discrepancy' — set once `promote_discrepancy` has minted a mission. */
   promotedMissionId?: string | null;
   /** kind === 'discrepancy' — the discrepancy's owning workspace. */
@@ -348,6 +360,13 @@ export interface ActionQueueItem {
   docFixPrLifecycleStatus?: string | null;
   /** See {@link WaitingOnYouRawItem.mergedDocFixTaskId} — carried through unchanged. */
   mergedDocFixTaskId?: string | null;
+  /** The doc-fix automation fields below are carried through unchanged from WaitingOnYouRawItem. */
+  docFixAutomation?: DocFixAutomation | null;
+  docFixFollowUpTaskId?: string | null;
+  recheckDispatchedMinutesAgo?: number | null;
+  docFixMergedHoursAgo?: number | null;
+  lastCheckedHoursAgo?: number | null;
+  declaredStatus?: string | null;
   /** See {@link EscalationRawItem.missionMergeBlockedReason} — carried through unchanged. */
   missionMergeBlockedReason?: string | null;
 }
@@ -491,6 +510,12 @@ export interface DiscrepancyCandidate {
   docFixPrLifecycleStatus?: string | null;
   /** `workers.mergedAt` for `docFixTaskId`'s PR, resolved by the caller. */
   docFixMergedAt?: Date | string | null;
+  /** `spec_discrepancies.recheck_requested_at` — when a forced ledger re-run was last dispatched. */
+  recheckRequestedAt?: Date | string | null;
+  /** `spec_discrepancies.auto_follow_up_task_id` — non-null once the one automatic follow-up is spent. */
+  autoFollowUpTaskId?: string | null;
+  /** `evidence.declaredStatus` — the doc status the checker last read. */
+  declaredStatus?: string | null;
 }
 
 export interface DiscrepancyQueueResult {
@@ -591,6 +616,119 @@ export function isDocFixClaimStale(
   );
 }
 
+// ─── Doc-fix automation (docs/design/spec-conformance.md §9/§12.1) ──────────
+
+/** The hourly sweep only re-dispatches a re-run for a fix merged at least this long ago. */
+export const DOC_FIX_RECHECK_SWEEP_AFTER_MS = 60 * 60 * 1000;
+/** A dispatched forced re-run counts as in flight (covering later merges) for this long. */
+export const DOC_FIX_RECHECK_IN_FLIGHT_MS = 45 * 60 * 1000;
+/**
+ * The re-run's whole budget, measured from the doc-fix merge. Past it, a row
+ * that was never rechecked is a genuine failure of the automation (the ledger
+ * workflow is not running, or cannot reach the row) and goes to the owner. It also caps the
+ * sweep: hourly re-dispatches stop here, so a broken workflow costs a handful
+ * of runs, not one an hour forever.
+ */
+export const DOC_FIX_AUTOMATION_BUDGET_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Where the automation stands on one card, derived only from ledger, task and
+ * worker rows — never from what any agent reported (§9).
+ *
+ *   fix_running        doc-fix task pending/running                   agents
+ *   follow_up_running  the one automatic follow-up pending/running    agents
+ *   pr_open            task done, docs PR still open                  agents (the PR is its own MERGE card)
+ *   pr_unknown         task done, PR lifecycle not yet observed       agents (pr-reconcile heals it; Accept stays as the exit)
+ *   recheck_dispatched merged; a forced re-run is in flight           agents
+ *   recheck_queued     merged; the next sweep dispatches the re-run   agents
+ *   recheck_stalled    merged past the budget and never rechecked     owner
+ *   follow_up_queued   merged, rechecked, still open; follow-up owed  agents (the hourly sweep files it; the
+ *                                                                     only way that fails is transiently, and
+ *                                                                     the next sweep retries)
+ *   needs_owner        fix AND follow-up merged, recheck still open   owner
+ *
+ * null means no automation is involved: the card offers Dispatch doc fix.
+ */
+export type DocFixAutomation =
+  | 'fix_running'
+  | 'follow_up_running'
+  | 'pr_open'
+  | 'pr_unknown'
+  | 'recheck_dispatched'
+  | 'recheck_queued'
+  | 'recheck_stalled'
+  | 'follow_up_queued'
+  | 'needs_owner';
+
+const AGENT_HANDLED_AUTOMATION: ReadonlySet<DocFixAutomation> = new Set<DocFixAutomation>([
+  'fix_running', 'follow_up_running', 'pr_open', 'pr_unknown', 'recheck_dispatched', 'recheck_queued', 'follow_up_queued',
+]);
+
+/** True while automation still owns the card — Home shows it under "agents handling", never "needs you". */
+export function isDocFixAutomationAgentHandled(state: DocFixAutomation | null | undefined): boolean {
+  return state != null && AGENT_HANDLED_AUTOMATION.has(state);
+}
+
+const ms = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : null);
+
+/** A forced re-run was dispatched after this row's fix merged, recently enough to still be running. */
+export function isRecheckInFlight(
+  c: Pick<DiscrepancyCandidate, 'recheckRequestedAt' | 'docFixMergedAt'>,
+  now: Date,
+): boolean {
+  const requested = ms(c.recheckRequestedAt);
+  const merged = ms(c.docFixMergedAt);
+  if (requested == null || merged == null) return false;
+  return requested >= merged && now.getTime() - requested < DOC_FIX_RECHECK_IN_FLIGHT_MS;
+}
+
+/**
+ * A merged doc fix whose row the checker has not yet evaluated, and for which
+ * automation should dispatch a forced ledger re-run now. `minAgeMs` is 0 on
+ * the merge webhook and DOC_FIX_RECHECK_SWEEP_AFTER_MS on the hourly sweep
+ * (which gives the ordinary dev-push run first go).
+ */
+export function rowNeedsRecheck(c: DiscrepancyCandidate, now: Date, minAgeMs: number): boolean {
+  if (c.status !== 'open' || !c.docFixTaskId) return false;
+  if (c.docFixTaskStatus !== 'completed' || c.docFixPrLifecycleStatus !== 'merged') return false;
+  const merged = ms(c.docFixMergedAt);
+  if (merged == null) return false;
+  if (isDocFixClaimStale(c)) return false; // already rechecked since the merge
+  const age = now.getTime() - merged;
+  if (age < minAgeMs || age > DOC_FIX_AUTOMATION_BUDGET_MS) return false;
+  return !isRecheckInFlight(c, now);
+}
+
+/**
+ * The card-level state for one group (every open row on a spec path and
+ * direction). Pure; `buildDiscrepancyItems`, the hourly sweep and the
+ * dispatch route all read it, so what Home says and what automation does
+ * cannot disagree.
+ */
+export function deriveDocFixAutomation(rows: DiscrepancyCandidate[], now: Date): DocFixAutomation | null {
+  const claim = rows.find((r) => isDocFixInFlight(r) && !isDocFixClaimStale(r));
+  if (claim) {
+    const isFollowUp = Boolean(claim.autoFollowUpTaskId) && claim.autoFollowUpTaskId === claim.docFixTaskId;
+    if (claim.docFixTaskStatus !== 'completed') return isFollowUp ? 'follow_up_running' : 'fix_running';
+    if (claim.docFixPrLifecycleStatus == null || (claim.docFixPrLifecycleStatus === 'merged' && !claim.docFixMergedAt)) {
+      return 'pr_unknown';
+    }
+    if (claim.docFixPrLifecycleStatus !== 'merged') return 'pr_open';
+    if (rows.some((r) => r.docFixTaskId === claim.docFixTaskId && isRecheckInFlight(r, now))) return 'recheck_dispatched';
+    const age = now.getTime() - (ms(claim.docFixMergedAt) ?? now.getTime());
+    return age > DOC_FIX_AUTOMATION_BUDGET_MS ? 'recheck_stalled' : 'recheck_queued';
+  }
+
+  const mergedStale = (r: DiscrepancyCandidate) => Boolean(r.docFixTaskId) && isDocFixClaimStale(r);
+  if (rows.length === 0 || !rows.every(mergedStale)) return null;
+  // The cap is per row: spent once a follow-up has been filed for it. Every
+  // row must have had its one follow-up before the owner is asked.
+  // No time budget here, unlike the re-run: a row can reach this state long
+  // after its merge (a fix that merged days before the writer could reach
+  // its row), and it is still owed its one follow-up.
+  return rows.every((r) => Boolean(r.autoFollowUpTaskId)) ? 'needs_owner' : 'follow_up_queued';
+}
+
 /** §12 ranking: an owner call outranks real unbuilt work outranks a pure doc fix. */
 const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
   contradicted: 0,
@@ -600,6 +738,19 @@ const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
 
 /** §12: cap the queue to the top 10 DISCREPANCY cards (specs) per workspace. */
 const DEFAULT_DISCREPANCY_QUEUE_CAP = 10;
+
+function latest(values: Array<Date | string | null | undefined>): number | null {
+  const times = values.map((v) => ms(v)).filter((t): t is number => t != null);
+  return times.length ? Math.max(...times) : null;
+}
+function minutesSince(t: number | Date | string | null | undefined, now: Date): number | null {
+  const at = typeof t === 'number' ? t : ms(t);
+  return at == null ? null : Math.max(0, Math.floor((now.getTime() - at) / 60_000));
+}
+function hoursSince(t: number | Date | string | null | undefined, now: Date): number | null {
+  const m = minutesSince(t, now);
+  return m == null ? null : Math.floor(m / 60);
+}
 
 /** One card: every open row sharing a (workspace, spec path, direction). */
 interface DiscrepancyGroup {
@@ -618,6 +769,7 @@ interface DiscrepancyGroup {
   inFlight: boolean;
   /** A merged, rechecked fix that did not close the gap — see isDocFixClaimStale. */
   mergedDocFixTaskId: string | null;
+  automation: DocFixAutomation | null;
 }
 
 /**
@@ -650,9 +802,10 @@ interface DiscrepancyGroup {
  */
 export function buildDiscrepancyItems(
   candidates: DiscrepancyCandidate[],
-  options: { cap?: number } = {},
+  options: { cap?: number; now?: Date } = {},
 ): DiscrepancyQueueResult {
   const cap = options.cap ?? DEFAULT_DISCREPANCY_QUEUE_CAP;
+  const now = options.now ?? new Date();
   const open = candidates.filter((c) => c.status === 'open');
 
   const groups = new Map<string, DiscrepancyGroup>();
@@ -676,6 +829,7 @@ export function buildDiscrepancyItems(
         docFixMergedAt: null,
         inFlight: false,
         mergedDocFixTaskId: null,
+        automation: null,
       });
     }
   }
@@ -693,12 +847,19 @@ export function buildDiscrepancyItems(
     // not as a fresh dispatch. If any row is unclaimed (or dead-claimed), a
     // doc fix is still owed for it, so Dispatch stays available; the dispatch
     // route leaves the merged-stale rows out of that task.
+    //
+    // Which of those states the card is in — and whether automation still owns
+    // it — is deriveDocFixAutomation's call, the same function the hourly
+    // sweep acts on. `inFlight` now means "agents handling": the card ranks
+    // after every owner call and Home files it under the collapsed in-flight
+    // list, not "needs you".
     const claimed = group.rows.find((r) => isDocFixInFlight(r) && !isDocFixClaimStale(r));
     const mergedStale = (r: DiscrepancyCandidate) => Boolean(r.docFixTaskId) && isDocFixClaimStale(r);
     group.mergedDocFixTaskId = !claimed && group.rows.every(mergedStale)
       ? group.rows[0].docFixTaskId ?? null
       : null;
-    group.inFlight = Boolean(claimed);
+    group.automation = deriveDocFixAutomation(group.rows, now);
+    group.inFlight = isDocFixAutomationAgentHandled(group.automation);
     group.docFixTaskId = claimed?.docFixTaskId ?? null;
     group.docFixTaskStatus = claimed?.docFixTaskStatus ?? null;
     group.docFixPrLifecycleStatus = claimed?.docFixPrLifecycleStatus ?? null;
@@ -735,10 +896,16 @@ export function buildDiscrepancyItems(
         direction: g.direction,
         firstSeenAt: new Date(g.oldestFirstSeen),
         promotedMissionId: g.promotedMissionId,
-        docFixTaskId: g.inFlight ? g.docFixTaskId : null,
-        docFixTaskStatus: g.inFlight ? g.docFixTaskStatus : null,
-        docFixPrLifecycleStatus: g.inFlight ? g.docFixPrLifecycleStatus : null,
+        docFixTaskId: g.docFixTaskId,
+        docFixTaskStatus: g.docFixTaskStatus,
+        docFixPrLifecycleStatus: g.docFixPrLifecycleStatus,
         mergedDocFixTaskId: g.mergedDocFixTaskId,
+        docFixAutomation: g.automation,
+        docFixFollowUpTaskId: g.rows.find((r) => r.autoFollowUpTaskId)?.autoFollowUpTaskId ?? null,
+        recheckDispatchedMinutesAgo: minutesSince(latest(g.rows.map((r) => r.recheckRequestedAt)), now),
+        docFixMergedHoursAgo: hoursSince(g.docFixMergedAt ?? latest(g.rows.map((r) => r.docFixMergedAt)), now),
+        lastCheckedHoursAgo: hoursSince(latest(g.rows.map((r) => r.lastCheckedAt)), now),
+        declaredStatus: g.rows.find((r) => r.declaredStatus)?.declaredStatus ?? null,
         workspaceId: g.workspaceId,
         workspaceName: g.workspaceName ?? undefined,
       });
@@ -940,7 +1107,14 @@ export function buildActionQueue(
       if (!map.has(key)) {
         map.set(key, {
           subjectKey: key,
-          chip: item.docFixTaskId ? 'FIXING_SPEC' : 'DISCREPANCY',
+          // Agent-handled only while automation still owns the card. A row
+          // the automation gave up on (stalled, or fix + follow-up merged and
+          // still open) is an owner call again even though a task is linked.
+          chip: (item.docFixAutomation !== undefined
+            ? isDocFixAutomationAgentHandled(item.docFixAutomation)
+            : Boolean(item.docFixTaskId))
+            ? 'FIXING_SPEC'
+            : 'DISCREPANCY',
           discrepancyId: item.discrepancyId,
           discrepancyIds: item.discrepancyIds,
           specPath: item.specPath,
@@ -958,6 +1132,12 @@ export function buildActionQueue(
           docFixTaskStatus: item.docFixTaskStatus ?? null,
           docFixPrLifecycleStatus: item.docFixPrLifecycleStatus ?? null,
           mergedDocFixTaskId: item.mergedDocFixTaskId ?? null,
+          docFixAutomation: item.docFixAutomation,
+          docFixFollowUpTaskId: item.docFixFollowUpTaskId ?? null,
+          recheckDispatchedMinutesAgo: item.recheckDispatchedMinutesAgo ?? null,
+          docFixMergedHoursAgo: item.docFixMergedHoursAgo ?? null,
+          lastCheckedHoursAgo: item.lastCheckedHoursAgo ?? null,
+          declaredStatus: item.declaredStatus ?? null,
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
         });
