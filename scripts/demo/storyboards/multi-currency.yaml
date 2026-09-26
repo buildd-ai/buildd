@@ -56,8 +56,11 @@ steps:
     goto: /app/chat/{C1}
     viewports: [desktop, phone]
     waitFor: approval-card
-    scrollTo: approval-card
-    scrollOffset: 60
+    # The card is taller than the chat on a phone: anchor its confirm button to
+    # the bottom edge (above the composer) so "Confirm & file" is in frame, as
+    # the chat's own scroll-to-bottom leaves it.
+    scrollTo: approval-confirm
+    scrollAlign: end
     caption: "Ask first. \"Make it a mission\" — nothing is filed until you confirm."
     # Live take: the confirm lands (t=0) and the mission docks in the pane, planning.
     record: { ms: 9000, advanceTo: "0:12", ticks: 3 }
@@ -157,6 +160,14 @@ steps:
     fullPage: true
     caption: "Phase 2 starts before phase 1 finishes."
 
+  # Live take: Home 10:00 -> 12:00 — the fleet fills to peak over soketi pushes.
+  - id: 07b-home-fleet-live
+    advance: "10:00"
+    goto: /app/home
+    waitFor: home-fleet
+    shot: false
+    record: { ms: 20000, advanceTo: "12:00", ticks: 10 }
+
   # ── peak ───────────────────────────────────────────────────────────────────
   - id: 08-home-peak
     advance: "11:50"
@@ -198,10 +209,12 @@ steps:
     waitFor: worker-question-hero
     caption: "When it matters, they ask."
 
+  # The mission came from a chat, so /respond redirects into it: the question
+  # opens as a sheet over the conversation (?focus=question).
   - id: 15-respond-phone
     goto: /app/tasks/{T8}/respond
     viewports: [phone]
-    waitFor: respond-question-hero
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
     caption: "You answer from wherever you are."
 
   - id: 16-home-question

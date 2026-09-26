@@ -20,6 +20,7 @@
  *       waitFor: mission-detail       # data-testid (or `text=…` / any Playwright selector)
  *       click: mission-task-row       # optional: testid/selector to click before the shot
  *       scrollTo: mission-feed        # optional: testid/selector to scroll into view
+ *       scrollAlign: end              # optional: bring it to the bottom edge (default start = top edge)
  *       highlight: [mission-pulse, mission-task-row]   # bounding boxes → manifest.json (warned when missing)
  *       caption: "Six agents. Four machines. At the same time."
  *       fullPage: false               # default: viewport-sized shot
@@ -43,7 +44,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, DESKTOP, highlightTargets, isRendered, resolveViewports, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, DESKTOP, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -54,6 +55,7 @@ type Step = {
   click?: string;
   scrollTo?: string;
   scrollOffset?: number;
+  scrollAlign?: 'start' | 'end';
   highlight?: string[];
   caption?: string;
   fullPage?: boolean;
@@ -185,16 +187,16 @@ async function main() {
       for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) if (el.scrollTop > 0) el.scrollTop = 0;
     });
     if (step.scrollTo && (await page.locator(sel(step.scrollTo)).count())) {
-      await page.locator(sel(step.scrollTo)).first().evaluate((el, offset) => {
-        el.scrollIntoView({ block: 'start' });
-        // Leave room for sticky headers.
+      await page.locator(sel(step.scrollTo)).first().evaluate((el, { block, delta }) => {
+        el.scrollIntoView({ block });
+        // Leave room for sticky headers (start) or below the target (end).
         let p: HTMLElement | null = el.parentElement;
         while (p && p !== document.body) {
-          if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(p).overflowY)) { p.scrollTop -= offset; return; }
+          if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(p).overflowY)) { p.scrollTop += delta; return; }
           p = p.parentElement;
         }
-        window.scrollBy(0, -offset);
-      }, step.scrollOffset ?? 120);
+        window.scrollBy(0, delta);
+      }, scrollPlan(step));
     }
     await page.waitForTimeout(150);
     return missing;
