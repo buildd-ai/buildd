@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import QuestionHero from '../QuestionHero';
 import type { UnifiedQuestion } from '../question-hero';
 import { respondRedirectHref } from './respond-links';
+import { submitAnswer } from './submit-answer';
 
 interface Props {
   workerId: string;
@@ -29,22 +30,7 @@ export default function RespondForm({ workerId, taskId, missionId, question, ask
     setSending(message);
     setError(null);
     try {
-      const res = await fetch(`/api/workers/${workerId}/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to send answer');
-      // The same ask recorded as a question note is marked answered too.
-      if (question.noteId) {
-        await fetch(`/api/tasks/${taskId}/notes/${question.noteId}/reply`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: message }),
-        }).catch(() => {});
-      }
+      const data = await submitAnswer({ workerId, taskId, noteId: question.noteId, message });
       // On a resume this is the SAME task (the resumed worker continues under
       // it); on a cold continuation it is the new one. Either way it is where
       // the work now is. A task-less worker returns null — stay put rather than

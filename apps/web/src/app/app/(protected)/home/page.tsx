@@ -84,6 +84,11 @@ import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
 import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
+import { getChatAvailability } from '@/lib/chat-availability';
+import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
+import HomeChatCard from '@/components/chat/HomeChatCard';
+import ChatSetupCard from '@/components/chat/ChatSetupCard';
+import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 
 // --- Helpers ---
 
@@ -265,6 +270,10 @@ export default async function HomePage({
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
   let audience: HomeAudience = 'operator';
+  // Agent chat on Home (docs/design/agent-chat.md, "Who sees what first").
+  let chatPlacement: HomeChatPlacement = { kind: 'none' };
+  let chatRecent: ConversationListItem[] = [];
+  let chatTeamId: string | null = null;
   const renderNow = Date.now();
 
   // Build a roles map for display
@@ -283,7 +292,19 @@ export default async function HomePage({
       const scope = await resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value);
       const activeTeamId = scope.teamId;
       teamWorkspaces = scope.workspaces;
-      if (activeTeamId) audience = homeAudience(await getUserTeamRole(user.id, activeTeamId).catch(() => null));
+      if (activeTeamId) {
+        // Role and chat availability are independent: one wait. Availability
+        // stops at one column read for a team that hasn't turned chat on.
+        const [role, chatAvail, recent] = await Promise.all([
+          getUserTeamRole(user.id, activeTeamId).catch(() => null),
+          getChatAvailability(user.id, activeTeamId).catch(() => null),
+          listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
+        ]);
+        audience = homeAudience(role);
+        chatPlacement = homeChatPlacement(audience, chatAvail);
+        chatRecent = recent;
+        chatTeamId = activeTeamId;
+      }
       const teamWsIds = scope.workspaces.map((w) => w.id);
       // Narrow to selected workspace if filter is set (must belong to team)
       const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
@@ -1940,6 +1961,11 @@ export default async function HomePage({
           />
         )}
 
+        {/* A member's home opens on the conversation; the fleet is one line further down. */}
+        {chatPlacement.kind === 'member-first' && chatTeamId && (
+          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} />
+        )}
+
         {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
         <div className="flex flex-col xl:grid xl:grid-cols-[minmax(0,1fr)_400px] xl:gap-8">
           <div className="min-w-0">
@@ -2008,8 +2034,14 @@ export default async function HomePage({
                 <>
                   {/* Operators get the fleet near the top; a member gets their
                       missions first and the fleet as one expandable line below.
-                      (Room here for the member chat surface, not built yet.) */}
+                      A member with chat gets the chat card above all of this. */}
                   {audience === 'operator' && fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
+                  {chatPlacement.kind === 'operator-after-fleet' && chatTeamId && (
+                    <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact />
+                  )}
+                  {chatPlacement.kind === 'setup' && (
+                    <div className="mb-8"><ChatSetupCard reason={chatPlacement.reason} canManage /></div>
+                  )}
                   {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
                     <div className="mb-8 space-y-2">
             {/* Agent-reviewing PR cards — ambient presence, not actionable */}
