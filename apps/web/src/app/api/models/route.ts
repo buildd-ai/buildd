@@ -41,6 +41,15 @@ export interface ModelEntry {
   provider: string;
   /** Set when this model is what a tier currently resolves to. */
   tier?: Tier;
+  /**
+   * OpenRouter's own id (`vendor/slug`), from the public catalog. An OpenRouter
+   * tier row stores this string, and for non-Anthropic vendors the bare `id`
+   * has lost the vendor.
+   */
+  openRouterId?: string;
+  /** USD per 1M tokens, from the public catalog. */
+  inputPrice?: number;
+  outputPrice?: number;
 }
 
 interface CachedCatalog {
@@ -192,6 +201,9 @@ export async function GET(req: NextRequest) {
     id: e.id,
     displayName: e.displayName,
     provider: e.provider,
+    openRouterId: e.openRouterId,
+    inputPrice: e.input,
+    outputPrice: e.output,
   }));
 
   // Tier entries first — they are the models this team actually uses, and one of
@@ -199,12 +211,26 @@ export async function GET(req: NextRequest) {
   // releases behind them, deduplicated by id so a tier model that also appears in
   // a catalog keeps its tier label. Credentialed Anthropic entries come before
   // public ones: they carry the dated snapshot ids you cannot pin otherwise.
-  const seen = new Set(tierEntries.map(m => m.id));
-  const models: ModelEntry[] = [...tierEntries];
+  const byId = new Map<string, ModelEntry>();
+  const models: ModelEntry[] = [];
+  for (const m of tierEntries) {
+    const copy = { ...m };
+    byId.set(m.id, copy);
+    models.push(copy);
+  }
   for (const m of [...(catalog ?? []), ...publicModels]) {
-    if (seen.has(m.id)) continue;
-    seen.add(m.id);
-    models.push(m);
+    const existing = byId.get(m.id);
+    if (existing) {
+      // A duplicate keeps the earlier entry's label and tier, but picks up the
+      // public catalog's OpenRouter id and price when it had none.
+      existing.openRouterId ??= m.openRouterId;
+      existing.inputPrice ??= m.inputPrice;
+      existing.outputPrice ??= m.outputPrice;
+      continue;
+    }
+    const copy = { ...m };
+    byId.set(m.id, copy);
+    models.push(copy);
   }
 
   // Audit the team's TIER CONFIG. `detectStalePin` on the client covers a

@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import SettingsSection from './SettingsSection';
+import Link from 'next/link';
 import {
   INFERENCE_CAPABILITIES,
   ALL_INFERENCE_CAPABILITIES,
+  type CapabilityDescriptor,
   type InferenceCapability,
 } from '@buildd/core/inference-policy';
 import { useConfirm } from '@/components/useConfirm';
@@ -248,7 +250,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   if (teamWorkspaces.length === 0) return null;
 
   return (
-    <SettingsSection title="Agent backends">
+    <SettingsSection title="Agent backends" id="agent-backends">
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
           Runners use these credentials to sign in to an agent backend. Set one credential
@@ -261,6 +263,19 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
         {/* Per-action opt-in for metered inference (separate from holding a key) */}
         <InferenceCapabilitiesToggle teamId={teamId} />
+
+        {/* Chat and inference keys + tier mapping live on their own page. */}
+        <Link
+          href="/app/settings/models"
+          className="flex items-center justify-between gap-3 inset-panel hover:bg-surface-4 transition-colors"
+          data-testid="model-tiers-link"
+        >
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm text-text-primary">Model tiers and provider keys</span>
+            <span className="text-xs text-text-secondary">Choose the model behind each tier. Add the Anthropic, OpenAI and OpenRouter keys chat uses.</span>
+          </span>
+          <span aria-hidden className="text-text-muted">→</span>
+        </Link>
         <div className="border-t border-border-default" />
 
         {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
@@ -313,6 +328,41 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * in one switch, instead of editing every workspace/role.
  */
 /**
+ * Button and status wording for one capability row.
+ *
+ * Chat is a feature switch, not a speed/cost trade: there is no agent path for a
+ * chat turn, so "Use agent" / "Use inference" would misdescribe it. Chat also
+ * needs a provider key to do anything, which the row says, because turning the
+ * capability on spends nothing by itself.
+ *
+ * Keyed on the id string so this builds before `chat` joins
+ * `INFERENCE_CAPABILITIES`; the row appears once it does.
+ */
+export function capabilityToggleCopy(
+  d: Pick<CapabilityDescriptor, 'label' | 'fallback' | 'costHint'> & { id: string },
+  on: boolean,
+): { button: string; meta: string; needsKeyHint: boolean; turnedOn: string; turnedOff: string } {
+  if (d.id === 'chat') {
+    return {
+      button: on ? 'Turn off chat' : 'Turn on chat',
+      meta: on ? `on · ${d.costHint}` : 'off',
+      needsKeyHint: true,
+      turnedOn: `Chat is on. Each turn spends on a provider key (${d.costHint}).`,
+      turnedOff: 'Chat is off. Nobody on the team sees it until you turn it back on.',
+    };
+  }
+  return {
+    button: on ? 'Use agent' : 'Use inference',
+    meta: on ? `inference · ${d.costHint}` : d.fallback === 'agent' ? 'agent run' : 'disabled',
+    needsKeyHint: false,
+    turnedOn: `${d.label} now uses an inference call (${d.costHint}).`,
+    turnedOff: d.fallback === 'agent'
+      ? `${d.label} is back on the agent path: slower, no metered spend.`
+      : `${d.label} is off. It has no agent fallback, so the feature is disabled.`,
+  };
+}
+
+/**
  * Per-action opt-in for metered inference calls.
  *
  * Holding an inference key and spending it are separate decisions. An inference
@@ -321,7 +371,7 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * per team, so this is an allowlist rather than one master switch — and it starts
  * empty, so storing a key changes nothing until an action is opted in.
  */
-function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
+export function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
   const [enabled, setEnabled] = useState<InferenceCapability[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -348,7 +398,8 @@ function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
   const isOn = (c: InferenceCapability) => enabled.includes(c);
 
   async function toggle(c: InferenceCapability) {
-    const next = isOn(c) ? enabled.filter((x) => x !== c) : [...enabled, c];
+    const wasOn = isOn(c);
+    const next = wasOn ? enabled.filter((x) => x !== c) : [...enabled, c];
     const ordered = ALL_INFERENCE_CAPABILITIES.filter((x) => next.includes(x));
     const prev = enabled;
     setEnabled(ordered); // optimistic
@@ -361,15 +412,11 @@ function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
         body: JSON.stringify({ enabledInferenceCapabilities: ordered }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
-      const d = INFERENCE_CAPABILITIES[c];
-      setMsg({
-        type: 'success',
-        text: isOn(c)
-          ? `${d.label} now uses an inference call (${d.costHint}).`
-          : d.fallback === 'agent'
-            ? `${d.label} is back on the agent path: slower, no metered spend.`
-            : `${d.label} is off. It has no agent fallback, so the feature is disabled.`,
-      });
+      // `enabled` in this closure is the state BEFORE the toggle, so `wasOn`
+      // true means the user just turned it off. (Reading isOn(c) directly here
+      // used to report the opposite of what happened.)
+      const copy = capabilityToggleCopy(INFERENCE_CAPABILITIES[c], wasOn);
+      setMsg({ type: 'success', text: wasOn ? copy.turnedOff : copy.turnedOn });
     } catch (e) {
       setEnabled(prev); // rollback
       setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
@@ -379,7 +426,7 @@ function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 scroll-mt-20" id="inference-spending">
       <div>
         <h3 className="text-sm font-medium text-text-primary">Inference spending</h3>
         <p className="text-xs text-text-secondary mt-0.5">
@@ -392,20 +439,27 @@ function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
         {ALL_INFERENCE_CAPABILITIES.map((c) => {
           const d = INFERENCE_CAPABILITIES[c];
           const on = isOn(c);
+          const copy = capabilityToggleCopy(d, on);
           return (
-            <div key={c} className="flex items-start justify-between gap-3 inset-panel">
+            <div key={c} className="flex items-start justify-between gap-3 inset-panel" data-testid={`capability-${c}`}>
               <span className="flex flex-col gap-0.5 text-sm text-text-primary">
                 <span className="flex flex-wrap items-center gap-2">
                   <span className={`w-2 h-2 shrink-0 ${on ? 'bg-status-success' : 'bg-text-muted'}`} />
                   {d.label}
-                  <span className="text-xs text-text-muted">
-                    {on ? `inference · ${d.costHint}` : d.fallback === 'agent' ? 'agent run' : 'disabled'}
-                  </span>
+                  <span className="text-xs text-text-muted">{copy.meta}</span>
                 </span>
                 <span className="text-xs text-text-secondary">{d.description}</span>
-                {/* The distinction that must not be flattened: for these, off is
-                    not "slower", it is "gone". */}
-                {d.fallback === 'none' && !on && (
+                {copy.needsKeyHint ? (
+                  <span className="text-xs text-text-secondary">
+                    Needs a provider key.{' '}
+                    <Link href="/app/settings/models#provider-keys" className="underline text-text-primary hover:text-accent-text">
+                      Set team keys
+                    </Link>
+                    {' '}or members add their own on the You page.
+                  </span>
+                ) : d.fallback === 'none' && !on && (
+                  /* The distinction that must not be flattened: for these, off is
+                     not "slower", it is "gone". */
                   <span className="text-xs text-status-warning">
                     No agent fallback. This feature stays off until you enable it.
                   </span>
@@ -416,7 +470,7 @@ function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
                 disabled={busy || !loaded}
                 className={`btn shrink-0 ${on ? '' : 'btn-accent'}`}
               >
-                {on ? 'Use agent' : 'Use inference'}
+                {copy.button}
               </button>
             </div>
           );
