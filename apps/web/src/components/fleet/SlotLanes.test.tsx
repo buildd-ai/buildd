@@ -172,8 +172,10 @@ describe('SlotLanes', () => {
     expect(tag).toContain('title="plan"');
     // No content inside the marker: it closes straight away.
     expect(html).toMatch(/data-bar-id="plan"[^>]*><\/span>/);
-    // Left-anchored at its own start (it is not at NOW).
-    expect(tag).toContain('style="left:5%;width:max(calc(5% - 2px), 6px)"');
+    // A solid tick at its own start (it is not at NOW), label in the tooltip only.
+    expect(tag).toContain('style="left:5%"');
+    expect(tag).toContain('bg-status-success');
+    expect(html).not.toContain('pointer-events-none absolute top-[9px] flex h-8');
     expect(html.match(/<[a-z]+ [^>]*data-bar-id="db"[^>]*>/)?.[0]).not.toContain('data-shape');
   });
 

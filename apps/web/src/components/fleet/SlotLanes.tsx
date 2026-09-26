@@ -258,7 +258,10 @@ export default function SlotLanes({
               const gap = startFrac - axisFraction(prevEnd, from, to);
               const claimed = b.end == null && b.tone === 'live' && end - b.start < CLAIMED_MS;
               const short = !claimed && frac < SHORT_FRACTION;
-              const outside = short && gap >= OUTSIDE_LABEL_FRACTION;
+              // A finished marker's label stays in its tooltip: squeezed into the
+              // gap before it, it read as a clipped "pla…" beside an empty box.
+              const outside = short && b.end == null && gap >= OUTSIDE_LABEL_FRACTION;
+              const tick = short && b.end != null;
               const tooltip = [b.label, b.title && b.title !== b.label ? b.title : null].filter(Boolean).join(' · ');
               const shortTitle = b.end == null
                 ? [b.prefix, b.scope, b.label].filter(Boolean).join(' ')
@@ -270,10 +273,13 @@ export default function SlotLanes({
                   {b.endMark && <span className={`ml-auto shrink-0 text-[11px] font-bold ${END_MARK[b.endMark].cls}`}>{END_MARK[b.endMark].glyph}</span>}
                 </>
               );
-              const markTint = b.end != null && b.endMark === 'fail' ? '!border-status-error' : '';
+              const tickTone = b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted';
               const cls = claimed
                 ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${isActive ? 'shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`
-                : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${markTint} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
+                : tick
+                  // The short-run marker: a solid tick at the run's start, never an empty box.
+                  ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
+                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
               const nowRight = (1 - axisFraction(end, from, to)) * 100;
               // An open bar is anchored by its right edge at NOW: a box has a
               // minimum drawn width, and anchored at its start a fresh bar
@@ -283,8 +289,8 @@ export default function SlotLanes({
                 ? { right: `calc(${nowRight}% + 4px)` }
                 : short && b.end == null
                   ? { right: `${nowRight}%`, width: `max(calc(${width(b.start, end)} - 2px), 6px)` }
-                  : short
-                    ? { left: pct(b.start), width: `max(calc(${width(b.start, end)} - 2px), 6px)` }
+                  : tick
+                    ? { left: pct(b.start) }
                     : { left: pct(b.start), width: `calc(${width(b.start, end)} - 2px)` };
               const claimedTitle = `${[b.prefix, b.scope, b.label].filter(Boolean).join(' ')} · claimed`;
               const common = {
