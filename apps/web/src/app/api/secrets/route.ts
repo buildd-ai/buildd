@@ -40,7 +40,7 @@ const RAW_STRING_PURPOSES = new Set([
  * would silently make a team credential work only for tasks that one account
  * files.
  */
-const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key']);
+const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key']);
 
 /** Required prefixes for Claude credential purposes. */
 const REQUIRED_PREFIXES: Record<string, string> = {
@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
     // fresh token sits unused. See docs/credentials-architecture.md.
     const id = await provider.replaceScoped(sanitizedValue, {
       teamId: targetTeamId,
-      // MCP credentials and decision keys are team-wide (shared by everyone in
+      // MCP credentials and decision/inference keys are team-wide (shared by everyone in
       // the team), so don't scope them to the caller's account by default.
       accountId: (TEAM_WIDE_BY_DEFAULT.has(purpose) ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
       workspaceId,

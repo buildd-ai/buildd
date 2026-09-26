@@ -11,6 +11,8 @@ export interface SecretMetadata {
   teamId: string;
   accountId?: string;
   workspaceId?: string;
+  /** A person's own key (inference_key only). Omitted/null = not personal. */
+  userId?: string | null;
   purpose: SecretPurpose;
   label?: string;
 }
@@ -42,7 +44,7 @@ export interface SecretsProvider {
   /**
    * Replace any existing secret at the same scope with a fresh value, returning
    * the new secret ID. "Scope" is the NULL-aware tuple
-   * (teamId, accountId, workspaceId, purpose, label): existing rows matching it
+   * (teamId, accountId, workspaceId, userId, purpose, label): existing rows matching it
    * are deleted before the new row is inserted, so a re-save REPLACES rather than
    * appending a duplicate. Because it inserts a fresh row, health state resets to
    * 'unknown' — a replaced credential is never left flagged 'revoked'.
@@ -59,6 +61,10 @@ export interface SecretsProvider {
   /** Delete a secret by ID. */
   delete(id: string): Promise<void>;
 
-  /** List secret metadata (never values) for a team. */
+  /**
+   * List secret metadata (never values) for a team. Personal rows (`userId`
+   * set) are excluded: they belong to one person, not the team, and are
+   * managed through /api/inference-keys.
+   */
   list(teamId: string): Promise<SecretRecord[]>;
 }

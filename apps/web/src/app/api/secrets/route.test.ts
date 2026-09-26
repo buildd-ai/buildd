@@ -158,6 +158,20 @@ describe('POST /api/secrets', () => {
     mockAccountsFindFirst.mockResolvedValue(null);
   });
 
+  it('keeps an inference_key team-wide when stored with an API key, so it serves every caller', async () => {
+    // An account-scoped inference key only reaches callers acting as that
+    // account; chat turns and cron judgments act as nobody's account.
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1' });
+    const res = await POST(new NextRequest('http://localhost:3000/api/secrets', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
+      body: JSON.stringify({ value: 'sk-or-v1-abc', purpose: 'inference_key', label: 'openrouter' }),
+    }));
+    expect(res.status).toBe(200);
+    expect((mockSecretsReplaceScoped.mock.calls.at(-1) as any[])[1].accountId).toBeUndefined();
+    mockAccountsFindFirst.mockResolvedValue(null);
+  });
+
   it('accepts all valid purpose values', async () => {
     const valueFor: Record<string, string> = {
       anthropic_api_key: 'sk-ant-api03-xxx',

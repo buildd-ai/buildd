@@ -2405,6 +2405,10 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // A person's own key (inference_key only). NULL = not personal. `accountId`
+  // can't hold this: accounts are API-key identities, not people. A personal row
+  // serves only its owner — see packages/core/inference-keys.ts.
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
@@ -2472,6 +2476,14 @@ export const secrets = pgTable('secrets', {
   scopedAuthCredentialIdx: uniqueIndex('secrets_scoped_auth_credential_idx')
     .on(t.teamId, t.accountId, t.workspaceId, t.purpose, t.label)
     .where(sql`${t.purpose} in ('oauth_token','anthropic_api_key','codex_credential','claude_credential')`),
+  // One personal inference key per (team, user, provider label). Partial on
+  // user_id IS NOT NULL so it binds only personal rows, which are new — it can't
+  // fail on any pre-existing row. Team-scope rows stay singletons through
+  // replaceScoped, as before. Personal keys are team-wide (workspace NULL) in P1.
+  personalInferenceKeyIdx: uniqueIndex('secrets_personal_inference_key_idx')
+    .on(t.teamId, t.userId, t.label)
+    .where(sql`${t.purpose} = 'inference_key' and ${t.userId} is not null and ${t.workspaceId} is null`),
+  userIdx: index('secrets_user_idx').on(t.userId),
 }));
 
 
