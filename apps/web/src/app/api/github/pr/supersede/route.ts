@@ -15,6 +15,7 @@ import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
+import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
         { status: resolved.status },
       );
     }
-    if (resolved.workspace?.teamId !== account.teamId) {
+    if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
     resolvedWorkerId = resolved.id as string;
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
       with: { workspace: true },
     });
     if (!worker) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    if (worker.workspace?.teamId !== account.teamId) {
+    if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
   }
