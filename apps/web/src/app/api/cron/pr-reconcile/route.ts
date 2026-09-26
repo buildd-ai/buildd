@@ -41,6 +41,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { reconcileStalePrWorkers, sweepMissionIntegrationPrs } from '@/lib/pr-reconcile';
 import { sweepDeadZonePrs } from '@/lib/dead-zone-sweep';
 import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
+import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { withCronRun } from '@/lib/cron-run';
 
 export const maxDuration = 60;
@@ -52,7 +53,7 @@ export async function GET(req: NextRequest) {
   const job = mergeStateOnly ? 'pr-reconcile:merge-state' : 'pr-reconcile';
 
   return withCronRun(job, req, async (report) => {
-    const [reconcile, deadZone, missionPrs, stranded] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -65,6 +66,12 @@ export async function GET(req: NextRequest) {
       // route's hourly cadence (the merge-state scope) rather than a new cron.
       // Isolated for the same reason as the mission sweep above.
       sweepStrandedTasks().catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // Merged doc fixes whose ledger rows were never rechecked get a forced
+      // re-run; rechecked-and-still-open ones get their one follow-up
+      // (lib/spec-recheck.ts). Hourly, like merge state — it acts on merges.
+      sweepSpecDiscrepancyRechecks().catch(err => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -89,20 +96,29 @@ export async function GET(req: NextRequest) {
     } else {
       console.log(`[StrandedSweep] scanned=${stranded.scanned} stranded=${stranded.stranded} cleared=${stranded.cleared}`);
     }
+    if ('error' in specRecheck) {
+      console.error('[SpecRecheckSweep] error:', specRecheck.error);
+    } else {
+      console.log(
+        `[SpecRecheckSweep] candidates=${specRecheck.candidates} rechecks=${specRecheck.rechecksDispatched} covered=${specRecheck.rechecksCovered} recheckFailed=${specRecheck.rechecksFailed} followUps=${specRecheck.followUpsDispatched} followUpFailed=${specRecheck.followUpsFailed}`,
+      );
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
     const missionPrErrors = 'error' in missionPrs ? 1 : (missionPrs.errors ?? 0);
     const strandedErrors = 'error' in stranded ? 1 : 0;
+    const specRecheckErrors = 'error' in specRecheck ? 1 : specRecheck.rechecksFailed + specRecheck.followUpsFailed;
     report({
       processed: reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total),
       changed:
         reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
         + ('error' in missionPrs ? 0 : missionPrs.opened)
-        + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared),
-      errors: reconcile.errors + missionPrErrors + strandedErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded },
+        + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared)
+        + ('error' in specRecheck ? 0 : specRecheck.rechecksDispatched + specRecheck.followUpsDispatched),
+      errors: reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck },
     });
 
     return NextResponse.json({
@@ -112,6 +128,7 @@ export async function GET(req: NextRequest) {
       deadZone,
       missionPrs,
       stranded,
+      specRecheck,
     });
   });
 }

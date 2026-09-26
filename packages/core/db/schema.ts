@@ -1343,6 +1343,16 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // of filing a second one. Never a closure signal — a row still closes only
   // when a checker re-run resolves its assertion (§9).
   docFixTaskId: uuid('doc_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // When a forced ledger re-run (the ledger workflow dispatched with the §4
+  // delta gate bypassed) was last requested for this row after its doc fix
+  // merged. The dedupe key for that dispatch, and what lets the card say "re-run
+  // dispatched" only when one actually was. Never a closure signal (§9).
+  recheckRequestedAt: timestamp('recheck_requested_at', { withTimezone: true }),
+  // The ONE automatic follow-up doc-fix task this row gets when a merged doc
+  // fix was rechecked and the gap is still open. Non-null means the cap is
+  // spent: a second follow-up never auto-dispatches, and the next still-open
+  // recheck surfaces the card to the owner with the evidence.
+  autoFollowUpTaskId: uuid('auto_follow_up_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   // The human's reason for rejecting a doc-fixer's net-enhancement proposal,
   // retained on the row so the next reader sees that the enhancement was
   // considered and declined rather than never noticed.

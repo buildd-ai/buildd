@@ -66,6 +66,7 @@ import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
@@ -1021,6 +1022,20 @@ async function handlePullRequestEvent(event: {
         prNumber: pr.number,
         mergedAt: new Date(),
       });
+      // A merged doc fix gets its conformance re-run now, not whenever the
+      // next dev push happens to evaluate the doc (spec-conformance.md §9).
+      // Best-effort; the hourly pr-reconcile sweep is the backstop.
+      if (worker.taskId) {
+        const docFixTaskId = worker.taskId;
+        const recheck = () => requestRecheckForMergedDocFix(docFixTaskId).catch(e =>
+          console.error(`[webhook] spec recheck dispatch failed for task ${docFixTaskId}:`, e),
+        );
+        try {
+          after(recheck);
+        } catch {
+          await recheck();
+        }
+      }
       await reconcileReviewWithMerge({
         workspaceId: worker.workspaceId,
         taskId: worker.taskId,

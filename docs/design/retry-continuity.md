@@ -1,5 +1,5 @@
 ---
-status: shipped
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "worktree-base-resolution"
@@ -16,7 +16,7 @@ assertions:
 ---
 # Retry Continuity Design Spec
 
-> **Status:** shipped. §§1–5 describe the original design, which shipped in PR #1268. §8 documents the
+> **Status:** implemented. §§1–5 describe the original design, which shipped in PR #1268. §8 documents the
 > `worker.branch` persistence bug found in production (#1714–#1717) and the targeted fix shipped in
 > PR #1720. Since then the runner side has grown further than either section anticipated — see the
 > "Beyond this spec" note at the end of §4 and §8.

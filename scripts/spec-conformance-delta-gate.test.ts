@@ -193,3 +193,27 @@ describe('spec-conformance-delta-gate record', () => {
     expect(lastPostBody).toBeNull();
   });
 });
+
+describe('spec-conformance-delta-gate --key (one pointer per consumer)', () => {
+  test('record writes only the named key, leaving the default pointer alone', async () => {
+    const sha = commit('initial');
+    await runGate('record', { BUILDD_API_KEY: 'test-key' }, ['--key', 'spec-discrepancy-ledger-last-sha']);
+    expect(store.get('spec-discrepancy-ledger-last-sha')).toBe(sha);
+    expect(store.has('spec-conformance-last-sha')).toBe(false);
+  });
+
+  test("check reads only the named key: the checker's newer pointer cannot make the ledger skip", async () => {
+    // The race this prevents: the checker records HEAD first, and a ledger run
+    // diffing HEAD..HEAD would see nothing watched and skip a doc it never wrote.
+    const firstSha = commit('initial');
+    store.set('spec-discrepancy-ledger-last-sha', firstSha);
+    writeFileSync(join(repo, 'docs', 'design', 'watched.md'), readFileSync(join(repo, 'docs', 'design', 'watched.md'), 'utf8') + '\nfix\n');
+    const head = commit('doc fix');
+    store.set('spec-conformance-last-sha', head);
+
+    const ledger = await runGate('check', { BUILDD_API_KEY: 'test-key' }, ['--key', 'spec-discrepancy-ledger-last-sha']);
+    expect(ledger.outputs.skip).toBe('false');
+    const checker = await runGate('check', { BUILDD_API_KEY: 'test-key' });
+    expect(checker.outputs.skip).toBe('true');
+  });
+});
