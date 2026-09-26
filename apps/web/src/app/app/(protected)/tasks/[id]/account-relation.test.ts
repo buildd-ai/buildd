@@ -20,8 +20,12 @@ const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text()
 const USED = ['name', 'authType'] as const;
 const ALLOWLIST = `account: { columns: { ${USED.map(c => `${c}: true`).join(', ')} } }`;
 
-/** How many account relations the page selects, root tree plus the worker reads. */
-const ACCOUNT_RELATION_SITES = 3;
+/**
+ * How many account relations the page selects: the root tree, the two worker
+ * reads, and the CI-retry attempts' workers (Worker history lists them beside
+ * the task's own, so they carry the same shape).
+ */
+const ACCOUNT_RELATION_SITES = 4;
 
 describe('tasks/[id]/page.tsx account relation', () => {
   it('never selects the account relation wholesale', () => {
