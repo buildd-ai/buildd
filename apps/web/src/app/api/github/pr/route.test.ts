@@ -127,6 +127,12 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // Mock pr-review-request — the stored-verdict lookup the agent-review
 // self-merge gate consults, plus the role listing the auto-review feature uses.
+// Claim grants for the cross-team runner path (canActOnWorkerPr). Default: none.
+const mockGetAccountWorkspacePermissions = mock(async (_accountId: string) => [] as Array<{ workspaceId: string; canClaim: boolean; canCreate: boolean }>);
+mock.module('@/lib/account-workspace-cache', () => ({
+  getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
+}));
+
 mock.module('@/lib/pr-review-request', () => ({
   readPrReviewStatus: mockReadPrReviewStatus,
   listWorkspaceRoles: mockListWorkspaceRoles,
@@ -362,6 +368,28 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error).toBe('Worker belongs to different account');
+  });
+
+  // A shared runner on its own team reaches this workspace through a claim
+  // grant; the claim path honours it, so create_pr must too.
+  it('lets the cross-team account running the worker through while it holds a claim grant', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetAccountWorkspacePermissions.mockResolvedValueOnce([{ workspaceId: 'ws-other', canClaim: true, canCreate: false }]);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-other',
+      name: 'test-worker',
+      workspace: WORKSPACE_OTHER_TEAM,
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).not.toBe(403);
   });
 
   it('returns 400 when workspace not linked to GitHub repo', async () => {
