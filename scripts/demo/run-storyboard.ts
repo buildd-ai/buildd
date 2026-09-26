@@ -1,30 +1,34 @@
 /**
  * run-storyboard.ts — drive the real dashboard through a storyboard and capture it.
  *
- *   bun run scripts/demo/run-storyboard.ts <storyboard.yaml> [--out <dir>] [--themes dark,light] [--no-seed] [--only step1,step2]
+ *   bun run scripts/demo/run-storyboard.ts <storyboard.yaml> [--out <dir>] [--themes dark,light] [--no-seed] [--only step1,step2] [--no-record]
  *
  * Prereqs: scripts/demo/up.sh (containers + migrations) and scripts/demo/serve.sh --bg.
  *
  * Storyboard YAML:
  *
- *   story: ../stories/placeholder.json   # dataset (relative to this file); env DEMO_STORY overrides
- *   viewport: { width: 1440, height: 900, scale: 2 }
+ *   story: ../stories/multi-currency.json   # dataset (relative to this file); env DEMO_STORY overrides
+ *   viewport: { width: 1440, height: 900, scale: 2 }   # the "desktop" viewport
+ *   viewports: { phone: { width: 390, height: 844, scale: 3 } }   # optional; phone is built in
  *   themes: [dark, light]
+ *   highlight: [goal-band, board-tile]  # optional: boxes recorded on EVERY shot where present (silent when absent)
  *   steps:
  *     - id: mission-mid-flight
  *       advance: "11:46"              # replay the timeline to t (seconds | mm:ss | end)
  *       goto: /app/missions/{M1}      # {key} = the seeded UUID of dataset key "M1"
+ *       viewports: [desktop, phone]   # default [desktop]
  *       waitFor: mission-detail       # data-testid (or `text=…` / any Playwright selector)
  *       click: mission-task-row       # optional: testid/selector to click before the shot
  *       scrollTo: mission-feed        # optional: testid/selector to scroll into view
- *       highlight: [mission-pulse, mission-task-row]   # bounding boxes → manifest.json
+ *       highlight: [mission-pulse, mission-task-row]   # bounding boxes → manifest.json (warned when missing)
  *       caption: "Six agents. Four machines. At the same time."
  *       fullPage: false               # default: viewport-sized shot
  *       hold: 500                     # ms to settle after load (default 400)
  *       record: { ms: 8000, advanceTo: "14:30", ticks: 6 }   # optional webm: live replay via Pusher
  *
- * Output: <out>/<story>/<step>-<theme>.png (+ .webm for record steps) and
- * <out>/<story>/manifest.json with captions, element boxes (CSS px) and timings.
+ * Output: <out>/<story>/<step>-<theme>.png (desktop) or <step>-<viewport>-<theme>.png,
+ * .webm for record steps, and <out>/<story>/manifest.json with captions, element
+ * boxes (CSS px, plus each element's data-status/state/kind) and timings.
  *
  * The browser clock is frozen at "story now" for every shot (page.clock), the
  * Next dev overlay/route announcer are hidden, and animations are settled, so a
@@ -39,11 +43,13 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
+import { captureFile, captureKey, DESKTOP, highlightTargets, resolveViewports, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
   goto?: string;
   advance?: string | number;
+  viewports?: string[];
   waitFor?: string | string[];
   click?: string;
   scrollTo?: string;
@@ -53,15 +59,18 @@ type Step = {
   fullPage?: boolean;
   hold?: number;
   shot?: boolean;
-  record?: { ms?: number; advanceTo?: string | number; ticks?: number };
+  record?: { ms?: number; advanceTo?: string | number; ticks?: number; theme?: 'dark' | 'light'; viewport?: string };
 };
 type Storyboard = {
   story?: string;
   name?: string;
-  viewport?: { width?: number; height?: number; scale?: number };
+  viewport?: ViewportSpec;
+  viewports?: Record<string, ViewportSpec>;
   themes?: Array<'dark' | 'light'>;
+  highlight?: string[];
   steps: Step[];
 };
+type Theme = 'dark' | 'light';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -89,7 +98,7 @@ function fill(path: string, ids: Record<string, string>): string {
 async function main() {
   const boardPath = process.argv[2];
   if (!boardPath || boardPath.startsWith('--')) {
-    console.error('usage: bun run scripts/demo/run-storyboard.ts <storyboard.yaml> [--out dir] [--themes dark,light] [--no-seed] [--only a,b]');
+    console.error('usage: bun run scripts/demo/run-storyboard.ts <storyboard.yaml> [--out dir] [--themes dark,light] [--no-seed] [--only a,b] [--no-record]');
     process.exit(1);
   }
   const board = Bun.YAML.parse(readFileSync(boardPath, 'utf8')) as Storyboard;
@@ -99,10 +108,12 @@ async function main() {
   const outRoot = resolve(arg('out') ?? join(import.meta.dir, 'out'));
   const outDir = join(outRoot, board.name ?? storyName);
   mkdirSync(outDir, { recursive: true });
-  const themes = (arg('themes')?.split(',') as Array<'dark' | 'light'>) ?? board.themes ?? ['dark', 'light'];
+  const themes = (arg('themes')?.split(',') as Theme[]) ?? board.themes ?? ['dark', 'light'];
   const only = arg('only')?.split(',');
-  const vp = { width: board.viewport?.width ?? 1440, height: board.viewport?.height ?? 900 };
-  const scale = board.viewport?.scale ?? 2;
+  const noRecord = process.argv.includes('--no-record');
+  const viewports = resolveViewports(board);
+  // Validate every step's viewports up front, before minutes of shooting.
+  for (const step of board.steps) stepViewports(step, viewports);
 
   const db = createLocalDb();
   if (!process.argv.includes('--no-seed')) {
@@ -117,8 +128,11 @@ async function main() {
   const browser: Browser = await chromium.launch({ headless: true });
   const base = new URL(DEMO.baseUrl);
 
-  async function newContext(theme: 'dark' | 'light', extra: Parameters<Browser['newContext']>[0] = {}): Promise<BrowserContext> {
-    const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: scale, colorScheme: theme, locale: 'en-US', timezoneId: story.team?.timezone ?? 'UTC', ...extra });
+  async function newContext(theme: Theme, vp: Viewport, extra: Parameters<Browser['newContext']>[0] = {}): Promise<BrowserContext> {
+    const ctx = await browser.newContext({
+      viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: vp.scale, colorScheme: theme,
+      isMobile: !!vp.mobile, hasTouch: !!vp.mobile, locale: 'en-US', timezoneId: story.team?.timezone ?? 'UTC', ...extra,
+    });
     await ctx.addCookies([
       { name: SESSION_COOKIE, value: token, domain: base.hostname, path: '/', httpOnly: true, sameSite: 'Lax' },
       { name: 'buildd-team', value: teamId, domain: base.hostname, path: '/', sameSite: 'Lax' },
@@ -127,16 +141,24 @@ async function main() {
     return ctx;
   }
 
+  // One long-lived page per (viewport, theme), opened lazily.
   const pages = new Map<string, Page>();
-  for (const theme of themes) {
-    const ctx = await newContext(theme);
-    const page = await ctx.newPage();
-    page.on('pageerror', (err) => console.warn(`[storyboard] page error (${theme}): ${err.message}`));
-    pages.set(theme, page);
+  async function pageFor(vpName: string, theme: Theme): Promise<Page> {
+    const key = captureKey(vpName, theme);
+    let page = pages.get(key);
+    if (!page) {
+      page = await (await newContext(theme, viewports[vpName])).newPage();
+      page.on('pageerror', (err) => console.warn(`[storyboard] page error (${key}): ${err.message}`));
+      pages.set(key, page);
+    }
+    return page;
   }
 
-  async function prepare(page: Page, step: Step) {
-    await page.clock.setFixedTime(new Date());
+  async function prepare(page: Page, step: Step, opts: { freezeClock?: boolean } = {}) {
+    // Stills freeze the page clock at "story now" for reproducible frames. Live
+    // takes must NOT: the pages' realtime throttles schedule off Date.now, and a
+    // frozen clock turns them into debounces that never fire under steady pushes.
+    if (opts.freezeClock !== false) await page.clock.setFixedTime(new Date());
     const url = DEMO.baseUrl + fill(step.goto ?? new URL(page.url()).pathname, state.ids);
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
     await page.addStyleTag({ content: HIDE_CSS });
@@ -178,25 +200,56 @@ async function main() {
     return missing;
   }
 
-  async function boxes(page: Page, targets: string[]) {
+  async function boxes(page: Page, step: Step) {
     const out = [];
-    for (const target of targets) {
+    for (const { target, required } of highlightTargets(step, board.highlight)) {
       const loc = page.locator(sel(target));
       const n = await loc.count();
+      if (!n && !required) continue;
       const found = [];
-      for (let i = 0; i < Math.min(n, 20); i++) {
-        const b = await loc.nth(i).boundingBox();
-        if (b && b.width > 0 && b.height > 0) found.push({ x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) });
+      for (let i = 0; i < Math.min(n, 40); i++) {
+        const el = loc.nth(i);
+        const b = await el.boundingBox();
+        if (!b || b.width <= 0 || b.height <= 0) continue;
+        const attrs = await el.evaluate((node) => {
+          const o: Record<string, string> = {};
+          for (const a of ['data-status', 'data-state', 'data-kind', 'data-phase']) {
+            const v = node.getAttribute(a);
+            if (v != null) o[a.slice(5)] = v;
+          }
+          const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+          if (text) o.text = text.slice(0, 80);
+          return o;
+        });
+        found.push({ x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height), ...attrs });
       }
-      if (!found.length) console.warn(`[storyboard]   highlight "${target}" not found/visible`);
+      if (!found.length && required) console.warn(`[storyboard]   highlight "${target}" not found/visible`);
       out.push({ target, selector: sel(target), count: n, boxes: found });
     }
     return out;
   }
 
+  async function unclip(page: Page) {
+    // The app scrolls inside <main>, not the window, so fullPage alone stops
+    // at the viewport: unclip inner scroll containers (as scripts/qa/capture.ts does).
+    await page.evaluate(() => {
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>('body *'))) {
+        const style = getComputedStyle(el);
+        if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
+          for (let n: HTMLElement | null = el; n && n !== document.body; n = n.parentElement) {
+            n.style.setProperty('height', 'auto', 'important');
+            n.style.setProperty('max-height', 'none', 'important');
+            n.style.setProperty('overflow', 'visible', 'important');
+          }
+        }
+      }
+    });
+  }
+
   const manifest: any = {
     story: storyName, storyboard: resolve(boardPath), generatedAt: new Date().toISOString(),
-    viewport: { ...vp, deviceScaleFactor: scale }, themes, steps: [] as any[],
+    viewports, viewport: { width: viewports[DESKTOP].width, height: viewports[DESKTOP].height, deviceScaleFactor: viewports[DESKTOP].scale },
+    themes, steps: [] as any[],
   };
   const t0 = Date.now();
 
@@ -214,44 +267,47 @@ async function main() {
       id: step.id, caption: step.caption ?? null, t: state.appliedT, path: step.goto ? fill(step.goto, state.ids) : null,
       files: {}, highlights: {}, timings: { offsetMs: started - t0, advanceMs },
     };
-    for (const theme of themes) {
-      const page = pages.get(theme)!;
-      const l = Date.now();
-      const missing = await prepare(page, step);
-      if (missing.length) entry.waitForMissing = missing;
-      entry.timings[`${theme}LoadMs`] = Date.now() - l;
-      entry.highlights[theme] = await boxes(page, step.highlight ?? []);
-      if (step.shot !== false) {
-        const file = `${step.id}-${theme}.png`;
-        // The app scrolls inside <main>, not the window, so fullPage alone stops
-        // at the viewport: unclip inner scroll containers (as scripts/qa/capture.ts does).
-        if (step.fullPage) {
-          await page.evaluate(() => {
-            for (const el of Array.from(document.querySelectorAll<HTMLElement>('body *'))) {
-              const style = getComputedStyle(el);
-              if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
-                for (let n: HTMLElement | null = el; n && n !== document.body; n = n.parentElement) {
-                  n.style.setProperty('height', 'auto', 'important');
-                  n.style.setProperty('max-height', 'none', 'important');
-                  n.style.setProperty('overflow', 'visible', 'important');
-                }
-              }
-            }
-          });
+    // `shot: false` steps exist only for their live take.
+    for (const vpName of step.shot === false ? [] : stepViewports(step, viewports)) {
+      for (const theme of themes) {
+        const key = captureKey(vpName, theme);
+        const page = await pageFor(vpName, theme);
+        // Re-anchor "story now" to the wall clock before every capture, so a
+        // shot taken 30s after its step's advance still reads t (not t+30s).
+        await advanceTo(db, state.appliedT, { quiet: true });
+        const l = Date.now();
+        const missing = await prepare(page, step);
+        if (missing.length) (entry.waitForMissing ??= {})[key] = missing;
+        entry.timings[`${key}LoadMs`] = Date.now() - l;
+        if (step.fullPage) await unclip(page);
+        entry.highlights[key] = await boxes(page, step);
+        if (step.shot !== false) {
+          const file = captureFile(step.id, vpName, theme);
+          await page.screenshot({ path: join(outDir, file), fullPage: step.fullPage ?? false, animations: 'disabled' });
+          entry.files[key] = file;
         }
-        await page.screenshot({ path: join(outDir, file), fullPage: step.fullPage ?? false, animations: 'disabled' });
-        entry.files[theme] = file;
+        entry.url = page.url().replace(DEMO.baseUrl, '');
       }
-      entry.url = page.url().replace(DEMO.baseUrl, '');
     }
 
-    if (step.record) {
-      // Record one live take (first theme): the page stays open while the
-      // timeline advances in ticks, so realtime pushes drive the UI.
-      const theme = themes[0];
-      const ctx = await newContext(theme, { recordVideo: { dir: outDir, size: vp } });
+    if (step.record && !noRecord) {
+      // Record one live take: the page stays open while the timeline advances
+      // in ticks, so realtime pushes (soketi) drive the UI.
+      const theme = step.record.theme ?? themes[0];
+      const vpName = step.record.viewport ?? DESKTOP;
+      const vp = viewports[vpName];
+      const ctx = await newContext(theme, vp, { recordVideo: { dir: outDir, size: { width: vp.width, height: vp.height } } });
       const page = await ctx.newPage();
-      await prepare(page, step);
+      const recStart = Date.now();
+      if (process.env.DEMO_DEBUG_RECORD) {
+        page.on('request', (r) => { if (r.url().includes('_rsc') && !r.url().includes('task=')) console.log('[rec rsc]', ((Date.now() - recStart) / 1000).toFixed(1), r.url().slice(-60)); });
+        page.on('websocket', (ws) => ws.on('framereceived', (f) => { const p = String(f.payload); if (!p.includes('ping') && !p.includes('pong')) console.log('[rec ws]', ((Date.now() - recStart) / 1000).toFixed(1), p.slice(0, 90)); }));
+        page.on('console', (m) => console.log('[rec console]', m.text().slice(0, 150)));
+      }
+      await advanceTo(db, state.appliedT, { quiet: true });
+      await prepare(page, step, { freezeClock: false });
+      // The video starts at page creation (blank + skeleton); trim this much.
+      const leadInMs = Date.now() - recStart;
       const from = state.appliedT;
       const to = step.record.advanceTo !== undefined ? parseT(String(step.record.advanceTo), story) : from;
       const ticks = Math.max(1, step.record.ticks ?? 4);
@@ -264,11 +320,11 @@ async function main() {
       const video = page.video();
       await ctx.close();
       if (video) {
-        const file = `${step.id}-${theme}.webm`;
+        const file = captureFile(step.id, vpName, theme, 'webm');
         renameSync(await video.path(), join(outDir, file));
-        entry.files[`${theme}Video`] = file;
+        entry.files[`${captureKey(vpName, theme)}Video`] = file;
       }
-      entry.record = { fromT: from, toT: state.appliedT, ms, ticks };
+      entry.record = { fromT: from, toT: state.appliedT, ms, ticks, theme, viewport: vpName, leadInMs };
     }
     entry.timings.totalMs = Date.now() - started;
     manifest.steps.push(entry);

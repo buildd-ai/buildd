@@ -1,0 +1,45 @@
+import { describe, expect, test } from 'bun:test';
+import { captureFile, captureKey, highlightTargets, resolveViewports, stepViewports } from './storyboard';
+
+describe('resolveViewports', () => {
+  test('desktop comes from the board viewport; phone is built in', () => {
+    const vps = resolveViewports({ viewport: { width: 1280, height: 800 } });
+    expect(vps.desktop).toEqual({ width: 1280, height: 800, scale: 2 });
+    expect(vps.phone).toEqual({ width: 390, height: 844, scale: 3, mobile: true });
+  });
+
+  test('named viewports override the built-ins field by field', () => {
+    const vps = resolveViewports({ viewports: { phone: { scale: 2 }, tablet: { width: 820, height: 1180 } } });
+    expect(vps.phone).toEqual({ width: 390, height: 844, scale: 2, mobile: true });
+    expect(vps.tablet).toMatchObject({ width: 820, height: 1180 });
+  });
+});
+
+describe('stepViewports', () => {
+  const known = resolveViewports({});
+  test('defaults to desktop', () => {
+    expect(stepViewports({}, known)).toEqual(['desktop']);
+  });
+  test('rejects an unknown viewport name', () => {
+    expect(() => stepViewports({ viewports: ['desktop', 'watch'] }, known)).toThrow(/watch/);
+  });
+});
+
+describe('capture names', () => {
+  test('desktop keeps <id>-<theme>; others carry the viewport name', () => {
+    expect(captureFile('06-question', 'desktop', 'dark')).toBe('06-question-dark.png');
+    expect(captureFile('06-question', 'phone', 'light')).toBe('06-question-phone-light.png');
+    expect(captureKey('phone', 'dark')).toBe('phone-dark');
+    expect(captureFile('04-peak', 'desktop', 'dark', 'webm')).toBe('04-peak-dark.webm');
+  });
+});
+
+describe('highlightTargets', () => {
+  test('step targets are required, board defaults optional, no duplicates', () => {
+    expect(highlightTargets({ highlight: ['board-tile', 'goal-band'] }, ['goal-band', 'home-fleet'])).toEqual([
+      { target: 'board-tile', required: true },
+      { target: 'goal-band', required: true },
+      { target: 'home-fleet', required: false },
+    ]);
+  });
+});
