@@ -103,7 +103,7 @@ export default function ModelTiersClient({ teamId, teamName, isAdmin }: Props) {
           {loadError && <div className="notice notice-err mb-3">{loadError}</div>}
 
           <div className="card" data-testid="tier-table">
-            <div className="hidden md:grid grid-cols-[140px_minmax(0,1fr)_110px] gap-3 px-3 py-2 border-b-2 border-border-strong text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
+            <div className="hidden md:grid grid-cols-[140px_minmax(0,1fr)_110px] gap-3 px-3 py-2 border-b-2 border-border-strong text-[11px] md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
               <span>Tier</span><span>Model</span><span className="text-right">Status</span>
             </div>
             {TIERS.map((tier) => (
@@ -231,7 +231,7 @@ function TierRow({
               aria-label={isAdmin ? `Change the model for ${tier}` : undefined}
               className={`inline-flex max-w-full items-center gap-2 border border-border-strong bg-surface-2 px-2 py-1 text-left ${isAdmin ? 'hover:bg-surface-3 cursor-pointer' : 'cursor-default'}`}
             >
-              <span className="shrink-0 text-[10px] uppercase tracking-[1.3px] text-text-muted">{providerLabel(entry.provider)}</span>
+              <span className="shrink-0 text-[11px] md:text-[10px] uppercase tracking-[1.3px] text-text-muted">{providerLabel(entry.provider)}</span>
               <span className="min-w-0 truncate font-mono text-xs font-semibold text-text-primary">{entry.model}</span>
               {isAdmin && <span aria-hidden className="text-text-muted">▾</span>}
             </button>
@@ -331,7 +331,7 @@ function SuggestionCard({ suggestions }: { suggestions: TierSuggestion[] }) {
       data-testid="tier-suggestions"
     >
       <div className="flex flex-wrap items-center gap-2.5 px-3.5 py-2.5 border-b border-border-default">
-        <span className="bg-accent text-white text-[10px] font-bold uppercase tracking-[1.5px] px-2 py-0.5">suggested by buildd</span>
+        <span className="bg-accent text-white text-[11px] md:text-[10px] font-bold uppercase tracking-[1.5px] px-2 py-0.5">suggested by buildd</span>
         <span className="flex-1" />
         <span className="text-[11px] text-text-muted">read-only</span>
       </div>

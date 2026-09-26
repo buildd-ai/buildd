@@ -27,7 +27,7 @@ export default async function ModelTiersPage() {
   const isAdmin = team?.role === 'owner' || team?.role === 'admin' || team?.slug === `personal-${user.id}`;
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
+    <main className="min-h-screen pt-4 px-4 pb-24 md:p-8 md:pb-8">
       <div className="max-w-6xl mx-auto">
         {teamId ? (
           <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
