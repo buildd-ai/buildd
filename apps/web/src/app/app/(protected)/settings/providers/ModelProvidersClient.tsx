@@ -6,6 +6,8 @@ import { CHAT_PROVIDER_INFO, chatKeySummary, type KeyPolicy, type ProviderKeysVi
 import { listProviderKeys, removeProviderKey, setProviderKey, testProviderKey } from '@/lib/provider-keys-api';
 import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
+import { useSearchParams } from 'next/navigation';
+import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { KEY_UNLOCKS, chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
 
 export interface ChatAvailabilityProp {
@@ -40,6 +42,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
   const canManage = view ? view.canManageTeamKeys : isAdmin;
   const status = view ? chatStatusCopy(availability, chatKeySummary(view), canManage, view.keyPolicy) : null;
   const showOwnCount = view?.keyPolicy !== 'team';
+  const flow = providerFlowMessage(useSearchParams());
+  const openRouterUnset = !!view && !view.providers.find((p) => p.provider === 'openrouter')?.team;
 
   return (
     <div className="space-y-8">
@@ -64,6 +68,15 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
       <section aria-labelledby="providers-h">
         <h2 id="providers-h" className="section-label mb-3">Team keys</h2>
         {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
+        {flow && (
+          <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`mb-3 text-sm ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
+        )}
+        {canManage && openRouterUnset && (
+          <div className="card mb-2.5 flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3" data-testid="connect-openrouter-row">
+            <span className="flex-1 text-xs text-text-secondary">Sign in to OpenRouter and it makes a key for the team. Nothing to paste.</span>
+            <ConnectOpenRouterButton scope="team" teamId={teamId} returnTo="/app/settings/providers" />
+          </div>
+        )}
         <div className="space-y-2.5">
           {CHAT_PROVIDER_INFO.map((info) => {
             const card = view?.providers.find((p) => p.provider === info.id);

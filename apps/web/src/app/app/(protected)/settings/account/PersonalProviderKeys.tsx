@@ -6,6 +6,7 @@ import { CHAT_PROVIDER_INFO, chatKeySummary, type ProviderKeysView } from '@/lib
 import { listProviderKeys, removeProviderKey, setProviderKey, testProviderKey } from '@/lib/provider-keys-api';
 import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
 import { chatKeyLine, ownKeyProviders } from './chat-key-line';
+import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButton';
 
 /**
  * Account → Chat. One row: what your chat runs on. Team setup lives in
@@ -67,6 +68,11 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
         </span>
       </div>
 
+      {view && required && !hasOwn && (
+        <div className="mt-3">
+          <ConnectOpenRouterButton scope="user" teamId={teamId} returnTo="/app/settings/account" />
+        </div>
+      )}
       {view && required && (
         <div className="mt-3 space-y-2.5">{cards(['openrouter', ...offered.filter((p) => p !== 'openrouter' && view.providers.find((c) => c.provider === p)?.mine)])}</div>
       )}

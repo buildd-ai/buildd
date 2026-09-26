@@ -16,7 +16,7 @@ export default async function ConversationPage({
   const [{ id }, q] = await Promise.all([params, searchParams]);
   if (!isUuid(id)) notFound();
   const data = await loadChatShell();
-  if ('unavailable' in data) return <ChatUnavailable reason={data.reason} canManage={data.canManage} policy={data.policy} />;
+  if ('unavailable' in data) return <ChatUnavailable reason={data.reason} canManage={data.canManage} policy={data.policy} teamId={data.teamId} />;
   const viewer = firstName(data.user);
   // Carried over from the first send (+ Mission, New task, Ask about...).
   const entry = parseChatEntry(q);

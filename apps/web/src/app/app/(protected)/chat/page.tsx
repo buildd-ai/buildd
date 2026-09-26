@@ -18,7 +18,7 @@ export default async function ChatPage({
   const [q, data] = await Promise.all([searchParams, loadChatShell()]);
   const entry = parseChatEntry(q);
   if ('unavailable' in data) {
-    return <ChatUnavailable reason={data.reason} canManage={data.canManage} policy={data.policy} formHref={formHref(entry.intent ?? 'mission', entry.workspaceId)} />;
+    return <ChatUnavailable reason={data.reason} canManage={data.canManage} policy={data.policy} teamId={data.teamId} formHref={formHref(entry.intent ?? 'mission', entry.workspaceId)} />;
   }
   const wsIds = data.workspaces.map(w => w.id);
   const about = await loadAboutRef(entry.about, { teamId: data.teamId, workspaceIds: wsIds });

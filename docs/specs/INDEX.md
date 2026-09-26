@@ -92,7 +92,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
-- [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
+- [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-09-26
   The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-30
   The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.

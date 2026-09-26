@@ -13,6 +13,7 @@ import { getChatAvailability } from '@/lib/chat-availability';
 import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
 import { loadChatPageContext, type ChatPageContext } from '@/lib/chat/chat-page-data';
 import ChatSetupCard from '@/components/chat/ChatSetupCard';
+import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import ChatContextPanel from '@/components/chat/ChatContextPanel';
 import { homeAudience } from '../home/home-view';
 import { ZonedTime } from '@/components/DisplayTimezone';
@@ -66,10 +67,14 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage, policy, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; formHref?: string }) {
+export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
-      <ChatSetupCard reason={reason} canManage={canManage} policy={policy} />
+      {/* Everyone brings their own key and this person has none: the connect
+          button right here, no settings trip. */}
+      {reason === 'no_key' && policy === 'own' && teamId
+        ? <ConnectOwnKeyCard teamId={teamId} returnTo="/app/chat" />
+        : <ChatSetupCard reason={reason} canManage={canManage} policy={policy} />}
       <Link href={formHref} className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
         {formHref.startsWith('/app/tasks/new') ? 'File a task instead →' : 'File a mission instead →'}
       </Link>
