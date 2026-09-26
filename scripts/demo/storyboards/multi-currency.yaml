@@ -35,11 +35,59 @@ highlight:
   - respond-question-hero
   - question-option
   - worker-now-strip
+  - approval-card
+  - approval-confirm
+  - tool-call-row
+  - object-card
+  - chat-pane
+  - chat-object-sheet
   - worker-stats
   - worker-touched-row
   - pr-outcome
   - pr-lineage
 steps:
+  # ── chat opener ────────────────────────────────────────────────────────────
+  # The demo opens in the chat (docs/design/agent-chat.md): the goal asked as a
+  # question, the agent's read-only tool rows, "Make it a mission", and the
+  # approval card. C1 is seeded with the card open (story `chat`, lib/chat.ts);
+  # the t=0 mission_create event is the confirm — the card folds to its row and
+  # the live mission docks beside the chat. No model call anywhere.
+  - id: c0-chat-propose
+    goto: /app/chat/{C1}
+    viewports: [desktop, phone]
+    waitFor: approval-card
+    scrollTo: approval-card
+    scrollOffset: 60
+    caption: "Ask first. \"Make it a mission\" — nothing is filed until you confirm."
+    # Live take: the confirm lands (t=0) and the mission docks in the pane, planning.
+    record: { ms: 9000, advanceTo: "0:12", ticks: 3 }
+
+  - id: c1-chat-filed
+    advance: "0:12"
+    goto: /app/chat/{C1}
+    waitFor: [chat-pane, object-card]
+    scrollTo: object-card
+    scrollOffset: 0
+    caption: "Confirmed. The card is now the live mission, docked beside the chat."
+
+  - id: c2-chat-phone-card
+    advance: "0:12"
+    goto: /app/chat/{C1}
+    viewports: [phone]
+    waitFor: object-card
+    scrollTo: object-card
+    scrollOffset: 0
+    caption: "On the phone the mission is a card in the conversation."
+
+  - id: c3-chat-phone-sheet
+    advance: "0:12"
+    goto: /app/chat/{C1}
+    viewports: [phone]
+    waitFor: object-expand
+    click: object-expand
+    hold: 700
+    caption: "Tap it: the board opens as a sheet over the chat."
+
   # ── fan-out ────────────────────────────────────────────────────────────────
   # Live take: the Board stays open 0:40 -> 1:00 while the organizer plans: twelve
   # tiles appear across three phases, all over soketi pushes. Each tick is a full
@@ -58,6 +106,14 @@ steps:
     waitFor: mission-board
     fullPage: true
     caption: "One sentence in. Twelve tasks, three phases, dependencies worked out."
+
+  - id: c4-chat-pane-planned
+    advance: "1:00"
+    goto: /app/chat/{C1}
+    waitFor: chat-pane
+    scrollTo: object-card
+    scrollOffset: 0
+    caption: "The pane follows the mission: twelve tasks, three phases."
 
   - id: 02-home-fanout
     advance: "2:00"

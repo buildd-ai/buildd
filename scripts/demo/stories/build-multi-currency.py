@@ -489,9 +489,9 @@ def merge(t, tk, pn=None):
        api="auto-merge on CI green (mergePolicy.tier=auto-threshold) → GitHub pull_request closed+merged webhook",
        db="workers.mergedAt=now, prLifecycleStatus=merged")
 
-ev(0, "mission_create", mission="M1", title=M1_TITLE, description=M1_GOAL,
-   api="POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
-   db="INSERT missions", beat="The one-sentence goal")
+ev(0, "mission_create", mission="M1", title=M1_TITLE, description=M1_GOAL, conversation="C1",
+   api="chat approval confirmed → manage_missions create → POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
+   db="INSERT missions (conversationId); the proposing tool part turns output-available with the mission ref", beat="Make it a mission")
 ev(2, "task_create", task="T0", api="(mission create auto-starts the organizer)", db="INSERT tasks (mode=planning, roleSlug=organizer)")
 claim(5, "T0")
 prog(8, "T0", 10, "Reading the repo: apps/web, apps/api, packages/money")
@@ -704,6 +704,61 @@ for e in TL:
     if "from_" in e: e["from"] = e.pop("from_")
 TL.sort(key=lambda e: e["t"])
 
+# ── Agent chat opener (docs/design/agent-chat.md) ─────────────────────────────
+# The conversation that files M1: seeded before t=0 with the approval card open;
+# the t=0 mission_create event confirms it (scripts/demo/lib/chat.ts). Strings
+# of the form {{KEY}} resolve to the seeded UUID of that dataset key. No model
+# call is made anywhere: the turns are data, replayed as the real route saves them.
+M1_DRAFT = {
+    "action": "create", "workspaceId": "{{ws}}", "title": M1_TITLE,
+    "description": M1_GOAL + "\n\nConstraints:\n- Invoices API changes are additive (v2-safe). FX rate is snapshotted at issue.",
+    "goalCriteria": hero_mission["goalCriteria"], "maxConcurrentTasks": 6,
+}
+def tool_part(call_id, action, inp, summary, objects=None, **kw):
+    part = {"type": f"tool-{action}", "toolCallId": call_id, "state": "output-available", "input": inp,
+            "output": {"data": summary, "objects": objects or [], "summary": summary}}
+    part.update(kw)
+    return part
+chat = {
+    "capabilities": ["chat"],
+    # Synthetic, never valid anywhere: it only makes the chat entry points appear
+    # on the demo stack. Nothing in the storyboard sends a turn.
+    "providerKey": {"provider": "anthropic", "value": "sk-ant-demo-000000000000000000000000-not-a-real-key"},
+    "conversations": [{
+        "key": "C1", "table": "conversations", "workspaceId": "ws", "createdByUserId": "u_maya",
+        "title": M1_TITLE, "titleSource": "auto", "agentRoleSlug": "organizer", "_createdAgo": "-5m",
+        "messages": [
+            {"key": "C1m1", "role": "user", "_at": "-5m",
+             "parts": [{"type": "text", "text": "What would it take to bill customers in their own currency?"}]},
+            {"key": "C1m2", "role": "assistant", "_at": "-5m", "tier": "standard",
+             "parts": [
+                 {"type": "step-start"},
+                 tool_part("call_demo_list", "manage_missions", {"action": "list", "workspace": "billing-web"}, "3 open, none touch currency"),
+                 tool_part("call_demo_recall", "recall", {"query": "currency money rounding"}, "1 recalled: money is integer minor units"),
+                 tool_part("call_demo_tasks", "list_tasks", {"workspace": "billing-web", "status": "in_progress"}, "nothing in flight touches currency"),
+                 {"type": "text", "text": "Nothing in flight touches currency. Amounts are integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."},
+             ]},
+            {"key": "C1m3", "role": "user", "_at": "-2m",
+             "parts": [{"type": "text", "text": "Make it a mission. Keep the public API backward compatible."}]},
+            {"key": "C1m4", "role": "assistant", "_at": "-2m", "tier": "standard",
+             "parts": [
+                 {"type": "step-start"},
+                 {"type": "text", "text": "Here's a draft. I won't file it until you confirm."},
+                 {"type": "tool-manage_missions", "toolCallId": "call_demo_create", "state": "approval-requested",
+                  "input": M1_DRAFT, "approval": {"id": "demo-approval-m1"}},
+             ]},
+        ],
+        # The open approval the card echoes back, and what confirming it turns into.
+        "approval": {"messageKey": "C1m4", "toolCallId": "call_demo_create", "approvalId": "demo-approval-m1", "toolName": "manage_missions"},
+        "_onConfirm": {
+            "summary": f'filed "{M1_TITLE}"',
+            "data": f"Mission created: {M1_TITLE}. The Organizer is planning it.",
+            "objects": [{"kind": "mission", "id": "{{M1}}", "workspaceId": "{{ws}}", "title": M1_TITLE, "fallbackText": f"Mission: {M1_TITLE}"}],
+            "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks.",
+        },
+    }],
+}
+
 data = {
     "_meta": {
         "purpose": "Synthetic dataset for the buildd product demo video. All names, ids, repos, people and numbers are fictional.",
@@ -728,6 +783,7 @@ data = {
     "memories": memories,
     "heartbeatPastTicks": heartbeat["past_ticks"],
     "backgroundMissions": [{"missionKey": b["mission"]["key"], "tasks": b["tasks"]} for b in background],
+    "chat": chat,
     "timeline": TL,
 }
 with open(OUT, "w") as f:

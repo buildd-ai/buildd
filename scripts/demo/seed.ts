@@ -14,6 +14,7 @@
 import { DEMO } from './lib/guard';
 import { createHash } from 'crypto';
 import { createLocalDb, schema, sql, type LocalDb } from '../../packages/core/db/local-client';
+import { registerChatKeys, seedChat } from './lib/chat';
 import { IdMap, loadStory, relTime, runnerEnvironment, runnerUrl, saveState, scheduleBaseline, toRow, type Entity, type Story } from './lib/story';
 
 const DEFAULT_STORY = new URL('./stories/placeholder.json', import.meta.url).pathname;
@@ -69,6 +70,7 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   (story.memories ?? []).forEach(reg);
   (story.artifacts ?? []).forEach(reg);
   for (const bm of story.backgroundMissions ?? []) (bm.tasks ?? []).forEach(reg);
+  registerChatKeys(story, ids);
   ids.register('__gh_install');
   ids.register('__gh_repo');
 
@@ -288,6 +290,9 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   checkColumns('workers', s.workers, story.workers ?? []);
   checkColumns('missionNotes', s.missionNotes, story.missionNotes ?? []);
   checkColumns('artifacts', s.artifacts, (story.artifacts ?? []).map(({ key: _k, artifactKey: _a, ...rest }: Entity) => rest));
+
+  // Agent chat: capability on, a synthetic key, and the conversation that files M1 (approval open).
+  await seedChat(db, story, ids, anchorMs);
 
   await saveState(db, { storyPath, storyName, ids: ids.ids, anchorMs, appliedT: -1, nextEvent: 0 });
   return ids;
