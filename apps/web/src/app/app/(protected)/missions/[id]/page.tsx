@@ -1044,6 +1044,7 @@ export default async function MissionDetailPage({
     title: a.title ?? a.key ?? null,
     // Fetched when the Records sheet opens (AC-18).
     content: null,
+    storageKey: a.storageKey ?? null,
     shareToken: a.shareToken ?? null,
     visibility: (a.visibility as 'private' | 'public') ?? 'private',
     metadata: (a.metadata as Record<string, unknown>) ?? {},

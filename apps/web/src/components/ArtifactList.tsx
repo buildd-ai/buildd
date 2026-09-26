@@ -176,6 +176,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showRe
       type: a.type,
       title: a.title,
       content: a.content,
+      storageKey: a.storageKey ?? null,
       shareToken: share.shareToken,
       visibility: share.visibility,
       metadata: a.metadata,
