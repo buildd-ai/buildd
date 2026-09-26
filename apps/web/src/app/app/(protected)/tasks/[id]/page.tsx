@@ -969,7 +969,7 @@ export default async function TaskDetailPage({
               <a
                 href="#agent-error-traces"
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
-                title="Pattern-matched errors caught from agent tool output. Click to see details."
+                title="Pattern-matched errors from agent tool output"
                 data-testid="task-error-count"
               >
                 {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
@@ -1079,7 +1079,7 @@ export default async function TaskDetailPage({
                 <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Blocked — waiting on {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
+                Blocked by {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
               </div>
               <div className="space-y-1.5 ml-6">
                 {prBlockers.map(({ dep, w }) => {
@@ -1126,7 +1126,7 @@ export default async function TaskDetailPage({
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
               </svg>
-              Mission budget exhausted — no worker can claim this task
+              Mission budget spent. No worker can claim this task.
             </div>
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
@@ -1135,7 +1135,7 @@ export default async function TaskDetailPage({
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
-              is held until its cost budget is raised. Raise the mission budget to release them all, or force-start this one task.
+              is on hold. Raise the mission budget to release them, or force-start this task.
             </p>
           </div>
         )}
@@ -1180,7 +1180,7 @@ export default async function TaskDetailPage({
               </summary>
               <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
                 <p className="text-xs text-text-muted mb-2">
-                  Pattern-matched errors caught by the runner from agent tool output. Throttled at 1 per pattern per 60s.
+                  The runner matched these errors in agent tool output. At most 1 per pattern per 60s.
                 </p>
                 {errorTraces.map((t) => (
                   <div key={t.id} className="flex items-start gap-2 text-sm">
@@ -1297,7 +1297,7 @@ export default async function TaskDetailPage({
                   <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Plan approved — {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
+                  Plan approved · {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
                 </div>
               </div>
             );
@@ -1308,7 +1308,7 @@ export default async function TaskDetailPage({
               <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">
                   <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
-                  Agent is generating a plan…
+                  The agent is writing a plan…
                 </div>
               </div>
             );
@@ -1321,7 +1321,7 @@ export default async function TaskDetailPage({
                   <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                   </svg>
-                  Planning agent will create a structured plan
+                  A planning agent will write a plan for your review
                 </div>
               </div>
             );
@@ -1586,7 +1586,7 @@ export default async function TaskDetailPage({
                       )}
                       {worker.status === 'superseded' && (
                         <p className="text-[11px] text-text-muted mt-0.5">
-                          Session ended after the question was answered.{' '}
+                          Session ended after you answered the question.{' '}
                           {worker.continuationTaskId ? (
                             <a href={taskPageHref({ taskId: worker.continuationTaskId, missionId: task.missionId })} className="text-status-info hover:underline">
                               Continued in a new task →
@@ -1616,7 +1616,7 @@ export default async function TaskDetailPage({
                         return (
                           <div className="mt-1 border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
                             <p className="font-mono text-[11px] md:text-[10px] uppercase tracking-wide text-status-warning">
-                              ⚠ Rejected deliverable — not a satisfied outcome
+                              ⚠ Deliverable rejected
                               {rejected.reason ? ` (${rejected.reason})` : ''}
                             </p>
                             {rejected.summary && (
@@ -1717,16 +1717,16 @@ export default async function TaskDetailPage({
           <div className="border border-dashed border-border-default p-8 text-center">
             {isBlocked ? (
               <>
-                <p className="text-text-secondary mb-2">This task is waiting for dependencies to complete</p>
+                <p className="text-text-secondary mb-2">Waiting on dependencies</p>
                 <p className="text-sm text-text-muted">
-                  {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} must finish before this task can start.
+                  {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} must finish first.
                 </p>
               </>
             ) : (
               <>
-                <p className="text-text-secondary mb-2">This task is waiting to be started</p>
+                <p className="text-text-secondary mb-2">Not started</p>
                 <p className="text-sm text-text-muted">
-                  Start it above to assign it to a worker, or wait for a worker to claim it automatically.
+                  Start it above, or a worker will claim it from the queue.
                 </p>
               </>
             )}

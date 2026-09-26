@@ -388,7 +388,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable
       {outcome.lineage.length > 0 && (
         <section>
           <div className="flex items-baseline justify-between border-b border-border-default pb-2 mb-5">
-            <span className="section-label">How it landed</span>
+            <span className="section-label">PR history</span>
           </div>
           <LineageChain steps={outcome.lineage} />
         </section>

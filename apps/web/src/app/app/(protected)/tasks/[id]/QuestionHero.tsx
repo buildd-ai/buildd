@@ -9,7 +9,7 @@ interface Props {
   askerLabel: string;
   /** Short age, e.g. "7s ago". */
   askedAgo?: string | null;
-  /** Extra eyebrow clause, e.g. "paused, holding its place". */
+  /** Extra eyebrow clause, e.g. "paused". */
   stateNote?: string | null;
   onAnswer: (answer: string) => void;
   /** The answer being sent, if any. */

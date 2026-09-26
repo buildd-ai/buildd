@@ -351,7 +351,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           <Spinner size="sm" className="text-status-success flex-shrink-0" aria-label="Start requested" />
           <div>
             <p className="text-sm text-text-primary">Start requested</p>
-            <p className="text-xs text-text-secondary">A worker will pick this up.</p>
+            <p className="text-xs text-text-secondary">Waiting for a worker to claim it.</p>
           </div>
         </div>
       );
@@ -363,17 +363,17 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           <div className="flex items-center gap-3">
             <Spinner size="sm" className="text-status-warning flex-shrink-0" aria-label="Queued at front" />
             <div>
-              <p className="text-sm text-text-primary font-medium">Queued at front — auto-starts</p>
+              <p className="text-sm text-text-primary font-medium">Queued at front</p>
               <p className="text-xs text-text-secondary">
-                No runner responded yet. The task is prioritized at the front of the queue
-                and will start automatically on the next claim cycle.
+                No runner has responded. The task is first in the queue and starts
+                on the next claim cycle.
               </p>
             </div>
           </div>
           {runnerFleet !== null && (
             <div className="p-2.5 bg-surface-3 rounded border border-border-default text-xs text-text-secondary">
               {runnerFleet.count === 0 ? (
-                <span className="text-status-warning">No runners online — task will start when a runner comes online.</span>
+                <span className="text-status-warning">No runners online. The task starts when a runner connects.</span>
               ) : (
                 <span>
                   <span className="text-text-primary font-medium">{runnerFleet.count} runner{runnerFleet.count !== 1 ? 's' : ''} online</span>
@@ -383,7 +383,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       : `${Math.floor(runnerFleet.lastSeenSecs / 60)}m ago`}
                     </>
                   )}
-                  {' — runner may be mid-task; this task will be claimed on the next poll.'}
+                  {'. If the runner is mid-task, it claims this task on its next poll.'}
                 </span>
               )}
             </div>
@@ -392,7 +392,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
             onClick={handleRetry}
             className="self-start px-3 py-1.5 text-xs bg-surface-3 rounded hover:bg-surface-4"
           >
-            Poke workers again
+            Retry start
           </button>
         </div>
       );
@@ -406,7 +406,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           </svg>
           <div className="flex-1">
             <p className="text-sm text-text-primary font-medium">Task started</p>
-            <p className="text-xs text-text-secondary">A worker has picked up your task</p>
+            <p className="text-xs text-text-secondary">A worker claimed the task.</p>
           </div>
           <button
             onClick={handleRefresh}
@@ -563,20 +563,20 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         </p>
         <p className="text-sm text-text-secondary mb-3">
           {gateData?.gateReason === 'deferred_start'
-            ? 'This task is intentionally deferred. Start now anyway to override its scheduled time.'
+            ? 'This task has a scheduled start time. Start now to override it.'
             : gateData?.gateReason === 'unmerged_dep_pr'
             ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
             : gateData?.gateReason === 'mission_held'
-            ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
+            ? 'The parent mission is held. Workers claim none of its tasks until you arm the mission. "Force start" bypasses the hold for this task only.'
             : gateData?.gateReason === 'mission_budget_exhausted'
-            ? 'The parent mission has spent its cost budget, so no worker will claim any of its tasks. Raise the mission budget to release them all, or force-start this one task.'
+            ? 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.'
             : gateData?.gateReason === 'connector_routing_mismatch'
-            ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Consider re-filing with role: ${gateData.alternativeRole}.` : ''}`
+            ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Or re-file it with role: ${gateData.alternativeRole}.` : ''}`
             : gateData?.gateReason === 'capability_mismatch'
-            ? `The configured backend has no server credentials and cannot run this task. Switch to an available backend to start it.`
+            ? `The configured backend has no server credentials. Switch to an available backend to start this task.`
             : gateData?.gateReason === 'workspace_cap_reached'
-            ? `This task is queued and will start automatically as soon as a slot opens — you don't need to do anything.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
-            : gateData?.error || 'This task cannot be started right now.'}
+            ? `Queued. The task starts when a slot opens.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
+            : gateData?.error || 'This task can\'t start yet.'}
         </p>
         {gateData?.gateReason === 'unmerged_dep_pr' && (
           <div className="space-y-2 text-left">
@@ -627,7 +627,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                   {raisingCap ? 'Updating…' : 'Save & start'}
                 </button>
               </div>
-              <p className="text-xs text-text-muted mt-1">Current limit: {gateData.cap}. Set higher to start this task now and allow more concurrent agents going forward.</p>
+              <p className="text-xs text-text-muted mt-1">Current limit: {gateData.cap}. A higher limit starts this task now and lets more agents run at once.</p>
             </div>
           </div>
         )}

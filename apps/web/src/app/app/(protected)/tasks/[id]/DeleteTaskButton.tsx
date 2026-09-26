@@ -58,9 +58,9 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
           onClick={(e) => e.target === e.currentTarget && setShowConfirm(false)}
         >
           <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-sm p-6">
-            <h3 className="text-lg font-semibold mb-2">Delete Task?</h3>
+            <h3 className="text-lg font-semibold mb-2">Delete task?</h3>
             <p className="text-text-secondary text-sm mb-4">
-              This action cannot be undone. The task and its history will be permanently deleted.
+              This deletes the task and its history. You can’t undo it.
             </p>
 
             {error && (

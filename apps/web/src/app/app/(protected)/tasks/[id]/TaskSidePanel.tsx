@@ -84,7 +84,7 @@ export function AlsoRunningCompact({ count, href }: { count: number; href: strin
       <span className="flex gap-[4px]" aria-hidden="true">
         {Array.from({ length: Math.min(count, 6) }, (_, i) => <span key={i} className="w-[14px] h-[14px] bg-accent" />)}
       </span>
-      {count} other agent{count === 1 ? '' : 's'} still working
+      {count} other agent{count === 1 ? '' : 's'} running
     </Link>
   );
 }
