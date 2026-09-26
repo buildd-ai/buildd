@@ -157,9 +157,11 @@ export function orderDeliverables<T extends MissionFeedTaskInput>(rows: readonly
 export type PulseState = 'needs_you' | 'moving' | 'queued' | 'done' | 'failed' | 'skipped';
 
 /** Design-token name per state — the component maps these to classes. No raw colours here. */
-export const PULSE_STATE_TOKEN: Record<PulseState, 'accent' | 'info' | 'border' | 'success' | 'error'> = {
-  needs_you: 'accent',
-  moving: 'info',
+export const PULSE_STATE_TOKEN: Record<PulseState, 'accent' | 'warning' | 'border' | 'success' | 'error'> = {
+  // Work in flight is the product's one accent; an ask of the owner is the
+  // warning tone, so "running" and "needs you" never share a colour.
+  needs_you: 'warning',
+  moving: 'accent',
   queued: 'border',
   done: 'success',
   failed: 'error',

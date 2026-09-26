@@ -202,7 +202,7 @@ describe('buildPulseSegments', () => {
       t('f', { status: 'failed' }),
     ]);
     expect(segs.map(s => s.state)).toEqual(['needs_you', 'moving', 'queued', 'done', 'needs_you']);
-    expect(PULSE_STATE_TOKEN).toMatchObject({ needs_you: 'accent', moving: 'info', queued: 'border', done: 'success', failed: 'error' });
+    expect(PULSE_STATE_TOKEN).toMatchObject({ needs_you: 'warning', moving: 'accent', queued: 'border', done: 'success', failed: 'error' });
   });
 
   it('counts only deliverable rows: attempts and cancelled re-creations add no segments (D1)', () => {

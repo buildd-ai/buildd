@@ -29,6 +29,14 @@ describe('AC-12: completed-missions query shape skips flight-strip fan-out', () 
     expect(args.with.tasks.with.workers.columns.exitCause).toBe(true);
   });
 
+  it('the active query carries the list card facts: the parked question and the schedule run count', () => {
+    const args = buildActiveMissionsQueryArgs(undefined);
+    expect(args.with.tasks.with.workers.columns.waitingFor).toBe(true);
+    expect(args.with.schedule.columns.totalRuns).toBe(true);
+    // Completed rows never render an answer strip.
+    expect('waitingFor' in buildCompletedMissionsQueryArgs(undefined, null).with.tasks.with.workers.columns).toBe(false);
+  });
+
   it('both queries read workers latest-first, so the live attempt is inside the limit', () => {
     const cols = { startedAt: 'startedAt', updatedAt: 'updatedAt' };
     const ops = { desc: (c: string) => `${c} desc` };
