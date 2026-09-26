@@ -31,6 +31,7 @@
 
 import { derivePrReviewStatus } from './pr-review-status';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
+import { isGreenAutoMergePending } from './auto-merge-grace';
 
 /**
  * Who owns the next move on this PR.
@@ -109,8 +110,9 @@ export interface ReviewerGateInput {
   prLifecycleUpdatedAt?: Date | null;
 }
 
-/** How long a `ci_green` auto-threshold PR may stay open before it counts as held. */
-const AUTO_MERGE_GREEN_GRACE_MS = 5 * 60_000;
+// The grace window and its predicate live in a pure module: the mission pulse
+// (client-bundled) reads the same one, and this file reaches the db.
+export { AUTO_MERGE_GREEN_GRACE_MS, isGreenAutoMergePending } from './auto-merge-grace';
 
 export interface ReviewerGateResult {
   actor: ReviewerGateActor;
@@ -235,10 +237,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
         return { actor: 'platform', platformState: 'auto_merge', reason: 'Auto-merges when CI passes' };
       }
       if (input.prLifecycleStatus === 'ci_green') {
-        const greenFor = input.prLifecycleUpdatedAt
-          ? input.now.getTime() - input.prLifecycleUpdatedAt.getTime()
-          : Number.POSITIVE_INFINITY;
-        if (greenFor < AUTO_MERGE_GREEN_GRACE_MS) {
+        if (isGreenAutoMergePending(input.prLifecycleStatus, input.prLifecycleUpdatedAt, input.now)) {
           return { actor: 'platform', platformState: 'auto_merge', reason: 'CI passed · merging' };
         }
         return { actor: 'human', reason: 'CI passed, but a merge rail held the auto-merge' };

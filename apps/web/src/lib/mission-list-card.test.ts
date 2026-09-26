@@ -94,6 +94,32 @@ describe('buildMissionListCard — a worker waiting on the owner', () => {
   });
 });
 
+describe('buildMissionListCard — a PR that just went green is merging, not an ask', () => {
+  // Regression: the home row read NEEDS YOU (amber cell) while the headline and
+  // the Needs-you stat said nothing needed you — the action queue files a
+  // just-green auto-merge PR as in flight, the pulse filed it as "yours to merge".
+  const mk = (greenAgoMs: number): ListMissionRow => ({
+    id: 'm-green', title: 'Example mission', status: 'active', createdAt: new Date(NOW - 3600_000),
+    tasks: [
+      task('inv', { status: 'completed', workers: [{ status: 'completed', prNumber: 21, prUrl: 'https://example.test/pr/21', prLifecycleStatus: 'ci_green', updatedAt: new Date(NOW - greenAgoMs) }] }),
+      // The CI-fix attempt adopted the parent's PR: its worker row carries the
+      // same PR number with no lifecycle of its own (the webhook stamps the owner row).
+      task('fix', { taskClass: 'attempt', parentTaskId: 'inv', status: 'completed', workers: [{ status: 'completed', prNumber: 21, prUrl: 'https://example.test/pr/21' }] }),
+      task('api', { status: 'in_progress', workers: [{ id: 'w-api', status: 'running', startedAt: new Date(NOW - 60_000) }] }),
+    ],
+  });
+  it('inside the grace window: no needs-you cell, status is not Needs you', () => {
+    const card = build(mk(20_000));
+    expect(card.counts.needsYou).toBe(0);
+    expect(card.phases.flatMap(p => p.cells).find(c => c.taskId === 'inv')?.state).not.toBe('needs_you');
+    expect(card.status.label).not.toBe('Needs you');
+  });
+  it('once auto-merge had its chance and the PR is still open, it is yours', () => {
+    const card = build(mk(30 * 60_000));
+    expect(card.status.label).toBe('Needs you');
+  });
+});
+
 describe('buildMissionListCard — recurring, held and done', () => {
   it('a recurring mission is Idle between ticks, with its cadence, runs and last summary', () => {
     const tick = (id: string, hoursAgo: number, over: Partial<ListTaskRow> = {}) =>

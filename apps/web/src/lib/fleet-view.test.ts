@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildFleetSnapshot,
+  fleetCapacity,
   fleetDisplayRows,
   fleetSummary,
   homeHeadline,
@@ -105,6 +106,12 @@ describe('buildFleetSnapshot', () => {
     expect(snap.runners[1].slots[0].lane.bars[0].state).toBe('waiting');
     expect(snap.live).toBe(2);
     expect(snap.capacity).toBe(4);
+  });
+
+  it('fleetCapacity is the snapshot capacity: online heartbeats only (the Lanes band reads it too)', () => {
+    const beats = [hb('h1', 'http://a:1', 2), hb('h2', 'http://b:1', 6), { ...hb('h3', 'http://c:1', 4), lastHeartbeatAt: new Date(NOW - 10 * 60_000) }];
+    expect(fleetCapacity(beats, { now: NOW })).toBe(8);
+    expect(buildFleetSnapshot(beats, [], { now: NOW }).capacity).toBe(fleetCapacity(beats, { now: NOW }));
   });
 
   it('drops a runner with no heartbeat unless it holds live work', () => {

@@ -109,6 +109,11 @@ export interface MissionBoardInput {
   humanTouches?: readonly number[];
   /** Heartbeats of the runners these workers ran on, for hostnames (`resolveRunnerDisplay`). */
   runnerHeartbeats?: readonly RunnerHeartbeatLike[];
+  /**
+   * The team's fleet capacity (`fleetCapacity` over fresh heartbeats) — the
+   * same denominator Home prints. Absent: the slots this mission's bars drew.
+   */
+  fleetCapacity?: number | null;
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -742,7 +747,9 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     criteriaPassed: criteria.filter(c => c.state === 'pass').length,
     runners,
     live,
-    capacity: runners.reduce((n, r) => n + r.capacity, 0),
+    capacity: input.fleetCapacity != null && input.fleetCapacity > 0
+      ? Math.max(input.fleetCapacity, live)
+      : runners.reduce((n, r) => n + r.capacity, 0),
     needsYou,
     inReview,
     upNext,

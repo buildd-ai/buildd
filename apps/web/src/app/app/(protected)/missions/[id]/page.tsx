@@ -54,6 +54,7 @@ import MissionBoard from './MissionBoard';
 import MissionLanes from './MissionLanes';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
 import MissionDelivery from './MissionDelivery';
 import VisualReviewStrip from './VisualReviewStrip';
@@ -180,6 +181,7 @@ export default async function MissionDetailPage({
     workspaceForPolicy,
     missionFollowupTasks,
     runnerHeartbeats,
+    fleetCapacity,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -262,6 +264,10 @@ export default async function MissionDetailPage({
     }]),
     // Runner hostnames for the Board and Lanes (runner-display).
     loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
+    // The Lanes band's "LIVE n/N slots": N is the team's fleet capacity, the
+    // same number Home's "AGENTS LIVE n/N" prints (not the slots drawn here).
+    (async () => loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds: await getUserWorkspaceIds(user.id), now: Date.now() }))()
+      .catch(() => null),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -1307,6 +1313,7 @@ export default async function MissionDetailPage({
   // folds and states them with the feed's own rules, so the counts agree.
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
+    fleetCapacity,
     tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
