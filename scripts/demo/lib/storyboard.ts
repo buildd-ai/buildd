@@ -45,6 +45,18 @@ export function captureFile(stepId: string, viewport: string, theme: string, ext
 }
 
 /**
+ * Whether a highlight element is actually painted. A non-empty boundingBox is
+ * not enough: a closed <details> keeps its content in layout under
+ * content-visibility, so the collapsed home fleet would report boxes for slot
+ * rows that aren't on screen. Runs in the page (passed to `el.evaluate`), so it
+ * must stay self-contained.
+ */
+export function isRendered(node: { checkVisibility?: (opts?: Record<string, boolean>) => boolean }): boolean {
+  if (typeof node.checkVisibility !== 'function') return true;
+  return node.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true, opacityProperty: false });
+}
+
+/**
  * Targets to record boxes for: the step's own `highlight` (warned when missing)
  * plus the board-wide `highlight` defaults (recorded when present, silent when
  * not — a close-up list shared by every shot).

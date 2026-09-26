@@ -61,6 +61,51 @@ describe('FleetStrip', () => {
   });
 });
 
+describe('FleetStrip on a real-shaped fleet (1 runner x 10 slots)', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://q.local:1', maxConcurrentWorkers: 10, lastHeartbeatAt: new Date(NOW),
+    environment: { labels: { hostname: 'quill-studio-workstation', machine: 'Mac mini' } } };
+  const done = (id: string, ago: number, title: string) => ({
+    id, accountId: 'a', runner: 'http://q.local:1', status: 'completed', startedAt: min(ago + 2), completedAt: min(ago), prNumber: 900,
+    task: { id: `t-${id}`, title, roleSlug: 'builder', missionId: 'm1' },
+  });
+  const idleFleet = buildFleetSnapshot([hb], [done('d1', 25, 'fix(pr): keep the PR body in sync after a force-push')], { now: NOW });
+  const busyFleet = buildFleetSnapshot([hb], [
+    done('d1', 25, 'fix(pr): keep the PR body in sync after a force-push'),
+    { id: 'w1', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(30), progress: 55, task: { id: 't1', title: 'feat(onboarding): checklist survives reload', roleSlug: 'builder', missionId: 'm1' } },
+  ], { now: NOW });
+
+  it('a fully idle fleet is one summary line naming the last run, not ten idle rows', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={idleFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).toContain('data-testid="fleet-summary"');
+    expect(html).toContain('all 10 slots idle');
+    expect(html).toContain('keep PR body');
+    expect(html).not.toContain('last pr');
+    // Collapsed: the table is behind the summary, and never ten rows of "idle".
+    expect((html.match(/data-testid="fleet-slot"/g) ?? []).length).toBeLessThanOrEqual(3);
+  });
+
+  it('with work running, the busy slot gets a row and the quiet ones fold into a count', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).not.toContain('data-testid="fleet-summary"');
+    expect(html).toContain('data-busy="true"');
+    expect(html).toContain('data-testid="fleet-idle-slots"');
+    expect(html).toContain('8 idle slots');
+    // Chart rows line up with the table: running + recent + folded row.
+    expect(html.match(/data-testid="slot-lane-row"/g)?.length).toBe(html.match(/data-testid="fleet-slot"|data-testid="fleet-idle-slots"/g)?.length);
+  });
+
+  it('the runner name is never cut without its full form in a title', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).toContain('title="quill-studio-workstation"');
+  });
+
+  it('compact mode (a member Home) folds even a busy fleet into the summary line', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" compact />);
+    expect(html).toContain('data-testid="fleet-summary"');
+    expect(html).toContain('1 of 10 slots busy');
+  });
+});
+
 describe('NeedsYouStack', () => {
   const html = renderToStaticMarkup(
     <NeedsYouStack
@@ -115,5 +160,59 @@ describe('ActivityTicker', () => {
     expect(html).toContain('data-testid="home-activity"');
     expect(html.match(/data-testid="ticker-row"/g)?.length).toBe(3);
     expect(html).not.toContain('via ');
+  });
+});
+
+describe('FleetStrip — demo polish regressions', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://cedar.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) };
+  // X ran first (slot 0) and finished; Y overlapped it (slot 1) and is still running.
+  const f = buildFleetSnapshot([hb], [
+    { id: 'x', accountId: 'a', runner: 'http://cedar.local:1', status: 'completed', startedAt: min(20), completedAt: min(4), task: { id: 'tx', title: 'feat(fx): rates service', missionId: 'm1' } },
+    { id: 'y', accountId: 'a', runner: 'http://cedar.local:1', status: 'running', startedAt: min(15), progress: 20, task: { id: 'ty', title: 'feat(invoices): render in currency', missionId: 'm1' } },
+  ], { now: NOW });
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+
+  it('the capacity dots follow the row order (busy slot listed first → filled dot first)', () => {
+    const rows = [...html.matchAll(/data-testid="fleet-slot" data-busy="(true|false)"/g)].map(m => m[1]);
+    expect(rows).toEqual(['true', 'false']);
+    const meter = html.match(/<span class="mt-0.5 flex[^"]*" aria-label="[^"]*">(.*?)<\/span>/)?.[1] ?? '';
+    const dots = [...meter.matchAll(/<i [^>]*class="([^"]*)"/g)].map(m => m[1].includes('bg-accent') ? 'busy' : 'idle');
+    expect(dots).toEqual(['busy', 'idle']);
+  });
+
+  it('an idle row keeps its time: the age sits in its own non-shrinking column, outside the truncated text', () => {
+    const at = html.match(/<span[^>]*data-testid="fleet-slot-last-at"[^>]*>/)?.[0] ?? '';
+    expect(at).toContain('shrink-0');
+    // The truncating span closes before the time begins.
+    expect(html).toMatch(/<span class="[^"]*truncate[^"]*">idle(?:(?!<\/span><span[^>]*fleet-slot-last-at).)*<\/span>(?:<[^>]+>)*?<span[^>]*data-testid="fleet-slot-last-at"/);
+  });
+});
+
+describe('NeedsYouStack — nothing needs you, but work is in flight', () => {
+  // Regression: the stack's only child was the action queue holding IN FLIGHT
+  // cards, so `hasChildren` suppressed the empty state and the NEEDS YOU
+  // heading sat over nothing but "IN FLIGHT 1".
+  it('says "Nothing waiting on you" above the in-flight cards when the count is 0', () => {
+    const html = renderToStaticMarkup(
+      <NeedsYouStack count={0} questions={[]} held={[]} shipped={[]}>
+        <div data-testid="home-action-queue"><div data-testid="waiting-in-flight">In flight 1</div></div>
+      </NeedsYouStack>,
+    );
+    expect(html).toContain('Nothing waiting on you');
+    expect(html.indexOf('Nothing waiting on you')).toBeLessThan(html.indexOf('waiting-in-flight'));
+  });
+});
+
+describe('ActivityTicker — a quiet gap reads as a gap', () => {
+  it('draws a divider before an event far older than the one above it', () => {
+    const events = [
+      { id: 'e1', at: NOW - 60_000, kind: 'claim' as const, label: 'money', detail: '→ atlas', right: 'claimed', href: null, count: 1 },
+      { id: 'e2', at: NOW - 2 * 60_000, kind: 'claim' as const, label: 'db', detail: '→ atlas', right: 'claimed', href: null, count: 1 },
+      { id: 'e3', at: NOW - 6 * 3_600_000, kind: 'claim' as const, label: 'plan', detail: '→ dune', right: 'claimed', href: null, count: 1 },
+    ];
+    const html = renderToStaticMarkup(<ActivityTicker events={events} timeZone="UTC" />);
+    expect(html.match(/data-testid="ticker-gap"/g)?.length).toBe(1);
+    expect(html.indexOf('data-testid="ticker-gap"')).toBeGreaterThan(html.indexOf('>db<'));
+    expect(html).toContain('6h earlier');
   });
 });

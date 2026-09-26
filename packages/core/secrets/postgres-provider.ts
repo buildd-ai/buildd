@@ -9,6 +9,27 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { encrypt, decrypt } from './crypto';
 import type { SecretsProvider, SecretMetadata, SecretRecord } from './types';
 
+/**
+ * The exact, NULL-aware scope a singleton credential occupies. A personal key
+ * and the team key share (team, purpose, label) and differ only in `user_id`,
+ * so the user dimension must be part of the match — otherwise saving your own
+ * key deletes the team's, and saving the team's deletes everyone's.
+ */
+export function secretScopeWhere(metadata: SecretMetadata) {
+  const accountId = metadata.accountId ?? null;
+  const workspaceId = metadata.workspaceId ?? null;
+  const userId = metadata.userId ?? null;
+  const label = metadata.label ?? null;
+  return and(
+    eq(secrets.teamId, metadata.teamId),
+    eq(secrets.purpose, metadata.purpose),
+    accountId ? eq(secrets.accountId, accountId) : isNull(secrets.accountId),
+    workspaceId ? eq(secrets.workspaceId, workspaceId) : isNull(secrets.workspaceId),
+    userId ? eq(secrets.userId, userId) : isNull(secrets.userId),
+    label ? eq(secrets.label, label) : isNull(secrets.label),
+  );
+}
+
 export class PostgresSecretsProvider implements SecretsProvider {
 
   async set(id: string | null, value: string, metadata: Partial<SecretMetadata>): Promise<string> {
@@ -39,6 +60,7 @@ export class PostgresSecretsProvider implements SecretsProvider {
         teamId: metadata.teamId,
         accountId: metadata.accountId || null,
         workspaceId: metadata.workspaceId || null,
+        userId: metadata.userId || null,
         purpose: metadata.purpose,
         label: metadata.label || null,
         encryptedValue,
@@ -52,30 +74,22 @@ export class PostgresSecretsProvider implements SecretsProvider {
     if (!metadata.teamId) throw new Error('teamId is required');
     if (!metadata.purpose) throw new Error('purpose is required');
 
-    const accountId = metadata.accountId ?? null;
-    const workspaceId = metadata.workspaceId ?? null;
-    const label = metadata.label ?? null;
     const encryptedValue = encrypt(value);
 
     // Delete any existing row(s) at the exact scope (NULL-aware) so a re-save
     // replaces rather than appends. A single UPDATE would leave stale health
     // columns (a replaced 'revoked' row must not stay revoked); delete+insert
     // gives a clean row that defaults to health 'unknown'.
-    await db.delete(secrets).where(and(
-      eq(secrets.teamId, metadata.teamId),
-      eq(secrets.purpose, metadata.purpose),
-      accountId ? eq(secrets.accountId, accountId) : isNull(secrets.accountId),
-      workspaceId ? eq(secrets.workspaceId, workspaceId) : isNull(secrets.workspaceId),
-      label ? eq(secrets.label, label) : isNull(secrets.label),
-    ));
+    await db.delete(secrets).where(secretScopeWhere(metadata));
 
     const [row] = await db.insert(secrets)
       .values({
         teamId: metadata.teamId,
-        accountId,
-        workspaceId,
+        accountId: metadata.accountId ?? null,
+        workspaceId: metadata.workspaceId ?? null,
+        userId: metadata.userId ?? null,
         purpose: metadata.purpose,
-        label,
+        label: metadata.label ?? null,
         encryptedValue,
       })
       .returning({ id: secrets.id });
@@ -98,7 +112,9 @@ export class PostgresSecretsProvider implements SecretsProvider {
 
   async list(teamId: string): Promise<SecretRecord[]> {
     const rows = await db.query.secrets.findMany({
-      where: eq(secrets.teamId, teamId),
+      // Personal keys are one person's, not the team's: never listed here, so
+      // no team-wide list or delete path can reach them.
+      where: and(eq(secrets.teamId, teamId), isNull(secrets.userId)),
       columns: {
         id: true,
         teamId: true,

@@ -8,8 +8,9 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { resolveActiveTeamScope } from '@/lib/team-access';
-import { splitWaitingOnYou, rightNowState, recordBestEffort } from './home-view';
+import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
+import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
+import { InFlightGroupCard } from './InFlightGroupCard';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { noRowOfPrMerged, oneRowPerPr } from '@/lib/pr-merge-stamp';
@@ -83,6 +84,11 @@ import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
 import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
+import { getChatAvailability } from '@/lib/chat-availability';
+import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
+import HomeChatCard from '@/components/chat/HomeChatCard';
+import ChatSetupCard from '@/components/chat/ChatSetupCard';
+import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 
 // --- Helpers ---
 
@@ -262,6 +268,12 @@ export default async function HomePage({
   let shippedToday = 0;
   let teamName: string | null = null;
   let teamTz: string | null = null;
+  // Owners/admins run the fleet; members see their asks and missions first.
+  let audience: HomeAudience = 'operator';
+  // Agent chat on Home (docs/design/agent-chat.md, "Who sees what first").
+  let chatPlacement: HomeChatPlacement = { kind: 'none' };
+  let chatRecent: ConversationListItem[] = [];
+  let chatTeamId: string | null = null;
   const renderNow = Date.now();
 
   // Build a roles map for display
@@ -280,6 +292,19 @@ export default async function HomePage({
       const scope = await resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value);
       const activeTeamId = scope.teamId;
       teamWorkspaces = scope.workspaces;
+      if (activeTeamId) {
+        // Role and chat availability are independent: one wait. Availability
+        // stops at one column read for a team that hasn't turned chat on.
+        const [role, chatAvail, recent] = await Promise.all([
+          getUserTeamRole(user.id, activeTeamId).catch(() => null),
+          getChatAvailability(user.id, activeTeamId).catch(() => null),
+          listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
+        ]);
+        audience = homeAudience(role);
+        chatPlacement = homeChatPlacement(audience, chatAvail);
+        chatRecent = recent;
+        chatTeamId = activeTeamId;
+      }
       const teamWsIds = scope.workspaces.map((w) => w.id);
       // Narrow to selected workspace if filter is set (must belong to team)
       const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
@@ -1903,6 +1928,9 @@ export default async function HomePage({
               ))}
             </h1>
             {arcHeadline && <p className="mt-1 font-mono text-[13px] text-text-secondary">{arcHeadline}</p>}
+            {/* Initiative pulse — a link chip under the headline, and nothing
+                at all when every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
+            {pulseItems.length > 0 && <div className="mt-2.5"><InitiativePulseLine items={pulseItems} /></div>}
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="hidden min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-[12.5px] text-text-secondary md:flex">
@@ -1923,10 +1951,6 @@ export default async function HomePage({
           </div>
         </header>
 
-        {/* Initiative pulse — at most one line, and nothing at all when
-            every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
-        <InitiativePulseLine items={pulseItems} />
-
         {rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
           <StatStrip
             live={live}
@@ -1939,6 +1963,11 @@ export default async function HomePage({
             prsInCi={stats?.prsInCi ?? []}
             selfHealed={stats?.selfHealed ?? 0}
           />
+        )}
+
+        {/* A member's home opens on the conversation; the fleet is one line further down. */}
+        {chatPlacement.kind === 'member-first' && chatTeamId && (
+          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} />
         )}
 
         {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
@@ -2007,7 +2036,16 @@ export default async function HomePage({
                 </div>
               ) : (
                 <>
-                  {fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
+                  {/* Operators get the fleet near the top; a member gets their
+                      missions first and the fleet as one expandable line below.
+                      A member with chat gets the chat card above all of this. */}
+                  {audience === 'operator' && fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
+                  {chatPlacement.kind === 'operator-after-fleet' && chatTeamId && (
+                    <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact />
+                  )}
+                  {chatPlacement.kind === 'setup' && (
+                    <div className="mb-8"><ChatSetupCard reason={chatPlacement.reason} canManage /></div>
+                  )}
                   {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
                     <div className="mb-8 space-y-2">
             {/* Agent-reviewing PR cards — ambient presence, not actionable */}
@@ -2103,7 +2141,10 @@ export default async function HomePage({
               )}
             </div>
 
-            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} />
+            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} timeZone={teamTz} />
+            {audience === 'member' && fleetData && rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
+              <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} compact />
+            )}
 
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (
@@ -2140,7 +2181,11 @@ export default async function HomePage({
             <ReleaseWidget items={releaseReadinessItems} />
           </div>
 
-          <div className="order-first min-w-0 xl:order-none">
+          {/* Below xl this column dissolves (display: contents) so its two
+              parts order independently: what needs you first, the ticker last —
+              not wedged between the asks and the fleet. */}
+          <div className="contents min-w-0 xl:block">
+            <div className="order-first min-w-0 xl:order-none">
             <NeedsYouStack
               count={needsYouCount}
               questions={questions}
@@ -2171,7 +2216,10 @@ export default async function HomePage({
                         <span className="text-[11px] text-text-muted font-mono">{inFlightItems.length}</span>
                       </div>
                       <div className="space-y-2">
-                        {inFlightItems.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
+                        {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
+                        {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
+                          ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
+                          : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
                       </div>
                     </div>
                   )}
@@ -2188,7 +2236,10 @@ export default async function HomePage({
               {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
             </NeedsYouStack>
 
-            <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
+            </div>
+            <div className="order-last min-w-0 xl:order-none">
+              <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
+            </div>
           </div>
         </div>
       </div>

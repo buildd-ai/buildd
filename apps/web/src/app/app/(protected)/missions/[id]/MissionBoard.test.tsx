@@ -61,6 +61,20 @@ describe('MissionBoard — running', () => {
   });
 });
 
+describe('MissionBoard — planning (no tasks yet)', () => {
+  const html = render('planning');
+
+  it('shows the planning placeholder with the organizer\'s live state, not an empty "Tasks 0/0" column', () => {
+    expect(count(html, 'data-testid="board-column"')).toBe(0);
+    expect(html).not.toContain('>0/0<');
+    expect(html).not.toContain('data-testid="mission-board-columns"');
+    expect(html).toContain('data-testid="board-planning"');
+    expect(html).toContain('Organizer is planning');
+    expect(html).toContain('Mapped the example tables');
+    expect(html).toContain('alpha');
+  });
+});
+
 describe('MissionBoard — a question open', () => {
   const html = render('question');
 

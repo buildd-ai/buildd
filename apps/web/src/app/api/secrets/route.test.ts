@@ -18,6 +18,12 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
 }));
 
+// Only the API-key auth path reads the DB (to find the calling account).
+const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
+mock.module('@buildd/core/db', () => ({
+  db: { query: { accounts: { findFirst: mockAccountsFindFirst } } },
+}));
+
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
     set: mockSecretsSet,
@@ -124,6 +130,46 @@ describe('POST /api/secrets', () => {
       accountId: 'account-1',
     }));
     expect(res.status).toBe(200);
+  });
+
+  it('stores a decision_key (OpenRouter) team-wide, quote-stripped, with no prefix rule', async () => {
+    const res = await POST(createPostRequest({ value: '"sk-or-v1-abc"', purpose: 'decision_key' }));
+    expect(res.status).toBe(200);
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-or-v1-abc', expect.objectContaining({
+      teamId: 'team-1',
+      accountId: undefined,
+      purpose: 'decision_key',
+    }));
+  });
+
+  it('keeps a decision_key team-wide even when stored with an API key, unless accountId is explicit', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1' });
+    const req = (body: any) => new NextRequest('http://localhost:3000/api/secrets', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
+      body: JSON.stringify(body),
+    });
+
+    await POST(req({ value: 'sk-or-v1-abc', purpose: 'decision_key' }));
+    expect((mockSecretsReplaceScoped.mock.calls.at(-1) as any[])[1].accountId).toBeUndefined();
+
+    await POST(req({ value: 'sk-or-v1-abc', purpose: 'decision_key', accountId: 'acct-caller' }));
+    expect((mockSecretsReplaceScoped.mock.calls.at(-1) as any[])[1].accountId).toBe('acct-caller');
+    mockAccountsFindFirst.mockResolvedValue(null);
+  });
+
+  it('keeps an inference_key team-wide when stored with an API key, so it serves every caller', async () => {
+    // An account-scoped inference key only reaches callers acting as that
+    // account; chat turns and cron judgments act as nobody's account.
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1' });
+    const res = await POST(new NextRequest('http://localhost:3000/api/secrets', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
+      body: JSON.stringify({ value: 'sk-or-v1-abc', purpose: 'inference_key', label: 'openrouter' }),
+    }));
+    expect(res.status).toBe(200);
+    expect((mockSecretsReplaceScoped.mock.calls.at(-1) as any[])[1].accountId).toBeUndefined();
+    mockAccountsFindFirst.mockResolvedValue(null);
   });
 
   it('accepts all valid purpose values', async () => {

@@ -71,6 +71,13 @@ mock.module('@/lib/mission-loop', () => ({
   reopenCompletedMission: mockReopenCompletedMission,
 }));
 
+// The category shadow is covered by task-category-decision.test.ts; here we only
+// assert WHEN the route schedules it, and that it cannot touch the stored row.
+const mockScheduleTaskCategoryShadow = mock((..._args: any[]) => {});
+mock.module('@/lib/task-category-decision', () => ({
+  scheduleTaskCategoryShadow: mockScheduleTaskCategoryShadow,
+}));
+
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -1209,6 +1216,84 @@ describe('POST /api/tasks', () => {
     await POST(request);
 
     expect(capturedValues.project).toBe('@mono/web');
+  });
+
+  // ── task category decision shadow ────────────────────────────────────
+  describe('category shadow', () => {
+    async function postWithBody(
+      body: Record<string, unknown>,
+      workspace: Record<string, unknown> = {},
+      opts: { keepMock?: boolean } = {},
+    ) {
+      if (!opts.keepMock) mockScheduleTaskCategoryShadow.mockReset();
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-123',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', ...workspace });
+      let capturedValues: any = null;
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          capturedValues = values;
+          return { returning: mock(() => [{ id: 'task-shadow', ...values }]) };
+        }),
+      });
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', ...body },
+      }));
+      return { response, capturedValues };
+    }
+
+    it('schedules a shadow run when the keyword classifier picked the category', async () => {
+      const { response, capturedValues } = await postWithBody({
+        title: 'Fix crash on save',
+        description: 'Throws on click.',
+      });
+      expect(response.status).toBe(200);
+      expect(capturedValues.category).toBe('bug');
+      expect(mockScheduleTaskCategoryShadow).toHaveBeenCalledTimes(1);
+      const [input, schedule] = mockScheduleTaskCategoryShadow.mock.calls[0] as any[];
+      expect(input).toEqual({
+        taskId: capturedValues.id,
+        teamId: 'team-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-123',
+        title: 'Fix crash on save',
+        description: 'Throws on click.',
+        keywordCategory: 'bug',
+        dataClass: null,
+      });
+      expect(typeof schedule).toBe('function');
+    });
+
+    it('also shadows when the keyword classifier abstained', async () => {
+      const { capturedValues } = await postWithBody({ title: 'Quarterly thing' });
+      expect(capturedValues.category).toBeUndefined();
+      expect((mockScheduleTaskCategoryShadow.mock.calls[0] as any[])[0].keywordCategory).toBeNull();
+    });
+
+    it('does not shadow a caller-supplied category', async () => {
+      const { capturedValues } = await postWithBody({ title: 'Fix crash on save', category: 'docs' });
+      expect(capturedValues.category).toBe('docs');
+      expect(mockScheduleTaskCategoryShadow).not.toHaveBeenCalled();
+    });
+
+    it('passes the workspace data class so sensitive content can be withheld', async () => {
+      await postWithBody({ title: 'Fix crash' }, { gitConfig: { dataClass: 'sensitive' } });
+      expect((mockScheduleTaskCategoryShadow.mock.calls[0] as any[])[0].dataClass).toBe('sensitive');
+    });
+
+    it('never fails task creation when scheduling throws', async () => {
+      mockScheduleTaskCategoryShadow.mockImplementationOnce(() => { throw new Error('boom'); });
+      const { response } = await postWithBody({ title: 'Fix crash on save' }, {}, { keepMock: true });
+      expect(response.status).toBe(200);
+    });
   });
 
   // ── short display label ──────────────────────────────────────────────

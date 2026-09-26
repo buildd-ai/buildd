@@ -11,7 +11,10 @@ import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvi
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
+import { getUserTeamRole, getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
+import { getChatAvailability } from '@/lib/chat-availability';
+import { homeAudience } from './home/home-view';
+import type { NavContext } from '@/lib/nav-config';
 
 export default async function ProtectedLayout({
   children,
@@ -24,6 +27,7 @@ export default async function ProtectedLayout({
   let workspaceIds: string[] = [];
   let teamWorkspaces: { id: string; name: string }[] = [];
   let teamTimezone: string | null = null;
+  let nav: NavContext = { chat: false, audience: 'operator' };
 
   if (user) {
     // These three have no dependency on each other, and this layout re-runs on
@@ -44,13 +48,26 @@ export default async function ProtectedLayout({
       cookies()
         .then((cookieStore) => resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value))
         // No team on failure; WorkspaceFilter renders nothing, timestamps use the browser zone
-        .catch((): ActiveTeamScope => ({ teamId: null, workspaces: [], timezone: null })),
+        .catch((): ActiveTeamScope => ({ teamId: null, workspaces: [], timezone: null }))
+        // Who sees Chat, and where (lib/chat-availability.ts): needs the team,
+        // so it rides the scope's own chain. The capability read short-circuits
+        // for every team that hasn't turned chat on. Both are React cache()d,
+        // so Home and /app/chat reuse the answer. Off on any failure.
+        .then(async (scope) => {
+          if (!scope.teamId) return { scope, nav };
+          const [avail, role] = await Promise.all([
+            getChatAvailability(user.id, scope.teamId).catch(() => null),
+            getUserTeamRole(user.id, scope.teamId).catch(() => null),
+          ]);
+          return { scope, nav: { chat: avail?.available === true, audience: homeAudience(role) } as NavContext };
+        }),
     ]);
     userTeams = userTeamsResult;
     workspaceIds = workspaceIdsResult;
-    currentTeamId = scopeResult.teamId;
-    teamWorkspaces = scopeResult.workspaces;
-    teamTimezone = scopeResult.timezone;
+    currentTeamId = scopeResult.scope.teamId;
+    teamWorkspaces = scopeResult.scope.workspaces;
+    teamTimezone = scopeResult.scope.timezone;
+    nav = scopeResult.nav;
   }
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
@@ -63,7 +80,7 @@ export default async function ProtectedLayout({
         <ConnectorReconnectProvider workspaceIds={workspaceIds}>
           <div className="flex h-screen overflow-hidden">
             {/* Desktop: collapsed icon sidebar */}
-            <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} />
+            <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} nav={nav} />
 
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -103,7 +120,7 @@ export default async function ProtectedLayout({
           {user && <TimezoneSync knownTimezone={user.timezone} />}
 
           {/* Mobile: bottom tab nav */}
-          <MissionsBottomNav />
+          <MissionsBottomNav nav={nav} />
         </ConnectorReconnectProvider>
       </NeedsInputProvider>
       </EscalationProvider>

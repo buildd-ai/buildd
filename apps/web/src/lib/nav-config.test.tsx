@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
+import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobilePageTitle, navItemsFor, showsWorkspaceFilter } from './nav-config';
 
 describe('NAV_ITEMS', () => {
   it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
     expect(NAV_ITEMS.map((i) => i.href)).toEqual([
       '/app/home',
+      '/app/chat',
       '/app/missions',
       '/app/releases',
       '/app/initiatives',
@@ -16,6 +17,7 @@ describe('NAV_ITEMS', () => {
     ]);
     expect(NAV_ITEMS.map((i) => i.label)).toEqual([
       'Home',
+      'Chat',
       'Missions',
       'Releases',
       'Initiatives',
@@ -30,6 +32,10 @@ describe('NAV_ITEMS', () => {
       '/app/releases',
       '/app/initiatives',
     ]);
+  });
+
+  it('only Chat is gated on chat availability', () => {
+    expect(NAV_ITEMS.filter((i) => i.requiresChat).map((i) => i.href)).toEqual(['/app/chat']);
   });
 
   it('provides an icon for every item', () => {
@@ -127,5 +133,33 @@ describe('showsWorkspaceFilter', () => {
     expect(checked.length).toBeGreaterThan(0);
     const nextConfig = readFileSync(resolve(import.meta.dir, '../../next.config.mjs'), 'utf8');
     for (const path of REDIRECT_ONLY) expect(nextConfig).toContain(`source: '${path}'`);
+  });
+});
+
+describe('navItemsFor', () => {
+  const hrefs = (items: { href: string }[]) => items.map(i => i.href);
+  const withoutChat = NAV_ITEMS.filter(i => !i.requiresChat);
+
+  it('chat unavailable: exactly the nav as it was, for everyone, on both surfaces', () => {
+    for (const audience of ['member', 'operator'] as const) {
+      expect(hrefs(navItemsFor({ chat: false, audience }, 'desktop'))).toEqual(hrefs(withoutChat));
+      expect(hrefs(navItemsFor({ chat: false, audience }, 'mobile'))).toEqual(hrefs(withoutChat.filter(i => !i.desktopOnly)));
+    }
+  });
+
+  it('a member with chat gets Chat first, desktop and phone', () => {
+    expect(navItemsFor({ chat: true, audience: 'member' }, 'desktop')[0].href).toBe('/app/chat');
+    expect(navItemsFor({ chat: true, audience: 'member' }, 'mobile')[0].href).toBe('/app/chat');
+  });
+
+  it('an operator with chat keeps Home (the fleet) first, Chat right after', () => {
+    expect(hrefs(navItemsFor({ chat: true, audience: 'operator' }, 'desktop')).slice(0, 2)).toEqual(['/app/home', '/app/chat']);
+  });
+
+  it('the phone tab bar never exceeds its limit; Team steps off, the rail keeps it', () => {
+    const mobile = navItemsFor({ chat: true, audience: 'member' }, 'mobile');
+    expect(mobile.length).toBeLessThanOrEqual(MOBILE_TAB_LIMIT);
+    expect(hrefs(mobile)).not.toContain('/app/team');
+    expect(hrefs(navItemsFor({ chat: true, audience: 'member' }, 'desktop'))).toContain('/app/team');
   });
 });

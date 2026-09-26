@@ -1,5 +1,5 @@
 {
-  "id": "06760c1f-f719-43aa-9328-0ec22cf363b7",
+  "id": "b8966524-ffb8-4361-b6e8-f913c5c1be8e",
   "prevId": "e0a99676-afff-4ea4-a042-4b53b71e7cc9",
   "version": "7",
   "dialect": "postgresql",
@@ -6668,6 +6668,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "purpose": {
           "name": "purpose",
           "type": "text",
@@ -6863,6 +6869,49 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "secrets_personal_inference_key_idx": {
+          "name": "secrets_personal_inference_key_idx",
+          "columns": [
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "label",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"secrets\".\"purpose\" = 'inference_key' and \"secrets\".\"user_id\" is not null and \"secrets\".\"workspace_id\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "secrets_user_idx": {
+          "name": "secrets_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -6898,6 +6947,19 @@
           "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "secrets_user_id_users_id_fk": {
+          "name": "secrets_user_id_users_id_fk",
+          "tableFrom": "secrets",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
           ],
           "columnsTo": [
             "id"
@@ -6982,18 +7044,6 @@
         },
         "doc_fix_task_id": {
           "name": "doc_fix_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recheck_requested_at": {
-          "name": "recheck_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_follow_up_task_id": {
-          "name": "auto_follow_up_task_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -7109,19 +7159,6 @@
           "tableTo": "tasks",
           "columnsFrom": [
             "doc_fix_task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "spec_discrepancies_auto_follow_up_task_id_tasks_id_fk": {
-          "name": "spec_discrepancies_auto_follow_up_task_id_tasks_id_fk",
-          "tableFrom": "spec_discrepancies",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "auto_follow_up_task_id"
           ],
           "columnsTo": [
             "id"

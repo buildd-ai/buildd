@@ -30,7 +30,17 @@ const RAW_STRING_PURPOSES = new Set([
   // comes from `label`, and Anthropic (sk-ant-api…) and OpenRouter (sk-or-v1…)
   // keys share the purpose.
   'inference_key',
+  // OpenRouter key for decision calls (packages/core/decision-client.ts).
+  'decision_key',
 ]);
+
+/**
+ * Purposes stored team-wide unless the caller names an account explicitly.
+ * Everything else defaults to the calling API key's account, which for these
+ * would silently make a team credential work only for tasks that one account
+ * files.
+ */
+const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key']);
 
 /** Required prefixes for Claude credential purposes. */
 const REQUIRED_PREFIXES: Record<string, string> = {
@@ -104,7 +114,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key'];
+  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key'];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }
@@ -146,8 +156,9 @@ export async function POST(req: NextRequest) {
     // fresh token sits unused. See docs/credentials-architecture.md.
     const id = await provider.replaceScoped(sanitizedValue, {
       teamId: targetTeamId,
-      // MCP credentials are team-wide (shared with all runners), so don't scope to account
-      accountId: (purpose === 'mcp_credential' ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
+      // MCP credentials and decision/inference keys are team-wide (shared by everyone in
+      // the team), so don't scope them to the caller's account by default.
+      accountId: (TEAM_WIDE_BY_DEFAULT.has(purpose) ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
       workspaceId,
       purpose,
       label,

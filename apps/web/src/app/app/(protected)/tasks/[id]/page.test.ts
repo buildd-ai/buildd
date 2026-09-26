@@ -196,3 +196,20 @@ describe('"Also running" — tasks/[id]/page.tsx', () => {
     expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
   });
 });
+
+describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
+  it('renders each related task through StatusBadge + deriveDisplayStatus, never the raw status enum', () => {
+    const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
+    expect(related).not.toContain('{sub.status}');
+    expect(related).not.toContain('{task.parentTask.status}');
+    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(sub.status)} />');
+    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />');
+  });
+});
+
+describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
+  it('shows the branch through displayBranchName with the full name in title', () => {
+    expect(pageSource).toContain('title={worker.branch}');
+    expect(pageSource).toContain('{displayBranchName(worker.branch)}');
+  });
+});

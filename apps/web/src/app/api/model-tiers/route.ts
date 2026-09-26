@@ -4,7 +4,13 @@ import { modelTierRegistry, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import {
+  getUserTeamIds,
+  getUserTeamRole,
+  resolveActiveTeamId,
+  verifyWorkspaceAccess,
+  verifyAccountWorkspaceAccess,
+} from '@/lib/team-access';
 import { resolveAllTiers, invalidateTierCache, TIERS, type Tier } from '@buildd/core/model-tier-registry';
 
 // Resolve the teamId for a given workspaceId.
@@ -16,71 +22,107 @@ async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null
   return ws?.teamId ?? null;
 }
 
+const ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
+
+type TeamResolution = { teamId: string } | { error: NextResponse };
+
 /**
- * Resolve the teamId a workspace-scoped request should operate on, after verifying
- * the caller can actually reach that workspace. Without this check any session user
- * (or any admin key on another team) could read or overwrite another team's tier
- * registry, which the claim path then honours. Returns null when access is denied
- * or the workspace does not exist, so callers 404 like the other workspace routes.
+ * Resolve which team's registry a request reads or writes, and check the caller
+ * may do so.
+ *
+ * - `workspaceId`: the caller must reach that workspace. Without this check any
+ *   session user (or any admin key on another team) could read or overwrite
+ *   another team's tier registry, which the claim path then honours. Denied or
+ *   missing workspaces 404, like the other workspace routes.
+ * - `teamId` (session only): the caller must belong to that team. Settings →
+ *   Model tiers sends it, so a user in several teams edits the team on screen.
+ * - neither: an API key's own team, or the session's ACTIVE team (the
+ *   `buildd-team` cookie), not whichever membership row happens to come first.
+ *
+ * Session writes also need owner or admin in the resolved team: which model
+ * backs a tier sets spend for the whole team, so it is an admin call
+ * (docs/design/agent-chat.md → Models). API keys are already held to admin level
+ * by each handler.
  */
-async function resolveScopedTeamId(
-  workspaceId: string,
+async function resolveTeam(
+  req: NextRequest,
   user: { id: string } | null,
-  apiAccount: { id: string } | null,
-): Promise<string | null> {
+  apiAccount: { id: string; teamId?: string | null } | null,
+  opts: { workspaceId: string | null; teamId: string | null; write: boolean },
+): Promise<TeamResolution> {
+  const fail = (status: number, error: string) => ({ error: NextResponse.json({ error }, { status }) });
+
   if (apiAccount) {
-    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId);
-    if (!hasAccess) return null;
-    return getTeamIdForWorkspace(workspaceId);
+    if (opts.workspaceId) {
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, opts.workspaceId);
+      if (!hasAccess) return fail(404, 'Workspace not found');
+      const teamId = await getTeamIdForWorkspace(opts.workspaceId);
+      return teamId ? { teamId } : fail(404, 'Workspace not found');
+    }
+    return apiAccount.teamId ? { teamId: apiAccount.teamId } : fail(400, 'Could not resolve team');
   }
-  if (user) {
-    const access = await verifyWorkspaceAccess(user.id, workspaceId);
-    return access?.teamId ?? null;
+
+  if (!user) return fail(401, 'Unauthorized');
+
+  let teamId: string | null;
+  let role: string | null = null;
+  if (opts.workspaceId) {
+    const access = await verifyWorkspaceAccess(user.id, opts.workspaceId);
+    if (!access?.teamId) return fail(404, 'Workspace not found');
+    teamId = access.teamId;
+    role = (access as { role?: string | null }).role ?? null;
+  } else if (opts.teamId) {
+    const teamIds = await getUserTeamIds(user.id);
+    if (!teamIds.includes(opts.teamId)) return fail(404, 'Team not found');
+    teamId = opts.teamId;
+  } else {
+    teamId = await resolveActiveTeamId(user.id, req.cookies.get('buildd-team')?.value);
   }
-  return null;
+  if (!teamId) return fail(400, 'Could not resolve team');
+
+  if (opts.write) {
+    if (!role) role = await getUserTeamRole(user.id, teamId);
+    if (!role || !ADMIN_ROLES.has(role)) {
+      return fail(403, 'Only a team owner or admin can change model tiers');
+    }
+  }
+  return { teamId };
 }
 
-// GET /api/model-tiers?workspaceId=<id>
-// Returns the effective tier map (workspace override → team default → code fallback).
-export async function GET(req: NextRequest) {
+/** Session user or API key, with API keys held to admin level. */
+async function authenticate(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const apiAccount = await authenticateApiKey(apiKey);
 
   if (!user && !apiAccount) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
   }
   if (apiAccount && apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
+    return { error: NextResponse.json({ error: 'Admin token required' }, { status: 403 }) };
   }
+  return { user, apiAccount: apiAccount as { id: string; teamId?: string | null } | null };
+}
+
+// GET /api/model-tiers?workspaceId=<id> | ?teamId=<id>
+// Returns the effective tier map (workspace override → team default → catalog → code fallback).
+export async function GET(req: NextRequest) {
+  const auth = await authenticate(req);
+  if ('error' in auth) return auth.error;
 
   const { searchParams } = new URL(req.url);
   const workspaceId = searchParams.get('workspaceId') || null;
 
   try {
-    let teamId: string | null = null;
+    const resolved = await resolveTeam(req, auth.user, auth.apiAccount, {
+      workspaceId,
+      teamId: searchParams.get('teamId') || null,
+      write: false,
+    });
+    if ('error' in resolved) return resolved.error;
 
-    if (apiAccount) {
-      teamId = (apiAccount as any).teamId as string | null;
-    } else if (user) {
-      const teamIds = await getUserTeamIds(user.id);
-      teamId = teamIds[0] ?? null;
-    }
-
-    if (workspaceId) {
-      const wsTeamId = await resolveScopedTeamId(workspaceId, user, apiAccount);
-      if (!wsTeamId) {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-      }
-      teamId = wsTeamId;
-    }
-
-    if (!teamId) {
-      return NextResponse.json({ error: 'Could not resolve team' }, { status: 400 });
-    }
-
-    const tiers = await resolveAllTiers(teamId, workspaceId);
+    const tiers = await resolveAllTiers(resolved.teamId, workspaceId);
     return NextResponse.json(tiers);
   } catch (error) {
     console.error('GET /api/model-tiers error:', error);
@@ -88,20 +130,11 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/model-tiers — upsert a registry row
-// Body: { tier, provider, model, workspaceId?, defaultEffort?, defaultMaxTurns? }
+// POST /api/model-tiers — upsert a registry row (pins the tier)
+// Body: { tier, provider, model, workspaceId?, teamId?, defaultEffort?, defaultMaxTurns? }
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
-  const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
-
-  if (!user && !apiAccount) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  if (apiAccount && apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
-  }
+  const auth = await authenticate(req);
+  if ('error' in auth) return auth.error;
 
   try {
     const body = await req.json();
@@ -117,23 +150,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'model is required' }, { status: 400 });
     }
 
-    let teamId: string | null = null;
-    if (apiAccount) {
-      teamId = (apiAccount as any).teamId as string | null;
-    } else if (user) {
-      const teamIds = await getUserTeamIds(user.id);
-      teamId = teamIds[0] ?? null;
-    }
-    if (workspaceId) {
-      const wsTeamId = await resolveScopedTeamId(workspaceId, user, apiAccount);
-      if (!wsTeamId) {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-      }
-      teamId = wsTeamId;
-    }
-    if (!teamId) {
-      return NextResponse.json({ error: 'Could not resolve team' }, { status: 400 });
-    }
+    const resolved = await resolveTeam(req, auth.user, auth.apiAccount, {
+      workspaceId: workspaceId ?? null,
+      teamId: typeof body.teamId === 'string' ? body.teamId : null,
+      write: true,
+    });
+    if ('error' in resolved) return resolved.error;
+    const { teamId } = resolved;
 
     const now = new Date();
     // Manual upsert to handle NULL workspace_id uniqueness correctly.
@@ -182,20 +205,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE /api/model-tiers?tier=<tier>&workspaceId=<id>
-// Removes a registry row, falling back to the next level in the chain.
+// DELETE /api/model-tiers?tier=<tier>&workspaceId=<id> | &teamId=<id>
+// Removes a registry row (unpins), falling back to the next level in the chain.
 export async function DELETE(req: NextRequest) {
-  const user = await getCurrentUser();
-  const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
-
-  if (!user && !apiAccount) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  if (apiAccount && apiAccount.level !== 'admin') {
-    return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
-  }
+  const auth = await authenticate(req);
+  if ('error' in auth) return auth.error;
 
   const { searchParams } = new URL(req.url);
   const tier = searchParams.get('tier');
@@ -206,23 +220,13 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    let teamId: string | null = null;
-    if (apiAccount) {
-      teamId = (apiAccount as any).teamId as string | null;
-    } else if (user) {
-      const teamIds = await getUserTeamIds(user.id);
-      teamId = teamIds[0] ?? null;
-    }
-    if (workspaceId) {
-      const wsTeamId = await resolveScopedTeamId(workspaceId, user, apiAccount);
-      if (!wsTeamId) {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-      }
-      teamId = wsTeamId;
-    }
-    if (!teamId) {
-      return NextResponse.json({ error: 'Could not resolve team' }, { status: 400 });
-    }
+    const resolved = await resolveTeam(req, auth.user, auth.apiAccount, {
+      workspaceId,
+      teamId: searchParams.get('teamId') || null,
+      write: true,
+    });
+    if ('error' in resolved) return resolved.error;
+    const { teamId } = resolved;
 
     await db
       .delete(modelTierRegistry)

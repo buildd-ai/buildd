@@ -15,7 +15,7 @@ import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, ty
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
+import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary } from '@/lib/mission-steering-events';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
@@ -54,6 +54,7 @@ import MissionBoard from './MissionBoard';
 import MissionLanes from './MissionLanes';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
 import MissionDelivery from './MissionDelivery';
 import VisualReviewStrip from './VisualReviewStrip';
@@ -180,6 +181,7 @@ export default async function MissionDetailPage({
     workspaceForPolicy,
     missionFollowupTasks,
     runnerHeartbeats,
+    fleetCapacity,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -262,6 +264,10 @@ export default async function MissionDetailPage({
     }]),
     // Runner hostnames for the Board and Lanes (runner-display).
     loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
+    // The Lanes band's "LIVE n/N slots": N is the team's fleet capacity, the
+    // same number Home's "AGENTS LIVE n/N" prints (not the slots drawn here).
+    (async () => loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds: await getUserWorkspaceIds(user.id), now: Date.now() }))()
+      .catch(() => null),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -789,7 +795,7 @@ export default async function MissionDetailPage({
     steeringEvents,
   });
   const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
-  const orchestratorTicks = (mission.schedule as any)?.totalChecks ?? 0;
+  const orchestratorLabel = orchestratorSummary(orchestratorPlans, (mission.schedule as { totalRuns?: number | null; totalChecks?: number | null } | null) ?? null);
   const missionRecords = selectMissionRecords(allArtifacts);
 
   // Goal criteria — hoisted so the header's Verified pill and its bottom
@@ -1307,6 +1313,7 @@ export default async function MissionDetailPage({
   // folds and states them with the feed's own rules, so the counts agree.
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
+    fleetCapacity,
     tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
@@ -1384,7 +1391,7 @@ export default async function MissionDetailPage({
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
         <span aria-hidden="true" className="text-text-muted">─</span>
         <span className="flex-1">
-          {`Orchestrator · ${countOf(orchestratorPlans, 'plan', 'plans')}, ${countOf(orchestratorTicks, 'tick', 'ticks')}`}
+          {orchestratorLabel}
         </span>
         <span aria-hidden="true" className="group-open:rotate-90">›</span>
       </summary>

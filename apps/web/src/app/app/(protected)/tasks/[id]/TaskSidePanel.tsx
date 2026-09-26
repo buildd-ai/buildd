@@ -12,6 +12,9 @@ export function HeaderStatusPill({ status, merged }: { status: string; merged: b
     case 'starting':
     case 'in_progress':
       return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}{status === 'starting' ? 'Starting' : 'Running'}</span>;
+    case 'fixing_ci':
+      // The task's own row is done, but a CI-fix attempt is still working its PR.
+      return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}Fixing CI</span>;
     case 'waiting_on_you':
     case 'waiting_input':
       return <span className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}Waiting on you</span>;
@@ -47,7 +50,12 @@ export function FactSheet({ rows, testId = 'task-fact-sheet' }: { rows: FactRow[
 
 export interface PeerTask {
   taskId: string;
+  /** Scope chip ("checkout"), from taskDisplayLabel. */
+  scope?: string | null;
+  /** Short display label, from taskDisplayLabel. */
   title: string;
+  /** The raw title, for the hover tooltip. */
+  fullTitle?: string;
   pct: number | null;
   href: string;
   waiting?: boolean;
@@ -64,7 +72,10 @@ export function AlsoRunning({ title, peers, testId = 'task-also-running' }: { ti
           <li key={p.taskId} className="border-b border-border-default">
             <Link href={p.href} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
               <span className={`w-[9px] h-[9px] shrink-0 ${p.waiting ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
-              <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{p.title}</span>
+              <span className="flex-1 min-w-0 flex items-center gap-2 font-mono text-[13px] text-text-primary" title={p.fullTitle ?? p.title}>
+                {p.scope && <span className="shrink-0 px-1.5 border border-border-strong text-[11px] text-text-secondary">{p.scope}</span>}
+                <span className="min-w-0 truncate">{p.title}</span>
+              </span>
               <span className="w-20 h-[6px] shrink-0 bg-surface-4" aria-label={p.pct != null ? `${p.pct}%` : 'no progress reported'}>
                 <span className="block h-full bg-accent" style={{ width: `${Math.max(2, p.pct ?? 0)}%` }} />
               </span>

@@ -12,6 +12,8 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([CALLER_TEAM_ID]));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
+const mockGetUserTeamRole = mock(() => Promise.resolve(null as any));
+const mockResolveActiveTeamId = mock(() => Promise.resolve(CALLER_TEAM_ID as string | null));
 
 const mockWorkspacesFindFirst = mock(() => Promise.resolve({ teamId: VICTIM_TEAM_ID } as any));
 const mockRegistryFindFirst = mock(() => Promise.resolve(null as any));
@@ -38,6 +40,8 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+  getUserTeamRole: mockGetUserTeamRole,
+  resolveActiveTeamId: mockResolveActiveTeamId,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -55,6 +59,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/model-tier-registry', () => ({
   resolveAllTiers: mockResolveAllTiers,
   invalidateTierCache: mockInvalidateTierCache,
+  TIERS: ['premium-plus', 'premium', 'standard', 'budget'],
 }));
 
 import { GET, POST, DELETE } from './route';
@@ -110,6 +115,10 @@ describe('/api/model-tiers workspace scoping', () => {
     mockResolveAllTiers.mockClear();
     mockInvalidateTierCache.mockClear();
 
+    mockGetUserTeamRole.mockReset();
+    mockResolveActiveTeamId.mockReset();
+    mockGetUserTeamRole.mockResolvedValue(null);
+    mockResolveActiveTeamId.mockResolvedValue(CALLER_TEAM_ID);
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetUserTeamIds.mockResolvedValue([CALLER_TEAM_ID]);
@@ -177,7 +186,18 @@ describe('/api/model-tiers workspace scoping', () => {
     expect(mockInvalidateTierCache).not.toHaveBeenCalled();
   });
 
-  it('POST upserts for a member of the workspace team', async () => {
+  it('POST rejects a plain member of the workspace team: tier mapping is an admin call', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-member' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: VICTIM_TEAM_ID, role: 'member' });
+
+    const res = await POST(postRequest(VALID_BODY));
+
+    expect(res.status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('POST upserts for an admin of the workspace team', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-member' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: VICTIM_TEAM_ID, role: 'admin' });
 
@@ -215,7 +235,17 @@ describe('/api/model-tiers workspace scoping', () => {
     expect(mockInvalidateTierCache).not.toHaveBeenCalled();
   });
 
-  it('DELETE removes the row for a member of the workspace team', async () => {
+  it('DELETE rejects a plain member of the workspace team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-member' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: VICTIM_TEAM_ID, role: 'member' });
+
+    const res = await DELETE(deleteRequest('premium', VICTIM_WORKSPACE_ID));
+
+    expect(res.status).toBe(403);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('DELETE removes the row for an admin of the workspace team', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-member' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: VICTIM_TEAM_ID, role: 'admin' });
 
@@ -231,5 +261,93 @@ describe('/api/model-tiers workspace scoping', () => {
   it('GET returns 401 with no auth at all', async () => {
     const res = await GET(getRequest(VICTIM_WORKSPACE_ID));
     expect(res.status).toBe(401);
+  });
+});
+
+// ── Team scope (Settings → Model tiers) ────────────────────────────────────
+
+function teamGet(teamId?: string) {
+  const qs = teamId ? `?teamId=${teamId}` : '';
+  return new NextRequest(`http://localhost/api/model-tiers${qs}`, {
+    headers: { cookie: 'buildd-team=' + CALLER_TEAM_ID },
+  });
+}
+
+describe('/api/model-tiers team scope', () => {
+  const OTHER_TEAM = 'team-other';
+
+  beforeEach(() => {
+    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockGetUserTeamIds, mockGetUserTeamRole,
+      mockResolveActiveTeamId, mockRegistryFindFirst, mockResolveAllTiers]) m.mockReset();
+    mockInsert.mockClear();
+    mockInsertValues.mockClear();
+    mockUpdate.mockClear();
+    mockDelete.mockClear();
+    mockDeleteWhere.mockClear();
+    mockInvalidateTierCache.mockClear();
+
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue([CALLER_TEAM_ID, OTHER_TEAM]);
+    mockResolveActiveTeamId.mockResolvedValue(OTHER_TEAM);
+    mockGetUserTeamRole.mockResolvedValue('member');
+    mockRegistryFindFirst.mockResolvedValue(null);
+    mockResolveAllTiers.mockResolvedValue({ premium: { model: 'm' } });
+  });
+
+  it('GET without a teamId reads the ACTIVE team, not whichever team sorts first', async () => {
+    const res = await GET(teamGet());
+    expect(res.status).toBe(200);
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(OTHER_TEAM, null);
+  });
+
+  it('GET with a teamId reads that team for a member', async () => {
+    const res = await GET(teamGet(CALLER_TEAM_ID));
+    expect(res.status).toBe(200);
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(CALLER_TEAM_ID, null);
+  });
+
+  it('GET refuses a teamId the caller does not belong to', async () => {
+    const res = await GET(teamGet(VICTIM_TEAM_ID));
+    expect(res.status).toBe(404);
+    expect(mockResolveAllTiers).not.toHaveBeenCalled();
+  });
+
+  it('POST refuses a team-wide write from a plain member and writes nothing', async () => {
+    const res = await POST(postRequest({ tier: 'budget', provider: 'openrouter', model: 'qwen/qwen3-coder', teamId: CALLER_TEAM_ID }));
+    expect(res.status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockGetUserTeamRole).toHaveBeenCalledWith('user-1', CALLER_TEAM_ID);
+  });
+
+  it('POST writes a team-wide row for an admin of the named team', async () => {
+    mockGetUserTeamRole.mockResolvedValue('admin');
+    const res = await POST(postRequest({ tier: 'budget', provider: 'openrouter', model: 'qwen/qwen3-coder', teamId: CALLER_TEAM_ID }));
+    expect(res.status).toBe(200);
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: CALLER_TEAM_ID, workspaceId: null, tier: 'budget', model: 'qwen/qwen3-coder' }),
+    );
+    expect(mockInvalidateTierCache).toHaveBeenCalledWith(CALLER_TEAM_ID, null);
+  });
+
+  it('POST refuses a teamId the caller does not belong to, even as an admin elsewhere', async () => {
+    mockGetUserTeamRole.mockResolvedValue(null);
+    const res = await POST(postRequest({ tier: 'budget', provider: 'anthropic', model: 'm', teamId: VICTIM_TEAM_ID }));
+    expect(res.status).toBe(404);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('DELETE (unpin) needs an admin of the team', async () => {
+    const qs = new URLSearchParams({ tier: 'standard', teamId: CALLER_TEAM_ID });
+    const del = () => DELETE(new NextRequest(`http://localhost/api/model-tiers?${qs}`, { method: 'DELETE' }));
+
+    expect((await del()).status).toBe(403);
+    expect(mockDelete).not.toHaveBeenCalled();
+
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    expect((await del()).status).toBe(200);
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateTierCache).toHaveBeenCalledWith(CALLER_TEAM_ID, null);
   });
 });

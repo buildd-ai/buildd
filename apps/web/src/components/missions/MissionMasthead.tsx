@@ -107,13 +107,13 @@ function Slot({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-function StateChip({ chip }: { chip: MastheadChip }) {
+function StateChip({ chip, owner }: { chip: MastheadChip; owner?: string }) {
   return (
     <span
       data-testid="mission-state-chip"
       className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase leading-none tracking-wider ${chip.cls}`}
     >
-      {chip.label}
+      {owner ? `${owner} · ${chip.label}` : chip.label}
     </span>
   );
 }
@@ -283,13 +283,18 @@ export default function MissionMasthead(props: MissionMastheadProps) {
         ) : (
           <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold text-text-primary">{title}</span>
         )}
-        <StateChip chip={chip} />
+        {/* A task's own status badge sits right below this bar: name whose state
+            this is, so MISSION · RUNNING beside FIXING CI is not a contradiction. */}
+        <StateChip chip={chip} owner="Mission" />
       </div>
       <div className="flex items-center gap-2">
-        <MissionPulse variant="context" segments={segments} selectedTaskId={selectedTaskId} className="flex-1" />
+        {/* The pulse keeps a floor width and never shrinks below it: squeezed to
+            ~0px beside a long phase label, its ringed segment's outline painted
+            over the count. The position text is what gives way (truncates). */}
+        <MissionPulse variant="context" segments={segments} selectedTaskId={selectedTaskId} className="flex-[1_0_5rem]" />
         {position && (
           <>
-            <span className="shrink-0 font-mono text-[11px] text-text-muted">
+            <span className="min-w-0 truncate font-mono text-[11px] text-text-muted">
               {`${position.n} / ${position.total}${position.phaseLabel ? ` · ${position.phaseLabel}` : ''}`}
             </span>
             <StepLink dir="prev" href={position.prevHref} onStep={onStep} />

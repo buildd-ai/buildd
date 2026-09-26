@@ -401,6 +401,29 @@ describe('GET /api/models', () => {
     expect(mockSetCatalogPrices).toHaveBeenCalled();
   });
 
+  it('carries the OpenRouter id and price on public entries, for the tier mapping screen', async () => {
+    // An OpenRouter tier row stores the OpenRouter model string (vendor/slug),
+    // which the bare native id loses for non-Anthropic vendors.
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      { ...publicEntry('qwen3-coder', 'other'), openRouterId: 'qwen/qwen3-coder', input: 0.3, output: 1.2 },
+    ]));
+
+    const data = await (await GET(req())).json();
+    const qwen = data.models.find((m: any) => m.id === 'qwen3-coder');
+
+    expect(qwen).toMatchObject({ openRouterId: 'qwen/qwen3-coder', inputPrice: 0.3, outputPrice: 1.2 });
+  });
+
+  it('enriches a tier model with its public price instead of dropping it as a duplicate', async () => {
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([publicEntry('claude-opus-5')]));
+
+    const data = await (await GET(req())).json();
+    const opus = data.models.filter((m: any) => m.id === 'claude-opus-5');
+
+    expect(opus).toHaveLength(1);
+    expect(opus[0]).toMatchObject({ tier: 'premium', openRouterId: 'anthropic/claude-opus-5', inputPrice: 2 });
+  });
+
   it('prefers the credentialed catalog for the audit when both are present', async () => {
     // The Anthropic list is authoritative (dated snapshots, unreselled models);
     // the public one is the fallback, not an override.

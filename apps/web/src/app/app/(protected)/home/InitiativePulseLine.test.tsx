@@ -87,4 +87,16 @@ describe('Home mounts the pulse line (§2.1)', () => {
     );
     expect(html).toContain('min-h-11');
   });
+
+  it('reads as a link chip (bordered, labelled), not a stray line of text', () => {
+    const html = renderToStaticMarkup(
+      <InitiativePulseLine items={[arc('i-1', 'Alpha', 'losing'), arc('i-2', 'Beta', 'stuck')]} />,
+    );
+    const tag = html.match(/<a [^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('border');
+    expect(tag).toContain('font-mono');
+    expect(tag).toContain('data-variant="chip"');
+    // Still one string, so the clause set cannot be split.
+    expect(html).toContain('Initiatives · 1 losing · 1 stuck');
+  });
 });

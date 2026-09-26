@@ -37,9 +37,9 @@
  */
 
 import { db } from './db';
-import { secrets, teams } from './db/schema';
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import { decrypt } from './secrets';
+import { teams } from './db/schema';
+import { eq } from 'drizzle-orm';
+import { resolveInferenceKey, INFERENCE_KEY_PURPOSE as KEY_PURPOSE } from './inference-keys';
 import { resolveTierEntry } from './model-tier-registry';
 import type { Tier, TierProvider } from './model-tier-defaults';
 import { isInferenceEnabled, type InferenceCapability } from './inference-policy';
@@ -61,7 +61,7 @@ const RETRY_BACKOFF_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 /** Secret purpose holding an inference API key. `label` names the provider. */
-export const INFERENCE_KEY_PURPOSE = 'inference_key' as const;
+export const INFERENCE_KEY_PURPOSE = KEY_PURPOSE;
 
 // ── Result and error types ────────────────────────────────────────────────────
 
@@ -112,86 +112,10 @@ export function describeInferenceError(error: InferenceError): string {
 
 // ── Key resolution ────────────────────────────────────────────────────────────
 
-/**
- * Env fallback per provider, kept only for backward compatibility while teams
- * migrate their keys into `secrets`. Neither var is set in production, which is
- * exactly the bug this indirection exists to stop repeating.
- */
-const ENV_FALLBACK: Record<string, string | undefined> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-};
-
-/**
- * Purposes accepted for a provider's key, in preference order.
- *
- * `anthropic_api_key` is honoured for Anthropic so a team that already pasted a
- * key for worker runs does not have to paste it twice. Notably absent:
- * `oauth_token` and `claude_credential` — see the module docstring.
- */
-const KEY_PURPOSES: Record<string, string[]> = {
-  anthropic: [INFERENCE_KEY_PURPOSE, 'anthropic_api_key'],
-  openrouter: [INFERENCE_KEY_PURPOSE],
-};
-
-export async function resolveInferenceKey(opts: {
-  provider: TierProvider;
-  teamId: string;
-  workspaceId?: string | null;
-}): Promise<string | null> {
-  const purposes = KEY_PURPOSES[opts.provider] ?? [];
-
-  if (purposes.length > 0) {
-    const rows = await db.query.secrets.findMany({
-      where: and(
-        eq(secrets.teamId, opts.teamId),
-        or(...purposes.map(p => eq(secrets.purpose, p as never))),
-        or(
-          isNull(secrets.workspaceId),
-          opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`,
-        ),
-      ),
-      columns: {
-        id: true, purpose: true, label: true, encryptedValue: true,
-        workspaceId: true, healthStatus: true, updatedAt: true,
-      },
-    });
-
-    // An `inference_key` row is provider-qualified by its label; an
-    // `anthropic_api_key` row has no label to check and is Anthropic by purpose.
-    //
-    // The purpose is re-checked in JS rather than trusted to the `where`: a loose
-    // or mocked query would otherwise let a purpose this provider does not accept
-    // through, which for `openrouter` would mean handing an Anthropic key to
-    // OpenRouter. A credential must never reach a provider it was not issued for.
-    const candidates = rows.filter(r =>
-      purposes.includes(r.purpose) &&
-      (r.purpose !== INFERENCE_KEY_PURPOSE || (r.label ?? '').toLowerCase() === opts.provider),
-    );
-
-    // Same ordering as the claim route: purpose preference, workspace-scoped over
-    // team-wide, healthy over revoked, then most recently updated — so a stale or
-    // revoked leftover can never shadow a working key.
-    const best = candidates.sort((a, b) =>
-      purposes.indexOf(a.purpose) - purposes.indexOf(b.purpose) ||
-      (b.workspaceId === opts.workspaceId ? 1 : 0) - (a.workspaceId === opts.workspaceId ? 1 : 0) ||
-      ((a.healthStatus as string) === 'revoked' ? 1 : 0) - ((b.healthStatus as string) === 'revoked' ? 1 : 0) ||
-      (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0)
-    )[0];
-
-    if (best) {
-      try {
-        const value = decrypt(best.encryptedValue);
-        if (value) return value;
-      } catch (e) {
-        console.error(`[inference] failed to decrypt secret ${best.id}:`, e);
-      }
-    }
-  }
-
-  const envVar = ENV_FALLBACK[opts.provider];
-  return (envVar ? process.env[envVar] : undefined) || null;
-}
+// One resolver for chat, inference and decision calls: see `inference-keys.ts`
+// for precedence (user → account → workspace → team → env outside production).
+// Re-exported so existing imports keep working.
+export { resolveInferenceKey } from './inference-keys';
 
 /**
  * Read the team's inference allowlist.

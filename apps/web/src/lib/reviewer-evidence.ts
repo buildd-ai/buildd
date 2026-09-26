@@ -13,8 +13,18 @@ type ReviewerNote = {
  */
 export const RECOMMENDATION_MARKER = '\n\n**Recommended next step:** ';
 
+/**
+ * Title of the note the reviewer verdict handler posts when an approve-only
+ * gate holds an approved PR for a human. Shared with GATE_EVIDENCE_PATTERN so
+ * the writer and the matcher cannot drift.
+ */
+export function approvedAwaitingMergeTitle(prNumber: number): string {
+  return `Reviewer approved PR #${prNumber}. Merge it yourself.`;
+}
+
+// "awaiting human merge" matches notes written before the title changed.
 const GATE_EVIDENCE_PATTERN =
-  /(?:gate condition|auto-merge blocked|awaiting human merge)/i;
+  /(?:gate condition|auto-merge blocked|awaiting human merge|approved PR #\d+\. Merge it yourself)/i;
 
 function noteText(note: ReviewerNote): string {
   return note.body ?? note.title;

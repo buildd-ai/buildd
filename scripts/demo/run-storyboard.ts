@@ -43,7 +43,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, DESKTOP, highlightTargets, resolveViewports, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, DESKTOP, highlightTargets, isRendered, resolveViewports, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -211,6 +211,7 @@ async function main() {
         const el = loc.nth(i);
         const b = await el.boundingBox();
         if (!b || b.width <= 0 || b.height <= 0) continue;
+        if (!(await el.evaluate(isRendered))) continue;
         const attrs = await el.evaluate((node) => {
           const o: Record<string, string> = {};
           for (const a of ['data-status', 'data-state', 'data-kind', 'data-phase']) {

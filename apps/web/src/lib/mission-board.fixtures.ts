@@ -35,7 +35,20 @@ function t(id: string, phase: 1 | 2, over: Partial<BoardTaskInput>): BoardTaskIn
   };
 }
 
-export function boardFixture(moment: 'running' | 'question' | 'complete'): MissionBoardModel {
+export function boardFixture(moment: 'running' | 'question' | 'complete' | 'planning'): MissionBoardModel {
+  if (moment === 'planning') {
+    return buildMissionBoard({
+      tasks: [t('plan', 1, {
+        title: 'Mission: Example goal', taskClass: 'bookkeeping', mode: 'planning', status: 'in_progress', roleSlug: 'organizer',
+        missionPhaseIndex: null, missionPhaseLabel: null, outputRequirement: null,
+        workers: [w({ runner: 'alpha', startedAt: min(0), milestones: [{ ts: min(1), label: 'Mapped the example tables' }] })],
+      })],
+      roles: [{ slug: 'organizer', name: 'Organizer', color: 'var(--test-role-colour)' }],
+      now: min(2),
+      missionCreatedAt: BOARD_T0,
+      missionStatus: 'active',
+    });
+  }
   const done = moment === 'complete';
   const tasks: BoardTaskInput[] = [
     t('base', 1, { status: 'completed', workers: [w({ status: 'completed', completedAt: min(4), prNumber: 101, mergedAt: min(5), linesAdded: 40, linesRemoved: 2 })] }),

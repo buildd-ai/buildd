@@ -79,6 +79,35 @@ function board(tasks: BoardTaskInput[], over: Partial<MissionBoardInput> = {}) {
   });
 }
 
+describe('buildMissionBoard — before the plan lands', () => {
+  // Regression: with only the orchestrator's planning task, the Board drew one
+  // empty "1 TASKS 0/0" column. No deliverables means no columns; the model
+  // carries the planning task's live state for a placeholder instead.
+  const plan = task('plan', {
+    title: 'Mission: Example goal', taskClass: 'bookkeeping', mode: 'planning', status: 'in_progress', roleSlug: 'organizer',
+    missionPhaseIndex: null, missionPhaseLabel: null,
+    workers: [worker({ runner: 'atlas', startedAt: min(0), currentAction: 'Reading the schema', milestones: [{ ts: min(1), label: 'Mapped the invoice tables' }] })],
+  });
+  const m = board([plan], { roles: [{ slug: 'organizer', name: 'Organizer', color: 'var(--test-role)' }] });
+
+  it('draws no phase columns', () => {
+    expect(m.phases).toEqual([]);
+  });
+
+  it('exposes the planning task and its live worker state', () => {
+    expect(m.planning).toMatchObject({
+      taskId: 'plan', roleName: 'Organizer', live: true, runner: 'atlas',
+      startedAt: min(0), currentAction: 'Reading the schema', lastMilestone: 'Mapped the invoice tables',
+    });
+  });
+
+  it('drops the placeholder once deliverables exist', () => {
+    const withWork = board([plan, task('db')], { roles: [{ slug: 'organizer', name: 'Organizer', color: 'var(--test-role)' }] });
+    expect(withWork.planning).toBeNull();
+    expect(withWork.phases.length).toBe(1);
+  });
+});
+
 describe('buildMissionBoard — tile states', () => {
   it('refines the feed state into what a tile draws', () => {
     const merged = task('db', { status: 'completed', workers: [worker({ status: 'completed', completedAt: min(5), prNumber: 11, mergedAt: min(6), prLifecycleStatus: 'merged' })] });
@@ -152,6 +181,33 @@ describe('buildMissionBoard — fleet and lanes', () => {
     expect(m.live).toBe(2);
     expect(m.capacity).toBe(3);
     expect(m.tasks.b.slot).toBe(1);
+  });
+
+  it('divides live by the FLEET capacity when it is known, not by the slots this mission drew', () => {
+    // Regression: Lanes read "LIVE 5 /5 slots" while Home said 5/8 — the
+    // denominator was the overlap-derived slot count of this mission's bars.
+    const a = task('a', { status: 'in_progress', workers: [worker({ runner: 'atlas', startedAt: min(1) })] });
+    const b = task('b', { status: 'in_progress', workers: [worker({ runner: 'birch', startedAt: min(1) })] });
+    expect(board([a, b]).capacity).toBe(2);
+    expect(board([a, b], { fleetCapacity: 8 }).capacity).toBe(8);
+    // Never below what is visibly live (a stale heartbeat must not read 5/3).
+    expect(board([a, b], { fleetCapacity: 1 }).capacity).toBe(2);
+  });
+
+  it('counts a claimed worker that has not started yet in the fleet band, as its tile does', () => {
+    // A claim inserts the worker (status idle) before the runner stamps
+    // startedAt. The tile already shows it running on its runner; the band
+    // must agree rather than read "0 agents · idle".
+    const plan = task('plan', { mode: 'planning', status: 'completed', workers: [worker({ runner: 'atlas', startedAt: min(0), completedAt: min(1), status: 'completed' })] });
+    const a = task('a', { status: 'assigned', workers: [worker({ runner: 'atlas', status: 'idle', startedAt: null, createdAt: min(1) })] });
+    const b = task('b', { status: 'assigned', workers: [worker({ runner: 'birch', status: 'idle', startedAt: null, createdAt: min(1) })] });
+    const m = board([plan, a, b], { now: min(1) + 2_000 });
+    expect(m.tasks.a.runner).toBe('atlas');
+    expect(m.tasks.b.runner).toBe('birch');
+    expect(m.live).toBe(2);
+    expect(m.runners.map(r => r.name)).toEqual(['atlas', 'birch']);
+    expect(m.runners.find(r => r.name === 'birch')!.slots).toEqual([{ taskId: 'b', waiting: false }]);
+    expect(m.runners.find(r => r.name === 'atlas')!.slots).toContainEqual({ taskId: 'a', waiting: false });
   });
 
   it('names a runner that claimed with its URL by host, not by the URL (avatar is not "H")', () => {

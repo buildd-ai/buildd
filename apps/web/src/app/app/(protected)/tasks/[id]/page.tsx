@@ -35,6 +35,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
@@ -64,9 +65,10 @@ import { findTaskRole } from './role-lookup';
 import { taskHeading } from './task-header';
 import { linkQuestionNote } from './question-hero';
 import { buildLineage } from './pr-lineage';
+import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
+import { sidePanelPeers } from './also-running';
 import { loadAlsoRunningWorkers } from './also-running-loader';
 import type { PrOutcome } from '@/components/task/PrCard';
-import type { WorkerMilestone } from '@buildd/core/db/schema';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -81,6 +83,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   test: 'bg-cat-test/15 text-cat-test',
   infra: 'bg-cat-infra/15 text-cat-infra',
   design: 'bg-cat-design/15 text-cat-design',
+  research: 'bg-cat-research/15 text-cat-research',
 };
 
 export default async function TaskDetailPage({
@@ -309,11 +312,12 @@ export default async function TaskDetailPage({
     prWorker?.prNumber
       ? db.query.tasks.findMany({
           where: and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha)),
-          columns: { id: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
+          columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
+            // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
-              columns: { runner: true, accountId: true, localUiUrl: true, commitCount: true, linesAdded: true, linesRemoved: true, filesChanged: true, createdAt: true, startedAt: true, completedAt: true, lastCommitSha: true },
               orderBy: desc(workers.createdAt),
+              with: { account: { columns: { name: true, authType: true } } },
             },
           },
           orderBy: asc(tasks.createdAt),
@@ -511,11 +515,20 @@ export default async function TaskDetailPage({
   });
 
   // Override to "Waiting on you" when a non-mission task has open question notes
-  const displayStatus = openQuestionCount > 0 && !isTerminal
+  const ownDisplayStatus = openQuestionCount > 0 && !isTerminal
     ? 'waiting_on_you'
     : subjectDead && !activeWorker
       ? 'subject_dead'
       : baseDisplayStatus;
+  // The lineage decides: a completed task whose PR a CI-fix attempt is still
+  // working reads "Fixing CI", not "Completed".
+  const displayStatus = lineageDisplayStatus({
+    displayStatus: ownDisplayStatus,
+    taskStatus: task.status,
+    prMerged: !!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
+    prClosed: prWorker?.prLifecycleStatus === 'closed',
+    attemptStatuses: ciAttemptTasks.map(t => t.status),
+  });
 
   const initiative = task.mission?.initiative ?? null;
 
@@ -661,24 +674,11 @@ export default async function TaskDetailPage({
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
   const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
 
-  const latestPct = (ms: unknown): number | null => {
-    const list = Array.isArray(ms) ? (ms as WorkerMilestone[]) : [];
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.type === 'status' && typeof m.progress === 'number') return m.progress;
-    }
-    return null;
-  };
-  const peers: PeerTask[] = peerWorkers
-    .filter(w => w.task && (task.missionId ? w.task.missionId === task.missionId : true))
-    .map(w => ({
-      taskId: w.task!.id,
-      title: w.task!.title.replace(/^\s*\[[^\]]*\]\s*/, ''),
-      pct: latestPct(w.milestones),
-      href: taskPageHref({ taskId: w.task!.id, missionId: w.task!.missionId }),
-      waiting: w.status === 'waiting_input',
-    }))
-    .filter((p, i, all) => all.findIndex(q => q.taskId === p.taskId) === i);
+  // A task listed under "Unblocked by this" is not repeated under "Also running".
+  const peers: PeerTask[] = sidePanelPeers(peerWorkers, {
+    missionId: task.missionId ?? null,
+    excludeTaskIds: new Set(dependentTasks.map(d => d.id)),
+  });
 
   let prOutcome: PrOutcome | null = null;
   if (prWorker) {
@@ -765,6 +765,8 @@ export default async function TaskDetailPage({
   const unresolvedDepIds = new Set(unresolvedDeps.map(d => d.id));
   const pathManifest = Array.isArray(task.pathManifest) ? (task.pathManifest as string[]) : [];
   const ciAttemptWorkers = ciAttemptTasks.flatMap(t => t.workers.slice(0, 1));
+  // Every worker on this task's PR, the CI-fix attempts' included.
+  const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
   const factRows: FactRow[] = [
     ...(prOutcome && prWorker && isTerminal
       ? [{
@@ -1227,9 +1229,7 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
-                    {task.parentTask.status}
-                  </span>
+                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
               )}
               {([
@@ -1247,9 +1247,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
-                          {sub.status}
-                        </span>
+                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
                       </div>
                     ))}
                   </div>
@@ -1559,13 +1557,13 @@ export default async function TaskDetailPage({
         )}
 
         {/* Worker History */}
-        {taskWorkers.length > 0 && (
-          <div>
+        {workerHistory.length > 0 && (
+          <div data-testid="task-worker-history">
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               Worker History
             </div>
             <div className="border border-border-default overflow-hidden">
-              {taskWorkers.map((worker) => {
+              {workerHistory.map(({ worker, attemptLabel }) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
@@ -1576,9 +1574,13 @@ export default async function TaskDetailPage({
                       {iconStyle.icon}
                     </div>
                     <div className="flex-1 min-w-0 basis-[calc(100%-2.75rem)] md:basis-0">
-                      <div className="text-[13px] font-medium text-text-primary truncate">{worker.name}</div>
+                      <div className="text-[13px] font-medium text-text-primary truncate" title={worker.name}>
+                        {runnerLabel(worker) ?? worker.name}
+                        {attemptLabel && <span className="font-normal text-text-muted"> · {attemptLabel}</span>}
+                      </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
-                        {worker.branch}
+                        {/* Generated names are capped mid-slug; cut at a token, full name on hover. */}
+                        <span title={worker.branch}>{displayBranchName(worker.branch)}</span>
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
                       {worker.error && (

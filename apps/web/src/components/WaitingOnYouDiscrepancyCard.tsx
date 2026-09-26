@@ -290,7 +290,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
           `${item.lastCheckedHoursAgo != null ? ` ${item.lastCheckedHoursAgo}h ago` : ''} still finds ${claimsWord} ` +
           `passing while the doc declares ${item.declaredStatus ? `'${item.declaredStatus}'` : 'no recognised status'}. ` +
           'Promote the status, correct the assertion, or add skip_until — or accept it.',
-        link: 'Open the doc-fix task →',
+        link: 'See the doc fix',
       };
       break;
     default:
@@ -309,6 +309,9 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
   const showAccept =
     showNormalCtas || automation === 'pr_open' || automation === 'pr_unknown'
     || automation === 'needs_owner';
+  // needs_owner is the one state where Accept is the only decision left, so it
+  // is THE action: primary, and named for what it does.
+  const decision = automation === 'needs_owner';
   const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
@@ -355,8 +358,23 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
         )}
 
         {/* The decision, where there is one, is the Accept button below; the
-            link only opens the task, so it says so rather than naming it. */}
-        {status && (
+            link only opens the task, so it says so rather than naming it. On
+            needs_owner the link is a quiet reference beside the evidence, so it
+            never out-shouts the button that carries the decision. */}
+        {status && decision && (
+          <p data-testid="discrepancy-decision" className="text-[12px] text-text-secondary">
+            {status.text}{' '}
+            {taskLink && (
+              <Link
+                href={`/app/tasks/${taskLink}`}
+                className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-secondary"
+              >
+                {status.link}
+              </Link>
+            )}
+          </p>
+        )}
+        {status && !decision && (
           <div>
             {status.text && <p className="text-[12px] text-text-secondary">{status.text}</p>}
             {status.link && taskLink && (
@@ -400,13 +418,16 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
               Flip direction
             </button>
           )}
+          {/* When Accept is the only decision left, it is THE action: primary,
+              and named for what it does. */}
           <button
             type="button"
             onClick={() => setMode('accepting')}
             disabled={busy}
-            className={SECONDARY_BTN}
+            data-testid="discrepancy-accept"
+            className={decision ? PRIMARY_BTN : SECONDARY_BTN}
           >
-            Accept
+            {decision ? 'Accept the gap' : 'Accept'}
           </button>
         </div>
       )}

@@ -11,3 +11,13 @@ describe('StatusBadge', () => {
     expect(cls).toContain('shrink-0');
   });
 });
+
+// Regression (demo reshoot, task page Related tasks): an attempt's badge read
+// the raw DB value `in_progress`. The badge speaks display labels only.
+describe('StatusBadge labels', () => {
+  it('reads an in-progress task as Running, never the raw enum', () => {
+    const html = renderToStaticMarkup(<StatusBadge status="in_progress" />);
+    expect(html).toContain('Running');
+    expect(html).not.toContain('in_progress');
+  });
+});

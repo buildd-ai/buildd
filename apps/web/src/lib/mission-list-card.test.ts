@@ -7,6 +7,7 @@ import {
   buildMissionListCard,
   describeCadence,
   missionsHeadline,
+  nextRunLabel,
   shortAgo,
   shortDuration,
   type ListMissionRow,
@@ -90,6 +91,32 @@ describe('buildMissionListCard — a worker waiting on the owner', () => {
     expect(card.status).toEqual({ label: 'Needs you', tone: 'warning' });
     expect(card.question).toMatchObject({ taskId: 'checkout', workerId: 'w-q', label: 'checkout', options: ['Per line', 'Total only'] });
     expect(card.counts.needsYou).toBe(1);
+  });
+});
+
+describe('buildMissionListCard — a PR that just went green is merging, not an ask', () => {
+  // Regression: the home row read NEEDS YOU (amber cell) while the headline and
+  // the Needs-you stat said nothing needed you — the action queue files a
+  // just-green auto-merge PR as in flight, the pulse filed it as "yours to merge".
+  const mk = (greenAgoMs: number): ListMissionRow => ({
+    id: 'm-green', title: 'Example mission', status: 'active', createdAt: new Date(NOW - 3600_000),
+    tasks: [
+      task('inv', { status: 'completed', workers: [{ status: 'completed', prNumber: 21, prUrl: 'https://example.test/pr/21', prLifecycleStatus: 'ci_green', updatedAt: new Date(NOW - greenAgoMs) }] }),
+      // The CI-fix attempt adopted the parent's PR: its worker row carries the
+      // same PR number with no lifecycle of its own (the webhook stamps the owner row).
+      task('fix', { taskClass: 'attempt', parentTaskId: 'inv', status: 'completed', workers: [{ status: 'completed', prNumber: 21, prUrl: 'https://example.test/pr/21' }] }),
+      task('api', { status: 'in_progress', workers: [{ id: 'w-api', status: 'running', startedAt: new Date(NOW - 60_000) }] }),
+    ],
+  });
+  it('inside the grace window: no needs-you cell, status is not Needs you', () => {
+    const card = build(mk(20_000));
+    expect(card.counts.needsYou).toBe(0);
+    expect(card.phases.flatMap(p => p.cells).find(c => c.taskId === 'inv')?.state).not.toBe('needs_you');
+    expect(card.status.label).not.toBe('Needs you');
+  });
+  it('once auto-merge had its chance and the PR is still open, it is yours', () => {
+    const card = build(mk(30 * 60_000));
+    expect(card.status.label).toBe('Needs you');
   });
 });
 
@@ -182,5 +209,37 @@ describe('shortAgo', () => {
     expect(shortAgo(new Date(now - 12 * 60_000).toISOString(), now)).toBe('12m');
     expect(shortAgo(new Date(now - 3 * 86_400_000).toISOString(), now)).toBe('3d');
     expect(shortAgo(null, now)).toBe('');
+  });
+});
+
+describe('nextRunLabel', () => {
+  const now = Date.UTC(2026, 8, 26, 12, 0);
+  const at = (mins: number) => new Date(now + mins * 60_000).toISOString();
+  const text = (mins: number | null, tz?: string) => {
+    const l = nextRunLabel(mins, mins == null ? null : at(mins), { now, timeZone: tz });
+    return l ? [l.lead, l.value].filter(Boolean).join(' ') : null;
+  };
+  it('near runs read in minutes and hours', () => {
+    expect(text(null)).toBeNull();
+    expect(text(0)).toBe('due now');
+    expect(text(45)).toBe('next 45m');
+    expect(text(200)).toBe('next 3h 20m');
+    expect(text(47 * 60)).toBe('next 47h');
+  });
+  it('days out read as a count of days, never thousands of hours', () => {
+    expect(text(3 * 1440 + 100)).toBe('in 3 days');
+    expect(text(13 * 1440)).toBe('in 13 days');
+  });
+  it('months out read as a date', () => {
+    // 111 days after Sep 26 is Jan 15 (next year, so the year shows).
+    expect(text(111 * 1440, 'UTC')).toBe('next Jan 15, 2027');
+    expect(text(40 * 1440, 'UTC')).toBe('next Nov 5');
+  });
+});
+
+describe('shortDuration for elapsed minutes', () => {
+  it('turns 8640 minutes into days, not a wall of minutes', () => {
+    expect(shortDuration(8640 * 60_000)).toBe('6d');
+    expect(shortDuration(1620 * 60_000)).toBe('1d');
   });
 });

@@ -28,6 +28,7 @@ import {
   taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
+import { useMissionLiveSnapshot } from './MissionLiveStore';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -63,7 +64,11 @@ export default function MissionBoard({ model: serverModel, completionText, notic
       ))}
       {model.complete && <CompletionRecord model={model} text={completionText ?? null} />}
 
-      <section
+      {model.phases.length === 0 && model.planning && (
+        <PlanningPlaceholder planning={model.planning} now={now} link={link} />
+      )}
+
+      {model.phases.length > 0 && <section
         data-testid="mission-board-columns"
         className="mt-[22px] grid grid-cols-1 items-start gap-[22px] md:[grid-template-columns:var(--cols)]"
         style={{ ['--cols' as string]: model.phases.map(p => `minmax(0,${p.total <= 2 ? 0.78 : 1}fr)`).join(' ') }}
@@ -95,7 +100,7 @@ export default function MissionBoard({ model: serverModel, completionText, notic
             </div>
           );
         })}
-      </section>
+      </section>}
 
       {model.complete ? <Concurrency model={model} /> : <Ticker model={model} now={now} link={link} />}
     </div>
@@ -410,6 +415,48 @@ function Ticker({ model, now, link }: { model: MissionBoardModel; now: number; l
         </a>
       ))}
     </section>
+  );
+}
+
+// ── Planning ─────────────────────────────────────────────────────────────────
+
+/**
+ * Before the plan lands there are no deliverables, so no columns: say who is
+ * planning and what they are doing, live (milestones stream in over the same
+ * store the tiles read), instead of an empty "Tasks 0/0" column.
+ */
+function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable<MissionBoardModel['planning']>; now: number; link: BoardLinkContext }) {
+  const live = useMissionLiveSnapshot()[p.taskId];
+  const milestone = live?.milestones?.length ? live.milestones[live.milestones.length - 1].label : p.lastMilestone;
+  const action = live?.currentAction ?? p.currentAction;
+  const detail = action ?? milestone;
+  return (
+    <a
+      href={taskSheetHref(link, p.taskId)}
+      data-testid="board-planning"
+      data-task-id={p.taskId}
+      data-live={String(p.live)}
+      className="mt-[22px] flex min-w-0 flex-col gap-1.5 border-2 border-dashed border-border-strong bg-card px-[18px] py-3.5 hover:bg-card-hover"
+    >
+      <span className="flex min-w-0 items-center gap-2.5">
+        <span
+          aria-hidden="true"
+          className={`block h-2 w-2 shrink-0 ${p.live ? 'animate-pulse bg-accent' : 'border border-border-strong'}`}
+          style={p.roleColor && p.live ? { background: p.roleColor } : undefined}
+        />
+        <span className="min-w-0 truncate font-mono text-[13px] font-semibold text-text-primary">
+          {p.live ? `${p.roleName} is planning…` : `${p.roleName} will plan this mission`}
+        </span>
+        {p.runner && <RunnerAvatar runner={p.runner} className="ml-auto" />}
+        {p.runner && <span className="shrink-0 font-mono text-[11px] text-text-muted">{p.runner}</span>}
+        {p.live && p.startedAt != null && (
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{formatAge(now - p.startedAt)}</span>
+        )}
+      </span>
+      <span data-testid="board-planning-detail" className="min-w-0 truncate font-mono text-[12px] text-text-secondary">
+        {detail ?? (p.live ? 'Breaking the goal into tasks and phases.' : 'Waiting for a runner to pick up the plan.')}
+      </span>
+    </a>
   );
 }
 

@@ -20,6 +20,7 @@ themes: [dark, light]
 highlight:
   - home-stat-strip
   - home-fleet
+  - fleet-summary # the one-line fleet once every slot is idle (30-home-end)
   - fleet-slot
   - fleet-runner
   - needs-you-card
