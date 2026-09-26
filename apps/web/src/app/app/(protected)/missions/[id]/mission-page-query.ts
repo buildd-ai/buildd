@@ -21,7 +21,7 @@
  * Pure: no `db` import. The page runs the queries.
  */
 import { sql, eq, and, type SQL } from 'drizzle-orm';
-import { artifacts, tasks, workers } from '@buildd/core/db/schema';
+import { artifacts, tasks } from '@buildd/core/db/schema';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { ArtifactType } from '@buildd/shared';
 
@@ -159,7 +159,10 @@ export const missionVisualShotsWhere = (missionId: string): SQL =>
     eq(artifacts.missionId, missionId),
     eq(artifacts.type, ArtifactType.SCREENSHOT),
     sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
-    sql`${artifacts.workerId} in (select ${workers.id} from ${workers} inner join ${tasks} on ${tasks.id} = ${workers.taskId} where ${tasks.missionId} = ${missionId} and ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG})`,
+    // Plain aliased identifiers, not workers/tasks column objects: the
+    // relational query maps every column in a raw `where` onto the queried
+    // table, which turned `workers.id` into `"artifacts"."id"`.
+    sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
   )!;
 
 // ── The digest query ─────────────────────────────────────────────────────────
