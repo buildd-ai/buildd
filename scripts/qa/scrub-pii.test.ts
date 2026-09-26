@@ -103,7 +103,12 @@ const SAFE: Record<string, string[]> = {
   worker_prompt_composition_events: ['policy_version', 'backend', 'sections'],
   artifacts: ['type'],
   mission_notes: ['delivered_to'],
-  worker_heartbeats: ['workspace_ids', 'runner_commit', 'runner_version'],
+  // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
+  // github_repos.default_branch.
+  worker_heartbeats: [
+    'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
+    'tracked_branch',
+  ],
   task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash'],
   github_installations: ['permissions'],
   github_repos: ['default_branch'],
