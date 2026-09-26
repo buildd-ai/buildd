@@ -53,6 +53,11 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
         </div>
       )}
 
+      <p className="text-xs text-text-secondary max-w-prose" data-testid="key-unlocks">
+        {KEY_UNLOCKS}{' '}
+        <Link href="/app/settings/models" className="underline hover:text-text-primary">Model tiers</Link> pick the model.
+      </p>
+
       <section aria-labelledby="providers-h">
         <h2 id="providers-h" className="section-label mb-3">Team keys</h2>
         {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
@@ -83,10 +88,6 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
         <KeyPolicyControl teamId={teamId} policy={view.keyPolicy} canManage={canManage} onChanged={load} />
       )}
 
-      <p className="text-xs text-text-secondary">
-        {KEY_UNLOCKS}{' '}
-        <Link href="/app/settings/models" className="underline hover:text-text-primary">Model tiers</Link> pick the model.
-      </p>
     </div>
   );
 }
