@@ -64,7 +64,8 @@ import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
-import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
+import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
+import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
@@ -1012,10 +1013,14 @@ async function handlePullRequestEvent(event: {
     if (pr.merged) {
       // Stamp mergedAt regardless of task completion state so the dependsOn gate
       // (which checks workers.mergedAt) is unblocked for downstream tasks.
-      await db
-        .update(workers)
-        .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-        .where(eq(workers.id, worker.id));
+      // Every row carrying this PR, not just the one findFirst returned: a
+      // CI-retry attempt pushes to its parent's branch and adopts the PR
+      // number, and a sibling left unstamped reads as an open PR forever.
+      await stampPrMergedOnAllRows({
+        prUrl: prUrlFor(repository.full_name, pr.number),
+        prNumber: pr.number,
+        mergedAt: new Date(),
+      });
       await reconcileReviewWithMerge({
         workspaceId: worker.workspaceId,
         taskId: worker.taskId,

@@ -18,6 +18,7 @@ import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { workerProgressSql } from './worker-progress';
+import { noRowOfPrMerged } from './pr-merge-stamp';
 
 export interface HomeFleetStats {
   mergedToday: number;
@@ -125,6 +126,8 @@ export async function loadHomeFleet(input: {
         inArray(workers.workspaceId, wsIds),
         isNotNull(workers.prNumber),
         isNull(workers.mergedAt),
+        // A retry row that adopted a PR another row saw merge is not "in CI".
+        noRowOfPrMerged(),
         inArray(workers.prLifecycleStatus, ['pr_open', 'ci_running']),
         gte(workers.updatedAt, new Date(now - 7 * 86_400_000)),
       ))
@@ -202,7 +205,8 @@ export async function loadHomeFleet(input: {
       mergedToday: mergedPrNumbers.length,
       mergedPrNumbers,
       prsInCi: ciRows
-        .filter(r => r.prNumber != null)
+        // One entry per PR, however many rows carry it.
+        .filter((r, i, all) => r.prNumber != null && all.findIndex(o => o.prNumber === r.prNumber) === i)
         .map(r => ({ prNumber: r.prNumber!, label: taskShortLabel({ title: r.taskTitle ?? '', label: r.taskLabel }).label })),
       selfHealed: healedRows[0]?.n ?? 0,
     },
