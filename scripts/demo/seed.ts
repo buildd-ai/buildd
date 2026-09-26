@@ -14,7 +14,7 @@
 import { DEMO } from './lib/guard';
 import { createHash } from 'crypto';
 import { createLocalDb, schema, sql, type LocalDb } from '../../packages/core/db/local-client';
-import { IdMap, loadStory, relTime, saveState, toRow, type Entity, type Story } from './lib/story';
+import { IdMap, loadStory, relTime, runnerEnvironment, runnerUrl, saveState, toRow, type Entity, type Story } from './lib/story';
 
 const DEFAULT_STORY = new URL('./stories/placeholder.json', import.meta.url).pathname;
 
@@ -123,7 +123,7 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
       await db.insert(s.workerHeartbeats).values({
         accountId: ids.get(a.key), localUiUrl: r.localUiUrl, workspaceIds: [ids.get(ws.key)],
         maxConcurrentWorkers: r.maxConcurrentWorkers ?? 2, activeWorkerCount: 0, lastHeartbeatAt: new Date(anchorMs),
-        environment: r._display ? ({ label: r._display } as any) : undefined,
+        environment: runnerEnvironment(r) as any,
       } as any);
     }
 
@@ -185,7 +185,7 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
       const shortId = ids.get(t.key!).slice(0, 8);
       return {
         id: ids.register(`${t.key}__w`), taskId: ids.get(t.key!), workspaceId: ids.get(ws.key), accountId: account ? ids.get(account.key) : null,
-        name: `${account?.name ?? 'demo'}-${shortId}`, runner: w.runner ?? 'atlas',
+        name: `${account?.name ?? 'demo'}-${shortId}`, runner: runnerUrl(story, w.runner ?? 'atlas'), localUiUrl: runnerUrl(story, w.runner ?? 'atlas'),
         branch: `buildd/${shortId}-${String(t.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30)}`,
         status: w.status ?? 'completed', startedAt: new Date(t.__start), completedAt: w.status === 'completed' ? new Date(t.__end) : null,
         updatedAt: new Date(t.__end), createdAt: new Date(t.__start),
@@ -221,7 +221,7 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
     } as any);
     await db.insert(s.workers).values({
       id: ids.register(`${tKey}__w`), taskId: tId, workspaceId: ids.get(ws.key), accountId: account ? ids.get(account.key) : null,
-      name: `${account?.name ?? 'demo'}-${tId.slice(0, 8)}`, runner: 'dune', branch: `buildd/${tId.slice(0, 8)}-mission-keep-dependencies-curr`,
+      name: `${account?.name ?? 'demo'}-${tId.slice(0, 8)}`, runner: runnerUrl(story, 'dune'), localUiUrl: runnerUrl(story, 'dune'), branch: `buildd/${tId.slice(0, 8)}-mission-keep-dependencies-curr`,
       status: 'completed', startedAt: new Date(startMs), completedAt: new Date(startMs + 70_000), createdAt: new Date(startMs), updatedAt: new Date(startMs + 70_000),
       turns: 9, inputTokens: 60_000, outputTokens: 3_000, costUsd: '0.21', milestones: [{ type: 'status', label: tick.summary, progress: 100, ts: startMs + 60_000 }],
     } as any);

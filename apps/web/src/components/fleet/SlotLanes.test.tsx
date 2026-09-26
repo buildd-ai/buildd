@@ -57,6 +57,21 @@ describe('SlotLanes', () => {
     expect(html).toContain('1 Build');
   });
 
+  it('labels={false} drops the label column so a caller can draw its own rows beside it', () => {
+    const html = render({ labels: false });
+    expect(html).toContain('grid-template-columns:0px 1fr');
+    expect(html).not.toContain('alpha');
+    expect(html).toContain('left:calc(0px + (100% - 0px) * 0.5)');
+    expect(render()).toContain('alpha');
+  });
+
+  it('bare drops the frame; tickLabel replaces the minute ticks', () => {
+    expect(render({ bare: true })).not.toContain('shadow-[var(--card-shadow)]');
+    const html = render({ tickLabel: (at: number) => `T${(at - m(0)) / 60_000}` });
+    expect(html).toContain('>T4<');
+    expect(html).not.toContain('>4m<');
+  });
+
   it('imports nothing mission-specific, so other surfaces can reuse it', () => {
     const src = readFileSync(join(import.meta.dir, 'SlotLanes.tsx'), 'utf8');
     const imports = [...src.matchAll(/from '([^']+)'/g)].map(x => x[1]);

@@ -71,10 +71,10 @@ describe('Home mounts the pulse line (§2.1)', () => {
     expect(source).toContain('loadInitiativeEffort');
   });
 
-  it('mounts it between the greeting block and Waiting on You (§2.1)', () => {
-    const greeting = source.indexOf('<Greeting firstName');
+  it('mounts it between the headline and the Needs-you stack (§2.1)', () => {
+    const greeting = source.indexOf('data-testid="home-headline"');
     const mount = source.indexOf('<InitiativePulseLine');
-    const waiting = source.indexOf('Waiting on You — unified action queue');
+    const waiting = source.indexOf('<NeedsYouStack');
     expect(greeting).toBeGreaterThan(-1);
     expect(waiting).toBeGreaterThan(-1);
     expect(mount).toBeGreaterThan(greeting);

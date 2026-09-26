@@ -20,7 +20,7 @@
  */
 import Link from 'next/link';
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { assignSlots, axisFraction, axisTicks, formatAxisMinutes } from './slot-lanes-layout';
+import { assignSlots, axisFraction, axisTicks, formatAxisMinutes, SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from './slot-lanes-layout';
 
 export type SlotLaneTone = 'live' | 'done' | 'waiting' | 'plan' | 'foreign';
 
@@ -76,10 +76,20 @@ export interface SlotLanesProps {
   pinnedId?: string | null;
   testId?: string;
   className?: string;
+  /**
+   * Draw the lane-label column. Off when a caller renders its own row labels
+   * beside the chart (Home's fleet table) — rows stay `ROW_PX` tall so the two
+   * line up.
+   */
+  labels?: boolean;
+  /** No border or shadow: the caller's card frames the chart. */
+  bare?: boolean;
+  /** Axis tick text for a tick at epoch `at`. Default: minutes from `from` ("5m"). */
+  tickLabel?: (at: number) => string;
 }
 
 const LABEL_COL_PX = 104;
-const ROW_PX = 50;
+const ROW_PX = SLOT_LANE_ROW_PX;
 /** Below this share of the axis a live bar's label goes beside it. */
 const OUTSIDE_LABEL_FRACTION = 0.06;
 
@@ -100,7 +110,9 @@ const END_MARK: Record<'ok' | 'fail' | 'ci', { glyph: string; cls: string }> = {
 export default function SlotLanes({
   lanes, from, to, now = null, nowLabel, phases, phasesLabel = 'Phase', marks, marksLabel,
   onHover, pinnedId = null, testId = 'slot-lanes', className = '',
+  labels = true, bare = false, tickLabel,
 }: SlotLanesProps) {
+  const labelPx = labels ? LABEL_COL_PX : 0;
   const pct = (t: number) => `${axisFraction(t, from, to) * 100}%`;
   const width = (a: number, b: number) => `${Math.max(0, axisFraction(b, from, to) - axisFraction(a, from, to)) * 100}%`;
   const drawEnd = (b: { end: number | null }) => b.end ?? now ?? to;
@@ -160,16 +172,16 @@ export default function SlotLanes({
     <div
       ref={chartRef}
       data-testid={testId}
-      className={`relative border-2 border-border-strong bg-card shadow-[var(--card-shadow)] ${className}`}
+      className={`relative ${bare ? '' : 'border-2 border-border-strong bg-card shadow-[var(--card-shadow)]'} ${className}`}
       onMouseLeave={() => hover(null)}
     >
       {/* Axis */}
-      <div className="grid h-[30px] border-b border-border-default" style={{ gridTemplateColumns: `${LABEL_COL_PX}px 1fr` }}>
+      <div className="grid border-b border-border-default" style={{ gridTemplateColumns: `${labelPx}px 1fr`, height: SLOT_LANE_AXIS_PX }}>
         <div />
         <div className="relative">
           {ticks.filter(m => axisFraction(from + m * 60_000, from, to) < 0.97).map(m => (
             <span key={m} className="absolute top-[9px] -translate-x-1/2 font-mono text-[11px] md:text-[10.5px] text-[var(--fleet-faint)] tabular-nums" style={{ left: pct(from + m * 60_000) }}>
-              {formatAxisMinutes(m)}
+              {tickLabel ? tickLabel(from + m * 60_000) : formatAxisMinutes(m)}
             </span>
           ))}
         </div>
@@ -177,7 +189,7 @@ export default function SlotLanes({
       <span className="sr-only">{`Axis step ${stepMin} minutes`}</span>
 
       {phases && phases.length > 0 && (
-        <div className="grid h-[26px] border-b border-border-default" style={{ gridTemplateColumns: `${LABEL_COL_PX}px 1fr` }}>
+        <div className="grid h-[26px] border-b border-border-default" style={{ gridTemplateColumns: `${labelPx}px 1fr` }}>
           <div className="flex items-center border-r border-border-default pl-3 font-mono text-[11px] md:text-[9.5px] font-semibold uppercase tracking-[1.6px] text-text-muted">{phasesLabel}</div>
           <div className="relative overflow-hidden">
             {phases.map(p => (
@@ -198,8 +210,9 @@ export default function SlotLanes({
           key={`${lane.id}:${slot}`}
           data-testid="slot-lane-row"
           className={`grid border-b border-border-default ${slot === 0 && i > 0 ? 'border-t-[1.5px] border-t-[var(--fleet-border-mid)]' : ''}`}
-          style={{ gridTemplateColumns: `${LABEL_COL_PX}px 1fr`, height: ROW_PX }}
+          style={{ gridTemplateColumns: `${labelPx}px 1fr`, height: ROW_PX }}
         >
+          {labels ? (
           <div className="flex items-center gap-[7px] border-r border-border-default pl-3 font-mono text-[11.5px] text-text-secondary">
             <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-[11px] md:text-[10.5px] font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
               {lane.badge ?? lane.label.slice(0, 1)}
@@ -207,6 +220,7 @@ export default function SlotLanes({
             {slot === 0 && <span className="min-w-0 truncate">{lane.label}</span>}
             <span className="text-[var(--fleet-faint)]">{`·${slot + 1}`}</span>
           </div>
+          ) : <div />}
           <div className="relative overflow-hidden">
             {grid}
             {bars.map(b => {
@@ -267,7 +281,7 @@ export default function SlotLanes({
       ))}
 
       {marks && (
-        <div className="grid h-10 border-t-2 border-border-strong" style={{ gridTemplateColumns: `${LABEL_COL_PX}px 1fr` }}>
+        <div className="grid h-10 border-t-2 border-border-strong" style={{ gridTemplateColumns: `${labelPx}px 1fr` }}>
           <div className="flex items-center border-r border-border-default pl-3 font-mono text-[11px] md:text-[9.5px] font-semibold uppercase tracking-[1.6px] text-status-success">
             {marksLabel ?? ''}
           </div>
@@ -293,12 +307,12 @@ export default function SlotLanes({
           <div
             aria-hidden="true"
             className="fleet-hatch-future pointer-events-none absolute inset-y-0 right-0"
-            style={{ left: `calc(${LABEL_COL_PX}px + (100% - ${LABEL_COL_PX}px) * ${axisFraction(now, from, to)})` }}
+            style={{ left: `calc(${labelPx}px + (100% - ${labelPx}px) * ${axisFraction(now, from, to)})` }}
           />
           <div
             data-testid="slot-lanes-now"
             className="pointer-events-none absolute inset-y-0 z-[6] w-0.5 bg-accent"
-            style={{ left: `calc(${LABEL_COL_PX}px + (100% - ${LABEL_COL_PX}px) * ${axisFraction(now, from, to)})` }}
+            style={{ left: `calc(${labelPx}px + (100% - ${labelPx}px) * ${axisFraction(now, from, to)})` }}
           >
             <span className="absolute -left-px -top-[22px] whitespace-nowrap bg-accent px-[5px] py-0.5 font-mono text-[11px] md:text-[10px] font-bold tracking-[0.5px] text-white">
               {nowLabel ?? 'NOW'}

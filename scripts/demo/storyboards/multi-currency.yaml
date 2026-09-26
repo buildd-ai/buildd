@@ -10,7 +10,7 @@ steps:
     advance: "2:20"
     goto: /app/home
     waitFor: home-right-now
-    highlight: [home-right-now, task-card]
+    highlight: [home-fleet, fleet-slot]
     caption: "Twelve tasks. Three phases. Dependencies worked out for you."
 
   - id: 02-mission-fanout

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { ReleaseReadinessItem } from '@/lib/release-readiness';
@@ -9,19 +9,15 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamScope } from '@/lib/team-access';
-import { splitWaitingOnYou, waitingOnYouSummary, rightNowState, stripLeadingPrRef, stageChipShowsPrNumber, recordBestEffort, homeSubheading } from './home-view';
+import { splitWaitingOnYou, rightNowState, recordBestEffort } from './home-view';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
-import Spinner from '@/components/Spinner';
-import { Greeting } from './greeting';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
 import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, summariseActionQueueAge } from '@/lib/action-queue';
-import { WaitingOnYouDiscrepancyCard } from '@/components/WaitingOnYouDiscrepancyCard';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
-import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
-import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
+import { actionCardTaskLink } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
@@ -34,19 +30,12 @@ import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseState } from '@/lib/release-baseline';
 import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
-import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
-import TaskCard from '@/components/TaskCard';
-import StatusBadge from '@/components/StatusBadge';
+import { SwipeProvider } from '@/components/SwipeableRow';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
 import { InterruptReviewButton } from './InterruptReviewButton';
-import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import HomeAutoRefresh from './HomeAutoRefresh';
-import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
-import { AgentHandledCard } from '@/components/AgentHandledCard';
-import { FixCiButton } from '@/components/FixCiButton';
-import { AgentRecommendation } from '@/components/AgentRecommendation';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import { sortInitiatives } from '@/lib/initiative-presentation';
@@ -76,22 +65,25 @@ import {
   type MissionCardView,
 } from '@/lib/mission-card-view';
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
-import { HomeMissions, selectHomeMissions, type HomeMissionSummary } from './HomeMissions';
+import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveReviewerGate, deriveStoredVerdictFallback } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
-import { StageChip } from '@/components/StageChip';
-import { deriveStage } from '@/lib/stage';
+import { ActionQueueCard } from './ActionQueueCard';
+import { StatStrip } from './StatStrip';
+import { FleetStrip } from './FleetStrip';
+import { ActivityTicker } from './ActivityTicker';
+import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
+import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
+import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
+import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
+import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
+import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
+import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
+import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
 
 // --- Helpers ---
-
-function getFirstName(name: string | null, email: string): string {
-  if (name) {
-    return name.split(' ')[0];
-  }
-  return email.split('@')[0];
-}
 
 function timeAgo(date: Date | string): string {
   const now = Date.now();
@@ -104,14 +96,6 @@ function timeAgo(date: Date | string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function formatTime(date: Date | string): string {
-  return new Date(date).toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
 }
 
 export default async function HomePage({
@@ -147,27 +131,8 @@ export default async function HomePage({
     intensityTier: 'fresh' | 'working' | 'slow' | 'stalled';
   }[] = [];
 
-  let recentActivity: {
-    id: string;
-    taskId: string | null;
-    taskStatus: string;
-    workerStatus: string;
-    type: 'completed' | 'started' | 'failed';
-    title: string;
-    workerName: string;
-    timestamp: Date;
-    missionTitle: string | null;
-    missionId: string | null;
-    prUrl: string | null;
-    prLifecycleStatus: string | null;
-    mergedAt: Date | string | null;
-    prNumber: number | null;
-  }[] = [];
-
   let missions: HomeMissionSummary[] = [];
-  let missionCardViews: MissionCardView[] = [];
 
-  let completedLast12h = 0;
   let totalTaskCount = 0;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
@@ -285,6 +250,18 @@ export default async function HomePage({
   let discrepancyOverflowCount = 0;
 
   let releaseReadinessItems: ReleaseReadinessItem[] = [];
+
+  // The fleet redesign: runner snapshot, ticker, stat counts (lib/home-fleet.ts),
+  // the compact missions rows and the Needs-you stack's own cards.
+  let fleetData: HomeFleetData | null = null;
+  let homeMissionRows: HomeMissionRow[] = [];
+  let heldMissions: HomeHeldMission[] = [];
+  let shippedMissions: HomeShippedMission[] = [];
+  let missionTotal = 0;
+  let shippedToday = 0;
+  let teamName: string | null = null;
+  let teamTz: string | null = null;
+  const renderNow = Date.now();
 
   // Build a roles map for display
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -427,20 +404,6 @@ export default async function HomePage({
           .where(and(inArray(tasks.workspaceId, wsIds), isNull(tasks.parentTaskId)));
         totalTaskCount = totalResult[0]?.count || 0;
 
-        // Count tasks completed in last 12 hours for the subheading
-        const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-        const countResult = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(workers)
-          .where(
-            and(
-              inArray(workers.workspaceId, wsIds),
-              eq(workers.status, 'completed'),
-              gte(workers.completedAt, twelveHoursAgo)
-            )
-          );
-        completedLast12h = countResult[0]?.count || 0;
-
         // Active workers with their tasks and objectives
         const activeWorkers = await db.query.workers.findMany({
           where: and(
@@ -448,7 +411,7 @@ export default async function HomePage({
             inArray(workers.status, [...LIVE_WORKER_STATUSES])
           ),
           orderBy: desc(workers.createdAt),
-          limit: 10,
+          // No cap: every live worker is a fleet slot, and a cap hid the 11th.
           with: {
             task: {
               columns: {
@@ -549,70 +512,13 @@ export default async function HomePage({
         });
 
         // Read-through PR state refresh: catch missed merge webhooks before
-        // querying both recentWorkers (Activity feed) and openPrWorkers (Waiting on You).
+        // querying openPrWorkers (Waiting on You) and the fleet ticker.
         await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
           console.error('[home] pr-state-refresh failed (non-fatal):', err),
         );
 
-        // Recent completed/failed/error workers for activity feed.
-        // Order by COALESCE(completedAt, updatedAt) so error workers (null
-        // completedAt) sort by their updatedAt rather than floating to the top
-        // via PostgreSQL's default NULLS FIRST for DESC ordering.
-        // Window to 30 days: "Activity" is a recency feed — months-old workers
-        // from dormant workspaces are noise, an empty state is honest.
+        // 30-day recency window for the resolved-escalations group below.
         const activityWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-        const recentWorkers = await db.query.workers.findMany({
-          where: and(
-            inArray(workers.workspaceId, wsIds),
-            inArray(workers.status, ['completed', 'failed', 'error']),
-            sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) >= ${activityWindowStart}`
-          ),
-          orderBy: sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) DESC`,
-          limit: 12,
-          with: {
-            task: {
-              columns: { id: true, title: true, status: true, missionId: true, roleSlug: true, parentTaskId: true, mode: true, taskClass: true },
-              with: {
-                mission: {
-                  columns: { title: true },
-                },
-              },
-            },
-            workspace: { columns: { name: true } },
-          },
-        });
-
-        // One row per task (a retried task can have several terminal workers —
-        // keep only the newest), skip bookkeeping rows (§3.6), and cap at 6 for the feed.
-        const seenTasks = new Set<string>();
-        recentActivity = recentWorkers
-          .filter((w: any) => {
-            const task = w.task;
-            if (task && (task.taskClass === 'attempt' || task.taskClass === 'bookkeeping')) return false;
-            const key = task?.id || w.id;
-            if (seenTasks.has(key)) return false;
-            seenTasks.add(key);
-            return true;
-          })
-          .slice(0, 6)
-          .map((w: any) => ({
-            id: w.id,
-            taskId: w.task?.id || null,
-            taskStatus: w.task?.status ?? w.status,
-            workerStatus: w.status,
-            type: w.status === 'completed' ? 'completed' as const : 'failed' as const,
-            title: w.task?.title || w.name,
-            // "via <workspace> · <role>" beats the runner's machine name —
-            // runner names (e.g. coder-workspace-x) carry no meaning here.
-            workerName: [w.workspace?.name, w.task?.roleSlug].filter(Boolean).join(' · ') || w.name,
-            timestamp: w.completedAt || w.updatedAt,
-            missionTitle: (w.task as any)?.mission?.title || null,
-            missionId: (w.task as any)?.missionId ?? null,
-            prUrl: w.prUrl ?? null,
-            prLifecycleStatus: w.prLifecycleStatus ?? null,
-            mergedAt: w.mergedAt ?? null,
-            prNumber: w.prNumber ?? null,
-          }));
 
         // Missions with task progress + health
         // Scope: the active team (wsIds is non-empty, so there is one).
@@ -634,13 +540,13 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
-              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
+              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true } },
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
@@ -684,14 +590,59 @@ export default async function HomePage({
             nextScanMins: summaries.get(m.id)!.nextScanMins,
           }));
 
-          const { visibleIds } = selectHomeMissions(missions);
-          const visibleRows = visibleIds
-            .map(id => allMissions.find(m => m.id === id))
-            .filter((m): m is (typeof allMissions)[number] => !!m) as unknown as MissionCardRow[];
-          const views = await loadMissionCardViews(visibleRows, {
-            from: 'home', now: nowMs, summaries, taskIndex: homeMissionTaskMap,
+          // Fleet redesign: compact rows (running, recurring, shipped in the
+          // last 12h), held missions for the Needs-you stack, and the one that
+          // just shipped. Same list-card model the missions list uses.
+          const recentMs = 12 * 3_600_000;
+          const recurringIds = allMissions.filter(m => (m.schedule as any)?.cronExpression && m.status !== 'completed').map(m => m.id);
+          const lastTickSummary = new Map<string, string>();
+          if (recurringIds.length > 0) {
+            const tickRows = await db
+              .selectDistinctOn([tasks.missionId], { missionId: tasks.missionId, summary: sql<string | null>`${tasks.result}->>'summary'` })
+              .from(tasks)
+              .where(and(inArray(tasks.missionId, recurringIds), isNotNull(tasks.scheduleId), eq(tasks.status, 'completed')))
+              .orderBy(tasks.missionId, desc(tasks.createdAt));
+            for (const r of tickRows) if (r.missionId && r.summary) lastTickSummary.set(r.missionId, r.summary);
+          }
+          missionTotal = allMissions.length;
+          const listed = allMissions.flatMap(m => {
+            const summary = summaries.get(m.id)!;
+            const recurring = recurringIds.includes(m.id);
+            const recentDone = m.status === 'completed' && m.completedAt && nowMs - new Date(m.completedAt).getTime() < recentMs;
+            const live = summary.liveWorkers > 0 || ['running', 'attention', 'review'].includes(summary.group);
+            if (!recurring && !recentDone && !live && !m.isHeld) return [];
+            const row = m as unknown as ListMissionRow;
+            if (recurring) {
+              const last = lastTickSummary.get(m.id);
+              const lastTick = (row.tasks ?? []).filter(t => t.scheduleId && t.status === 'completed')
+                .sort((a, b) => new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime())[0];
+              if (last && lastTick) (lastTick as any).result = { summary: last };
+            }
+            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
+            const model = buildMissionListCard(row, view, summary, { now: nowMs });
+            return [{ view, model, completedAt: m.completedAt }];
           });
-          missionCardViews = visibleIds.map(id => views.get(id)).filter((v): v is MissionCardView => !!v);
+          homeMissionRows = listed
+            .filter(r => r.model.kind === 'active' || r.model.kind === 'recurring' || r.model.kind === 'done')
+            .sort((a, b) => ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[a.model.kind] - ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[b.model.kind])
+            .slice(0, 6)
+            .map(({ view, model }) => ({ view, model }));
+          heldMissions = listed.filter(r => r.model.kind === 'held').map(({ view, model }) => ({
+            id: view.id, title: view.title, href: view.href,
+            ready: model.held?.ready ?? 0, roles: model.held?.roles ?? [],
+            done: model.counts.done, total: model.counts.total,
+            heldFor: model.held?.since ? shortAgo(model.held.since, nowMs) : null,
+          }));
+          const done = listed.filter(r => r.model.kind === 'done');
+          shippedToday = done.length;
+          shippedMissions = done
+            .filter(r => r.completedAt && nowMs - new Date(r.completedAt).getTime() < 3 * 3_600_000)
+            .slice(0, 1)
+            .map(({ view, model }) => ({
+              id: view.id, title: view.title, href: view.href, completedAt: view.completedAt!,
+              prs: model.done?.prs ?? 0, fixes: model.done?.fixes ?? 0, durationMs: model.done?.durationMs ?? null,
+              criteria: model.criteria,
+            }));
         }
 
         // Schedules with pending agent suggestions
@@ -1783,7 +1734,11 @@ export default async function HomePage({
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
-            inArray(workspaceSkills.workspaceId, wsIds),
+            // Team-level roles (workspaceId NULL, teamId set) are the default
+            // shape; workspace-scoped ones override per workspace.
+            activeTeamId
+              ? or(inArray(workspaceSkills.workspaceId, wsIds), and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, activeTeamId)))
+              : inArray(workspaceSkills.workspaceId, wsIds),
             eq(workspaceSkills.enabled, true),
             eq(workspaceSkills.isRole, true),
           ),
@@ -1808,6 +1763,38 @@ export default async function HomePage({
             .filter(Boolean)
         );
 
+        // Roles load after the missions block: colour the rows' live dots now.
+        for (const r of homeMissionRows) {
+          for (const d of r.model.live.dots) if (d.roleSlug && !d.color) d.color = rolesMap.get(d.roleSlug)?.color ?? null;
+        }
+
+        // Fleet panel, ticker and stat counts — one loader, all batched.
+        {
+          const [teamRow] = activeTeamId
+            ? await db.select({ name: teamsTable.name, timezone: teamsTable.timezone }).from(teamsTable).where(eq(teamsTable.id, activeTeamId)).limit(1)
+            : [];
+          teamName = teamRow?.name ?? null;
+          teamTz = teamRow?.timezone ?? null;
+          fleetData = await loadHomeFleet({
+            teamId: activeTeamId ?? null,
+            wsIds,
+            now: renderNow,
+            dayStart: startOfDayInZone(renderNow, teamTz),
+            roles: new Map([...rolesMap].map(([slug, r]) => [slug, { name: r.name, color: r.color ?? null }])),
+          }).catch(err => {
+            console.error('[home] fleet load failed (non-fatal):', err);
+            return null;
+          });
+          // Running cells in the missions rows fill to their worker's progress.
+          const progressByTask = new Map<string, number>();
+          for (const r of fleetData?.fleet.runners ?? []) for (const sl of r.slots) {
+            if (sl.worker?.taskId && sl.worker.progress != null) progressByTask.set(sl.worker.taskId, sl.worker.progress);
+          }
+          for (const row of homeMissionRows) for (const p of row.model.phases) for (const c of p.cells) {
+            if (c.state === 'running' && progressByTask.has(c.taskId)) c.fill = progressByTask.get(c.taskId)! / 100;
+          }
+        }
+
         teamRoles = allRoles.map(r => ({
           id: r.id,
           name: r.name,
@@ -1822,15 +1809,6 @@ export default async function HomePage({
     }
   }
 
-  const firstName = user ? getFirstName(user.name, user.email) : 'there';
-  // Server runs UTC; assume EST (UTC-5) for time-aware copy
-  const hour = (new Date().getUTCHours() - 5 + 24) % 24;
-  const timePeriod = hour < 12 ? 'overnight' : 'today';
-  // Arc-aware subheading: overnight throughput + the actionable "waiting on you"
-  // count (the milestone, when one crossed, leads as the headline above).
-  const shipClause = completedLast12h > 0
-    ? `${completedLast12h} ship${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
-    : null;
   // Chips SCOPE the Waiting-on-you queue (never group it). The section still
   // gates on the unfiltered queue so a filter that empties it doesn't hide the
   // chips (leaving the user unable to clear the filter).
@@ -1842,385 +1820,102 @@ export default async function HomePage({
   // RESOLVING / FIXING_CI / CI_RUNNING / FIXING_SPEC are informational: they
   // stay visible but never count as needing the human.
   const { needsYou: needsYouItems, inFlight: inFlightItems } = splitWaitingOnYou(filteredActionQueue);
-  const waitingSummary = waitingOnYouSummary(needsYouItems.length, inFlightItems.length);
-  // Same set and wording as the header above the cards.
-  const subheading = homeSubheading(shipClause, needsYouItems.length);
   const rightNow = rightNowState({
     inFlightCount: activeItems.length + agentReviewingPrs.length + reviewQueuedPrs.length,
     workspaceCount,
     totalTaskCount,
   });
 
+  // ── Fleet redesign ──
+  const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
+    workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
+    askedAt: q.askedAt, prompt: q.prompt, options: q.options,
+    href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
+  }));
+  // A parked worker's question renders once, as the one-tap card.
+  const answeredInline = new Set(questions.map(q => q.taskId).filter(Boolean));
+  const queueNeedsYou = needsYouItems.filter(i => !(i.chip === 'QUESTION' && i.taskId && answeredInline.has(i.taskId)));
+  const needsYouCount = questions.length + heldMissions.length + queueNeedsYou.length;
+  const needsYouDetail = [
+    questions.length > 0 && `${questions.length} question${questions.length === 1 ? '' : 's'}`,
+    heldMissions.length > 0 && `${heldMissions.length} held`,
+    queueNeedsYou.length > 0 && `${queueNeedsYou.length} to act on`,
+  ].filter(Boolean).join(' · ') || null;
+  const live = fleetData?.fleet.live ?? activeItems.length;
+  const headline = homeHeadline({ live, needsYou: needsYouCount, shipped: shippedMissions[0]?.title ?? null });
+  const clock = new Date(renderNow).toLocaleTimeString('en-US', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+    ...(teamTz ? { timeZone: teamTz } : {}),
+  });
+  const stats = fleetData?.stats;
+  // Legend: the roles on today's lanes (every role when the lanes are empty).
+  const lanesRoles = new Set((fleetData?.fleet.runners ?? []).flatMap(r => r.slots.flatMap(sl => sl.lane.bars.map(b => b.roleSlug))).filter(Boolean));
+  const fleetRoles = teamRoles
+    .filter(r => lanesRoles.size === 0 || lanesRoles.has(r.slug))
+    .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
+
   return (
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
-      <div className="max-w-5xl mx-auto">
-        {/* Workspace filter — desktop only; mobile header owns the picker */}
-        {teamWorkspaces.length > 0 && (
-          <div className="hidden md:flex justify-end mb-4">
-            <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />
+      <div className="mx-auto max-w-[1320px]">
+        <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
+          <div className="min-w-0">
+            <div className="section-label hidden text-text-muted md:block">Home{teamName ? ` · ${teamName}` : ''}</div>
+            <h1 data-testid="home-headline" className="mt-1.5 font-mono text-[22px] font-semibold leading-tight tracking-[-0.5px] text-text-primary md:text-[28px]">
+              {headline.map((part, i) => (
+                <span key={i} className={part.tone === 'accent' ? 'text-accent-text' : part.tone === 'success' ? 'text-status-success' : undefined}>
+                  {part.text}
+                </span>
+              ))}
+            </h1>
+            {arcHeadline && <p className="mt-1 font-mono text-[13px] text-text-secondary">{arcHeadline}</p>}
           </div>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="hidden min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-[12.5px] text-text-secondary md:flex">
+              <i aria-hidden="true" className="inline-block h-2 w-2 bg-accent" />
+              {clock}
+            </span>
+            {teamWorkspaces.length > 0 && (
+              <span className="hidden md:block">
+                <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />
+              </span>
+            )}
+            <Link
+              href="/app/missions/new"
+              className="hidden min-h-9 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm hover:bg-primary-hover md:inline-flex"
+            >
+              + Mission
+            </Link>
+          </div>
+        </header>
+
+        {/* Initiative pulse — at most one line, and nothing at all when
+            every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
+        <InitiativePulseLine items={pulseItems} />
+
+        {rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
+          <StatStrip
+            live={live}
+            capacity={fleetData?.fleet.capacity ?? 0}
+            runners={fleetData?.fleet.runners.filter(r => r.online).length ?? 0}
+            needsYou={needsYouCount}
+            needsYouDetail={needsYouDetail}
+            mergedToday={stats?.mergedToday ?? 0}
+            mergedDetail={stats && stats.mergedPrNumbers.length > 0 ? stats.mergedPrNumbers.slice(0, 4).map(n => `#${n}`).join(' ') : null}
+            prsInCi={stats?.prsInCi ?? []}
+            selfHealed={stats?.selfHealed ?? 0}
+          />
         )}
-        {/* Desktop two-column layout */}
-        <div className="md:flex md:gap-0">
-          {/* Left column: Greeting + Right Now */}
-          <div className="md:w-[60%] md:pr-8">
-            {/* Greeting — replaced by an arc headline when an initiative crossed
-                a milestone since the user's last visit. */}
-            <div className="mb-8 md:mb-10">
-              {arcHeadline ? (
-                <h1 className="text-[28px] font-semibold text-text-primary leading-tight uppercase tracking-tight">
-                  {arcHeadline}
-                </h1>
-              ) : (
-                <Greeting firstName={firstName} />
-              )}
-              <p className="text-[15px] text-text-secondary font-light mt-1.5">
-                {subheading}
-              </p>
-            </div>
 
-            {/* Initiative pulse — at most one line, and nothing at all when
-                every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
-            <InitiativePulseLine items={pulseItems} />
-
-            {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE · RESOLVING) */}
-            {actionQueue.length > 0 && (
-              <div className="mb-8" data-testid="home-waiting-on-you">
-                <div className="flex items-center justify-between gap-3 mb-4">
-                  <div className="section-label">Waiting on You</div>
-                  {/* Names both halves: "1 needs you · 4 in flight". A bare
-                      "1" over five cards read as a miscount. */}
-                  {waitingSummary && (
-                    <span className="text-[12px] font-mono text-text-muted text-right" data-testid="waiting-on-you-summary">
-                      {needsYouItems.length > 0 && (
-                        <span className="font-semibold text-accent-text">
-                          {waitingOnYouSummary(needsYouItems.length, 0)}
-                        </span>
-                      )}
-                      {needsYouItems.length > 0 && inFlightItems.length > 0 && ' · '}
-                      {inFlightItems.length > 0 && waitingOnYouSummary(0, inFlightItems.length)}
-                    </span>
-                  )}
-                </div>
-                {/* Initiative scoping chips — SCOPE the queue, never group it. */}
-                <InitiativeFilterChips
-                  initiatives={actionQueueInitiatives}
-                  selectedId={initFilter ?? null}
-                  workspaceFilter={wsFilter ?? null}
-                />
-                {filteredActionQueue.length === 0 && (
-                  <p className="text-[13px] text-text-muted mb-2">Nothing waiting for this initiative.</p>
-                )}
-                {filteredActionQueue.length > 0 && needsYouItems.length === 0 && (
-                  <p className="text-[13px] text-text-muted mb-3">Nothing needs you right now.</p>
-                )}
-                {[needsYouItems, inFlightItems].map((group, groupIndex) => group.length === 0 ? null : (
-                <div key={groupIndex === 0 ? 'needs-you' : 'in-flight'} data-testid={groupIndex === 0 ? 'waiting-needs-you' : 'waiting-in-flight'} className={groupIndex === 1 && needsYouItems.length > 0 ? 'mt-5' : undefined}>
-                {groupIndex === 1 && (
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="section-label-missions text-[11px] text-text-muted">In flight</span>
-                    <span className="text-[11px] text-text-muted font-mono">{group.length}</span>
-                  </div>
-                )}
-                <div className="space-y-2">
-                  {group.map((item) => {
-                    const arc = resolveActionCardContext(item);
-                    if (item.chip === 'MERGE') {
-                      return (
-                        <SwipeableRow
-                          key={item.subjectKey}
-                          cardType="gate-card"
-                          taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
-                          prUrl={item.prUrl}
-                          subjectKey={item.subjectKey}
-                        >
-                          <WaitingOnYouMergeCard item={item} />
-                        </SwipeableRow>
-                      );
-                    }
-                    if (item.chip === 'REVIEW') {
-                      return (
-                        <SwipeableRow
-                          key={item.subjectKey}
-                          cardType="gate-card"
-                          taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
-                          prUrl={item.prUrl}
-                          subjectKey={item.subjectKey}
-                        >
-                          <WaitingOnYouReviewCard item={item} />
-                        </SwipeableRow>
-                      );
-                    }
-                    if (item.chip === 'QUESTION') {
-                      return (
-                        <Link
-                          key={item.subjectKey}
-                          href={actionCardTaskLink(item)}
-                          className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">
-                              Question
-                            </span>
-                            {arc && arc.kind !== 'workspace' && (
-                              <span className="text-[11px] text-text-muted">{arc.label}</span>
-                            )}
-                          </div>
-                          <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mb-0.5">
-                            {item.taskTitle}
-                          </div>
-                          <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
-                        </Link>
-                      );
-                    }
-                    if (item.chip === 'DECIDE') {
-                      return <WaitingOnYouDecideCard key={item.subjectKey} item={item} />;
-                    }
-                    if (item.chip === 'DISCREPANCY' || item.chip === 'FIXING_SPEC') {
-                      // Same card either way: FIXING_SPEC is the same finding
-                      // with a doc fix already dispatched against it, so it
-                      // renders the link instead of the CTA set rather than
-                      // becoming a different-looking row.
-                      return <WaitingOnYouDiscrepancyCard key={item.subjectKey} item={item} />;
-                    }
-                    if (item.chip === 'RECONNECT') {
-                      return (
-                        <Link
-                          key={item.subjectKey}
-                          href="/app/connections"
-                          className="block border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3 hover:bg-status-error/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
-                              Reconnect
-                            </span>
-                            <span className="text-[11px] text-text-muted">Connection</span>
-                          </div>
-                          <div className="text-[13px] font-medium text-text-primary truncate">
-                            {item.connectorName}
-                            <span className="font-normal text-text-secondary"> needs re-authorising</span>
-                          </div>
-                        </Link>
-                      );
-                    }
-                    if (item.chip === 'APPROVE') {
-                      return (
-                        <Link
-                          key={item.subjectKey}
-                          href={actionCardTaskLink(item, { page: true })}
-                          className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[11px] font-mono font-medium text-accent-text tracking-wide uppercase">
-                              Approve Plan
-                            </span>
-                            {arc && arc.kind !== 'workspace' && (
-                              <span className="text-[11px] text-text-muted">{arc.label}</span>
-                            )}
-                          </div>
-                          <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
-                            {item.taskTitle}
-                          </div>
-                        </Link>
-                      );
-                    }
-                    if (item.chip === 'RESOLVING') {
-                      return (
-                        <div
-                          key={item.subjectKey}
-                          className="border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                                  <Spinner size="xs" aria-label="Resolving conflicts" />
-                                  Resolving Conflicts
-                                  {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
-                                </span>
-                              </div>
-                              {item.taskTitle && (
-                                <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
-                                  {item.conflictRetryTaskId ? (
-                                    <Link href={actionCardTaskLink(item, { taskId: item.conflictRetryTaskId, page: true })} className="hover:underline">
-                                      {item.taskTitle}
-                                    </Link>
-                                  ) : item.taskId ? (
-                                    <Link href={actionCardTaskLink(item)} className="hover:underline">
-                                      {item.taskTitle}
-                                    </Link>
-                                  ) : item.taskTitle}
-                                </div>
-                              )}
-                              {item.prUrl && (
-                                <a
-                                  href={item.prUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
-                                >
-                                  PR #{item.prNumber} ↗
-                                </a>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    }
-                    if (item.chip === 'FIXING_CI' || item.chip === 'CI_RUNNING') {
-                      return <AgentHandledCard key={item.subjectKey} item={item} />;
-                    }
-                    if (item.chip === 'BLOCKED') {
-                      return (
-                        <div
-                          key={item.subjectKey}
-                          className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="text-[11px] font-mono font-medium text-status-error tracking-wide uppercase">
-                                  Blocked
-                                </span>
-                                {arc && (
-                                  <span className="text-[11px] text-text-muted">{arc.label}</span>
-                                )}
-                              </div>
-                              {item.taskTitle && (
-                                <div className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
-                                  {item.taskId ? (
-                                    <Link href={actionCardTaskLink(item)} className="hover:underline">
-                                      {item.taskTitle}
-                                    </Link>
-                                  ) : item.taskTitle}
-                                </div>
-                              )}
-                              <p className="text-[12px] text-text-secondary mt-0.5">
-                                {item.escalationReason ?? 'Conflict-resolution retries exhausted — manual intervention required'}
-                              </p>
-                              {/* The human is being asked to decide something an
-                                  agent already failed at — lead with what that
-                                  agent said to do next, not with a merge button. */}
-                              <AgentRecommendation
-                                recommendation={item.recommendation}
-                                expected={item.ciGate?.kind === 'blocked'}
-                                tone="error"
-                              />
-                              {item.prUrl && (
-                                <a
-                                  href={item.prUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
-                                >
-                                  PR #{item.prNumber} ↗
-                                </a>
-                              )}
-                            </div>
-                            {item.deadZoneLastRetryTaskId && (
-                              <Link
-                                href={actionCardTaskLink(item, { taskId: item.deadZoneLastRetryTaskId, page: true })}
-                                className="shrink-0 inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
-                              >
-                                Last attempt
-                              </Link>
-                            )}
-                            {/* Only a genuine CI block gets a fix action — a
-                                conflict dead-zone needs a merge decision, not
-                                a CI retry. */}
-                            {item.ciGate?.kind === 'blocked' && (
-                              <FixCiButton prNumber={item.prNumber} workspaceId={item.workspaceId} />
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-                    // STALE — the shape #1790 established for BLOCKED, applied to
-                    // a different failure: we either cannot vouch for this PR's
-                    // current state, or we can and it is old enough that merging
-                    // it blind is the wrong ask. Either way it is a decision, not
-                    // a tap, so there is no merge button.
-                    if (item.chip === 'STALE') {
-                      const ageLabel = item.cardAgeHours == null
-                        ? null
-                        : item.cardAgeHours < 48
-                          ? `${item.cardAgeHours}h old`
-                          : `${Math.floor(item.cardAgeHours / 24)}d old`;
-                      return (
-                        <div
-                          key={item.subjectKey}
-                          className="border-l-2 border-border bg-surface-raised/40 rounded-r-[10px] px-4 py-3"
-                        >
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                              Stale
-                            </span>
-                            {ageLabel && (
-                              <span className="text-[11px] font-mono text-text-muted">{ageLabel}</span>
-                            )}
-                            {arc && (
-                              <span className="text-[11px] text-text-muted">{arc.label}</span>
-                            )}
-                          </div>
-                          {item.taskTitle && (
-                            <div className="text-[13px] font-medium text-text-secondary line-clamp-2 [overflow-wrap:anywhere] mt-0.5">
-                              {item.taskId ? (
-                                <Link href={actionCardTaskLink(item)} className="hover:underline">
-                                  {item.taskTitle}
-                                </Link>
-                              ) : item.taskTitle}
-                            </div>
-                          )}
-                          <p className="text-[12px] text-text-muted mt-0.5">
-                            {item.staleGate?.reason ?? item.escalationReason}
-                          </p>
-                          {item.prUrl && (
-                            <a
-                              href={item.prUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline mt-0.5"
-                            >
-                              Check PR #{item.prNumber} on GitHub ↗
-                            </a>
-                          )}
-                        </div>
-                      );
-                    }
-                    return null;
-                  })}
-                </div>
-                </div>
-                ))}
-                {/* §12: overflow past the top-10-per-workspace cap is never
-                    silently dropped — a clean-looking queue must not be able
-                    to hide a growing backlog the way the Schedules page did. */}
-                {discrepancyOverflowCount > 0 && (
-                  <p className="text-[11px] text-text-muted mt-2">
-                    +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
-                  </p>
-                )}
-                {resolvedEscalations.length > 0 && (
-                  <ResolvedEscalationsGroup items={resolvedEscalations} />
-                )}
-              </div>
-            )}
-            {actionQueue.length === 0 && activeItems.length > 0 && (
-              <div className="mb-8" data-testid="home-waiting-on-you">
-                <div className="section-label mb-3">Waiting on You</div>
-                <p className="text-[13px] text-text-muted">Nothing waiting on you. All in-flight work is autonomous.</p>
-                {resolvedEscalations.length > 0 && (
-                  <ResolvedEscalationsGroup items={resolvedEscalations} />
-                )}
-              </div>
-            )}
-
-            {/* Right Now */}
-            <div className="mb-8" data-testid="home-right-now">
-              <div className="section-label mb-4">Right Now</div>
-              {rightNow === 'create-workspace' ? (
+        {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
+        <div className="flex flex-col xl:grid xl:grid-cols-[minmax(0,1fr)_400px] xl:gap-8">
+          <div className="min-w-0">
+            <div data-testid="home-right-now">
+              {rightNow === 'create-workspace' || rightNow === 'get-started' ? (
+                <div className="mb-8">
+                  <div className="section-label mb-4">Right Now</div>
+                  {rightNow === 'create-workspace' ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
@@ -2275,126 +1970,107 @@ export default async function HomePage({
                     </div>
                   </div>
                 </div>
-              ) : rightNow === 'idle' ? (
-                // The idle roles already render as chips in Team, right beside
-                // this — repeating them here just doubled the list.
-                <div className="text-[14px] text-text-secondary">No agents running.</div>
-              ) : (
-                <div className="space-y-2">
-                  {/* Agent-reviewing PR cards — ambient presence, not actionable */}
-                  {agentReviewingPrs.map((item) => (
-                    <div
-                      key={item.reviewerWorkerId}
-                      className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                              Agent Reviewing
-                            </span>
-                            {item.reviewerRoleSlug && (
-                              <span className="text-[11px] text-text-muted">· {item.reviewerRoleSlug}</span>
-                            )}
-                            {item.reviewerStartedAt && (
-                              <span className="text-[11px] text-text-muted">
-                                {timeAgo(item.reviewerStartedAt)}
-                              </span>
-                            )}
-                            {!!item.unblockCount && item.unblockCount > 0 && (
-                              <span className="text-[11px] text-text-muted">
-                                · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
-                              </span>
-                            )}
-                          </div>
-                          <Link
-                            href={actionCardTaskLink(item)}
-                            className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
-                          >
-                            {item.taskTitle}
-                          </Link>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                            {item.workspaceName && (
-                              <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
-                            )}
-                            {item.prUrl && (
-                              <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
-                                PR #{item.prNumber} ↗
-                              </ExternalLink>
-                            )}
-                          </div>
-                        </div>
-                        <InterruptReviewButton workerId={item.reviewerWorkerId} />
-                      </div>
-                    </div>
-                  ))}
-                  {/* Review-queued PR cards have no live reviewer worker.
-                      The agent still owns these during the dispatch grace period. */}
-                  {reviewQueuedPrs.map((item) => (
-                    <div
-                      key={item.taskId}
-                      className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                          <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                            Review Queued
-                          </span>
-                          {!!item.unblockCount && item.unblockCount > 0 && (
-                            <span className="text-[11px] text-text-muted">
-                              · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
-                            </span>
-                          )}
-                        </div>
-                        <Link
-                          href={actionCardTaskLink(item)}
-                          className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
-                        >
-                          {item.taskTitle}
-                        </Link>
-                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                          {item.workspaceName && (
-                            <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
-                          )}
-                          {item.prUrl && (
-                            <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
-                              PR #{item.prNumber} ↗
-                            </ExternalLink>
-                          )}
-                          {item.reason && (
-                            <span className="text-[11px] text-text-muted">{item.reason}</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {activeItems.map((item) => (
-                    <TaskCard
-                      key={item.id}
-                      id={item.taskId}
-                      title={item.taskTitle}
-                      taskStatus={item.taskStatus}
-                      workerStatus={item.workerStatus}
-                      missionId={item.missionId}
-                      missionTitle={item.missionTitle}
-                      workspaceName={item.workspaceName}
-                      chain={item.chain}
-                      taskCreatedAt={item.taskCreatedAt}
-                      taskUpdatedAt={item.taskUpdatedAt}
-                      workerStartedAt={item.startedAt ? item.startedAt.toISOString() : null}
-                      workerUpdatedAt={item.workerUpdatedAt}
-                      intensity={{ tier: item.intensityTier, sparkline: [] }}
-                      attemptCurrent={item.attemptCurrent}
-                      attemptTotal={item.attemptTotal}
-                      runnerName={item.workerName}
-                      prUrl={item.prUrl}
-                      prNumber={item.prNumber}
-                      density="full"
-                    />
-                  ))}
+                  ) : null}
                 </div>
+              ) : (
+                <>
+                  {fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
+                  {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
+                    <div className="mb-8 space-y-2">
+            {/* Agent-reviewing PR cards — ambient presence, not actionable */}
+            {agentReviewingPrs.map((item) => (
+              <div
+                key={item.reviewerWorkerId}
+                className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                      <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                        Agent Reviewing
+                      </span>
+                      {item.reviewerRoleSlug && (
+                        <span className="text-[11px] text-text-muted">· {item.reviewerRoleSlug}</span>
+                      )}
+                      {item.reviewerStartedAt && (
+                        <span className="text-[11px] text-text-muted">
+                          {timeAgo(item.reviewerStartedAt)}
+                        </span>
+                      )}
+                      {!!item.unblockCount && item.unblockCount > 0 && (
+                        <span className="text-[11px] text-text-muted">
+                          · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </div>
+                    <Link
+                      href={actionCardTaskLink(item)}
+                      className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
+                    >
+                      {item.taskTitle}
+                    </Link>
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      {item.workspaceName && (
+                        <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                      )}
+                      {item.prUrl && (
+                        <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
+                          PR #{item.prNumber} ↗
+                        </ExternalLink>
+                      )}
+                    </div>
+                  </div>
+                  <InterruptReviewButton workerId={item.reviewerWorkerId} />
+                </div>
+              </div>
+            ))}
+            {/* Review-queued PR cards have no live reviewer worker.
+                The agent still owns these during the dispatch grace period. */}
+            {reviewQueuedPrs.map((item) => (
+              <div
+                key={item.taskId}
+                className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                    <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                      Review Queued
+                    </span>
+                    {!!item.unblockCount && item.unblockCount > 0 && (
+                      <span className="text-[11px] text-text-muted">
+                        · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </div>
+                  <Link
+                    href={actionCardTaskLink(item)}
+                    className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
+                  >
+                    {item.taskTitle}
+                  </Link>
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    {item.workspaceName && (
+                      <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                    )}
+                    {item.prUrl && (
+                      <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
+                        PR #{item.prNumber} ↗
+                      </ExternalLink>
+                    )}
+                    {item.reason && (
+                      <span className="text-[11px] text-text-muted">{item.reason}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
+
+            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} />
 
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (
@@ -2427,95 +2103,59 @@ export default async function HomePage({
               </div>
             )}
 
-            {/* Missions — active work only on Home */}
-            <HomeMissions missions={missions} views={missionCardViews} />
-
             {/* Release Queue — gated workspaces with unshipped commits and CI green (spec §8) */}
             <ReleaseWidget items={releaseReadinessItems} />
-
           </div>
 
-          {/* Right column: Team + Activity rail */}
-          <div className="md:w-[40%] md:border-l md:border-border-default md:pl-8">
-            {/* Team section — above Activity for visibility */}
-            {teamRoles.length > 0 && (
-              <div className="mb-6 pb-6 border-b border-border-default">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="section-label">Team</div>
-                  <Link href="/app/team" className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-text-secondary">
-                    {teamRoles.filter(r => r.isActive).length} active &middot; {teamRoles.length} total
-                  </Link>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {teamRoles.map((role) => (
-                    <Link
-                      key={role.id}
-                      href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
-                      className="flex items-center gap-2 min-h-11 md:min-h-0 px-3 py-1.5 bg-[var(--card)] border border-border-strong hover:bg-surface-3 transition-colors"
-                    >
-                      <div
-                        className={`w-5 h-5 flex items-center justify-center flex-shrink-0 border border-border-strong ${role.isActive ? 'ring-2 ring-accent/50' : ''}`}
-                      >
-                        <span className="text-text-primary text-[11px] font-bold">{role.name[0]?.toUpperCase()}</span>
-                      </div>
-                      <span className="text-[12px] font-medium text-text-primary">{role.name}</span>
-                      {role.isActive && (
-                        <span className="w-1.5 h-1.5 bg-accent animate-pulse" />
-                      )}
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="section-label mb-4">Activity</div>
-            {recentActivity.length === 0 ? (
-              <p className="text-[14px] text-text-secondary">
-                No recent activity yet.
-              </p>
-            ) : (
-              <div className="card" data-testid="home-activity">
-                {recentActivity.map((event, i) => {
-                  const stage = deriveStage({
-                    taskStatus: event.taskStatus,
-                    workerStatus: event.workerStatus,
-                    prUrl: event.prUrl,
-                    prLifecycleStatus: event.prLifecycleStatus,
-                    mergedAt: event.mergedAt ? String(event.mergedAt) : null,
-                  });
-
-                  const row = (
-                    <>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13px] text-text-primary line-clamp-2 [overflow-wrap:anywhere]">
-                          {stageChipShowsPrNumber(stage) ? stripLeadingPrRef(event.title, event.prNumber) : event.title}
-                        </div>
-                        <div className="text-[11px] text-text-muted mt-0.5 truncate">
-                          via {event.workerName}
-                          {event.missionTitle && ` \u00B7 ${event.missionTitle}`}
-                          {' \u00B7 '}
-                          {timeAgo(event.timestamp)}
-                        </div>
-                      </div>
-                      <div className="flex-shrink-0">
-                        <StageChip stage={stage} prNumber={event.prNumber} />
-                      </div>
-                    </>
-                  );
-                  const rowClass = `flex items-center gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`;
-
-                  return event.taskId ? (
-                    <Link key={event.id} href={missionTaskHref({ missionId: event.missionId, taskId: event.taskId, from: 'home', mode: 'sheet' })} className={`${rowClass} hover:bg-surface-3 transition-colors`}>
-                      {row}
-                    </Link>
-                  ) : (
-                    <div key={event.id} className={rowClass}>
-                      {row}
+          <div className="order-first min-w-0 xl:order-none">
+            <NeedsYouStack
+              count={needsYouCount}
+              questions={questions}
+              held={heldMissions}
+              shipped={shippedMissions}
+              timeZone={teamTz}
+            >
+              {actionQueue.length > 0 && (
+                <div data-testid="home-action-queue">
+                  {/* Initiative scoping chips — SCOPE the queue, never group it. */}
+                  <InitiativeFilterChips
+                    initiatives={actionQueueInitiatives}
+                    selectedId={initFilter ?? null}
+                    workspaceFilter={wsFilter ?? null}
+                  />
+                  {filteredActionQueue.length === 0 && (
+                    <p className="text-[13px] text-text-muted mb-2">Nothing waiting for this initiative.</p>
+                  )}
+                  {queueNeedsYou.length > 0 && (
+                    <div data-testid="waiting-needs-you" className="space-y-2">
+                      {queueNeedsYou.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  )}
+                  {inFlightItems.length > 0 && (
+                    <div data-testid="waiting-in-flight" className={queueNeedsYou.length > 0 ? 'mt-5' : undefined}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="section-label-missions text-[11px] text-text-muted">In flight</span>
+                        <span className="text-[11px] text-text-muted font-mono">{inFlightItems.length}</span>
+                      </div>
+                      <div className="space-y-2">
+                        {inFlightItems.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
+                      </div>
+                    </div>
+                  )}
+                  {/* §12: overflow past the top-10-per-workspace cap is never
+                      silently dropped — a clean-looking queue must not be able
+                      to hide a growing backlog the way the Schedules page did. */}
+                  {discrepancyOverflowCount > 0 && (
+                    <p className="text-[11px] text-text-muted mt-2">
+                      +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
+                    </p>
+                  )}
+                </div>
+              )}
+              {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
+            </NeedsYouStack>
+
+            <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
           </div>
         </div>
       </div>
