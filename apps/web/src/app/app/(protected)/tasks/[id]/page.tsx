@@ -1557,6 +1557,7 @@ export default async function TaskDetailPage({
             taskId={task.id}
             baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
             initialOpenArtifactId={initialOpenArtifactId}
+            missionId={task.missionId ?? null}
           />
         )}
 

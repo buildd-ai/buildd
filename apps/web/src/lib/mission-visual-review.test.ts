@@ -16,6 +16,10 @@ import {
   thumbSrc,
   toVisualShots,
   type VisualShot,
+  shotCaption,
+  titleVariant,
+  verdictLine,
+  withVariants,
 } from './mission-visual-review';
 
 const qa = (over: Record<string, unknown> = {}) => ({
@@ -268,5 +272,63 @@ describe('auditBootFailed', () => {
   it('makes missionVisualReview show a blocked step even with no shots and a failed audit task', () => {
     const r = missionVisualReview([], [task([w({ status: 'failed' })], { status: 'failed' })]);
     expect(r!.summary).toMatchObject({ shots: 0, bootFailed: true });
+  });
+});
+
+describe('shot captions', () => {
+  const shotRow = (id: string, title: string, route: string, viewport: string, extra: Record<string, unknown> = {}) => ({
+    id, type: 'screenshot', title, createdAt: `2026-03-10T10:0${id.length}:00.000Z`,
+    metadata: { qa: qa({ route, viewport, ...extra }) },
+  });
+
+  it('adds the title variant where two shots share a route and viewport, and only there', () => {
+    const run = withVariants(toVisualShots([
+      shotRow('a', 'invoices-eur-desktop.png', '/invoices/:id', 'desktop'),
+      shotRow('bb', 'invoices-eur-mobile.png', '/invoices/:id', 'mobile'),
+      shotRow('ccc', 'invoices-jpy-desktop.png', '/invoices/:id', 'desktop'),
+      shotRow('dddd', 'invoices-jpy-mobile.png', '/invoices/:id', 'mobile'),
+      shotRow('eeeee', 'pay-jpy-desktop.png', '/pay/:invoiceId', 'desktop'),
+    ]));
+    const captions = run.map(shotCaption);
+    expect(captions).toEqual([
+      '/invoices/:id · eur · desktop',
+      '/invoices/:id · eur · mobile',
+      '/invoices/:id · jpy · desktop',
+      '/invoices/:id · jpy · mobile',
+      '/pay/:invoiceId · desktop',
+    ]);
+    expect(new Set(captions).size).toBe(captions.length);
+  });
+
+  it('prefers an explicit qa.variant (or locale, or label) over the title', () => {
+    const run = withVariants(toVisualShots([
+      shotRow('a', 'one.png', '/x', 'desktop', { variant: 'EUR' }),
+      shotRow('bb', 'two.png', '/y', 'desktop', { locale: 'ja-JP' }),
+      shotRow('ccc', 'three.png', '/z', 'desktop', { label: 'empty state' }),
+    ]));
+    expect(run.map(shotCaption)).toEqual(['/x · EUR · desktop', '/y · ja-JP · desktop', '/z · empty state · desktop']);
+  });
+
+  it('titleVariant drops route words, viewport words, the theme and the extension', () => {
+    const [s] = toVisualShots([shotRow('a', 'app-tasks-dark-empty-mobile.png', '/app/tasks', 'mobile', { theme: 'dark' })]);
+    expect(titleVariant(s)).toBe('empty');
+    const [t] = toVisualShots([shotRow('b', 'tasks-mobile.png', '/app/tasks', 'mobile')]);
+    expect(titleVariant(t)).toBeNull();
+  });
+});
+
+describe('verdictLine', () => {
+  it('reads n of m ok, then issues and unsure', () => {
+    expect(verdictLine({ shots: 6, ok: 6, issues: 0, unsure: 0 })).toBe('6 of 6 ok');
+    expect(verdictLine({ shots: 6, ok: 3, issues: 2, unsure: 1 })).toBe('3 of 6 ok · 2 issues · 1 unsure');
+    expect(verdictLine({ shots: 0, ok: 0, issues: 0, unsure: 0 })).toBe('no shots');
+  });
+});
+
+describe('missionVisualReview taskId', () => {
+  it('names the task whose worker wrote the run', () => {
+    const rows = [{ id: 's1', type: 'screenshot', createdAt: '2026-03-10T10:00:00.000Z', workerId: 'w1', metadata: { qa: qa() } }];
+    const tasks = [{ id: 't1', status: 'completed', roleSlug: VISUAL_AUDITOR_ROLE_SLUG, workers: [{ id: 'w1' }] }];
+    expect(missionVisualReview(rows, tasks)?.taskId).toBe('t1');
   });
 });

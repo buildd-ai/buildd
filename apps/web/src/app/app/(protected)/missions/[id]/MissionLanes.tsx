@@ -16,10 +16,13 @@ import {
   taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
+import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
 
 export interface MissionLanesProps extends BoardLinkContext {
   model: MissionBoardModel;
   completionText?: string | null;
+  /** The latest visual-review run: the completion record counts its screens. */
+  visual?: { shots: readonly VisualShot[]; taskId: string | null } | null;
 }
 
 /** Look-ahead past NOW while running. */
@@ -40,7 +43,7 @@ export function laneWindow(model: Pick<MissionBoardModel, 'startedAt' | 'complet
   return { from, to: Math.max(from + LANE_WINDOW_MIN_SPAN_MS, now + LOOKAHEAD_MS) };
 }
 
-export default function MissionLanes({ model: serverModel, completionText, ...link }: MissionLanesProps) {
+export default function MissionLanes({ model: serverModel, completionText, visual = null, ...link }: MissionLanesProps) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   const { from, to } = laneWindow(model, now);
@@ -126,7 +129,7 @@ export default function MissionLanes({ model: serverModel, completionText, ...li
           </div>
           {detailBar && <Detail bar={detailBar} model={model} now={now} />}
         </div>
-        <Side model={model} now={now} link={link} completionText={completionText ?? null} />
+        <Side model={model} now={now} link={link} completionText={completionText ?? null} shots={visual?.shots ?? null} />
       </div>
       <Legend />
     </div>
@@ -213,7 +216,7 @@ function Kv({ k, v }: { k: string; v: string }) {
   );
 }
 
-function Side({ model, now, link, completionText }: { model: MissionBoardModel; now: number; link: BoardLinkContext; completionText: string | null }) {
+function Side({ model, now, link, completionText, shots }: { model: MissionBoardModel; now: number; link: BoardLinkContext; completionText: string | null; shots: readonly VisualShot[] | null }) {
   const sec = (label: string, n: number, hot: boolean, testId: string, body: React.ReactNode) => (
     <div data-testid={testId}>
       <div className={`mb-1.5 flex items-center gap-2 border-b-2 border-border-strong pb-[7px] font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.6px] ${hot ? 'text-accent-text' : 'text-text-muted'}`}>
@@ -227,6 +230,7 @@ function Side({ model, now, link, completionText }: { model: MissionBoardModel; 
 
   if (model.complete) {
     const r = model.record;
+    const review = shots ? summarizeVisualRun(shots) : null;
     const stat = (n: string, l: string, cls = 'text-text-primary') => (
       <div className="flex flex-col gap-[3px]">
         <b className={`font-mono text-[22px] font-semibold tabular-nums ${cls}`}>{n}</b>
@@ -243,7 +247,13 @@ function Side({ model, now, link, completionText }: { model: MissionBoardModel; 
             {stat(String(r.peakAgents), 'peak agents')}
             {stat(`+${r.linesAdded.toLocaleString()}`, 'lines')}
             {stat(String(r.runners), 'runners')}
-            {stat(String(r.ciFixes), 'CI auto-fixed', r.ciFixes ? 'text-status-error' : 'text-text-primary')}
+            {/* A zero is not an outcome: CI auto-fix shows only when something was fixed. */}
+            {r.ciFixes > 0 && stat(String(r.ciFixes), 'CI auto-fixed', 'text-status-error')}
+            {review && review.shots > 0 && stat(
+              `${review.ok}/${review.shots}`,
+              review.ok === review.shots ? 'screens ok' : verdictLine(review).replace(/^\d+ of \d+ ok · /, 'screens · '),
+              review.issues > 0 ? 'text-status-error' : 'text-text-primary',
+            )}
             {stat(String(r.decisions), 'your answers', r.decisions ? 'text-accent-text' : 'text-text-primary')}
           </div>
         </div>
