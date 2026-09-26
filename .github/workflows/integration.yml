@@ -281,7 +281,7 @@ jobs:
         run: |
           psql "$DATABASE_URL" <<'SQL'
             UPDATE accounts SET max_concurrent_workers = 50;
-            UPDATE runner_instances SET max_concurrent_workers = 50;
+            UPDATE worker_heartbeats SET max_concurrent_workers = 50;
           SQL
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
