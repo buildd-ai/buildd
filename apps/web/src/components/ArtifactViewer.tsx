@@ -278,6 +278,7 @@ export default function ArtifactViewer({
     >
       <div
         ref={panelRef}
+        data-testid="artifact-viewer"
         role="dialog"
         aria-modal="true"
         aria-label={active.title || 'Artifact'}
