@@ -19,6 +19,7 @@ import { isGeneratedPath } from '@buildd/shared';
 import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 import { describePrimaryCloneDrift } from './worktree-confinement';
+import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -117,7 +118,7 @@ export type InstallFailureClass =
 export type InstallOutcome =
   | { status: 'ok'; dirs: string[]; unfrozen?: boolean }
   | { status: 'skipped'; reason: 'no-manifest' | 'non-bun-toolchain' | 'declared-manifest' }
-  | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string };
+  | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string; registry?: RegistryAuthDiagnosis };
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -171,8 +172,18 @@ export function classifyInstallFailure(err: unknown): InstallFailureClass {
  * different risk profile. A non-bun lockfile yields
  * `{status:'skipped', reason:'non-bun-toolchain'}` — honest, and recorded. Repos
  * that need it declare `.buildd/env.yaml` and the provision gate owns it.
+ *
+ * `installEnv` is the worker's resolved secret env (role env today), overlaid
+ * on the runner's own env. Without it a repo whose `.npmrc` reads
+ * `${NODE_AUTH_TOKEN}` could only ever get that token from the host
+ * container, because this runs before the agent env exists. Values are never
+ * logged — only the key count.
  */
-async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<InstallOutcome> {
+async function installWorkspaceDeps(
+  worktreePath: string,
+  workerId: string,
+  installEnv?: Record<string, string>,
+): Promise<InstallOutcome> {
   const plans = detectInstallPlans(worktreePath, {
     exists: (rel) => existsSync(join(worktreePath, rel)),
     listDirs: (rel) => {
@@ -206,9 +217,29 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
   const dirs: string[] = [];
   let usedUnfrozen = false;
 
+  // No overlay → no `env` key at all, so execFile inherits exactly as before.
+  const hasOverlay = !!installEnv && Object.keys(installEnv).length > 0;
+  const env = hasOverlay ? { ...process.env, ...installEnv } : undefined;
+  if (hasOverlay) {
+    console.log(`[Worker ${workerId}] Install env carries ${Object.keys(installEnv!).length} worker-resolved var(s)`);
+  }
+  const failed = (dir: string, failure: InstallFailureClass, message: string): InstallOutcome => {
+    if (failure !== 'registry-auth') return { status: 'failed', dir, failure, message };
+    const registry = diagnoseRegistryAuth(
+      message,
+      dir,
+      (rel) => {
+        const abs = join(worktreePath, rel);
+        return existsSync(abs) ? String(readFileSync(abs, 'utf-8')) : null;
+      },
+      env ?? process.env,
+    );
+    return { status: 'failed', dir, failure, message, registry };
+  };
+
   for (const plan of bunPlans) {
     const cwd = plan.dir === '.' ? worktreePath : join(worktreePath, plan.dir);
-    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const };
+    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const, ...(env ? { env } : {}) };
     // new Promise + execFile directly rather than util.promisify, so mock
     // injection via __setGitOpsDeps works consistently across bun versions.
     const run = (args: string[]) => new Promise<void>((resolve, reject) => {
@@ -226,7 +257,7 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
         console.warn(
           `[Worker ${workerId}] bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
         );
-        return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+        return failed(plan.dir, failure, errMessage(err));
       }
       console.warn(
         `[Worker ${workerId}] Frozen bun install in ${plan.dir} rejected the lockfile, retrying unfrozen: ${errMessage(err)}`,
@@ -242,7 +273,7 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
       console.warn(
         `[Worker ${workerId}] Unfrozen bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
       );
-      return { status: 'failed', dir: plan.dir, failure, message: errMessage(err) };
+      return failed(plan.dir, failure, errMessage(err));
     }
   }
 
@@ -415,6 +446,12 @@ export async function setupWorktree(
    * have no in-memory map).
    */
   liveWorkers?: Iterable<[string, WorktreeOwnershipRecord]>,
+  /**
+   * Worker-resolved env overlaid onto the tolerant install (undeclared repos
+   * only — a declared repo's install runs in the provision gate with the full
+   * agent env). See installWorkspaceDeps.
+   */
+  installEnv?: Record<string, string>,
 ): Promise<SetupWorktreeResult | null> {
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
@@ -943,7 +980,7 @@ export async function setupWorktree(
     const install: InstallOutcome =
       declared.source === 'manifest' && declared.manifest?.install?.command
         ? { status: 'skipped', reason: 'declared-manifest' }
-        : await installWorkspaceDeps(worktreePath, workerId);
+        : await installWorkspaceDeps(worktreePath, workerId, installEnv);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return {
