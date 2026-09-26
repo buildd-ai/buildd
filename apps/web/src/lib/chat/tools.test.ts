@@ -40,8 +40,8 @@ describe('allowlist parity', () => {
     for (const a of CHAT_TOOL_ACTIONS) expect(allActions as readonly string[]).toContain(a);
   });
 
-  it('the shared contract lists exactly the chat read tools', () => {
-    expect([...CHAT_READ_TOOLS].sort()).toEqual([...CHAT_TOOL_ACTIONS].sort());
+  it('every tool the server exposes is in the shared read class (the UI groups by it)', () => {
+    for (const a of CHAT_TOOL_ACTIONS) expect(CHAT_READ_TOOLS as readonly string[]).toContain(a);
   });
 
   it('never exposes a never-from-chat action', () => {
