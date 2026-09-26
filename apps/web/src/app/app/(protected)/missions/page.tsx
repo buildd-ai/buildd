@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { missions, accounts, workers, workspaces, workspaceSkills, teams } from '@buildd/core/db/schema';
 import { inArray, and, eq, sql, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { loadReleaseFooterData } from '@/lib/release-footer';
@@ -28,6 +28,9 @@ import {
   paginateCompletedMissions,
 } from '@/lib/missions-query';
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
+import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
+import { loadWorkerProgress } from '@/lib/worker-progress';
+import { SlotMeter } from '@/components/fleet/SlotMeter';
 
 export const dynamic = 'force-dynamic';
 
@@ -89,6 +92,8 @@ export default async function MissionsPage({
     teamWorkspaces,
     activeRows,
     completedRowsPage,
+    roleRows,
+    teamRows,
   ] = await Promise.all([
     // Seat utilization across the active team's accounts. The live-seat count
     // needs the account ids, so it genuinely follows the accounts read.
@@ -116,7 +121,18 @@ export default async function MissionsPage({
       .where(eq(workspaces.teamId, activeTeamId)),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
+    // Role colours for the live-agent dots — read from the roles, never hardcoded.
+    db
+      .select({ slug: workspaceSkills.slug, color: workspaceSkills.color })
+      .from(workspaceSkills)
+      .innerJoin(workspaces, eq(workspaceSkills.workspaceId, workspaces.id))
+      .where(and(eq(workspaces.teamId, activeTeamId), eq(workspaceSkills.isRole, true), eq(workspaceSkills.enabled, true))),
+    // The header's "Missions · <team>" label.
+    db.select({ name: teams.name }).from(teams).where(eq(teams.id, activeTeamId)).limit(1),
   ]);
+  const team = teamRows[0] ?? null;
+  const roleColors = new Map<string, string | null>();
+  for (const r of roleRows) if (!roleColors.has(r.slug)) roleColors.set(r.slug, r.color ?? null);
 
   const { maxSeats, activeSeats } = seats;
   const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
@@ -146,10 +162,14 @@ export default async function MissionsPage({
   // produces, so they are one wait rather than two. The release footers are
   // themselves 3 deep per workspace.
   const releaseFooters: Record<string, ReleaseFooterData> = {};
-  const [steeringMarksByMission] = await Promise.all([
+  // The running cells fill to each live worker's last reported progress.
+  const liveWorkerIds = (activeRows as any[]).flatMap(m => (m.tasks || []).flatMap((t: any) =>
+    (t.workers || []).filter((w: any) => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)).map((w: any) => w.id as string)));
+  const [steeringMarksByMission, progressByWorker] = await Promise.all([
     // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
     // one batched query across the whole active set, not one per mission.
     loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
+    loadWorkerProgress(liveWorkerIds),
     // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
     // so the two surfaces cannot disagree about queue depth or deploy state.
     Promise.all(
@@ -200,6 +220,7 @@ export default async function MissionsPage({
 
     return {
       view,
+      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker }),
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       isHeld: obj.isHeld ?? false,
@@ -221,29 +242,36 @@ export default async function MissionsPage({
   // D8: the header counts with the cards' own grouping (healthToGroup), so a
   // mission waiting on you — a live worker — counts as active here too.
   const activeCount = countActiveMissions(missionsList.map(m => m.view.group));
+  const runningMissions = missionsList.filter(m => m.list.kind === 'active');
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const headline = missionsHeadline({
+    running: runningMissions.length,
+    liveAgents: runningMissions.reduce((n, m) => n + m.list.live.count, 0),
+    shippedToday: missionsList.filter(m => m.view.completedAt && new Date(m.view.completedAt).getTime() >= dayStart.getTime()).length,
+  });
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-        {/* Row 1: title + active count */}
-        <div className="flex items-baseline gap-3 min-w-0">
-          <h1 className="hidden md:block text-xl font-semibold text-text-primary font-sans">Missions</h1>
-          <span data-testid="missions-active-count" className="text-xs text-text-secondary font-light">
-            {activeCount} active
-          </span>
+    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
+      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="min-w-0">
+          <div className="section-label hidden text-text-muted md:block">
+            Missions{team?.name ? ` · ${team.name}` : ''}
+          </div>
+          <h1 data-testid="missions-headline" className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+            {headline}
+          </h1>
+          <span data-testid="missions-active-count" className="sr-only">{activeCount} active</span>
         </div>
-        {/* Row 2 on mobile / right side on desktop: seats chip + workspace filter + new button */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex flex-wrap items-center gap-2.5">
           {maxSeats > 0 && (
             <span
-              className={`text-[11px] font-mono px-2 py-0.5 border ${
-                activeSeats >= maxSeats
-                  ? 'border-status-warning text-status-warning'
-                  : 'border-status-info text-status-info'
-              }`}
-              title={`${activeSeats} of ${maxSeats} concurrent worker seats in use`}
+              data-testid="missions-slots"
+              className="flex min-h-9 items-center gap-2 border border-border-default px-2.5 font-mono text-[12px] text-text-secondary"
+              title={`${activeSeats} of ${maxSeats} concurrent worker slots in use`}
             >
-              Seats: {activeSeats}/{maxSeats}
+              <SlotMeter live={activeSeats} max={maxSeats} />
+              {activeSeats}/{maxSeats} slots
             </span>
           )}
           <span className="hidden md:block">
@@ -254,9 +282,10 @@ export default async function MissionsPage({
           </span>
           <Link
             href="/app/missions/new"
-            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+            data-testid="new-mission-link"
+            className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover md:min-h-9"
           >
-            + New Mission
+            + New mission
           </Link>
         </div>
       </div>
@@ -269,7 +298,7 @@ export default async function MissionsPage({
           </p>
         </div>
       ) : (
-        <MissionGrid missions={missionsList} releaseFooters={releaseFooters} />
+        <MissionGrid missions={missionsList} releaseFooters={releaseFooters} slots={maxSeats > 0 ? { live: activeSeats, max: maxSeats } : null} />
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the

@@ -44,6 +44,7 @@ import { buildMissionFeedGroups, type FeedRow } from './mission-feed-groups';
 import {
   buildPulseCaption,
   buildPulseSegments,
+  deriveFeedPrState,
   missionDeliverableCounts,
   pulseDoneCounts,
   type MissionFeedTaskInput,
@@ -372,6 +373,10 @@ function deriveCardState(
     if (t.status !== 'completed') return [];
     const w = latestWorker(t.workers);
     if (!w?.prUrl || w.mergedAt || w.prLifecycleStatus === 'closed') return [];
+    // CI has not reported yet: auto-merge evaluates on the green transition,
+    // so the platform owns the next step, not the owner. Same rule as the
+    // pulse (`deriveFeedTaskState`: checks_running → moving).
+    if (deriveFeedPrState(w)?.state === 'checks_running') return [];
     return [{ taskId: t.id, title: t.title, prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null }];
   });
   return deriveMissionStateView({

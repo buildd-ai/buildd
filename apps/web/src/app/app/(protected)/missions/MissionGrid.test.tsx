@@ -1,34 +1,55 @@
 /**
- * Missions list grouping and cards (docs/design/mission-feed-mobile-continuity.md,
- * S5, AC-14, addendum D6/D7/D8). Fixtures are illustrative.
+ * Missions list: running card with a phase bar, recurring/held mini cards,
+ * done rows (docs/design/mission-feed-mobile-continuity.md, D6/D8, and the
+ * home + missions-list redesign). Fixtures are illustrative.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+// The inline answer and Arm buttons refresh the route after a POST.
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ refresh: () => {}, push: () => {}, replace: () => {} }),
+  usePathname: () => '/app/missions',
+  useSearchParams: () => new URLSearchParams(''),
+}));
+
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
-import { buildMissionCardView, type MissionCardRow, type MissionCardTaskRow } from '@/lib/mission-card-view';
+import { buildMissionCardView, summarizeMissionForCard, type MissionCardTaskRow } from '@/lib/mission-card-view';
+import { buildMissionListCard, type ListMissionRow } from '@/lib/mission-list-card';
 import { MissionGrid, type MissionItem } from './MissionGrid';
 
 let clock = Date.UTC(2026, 0, 1);
-function task(id: string, over: Partial<MissionCardTaskRow> = {}): MissionCardTaskRow {
+function task(id: string, over: Partial<MissionCardTaskRow> & Record<string, unknown> = {}): MissionCardTaskRow {
   clock += 60_000;
-  return { id, title: `Task ${id}`, status: 'pending', taskClass: 'work', createdAt: new Date(clock), workers: [], ...over };
+  return { id, title: `feat(${id}): something`, status: 'pending', taskClass: 'work', createdAt: new Date(clock), workers: [], ...over };
 }
-function item(row: MissionCardRow, workspaceId = 'ws1'): MissionItem {
+function item(row: ListMissionRow, workspaceId = 'ws1'): MissionItem {
+  const summary = summarizeMissionForCard(row);
+  const view = buildMissionCardView(row, { from: 'missions', summary });
   return {
-    view: buildMissionCardView(row, { from: 'missions' }),
+    view, list: buildMissionListCard(row, view, summary),
     workspaceId, workspaceName: 'Platform', isHeld: row.isHeld ?? false,
-    nextScanMins: null, lastActivityAt: new Date().toISOString(), lastRunAt: null,
+    nextScanMins: summary.nextScanMins, lastActivityAt: new Date().toISOString(), lastRunAt: null,
   };
 }
 
 const running = item({
   id: 'm-run', title: 'Claim loop hardening', status: 'active',
-  tasks: [task('a', { status: 'in_progress', workers: [{ status: 'running' }] }), task('b')],
+  tasks: [task('a', { status: 'in_progress', workers: [{ id: 'w1', status: 'running' }] }), task('b')],
 });
 const waiting = item({
   id: 'm-ask', title: 'Heartbeat renew', status: 'active',
-  tasks: [task('c', { status: 'in_progress', workers: [{ status: 'waiting_input' }] })],
+  tasks: [task('c', {
+    status: 'in_progress',
+    workers: [{ id: 'w-q', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Per line or total?', options: ['Per line', 'Total only'] } } as any],
+  })],
 });
+const recurring = item({
+  id: 'm-rec', title: 'Keep dependencies current', status: 'active',
+  schedule: { id: 's1', cronExpression: '0 */6 * * *', nextRunAt: new Date(Date.now() + 9 * 60_000) },
+  tasks: [task('tick', { mode: 'planning', kind: 'coordination', scheduleId: 's1', status: 'completed' })],
+});
+const held = item({ id: 'm-held', title: 'Spec first', status: 'paused', isHeld: true, tasks: [task('spec', { roleSlug: 'writer' })] });
 const done = item({
   id: 'm-done', title: 'Retire the legacy lock', status: 'completed', completedAt: new Date(),
   tasks: [task('d', { status: 'completed' })],
@@ -44,21 +65,51 @@ describe('MissionGrid', () => {
       releaseId: 'rel-1',
     },
   };
-  const html = renderToStaticMarkup(<MissionGrid missions={[running, waiting, done]} releaseFooters={release} />);
+  const html = renderToStaticMarkup(
+    <MissionGrid missions={[running, waiting, recurring, held, done]} releaseFooters={release} />,
+  );
+  const card = (id: string) => {
+    const at = html.indexOf(`/app/missions/${id}?`);
+    return html.slice(html.lastIndexOf('data-testid="mission-card"', at), at + 4000);
+  };
 
-  it('an active mission with live agents under 100% lands in RUNNING, not NEEDS ATTENTION (AC-14)', () => {
-    const runningGroup = html.split('data-testid="mission-group" data-group="running"')[1] ?? '';
-    expect(runningGroup).toContain('Claim loop hardening');
-    expect(html).not.toContain('data-group="attention"');
+  it('tabs count by kind: All, Running, Recurring, Held, Done', () => {
+    const tab = (k: string) => html.match(new RegExp(`data-tab="${k}"[^>]*>(?:(?!</button>).)*<b[^>]*>(\\d+)</b>`))?.[1];
+    expect(tab('all')).toBe('5');
+    expect(tab('active')).toBe('2');
+    expect(tab('recurring')).toBe('1');
+    expect(tab('held')).toBe('1');
+    expect(tab('done')).toBe('1');
   });
 
-  it('a mission waiting on the user counts as active in the tab counts (D8)', () => {
-    expect(html).toMatch(/Active<span class="ml-1 opacity-60">2<\/span>/);
+  it('a running mission gets one status word and a labelled phase bar', () => {
+    const c = card('m-run');
+    expect(c).toContain('data-status="running"');
+    expect(c).toContain('data-testid="phase-bar"');
+    expect(c).toMatch(/data-testid="phase-bar-cell" data-state="running"/);
   });
 
-  it('renders every card with the card masthead and a compact completed card (D7)', () => {
-    expect(html.match(/data-testid="mission-masthead"/g)?.length).toBe(2);
-    expect(html).toContain('data-testid="mission-card-compact"');
+  it('a mission waiting on the owner answers inline, one tap per option', () => {
+    const c = card('m-ask');
+    expect(c).toContain('data-status="needs_you"');
+    expect(c).toContain('data-testid="mission-inline-answer"');
+    expect(c.match(/data-testid="mission-inline-answer-option"/g)?.length).toBe(2);
+  });
+
+  it('a recurring mission shows its cadence chip and next tick', () => {
+    const c = card('m-rec');
+    expect(c).toContain('↻ every 6h');
+    expect(c).toMatch(/next <b[^>]*>9m<\/b>/);
+  });
+
+  it('a held mission carries Arm', () => {
+    expect(card('m-held')).toContain('data-testid="mission-arm-button"');
+  });
+
+  it('done missions are compact table rows', () => {
+    const table = html.slice(html.indexOf('data-testid="mission-done-table"'));
+    expect(table).toContain('Retire the legacy lock');
+    expect(table).toContain('data-status="done"');
   });
 
   it('shows the workspace release state once, never on a card (D6)', () => {
@@ -69,63 +120,41 @@ describe('MissionGrid', () => {
   it('links nothing straight to a task page', () => {
     expect(html).not.toContain('/app/tasks/');
   });
-});
 
-describe('MissionGrid — completed-only workspaces collapse to tight one-line headers', () => {
-  const longAgo = new Date(Date.now() - 30 * 24 * 3_600_000);
-  const old = (id: string, ws: string, name: string): MissionItem => ({
-    ...item({ id, title: `Example ${id}`, status: 'completed', completedAt: longAgo, tasks: [task(`${id}-t`, { status: 'completed' })] }, ws),
-    workspaceName: name,
-    lastActivityAt: longAgo.toISOString(),
-  });
-  const html = renderToStaticMarkup(
-    <MissionGrid missions={[old('o1', 'ws-a', 'Alpha'), old('o2', 'ws-b', 'Beta'), old('o3', 'ws-b', 'Beta'), running]} />,
-  );
-
-  it('stacks consecutive completed-only workspaces in one list, with no gap between them', () => {
-    const lists = html.match(/<div[^>]*data-testid="mission-compact-workspaces"[^>]*>/g) ?? [];
-    expect(lists).toHaveLength(1);
-    expect(lists[0]).not.toMatch(/space-y-|gap-|py-|my-/);
-    const list = html.slice(html.indexOf('data-testid="mission-compact-workspaces"'));
-    const rows = list.match(/<button[^>]*data-testid="mission-workspace-compact"[^>]*>/g) ?? [];
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      // The row is the 44px tap target itself; no padding stacked on top of it.
-      expect(row).toContain('min-h-11');
-      expect(row).not.toMatch(/\bpy-|\bmy-/);
-    }
-  });
-
-  it('each row still names the workspace and its hidden count, and expands on tap', () => {
-    const list = html.slice(html.indexOf('data-testid="mission-compact-workspaces"'));
-    expect(list).toContain('Alpha');
-    expect(list).toContain('Show 1 older');
-    expect(list).toContain('Beta');
-    expect(list).toContain('Show 2 older');
-    expect(list).toMatch(/data-testid="mission-workspace-compact"[^>]*aria-expanded="false"/);
+  it('uses no raw colours', () => {
+    expect(html).not.toMatch(/#[0-9a-fA-F]{6}\b/);
   });
 });
 
-describe('MissionGrid — the Active count includes the missions waiting on you (D8)', () => {
-  it('counts a paused mission whose work is done (READY FOR REVIEW) as active', () => {
+describe('MissionGrid — nothing running', () => {
+  it('says so, with the free slots and the last thing that shipped', () => {
+    const html = renderToStaticMarkup(<MissionGrid missions={[done, recurring]} slots={{ live: 0, max: 8 }} />);
+    const empty = html.slice(html.indexOf('data-testid="missions-nothing-running"'));
+    expect(empty).toContain('All 8 slots free.');
+    expect(empty).toContain('Retire the legacy lock');
+  });
+});
+
+describe('MissionGrid — the Running tab includes the missions waiting on you (D8)', () => {
+  it('counts a paused mission whose work is done (READY FOR REVIEW) as running', () => {
     const review = item({ id: 'm-rev', title: 'Example review', status: 'paused', tasks: [task('r', { status: 'completed' })] });
     expect(review.view.chip.label).toBe('READY FOR REVIEW');
     const html = renderToStaticMarkup(<MissionGrid missions={[review]} />);
-    expect(html).toMatch(/Active<span class="ml-1 opacity-60">1<\/span>/);
-    expect(html).not.toContain('data-group="paused"');
+    expect(html).toMatch(/data-tab="active"(?:(?!<\/button>).)*<b[^>]*>1<\/b>/);
   });
 });
 
-// Mobile QA: on a 320px phone the filter pills scroll with no sign there is
-// more to the right. The bar fades its trailing edge below md.
+// Mobile QA: on a 320px phone the tabs scroll with no sign there is more to
+// the right. The bar fades its trailing edge below md.
 describe('MissionGrid filter bar', () => {
-  it('fades its trailing edge below md and keeps pills from shrinking', () => {
+  it('fades its trailing edge below md and keeps tabs from shrinking', () => {
     const html = renderToStaticMarkup(<MissionGrid missions={[running, waiting, done]} />);
     const bar = html.match(/<div\b[^>]*data-testid="mission-filter-bar"[^>]*>/)![0];
     expect(bar).toContain('overflow-x-auto');
     expect(bar).toMatch(/\[mask-image:linear-gradient\(to_right[^\]]*transparent\)\]/);
     expect(bar).toContain('md:[mask-image:none]');
-    const pill = html.match(/<button\b[^>]*class="[^"]*filter-pill[^"]*"[^>]*>/)![0];
-    expect(pill).toContain('shrink-0');
+    const tab = html.match(/<button\b[^>]*data-testid="mission-filter-tab"[^>]*>/)![0];
+    expect(tab).toContain('shrink-0');
+    expect(tab).toContain('min-h-11');
   });
 });
