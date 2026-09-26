@@ -92,6 +92,14 @@ export interface ReviewerGateInput {
    * the tier applies there.
    */
   isMissionIntegrationTaskPr?: boolean;
+  /**
+   * The PR's persisted lifecycle (`workers.prLifecycleStatus`). Only read under
+   * `auto-threshold` with no reviewer task, where it decides whether auto-merge
+   * is still pending (the platform's move) or has already been held (the
+   * human's). `undefined` means the caller does not know, and keeps the
+   * fail-visible answer: human.
+   */
+  prLifecycleStatus?: string | null;
 }
 
 export interface ReviewerGateResult {
@@ -99,6 +107,31 @@ export interface ReviewerGateResult {
   reason: string | null;
   /** Set when actor === 'agent' — which in-flight state to render. */
   agentState?: 'queued' | 'reviewing';
+  /**
+   * Set when actor === 'platform' and the platform will merge this PR by
+   * itself once CI is green (plain `auto-threshold`). Unlike Option A′, the
+   * PR lands on trunk, so it stays visible as in-flight work instead of
+   * disappearing.
+   */
+  platformState?: 'auto_merge';
+}
+
+/**
+ * Lifecycles under which an `auto-threshold` PR is still on its way to an
+ * unattended merge: no CI verdict yet, or CI running. `ci_failed` and
+ * `conflict` are left to the CI and conflict gates, and `ci_green` on a PR
+ * that is still open means a merge rail refused it.
+ */
+const AUTO_MERGE_PENDING_LIFECYCLES: ReadonlySet<string | null> = new Set([null, 'pr_open', 'ci_running']);
+
+/**
+ * Should this PR get a card in Home's action queue? Human-owned PRs do (they
+ * need you), and so do plain auto-merge PRs (shown in flight, never counted).
+ * Agent-owned PRs have their own in-flight rail, and Option A′ task PRs render
+ * nowhere.
+ */
+export function gateReachesActionQueue(gate: ReviewerGateResult | undefined): boolean {
+  return gate?.actor === 'human' || gate?.platformState === 'auto_merge';
 }
 
 const DEFAULT_QUEUED_THRESHOLD_MINUTES = 30;
@@ -183,6 +216,23 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
         };
       }
       return { actor: 'agent', agentState: 'queued', reason: 'review queued' };
+    }
+    if (input.policyTier === 'auto-threshold' && input.prLifecycleStatus !== undefined) {
+      // No reviewer is expected: the check_suite webhook merges this PR by
+      // itself once CI is green (tryAutoMergeWorkerPr). Until then it is in
+      // flight, and it is nobody's merge request.
+      if (AUTO_MERGE_PENDING_LIFECYCLES.has(input.prLifecycleStatus)) {
+        return { actor: 'platform', platformState: 'auto_merge', reason: 'Auto-merges when CI passes' };
+      }
+      if (input.prLifecycleStatus === 'ci_green') {
+        return { actor: 'human', reason: 'CI passed but auto-merge did not land it — a merge rail held it' };
+      }
+      if (input.prLifecycleStatus === 'ci_failed') {
+        return { actor: 'human', reason: 'CI failing — auto-merge waits for green' };
+      }
+      if (input.prLifecycleStatus === 'conflict') {
+        return { actor: 'human', reason: 'Branch has conflicts — auto-merge cannot land it' };
+      }
     }
     // No reviewer task, and this policy tier will never create one.
     return { actor: 'human', reason: 'No reviewer will run for this PR — manual merge required' };

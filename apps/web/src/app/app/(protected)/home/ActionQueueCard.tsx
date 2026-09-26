@@ -1,6 +1,7 @@
 /**
  * One Waiting-on-You action card (MERGE · REVIEW · QUESTION · DECIDE ·
- * DISCREPANCY · RECONNECT · APPROVE · RESOLVING · FIXING_CI · BLOCKED · STALE),
+ * DISCREPANCY · RECONNECT · APPROVE · RESOLVING · FIXING_CI · CI_RUNNING ·
+ * AUTO_MERGE · BLOCKED · STALE),
  * moved verbatim out of home/page.tsx so the page composes sections instead
  * of spelling every card. Selection and ordering stay in lib/action-queue.ts.
  */
@@ -161,7 +162,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         </div>
       );
     }
-    if (item.chip === 'FIXING_CI' || item.chip === 'CI_RUNNING') {
+    if (item.chip === 'FIXING_CI' || item.chip === 'CI_RUNNING' || item.chip === 'AUTO_MERGE') {
       return <AgentHandledCard key={item.subjectKey} item={item} />;
     }
     if (item.chip === 'BLOCKED') {

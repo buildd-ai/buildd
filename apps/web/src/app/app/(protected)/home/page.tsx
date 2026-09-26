@@ -67,7 +67,7 @@ import {
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { resolveReviewerGate, deriveStoredVerdictFallback } from '@/lib/reviewer-gate';
+import { resolveReviewerGate, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
@@ -908,6 +908,9 @@ export default async function HomePage({
             // from this one map so they can never disagree.
             const gateNow = new Date();
             const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
+            // The mission-aware tier each gate was resolved with, so the card
+            // built below reports the same tier its gate decided on.
+            const policyTierByTaskId = new Map<string, string>();
             for (const w of openPrWorkers) {
               if (!w.taskId) continue;
               const ws = wsInboxMap.get(w.workspaceId);
@@ -920,6 +923,7 @@ export default async function HomePage({
                     { baseRef: w.prBaseRef },
                   )
                 : { tier: 'auto-threshold' as const };
+              policyTierByTaskId.set(w.taskId, policy.tier);
               const rt = latestReviewerTaskByOrigId.get(w.taskId);
               // Mission notes never exist for a mission-less PR
               // (handleReviewerOutcomeIfNeeded writes reviewer_approved /
@@ -949,6 +953,9 @@ export default async function HomePage({
                   : undefined,
                 prOpenedAt: w.completedAt ?? null,
                 now: gateNow,
+                // Under auto-threshold this decides "auto-merge still pending"
+                // (in flight) vs "auto-merge was held" (needs you).
+                prLifecycleStatus: w.prLifecycleStatus ?? null,
                 // Option A′: the tier drop in resolvePolicy is also what removes
                 // the reviewer, and "no reviewer will ever run" otherwise reads
                 // as "a human must merge this" — the exact inverse of the intent.
@@ -1165,11 +1172,17 @@ export default async function HomePage({
                   const ws = wsInboxMap.get(w.workspaceId);
                   return !!ws && resolvePolicy(ws).tier === 'human';
                 }
-                return reviewerGateMap.get(w.taskId)?.actor === 'human';
+                // Human-owned PRs, plus auto-merge PRs as in-flight cards.
+                return gateReachesActionQueue(reviewerGateMap.get(w.taskId));
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
-                const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
+                // The tier the gate resolved (mission-aware), not the workspace
+                // default: a mission's own mergePolicy is what decides the card.
+                const policy = {
+                  tier: (w.taskId ? policyTierByTaskId.get(w.taskId) : undefined)
+                    ?? (ws ? resolvePolicy(ws).tier : 'auto-threshold'),
+                };
                 const gate = w.taskId ? reviewerGateMap.get(w.taskId) : undefined;
                 const verdictSummary = (w.taskId ? approvedMap.get(w.taskId) : undefined) ?? null;
                 // The SHA the most recent reviewer task's verdict was made
@@ -1211,6 +1224,7 @@ export default async function HomePage({
                   prNumber: w.prNumber,
                   prUrl: w.prUrl,
                   policyTier: policy.tier,
+                  autoMerge: gate?.platformState === 'auto_merge',
                   missionId: (w.task as any)?.missionId ?? null,
                   missionTitle: (w.task as any)?.mission?.title ?? null,
                   ciGate,
@@ -1246,8 +1260,11 @@ export default async function HomePage({
                 };
               })
               .sort((a, b) => {
-                const handled = (k?: string) => (k === 'fixing' || k === 'running' ? 1 : 0);
-                const handledDiff = handled(a.ciGate?.kind) - handled(b.ciGate?.kind);
+                // In-flight cards sort last so the slice below never drops a
+                // card that needs the human in favour of one that does not.
+                const handled = (i: { ciGate?: { kind: string } | null; autoMerge?: boolean }) =>
+                  (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || (i.autoMerge && !i.ciGate) ? 1 : 0);
+                const handledDiff = handled(a) - handled(b);
                 if (handledDiff !== 0) return handledDiff;
                 const arcDiff = Number(!!b.missionId) - Number(!!a.missionId);
                 if (arcDiff !== 0) return arcDiff;

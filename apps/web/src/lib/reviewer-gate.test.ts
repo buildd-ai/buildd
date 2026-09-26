@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveReviewerGate, deriveStoredVerdictFallback } from './reviewer-gate';
+import { resolveReviewerGate, deriveStoredVerdictFallback, gateReachesActionQueue } from './reviewer-gate';
 import type { ReviewerGateInput } from './reviewer-gate';
 import { resolvePolicy, isMissionIntegrationBase } from './merge-policy';
-import { buildActionQueue } from './action-queue';
+import { buildActionQueue, isActionableChip } from './action-queue';
 import type { EscalationRawItem } from './action-queue';
 import { DAY_MS, HOUR_MS, MINUTE_MS } from './pr-freshness';
 
@@ -639,5 +639,85 @@ describe('deriveStoredVerdictFallback — the mission-less "no recorded verdict"
     });
     expect(fallback.escalationReason).toBeNull();
     expect(fallback.approvalSummary).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Direction 5: plain `auto-threshold` PRs (no integration branch, no reviewer).
+//
+// Under auto-threshold nobody reviews the PR and nobody is asked to merge it:
+// the check_suite webhook calls tryAutoMergeWorkerPr as soon as CI is green.
+// Home used to read "no reviewer will run" as "a human must merge this", so it
+// put a Merge card and a needs-you count on every such PR, even one whose CI had
+// not finished. The escalation-inbox route already treats only the `human` tier
+// as human-owned, and Home now agrees with it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('resolveReviewerGate — auto-threshold PRs merge themselves on green', () => {
+  const autoInput = (prLifecycleStatus: string | null) =>
+    baseInput({ policyTier: 'auto-threshold', reviewerTask: null, prLifecycleStatus });
+
+  for (const status of ['pr_open', 'ci_running', null] as const) {
+    it(`lifecycle ${status ?? 'null (CI not reported yet)'} → platform auto-merge, never a manual merge`, () => {
+      const gate = resolveReviewerGate(autoInput(status));
+      expect(gate.actor).toBe('platform');
+      expect(gate.platformState).toBe('auto_merge');
+      expect(gate.agentState).toBeUndefined();
+      expect(gate.reason ?? '').not.toContain('manual merge required');
+      // It still reaches the queue, as an in-flight card rather than nothing.
+      expect(gateReachesActionQueue(gate)).toBe(true);
+    });
+  }
+
+  it('CI green but still open → human: a merge rail held the auto-merge', () => {
+    const gate = resolveReviewerGate(autoInput('ci_green'));
+    expect(gate.actor).toBe('human');
+    expect(gate.reason).toContain('auto-merge');
+  });
+
+  it('CI failed → human, so the CI gate (fixing / blocked) decides the card', () => {
+    expect(resolveReviewerGate(autoInput('ci_failed')).actor).toBe('human');
+  });
+
+  it('conflict → human: auto-merge cannot land a conflicted branch', () => {
+    expect(resolveReviewerGate(autoInput('conflict')).actor).toBe('human');
+  });
+
+  it('a human tier is unchanged by the lifecycle', () => {
+    const gate = resolveReviewerGate(baseInput({ policyTier: 'human', prLifecycleStatus: 'ci_running' }));
+    expect(gate.actor).toBe('human');
+  });
+
+  it('the Option A′ platform owner still renders nowhere', () => {
+    const gate = resolveReviewerGate(baseInput({
+      policyTier: 'auto-threshold', reviewerTask: null, prLifecycleStatus: 'pr_open', isMissionIntegrationTaskPr: true,
+    }));
+    expect(gate.actor).toBe('platform');
+    expect(gate.platformState).toBeUndefined();
+    expect(gateReachesActionQueue(gate)).toBe(false);
+  });
+
+  it('the queue shows an auto-merge PR as in flight, and a CI state still outranks it', () => {
+    const queue = buildActionQueue([], [
+      queueItem({ policyTier: 'auto-threshold', autoMerge: true, escalationReason: 'Auto-merges when CI passes' }),
+      queueItem({
+        prUrl: 'https://github.com/org/repo/pull/2041', prNumber: 2041,
+        policyTier: 'auto-threshold', autoMerge: true, prLifecycleStatus: 'ci_running',
+        ciGate: { kind: 'running', label: 'CI running' },
+      }),
+    ], { now: NOW });
+    const byPr = new Map(queue.map(i => [i.prNumber, i.chip]));
+    expect(byPr.get(2040)).toBe('AUTO_MERGE');
+    expect(byPr.get(2041)).toBe('CI_RUNNING');
+    // Neither counts toward "needs you", and the headline is built from this.
+    expect(queue.filter(i => isActionableChip(i.chip))).toHaveLength(0);
+  });
+
+  it('an auto-merge PR is never shown as a merge CTA, even when stale', () => {
+    const queue = buildActionQueue([], [queueItem({
+      policyTier: 'auto-threshold', autoMerge: true,
+      prOpenedAt: new Date(NOW.getTime() - 90 * DAY_MS), prLifecycleVerifiedAt: null,
+    })], { now: NOW });
+    expect(queue[0].chip).toBe('AUTO_MERGE');
   });
 });
