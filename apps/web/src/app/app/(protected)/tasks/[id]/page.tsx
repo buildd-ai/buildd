@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
-import { eq, desc, inArray, asc, ne, and, count } from 'drizzle-orm';
+import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
@@ -56,6 +56,14 @@ import { descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selec
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
+import WorkerSteerPanel from './WorkerSteerPanel';
+import { HeaderStatusPill, FactSheet, AlsoRunning, AlsoRunningCompact, SideDescription, type FactRow, type PeerTask } from './TaskSidePanel';
+import { findTaskRole } from './role-lookup';
+import { taskHeading } from './task-header';
+import { linkQuestionNote } from './question-hero';
+import { buildLineage } from './pr-lineage';
+import type { PrOutcome } from '@/components/task/PrCard';
+import type { WorkerMilestone } from '@buildd/core/db/schema';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -144,16 +152,27 @@ export default async function TaskDetailPage({
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
   const [openQuestionRows, depTasks, taskWorkers, missionContextRow] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
-    // badge). A mission task's questions carry its missionId too — they are
-    // still this task's, so no mission gate (S6).
+    // badge, and lets the live worker view show the note and the worker's
+    // waitingFor as ONE question). A mission task's questions carry its
+    // missionId too — they are still this task's, so no mission gate (S6).
     db
-      .select({ c: count() })
+      .select({
+        id: missionNotes.id,
+        workerId: missionNotes.workerId,
+        type: missionNotes.type,
+        status: missionNotes.status,
+        title: missionNotes.title,
+        body: missionNotes.body,
+        defaultChoice: missionNotes.defaultChoice,
+        createdAt: missionNotes.createdAt,
+      })
       .from(missionNotes)
       .where(and(
         eq(missionNotes.taskId, id),
         eq(missionNotes.type, 'question'),
         eq(missionNotes.status, 'open'),
-      )),
+      ))
+      .orderBy(asc(missionNotes.createdAt)),
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
@@ -198,7 +217,7 @@ export default async function TaskDetailPage({
         })
       : Promise.resolve(null),
   ]);
-  const openQuestionCount = Number(openQuestionRows[0]?.c ?? 0);
+  const openQuestionCount = openQuestionRows.length;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
@@ -239,7 +258,9 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  const [taskArtifacts, errorTraces, ship, teamTimezone] = await Promise.all([
+  const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
+  const LIVE_WORKER_STATUSES = ['running', 'starting', 'waiting_input'];
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -274,6 +295,39 @@ export default async function TaskDetailPage({
     // its PR activity comment uses), not the layout's current-team zone.
     // Null → the viewer's browser zone; never the server's UTC. Never throws.
     getTeamTimezoneSetting((task.workspace as any)?.teamId as string | undefined),
+    // Role name/colour come from the workspace's role row, never a local map.
+    findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as any)?.teamId, slug: task.roleSlug }),
+    // Other live agents in this workspace — "Also running" / "While you decide".
+    db.query.workers.findMany({
+      where: and(eq(workers.workspaceId, task.workspaceId), inArray(workers.status, LIVE_WORKER_STATUSES), ne(workers.taskId, id)),
+      columns: { id: true, taskId: true, status: true, milestones: true },
+      with: { task: { columns: { id: true, title: true, label: true, missionId: true } } },
+      orderBy: desc(workers.updatedAt),
+      limit: 12,
+    }),
+    // CI-retry attempts at this task's PR: each is a fresh worker handed the
+    // failure excerpt, on the same branch. They make "How it landed".
+    prWorker?.prNumber
+      ? db.query.tasks.findMany({
+          where: and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha)),
+          columns: { id: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
+          with: {
+            workers: {
+              columns: { runner: true, commitCount: true, linesAdded: true, linesRemoved: true, filesChanged: true, createdAt: true, startedAt: true, completedAt: true, lastCommitSha: true },
+              orderBy: desc(workers.createdAt),
+            },
+          },
+          orderBy: asc(tasks.createdAt),
+        })
+      : Promise.resolve([]),
+    // What this task unblocks, once it has landed.
+    task.status === 'completed'
+      ? db.query.tasks.findMany({
+          where: and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
+          columns: { id: true, title: true, label: true, status: true },
+          limit: 6,
+        })
+      : Promise.resolve([]),
   ]);
   const shippedRelease = ship.shippedRelease;
   const shippedReleaseLabel = ship.label;
@@ -597,6 +651,84 @@ export default async function TaskDetailPage({
       ? planChain[currentChainIdx + 1]
       : null;
 
+  // --- Side panel + outcome data ---
+  const roleName = roleRow?.name ?? null;
+  const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
+  const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
+
+  const latestPct = (ms: unknown): number | null => {
+    const list = Array.isArray(ms) ? (ms as WorkerMilestone[]) : [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.type === 'status' && typeof m.progress === 'number') return m.progress;
+    }
+    return null;
+  };
+  const peers: PeerTask[] = peerWorkers
+    .filter(w => w.task && (task.missionId ? w.task.missionId === task.missionId : true))
+    .map(w => ({
+      taskId: w.task!.id,
+      title: w.task!.title.replace(/^\s*\[[^\]]*\]\s*/, ''),
+      pct: latestPct(w.milestones),
+      href: taskPageHref({ taskId: w.task!.id, missionId: w.task!.missionId }),
+      waiting: w.status === 'waiting_input',
+    }))
+    .filter((p, i, all) => all.findIndex(q => q.taskId === p.taskId) === i);
+
+  let prOutcome: PrOutcome | null = null;
+  if (prWorker) {
+    const firstAttempt = {
+      runner: prWorker.runner ?? null,
+      roleName,
+      commits: prWorker.commitCount ?? 0,
+      add: prWorker.linesAdded ?? 0,
+      rem: prWorker.linesRemoved ?? 0,
+      files: prWorker.filesChanged ?? 0,
+      createdAt: prWorker.createdAt.getTime(),
+      startedAt: prWorker.startedAt?.getTime() ?? null,
+      completedAt: prWorker.completedAt?.getTime() ?? null,
+      headSha: prWorker.lastCommitSha ?? null,
+    };
+    const retried = ciAttemptTasks.filter(t => t.workers.length > 0);
+    const retryAttempts = retried.map(t => {
+      const w = t.workers[0];
+      return {
+        runner: w.runner ?? null,
+        roleName,
+        commits: w.commitCount ?? 0,
+        add: w.linesAdded ?? 0,
+        rem: w.linesRemoved ?? 0,
+        files: w.filesChanged ?? 0,
+        createdAt: w.createdAt.getTime(),
+        startedAt: w.startedAt?.getTime() ?? null,
+        completedAt: w.completedAt?.getTime() ?? null,
+        headSha: w.lastCommitSha ?? null,
+      };
+    });
+    const attempts = [firstAttempt, ...retryAttempts];
+    const lineage = buildLineage({
+      attempts,
+      retries: retried.map(t => ({
+        createdAt: t.createdAt.getTime(),
+        headSha: t.ciRetryHeadSha ?? null,
+        failure: ((t.context as Record<string, unknown> | null)?.failureContext as { job?: string; test?: string; excerpt?: string } | undefined) ?? null,
+      })),
+      pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
+    });
+    prOutcome = {
+      repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
+      summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
+      totals: lineage.totals,
+      attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null })),
+      lineage: lineage.steps,
+      // The retry's own summary is what it did about the failure.
+      commits: lineage.commits.map(c => ({
+        ...c,
+        fix: c.state === 'failed' ? ((retried[c.attempt - 1]?.result as { summary?: string } | null)?.summary ?? null) : null,
+      })),
+    };
+  }
+
   // --- Helpers ---
 
   function timeAgo(date: Date | string): string {
@@ -623,10 +755,109 @@ export default async function TaskDetailPage({
   };
   const DEFAULT_ICON = TASK_ICONS.pending;
 
+  // The side panel's fact sheet. Each row only when there's something to say.
+  const factWorker = activeWorker ?? taskWorkers[0] ?? null;
+  const unresolvedDepIds = new Set(unresolvedDeps.map(d => d.id));
+  const pathManifest = Array.isArray(task.pathManifest) ? (task.pathManifest as string[]) : [];
+  const ciAttemptWorkers = ciAttemptTasks.flatMap(t => t.workers.slice(0, 1));
+  const factRows: FactRow[] = [
+    ...(prOutcome && prWorker && isTerminal
+      ? [{
+          key: 'pr',
+          label: 'PR',
+          value: (
+            <a href={prWorker.prUrl!} target="_blank" rel="noopener noreferrer" className="hover:underline">
+              <span className="text-accent-text">#{prWorker.prNumber}</span>
+              <span className="text-text-muted"> · {(prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus ?? 'open').replace(/_/g, ' ')}</span>
+            </a>
+          ),
+        }]
+      : []),
+    ...(prOutcome && ciAttemptWorkers.length > 0 && prWorker
+      ? [{
+          key: 'workers',
+          label: 'Workers',
+          value: (
+            <ul>
+              {[prWorker, ...ciAttemptWorkers].map((w, i) => (
+                <li key={i}>{w.runner}<span className="text-text-muted"> · attempt {i + 1}{i > 0 ? ' (retry)' : ''}</span></li>
+              ))}
+            </ul>
+          ),
+        }]
+      : factWorker
+        ? [{ key: 'runner', label: 'Runner', value: factWorker.runner }]
+        : []),
+    ...(factWorker?.branch && !(prOutcome && isTerminal)
+      ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]
+      : []),
+    ...(depTasks.length > 0
+      ? [{
+          key: 'needs',
+          label: 'Needs',
+          value: (
+            <ul className="space-y-1">
+              {depTasks.map(dep => {
+                const depResult = dep.result as Record<string, unknown> | null;
+                const stalled = dep.status === 'failed' && depResult?.errorType === 'infra_stalled';
+                const ok = !unresolvedDepIds.has(dep.id);
+                return (
+                  <li key={dep.id} className="flex items-baseline gap-2 min-w-0">
+                    <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
+                      {ok ? '✓' : stalled ? '!' : '○'}
+                    </span>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{dep.title}</Link>
+                    {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          ),
+        }]
+      : []),
+    ...(pathManifest.length > 0
+      ? [{
+          key: 'scope',
+          label: 'Scope',
+          value: <ul>{pathManifest.map(p => <li key={p} className="truncate" title={p}>{p}</li>)}</ul>,
+        }]
+      : []),
+    ...(!origin.isEmpty || origin.shipped
+      ? [{
+          key: 'origin',
+          label: 'Origin',
+          value: (
+            <div data-testid="task-origin" className="space-y-1">
+              {!origin.isEmpty && (
+                <div data-testid="task-origin-clause">{[origin.actor, ...origin.parts].filter(Boolean).join(' · ')}</div>
+              )}
+              {origin.links.length > 0 && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {origin.links.map(link => (
+                    link.href.startsWith('/') ? (
+                      <Link key={`${link.key}-${link.href}`} href={link.href} className="text-accent-text hover:underline">{link.label}</Link>
+                    ) : (
+                      <a key={`${link.key}-${link.href}`} href={link.href} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">{link.label} ↗</a>
+                    )
+                  ))}
+                </div>
+              )}
+              {origin.shipped && (
+                <div data-testid="task-origin-shipped" className="text-text-secondary">
+                  Shipped in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
+                </div>
+              )}
+            </div>
+          ),
+        }]
+      : []),
+  ];
+
+
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
-      <div className="max-w-4xl w-full">
+      <div className="max-w-[1384px] w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
         <TaskAutoRefresh
           taskId={task.id}
@@ -665,55 +896,28 @@ export default async function TaskDetailPage({
           </nav>
         )}
 
-        {/* Header — the title gets the full width (D9); status and chips sit on
-            the line below it with the admin actions behind ⋮. */}
-        <div className="mb-4">
-          <h1 className="text-[22px] md:text-[28px] font-semibold leading-tight tracking-tight break-words">{task.title}</h1>
-          <div className="mt-2 flex items-center gap-2 flex-wrap">
-            <span data-testid="task-header-status" data-status={displayStatus}>
-              <StatusBadge status={displayStatus} />
-            </span>
-            {task.loopConfig && (
-              <LoopStatusChip
-                loopIteration={task.loopIteration}
-                maxLoops={task.loopConfig.maxLoops ?? 5}
-                loopState={task.loopState}
-                startAt={task.startAt?.toISOString() ?? null}
-              />
-            )}
-            {errorTraces.length > 0 && (
-              <a
-                href="#agent-error-traces"
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
-                title="Pattern-matched errors caught from agent tool output. Click to see details."
-                data-testid="task-error-count"
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-2.99l-6.93-12a2 2 0 00-3.48 0l-6.93 12A2 2 0 005.07 19z" />
-                </svg>
-                {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
-              </a>
-            )}
-            {task.mode === 'planning' && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                </svg>
-                Planning
+        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_336px] lg:gap-9 lg:items-start">
+        <div className="min-w-0" data-testid="task-main">
+        {/* Header — eyebrow (type · scope · role), the subject as the title, and
+            one status pill with the admin actions behind ⋯ (D9). Chips that
+            used to crowd the title line sit on the quiet meta line below. */}
+        <div className="mb-5 md:mb-6" data-testid="task-header">
+          <div className="flex flex-col-reverse md:flex-row md:items-start md:justify-between gap-3 md:gap-4">
+            <div className="min-w-0 flex-1">
+              {heading.eyebrow.length > 0 && (
+                <p data-testid="task-eyebrow" className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted font-medium">
+                  {heading.eyebrow.join(' · ')}
+                </p>
+              )}
+              <h1 className="mt-1.5 text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
+            </div>
+            <div className="flex items-center justify-between md:justify-start gap-2 shrink-0 md:mt-0.5">
+              <span data-testid="task-header-status" data-status={displayStatus}>
+                <HeaderStatusPill
+                  status={displayStatus}
+                  merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                />
               </span>
-            )}
-            {task.category && (
-              <span className={`px-2 py-0.5 text-xs font-medium rounded ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
-                {task.category}
-              </span>
-            )}
-            {task.project && (
-              <span className="px-2 py-0.5 text-xs font-medium rounded bg-primary/10 text-primary">
-                {task.project}
-              </span>
-            )}
-            <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
-            <span className="ml-auto flex items-center">
               <TaskOverflowMenu>
                 <EditTaskButton
                   task={{
@@ -742,34 +946,57 @@ export default async function TaskDetailPage({
                 )}
                 <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
               </TaskOverflowMenu>
-            </span>
+            </div>
           </div>
-          <p className="mt-1.5 text-[13px] text-text-secondary">
-            {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created <ZonedTime value={task.createdAt} format="date" />
-          </p>
-          {workerWithPr && (
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <div className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
+            <span>
+              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created <ZonedTime value={task.createdAt} format="date" />
+            </span>
+            {task.loopConfig && (
+              <LoopStatusChip
+                loopIteration={task.loopIteration}
+                maxLoops={task.loopConfig.maxLoops ?? 5}
+                loopState={task.loopState}
+                startAt={task.startAt?.toISOString() ?? null}
+              />
+            )}
+            {errorTraces.length > 0 && (
+              <a
+                href="#agent-error-traces"
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
+                title="Pattern-matched errors caught from agent tool output. Click to see details."
+                data-testid="task-error-count"
+              >
+                {errorTraces.length} {errorTraces.length === 1 ? 'error' : 'errors'}
+              </a>
+            )}
+            {task.mode === 'planning' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-border-default text-text-secondary">
+                Planning
+              </span>
+            )}
+            {task.category && (
+              <span className={`px-2 py-0.5 text-xs font-medium ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
+                {task.category}
+              </span>
+            )}
+            {task.project && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-primary/10 text-accent-text">
+                {task.project}
+              </span>
+            )}
+            <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
+            {workerWithPr && !prOutcome && (
               <a
                 href={workerWithPr.prUrl!}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[13px] text-primary hover:underline font-medium"
+                className="inline-flex items-center gap-1 text-accent-text hover:underline font-medium"
               >
                 PR #{workerWithPr.prNumber} ↗
               </a>
-              {workerWithPr.prLifecycleStatus && (
-                <span className={`px-1.5 py-0.5 text-[11px] font-medium rounded ${
-                  workerWithPr.prLifecycleStatus === 'merged'
-                    ? 'bg-status-success/15 text-status-success'
-                    : workerWithPr.prLifecycleStatus === 'closed'
-                    ? 'bg-status-error/15 text-status-error'
-                    : 'bg-primary/10 text-primary'
-                }`}>
-                  {workerWithPr.prLifecycleStatus}
-                </span>
-              )}
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {/* Action first (W6): the phase's one decision, before anything to read.
@@ -803,6 +1030,8 @@ export default async function TaskDetailPage({
           missionId={task.missionId ?? null}
           activeWorkerId={activeWorker?.id ?? null}
           activeWorkerStatus={activeWorker?.status ?? null}
+          excludeNoteId={questionNote?.id ?? null}
+          roleName={roleName}
         />
 
         <div className="flex flex-col">
@@ -840,7 +1069,7 @@ export default async function TaskDetailPage({
           });
           const inProgressBlockers = unresolvedDeps.filter(d => d.status !== 'completed');
           return (
-            <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
+            <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
               <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
                 <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -873,7 +1102,7 @@ export default async function TaskDetailPage({
                     >
                       {dep.title}
                     </Link>
-                    <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
+                    <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
                       {dep.status}
                     </span>
                   </div>
@@ -887,7 +1116,7 @@ export default async function TaskDetailPage({
             claim loop skips this task and every sibling. Only raising the
             mission budget (or force-starting this one task) clears it. */}
         {missionBudgetExhausted && (
-          <div className="bg-status-error/10 border border-status-error/20 rounded-[10px] p-4 mb-6">
+          <div className="bg-status-error/10 border border-status-error/20 p-4 mb-6">
             <div className="flex items-center gap-2 text-status-error font-medium text-sm mb-1">
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -908,7 +1137,7 @@ export default async function TaskDetailPage({
 
         {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
         {isBudgetPaused && !isBlocked && (
-          <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
+          <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
             <div className="flex items-center gap-2 text-status-warning font-medium text-sm">
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -993,7 +1222,7 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
+                  <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
                     {task.parentTask.status}
                   </span>
                 </div>
@@ -1013,7 +1242,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
+                        <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
                           {sub.status}
                         </span>
                       </div>
@@ -1024,123 +1253,6 @@ export default async function TaskDetailPage({
             </div>
           </div>
         )}
-
-        {/* Origin (U6) — who created this task, by what mechanism, and because of
-            what. Every clause comes from a stored column via deriveTaskOrigin; the
-            `Shipped in` line is the §10.3 badge-class annotation, never a rail
-            segment. Renders nothing when nothing is recorded. */}
-        {(!origin.isEmpty || origin.shipped) && (
-          <div className="mb-6" data-testid="task-origin">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Origin
-            </div>
-            <div className="card p-4 space-y-2">
-              {!origin.isEmpty && (
-                <div className="flex items-baseline gap-2 flex-wrap">
-                  <span className="text-[13px] text-text-primary" data-testid="task-origin-clause">
-                    {[origin.actor, ...origin.parts].filter(Boolean).join(' · ')}
-                  </span>
-                  {origin.links.length > 0 && (
-                    <span className="flex items-center gap-2 flex-wrap">
-                      {origin.links.map(link => (
-                        link.href.startsWith('/') ? (
-                          <Link
-                            key={`${link.key}-${link.href}`}
-                            href={link.href}
-                            className="text-[13px] text-primary hover:underline"
-                          >
-                            {link.label}
-                          </Link>
-                        ) : (
-                          <a
-                            key={`${link.key}-${link.href}`}
-                            href={link.href}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[13px] text-primary hover:underline"
-                          >
-                            {link.label} ↗
-                          </a>
-                        )
-                      ))}
-                    </span>
-                  )}
-                </div>
-              )}
-              {origin.shipped && (
-                <div className="text-[13px] text-text-secondary" data-testid="task-origin-shipped">
-                  Shipped in{' '}
-                  <Link href={origin.shipped.href} className="text-status-success hover:underline">
-                    {origin.shipped.label}
-                  </Link>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        <SpecSourceBlock specSource={specSource} />
-
-        {/* Description — for machine-generated tasks (reviewer/builder) this is a
-            templated prompt, i.e. reference material, so it sits below the plan. */}
-        {task.description && !descriptionIsSummary && (
-          <div className="mb-6">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Description
-            </div>
-            <CollapsibleDescription content={task.description} />
-          </div>
-        )}
-
-        {/* Dependencies (dependsOn) */}
-        {depTasks.length > 0 && (() => {
-          // Reuses the already-gate-checked list rather than re-deriving it.
-          // The local copy here was `every(d => d.status === 'completed')`,
-          // which diverged from the real gate in both directions: it withheld
-          // the checkmark for a satisfying `cancelled` dep, and — worse — it
-          // showed "All dependencies resolved" for a `completed` dep whose PR
-          // was still open, which the gate treats as blocking. A green
-          // checkmark on a task that cannot be claimed is the phantom blocker
-          // inverted, and this file already imported the shared predicate.
-          const allResolved = unresolvedDeps.length === 0;
-          return (
-            <div className="mb-6">
-              <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-                Dependencies
-              </div>
-              <div className="card p-4 space-y-2">
-                {depTasks.map((dep) => {
-                  const depResult = dep.result as Record<string, unknown> | null;
-                  const displayStatus = dep.status === 'failed' && depResult?.errorType === 'infra_stalled'
-                    ? 'infra_stalled'
-                    : dep.status;
-                  return (
-                    <div key={dep.id} className="flex items-center gap-2 flex-wrap">
-                      <Link
-                        href={taskPageHref({ taskId: dep.id })}
-                        className="text-sm text-primary-400 hover:underline"
-                      >
-                        {dep.title}
-                      </Link>
-                      <StatusBadge status={displayStatus} />
-                      {displayStatus === 'infra_stalled' && (
-                        <span className="text-xs text-[#D97706]">Blocked by infra error — needs manual retry</span>
-                      )}
-                    </div>
-                  );
-                })}
-                {allResolved && (
-                  <div className="flex items-center gap-1.5 mt-2 text-xs text-status-success">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                    </svg>
-                    All dependencies resolved
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
 
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
@@ -1155,10 +1267,10 @@ export default async function TaskDetailPage({
                     <img
                       src={att.src}
                       alt={att.filename}
-                      className="max-h-32 rounded-[6px] border border-border-default"
+                      className="max-h-32 border border-border-default"
                     />
                   ) : (
-                    <div className="p-3 bg-surface-3 rounded-[6px]">
+                    <div className="p-3 bg-surface-3">
                       <span className="text-sm">{att.filename}</span>
                     </div>
                   )}
@@ -1175,7 +1287,7 @@ export default async function TaskDetailPage({
           if (hasSubTasks) {
             // Plan was approved and child tasks created
             return (
-              <div className="bg-status-success/10 border border-status-success/20 rounded-[10px] p-4 mb-6">
+              <div className="bg-status-success/10 border border-status-success/20 p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-success font-medium text-sm">
                   <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -1188,7 +1300,7 @@ export default async function TaskDetailPage({
 
           if (task.status === 'running') {
             return (
-              <div className="bg-status-running/10 border border-status-running/20 rounded-[10px] p-4 mb-6">
+              <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">
                   <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
                   Agent is generating a plan…
@@ -1199,7 +1311,7 @@ export default async function TaskDetailPage({
 
           if (task.status === 'pending' || task.status === 'assigned') {
             return (
-              <div className="bg-status-info/10 border border-status-info/20 rounded-[10px] p-4 mb-6">
+              <div className="bg-status-info/10 border border-status-info/20 p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-info font-medium text-sm">
                   <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -1222,13 +1334,10 @@ export default async function TaskDetailPage({
           result={task.result as Record<string, unknown> | null}
         />
 
-        {/* Active Worker */}
+        {/* Active Worker — the hero: the Now strip while it runs, the question
+            while it waits. First in the column at every width. */}
         {activeWorker && (
-          <div className="mb-8 order-first md:order-none">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6 flex items-center gap-2">
-              <Spinner size="xs" className="text-status-running" aria-label="Running" />
-              Active Worker
-            </div>
+          <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
               taskId={task.id}
               initialWorker={{
@@ -1245,6 +1354,7 @@ export default async function TaskDetailPage({
                 startedAt: activeWorker.startedAt?.toISOString() || null,
                 prUrl: activeWorker.prUrl,
                 prNumber: activeWorker.prNumber,
+                prLifecycleStatus: activeWorker.prLifecycleStatus,
                 localUiUrl: null,
                 commitCount: activeWorker.commitCount,
                 filesChanged: activeWorker.filesChanged,
@@ -1259,9 +1369,40 @@ export default async function TaskDetailPage({
                 resultMeta: activeWorker.resultMeta as any,
               }}
               modelTier={modelSummary.tierLabel}
+              questionNote={questionNote}
+              roleName={roleName}
             />
+            <AlsoRunningCompact count={peers.length} href="/app/home" />
           </div>
         )}
+
+        {/* PR outcome — the diff split by attempt, "How it landed" (attempt →
+            CI → retry → merge) and checks per commit (AC-4). Shown for an open
+            PR and for one that landed. */}
+        {(() => {
+          if (!prWorker?.prUrl || !prWorker.prNumber || prWorker.prLifecycleStatus === 'closed') return null;
+          const storedPrFacts = {
+            prUrl: prWorker.prUrl,
+            prNumber: prWorker.prNumber,
+            prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
+            linesAdded: prWorker.linesAdded,
+            linesRemoved: prWorker.linesRemoved,
+            filesChanged: prWorker.filesChanged,
+            outcome: prOutcome,
+          };
+          return (
+            <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">
+              {/* The GitHub-derived half of this card (CI runs, reviews,
+                  mergeability) is several REST calls, so it streams in behind
+                  a boundary instead of holding the whole page. The fallback is
+                  the same card rendered from stored state, so the PR is
+                  readable and linkable on first paint. */}
+              <Suspense fallback={<StoredPrCard {...storedPrFacts} />}>
+                <PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />
+              </Suspense>
+            </div>
+          );
+        })()}
 
         </div>{/* end flex container */}
 
@@ -1270,45 +1411,16 @@ export default async function TaskDetailPage({
         {phase === 'completed' && nextChainTask && !missionContextBar && (
           <Link
             href={taskPageHref({ taskId: nextChainTask.id })}
-            className="group mb-8 flex items-center gap-3 p-4 rounded-[10px] border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
+            className="group mb-8 flex items-center gap-3 p-4 border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
           >
             <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
             <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
-            <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
+            <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
               {nextChainTask.status}
             </span>
             <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
           </Link>
         )}
-
-        {/* PR panel — detailed view with CI checks, review state, and merge action (AC-4) */}
-        {(() => {
-          const prWorker = taskWorkers.find(w => w.prNumber && w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed' && w.prLifecycleStatus !== 'merged');
-          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
-          const storedPrFacts = {
-            prUrl: prWorker.prUrl,
-            prNumber: prWorker.prNumber,
-            prLifecycleStatus: prWorker.prLifecycleStatus,
-            linesAdded: prWorker.linesAdded,
-            linesRemoved: prWorker.linesRemoved,
-            filesChanged: prWorker.filesChanged,
-          };
-          return (
-            <div className="mb-8">
-              <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-                Pull Request
-              </div>
-              {/* The GitHub-derived half of this card (CI runs, reviews,
-                  mergeability) is up to three sequential REST calls, so it
-                  streams in behind a boundary instead of holding the whole
-                  page. The fallback is the same card rendered from stored
-                  state, so the PR is readable and linkable on first paint. */}
-              <Suspense fallback={<StoredPrCard {...storedPrFacts} />}>
-                <PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />
-              </Suspense>
-            </div>
-          );
-        })()}
 
         {/* Deliverables */}
         {(task.result as any) && (
@@ -1316,6 +1428,8 @@ export default async function TaskDetailPage({
             const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
             const hasCodeDeliverables = (result.commits ?? 0) > 0 || !!result.prUrl || !!result.branch;
             const isFallbackSummary = result.summarySource === 'fallback';
+            // The PR outcome card already carries the code deliverables and summary.
+            if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
             const fallbackChip = (
               <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
                 unauthored · last message
@@ -1330,7 +1444,7 @@ export default async function TaskDetailPage({
 
                 {/* Non-code summary — shown prominently when no code deliverables */}
                 {!hasCodeDeliverables && result.summary && (
-                  <div className="p-5 bg-surface-2 border border-border-default rounded-[10px] mb-4">
+                  <div className="p-5 bg-surface-2 border border-border-default mb-4">
                     {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
                     <MarkdownContent content={result.summary} />
                     <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
@@ -1355,9 +1469,9 @@ export default async function TaskDetailPage({
                   </div>
                 )}
 
-                {/* Code deliverables bar */}
-                {hasCodeDeliverables && (
-                  <div className="p-4 bg-status-success/10 border border-status-success/20 rounded-[10px]">
+                {/* Code deliverables bar — the PR outcome card above carries these */}
+                {hasCodeDeliverables && !prOutcome && (
+                  <div className="p-4 bg-status-success/10 border border-status-success/20">
                     <div className="flex items-center gap-3 text-sm flex-wrap">
                       {result.branch && (
                         <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
@@ -1386,7 +1500,7 @@ export default async function TaskDetailPage({
                           href={result.prUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
+                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success hover:bg-status-success/20"
                         >
                           PR #{result.prNumber}
                         </a>
@@ -1410,7 +1524,7 @@ export default async function TaskDetailPage({
                     <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
                       Structured Output
                     </div>
-                    <pre className="p-4 bg-surface-2 border border-border-default rounded-[10px] overflow-x-auto text-sm font-mono text-text-primary">
+                    <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
                       {JSON.stringify(result.structuredOutput, null, 2)}
                     </pre>
                   </div>
@@ -1445,7 +1559,7 @@ export default async function TaskDetailPage({
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               Worker History
             </div>
-            <div className="border border-border-default rounded-[10px] overflow-hidden">
+            <div className="border border-border-default overflow-hidden">
               {taskWorkers.map((worker) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
@@ -1453,7 +1567,7 @@ export default async function TaskDetailPage({
                   // text (the text column takes the rest of the first line, and
                   // pl-11 = icon w-7 + gap-4 lines them up with it).
                   <div key={worker.id} className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-2 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
-                    <div className={`w-7 h-7 rounded-[6px] flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
+                    <div className={`w-7 h-7 flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
                       {iconStyle.icon}
                     </div>
                     <div className="flex-1 min-w-0 basis-[calc(100%-2.75rem)] md:basis-0">
@@ -1495,7 +1609,7 @@ export default async function TaskDetailPage({
                           reason?: string; summary?: string | null; salvagedArtifactId?: string;
                         };
                         return (
-                          <div className="mt-1 rounded-[6px] border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
+                          <div className="mt-1 border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
                             <p className="font-mono text-[11px] md:text-[10px] uppercase tracking-wide text-status-warning">
                               ⚠ Rejected deliverable — not a satisfied outcome
                               {rejected.reason ? ` (${rejected.reason})` : ''}
@@ -1580,7 +1694,7 @@ export default async function TaskDetailPage({
                           href={worker.prUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-[5px] text-xs whitespace-nowrap bg-status-success/10 text-status-success rounded-[6px] hover:bg-status-success/20"
+                          className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-[5px] text-xs whitespace-nowrap bg-status-success/10 text-status-success hover:bg-status-success/20"
                         >
                           PR #{worker.prNumber}
                         </a>
@@ -1593,30 +1707,9 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Details — the triage/metadata that used to dominate the header as stat
-            cards. Kept one tap away for when it's actually needed (billing, routing,
-            debugging) without letting it crowd out the phase-relevant content. */}
-        <details className="mt-8 group">
-          <summary className="cursor-pointer font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-secondary select-none">
-            Details
-          </summary>
-          <dl className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-[13px]">
-            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
-            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
-            {task.backend && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
-            <TaskModelCell summary={modelSummary} />
-            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
-            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
-            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary"><ZonedTime value={task.createdAt} format="date" /></dd></div>
-            {task.category && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
-            {task.project && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
-            <div className="col-span-2 md:col-span-3"><dt className="text-text-muted text-[11px] uppercase tracking-wider">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
-          </dl>
-        </details>
-
         {/* Empty state */}
         {taskWorkers.length === 0 && task.status === 'pending' && (
-          <div className="border border-dashed border-border-default rounded-[10px] p-8 text-center">
+          <div className="border border-dashed border-border-default p-8 text-center">
             {isBlocked ? (
               <>
                 <p className="text-text-secondary mb-2">This task is waiting for dependencies to complete</p>
@@ -1634,6 +1727,86 @@ export default async function TaskDetailPage({
             )}
           </div>
         )}
+        </div>{/* end task-main */}
+
+        {/* Side panel — steer, the facts (runner, branch, needs, scope, origin),
+            the description, and the rest of the fleet. On mobile it follows the
+            main column; the question or the Now strip stays the first screen. */}
+        <aside data-testid="task-side-panel" className="mt-10 lg:mt-0 space-y-6 lg:sticky lg:top-4">
+          {activeWorker && (
+            <WorkerSteerPanel
+              workerId={activeWorker.id}
+              status={activeWorker.status}
+              hasUnansweredQuestion={!!activeWorker.waitingFor}
+              instructionHistory={(activeWorker.instructionHistory as any[]) || []}
+            />
+          )}
+
+          {activeWorker?.waitingFor && (
+            <div className="hidden lg:block">
+              <AlsoRunning title={`While you decide · ${peers.length} still running`} peers={peers} testId="task-while-you-decide" />
+            </div>
+          )}
+
+          <FactSheet rows={factRows} />
+
+          {/* Description — reference material, collapsed in the side panel */}
+          {task.description && !descriptionIsSummary && (
+            <SideDescription preview={task.description.replace(/[#*_`>\-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)}>
+              <CollapsibleDescription content={task.description} />
+            </SideDescription>
+          )}
+
+          <SpecSourceBlock specSource={specSource} />
+
+          {!activeWorker?.waitingFor && (
+            <div className="hidden lg:block">
+              <AlsoRunning title={`Also running · ${peers.length}`} peers={peers} />
+            </div>
+          )}
+
+          {dependentTasks.length > 0 && (
+            <section data-testid="task-unblocked">
+              <div className="section-label border-b border-border-default pb-2 mb-1">Unblocked by this</div>
+              <ul>
+                {dependentTasks.map(d => (
+                  <li key={d.id} className="border-b border-border-default">
+                    <Link href={taskPageHref({ taskId: d.id, missionId: task.missionId })} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
+                      <span className={`w-[9px] h-[9px] shrink-0 ${d.status === 'pending' ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
+                      <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{d.title}</span>
+                      <span className={`shrink-0 font-mono text-[12px] ${d.status === 'completed' ? 'text-status-success' : d.status === 'pending' ? 'text-text-muted' : 'text-accent-text'}`}>
+                        {d.status === 'pending' ? 'queued' : d.status === 'in_progress' || d.status === 'assigned' ? 'claimed' : d.status}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* Details — the triage/metadata that used to dominate the header as stat
+              cards. Kept one tap away for when it's actually needed (billing, routing,
+              debugging) without letting it crowd out the phase-relevant content. */}
+          <details className="group">
+            <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-3 min-h-11 border-b border-border-default font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary">
+              <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
+              Details
+            </summary>
+            <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-[13px]">
+              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
+              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
+              {task.backend && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
+              <TaskModelCell summary={modelSummary} />
+              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
+              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
+              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary"><ZonedTime value={task.createdAt} format="date" /></dd></div>
+              {task.category && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
+              {task.project && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
+              <div className="col-span-2"><dt className="text-text-muted text-[11px] uppercase tracking-wider">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
+            </dl>
+          </details>
+        </aside>
+        </div>{/* end grid */}
       </div>
     </div>
     </DisplayTimezoneProvider>

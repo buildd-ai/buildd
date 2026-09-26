@@ -113,6 +113,28 @@ describe('PrDetailsCard', () => {
     expect(props.linesAdded).toBe(10);
   });
 
+  it('fetches check runs for an earlier attempt head (the CI-retry commit) as well as the PR head', async () => {
+    githubResponses.set('/commits/failedsha1/check-runs', {
+      check_runs: [{ name: 'unit', status: 'completed', conclusion: 'failure' }],
+    });
+    githubResponses.set('/commits/headsha2/check-runs', {
+      check_runs: [{ name: 'unit', status: 'completed', conclusion: 'success' }],
+    });
+    githubResponses.set('/pulls/7', { head: { sha: 'headsha2' } });
+    const outcome = {
+      totals: { add: 1, rem: 0, files: 1, commits: 2, attempts: 2, claimToMerge: null },
+      attempts: [{ add: 1, rem: 0, files: 1 }],
+      lineage: [],
+      commits: [
+        { attempt: 1, sha: 'faileds', ref: 'failedsha1', state: 'failed' as const, failure: null },
+        { attempt: 2, sha: 'headsha', ref: 'headsha2', state: 'passed' as const, failure: null },
+      ],
+    };
+    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS, outcome }));
+    expect(props.outcome.commits[0].runs).toEqual([{ name: 'unit', status: 'completed', conclusion: 'failure', detailsUrl: null }]);
+    expect(props.outcome.commits[1].runs).toEqual([{ name: 'unit', status: 'completed', conclusion: 'success', detailsUrl: null }]);
+  });
+
   it('counts only the latest review per user', async () => {
     githubResponses.set('/pulls/7/reviews', [
       { user: { login: 'a' }, state: 'CHANGES_REQUESTED' },

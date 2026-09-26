@@ -18,6 +18,7 @@ import { createLocalDb, schema as s, sql, eq, type LocalDb } from '../../package
 import { IdMap, loadState, loadStory, saveState, shiftAllTimestamps, toRow, type DemoState, type Entity, type Story, type TimelineEvent } from './lib/story';
 import { artifactRow, seedStory } from './seed';
 import { triggerPusher } from './lib/pusher';
+import { toolMilestone } from './lib/tool-milestone';
 
 type Ctx = { db: LocalDb; story: Story; ids: IdMap; state: DemoState; at: (t: number) => Date; ms: (t: number) => number; pushes: Array<[string, string, unknown]> };
 
@@ -146,6 +147,12 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
       costUsd: Math.max(Number(w?.costUsd ?? 0), pct * 0.031).toFixed(4),
     } as any).where(eq(s.workers.id, c.ids.get(e.worker)));
     workerPush(c, e.worker, taskKeyOfWorker(c, e.worker), w?.status ?? 'running', { currentAction: String(e.message).slice(0, 200) });
+  },
+
+  // One tool call, recorded the way the runner records it: an action milestone
+  // with structured {tool, path, add, rem, cmd, count} and the legacy label.
+  async tool(c, e) {
+    await appendMilestones(c, e.worker, [toolMilestone(e, c.ms(e.t))]);
   },
 
   async mission_note(c, e) {

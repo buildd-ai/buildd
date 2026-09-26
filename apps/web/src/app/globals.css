@@ -61,6 +61,12 @@
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
 
+  /* Task page: the hard shadow under an accent-bordered hero, ink on an accent
+     fill, and the muted fill for read ticks on the activity tape. */
+  --accent-shadow: 5px 5px 0 0 #f4811f;
+  --on-accent: #1a1512;
+  --tape-read: rgba(255, 245, 230, 0.28);
+
   color-scheme: dark;
 }
 
@@ -113,6 +119,10 @@
 
   --chrome-bg: rgba(247, 244, 240, 0.92);
   --chrome-sidebar: #f7f4f0;
+
+  --accent-shadow: 5px 5px 0 0 #1a1512;
+  --on-accent: #1a1512;
+  --tape-read: rgba(26, 21, 18, 0.30);
 
   color-scheme: light;
 }

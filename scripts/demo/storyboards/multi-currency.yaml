@@ -37,10 +37,8 @@ steps:
   - id: 05-task-live-activity
     advance: "12:40"
     goto: /app/tasks/{T7}
-    waitFor: worker-activity-timeline
-    scrollTo: worker-current-action
-    scrollOffset: 220
-    highlight: [worker-current-action, worker-progress-bar, worker-activity-timeline, worker-stats]
+    waitFor: worker-now-strip
+    highlight: [worker-current-action, worker-progress-bar, worker-step-rail, worker-stats, worker-activity-timeline, worker-touched]
     caption: "Every agent narrates what it's doing."
 
   - id: 06-waiting-input
@@ -53,9 +51,7 @@ steps:
   - id: 07-waiting-input-banner
     goto: /app/tasks/{T8}
     waitFor: worker-needs-input-banner
-    scrollTo: worker-needs-input-banner
-    scrollOffset: 160
-    highlight: [worker-needs-input-banner, worker-needs-input-options]
+    highlight: [worker-needs-input-options, worker-paused-bar, task-while-you-decide]
     caption: "The other five keep working."
 
   - id: 07b-mission-needs-you
@@ -83,6 +79,13 @@ steps:
     waitFor: task-card
     highlight: [task-card]
     caption: "It's fixed. And background work keeps ticking."
+
+  - id: 10b-task-landed
+    advance: "22:30"
+    goto: /app/tasks/{T7}
+    waitFor: pr-outcome
+    highlight: [pr-outcome, pr-diff-bar, pr-lineage, pr-commit-checks]
+    caption: "Red, retried, green, merged. Nobody touched it."
 
   - id: 11-criteria-going-green
     advance: "34:05"

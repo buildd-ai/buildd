@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { tasks, workers, missionNotes } from '@buildd/core/db/schema';
+import { eq, desc, and, asc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -8,6 +8,10 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import RespondForm from './RespondForm';
 import { respondBackLink } from './respond-links';
 import { taskPageHref } from '@/lib/mission-task-href';
+import { linkQuestionNote, unifyWorkerQuestion } from '../question-hero';
+import { findTaskRole } from '../role-lookup';
+import { taskHeading } from '../task-header';
+import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 
 // Focused landing page for the "Agent needs your input" push notification.
 // Renders the question + options with no extra chrome, so the user can answer
@@ -24,7 +28,7 @@ export default async function RespondPage({
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
     with: {
-      workspace: { columns: { id: true, name: true } },
+      workspace: { columns: { id: true, name: true, teamId: true } },
       mission: { columns: { id: true, title: true } },
     },
   });
@@ -44,11 +48,28 @@ export default async function RespondPage({
   // Nothing to answer — bounce to the full task page so the user sees state.
   if (!pending) redirect(taskPageHref({ taskId: id, missionId: task.missionId }));
 
-  const waitingFor = pending.waitingFor as {
-    type: string;
-    prompt: string;
-    options?: Array<string | { label: string; description?: string; recommended?: boolean }>;
-  };
+  const waitingFor = pending.waitingFor as WorkerWaitingFor;
+
+  // The same ask may also be a question note: one question, one surface.
+  const [openNotes, role] = await Promise.all([
+    db
+      .select({
+        id: missionNotes.id,
+        workerId: missionNotes.workerId,
+        type: missionNotes.type,
+        status: missionNotes.status,
+        title: missionNotes.title,
+        body: missionNotes.body,
+        defaultChoice: missionNotes.defaultChoice,
+      })
+      .from(missionNotes)
+      .where(and(eq(missionNotes.taskId, id), eq(missionNotes.type, 'question'), eq(missionNotes.status, 'open')))
+      .orderBy(asc(missionNotes.createdAt)),
+    findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as any)?.teamId, slug: task.roleSlug }),
+  ]);
+  const question = unifyWorkerQuestion(waitingFor, linkQuestionNote(openNotes, pending.id));
+  const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, null);
+  const asker = `The ${(role?.name || 'agent').toLowerCase()} asks`;
 
   // A mission task returns to its row on the mission; the back link names the
   // mission, not the workspace (docs/design/mission-feed-mobile-continuity.md W6).
@@ -56,7 +77,7 @@ export default async function RespondPage({
 
   return (
     <div className="min-h-screen bg-surface-1 py-8 px-4 sm:px-6">
-      <div className="max-w-xl mx-auto">
+      <div className="max-w-2xl mx-auto">
         <Link
           href={back.href}
           data-testid="respond-back-link"
@@ -65,26 +86,15 @@ export default async function RespondPage({
           ← {back.label}
         </Link>
 
-        <h1 className="mt-2 text-xl font-semibold text-text-primary leading-tight">
-          {task.title}
+        <h1 className="mt-3 text-[20px] font-semibold text-text-primary leading-snug">
+          {heading.eyebrow.length > 0 && (
+            <span className="mr-2 font-mono text-[11px] uppercase tracking-[2px] text-text-muted align-middle">{heading.eyebrow.join(' · ')}</span>
+          )}
+          {heading.heading}
         </h1>
 
-        <div className="mt-6 border border-status-warning/30 bg-status-warning/5 rounded-lg p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
-            </span>
-            <span className="font-mono text-[11px] md:text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">
-              Needs input
-            </span>
-          </div>
-
-          <p className="text-[15px] text-text-primary leading-relaxed whitespace-pre-wrap">
-            {waitingFor.prompt}
-          </p>
-
-          <RespondForm workerId={pending.id} missionId={task.missionId} options={waitingFor.options || []} />
+        <div className="mt-6">
+          <RespondForm workerId={pending.id} taskId={id} missionId={task.missionId} question={question} askerLabel={asker} />
         </div>
 
         <div className="mt-6 text-center">

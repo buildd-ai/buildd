@@ -70,20 +70,22 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
   }
 
   return (
-    <div data-testid="worker-instruct-form" className="mt-4 pt-4 border-t border-border-default">
-      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2 mt-3">
+    <div data-testid="worker-instruct-form">
+      <form onSubmit={handleSubmit} className="flex items-stretch">
+        <label htmlFor={`steer-${workerId}`} className="sr-only">Steer this agent</label>
         <input
+          id={`steer-${workerId}`}
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="e.g., Focus on edge cases, add more tests..."
-          className="flex-1 px-3 py-2 text-base md:text-sm border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+          placeholder="Steer this agent…"
+          className="flex-1 min-w-0 min-h-12 px-4 text-base md:text-[14px] border-2 border-border-strong bg-surface-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
           disabled={loading}
         />
         <button
           type="submit"
           disabled={loading || !message.trim()}
-          className="w-full sm:w-auto px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          className="shrink-0 min-h-12 px-4 text-[13px] font-medium border-2 border-l-0 border-border-strong bg-surface-3 text-text-primary hover:bg-surface-4 disabled:text-text-muted disabled:cursor-not-allowed"
         >
           {loading ? 'Sending…' : 'Send'}
         </button>
