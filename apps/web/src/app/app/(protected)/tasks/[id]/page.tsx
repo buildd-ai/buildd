@@ -83,6 +83,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   test: 'bg-cat-test/15 text-cat-test',
   infra: 'bg-cat-infra/15 text-cat-infra',
   design: 'bg-cat-design/15 text-cat-design',
+  research: 'bg-cat-research/15 text-cat-research',
 };
 
 export default async function TaskDetailPage({

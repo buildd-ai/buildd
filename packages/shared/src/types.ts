@@ -157,6 +157,7 @@ export const TaskCategory = {
   INFRA: 'infra',
   DESIGN: 'design',
   REVIEW: 'review',
+  RESEARCH: 'research',
 } as const;
 
 export type TaskCategoryValue = typeof TaskCategory[keyof typeof TaskCategory];
