@@ -45,6 +45,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -4531,7 +4532,7 @@ async function handleReviewerOutcomeIfNeeded(
             taskId: originalTaskId,
             authorType: 'system',
             type: 'reviewer_approved',
-            title: `PR #${prNumber} approved — awaiting human merge`,
+            title: approvedAwaitingMergeTitle(prNumber),
             body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
             status: 'open',
           });
