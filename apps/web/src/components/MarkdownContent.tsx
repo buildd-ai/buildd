@@ -12,9 +12,16 @@ interface MarkdownContentProps {
    * title. Everything else is the same renderer.
    */
   variant?: 'default' | 'compact';
+  /**
+   * `link`: an image renders as a link to it instead of loading. For text a
+   * model wrote (chat): an auto-loading image URL would send whatever the
+   * model put in it to that host with no click, so anything the model read
+   * could leave through it.
+   */
+  images?: 'render' | 'link';
 }
 
-export default function MarkdownContent({ content, className = '', variant = 'default' }: MarkdownContentProps) {
+export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render' }: MarkdownContentProps) {
   const compact = variant === 'compact';
   return (
     <div className={`prose prose-sm dark:prose-invert max-w-none ${className}`}>
@@ -62,6 +69,13 @@ export default function MarkdownContent({ content, className = '', variant = 'de
               {children}
             </a>
           ),
+          ...(images === 'link' ? {
+            img: ({ src, alt }: { src?: unknown; alt?: string }) => (
+              <a href={typeof src === 'string' ? src : undefined} target="_blank" rel="noopener noreferrer nofollow" className="text-primary hover:underline">
+                {alt || (typeof src === 'string' ? src : 'image')}
+              </a>
+            ),
+          } : {}),
           // A wide table scrolls inside its own box instead of widening the page.
           table: ({ children }) => (
             <div className="overflow-x-auto my-2 max-w-full">

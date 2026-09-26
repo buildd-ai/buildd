@@ -20,6 +20,7 @@ import {
 import { runChatTurn } from '@/lib/chat/turn';
 import { evaluateLimits, loadLimitInputs } from '@/lib/chat/limits';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
+import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
 
 // The turn streams for up to ~45s (TURN_BUDGET_MS) plus persistence.
@@ -32,7 +33,9 @@ async function loadOwn(req: NextRequest, ctx: Ctx) {
   if ('response' in r) return r;
   const { id } = await ctx.params;
   const conversation = await getOwnConversation(id, r.caller.user.id);
-  if (!conversation) return { response: NextResponse.json({ error: 'Conversation not found' }, { status: 404 }) };
+  // Ownership alone isn't enough: a conversation lives in a team, and runs on
+  // that team's key and data. Leaving the team ends access to it.
+  if (!conversation || !r.caller.teamIds.includes(conversation.teamId)) return { response: NextResponse.json({ error: 'Conversation not found' }, { status: 404 }) };
   return { caller: r.caller, conversation };
 }
 
@@ -80,9 +83,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
   const settings = await loadTeamChatSettings(conv.teamId);
-  const [user, workspace] = await Promise.all([
+  const [user, workspace, reach] = await Promise.all([
     turnUserFor(r.caller.user, conv.teamId, settings.timezone),
     workspaceForConversation(conv.workspaceId, conv.teamId),
+    loadChatReach(conv.teamId),
   ]);
 
   return runChatTurn({
@@ -93,7 +97,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     deps: {
       chatEnabled: async () => settings.chatEnabled,
       limits: async a => evaluateLimits({ ...a, ...(await loadLimitInputs(a)), dailyBudgetUsd: settings.dailyBudgetUsd }),
-      makeApi: onCall => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall }),
+      makeApi: onCall => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach }),
       actionContext: {
         workspaceId: conv.workspaceId ?? undefined,
         teamId: conv.teamId,
@@ -101,7 +105,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         authType: 'oauth',
         getWorkspaceId: async () => conv.workspaceId,
         // Level gates are token-scoped; the routes enforce the user's real
-        // authorization, and the chat allowlist bounds the actions.
+        // authorization, the chat allowlist bounds the actions, and `reach`
+        // bounds the workspaces (this team's, never a sensitive one).
         getLevel: async () => 'admin',
         appBaseUrl: req.nextUrl.origin,
       },

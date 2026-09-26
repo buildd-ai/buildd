@@ -15,6 +15,7 @@ import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team
 import { resolveChatModel } from './models';
 import { FALLBACK_TIER } from './routing';
 import type { TurnUser } from './turn';
+import { isStandardWorkspace } from './reach';
 
 export type ChatCaller = { user: CurrentUser; teamIds: string[] };
 
@@ -77,9 +78,9 @@ export async function isSensitiveWorkspace(workspaceId: string): Promise<boolean
   try {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
-      columns: { dataClass: true },
+      columns: { dataClass: true, gitConfig: true },
     });
-    return ws?.dataClass !== 'standard';
+    return !ws || !isStandardWorkspace(ws);
   } catch {
     return true;
   }

@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import ChatConversation from '@/components/chat/ChatConversation';
 import { loadConversation } from '@/lib/chat/conversations';
 import { isUuid } from '@/lib/uuid';
+import { getUserTeamIds } from '@/lib/team-access';
 import { ChatUnavailable, contextAside, firstName, focusRefFrom, loadChatShell } from '../chat-shell';
 
 export default async function ConversationPage({
@@ -16,8 +17,9 @@ export default async function ConversationPage({
   const data = await loadChatShell();
   if ('unavailable' in data) return <ChatUnavailable reason={data.reason} canManage={data.canManage} />;
   const viewer = firstName(data.user);
-  const conv = await loadConversation(id, data.user.id, viewer);
-  if (!conv) notFound();
+  const [conv, teamIds] = await Promise.all([loadConversation(id, data.user.id, viewer), getUserTeamIds(data.user.id)]);
+  // A conversation lives in its team: leaving the team ends access to it.
+  if (!conv || !teamIds.includes(conv.teamId)) notFound();
   return (
     <ChatConversation
       key={conv.id}
