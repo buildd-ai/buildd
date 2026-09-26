@@ -152,7 +152,7 @@ describe('ProviderKeyCard', () => {
   it('shows a key set elsewhere without offering to change it here', () => {
     render({ status: RUNNER_KEY });
     expect(host.textContent).toContain('…0c0c');
-    expect(host.textContent).toMatch(/Agent backends/);
+    expect(host.textContent).toMatch(/Settings, Runners/);
     expect(button('Remove')).toBeUndefined();
     expect(button('Replace')).toBeUndefined();
   });

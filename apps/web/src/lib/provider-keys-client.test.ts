@@ -86,7 +86,7 @@ describe('toKeyStatus', () => {
   it('marks a key that serves chat from elsewhere as not managed here', () => {
     const s = toKeyStatus(masked({ source: 'anthropic_api_key' }) as never)!;
     expect(s.managedHere).toBe(false);
-    expect(s.sourceNote).toMatch(/Agent backends/);
+    expect(s.sourceNote).toMatch(/Settings, Runners/);
   });
 
   it('returns null for no key', () => {
