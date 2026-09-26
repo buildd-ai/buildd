@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 let chatEnabled = true;
 let callerResponse: Response | null = null;
 const created: any[] = [];
+const listed: any[] = [];
 
 mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => (callerResponse ? { response: callerResponse } : { caller: { user: { id: 'u-1' }, teamIds: ['t-1'] } }),
@@ -21,7 +22,7 @@ mock.module('@/lib/chat/store', () => ({
     created.push(row);
     return row;
   },
-  listConversations: async () => ({ conversations: [], nextCursor: null }),
+  listConversations: async (...args: any[]) => { listed.push(args); return { conversations: [], nextCursor: null }; },
   toConversationDTO: (c: any) => ({ id: c.id, teamId: c.teamId, workspaceId: c.workspaceId, title: 'New conversation' }),
 }));
 
@@ -72,6 +73,13 @@ describe('GET /api/chat', () => {
     const res = await GET(new NextRequest('http://localhost/api/chat'));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ conversations: [], nextCursor: null });
+  });
+
+  it('lists only conversations in teams the caller still belongs to', async () => {
+    listed.length = 0;
+    await GET(new NextRequest('http://localhost/api/chat'));
+    expect(listed[0][0]).toBe('u-1');
+    expect(listed[0][1].teamIds).toEqual(['t-1']);
   });
 
   it('rejects a malformed cursor', async () => {

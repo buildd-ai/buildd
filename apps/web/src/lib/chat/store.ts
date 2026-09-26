@@ -3,7 +3,7 @@
  * personal: only their creator reads or writes them (P1).
  */
 
-import { and, asc, desc, eq, isNull, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { conversationApprovals, conversationMessages, conversations } from '@buildd/core/db/schema';
 import { conversationDisplayTitle, normalizeConversationTitle } from '@buildd/core/conversation-title';
@@ -67,10 +67,12 @@ export async function createConversation(input: {
   return row;
 }
 
-export async function listConversations(userId: string, opts: { before?: Date; limit: number }) {
+export async function listConversations(userId: string, opts: { before?: Date; limit: number; teamIds: string[] }) {
+  if (opts.teamIds.length === 0) return { conversations: [], nextCursor: null };
   const rows = await db.query.conversations.findMany({
     where: and(
       eq(conversations.createdByUserId, userId),
+      inArray(conversations.teamId, opts.teamIds),
       isNull(conversations.archivedAt),
       opts.before ? lt(conversations.lastMessageAt, opts.before) : undefined,
     ),

@@ -146,3 +146,18 @@ describe('objects', () => {
     expect(qa('[data-testid="object-card"][data-kind="pr"]').length).toBe(7);
   });
 });
+
+describe('model-authored text', () => {
+  it('never auto-loads a remote image: it renders as a plain link the user can choose to follow', async () => {
+    const msgs = [{
+      id: 'a', role: 'assistant' as const,
+      parts: [{ type: 'text', text: 'Here you go ![status](https://example.invalid/pixel.png?d=abc)' }],
+    }];
+    await render(msgs as Msgs);
+    const text = q('[data-testid="feed-text"]');
+    expect(text?.querySelector('img')).toBeNull();
+    const link = text?.querySelector('a');
+    expect(link?.getAttribute('href')).toBe('https://example.invalid/pixel.png?d=abc');
+    expect(link?.textContent).toContain('status');
+  });
+});

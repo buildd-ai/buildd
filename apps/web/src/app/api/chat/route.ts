@@ -5,7 +5,7 @@ import { createConversation, listConversations, toConversationDTO } from '@/lib/
 import { isSensitiveWorkspace, loadTeamChatSettings, requireChatCaller, resolveChatTeam } from '@/lib/chat/session';
 
 /**
- * GET  /api/chat?cursor=&limit=  → ListConversationsResponse (the caller's own, newest first)
+ * GET  /api/chat?cursor=&limit=  → ListConversationsResponse (the caller's own, in teams they still belong to, newest first)
  * POST /api/chat { teamId?, workspaceId? } → { conversation }
  *
  * Session only. Creating a conversation needs the team's `chat` capability on;
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   const before = cursor ? new Date(cursor) : undefined;
   if (before && Number.isNaN(before.getTime())) return NextResponse.json({ error: 'invalid cursor' }, { status: 400 });
 
-  const page = await listConversations(r.caller.user.id, { before, limit });
+  const page = await listConversations(r.caller.user.id, { before, limit, teamIds: r.caller.teamIds });
   const body: ListConversationsResponse = {
     conversations: page.conversations.map(toConversationDTO),
     nextCursor: page.nextCursor,
