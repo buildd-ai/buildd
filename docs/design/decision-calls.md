@@ -1,6 +1,11 @@
 ---
 status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# decision-client and task-category-shadow pass because steps 1-4 shipped
+# (PRs #2823, #2829, #2830). gated-apply fails because step 6 has not. Status
+# stays 'partially' until it does; the two passing assertions reading as
+# code_ahead against 'partially' is expected, not drift. See "Implementation
+# status" at the end.
 assertions:
   - id: "decision-client"
     type: "symbol"
@@ -20,8 +25,8 @@ assertions:
 ---
 # Decision Calls: a Third Primitive for Fixed-Label Judgments
 
-**Status:** Partially implemented. The client, the offline benchmark and the `classifyTask` shadow have shipped. Nothing acts on a decision yet. See "Implementation status" below.
-**Related:** `docs/design/inference-calls-primitive.md` (which this extends), `packages/core/inference-client.ts`, `packages/core/inference-policy.ts`, `packages/core/decision-client.ts`, `packages/core/decision-benchmark.ts`, `apps/web/src/lib/task-category.ts`, `apps/web/src/lib/task-category-decision.ts`, `scripts/decision-benchmark.ts`, `docs/credentials-architecture.md`, `docs/design/model-tiers.md`
+**Status:** Partially implemented. Steps 1–4 have shipped: the client, the policy wiring, the offline benchmark and the `classifyTask` shadow. Step 6, the first confidence-gated apply, has not, so nothing acts on a decision yet. See "Implementation status" below.
+**Related:** `docs/design/inference-calls-primitive.md` (which this extends), `packages/core/inference-client.ts`, `packages/core/inference-policy.ts`, `packages/core/decision-client.ts`, `packages/core/inference-keys.ts`, `packages/core/decision-benchmark.ts`, `apps/web/src/lib/task-category.ts`, `apps/web/src/lib/task-category-decision.ts`, `scripts/decision-benchmark.ts`, `docs/credentials-architecture.md`, `docs/design/model-tiers.md`, `docs/design/agent-chat.md`
 
 ---
 
@@ -126,13 +131,13 @@ The key is an OpenRouter key stored in the `secrets` table under a new purpose, 
 
 **Since agent chat P1**, `resolveDecisionKey` is a thin wrapper over the shared `resolveInferenceKey` (`packages/core/inference-keys.ts`), so one OpenRouter key serves chat, inference and decision calls. `decision_key` stays preferred over `inference_key` at the same scope, and a personal key (`secrets.userId`) ranks first when the call names the acting user.
 
-**Resolution order: acting user's account → workspace → team.** An account-scoped row whose `accountId` equals the caller's account wins, then a workspace-scoped row, then the team-wide row. Rows scoped to *another* account or workspace are never considered.
+**Resolution order: acting user → acting account → workspace → team.** A personal row whose `userId` equals the caller wins, then an account-scoped row whose `accountId` equals the caller's account, then a workspace-scoped row, then the team-wide row. Rows scoped to *another* user, account or workspace are never considered. The full order, including the legacy account-row and env steps, is documented at the top of `packages/core/inference-keys.ts`.
 
 This intentionally differs from the credentials doc's workspace → account → team order. That order is for runner credentials; the order here is for a key that a person pays for. If a user has brought their own key, that key should be the one spent (Open Question 1).
 
-**Env.** `OPENROUTER_API_KEY` is used only when `NODE_ENV !== 'production'`, for local development and the benchmark script. In production the key must come from `secrets`, so a stray deployment env var can never start spending on every team. `inferenceCall`'s env fallback does not have this guard. Adding it there is an easy follow-up.
+**Env.** `OPENROUTER_API_KEY` is used only when `NODE_ENV !== 'production'`, for local development and the benchmark script. In production the key must come from `secrets`, so a stray deployment env var can never start spending on every team. The guard is `envKeysAllowed()` in `packages/core/inference-keys.ts`, so since the shared resolver landed it covers `inferenceCall` and chat too. A self-hosted deployment can opt back in with `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1`.
 
-**Storage.** `POST /api/secrets` accepts `decision_key` as a raw-string purpose, strips wrapping quotes, and applies no prefix rule. Like `mcp_credential`, it is stored **team-wide by default**. Every other purpose defaults to the calling API key's account, which would quietly make a team's key work only for tasks filed by that one account.
+**Storage.** `POST /api/secrets` accepts `decision_key` as a raw-string purpose, strips wrapping quotes, and applies no prefix rule. Like `mcp_credential` and `inference_key`, it is stored **team-wide by default**. Every other purpose defaults to the calling API key's account, which would quietly make a team's key work only for tasks filed by that one account.
 
 ### Point 5: Model selection
 
@@ -194,8 +199,8 @@ Ranked by fit for a decision call: a fixed label set, short text input, a cheap-
 | 6 | Friction and error grouping: `normalizeErrorSignature` (`packages/core/error-signature.ts:119`) and `failure-friction-signature.ts` | Regex canonicalisation, then a hash. Not a label set. | None; exact-match clustering | Medium. Duplicate or merged friction tasks. | **Poor fit as a classifier.** The possible fit is a Noul asking "are these two excerpts the same failure?" against the top few candidate signatures before a new friction task is filed. That is dedupe verification, a later design. |
 | 7 | Criteria judge: `judgeWithLLM`, `apps/web/src/lib/mission-criteria-eval.ts:112` | `inferenceCall`, verdict `pass fail UNVERIFIED` | 3 verdicts | High. A false pass moves a mission toward completion. | **Poor fit today.** The evidence is long (task summaries plus artifact snippets), and a verdict is a multi-hop judgment. Revisit only for short, fixed-rubric criteria, as a Score, with the current judge as fallback. |
 | 8 | Merge risk and auto-merge: `resolvePolicy` (`apps/web/src/lib/merge-policy.ts:126`), `detectAllRiskClasses` (`apps/web/src/lib/workspace-policy.ts:168`), `evaluateAutoMergeSafety` (`apps/web/src/lib/auto-merge.ts:103`) | Deterministic rules on paths, CI state and line counts | Policy `auto-threshold agent-review human`; risk classes `destructive_schema_change ci_deploy_config auth_and_secrets dependency_bump public_api_contract` | Highest. Code merges without a human. | **Do not replace.** The inputs are structured and the rules are exact. At most, a Noul over the PR description could *escalate* to review (never de-escalate), as an extra signal behind the rules. |
-| 9 | Mission health: `deriveMissionHealth`, `apps/web/src/lib/mission-helpers.ts:656` | Ordered rules on structured fields | `active on-schedule stalled shipped paused idle budget-exhausted held escalated` | Low | **Not a fit.** There is no free text and the rules are exact. This is exactly the "use code" case. |
-| 10 | Notification relevance: `resolveNotifyPlan` (`apps/web/src/lib/notify-rules.ts:57`) and hardcoded priorities in `apps/web/src/lib/mission-notifications.ts` | Per-event preference yes/no | None; there is no relevance scoring | Low | No site to replace. A future "is this worth a push?" Noul over the event text would be a new feature, and would need labelled read/dismiss data first. |
+| 9 | Mission health: `deriveMissionHealth`, `apps/web/src/lib/mission-helpers.ts:659` | Ordered rules on structured fields | `active on-schedule stalled shipped paused idle budget-exhausted held escalated` | Low | **Not a fit.** There is no free text and the rules are exact. This is exactly the "use code" case. |
+| 10 | Notification relevance: `resolveNotifyPlan` (`apps/web/src/lib/notify-rules.ts:56`) and hardcoded priorities in `apps/web/src/lib/mission-notifications.ts` | Per-event preference yes/no | None; there is no relevance scoring | Low | No site to replace. A future "is this worth a push?" Noul over the event text would be a new feature, and would need labelled read/dismiss data first. |
 
 Other fixed-label classifiers of free text, for completeness. Each is regex- or substring-based, and each falls somewhere between ranks 3 and 6:
 
@@ -205,7 +210,7 @@ Other fixed-label classifiers of free text, for completeness. Each is regex- or 
 
 ### Upcoming uses: agent chat
 
-These are for the planned agent chat. Its design is being written in parallel, and the file does not exist yet. Each fits the policy above, because each is a short user utterance, a fixed label set and a cheap fallback:
+These are for agent chat, designed in `docs/design/agent-chat.md` (Proposed), which adopts the tier and intent routing below. Each fits the policy above, because each is a short user utterance, a fixed label set and a cheap fallback:
 
 - **Routing a request to a model tier.** A Choice over `simple / standard / complex`, fed the user's message plus minimal thread context. It maps onto the existing registry tiers (`budget / standard / premium`, `docs/design/model-tiers.md`).
   - Fallback: `standard`.
@@ -256,7 +261,7 @@ In order, load-bearing piece first:
 1. **Key precedence: account-first or workspace-first?** I lean account-first, as built. The person whose account filed the work and who brought a key expects that key to be spent. This differs from the runner-credential order in `docs/credentials-architecture.md`, and the two may be worth unifying later. Nothing breaks if the order is flipped: a flip only changes which key is spent.
 2. **Should the shadow write somewhere queryable instead of the log?** I lean no until step 5 shows the log is insufficient. Log retention limits how long a shadow window can be, and that is the trade.
 3. **A platform-provided OpenRouter key?** Deferred, as for inference calls. It is a pricing decision. Mechanically it would be a new bottom fallback in `resolveDecisionKey`, with no caller change.
-4. **`inferenceCall`'s production env fallback.** Should it get the same `NODE_ENV !== 'production'` guard? I lean yes, but that is a behaviour change for any deployment relying on `ANTHROPIC_API_KEY`, so it belongs in its own PR.
+4. **`inferenceCall`'s production env fallback.** *Resolved.* The shared `resolveInferenceKey` applies the same production guard to every caller, with `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` as the opt-in for deployments that relied on an env key (Point 4).
 5. **Should decision capabilities live in the inference allowlist or a separate one?** I lean toward the same allowlist, as built. It is one settings surface for "what may buildd spend API money on", and the descriptor's `fallback` field already communicates the difference.
 
 ## Non-goals
@@ -276,6 +281,9 @@ Landed:
 - `packages/core/decision-benchmark.ts` and `scripts/decision-benchmark.ts`.
 - The `task_category_shadow` capability.
 - The `decision_key` secret purpose.
-- The `classifyTask` shadow in `POST /api/tasks`.
+- The `classifyTask` shadow in `POST /api/tasks`, including the `research` label (PR #2830).
+- The key lookup moved onto the shared `resolveInferenceKey` (agent chat P1, PR #2832); `resolveDecisionKey` is now a wrapper.
+
+Landed in PRs #2823 (client, benchmark and shadow) and #2829 (SDK transport, lazy DB import).
 
 Remaining: steps 5 and 6. Both are gated on real shadow and benchmark data, so this doc stays `partially` until one site applies a decision.
