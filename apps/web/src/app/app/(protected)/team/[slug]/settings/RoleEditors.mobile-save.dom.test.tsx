@@ -34,13 +34,13 @@ const { RoleEditor } = await import('../../../workspaces/[id]/skills/[skillId]/R
 const role = {
   id: 'role-1', teamId: 'team-1', workspaceId: null, slug: 'builder', name: 'Builder',
   description: null, content: 'You build.', model: 'inherit', defaultBackend: null,
-  allowedTools: ['Read', 'Bash'], canDelegateTo: [], background: false, maxTurns: null, color: '#D4724A',
+  allowedTools: ['Read', 'Bash'], canDelegateTo: [], background: false, maxTurns: null, color: '#0C72CB',
   mcpServers: [], requiredEnvVars: {}, isRole: true, repoUrl: null,
 };
 const skill = {
   id: 'skill-1', slug: 'builder', teamId: 'team-1', workspaceId: 'ws-1', name: 'Builder',
   description: null, content: 'You build.', model: 'inherit', defaultBackend: null,
-  allowedTools: ['Read', 'Bash'], canDelegateTo: [], background: false, maxTurns: null, color: '#D4724A',
+  allowedTools: ['Read', 'Bash'], canDelegateTo: [], background: false, maxTurns: null, color: '#0C72CB',
   connectorRefs: [], isRole: true, repoUrl: null, createdAt: '2026-01-01T00:00:00.000Z',
 };
 

@@ -267,7 +267,8 @@ Title: concise + searchable + includes the error class (e.g. "CI: stale /tmp/bui
 
 Do NOT save summaries of task outcomes — use \`learn type=gotcha|pattern|decision|architecture|discovery\` only. Task outcomes are automatically indexed in the task corpus via complete_task.
 `,
-    color: '#D4724A',
+    // Cobalt — off the accent orange (reserved for action/progress); see role-colours.test.ts.
+    color: '#0C72CB',
     // Builder defaults to Opus. Overrides flow downward via task.complexity
     // (simple→Haiku, normal→Sonnet) in the claim-time router; overriding upward
     // to Opus is never needed.
@@ -314,7 +315,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
 - Flag urgent findings (breaking changes, security issues) immediately
 - Use the buildd MCP to report progress and create artifacts
 `,
-    color: '#D97706',
+    // Orchid — off the accent orange and warning amber; see role-colours.test.ts.
+    color: '#B24C9C',
     // Researcher reads and summarises — Sonnet is the sweet spot for this shape
     // of work. Router downshifts to Haiku under budget pressure.
     model: 'sonnet',

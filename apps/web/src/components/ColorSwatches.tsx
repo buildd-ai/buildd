@@ -2,11 +2,11 @@
 
 /** Role avatar palette. Names are what assistive tech announces. */
 export const ROLE_COLORS = [
-  { value: '#D4724A', name: 'Terracotta' },
+  { value: '#0C72CB', name: 'Cobalt' },
   { value: '#5B7BB3', name: 'Blue' },
   { value: '#6B8E5E', name: 'Green' },
   { value: '#C4963B', name: 'Ochre' },
-  { value: '#9B59B6', name: 'Purple' },
+  { value: '#B24C9C', name: 'Orchid' },
   { value: '#2C8C99', name: 'Teal' },
   { value: '#D4A24A', name: 'Amber' },
   { value: '#8A8478', name: 'Stone' },
