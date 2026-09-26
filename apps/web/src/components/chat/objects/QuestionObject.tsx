@@ -14,6 +14,7 @@ import type { BuilddObjectRef } from '../chat-contract';
 import { useChatActions } from '../ChatActions';
 import { useObjectStore } from './ObjectStoreProvider';
 import type { QuestionObjectView } from './object-views';
+import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
 
 /** "The builder asks" → "The Builder": who the answer went to. */
 export function askerName(askerLabel: string): string {
@@ -28,6 +29,9 @@ export function QuestionCard({ objRef, view, variant = 'card' }: { objRef: Build
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [answered, setAnswered] = useState<string | null>(null);
+  // Open in the sheet or the docked pane, this card IS the answer surface: the
+  // layout's "…needs your input" banner stands down for this question.
+  useHideNeedsInputWhileOpen(variant === 'pane' && view.open && !answered ? view.taskId : null);
   const ago = view.askedAt ? formatAge(Math.max(0, view.renderedAt - view.askedAt)) : null;
   const aside = [view.scope, ago].filter(Boolean).join(' · ');
 

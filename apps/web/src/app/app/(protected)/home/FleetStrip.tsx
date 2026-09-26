@@ -122,7 +122,7 @@ const TABLE_COLS = 'grid-cols-1 md:grid-cols-[170px_minmax(0,1fr)]';
 
 /**
  * One square per slot, in the order the rows beside it list them
- * (`fleetDisplayRows`: busy first, then recent idle, then the folded rest) —
+ * (`fleetDisplayRows`: busy and recent idle slots in slot order, then the folded rest) —
  * so the filled square is the row with the agent on it, not its slot index.
  */
 function SlotMeterSquares({ runner, rows }: { runner: FleetRunner; rows: readonly FleetDisplayRow[] }) {

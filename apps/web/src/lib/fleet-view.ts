@@ -197,11 +197,15 @@ export type FleetDisplayRow =
 
 /**
  * Which of a runner's slots get their own row. Ten rows of "idle" bury the one
- * slot doing something, so: busy slots first (slot order), then up to
- * `recentIdle` idle slots whose last run ended inside the chart window (most
- * recent first), then everything else folded into one "N idle slots" row. A
- * single leftover slot keeps its row — folding one row into one row hides a
- * name for nothing.
+ * slot doing something, so: every busy slot, plus up to `recentIdle` idle slots
+ * whose last run ended inside the chart window (the most recent ones), each in
+ * its own row IN SLOT ORDER, then everything else folded into one "N idle
+ * slots" row. A single leftover slot keeps its row — folding one row into one
+ * row hides a name for nothing.
+ *
+ * Slot order, not busy-first: a running task keeps its row for its whole run.
+ * Sorting busy slots to the top moved a task up a row the moment the slot above
+ * it finished, which on a live dashboard reads as the work hopping runners.
  */
 export function fleetDisplayRows(runner: FleetRunner, opts: { since?: number; recentIdle?: number } = {}): FleetDisplayRow[] {
   const recentIdle = opts.recentIdle ?? 2;
@@ -213,7 +217,8 @@ export function fleetDisplayRows(runner: FleetRunner, opts: { since?: number; re
     .sort((a, b) => (b.last!.at ?? 0) - (a.last!.at ?? 0))
     .slice(0, recentIdle);
   const rest = idle.filter(s => !recent.includes(s));
-  const rows: FleetDisplayRow[] = [...busy, ...recent].map(slot => ({ kind: 'slot', slot }));
+  const shown = [...busy, ...recent].sort((a, b) => a.index - b.index);
+  const rows: FleetDisplayRow[] = shown.map(slot => ({ kind: 'slot', slot }));
   if (rest.length === 1) rows.push({ kind: 'slot', slot: rest[0] });
   else if (rest.length > 1) rows.push({ kind: 'idle', count: rest.length, slots: rest });
   return rows;

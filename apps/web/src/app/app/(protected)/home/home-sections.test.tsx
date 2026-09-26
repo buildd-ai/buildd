@@ -172,12 +172,14 @@ describe('FleetStrip — demo polish regressions', () => {
   ], { now: NOW });
   const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
 
-  it('the capacity dots follow the row order (busy slot listed first → filled dot first)', () => {
+  // Rows are in slot order (a running task keeps its row when the slot above it
+  // frees up — demo capture, home fleet live take), and the dots follow them.
+  it('rows stay in slot order and the capacity dots follow the row order', () => {
     const rows = [...html.matchAll(/data-testid="fleet-slot" data-busy="(true|false)"/g)].map(m => m[1]);
-    expect(rows).toEqual(['true', 'false']);
+    expect(rows).toEqual(['false', 'true']);
     const meter = html.match(/<span class="mt-0.5 flex[^"]*" aria-label="[^"]*">(.*?)<\/span>/)?.[1] ?? '';
     const dots = [...meter.matchAll(/<i [^>]*class="([^"]*)"/g)].map(m => m[1].includes('bg-accent') ? 'busy' : 'idle');
-    expect(dots).toEqual(['busy', 'idle']);
+    expect(dots).toEqual(['idle', 'busy']);
   });
 
   it('an idle row keeps its time: the age sits in its own non-shrinking column, outside the truncated text', () => {
