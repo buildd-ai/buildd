@@ -20,7 +20,8 @@ import {
   type ActionContext, type ApiFn,
 } from '@buildd/core/mcp-tools';
 import type { BuilddObjectRef, ChatApprovalPreview, ChatToolResult } from '@buildd/shared';
-import { previewMatches, type PreviewOutcome } from './previews';
+import { asBool, previewMatches, type PreviewOutcome } from './previews';
+import { isUuid, type Resolution } from './targets';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import {
@@ -104,9 +105,40 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         status: z.string().optional(),
         title: z.string().max(200).optional().describe('create: a short mission title'),
         description: z.string().max(8000).optional().describe('create: the goal, in the words settled with the user'),
-        goalCriteria: z.array(criterion).max(12).optional(),
+        goalCriteria: z.array(criterion).max(12).optional().describe('create: the criteria. update: REPLACES the list; prefer addGoalCriteria / removeGoalCriteria.'),
+        addGoalCriteria: z.array(criterion).max(12).optional().describe('update: criteria to add to the current list.'),
+        removeGoalCriteria: z.array(z.string()).max(12).optional().describe('update: labels of criteria to remove from the current list.'),
         priority: z.number().int().min(0).max(10).optional(),
       }).catchall(z.unknown());
+    case 'create_task':
+      return z.object({
+        title: z.string().max(200),
+        description: z.string().max(8000),
+        missionId: z.string().optional().describe('The mission it belongs to (the docked one, usually).'),
+        dependsOn: z.array(z.string()).optional().describe('Tasks it must wait for: ids, short ids or the words the user used.'),
+        baseBranch: z.string().optional().describe('Branch to build on, e.g. the branch of the PR being fixed.'),
+        pathManifest: z.array(z.string()).optional().describe('Files it will change. Mission tasks that open a PR need at least one.'),
+        workspaceId: ws,
+        priority: z.number().int().min(0).max(10).optional(),
+        roleSlug: z.string().optional(),
+        kind: z.string().optional(),
+        label: z.string().optional(),
+        outputRequirement: z.string().optional(),
+      }).catchall(z.unknown());
+    case 'hold_task':
+      return z.object({
+        taskId: z.string(),
+        hold: z.boolean().optional().describe('true to hold (default), false to resume'),
+        reason: z.string().max(280).optional(),
+      });
+    case 'send_agent_message':
+      return z.object({
+        taskId: z.string(),
+        message: z.string().max(4000),
+        priority: z.enum(['normal', 'urgent']).optional(),
+      });
+    case 'answer_question':
+      return z.object({ taskId: z.string(), answer: z.string().max(4000) });
     case 'list_schedules':
       return z.object({
         workspaceId: ws,
@@ -177,6 +209,8 @@ export interface ChatToolDeps {
   approvedPreviews?: ReadonlyMap<string, ChatApprovalPreview>;
   /** Builds the card for a write from current state (previews.ts), bound to this turn's reach and dock. */
   preview?: (tool: string, input: Record<string, unknown>) => Promise<PreviewOutcome>;
+  /** Resolve a task named by short id or words (targets.ts), bound to this turn's dock. */
+  resolveTask?: (ref: string) => Promise<Resolution>;
   /** After a mission is filed: link it to the conversation, store the result. */
   onMissionFiled?: (args: { missionId: string; toolCallId: string; result: ChatToolResult }) => Promise<void>;
   /** Team memory for recall/learn, for an in-reach workspace; null when unavailable. */
@@ -231,6 +265,13 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         }
 
         let callInput = input;
+        // A read that names a task by short id or words (as the docked list
+        // shows them) is resolved the same way a steering write is.
+        if (!isWrite && typeof input.taskId === 'string' && !isUuid(input.taskId) && deps.resolveTask) {
+          const r = await deps.resolveTask(input.taskId);
+          if (!r.ok) return { data: `Needs clarification: ${r.question}`, objects: [], summary: 'needs clarification' };
+          callInput = { ...input, taskId: r.id };
+        }
         let target: ChatApprovalPreview['target'] | null = null;
         if (isWrite && needsApproval(action, input)) {
           if (!deps.allowWrites || !deps.authorizedToolCallIds.has(toolCallId)) {
@@ -308,7 +349,7 @@ const textOut = (text: string, isError = false) => ({ content: [{ type: 'text' a
 /** hold_task: the hold itself, then a word to the running agent. */
 async function holdTask(api: ApiFn, input: Record<string, unknown>) {
   const taskId = String(input.taskId);
-  const hold = input.hold !== false;
+  const hold = asBool(input.hold, true);
   const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, 280) : '';
   const task = await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ held: hold, ...(hold && reason ? { heldReason: reason } : {}) }) });
   const fresh = await api(`/api/tasks/${taskId}?include=workers`);
