@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { handleBuilddAction, adminActions, type ApiFn, type ActionContext } from '../mcp-tools';
+import { handleBuilddAction, adminActions, buildParamsDescription, type ApiFn, type ActionContext } from '../mcp-tools';
 
 const MOCK_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -84,6 +84,39 @@ describe('manage_initiatives', () => {
     expect(text).toContain('3/5 tasks');
     expect(text).toContain('A');
     expect(text).toContain('Roadmap');
+  });
+
+  it('create and update pass the owner, target date and a planned status', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Billing', status: 'planned', priority: 0 });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+      { action: 'create', title: 'Billing', status: 'planned', targetDate: '2026-11-15', ownerUserId: 'user-2' }, createMockContext());
+    expect(JSON.parse(mockApi.mock.calls[0][1].body)).toMatchObject({ status: 'planned', targetDate: '2026-11-15', ownerUserId: 'user-2' });
+
+    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Billing', status: 'active' });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+      { action: 'update', initiativeId: 'init-1', targetDate: null }, createMockContext());
+    expect(JSON.parse(mockApi.mock.calls[1][1].body)).toEqual({ targetDate: null });
+  });
+
+  it('get shows the owner id and target date when set', async () => {
+    mockApi.mockResolvedValueOnce({
+      id: 'init-1', title: 'Billing', status: 'planned', targetDate: '2026-11-15', ownerUserId: 'user-2',
+      progress: { progress: 0, completedMissions: 0, totalMissions: 0, completedTasks: 0, totalTasks: 0, status: 'empty' },
+      missions: [], artifacts: [],
+    });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+      { action: 'get', initiativeId: 'init-1' }, createMockContext());
+    const text = (res as any).content[0].text;
+    expect(text).toContain('Target date: 2026-11-15');
+    expect(text).toContain('Owner: user-2');
+  });
+
+  it('describes the planned status and marks the KPI params deprecated', () => {
+    const desc = buildParamsDescription(['manage_initiatives']);
+    expect(desc).toContain('"planned"');
+    expect(desc).toContain('targetDate');
+    expect(desc).toContain('ownerUserId');
+    expect(desc).toMatch(/DEPRECATED[^.]*kpis/);
   });
 
   it('link_mission PATCHes the mission with initiativeId', async () => {

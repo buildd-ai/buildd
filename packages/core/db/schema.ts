@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar, date
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -985,12 +985,21 @@ export const initiatives = pgTable('initiatives', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
+  // Human-set lifecycle, Linear's initiative statuses plus paused/archived.
+  // Nothing derives or auto-advances it. 'planned' needs no migration: text column.
+  status: text('status').default('active').notNull().$type<'planned' | 'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
-  // Denormalized rollup from computeInitiativeProgress, refreshed on child-mission change.
+  // Who answers for the initiative. NULL reads as createdByUserId.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Optional calendar target, no time of day ('YYYY-MM-DD').
+  targetDate: date('target_date', { mode: 'string' }),
+  // DEPRECATED: never written or read. Scheduled for drop (schema-change skill, "dropping things safely").
   progressCache: jsonb('progress_cache').$type<InitiativeProgressCache | null>(),
   // Curated artifact-id pointers for context assembly (mirrors missions.contextArtifactIds).
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
+  // DEPRECATED (kpis, kpiState, autoVerify): no longer rendered; the API/MCP
+  // still accept them until a later release drops them. Mission goal criteria
+  // cover what buildd can check.
   // KPIs: outcome-oriented indicators that gate initiative completion.
   // null = no KPIs (completion driven by child-mission rollup alone).
   // A blocking KPI (blocking: true, the default) holds status='active' until met.
@@ -2885,6 +2894,7 @@ export const initiativesRelations = relations(initiatives, ({ one, many }) => ({
   team: one(teams, { fields: [initiatives.teamId], references: [teams.id] }),
   workspace: one(workspaces, { fields: [initiatives.workspaceId], references: [workspaces.id] }),
   createdByUser: one(users, { fields: [initiatives.createdByUserId], references: [users.id] }),
+  ownerUser: one(users, { fields: [initiatives.ownerUserId], references: [users.id] }),
   missions: many(missions),
   artifacts: many(artifacts),
 }));

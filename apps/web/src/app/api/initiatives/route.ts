@@ -6,6 +6,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { loadInitiativeList } from '@/lib/initiative-list';
+import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
+import type { InitiativeStatus } from '@/lib/initiative-view';
 
 // GET /api/initiatives — list initiatives for the user's team(s), with rolled-up progress
 export async function GET(req: NextRequest) {
@@ -70,17 +72,24 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, teamId: requestedTeamId, priority, status: requestedStatus, contextArtifactIds, kpis, autoVerify } = body;
+    const { title, description, workspaceId, teamId: requestedTeamId, priority, status: requestedStatus, contextArtifactIds, targetDate, ownerUserId, kpis, autoVerify } = body;
 
     if (!title || typeof title !== 'string') {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
     }
 
-    const validStatuses = ['active', 'paused', 'completed', 'archived'];
-    if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
-      return NextResponse.json({ error: `Invalid status: must be one of ${validStatuses.join(', ')}` }, { status: 400 });
+    let effectiveStatus: InitiativeStatus = 'active';
+    if (requestedStatus !== undefined) {
+      const parsed = parseInitiativeStatus(requestedStatus);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      effectiveStatus = parsed.value;
     }
-    const effectiveStatus: 'active' | 'paused' | 'completed' | 'archived' = requestedStatus || 'active';
+    let effectiveTargetDate: string | null = null;
+    if (targetDate !== undefined) {
+      const parsed = parseTargetDate(targetDate);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      effectiveTargetDate = parsed.value;
+    }
 
     let teamId: string;
     let userTeamIds: string[] = [];
@@ -116,6 +125,16 @@ export async function POST(req: NextRequest) {
       teamId = ws.teamId;
     }
 
+    // Owner: whoever the caller names on this team, else the creating user.
+    let effectiveOwner: string | null = user?.id ?? null;
+    if (ownerUserId !== undefined) {
+      const parsed = await parseOwnerUserId(ownerUserId, teamId);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      effectiveOwner = parsed.value;
+    }
+
+    // DEPRECATED: kpis / autoVerify are still stored for API compatibility but
+    // no surface renders or evaluates them for the initiative any more.
     if (kpis !== undefined && kpis !== null) {
       if (!Array.isArray(kpis)) {
         return NextResponse.json({ error: 'kpis must be an array' }, { status: 400 });
@@ -133,6 +152,8 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         contextArtifactIds: contextArtifactIds || [],
         createdByUserId: user?.id || null,
+        ownerUserId: effectiveOwner,
+        targetDate: effectiveTargetDate,
         ...(kpis !== undefined ? { kpis: kpis ?? null } : {}),
         ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
       })

@@ -8,6 +8,7 @@ const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as strin
 const mockInitiativesFindMany = mock(() => [] as any[]);
 const mockLinearLinkRows = mock(() => [] as Array<{ entityId: string }>);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1', teamId: 'team-1' }) as any);
+const mockTeamMembersFindFirst = mock(() => ({ userId: 'user-2' }) as any);
 let insertedInitiativeValues: any = null;
 const mockInitiativesInsert = mock(() => ({
   values: mock((vals: any) => {
@@ -31,6 +32,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       initiatives: { findMany: mockInitiativesFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      teamMembers: { findFirst: mockTeamMembersFindFirst },
     },
     insert: () => mockInitiativesInsert(),
     // Batched Linear-link existence query (db.select(...).from(...).where(...)).
@@ -46,6 +48,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   initiatives: { teamId: 'teamId', workspaceId: 'workspaceId', status: 'status', priority: 'priority', createdAt: 'createdAt' },
   workspaces: { id: 'id', teamId: 'teamId' },
+  teamMembers: { teamId: 'teamId', userId: 'userId' },
   externalLinks: { provider: 'provider', builddEntityType: 'builddEntityType', builddEntityId: 'builddEntityId' },
 }));
 
@@ -90,6 +93,38 @@ describe('POST /api/initiatives', () => {
     expect(insertedInitiativeValues.orchestrationMode).toBeUndefined();
     expect(insertedInitiativeValues.scheduleId).toBeUndefined();
     expect(insertedInitiativeValues.costBudgetUsd).toBeUndefined();
+  });
+
+  it('owner defaults to the creator; no target date unless given', async () => {
+    const res = await POST(new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST', body: JSON.stringify({ title: 'Team billing' }),
+    }));
+    expect(res.status).toBe(201);
+    expect(insertedInitiativeValues.ownerUserId).toBe('user-1');
+    expect(insertedInitiativeValues.targetDate).toBeNull();
+  });
+
+  it('creates a planned initiative with a target date and an owner from the team', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue({ userId: 'user-2' });
+    const res = await POST(new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST', body: JSON.stringify({ title: 'Team billing', status: 'planned', targetDate: '2026-11-15', ownerUserId: 'user-2' }),
+    }));
+    expect(res.status).toBe(201);
+    expect(insertedInitiativeValues.status).toBe('planned');
+    expect(insertedInitiativeValues.targetDate).toBe('2026-11-15');
+    expect(insertedInitiativeValues.ownerUserId).toBe('user-2');
+  });
+
+  it('rejects a malformed target date and an owner outside the team', async () => {
+    const bad = await POST(new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST', body: JSON.stringify({ title: 'X', targetDate: '15/11/2026' }),
+    }));
+    expect(bad.status).toBe(400);
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    const stranger = await POST(new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST', body: JSON.stringify({ title: 'X', ownerUserId: 'user-9' }),
+    }));
+    expect(stranger.status).toBe(400);
   });
 
   it('rejects a missing title', async () => {

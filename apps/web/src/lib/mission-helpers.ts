@@ -13,7 +13,7 @@ import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_C
  * own PR merge commit is contained in a healthy release, or `unavailable` when
  * that cannot be determined at all). Do not read this value as a delivery
  * signal, and do not derive `shippedThisWeek` or any other "is it out" count
- * from it — see `initiative-pulse.ts`'s `PulseMission.shipped`.
+ * from it.
  */
 export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted' | 'held' | 'escalated';
 
@@ -321,8 +321,7 @@ export function deriveMissionDisplayState(opts: {
   /**
    * True when the mission states goal criteria whose stored verdict is not
    * `pass`. The work may be finished, but the mission is not complete and will
-   * not close — it is awaiting verification. Same vocabulary as
-   * `deriveInitiativeDisplayStatus`'s `awaiting_verification`, deliberately.
+   * not close — it is awaiting verification.
    */
   criteriaUnverified?: boolean;
   /** `missions.criteriaEscalatedAt` — set when goal-criteria gate has escalated to owner. */

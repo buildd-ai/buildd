@@ -15,7 +15,7 @@ import { DEMO } from './lib/guard';
 import { createHash } from 'crypto';
 import { createLocalDb, schema, sql, type LocalDb } from '../../packages/core/db/local-client';
 import { registerChatKeys, seedChat } from './lib/chat';
-import { IdMap, loadStory, relTime, runnerEnvironment, runnerUrl, saveState, scheduleBaseline, toRow, type Entity, type Story } from './lib/story';
+import { IdMap, loadStory, relFuture, relTime, runnerEnvironment, runnerUrl, saveState, scheduleBaseline, toRow, type Entity, type Story } from './lib/story';
 
 const DEFAULT_STORY = new URL('./stories/placeholder.json', import.meta.url).pathname;
 
@@ -138,6 +138,10 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
       id: ids.get(ini.key), teamId: ids.get(team.key), workspaceId: ids.get(ws.key),
       createdByUserId: story.users?.[0]?.key ? ids.get(story.users[0].key) : null,
       createdAt: at(ini._createdAgo, 30 * 86_400_000), updatedAt: at(ini._updatedAgo, 86_400_000),
+      // `_targetIn: '+18d'` → a calendar date that many days from story now.
+      targetDate: ini._targetIn ? relFuture(anchorMs, ini._targetIn).toISOString().slice(0, 10) : null,
+      // A KPI verdict is a snapshot; date it relative to story now.
+      kpiState: ini.kpiState ? { ...ini.kpiState, evaluatedAt: at(ini._kpiEvaluatedAgo, 86_400_000).toISOString() } : null,
     }) as any);
   }
 

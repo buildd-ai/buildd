@@ -14,6 +14,8 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
+  const [status, setStatus] = useState<'planned' | 'active'>('active');
+  const [targetDate, setTargetDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -25,6 +27,8 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
       const payload: Record<string, unknown> = { title: title.trim(), teamId };
       if (description.trim()) payload.description = description.trim();
       if (workspaceId) payload.workspaceId = workspaceId;
+      payload.status = status;
+      if (targetDate) payload.targetDate = targetDate;
 
       const res = await fetch('/api/initiatives', {
         method: 'POST',
@@ -48,15 +52,15 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
   return (
     <div className="max-w-lg">
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
-        <Link href="/app/missions" className="hover:text-text-secondary transition-colors">Missions</Link>
+        <Link href="/app/initiatives" className="hover:text-text-secondary transition-colors">Initiatives</Link>
         <span>/</span>
         <span className="text-text-secondary">New initiative</span>
       </div>
 
       <h1 className="text-xl font-semibold text-text-primary font-sans mb-1">New Initiative</h1>
       <p className="text-sm text-text-secondary mb-6">
-        An initiative groups related missions under one goal. Its missions carry
-        the schedules, budgets and work.
+        An initiative groups the missions behind one goal. You own it and set its
+        status; its missions carry the schedules, budgets and work.
       </p>
 
       <div className="flex flex-col gap-4">
@@ -83,6 +87,20 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
           />
         </label>
 
+        <div className="flex flex-col gap-4 sm:flex-row">
+          <label className="flex flex-1 flex-col gap-1.5">
+            <span className="text-xs font-medium text-text-secondary">Status</span>
+            <select value={status} onChange={(e) => setStatus(e.target.value as 'planned' | 'active')} className="input">
+              <option value="active">Active</option>
+              <option value="planned">Planned</option>
+            </select>
+          </label>
+          <label className="flex flex-1 flex-col gap-1.5">
+            <span className="text-xs font-medium text-text-secondary">Target date <span className="text-text-muted">(optional)</span></span>
+            <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="input" />
+          </label>
+        </div>
+
         {workspaces.length > 0 && (
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-text-secondary">Workspace <span className="text-text-muted">(optional: leave empty to span repos)</span></span>
@@ -105,7 +123,7 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
           >
             {submitting ? 'Creating…' : 'Create Initiative'}
           </button>
-          <Link href="/app/missions" className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors">
+          <Link href="/app/initiatives" className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors">
             Cancel
           </Link>
         </div>

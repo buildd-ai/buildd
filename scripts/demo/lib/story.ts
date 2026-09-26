@@ -41,7 +41,7 @@ export function mintId(storyName: string, key: string, idShort?: string): string
 /** Columns whose string value is a dataset key to resolve to a UUID. */
 const REF_FIELDS = new Set([
   'teamId', 'userId', 'workspaceId', 'missionId', 'taskId', 'workerId', 'accountId',
-  'createdByUserId', 'createdByWorkerId', 'createdByAccountId', 'parentTaskId', 'scheduleId',
+  'createdByUserId', 'ownerUserId', 'createdByWorkerId', 'createdByAccountId', 'parentTaskId', 'scheduleId',
   'claimedBy', 'replyTo', 'lastTaskId', 'parentMissionId', 'dependsOnMissionId', 'githubRepoId',
   'githubInstallationId', 'installationId', 'initiativeId', 'docFixTaskId', 'promotedMissionId',
 ]);
