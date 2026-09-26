@@ -1,7 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-let pathname = '/app/connections';
+let pathname = '/app/settings/connectors';
 mock.module('next/navigation', () => ({
   usePathname: () => pathname,
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
@@ -34,7 +34,7 @@ describe('MobilePageHeader', () => {
   it('places the team switcher in the title cluster, left of the account avatar', () => {
     const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
     expect(html.indexOf('Cue')).toBeLessThan(html.lastIndexOf('M'));
-    expect(html).toContain('Connections');
+    expect(html).toContain('MCP connectors');
   });
 
   it('keeps the title truncatable so the row cannot overflow at 320pt', () => {
@@ -43,9 +43,26 @@ describe('MobilePageHeader', () => {
     expect(html).toContain('min-w-0');
   });
 
+  it('gives a settings section a back arrow to the settings list', () => {
+    const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
+    const back = html.match(/<a[^>]*aria-label="Back to Settings"[^>]*>/)?.[0] ?? "";
+    expect(back).toContain('href="/app/settings"');
+  });
+
+  it('shows no back arrow on the settings list itself', () => {
+    pathname = '/app/settings';
+    try {
+      const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
+      expect(html).toContain('Settings');
+      expect(html).not.toContain('aria-label="Back');
+    } finally {
+      pathname = '/app/settings/connectors';
+    }
+  });
+
   it('renders the title alone when the user has no teams', () => {
     const html = render({ userInitial: 'M' });
-    expect(html).toContain('Connections');
+    expect(html).toContain('MCP connectors');
     expect(html).not.toContain('·');
   });
 });
@@ -67,7 +84,7 @@ describe('MobilePageHeader', () => {
     expect(html).toContain('All workspaces</span>');
     // Ensure the icon and chevron structure is present for mobile
     expect(html).toContain('md:hidden');
-    pathname = '/app/connections';
+    pathname = '/app/settings/connectors';
   });
 
   it('omits the WorkspaceFilter on pages that ignore ?workspace=', () => {
@@ -79,7 +96,7 @@ describe('MobilePageHeader', () => {
         'Filter by workspace',
       );
     } finally {
-      pathname = '/app/connections';
+      pathname = '/app/settings/connectors';
     }
   });
 
@@ -124,7 +141,7 @@ describe('MobilePageHeader banner stack', () => {
       expect(html).not.toContain('mobile-page-header');
       expect(html).not.toContain('fixed');
     } finally {
-      pathname = '/app/connections';
+      pathname = '/app/settings/connectors';
     }
   });
 });

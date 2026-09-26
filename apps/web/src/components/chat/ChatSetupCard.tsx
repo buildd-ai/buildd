@@ -10,9 +10,9 @@ export type ChatSetupReason = 'capability_disabled' | 'no_key';
 
 /** Settings screens (the settings UI's own anchors). */
 export const CHAT_SETTINGS_HREF = {
-  capability: '/app/settings#inference-spending',
+  capability: '/app/settings/ai',
   teamKeys: '/app/settings/models#provider-keys',
-  ownKey: '/app/you#provider-keys',
+  ownKey: '/app/settings/account#provider-keys',
 } as const;
 
 export function chatSetupCopy(reason: ChatSetupReason, canManage: boolean): { title: string; body: string; cta: { href: string; label: string } | null; secondary: { href: string; label: string } | null } {

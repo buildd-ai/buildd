@@ -234,8 +234,8 @@ a mission can do useful work.
 - AC-1: GIVEN a team with zero workspaces, WHEN the user views the Settings
   Workspaces section, THEN it MUST render a header with a "+ New Workspace" link
   and an empty state linking to `/app/workspaces/new` that explains workspace =
-  repo. *(Implemented — `settings/page.tsx` Workspaces section no longer hides
-  when empty.)*
+  repo. *(Implemented — `settings/workspaces/page.tsx` renders the list with a
+  "New workspace" link and an empty state.)*
 - AC-2: GIVEN the New Workspace form, WHEN the user has no GitHub App connected,
   THEN a "Connect GitHub" call-to-action MUST be shown (exists today via
   `/api/github/install`).

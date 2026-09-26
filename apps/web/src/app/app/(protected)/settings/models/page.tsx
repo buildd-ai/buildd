@@ -7,7 +7,7 @@ import ModelTiersClient from './ModelTiersClient';
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team → Agent backends → Model tiers.
+ * Settings → AI → Model tiers.
  *
  * Tier → model mapping plus the team's chat provider keys. Everyone in the team
  * can see it; only owners and admins can change it (the APIs enforce the same
@@ -27,8 +27,8 @@ export default async function ModelTiersPage() {
   const isAdmin = team?.role === 'owner' || team?.role === 'admin' || team?.slug === `personal-${user.id}`;
 
   return (
-    <main className="min-h-screen pt-4 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-6xl mx-auto">
+    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
+      <div className="max-w-6xl">
         {teamId ? (
           <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
         ) : (

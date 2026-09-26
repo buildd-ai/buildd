@@ -230,8 +230,8 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           )}
           {!modelsLoading && modelsFetched && models.length > 0 && !catalogComplete && (
             <p className="text-[11px] text-text-muted" data-testid="tier-only-hint">
-              Showing your configured tiers. Connect an agent backend in Settings →
-              Agent Backends to see all model releases.
+              Showing your configured tiers. Connect Claude or Codex under Settings,
+              Runners to see every model release.
             </p>
           )}
           <p className="text-[11px] md:text-[10px] text-text-muted">

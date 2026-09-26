@@ -70,8 +70,8 @@ export interface ProviderKeysView {
 }
 
 const SOURCE_NOTE: Record<string, string> = {
-  anthropic_api_key: 'This is the runner’s Anthropic API key from Agent backends. Chat uses it too. Change it there.',
-  decision_key: 'This is the OpenRouter decision key. Chat uses it too. Change it where it was set.',
+  anthropic_api_key: 'Your runners’ Anthropic API key, set under Settings, Runners. Chat uses it too. Change it there.',
+  decision_key: 'An older OpenRouter setting holds this key. Chat uses it too.',
 };
 
 export function toKeyStatus(k: MaskedProviderKey | null | undefined): ProviderKeyStatus | null {

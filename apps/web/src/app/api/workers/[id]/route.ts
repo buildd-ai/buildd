@@ -432,8 +432,8 @@ async function recordCredentialHealthForOutcome(
         if (result?.becameRevoked) {
           void notifyTeam(teamId, 'credentialExpired', {
             title: '🔑 Credential revoked — action required',
-            message: `Backend credential (${backend ?? 'claude'}) was revoked. Re-auth in Settings → Agent Backends.\nError: ${error.slice(0, 150)}`,
-            url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings`,
+            message: `Backend credential (${backend ?? 'claude'}) was revoked. Sign in again under Settings, Runners.\nError: ${error.slice(0, 150)}`,
+            url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings/runners`,
             urlTitle: 'Open settings',
             priority: 1,
           });
@@ -3613,8 +3613,8 @@ export async function PATCH(
             if (!isDone && isCredentialExpiredError(error)) {
               void notifyTeam(notifyTeamId, 'credentialExpired', {
                 title: '🔑 Agent credential expired',
-                message: `Your Claude credential is expired or invalid — re-set it in Settings → Agent Backends.\nTask: ${taskRecord.title}`,
-                url: `https://buildd.dev/app/settings`,
+                message: `Your Claude credential is expired or invalid — set it again under Settings, Runners.\nTask: ${taskRecord.title}`,
+                url: `https://buildd.dev/app/settings/runners`,
                 urlTitle: 'Open settings',
                 priority: 1,
               });

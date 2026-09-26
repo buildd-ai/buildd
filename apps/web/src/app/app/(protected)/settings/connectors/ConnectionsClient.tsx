@@ -64,9 +64,12 @@ function truncateUrl(url: string, maxLen = 48): string {
 export default function ConnectionsClient({
   connectedId,
   errorMsg,
+  embedded = false,
 }: {
   connectedId?: string;
   errorMsg?: string;
+  /** Rendered inside Settings → MCP connectors: no page padding, a section label instead of an h1. */
+  embedded?: boolean;
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
@@ -354,14 +357,16 @@ export default function ConnectionsClient({
   const transferableTeams = teams.filter(t => t.id !== ownerTeamId && t.role !== 'member');
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-semibold text-text-primary font-sans">Connections</h1>
+    <div className={embedded ? '' : 'px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl'}>
+      <div className={`flex items-center justify-between ${embedded ? 'mb-3 min-h-8' : 'mb-6'}`}>
+        {embedded
+          ? <h2 className="section-label">Your connectors</h2>
+          : <h1 className="text-xl font-semibold text-text-primary font-sans">Connections</h1>}
         <button
           onClick={() => setShowAddModal(true)}
-          className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+          className="btn btn-primary"
         >
-          Add connection
+          Add connector
         </button>
       </div>
 
@@ -379,13 +384,13 @@ export default function ConnectionsClient({
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
-          <p className="text-text-muted text-sm mb-3">No connections yet.</p>
-          <p className="text-text-muted text-xs mb-4">Add a remote MCP server to give agents its tools.</p>
+          <p className="text-text-muted text-sm mb-3">No connectors yet.</p>
+          <p className="text-text-muted text-xs mb-4">Add a remote MCP server to give your agents its tools.</p>
           <button
             onClick={() => setShowAddModal(true)}
-            className="text-sm text-primary hover:underline"
+            className="btn"
           >
-            Add connection
+            Add connector
           </button>
         </div>
       ) : (

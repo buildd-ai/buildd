@@ -31,6 +31,20 @@ const nextConfig = {
         destination: '/app/home',
         permanent: false,
       },
+      // Settings moved under one route tree with a sub-nav (lib/settings-nav.ts).
+      // The browser keeps a #fragment across a redirect and Next passes the
+      // query through, so /app/you#provider-keys and the OAuth callback's
+      // /app/connections?connected=… both still land where they meant to.
+      {
+        source: '/app/you',
+        destination: '/app/settings/account',
+        permanent: false,
+      },
+      {
+        source: '/app/connections',
+        destination: '/app/settings/connectors',
+        permanent: false,
+      },
       // /memory is handled in src/proxy.ts: on the apex it goes to the
       // marketing site's /memory page; elsewhere it keeps the old 307 to the
       // docs page. It can't live here — config redirects run before the proxy.

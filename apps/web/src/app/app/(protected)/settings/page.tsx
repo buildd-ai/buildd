@@ -1,123 +1,59 @@
-import { db } from '@buildd/core/db';
-import { accounts, workspaces } from '@buildd/core/db/schema';
-import { desc, inArray } from 'drizzle-orm';
-import { cookies } from 'next/headers';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamsWithDetails } from '@/lib/team-access';
-import { isSystemWorkspace } from '@buildd/shared';
-import GitHubSection from './GitHubSection';
-import VercelSection from './VercelSection';
-import RunnerTokensSection from './RunnerTokensSection';
-import AgentBackendsSection from './AgentBackendsSection';
-import NotificationsSection from './NotificationsSection';
-import TimezoneSection from './TimezoneSection';
-import ConnectorsSection from './ConnectorsSection';
-import WorkspaceMigrationSection from './WorkspaceMigrationSection';
-import WorkspaceGitFeaturesSection from './WorkspaceGitFeaturesSection';
+import { SETTINGS_NAV, legacySettingsTarget } from '@/lib/settings-nav';
+import LegacyAnchorRedirect from './_components/LegacyAnchorRedirect';
 
 export const dynamic = 'force-dynamic';
 
-export default async function SettingsPage() {
+/**
+ * Settings index. On a phone this is the list half of list → detail: every
+ * section, grouped, one tap each. On desktop the sub-nav already lists them, so
+ * the same list doubles as an overview with a line on what each one holds.
+ *
+ * Old links: `?section=agent-backends` resolves here on the server;
+ * `#agent-backends` resolves in the browser (LegacyAnchorRedirect).
+ */
+export default async function SettingsIndexPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ section?: string }>;
+}) {
   const user = await getCurrentUser();
+  if (!user) redirect('/app/auth/signin');
 
-  if (!user) {
-    redirect('/app/auth/signin');
-  }
-
-  let userTeams: Awaited<ReturnType<typeof getUserTeamsWithDetails>> = [];
-  let wsIds: string[] = [];
-
-  try {
-    [userTeams, wsIds] = await Promise.all([
-      getUserTeamsWithDetails(user.id),
-      getUserWorkspaceIds(user.id),
-    ]);
-  } catch (error) {
-    console.error('Settings: teams/workspace query error:', error);
-  }
-
-  const teamIds = userTeams.map(t => t.id);
-
-  const cookieStore = await cookies();
-  const teamCookie = cookieStore.get('buildd-team')?.value;
-  const currentTeamId = (teamCookie && userTeams.some(t => t.id === teamCookie))
-    ? teamCookie
-    : userTeams[0]?.id || null;
-
-  const [allAccounts, userWorkspaces] = await Promise.all([
-    teamIds.length > 0
-      ? db.query.accounts.findMany({
-          where: inArray(accounts.teamId, teamIds),
-          orderBy: desc(accounts.createdAt),
-          with: {
-            team: { columns: { name: true } },
-            accountWorkspaces: { columns: { workspaceId: true } },
-          },
-        }).catch(() => [] as any[])
-      : Promise.resolve([] as any[]),
-
-    wsIds.length > 0
-      ? db.query.workspaces.findMany({
-          where: inArray(workspaces.id, wsIds),
-          columns: { id: true, name: true, repo: true, teamId: true },
-        }).catch(() => [] as any[])
-      : Promise.resolve([] as any[]),
-  ]);
-
-  const filteredWorkspaces = userWorkspaces.filter((ws: any) => !isSystemWorkspace(ws.name));
+  const { section } = await searchParams;
+  const legacy = legacySettingsTarget(section);
+  if (legacy) redirect(legacy);
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-2xl mx-auto space-y-10">
-
-        {/* Agent Backends */}
-        <AgentBackendsSection
-          workspaces={filteredWorkspaces}
-          currentTeamId={currentTeamId}
-        />
-
-        {/* Notifications */}
-        <NotificationsSection
-          workspaces={filteredWorkspaces}
-          currentTeamId={currentTeamId}
-        />
-
-        {/* Timezone */}
-        <TimezoneSection
-          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
-          currentTeamId={currentTeamId}
-        />
-
-        {/* Workspace CI policy */}
-        <WorkspaceGitFeaturesSection workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name }))} />
-
-        {/* GitHub */}
-        <GitHubSection />
-
-        {/* Vercel */}
-        <VercelSection teams={userTeams.map(t => ({ id: t.id, name: t.name }))} />
-
-        {/* Connectors */}
-        <ConnectorsSection
-          workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name }))}
-          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
-          currentTeamId={currentTeamId}
-        />
-
-        {/* Runner Tokens */}
-        <RunnerTokensSection
-          accounts={allAccounts.map((a: any) => ({ ...a, hasOauthToken: !!a.oauthToken }))}
-          workspaces={filteredWorkspaces}
-        />
-
-        {/* Workspace Migration (Danger Zone) */}
-        <WorkspaceMigrationSection
-          workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name, teamId: ws.teamId }))}
-          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
-        />
-
+    <div className="pt-14 px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+      <LegacyAnchorRedirect />
+      <div className="max-w-2xl space-y-7">
+        <h1 className="hidden md:block text-xl font-semibold text-text-primary">Settings</h1>
+        {SETTINGS_NAV.map((group) => (
+          <section key={group.label} aria-labelledby={`settings-group-${group.label}`}>
+            <h2 id={`settings-group-${group.label}`} className="section-label mb-2">{group.label}</h2>
+            <ul className="card divide-y divide-border-default" data-testid="settings-index-group">
+              {group.items.map((item) => (
+                <li key={item.id}>
+                  <Link
+                    href={item.href}
+                    className="flex items-center gap-3 px-4 py-3 min-h-14 hover:bg-surface-3 transition-colors"
+                    data-testid={`settings-index-${item.id}`}
+                  >
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-medium text-text-primary">{item.label}</span>
+                      <span className="block text-xs text-text-secondary mt-0.5">{item.description}</span>
+                    </span>
+                    <span aria-hidden className="text-text-muted shrink-0">›</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
       </div>
-    </main>
+    </div>
   );
 }

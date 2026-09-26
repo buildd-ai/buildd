@@ -78,14 +78,9 @@ export default function ModelTiersClient({ teamId, teamName, isAdmin }: Props) {
 
   return (
     <div>
-      <nav className="text-[11px] font-mono font-semibold uppercase tracking-[2px] text-text-muted" aria-label="Breadcrumb">
-        <Link href="/app/settings" className="hover:text-text-primary">Settings</Link>
-        <span className="mx-1.5">·</span>
-        <span>Team</span>
-        <span className="mx-1.5">·</span>
-        <Link href="/app/settings#agent-backends" className="hover:text-text-primary">Agent backends</Link>
-      </nav>
-      <h1 className="text-xl md:text-2xl font-semibold text-text-primary mt-1 mb-1.5">Model tiers</h1>
+      {/* The settings sub-nav (desktop) and the mobile header's back arrow
+          replace the breadcrumb this page used to carry. */}
+      <h1 className="hidden md:block text-xl font-semibold text-text-primary mb-1.5">Model tiers</h1>
       <p className="font-[family-name:var(--font-outfit)] text-[15px] text-text-secondary max-w-3xl">
         Chat and agents ask for a tier, never a specific model. You decide which model backs each tier.
         buildd can suggest a change when it has evidence, but it won&apos;t make one on its own.
@@ -143,7 +138,7 @@ function ChatStatus({ chatOn, teamName }: { chatOn: boolean | null; teamName: st
           ? `Chat is on for ${teamName ?? 'this team'}. It needs a provider key below.`
           : `Chat is off for ${teamName ?? 'this team'}. Adding a key spends nothing until you turn it on.`}
       </span>
-      <Link href="/app/settings#inference-spending" className="underline text-text-primary hover:text-accent-text">
+      <Link href="/app/settings/ai" className="underline text-text-primary hover:text-accent-text">
         {chatOn ? 'Chat setting' : 'Turn on chat'}
       </Link>
     </div>
