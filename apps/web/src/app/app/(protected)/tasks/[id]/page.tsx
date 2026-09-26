@@ -35,6 +35,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
@@ -54,7 +55,7 @@ import TaskPageActionZone from './TaskPageActionZone';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
-import { descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
+import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
@@ -82,6 +83,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   test: 'bg-cat-test/15 text-cat-test',
   infra: 'bg-cat-infra/15 text-cat-infra',
   design: 'bg-cat-design/15 text-cat-design',
+  research: 'bg-cat-research/15 text-cat-research',
 };
 
 export default async function TaskDetailPage({
@@ -763,6 +765,12 @@ export default async function TaskDetailPage({
   const unresolvedDepIds = new Set(unresolvedDeps.map(d => d.id));
   const pathManifest = Array.isArray(task.pathManifest) ? (task.pathManifest as string[]) : [];
   const ciAttemptWorkers = ciAttemptTasks.flatMap(t => t.workers.slice(0, 1));
+  // Attempts the PR history already tells are not listed again under Related tasks.
+  const relatedAttempts = attemptsNotInPrHistory(
+    childTasks.attempts,
+    new Set(prOutcome ? ciAttemptTasks.filter(t => t.workers.length > 0).map(t => t.id) : []),
+  );
+  const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;
   // Every worker on this task's PR, the CI-fix attempts' included.
   const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
   const factRows: FactRow[] = [
@@ -785,7 +793,12 @@ export default async function TaskDetailPage({
           value: (
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
-                <li key={i}>{runnerLabel(w)}<span className="text-text-muted"> · attempt {i + 1}{i > 0 ? ' (retry)' : ''}</span></li>
+                // One line each: the runner, then its attempt number. "(retry)"
+                // is what "attempt 2" already says, and it wrapped on its own.
+                <li key={i} className="flex min-w-0 items-baseline gap-2">
+                  <span className="min-w-0 truncate">{runnerLabel(w)}</span>
+                  <span className="shrink-0 text-text-muted">attempt {i + 1}</span>
+                </li>
               ))}
             </ul>
           ),
@@ -1212,7 +1225,7 @@ export default async function TaskDetailPage({
             tasks={planChain}
             roleMap={Object.fromEntries(roleMap)}
           />
-        ) : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
+        ) : hasRelatedTasks && (
           <div className="mb-6">
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
@@ -1227,14 +1240,12 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[task.parentTask.status] || STATUS_COLORS.pending}`}>
-                    {task.parentTask.status}
-                  </span>
+                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
               )}
               {([
                 ['Subtasks', childTasks.subtasks],
-                ['Attempts', childTasks.attempts],
+                ['Attempts', relatedAttempts],
               ] as const).map(([label, list]) => list.length > 0 && (
                 <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
                   <span className="font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
@@ -1247,9 +1258,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <span className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-xs ${STATUS_COLORS[sub.status] || STATUS_COLORS.pending}`}>
-                          {sub.status}
-                        </span>
+                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
                       </div>
                     ))}
                   </div>
@@ -1581,7 +1590,8 @@ export default async function TaskDetailPage({
                         {attemptLabel && <span className="font-normal text-text-muted"> · {attemptLabel}</span>}
                       </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
-                        {worker.branch}
+                        {/* Generated names are capped mid-slug; cut at a token, full name on hover. */}
+                        <span title={worker.branch}>{displayBranchName(worker.branch)}</span>
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
                       {worker.error && (

@@ -36,12 +36,37 @@ export function stepViewports(step: { viewports?: string[] }, known: Record<stri
   return names;
 }
 
+/**
+ * How `prepare` scrolls a step's `scrollTo` target into view. `start` (default)
+ * puts it at the top edge and backs off `scrollOffset` (120) for sticky headers;
+ * `end` puts it at the bottom edge and pushes `scrollOffset` (24) past it, for a
+ * target near the end of its scroller (a chat's last card), where scrollTop
+ * clamps and "top edge minus an offset" would scroll the wrong way.
+ */
+export function scrollPlan(step: { scrollAlign?: 'start' | 'end'; scrollOffset?: number }): { block: 'start' | 'end'; delta: number } {
+  const block = step.scrollAlign ?? 'start';
+  if (block !== 'start' && block !== 'end') throw new Error(`[storyboard] scrollAlign must be start or end, got "${block}"`);
+  return block === 'end' ? { block, delta: step.scrollOffset ?? 24 } : { block, delta: 0 - (step.scrollOffset ?? 120) };
+}
+
 /** Manifest key + PNG name for one capture. Desktop keeps the legacy `<id>-<theme>` names. */
 export function captureKey(viewport: string, theme: string): string {
   return viewport === DESKTOP ? theme : `${viewport}-${theme}`;
 }
 export function captureFile(stepId: string, viewport: string, theme: string, ext = 'png'): string {
   return `${stepId}-${captureKey(viewport, theme)}.${ext}`;
+}
+
+/**
+ * Whether a highlight element is actually painted. A non-empty boundingBox is
+ * not enough: a closed <details> keeps its content in layout under
+ * content-visibility, so the collapsed home fleet would report boxes for slot
+ * rows that aren't on screen. Runs in the page (passed to `el.evaluate`), so it
+ * must stay self-contained.
+ */
+export function isRendered(node: { checkVisibility?: (opts?: Record<string, boolean>) => boolean }): boolean {
+  if (typeof node.checkVisibility !== 'function') return true;
+  return node.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true, opacityProperty: false });
 }
 
 /**

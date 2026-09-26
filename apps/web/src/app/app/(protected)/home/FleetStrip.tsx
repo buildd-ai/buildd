@@ -41,8 +41,8 @@ function RoleSquare({ name, color }: { name: string | null; color: string | null
   );
 }
 
-/** "last reconcile exports spec · 25m", "last PR #812", or nothing. */
-function LastRun({ last, now }: { last: NonNullable<FleetSlot['last']>; now: number }) {
+/** "last reconcile exports spec", "last PR #812", or nothing. The age is drawn by the caller. */
+function LastRun({ last }: { last: NonNullable<FleetSlot['last']> }) {
   const what = last.label ?? (last.prNumber ? `PR #${last.prNumber}` : null);
   if (!what) return null;
   return (
@@ -50,7 +50,6 @@ function LastRun({ last, now }: { last: NonNullable<FleetSlot['last']>; now: num
       {' · last '}
       {last.fix && <span aria-label="retry">↻ </span>}
       <b className={`font-semibold ${last.failed ? 'text-status-error' : 'text-text-secondary'}`}>{what}</b>
-      {last.at != null && <span className="text-text-muted"> · {ago(last.at, now).replace(' ago', '')}</span>}
     </>
   );
 }
@@ -58,17 +57,29 @@ function LastRun({ last, now }: { last: NonNullable<FleetSlot['last']>; now: num
 function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
   const w = slot.worker;
   if (!w) {
+    const last = slot.last;
+    const named = !!last && !!(last.label ?? last.prNumber);
     return (
       <div className="flex min-w-0 items-center gap-2.5 font-mono text-[12.5px] text-text-muted">
         <span aria-hidden="true" className="h-[18px] w-[18px] shrink-0 border border-dashed border-border-strong" />
-        <span className="truncate">
+        {/* The label truncates; the age never does — it is the one fact a
+            glance needs ("idle · last rates service · 4m"). */}
+        <span className="min-w-0 truncate">
           idle
-          {slot.last && <LastRun last={slot.last} now={now} />}
+          {last && <LastRun last={last} />}
         </span>
+        {named && last!.at != null && (
+          <span data-testid="fleet-slot-last-at" className="-ml-2 shrink-0 whitespace-nowrap text-text-muted">
+            {' · '}{ago(last!.at, now).replace(' ago', '')}
+          </span>
+        )}
       </div>
     );
   }
-  const mins = w.startedAt ? Math.max(0, Math.round((now - new Date(w.startedAt).getTime()) / 60_000)) : null;
+  const elapsedMs = w.startedAt ? Math.max(0, now - new Date(w.startedAt).getTime()) : null;
+  const mins = elapsedMs != null ? Math.round(elapsedMs / 60_000) : null;
+  // Same minute the lanes chart draws as a "claimed" marker at NOW.
+  const justClaimed = elapsedMs == null || elapsedMs < 60_000;
   const href = w.taskId ? missionTaskHref({ missionId: w.missionId, taskId: w.taskId, from: 'home', mode: 'sheet' }) : null;
   const body = (
     <>
@@ -80,14 +91,19 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
         <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[1px] text-status-warning">
           ? Waiting on you{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}m</span>}
         </div>
-      ) : (
+      ) : w.progress != null ? (
         <div className="mt-1.5 flex items-center gap-2.5 font-mono text-[11px] text-text-muted">
           <span className="relative h-[3px] w-full max-w-[150px] bg-border-default" aria-hidden="true">
-            <span className="absolute inset-y-0 left-0 bg-accent" style={{ width: `${w.progress ?? 0}%` }} />
+            <span className="absolute inset-y-0 left-0 bg-accent" style={{ width: `${w.progress}%` }} />
           </span>
-          <span className="shrink-0 whitespace-nowrap">{w.progress != null ? `${Math.round(w.progress)}%` : '—'}{mins != null && ` · ${mins}m`}</span>
+          <span className="shrink-0 whitespace-nowrap">{`${Math.round(w.progress)}%`}{mins != null && ` · ${mins}m`}</span>
         </div>
-      )}
+      ) : justClaimed ? (
+        // Claimed this minute and nothing reported: not "— · 0m" under an empty track.
+        <div data-testid="fleet-slot-claimed" className="mt-1 font-mono text-[11px] font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</div>
+      ) : mins != null ? (
+        <div className="mt-1 font-mono text-[11px] tabular-nums text-text-muted">{`${mins}m`}</div>
+      ) : null}
     </>
   );
   return (
@@ -104,10 +120,18 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
 // rows line up with.
 const TABLE_COLS = 'grid-cols-1 md:grid-cols-[170px_minmax(0,1fr)]';
 
-function SlotMeterSquares({ runner }: { runner: FleetRunner }) {
+/**
+ * One square per slot, in the order the rows beside it list them
+ * (`fleetDisplayRows`: busy and recent idle slots in slot order, then the folded rest) —
+ * so the filled square is the row with the agent on it, not its slot index.
+ */
+function SlotMeterSquares({ runner, rows }: { runner: FleetRunner; rows: readonly FleetDisplayRow[] }) {
+  const ordered = rows.flatMap(r => (r.kind === 'slot' ? [r.slot] : r.slots));
+  const seen = new Set(ordered.map(s => s.index));
+  const slots = [...ordered, ...runner.slots.filter(s => !seen.has(s.index))];
   return (
     <span className="mt-0.5 flex flex-wrap gap-[3px]" aria-label={`${runner.slots.filter(s => s.worker).length} of ${runner.maxSlots} slots busy`}>
-      {runner.slots.map(s => (
+      {slots.map(s => (
         <i key={s.index} className={`inline-block h-2.5 w-2.5 border ${s.worker ? 'border-accent bg-accent' : 'border-border-strong'}`} />
       ))}
     </span>
@@ -130,7 +154,7 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
           {runner.name}
         </span>
         {runner.machine && <span className={`truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
-        <span className={roomy ? '' : 'md:hidden'}><SlotMeterSquares runner={runner} /></span>
+        <span className={roomy ? '' : 'md:hidden'}><SlotMeterSquares runner={runner} rows={rows} /></span>
         {!runner.online && <span className="font-mono text-[11px] text-status-warning">offline</span>}
       </div>
       {rows.map((row) => row.kind === 'slot' ? (

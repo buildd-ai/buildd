@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { groupTasksByPhase } from './flight-strip-nav';
+import { resolveReviewerGate } from './reviewer-gate';
 import {
   buildPulseSegments,
   deriveFeedTaskState,
@@ -127,6 +128,30 @@ describe('deriveFeedTaskState × PR lifecycle (completed task)', () => {
       expect(deriveFeedTaskState({ task, attempts: [fix] })).toMatchObject(withAttempt);
     });
   }
+});
+
+describe('deriveFeedTaskState — a just-green PR is still merging (shared with the reviewer gate)', () => {
+  const NOW = Date.parse('2026-01-01T12:00:00Z');
+  const green = (agoMs: number) => t(`green-${agoMs}`, {
+    status: 'completed',
+    worker: { status: 'completed', prNumber: 9, prLifecycleStatus: 'ci_green', updatedAt: new Date(NOW - agoMs) },
+  });
+  it('inside the auto-merge grace window the platform owns the merge: moving, not needs-you', () => {
+    expect(deriveFeedTaskState({ task: green(20_000), attempts: [] }, { now: NOW })).toMatchObject({ state: 'moving', needsYou: null });
+  });
+  it('past the grace window the merge rail held it: needs you', () => {
+    expect(deriveFeedTaskState({ task: green(10 * 60_000), attempts: [] }, { now: NOW })).toMatchObject({ state: 'needs_you', needsYou: 'pr' });
+  });
+  it('agrees with resolveReviewerGate on both sides of the boundary', () => {
+    for (const ago of [0, 20_000, 4 * 60_000, 6 * 60_000, 60 * 60_000]) {
+      const gate = resolveReviewerGate({
+        policyTier: 'auto-threshold', escalationReason: null, approvalSummary: null, reviewerTask: null,
+        now: new Date(NOW), prLifecycleStatus: 'ci_green', prLifecycleUpdatedAt: new Date(NOW - ago),
+      } as any);
+      const feed = deriveFeedTaskState({ task: green(ago), attempts: [] }, { now: NOW });
+      expect(feed.state === 'needs_you').toBe(gate.actor === 'human');
+    }
+  });
 });
 
 describe('deriveFeedTaskState', () => {

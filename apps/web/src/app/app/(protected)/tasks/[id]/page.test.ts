@@ -47,7 +47,8 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
 
   it('falls back to Related Tasks only when chain is empty', () => {
     // The Related Tasks section (with parent link) only renders when the chain is empty.
-    expect(pageSource).toContain(') : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (');
+    expect(pageSource).toContain(') : hasRelatedTasks && (');
+    expect(pageSource).toContain('const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;');
   });
 });
 
@@ -194,5 +195,22 @@ describe('"Also running" — tasks/[id]/page.tsx', () => {
     // The peer query must select the column the lineage walk reads, and filter on it.
     expect(loader).toContain('missionId: true, parentTaskId: true } } },');
     expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
+  });
+});
+
+describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
+  it('renders each related task through StatusBadge + deriveDisplayStatus, never the raw status enum', () => {
+    const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
+    expect(related).not.toContain('{sub.status}');
+    expect(related).not.toContain('{task.parentTask.status}');
+    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(sub.status)} />');
+    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />');
+  });
+});
+
+describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
+  it('shows the branch through displayBranchName with the full name in title', () => {
+    expect(pageSource).toContain('title={worker.branch}');
+    expect(pageSource).toContain('{displayBranchName(worker.branch)}');
   });
 });

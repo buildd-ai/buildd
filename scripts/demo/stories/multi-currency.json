@@ -2102,6 +2102,177 @@
       ]
     }
   ],
+  "chat": {
+    "capabilities": [
+      "chat"
+    ],
+    "providerKey": {
+      "provider": "anthropic",
+      "value": "sk-ant-demo-000000000000000000000000-not-a-real-key"
+    },
+    "conversations": [
+      {
+        "key": "C1",
+        "table": "conversations",
+        "workspaceId": "ws",
+        "createdByUserId": "u_maya",
+        "title": "Multi-currency invoices",
+        "titleSource": "auto",
+        "agentRoleSlug": "organizer",
+        "_createdAgo": "-5m",
+        "messages": [
+          {
+            "key": "C1m1",
+            "role": "user",
+            "_at": "-5m",
+            "parts": [
+              {
+                "type": "text",
+                "text": "What would it take to bill customers in their own currency?"
+              }
+            ]
+          },
+          {
+            "key": "C1m2",
+            "role": "assistant",
+            "_at": "-5m",
+            "tier": "standard",
+            "parts": [
+              {
+                "type": "step-start"
+              },
+              {
+                "type": "tool-manage_missions",
+                "toolCallId": "call_demo_list",
+                "state": "output-available",
+                "input": {
+                  "action": "list",
+                  "workspace": "billing-web"
+                },
+                "output": {
+                  "data": "3 open, none touch currency",
+                  "objects": [],
+                  "summary": "3 open, none touch currency"
+                }
+              },
+              {
+                "type": "tool-recall",
+                "toolCallId": "call_demo_recall",
+                "state": "output-available",
+                "input": {
+                  "query": "currency money rounding"
+                },
+                "output": {
+                  "data": "1 recalled: money is integer minor units",
+                  "objects": [],
+                  "summary": "1 recalled: money is integer minor units"
+                }
+              },
+              {
+                "type": "tool-list_tasks",
+                "toolCallId": "call_demo_tasks",
+                "state": "output-available",
+                "input": {
+                  "workspace": "billing-web",
+                  "status": "in_progress"
+                },
+                "output": {
+                  "data": "nothing in flight touches currency",
+                  "objects": [],
+                  "summary": "nothing in flight touches currency"
+                }
+              },
+              {
+                "type": "text",
+                "text": "Nothing in flight touches currency. Amounts are integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."
+              }
+            ]
+          },
+          {
+            "key": "C1m3",
+            "role": "user",
+            "_at": "-2m",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Make it a mission. Keep the public API backward compatible."
+              }
+            ]
+          },
+          {
+            "key": "C1m4",
+            "role": "assistant",
+            "_at": "-2m",
+            "tier": "standard",
+            "parts": [
+              {
+                "type": "step-start"
+              },
+              {
+                "type": "text",
+                "text": "Here's a draft. I won't file it until you confirm."
+              },
+              {
+                "type": "tool-manage_missions",
+                "toolCallId": "call_demo_create",
+                "state": "approval-requested",
+                "input": {
+                  "action": "create",
+                  "workspaceId": "{{ws}}",
+                  "title": "Multi-currency invoices",
+                  "description": "Let customers see, pay, and get receipts for invoices in their own currency.\n\nConstraints:\n- Invoices API changes are additive (v2-safe). FX rate is snapshotted at issue.",
+                  "goalCriteria": [
+                    {
+                      "type": "all_prs_merged",
+                      "label": "every task PR merged"
+                    },
+                    {
+                      "type": "no_open_tasks",
+                      "label": "no open tasks"
+                    },
+                    {
+                      "type": "command",
+                      "command": "pnpm test --filter @harborline/money --filter web -- currency",
+                      "label": "currency suite green"
+                    },
+                    {
+                      "type": "artifact_exists",
+                      "key": "fx-rounding-decision",
+                      "label": "rounding policy recorded"
+                    }
+                  ],
+                  "maxConcurrentTasks": 6
+                },
+                "approval": {
+                  "id": "demo-approval-m1"
+                }
+              }
+            ]
+          }
+        ],
+        "approval": {
+          "messageKey": "C1m4",
+          "toolCallId": "call_demo_create",
+          "approvalId": "demo-approval-m1",
+          "toolName": "manage_missions"
+        },
+        "_onConfirm": {
+          "summary": "filed \"Multi-currency invoices\"",
+          "data": "Mission created: Multi-currency invoices. The Organizer is planning it.",
+          "objects": [
+            {
+              "kind": "mission",
+              "id": "{{M1}}",
+              "workspaceId": "{{ws}}",
+              "title": "Multi-currency invoices",
+              "fallbackText": "Mission: Multi-currency invoices"
+            }
+          ],
+          "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks."
+        }
+      }
+    ]
+  },
   "timeline": [
     {
       "t": 0,
@@ -2109,9 +2280,10 @@
       "mission": "M1",
       "title": "Multi-currency invoices",
       "description": "Let customers see, pay, and get receipts for invoices in their own currency.",
-      "api": "POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
-      "db": "INSERT missions",
-      "beat": "The one-sentence goal"
+      "conversation": "C1",
+      "api": "chat approval confirmed → manage_missions create → POST /api/missions {title, description, workspaceId, goalCriteria, maxConcurrentTasks:6}",
+      "db": "INSERT missions (conversationId); the proposing tool part turns output-available with the mission ref",
+      "beat": "Make it a mission"
     },
     {
       "t": 2,

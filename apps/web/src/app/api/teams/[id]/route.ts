@@ -8,6 +8,9 @@ import { isValidTimezone } from '@buildd/core/timezone';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
+/** Fits numeric(10, 2) with room to spare; anything above is a typo. */
+const MAX_CHAT_BUDGET_USD = 100_000;
+
 const ROLE_HIERARCHY: Record<TeamRole, number> = {
   owner: 3,
   admin: 2,
@@ -85,6 +88,8 @@ export async function GET(
         budgetAlertsSent: true,
         enabledBackends: true,
         enabledInferenceCapabilities: true,
+        chatDailyBudgetUsd: true,
+        chatUserDailyBudgetUsd: true,
       },
     });
 
@@ -137,7 +142,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, enabledInferenceCapabilities, timezone } = body;
+    const { name, slug, enabledBackends, enabledInferenceCapabilities, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -185,6 +190,22 @@ export async function PATCH(
         );
       }
       updates.timezone = timezone;
+    }
+    // Agent-chat daily budgets in USD (apps/web/src/lib/chat/limits.ts). `null`
+    // reverts to the default; it never means "no cap".
+    for (const [field, value] of [
+      ['chatDailyBudgetUsd', chatDailyBudgetUsd],
+      ['chatUserDailyBudgetUsd', chatUserDailyBudgetUsd],
+    ] as const) {
+      if (value === undefined) continue;
+      if (value === null) { updates[field] = null; continue; }
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > MAX_CHAT_BUDGET_USD) {
+        return NextResponse.json(
+          { error: `${field} must be a number of dollars from 0 to ${MAX_CHAT_BUDGET_USD}, or null for the default` },
+          { status: 400 },
+        );
+      }
+      updates[field] = value.toFixed(2);
     }
     if (slug !== undefined) {
       // Validate slug format

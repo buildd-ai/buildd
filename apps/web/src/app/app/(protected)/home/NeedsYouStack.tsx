@@ -79,7 +79,12 @@ export function NeedsYouStack({
   // `[false, false]` — truthy. `Children.toArray` drops false/null/undefined,
   // which is the question that matters: will anything render under the heading?
   const hasChildren = Children.toArray(children).length > 0;
-  const empty = questions.length === 0 && held.length === 0 && shipped.length === 0 && !hasChildren;
+  // Children are not all asks: the action queue also carries IN FLIGHT cards
+  // (the platform's next move, not yours). So "nothing needs you" is the count
+  // — the same number as the headline and the stat — not "no children".
+  // Without this the heading sat over nothing but "IN FLIGHT 1".
+  const nothingNeedsYou = count === 0 && questions.length === 0 && held.length === 0;
+  const empty = nothingNeedsYou && shipped.length === 0 && !hasChildren;
   return (
     <section data-testid="home-waiting-on-you" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -94,10 +99,10 @@ export function NeedsYouStack({
         {shipped.map(m => <ShippedCard key={m.id} m={m} timeZone={timeZone} />)}
         {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
         {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
-        {children}
-        {empty && (
-          <p className="font-mono text-[13px] text-text-muted">Nothing waiting on you.</p>
+        {(empty || (nothingNeedsYou && hasChildren)) && (
+          <p data-testid="needs-you-empty" className="font-mono text-[13px] text-text-muted">Nothing waiting on you.</p>
         )}
+        {children}
       </div>
     </section>
   );

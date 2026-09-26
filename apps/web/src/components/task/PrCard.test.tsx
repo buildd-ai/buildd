@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import PrCard, { type PrOutcome } from './PrCard';
+import PrCard, { LineageChain, type PrOutcome } from './PrCard';
 
 const outcome = (attempts: PrOutcome['attempts']): PrOutcome => ({
   repoLabel: 'acme/web',
@@ -79,5 +79,19 @@ describe('PrCard diff bar', () => {
       { n: 2, add: false, rem: false, pending: true },
     ]);
     expect(html).toContain('in progress');
+  });
+});
+
+// Regression (demo reshoot, PR history): the CI-failed step broke a file name
+// mid-word ("invoice.snapshot.t / est.tsx") under overflow-wrap:anywhere.
+describe('LineageChain step text wraps at path boundaries only', () => {
+  const html = renderToStaticMarkup(
+    <LineageChain steps={[{ kind: 'ci_failed', title: 'CI failed', sub: 'unit · packages/pdf/invoice.snapshot.test.tsx', at: null }]} />,
+  );
+  it('offers a break after every "/" and "." and nowhere else', () => {
+    expect(html).toContain('packages/<wbr/>pdf/<wbr/>invoice.<wbr/>snapshot.<wbr/>test.<wbr/>tsx');
+  });
+  it('does not let the browser break anywhere mid-word', () => {
+    expect(html).not.toContain('overflow-wrap:anywhere');
   });
 });

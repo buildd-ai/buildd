@@ -1,8 +1,10 @@
+import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
+import { getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import SignOutButton from './SignOutButton';
+import PersonalProviderKeys from './PersonalProviderKeys';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +37,8 @@ export default async function YouPage() {
   }
 
   const initials = getInitials(user.name, user.email);
+  const cookieStore = await cookies();
+  const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value).catch(() => null);
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
@@ -64,6 +68,12 @@ export default async function YouPage() {
             </div>
           </div>
         </section>
+
+        {/* Personal provider keys (chat). Wins over the team key for your turns. */}
+        <PersonalProviderKeys
+          teamId={activeTeamId}
+          teamName={userTeams.find((t) => t.id === activeTeamId)?.name ?? null}
+        />
 
         {/* Teams */}
         <section>

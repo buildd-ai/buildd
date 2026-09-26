@@ -1,60 +1,53 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
+import { db } from '@buildd/core/db';
+import { teams } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds } from '@/lib/team-access';
-import { loadInitiativeList } from '@/lib/initiative-list';
-import {
-  loadInitiativeEffort,
-  loadInitiativeVerdictInputs,
-  deriveInitiativeVerdict,
-  derivePendingCounts,
-  countBlockedByPR,
-  emptyVerdictRollup,
-  zeroEffortWindow,
-  noPendingCounts,
-  type EffortDay,
-  type VerdictRollup,
-  type BlockingTask,
-} from '@/lib/initiative-pulse';
-import { loadShippedMissionIds } from '@/lib/mission-ship-state';
-import {
-  partitionInitiativeZones,
-  VERDICT_LABEL,
-  NOT_WINNING_ORDER,
-  type InitiativePulse,
-} from '@/lib/verdict-presentation';
-import { InitiativeTriage } from './InitiativeTriage';
+import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { loadInitiativeCards } from '@/lib/initiative-cards';
+import { groupInitiativeCards, initiativesHeadline } from '@/lib/initiative-view';
+import { InitiativeList } from './InitiativeList';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * The Initiatives list — the triage host (spec §4).
- *
- * One row per initiative, led by its verdict, partitioned into
- * Not-winning / Winning / Dormant. This replaced a grid of `InitiativeCard`s
- * whose only signal was a percentage and a lifecycle chip, which could not
- * distinguish an arc that ships from one that burns tokens without merging.
+ * The Initiatives list (docs/specs/initiatives.md). One card per initiative:
+ * the status a person set, owner, target date, a bar with one segment per
+ * mission, and whatever its missions need from you. Scoped to the active team,
+ * like the Missions tab.
  */
 export default async function InitiativesListPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
-  const initiatives = await loadInitiativeList({ teamIds, pendingSignals: true });
+  const cookieStore = await cookies();
+  const activeTeamId = teamIds.length
+    ? (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0]
+    : null;
 
-  // Empty-collapse: with zero initiatives the page is pure absence — no zone
-  // headers, no divider, no dormant control (AC-18).
-  if (initiatives.length === 0) {
+  const [loaded, teamRows] = await Promise.all([
+    activeTeamId ? loadInitiativeCards({ teamIds: [activeTeamId] }) : Promise.resolve([]),
+    activeTeamId
+      ? db.select({ name: teams.name }).from(teams).where(eq(teams.id, activeTeamId)).limit(1)
+      : Promise.resolve([] as Array<{ name: string }>),
+  ]);
+  const cards = loaded.map((l) => l.card);
+  const teamName = teamRows[0]?.name ?? null;
+
+  if (cards.length === 0) {
     return (
-      <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
+      <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-[1180px]">
         <div className="card p-8 text-center max-w-md mx-auto mt-10">
           <p className="text-sm text-text-secondary mb-1">No initiatives yet.</p>
           <p className="text-xs text-text-muted mb-4">
-            Group related missions under one goal to track their combined progress.
+            An initiative groups the missions behind one goal, with an owner and a target date.
           </p>
           <Link
             href="/app/initiatives/new"
-            className="inline-block px-3 py-1.5 text-[12px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+            className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm hover:bg-primary-hover md:min-h-9"
           >
             + New initiative
           </Link>
@@ -63,112 +56,36 @@ export default async function InitiativesListPage() {
     );
   }
 
-  // Effort and verdict evidence are both team-scoped (§6.5): one pair of loaders
-  // per team, merged on initiative id. Initiative ids are globally unique, so the
-  // merge cannot collide — and the `__unassigned__` bucket is dropped, since
-  // missions without an initiative are a Missions-tab concern, not a row here.
-  const effortByInitiative = new Map<string, EffortDay[]>();
-  const rollupByInitiative = new Map<string, VerdictRollup>();
-  await Promise.all(
-    teamIds.map(async (teamId) => {
-      const [effort, rollups] = await Promise.all([
-        loadInitiativeEffort({ teamId }),
-        loadInitiativeVerdictInputs({ teamId }),
-      ]);
-      for (const [id, days] of effort) effortByInitiative.set(id, days);
-      for (const [id, rollup] of rollups) rollupByInitiative.set(id, rollup);
-    }),
-  );
-
-  // `dependsOn` crosses mission boundaries, so the blocking index spans every
-  // mission on the page rather than being rebuilt per initiative.
-  const taskIndex = new Map<string, BlockingTask>();
-  for (const initiative of initiatives) {
-    for (const mission of initiative.missions) {
-      for (const task of mission.tasks ?? []) taskIndex.set(task.id, task);
-    }
-  }
-
-  // Ship state, not the mission.status row transition (docs/design/mission-delivery-arc.md,
-  // "The missing dimension: ship state"): `shippedThisWeek` must count missions
-  // whose work landed in a healthy release, not missions whose row merely closed.
-  // One batched query for every mission on the page, not one per mission.
-  const allMissionIds = initiatives.flatMap((initiative) => initiative.missions.map((m) => m.id));
-  const shippedMissionIds = await loadShippedMissionIds(allMissionIds);
-
-  const pulses: InitiativePulse[] = initiatives.map((initiative) => {
-    const rollup = rollupByInitiative.get(initiative.id) ?? emptyVerdictRollup(initiative.status);
-    const effortDays = effortByInitiative.get(initiative.id) ?? zeroEffortWindow();
-
-    const counts =
-      derivePendingCounts(
-        initiative.missions.map((mission) => ({
-          initiativeId: initiative.id,
-          isHeld: mission.isHeld,
-          shipped: shippedMissionIds.has(mission.id),
-          lastActivityAt: mission.updatedAt,
-          blockedPRCount: countBlockedByPR(mission.tasks ?? [], taskIndex),
-          tasks: mission.tasks ?? [],
-        })),
-      ).get(initiative.id) ?? noPendingCounts();
-
-    const { verdict, confidence, tokens7d } = deriveInitiativeVerdict({ rollup, effortDays, counts });
-
-    return {
-      id: initiative.id,
-      title: initiative.title,
-      progress: initiative.progress.progress,
-      effortDays,
-      awaitingVerification: counts.awaitingVerification,
-      blocked: counts.blocked,
-      held: counts.held,
-      shippedThisWeek: counts.shippedThisWeek,
-      verdict,
-      confidence,
-      merges7d: rollup.merges7d,
-      attempts7d: rollup.attempts7d,
-      tokens7d,
-      criteriaFail: rollup.criteriaFail,
-      completedMissions: initiative.progress.completedMissions,
-      totalMissions: initiative.progress.totalMissions,
-      completedTasks: initiative.progress.completedTasks,
-      totalTasks: initiative.progress.totalTasks,
-    };
-  });
-
-  // Subheading counts arcs by verdict in ladder order, so the page states the
-  // answer before any row is read. Silent when nothing is going wrong.
-  const { notWinning } = partitionInitiativeZones(pulses);
-  const notWinningSummary = NOT_WINNING_ORDER
-    .map((verdict) => {
-      const n = notWinning.filter((p) => p.verdict === verdict).length;
-      return n > 0 ? `${n} ${VERDICT_LABEL[verdict].toLowerCase()}` : null;
-    })
-    .filter(Boolean)
+  const groups = groupInitiativeCards(cards);
+  const count = (s: string) => cards.filter((c) => c.section === s).length;
+  const headline = initiativesHeadline({ needsYou: count('needs_you'), active: count('active') });
+  const summary = groups
+    .filter((g) => g.section !== 'needs_you')
+    .map((g) => `${g.cards.length} ${g.label.toLowerCase()}`)
     .join(' · ');
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
-      {/* The summary sits below the title row, not beside the button: on a
-          narrow viewport it otherwise wrapped mid-verdict ("2 ready to /
-          close"), which is the one line meant to answer the page at a glance. */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold text-text-primary font-sans uppercase tracking-tight">Initiatives</h1>
-          <Link
-            href="/app/initiatives/new"
-            className="shrink-0 px-2.5 py-1 text-[11px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
-          >
-            + New initiative
-          </Link>
+    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
+      <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="min-w-0">
+          <div className="section-label hidden text-text-muted md:block">
+            Initiatives{teamName ? ` · ${teamName}` : ''}
+          </div>
+          <h1 data-testid="initiatives-headline" className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+            {headline}
+          </h1>
+          {summary && <p className="mt-1 font-mono text-[12px] text-text-muted">{summary}</p>}
         </div>
-        <p className="text-[12px] text-text-muted mt-1">
-          {initiatives.length} {initiatives.length === 1 ? 'arc' : 'arcs'}
-          {notWinningSummary ? ` · ${notWinningSummary}` : ''}
-        </p>
+        <Link
+          href="/app/initiatives/new"
+          data-testid="new-initiative-link"
+          className="inline-flex min-h-11 items-center self-start border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover md:min-h-9 md:self-auto"
+        >
+          + New initiative
+        </Link>
       </div>
 
-      <InitiativeTriage items={pulses} teamId={teamIds[0] ?? 'none'} />
+      <InitiativeList groups={groups} />
     </div>
   );
 }

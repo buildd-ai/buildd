@@ -12,6 +12,12 @@ export interface NavItem {
   /** Shown in the desktop sidebar only; filtered out of the mobile bottom tab bar
    * (which is kept to a small tab count — Initiatives is reached via the Home rail). */
   desktopOnly?: boolean;
+  /**
+   * Shown only when agent chat is available to this person (the team's `chat`
+   * capability is on and a provider key resolves). With chat off nothing about
+   * the nav changes (docs/design/agent-chat.md, P1 acceptance).
+   */
+  requiresChat?: boolean;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -22,6 +28,16 @@ export const NAV_ITEMS: NavItem[] = [
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <circle cx="12" cy="12" r="3" />
         <circle cx="12" cy="12" r="9" strokeDasharray="2 4" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Chat',
+    href: '/app/chat',
+    requiresChat: true,
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 5h16v11H9l-5 4z" />
       </svg>
     ),
   },
@@ -92,6 +108,34 @@ export const NAV_ITEMS: NavItem[] = [
     ),
   },
 ];
+
+export interface NavContext {
+  /** Agent chat is available to this person. */
+  chat: boolean;
+  /** Members get Chat first; operators keep Home (the fleet) first. */
+  audience: 'member' | 'operator';
+}
+
+/** The mobile tab bar holds at most this many tabs. */
+export const MOBILE_TAB_LIMIT = 5;
+
+/**
+ * The nav for one person. Without chat it is exactly NAV_ITEMS as before. With
+ * chat, a member's first item is Chat; on the phone, Team steps off the tab
+ * bar to keep it at five (it stays in the desktop rail).
+ */
+export function navItemsFor(ctx: NavContext, surface: 'desktop' | 'mobile'): NavItem[] {
+  let items = NAV_ITEMS.filter(i => !i.requiresChat || ctx.chat);
+  if (ctx.chat && ctx.audience === 'member') {
+    const chat = items.find(i => i.requiresChat);
+    items = chat ? [chat, ...items.filter(i => i !== chat)] : items;
+  }
+  if (surface === 'mobile') {
+    items = items.filter(i => !i.desktopOnly);
+    if (items.length > MOBILE_TAB_LIMIT) items = items.filter(i => i.href !== '/app/team');
+  }
+  return items;
+}
 
 /**
  * Top-level pages get a mobile header (title + team switcher + account menu).

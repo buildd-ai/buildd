@@ -162,3 +162,82 @@ describe('ActivityTicker', () => {
     expect(html).not.toContain('via ');
   });
 });
+
+describe('FleetStrip — demo polish regressions', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://cedar.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) };
+  // X ran first (slot 0) and finished; Y overlapped it (slot 1) and is still running.
+  const f = buildFleetSnapshot([hb], [
+    { id: 'x', accountId: 'a', runner: 'http://cedar.local:1', status: 'completed', startedAt: min(20), completedAt: min(4), task: { id: 'tx', title: 'feat(fx): rates service', missionId: 'm1' } },
+    { id: 'y', accountId: 'a', runner: 'http://cedar.local:1', status: 'running', startedAt: min(15), progress: 20, task: { id: 'ty', title: 'feat(invoices): render in currency', missionId: 'm1' } },
+  ], { now: NOW });
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+
+  // Rows are in slot order (a running task keeps its row when the slot above it
+  // frees up — demo capture, home fleet live take), and the dots follow them.
+  it('rows stay in slot order and the capacity dots follow the row order', () => {
+    const rows = [...html.matchAll(/data-testid="fleet-slot" data-busy="(true|false)"/g)].map(m => m[1]);
+    expect(rows).toEqual(['false', 'true']);
+    const meter = html.match(/<span class="mt-0.5 flex[^"]*" aria-label="[^"]*">(.*?)<\/span>/)?.[1] ?? '';
+    const dots = [...meter.matchAll(/<i [^>]*class="([^"]*)"/g)].map(m => m[1].includes('bg-accent') ? 'busy' : 'idle');
+    expect(dots).toEqual(['idle', 'busy']);
+  });
+
+  it('an idle row keeps its time: the age sits in its own non-shrinking column, outside the truncated text', () => {
+    const at = html.match(/<span[^>]*data-testid="fleet-slot-last-at"[^>]*>/)?.[0] ?? '';
+    expect(at).toContain('shrink-0');
+    // The truncating span closes before the time begins.
+    expect(html).toMatch(/<span class="[^"]*truncate[^"]*">idle(?:(?!<\/span><span[^>]*fleet-slot-last-at).)*<\/span>(?:<[^>]+>)*?<span[^>]*data-testid="fleet-slot-last-at"/);
+  });
+});
+
+describe('FleetStrip — a just-claimed slot', () => {
+  const hb = { id: 'h1', accountId: 'a', localUiUrl: 'http://dune.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) };
+  const f = buildFleetSnapshot([hb], [
+    { id: 'c', accountId: 'a', runner: 'http://dune.local:1', status: 'running', startedAt: new Date(NOW - 10_000), task: { id: 'tc', title: 'feat(checkout): Stripe in currency', missionId: 'm1' } },
+    { id: 'd', accountId: 'a', runner: 'http://dune.local:1', status: 'running', startedAt: min(6), task: { id: 'td', title: 'feat(settings): currency picker', missionId: 'm1' } },
+  ], { now: NOW });
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+  const slots = html.split('data-testid="fleet-slot"').slice(1);
+
+  it('says "claimed", not "— · 0m", and draws no empty progress track', () => {
+    const claimed = slots.find(s => s.includes('checkout')) ?? '';
+    expect(claimed).toContain('data-testid="fleet-slot-claimed"');
+    expect(claimed).not.toContain('—');
+    expect(claimed).not.toContain('max-w-[150px]');
+  });
+
+  it('with no progress reported, shows only the elapsed time', () => {
+    const running = slots.find(s => s.includes('currency picker')) ?? '';
+    expect(running).toContain('>6m<');
+    expect(running).not.toContain('—');
+  });
+});
+
+describe('NeedsYouStack — nothing needs you, but work is in flight', () => {
+  // Regression: the stack's only child was the action queue holding IN FLIGHT
+  // cards, so `hasChildren` suppressed the empty state and the NEEDS YOU
+  // heading sat over nothing but "IN FLIGHT 1".
+  it('says "Nothing waiting on you" above the in-flight cards when the count is 0', () => {
+    const html = renderToStaticMarkup(
+      <NeedsYouStack count={0} questions={[]} held={[]} shipped={[]}>
+        <div data-testid="home-action-queue"><div data-testid="waiting-in-flight">In flight 1</div></div>
+      </NeedsYouStack>,
+    );
+    expect(html).toContain('Nothing waiting on you');
+    expect(html.indexOf('Nothing waiting on you')).toBeLessThan(html.indexOf('waiting-in-flight'));
+  });
+});
+
+describe('ActivityTicker — a quiet gap reads as a gap', () => {
+  it('draws a divider before an event far older than the one above it', () => {
+    const events = [
+      { id: 'e1', at: NOW - 60_000, kind: 'claim' as const, label: 'money', detail: '→ atlas', right: 'claimed', href: null, count: 1 },
+      { id: 'e2', at: NOW - 2 * 60_000, kind: 'claim' as const, label: 'db', detail: '→ atlas', right: 'claimed', href: null, count: 1 },
+      { id: 'e3', at: NOW - 6 * 3_600_000, kind: 'claim' as const, label: 'plan', detail: '→ dune', right: 'claimed', href: null, count: 1 },
+    ];
+    const html = renderToStaticMarkup(<ActivityTicker events={events} timeZone="UTC" />);
+    expect(html.match(/data-testid="ticker-gap"/g)?.length).toBe(1);
+    expect(html.indexOf('data-testid="ticker-gap"')).toBeGreaterThan(html.indexOf('>db<'));
+    expect(html).toContain('6h earlier');
+  });
+});

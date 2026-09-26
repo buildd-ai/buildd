@@ -11,6 +11,7 @@
 import { isAttempt, isDeliverableTask, stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 import { groupTasksByPhase } from './flight-strip-nav';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import { isGreenAutoMergePending } from './auto-merge-grace';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ export interface MissionFeedContext {
   openQuestions?: ReadonlyMap<string, Date | string>;
   /** Open `waiting_decision` gates, by the task they block → when opened. */
   openDecisions?: ReadonlyMap<string, Date | string>;
+  /** Clock for the just-green auto-merge grace window (ms). Defaults to `Date.now()`. */
+  now?: number;
 }
 
 // ─── D1: which tasks are rows ─────────────────────────────────────────────────
@@ -280,11 +283,16 @@ export function deriveFeedTaskState(row: DeliverableRow, ctx: MissionFeedContext
       // the health surface, not the action queue (nobody can act on it here).
       case 'unresolvable':
         return { state: 'failed', needsYou: null, askedAt: null };
-      // Green (or unknown) and still open: auto-merge already ran on green and
-      // declined, or is off — the merge is yours. Red / conflicted with no fix
+      // Green (or unknown) and still open past the merge grace window:
+      // auto-merge already ran on green and declined, or is off — the merge is yours. Red / conflicted with no fix
       // attempt queued is yours too. An open fix attempt means the platform
       // owes the next push, not you.
       case 'open':
+        // Green seconds ago: the webhook that stamped green is merging it now
+        // (`isGreenAutoMergePending`, the reviewer gate's own predicate).
+        if (isGreenAutoMergePending(task.worker?.prLifecycleStatus, task.worker?.updatedAt, ctx.now ?? Date.now())) {
+          return { state: 'moving', needsYou: null, askedAt: null };
+        }
         return openAttempt ? { state: 'queued', needsYou: null, askedAt: null } : needs('pr', fallbackAsk);
       case 'ci_failed':
       case 'conflict':

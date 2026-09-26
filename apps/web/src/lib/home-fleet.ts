@@ -13,7 +13,7 @@ import { db } from '@buildd/core/db';
 import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
-import { buildFleetSnapshot, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
+import { buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -60,6 +60,43 @@ const EMPTY: HomeFleetData = {
   questions: [],
 };
 
+/**
+ * The runners a team's fleet is made of: fresh heartbeats scoped to the team's
+ * accounts or its workspaces. Home's fleet panel and the mission Lanes band
+ * both read this (then `fleetCapacity`), so their capacity is one number.
+ */
+export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetHeartbeatRow[]> {
+  const { teamId, wsIds, now } = input;
+  if (wsIds.length === 0 && !teamId) return [];
+  const wsArray = sql`array[${sql.join(wsIds.map(id => sql`${id}`), sql`, `)}]::text[]`;
+  const teamAccountIds = teamId
+    ? db.select({ id: accounts.id }).from(accounts).where(eq(accounts.teamId, teamId))
+    : null;
+  const rows = await db
+    .select({
+      id: workerHeartbeats.id,
+      accountId: workerHeartbeats.accountId,
+      localUiUrl: workerHeartbeats.localUiUrl,
+      maxConcurrentWorkers: workerHeartbeats.maxConcurrentWorkers,
+      environment: workerHeartbeats.environment,
+      lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+    })
+    .from(workerHeartbeats)
+    .where(and(
+      gt(workerHeartbeats.lastHeartbeatAt, new Date(now - RUNNER_STALE_CUTOFF_MS)),
+      or(
+        wsIds.length > 0 ? sql`${workerHeartbeats.workspaceIds} ?| ${wsArray}` : undefined,
+        teamAccountIds ? inArray(workerHeartbeats.accountId, teamAccountIds) : undefined,
+      ),
+    ));
+  return rows as FleetHeartbeatRow[];
+}
+
+/** `fleetCapacity` over `loadFleetHeartbeats`, with Home's online threshold. */
+export async function loadFleetCapacity(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<number> {
+  return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS });
+}
+
 export async function loadHomeFleet(input: {
   teamId: string | null;
   wsIds: string[];
@@ -72,29 +109,8 @@ export async function loadHomeFleet(input: {
   const windowStart = new Date(Math.max(now - FLEET_WINDOW_MS, Math.min(dayStart, now - 30 * 60_000)));
   const dayStartDate = new Date(dayStart);
 
-  const wsArray = sql`array[${sql.join(wsIds.map(id => sql`${id}`), sql`, `)}]::text[]`;
-  const teamAccountIds = teamId
-    ? db.select({ id: accounts.id }).from(accounts).where(eq(accounts.teamId, teamId))
-    : null;
-
   const [heartbeatRows, workerRows, ciRows, healedRows, doneMissions] = await Promise.all([
-    db
-      .select({
-        id: workerHeartbeats.id,
-        accountId: workerHeartbeats.accountId,
-        localUiUrl: workerHeartbeats.localUiUrl,
-        maxConcurrentWorkers: workerHeartbeats.maxConcurrentWorkers,
-        environment: workerHeartbeats.environment,
-        lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
-      })
-      .from(workerHeartbeats)
-      .where(and(
-        gt(workerHeartbeats.lastHeartbeatAt, new Date(now - RUNNER_STALE_CUTOFF_MS)),
-        or(
-          sql`${workerHeartbeats.workspaceIds} ?| ${wsArray}`,
-          teamAccountIds ? inArray(workerHeartbeats.accountId, teamAccountIds) : undefined,
-        ),
-      )),
+    loadFleetHeartbeats({ teamId, wsIds, now }),
     // No cap on live workers (every one is a slot); the history half is windowed.
     db
       .select({

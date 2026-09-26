@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar, date
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -69,6 +69,15 @@ export const teams = pgTable('teams', {
   // Same shape as enabledBackends: a reversible mask above the resolution chain,
   // not another default inside it. See packages/core/inference-policy.ts.
   enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
+  // Daily cap on agent-chat spend in USD, reset at midnight in the team's
+  // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
+  // never "no cap". Metered from conversation_messages.usage (generative turns
+  // plus their routing decision calls); never touches accounts.maxCostPerDay,
+  // which meters runner work.
+  chatDailyBudgetUsd: decimal('chat_daily_budget_usd', { precision: 10, scale: 2 }),
+  // Per-person daily share of that budget, in USD. NULL = DEFAULT_CHAT_USER_SHARE
+  // of the team budget. Always clamped to the team budget.
+  chatUserDailyBudgetUsd: decimal('chat_user_daily_budget_usd', { precision: 10, scale: 2 }),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -792,6 +801,9 @@ export const missions = pgTable('missions', {
   // Optional parent initiative — an execution-free planning container above missions.
   // Null = mission is ungrouped and behaves exactly as before (default no-op).
   initiativeId: uuid('initiative_id').references(() => initiatives.id, { onDelete: 'set null' }),
+  // The agent-chat conversation this mission was filed from, if any. Planning
+  // updates (plan ready, a worker asking) post back into it. NULL = not from chat.
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'set null' }),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
   // Mission-level dependency sequencing: this mission won't run until the gate condition
   // is met on dependsOnMissionId. 'merged' = upstream PRs landed; 'completed' = mission.status='completed'.
@@ -947,6 +959,7 @@ export const missions = pgTable('missions', {
   parentIdx: index('missions_parent_idx').on(t.parentMissionId),
   dependsOnIdx: index('missions_depends_on_idx').on(t.dependsOnMissionId),
   initiativeIdx: index('missions_initiative_idx').on(t.initiativeId),
+  conversationIdx: index('missions_conversation_idx').on(t.conversationId),
 }));
 
 // Denormalized initiative rollup. Shape mirrors InitiativeProgress in
@@ -972,20 +985,23 @@ export const initiatives = pgTable('initiatives', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
+  // Human-set lifecycle, Linear's initiative statuses plus paused/archived.
+  // Nothing derives or auto-advances it. 'planned' needs no migration: text column.
+  status: text('status').default('active').notNull().$type<'planned' | 'active' | 'paused' | 'completed' | 'archived'>(),
   priority: integer('priority').default(0).notNull(),
-  // Denormalized rollup from computeInitiativeProgress, refreshed on child-mission change.
+  // Who answers for the initiative. NULL reads as createdByUserId.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Optional calendar target, no time of day ('YYYY-MM-DD').
+  targetDate: date('target_date', { mode: 'string' }),
+  // DEPRECATED — unread and unwritten. Drop in a later release (schema-change
+  // skill, "Dropping a table or column").
   progressCache: jsonb('progress_cache').$type<InitiativeProgressCache | null>(),
   // Curated artifact-id pointers for context assembly (mirrors missions.contextArtifactIds).
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
-  // KPIs: outcome-oriented indicators that gate initiative completion.
-  // null = no KPIs (completion driven by child-mission rollup alone).
-  // A blocking KPI (blocking: true, the default) holds status='active' until met.
+  // DEPRECATED — initiative KPIs were removed; nothing reads or writes these
+  // three columns. Drop in a later release (schema-change skill).
   kpis: jsonb('kpis').$type<import('@buildd/shared').InitiativeKPI[] | null>(),
-  // Last KPI evaluation result.
   kpiState: jsonb('kpi_state').$type<import('@buildd/shared').InitiativeKPIState | null>(),
-  // When false, organizer never auto-evaluates KPIs; on-demand still works.
-  // null reads as true (default: auto-verify ON when KPIs are set).
   autoVerify: boolean('auto_verify'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1060,7 +1076,7 @@ export const tasks = pgTable('tasks', {
   reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
   // Task category for visual grouping
-  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
+  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -2405,7 +2421,11 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key'>(),
+  // A person's own key (inference_key only). NULL = not personal. `accountId`
+  // can't hold this: accounts are API-key identities, not people. A personal row
+  // serves only its owner — see packages/core/inference-keys.ts.
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -2472,8 +2492,92 @@ export const secrets = pgTable('secrets', {
   scopedAuthCredentialIdx: uniqueIndex('secrets_scoped_auth_credential_idx')
     .on(t.teamId, t.accountId, t.workspaceId, t.purpose, t.label)
     .where(sql`${t.purpose} in ('oauth_token','anthropic_api_key','codex_credential','claude_credential')`),
+  // One personal inference key per (team, user, provider label). Partial on
+  // user_id IS NOT NULL so it binds only personal rows, which are new — it can't
+  // fail on any pre-existing row. Team-scope rows stay singletons through
+  // replaceScoped, as before. Personal keys are team-wide (workspace NULL) in P1.
+  personalInferenceKeyIdx: uniqueIndex('secrets_personal_inference_key_idx')
+    .on(t.teamId, t.userId, t.label)
+    .where(sql`${t.purpose} = 'inference_key' and ${t.userId} is not null and ${t.workspaceId} is null`),
+  userIdx: index('secrets_user_idx').on(t.userId),
 }));
 
+
+// ── Agent chat (docs/design/agent-chat.md) ───────────────────────────────────
+
+// One conversation with the buildd agent. Same conversation on web and phone.
+export const conversations = pgTable('conversations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Default scope for tool calls. NULL = the creator's whole team.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  // Auto-titled after the first exchange; read through conversationDisplayTitle.
+  title: varchar('title', { length: 80 }),
+  titleSource: text('title_source').default('auto').notNull().$type<'auto' | 'user'>(),
+  agentRoleSlug: text('agent_role_slug').default('organizer').notNull(),
+  lastMessageAt: timestamp('last_message_at', { withTimezone: true }).defaultNow().notNull(),
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userRecentIdx: index('conversations_user_recent_idx').on(t.createdByUserId, t.lastMessageAt),
+  teamIdx: index('conversations_team_idx').on(t.teamId),
+}));
+
+// One saved message. `parts` are AI SDK UIMessage parts; tool parts carry their
+// state and a ChatToolResult (BuilddObjectRef[]) — refs, never snapshots.
+export const conversationMessages = pgTable('conversation_messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'cascade' }).notNull(),
+  role: text('role').notNull().$type<'user' | 'assistant' | 'event'>(),
+  parts: jsonb('parts').notNull().$type<Array<{ type: string; [key: string]: unknown }>>(),
+  authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
+  surface: text('surface').default('web').notNull().$type<'web' | 'slack' | 'discord' | 'teams'>(),
+  tier: text('tier'),
+  model: text('model'),
+  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null }>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
+  // Recent messages by author (turn admission itself lives in chat_turn_windows).
+  authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
+}));
+
+// A write the agent proposed, awaiting the user's tap. Decided with an atomic
+// UPDATE ... WHERE status = 'pending' RETURNING (no db.transaction on
+// neon-http): only the caller whose update returns a row executes the tool, so
+// a replayed or concurrent approval files nothing. `result` keeps what the
+// execution returned, so a replay answers with it instead of re-running.
+export const conversationApprovals = pgTable('conversation_approvals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // The AI SDK approval id (tool part `approval.id`) the client echoes back.
+  approvalId: text('approval_id').notNull(),
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'cascade' }).notNull(),
+  messageId: uuid('message_id').references(() => conversationMessages.id, { onDelete: 'cascade' }).notNull(),
+  toolCallId: text('tool_call_id').notNull(),
+  toolName: text('tool_name').notNull(),
+  // sha256 of the canonical tool input as proposed; an edited input doesn't match.
+  inputHash: text('input_hash').notNull(),
+  proposedForUserId: uuid('proposed_for_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'approved' | 'denied' | 'expired'>(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  result: jsonb('result').$type<unknown>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  approvalIdIdx: uniqueIndex('conversation_approvals_approval_id_idx').on(t.approvalId),
+  conversationIdx: index('conversation_approvals_conversation_idx').on(t.conversationId),
+}));
+
+// Chat turn admission: one row per user holding the start times of their turns
+// in the current rate window. A turn is admitted by a single
+// INSERT ... ON CONFLICT DO UPDATE ... WHERE <under the limit> RETURNING, which
+// takes the row lock, so parallel requests are serialized and at most
+// CHAT_RATE_LIMIT get a row back (no db.transaction on neon-http).
+export const chatTurnWindows = pgTable('chat_turn_windows', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).primaryKey(),
+  turnAt: timestamp('turn_at', { withTimezone: true }).array().notNull().default(sql`'{}'::timestamptz[]`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
@@ -2784,6 +2888,7 @@ export const initiativesRelations = relations(initiatives, ({ one, many }) => ({
   team: one(teams, { fields: [initiatives.teamId], references: [teams.id] }),
   workspace: one(workspaces, { fields: [initiatives.workspaceId], references: [workspaces.id] }),
   createdByUser: one(users, { fields: [initiatives.createdByUserId], references: [users.id] }),
+  ownerUser: one(users, { fields: [initiatives.ownerUserId], references: [users.id] }),
   missions: many(missions),
   artifacts: many(artifacts),
 }));
@@ -3240,7 +3345,7 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   tier: text('tier').notNull().$type<'premium-plus' | 'premium' | 'standard' | 'budget'>(),
-  provider: text('provider').notNull().$type<'anthropic' | 'openai-codex' | 'openrouter'>(),
+  provider: text('provider').notNull().$type<'anthropic' | 'openai' | 'openai-codex' | 'openrouter'>(),
   model: text('model').notNull(),
   defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
   defaultMaxTurns: integer('default_max_turns'),

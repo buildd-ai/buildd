@@ -58,6 +58,7 @@ const config: Config = {
           test: 'var(--cat-test)',
           infra: 'var(--cat-infra)',
           design: 'var(--cat-design)',
+          research: 'var(--cat-research)',
         },
       },
       // Brutalist: square everything, including 'full' — there is no true circle in

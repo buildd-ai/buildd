@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildFleetSnapshot,
+  fleetCapacity,
   fleetDisplayRows,
   fleetSummary,
   homeHeadline,
@@ -107,6 +108,12 @@ describe('buildFleetSnapshot', () => {
     expect(snap.capacity).toBe(4);
   });
 
+  it('fleetCapacity is the snapshot capacity: online heartbeats only (the Lanes band reads it too)', () => {
+    const beats = [hb('h1', 'http://a:1', 2), hb('h2', 'http://b:1', 6), { ...hb('h3', 'http://c:1', 4), lastHeartbeatAt: new Date(NOW - 10 * 60_000) }];
+    expect(fleetCapacity(beats, { now: NOW })).toBe(8);
+    expect(buildFleetSnapshot(beats, [], { now: NOW }).capacity).toBe(fleetCapacity(beats, { now: NOW }));
+  });
+
   it('drops a runner with no heartbeat unless it holds live work', () => {
     expect(snap.runners.some(r => r.name === 'gone')).toBe(false);
   });
@@ -188,7 +195,7 @@ describe('startOfDayInZone', () => {
   });
 });
 
-describe('fleetDisplayRows — busy slots first, idle ones folded', () => {
+describe('fleetDisplayRows — shown slots in slot order, idle ones folded', () => {
   const hb10: FleetHeartbeatRow = { id: 'h1', accountId: 'acct', localUiUrl: 'http://q.local:1', maxConcurrentWorkers: 10, lastHeartbeatAt: new Date(NOW - 10_000) };
   const w = (id: string, over: Partial<FleetWorkerRow>): FleetWorkerRow => ({
     id, accountId: 'acct', runner: 'http://q.local:1', status: 'running', startedAt: min(10),
@@ -201,7 +208,7 @@ describe('fleetDisplayRows — busy slots first, idle ones folded', () => {
     expect(rows).toEqual([{ kind: 'idle', count: 10, slots: s.runners[0].slots }]);
   });
 
-  it('busy slots, then up to two recently finished ones, then the rest as a count', () => {
+  it('busy slots and up to two recently finished ones, in slot order, then the rest as a count', () => {
     const s = buildFleetSnapshot([hb10], [
       w('a', { startedAt: min(30) }),
       w('b', { status: 'completed', startedAt: min(29), completedAt: min(20) }),
@@ -211,9 +218,25 @@ describe('fleetDisplayRows — busy slots first, idle ones folded', () => {
     ], { now: NOW });
     const rows = fleetDisplayRows(s.runners[0], { since: s.window.from });
     const shown = rows.filter(r => r.kind === 'slot').map(r => (r.kind === 'slot' ? r.slot.worker?.label ?? r.slot.last?.scope : null));
-    // Busy (a, e) first, then the two most recent idle (d, then c); b and the empty slots fold.
-    expect(shown).toEqual(['a', 'e', 'd', 'c']);
+    // Busy (a, e) and the two most recent idle (c, d) keep their own slots' order;
+    // b and the empty slots fold.
+    expect(shown).toEqual(['a', 'c', 'd', 'e']);
     expect(rows[rows.length - 1]).toMatchObject({ kind: 'idle', count: 6 });
+  });
+
+  // Regression (demo capture, home fleet live take): when a runner's first slot
+  // finished, the task still running in its second slot jumped up to row 1.
+  it('a running task keeps its row when the slot above it frees up', () => {
+    const hb2 = { ...hb10, maxConcurrentWorkers: 2 };
+    const before = buildFleetSnapshot([hb2], [w('fx', { startedAt: min(12) }), w('inv', { startedAt: min(5) })], { now: NOW });
+    const after = buildFleetSnapshot([hb2], [
+      w('fx', { status: 'completed', startedAt: min(12), completedAt: min(1) }),
+      w('inv', { startedAt: min(5) }),
+    ], { now: NOW });
+    const rowOf = (s: typeof before, label: string) => fleetDisplayRows(s.runners[0], { since: s.window.from })
+      .findIndex(r => r.kind === 'slot' && r.slot.worker?.label === label);
+    expect(rowOf(before, 'inv')).toBe(1);
+    expect(rowOf(after, 'inv')).toBe(1);
   });
 
   it('a single leftover idle slot is shown, not folded', () => {

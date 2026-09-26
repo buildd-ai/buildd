@@ -4,7 +4,10 @@
  * scroll model"). Fixtures are illustrative.
  */
 import { describe, expect, it } from 'bun:test';
-import { needsInputTaskHref } from './NeedsInputBanner';
+import { renderToStaticMarkup } from 'react-dom/server';
+import NeedsInputBanner, { needsInputTaskHref } from './NeedsInputBanner';
+import { NeedsInputContext } from './NeedsInputProvider';
+import { hideNeedsInputFor } from '@/lib/needs-input-hidden';
 
 describe('needsInputTaskHref', () => {
   it('opens a mission task as the sheet over its mission', () => {
@@ -14,5 +17,39 @@ describe('needsInputTaskHref', () => {
   it('opens a task with no mission on its own page', () => {
     expect(needsInputTaskHref({ id: 'task-1', missionId: null })).toBe('/app/tasks/task-1');
     expect(needsInputTaskHref({ id: 'task-1' })).toBe('/app/tasks/task-1');
+  });
+});
+
+// Regression (demo capture, phone respond step): the banner for a question sat
+// on top of the sheet answering that same question.
+describe('NeedsInputBanner — the question open in its own sheet', () => {
+  const waiting = (id: string, title: string) => ({ id, title, workspaceId: 'ws', missionId: 'm1', waitingFor: null });
+  const render = (tasks: ReturnType<typeof waiting>[]) => renderToStaticMarkup(
+    <NeedsInputContext.Provider value={{ tasks, count: tasks.length, alertPermission: 'unsupported', enableAlerts: () => {} }}>
+      <NeedsInputBanner />
+    </NeedsInputContext.Provider>,
+  );
+
+  it('does not render for the only waiting question while its sheet is open', () => {
+    const release = hideNeedsInputFor('q1');
+    try {
+      expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toBe('');
+    } finally { release(); }
+  });
+
+  it('still names the other waiting question, counted without the open one', () => {
+    const release = hideNeedsInputFor('q1');
+    try {
+      const html = render([waiting('q1', 'feat(checkout): pay in currency'), waiting('q2', 'docs: billing guide')]);
+      expect(html).toContain('docs: billing guide');
+      expect(html).not.toContain('pay in currency');
+      expect(html).toContain('needs your input');
+      expect(html).not.toContain('2 tasks');
+    } finally { release(); }
+  });
+
+  it('renders again once the sheet is closed', () => {
+    hideNeedsInputFor('q1')();
+    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs your input');
   });
 });

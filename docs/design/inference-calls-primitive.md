@@ -19,7 +19,7 @@ assertions:
 # Inference Calls as a First-Class Primitive
 
 **Status:** Partially implemented — Step 1 (the client), Step 2 (via deletion, not migration), Step 3 (the judge), and Step 4 (via deletion of `/api/qa/judge`) are done; see "Implementation status" below.
-**Related:** `apps/web/src/lib/mission-criteria-eval.ts:104-192`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `packages/core/inference-policy.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
+**Related:** `docs/design/decision-calls.md` (the fixed-label counterpart to this primitive), `apps/web/src/lib/mission-criteria-eval.ts:104-192`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `packages/core/inference-policy.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
 
 ---
 

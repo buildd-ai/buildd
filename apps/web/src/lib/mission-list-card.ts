@@ -192,13 +192,14 @@ export function buildMissionListCard(
   let question: ListQuestion | null = null;
 
   for (const r of ordered) {
-    const fs = deriveFeedTaskState(r);
+    const fs = deriveFeedTaskState(r, { now });
     const source = byId.get(r.task.id)!;
     let state: ListCellState;
     let fill = 1;
     switch (fs.state) {
       case 'moving': {
-        const inCi = r.task.status === 'completed' && deriveFeedPrState(r.task.worker)?.state === 'checks_running';
+        // A completed row that is still moving is its PR in CI or mid-merge.
+        const inCi = r.task.status === 'completed' && !!deriveFeedPrState(r.task.worker);
         state = inCi ? 'in_ci' : 'running';
         if (!inCi) {
           const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];

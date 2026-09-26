@@ -61,6 +61,20 @@ describe('MissionBoard — running', () => {
   });
 });
 
+describe('MissionBoard — planning (no tasks yet)', () => {
+  const html = render('planning');
+
+  it('shows the planning placeholder with the organizer\'s live state, not an empty "Tasks 0/0" column', () => {
+    expect(count(html, 'data-testid="board-column"')).toBe(0);
+    expect(html).not.toContain('>0/0<');
+    expect(html).not.toContain('data-testid="mission-board-columns"');
+    expect(html).toContain('data-testid="board-planning"');
+    expect(html).toContain('Organizer is planning');
+    expect(html).toContain('Mapped the example tables');
+    expect(html).toContain('alpha');
+  });
+});
+
 describe('MissionBoard — a question open', () => {
   const html = render('question');
 
@@ -89,5 +103,88 @@ describe('MissionBoard — complete', () => {
     expect(tileStatuses(html)).toEqual(['merged', 'merged', 'merged', 'merged']);
     expect(html).toContain('+40');
     expect(html).toContain('all answered');
+  });
+});
+
+describe('MissionBoard — demo v5 polish', () => {
+  /** One tile's own markup, from its anchor to the next tile. */
+  const tileOf = (html: string, id: string) => html.split(`data-task-id="${id}"`)[1]?.split(' data-task-id="')[0] ?? '';
+  const runningWith = (patch: Record<string, unknown>) => {
+    const model = boardFixture('running');
+    const t = Object.values(model.tasks).find(x => x.status === 'running')!;
+    Object.assign(t, patch);
+    return { id: t.id, html: renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" />) };
+  };
+
+  it('a running tile with nothing to say has no second line (no empty gap under the title)', () => {
+    const { id, html } = runningWith({ startedAt: null, milestones: [], currentAction: null, pr: null });
+    expect(tileOf(html, id)).not.toBe('');
+    expect(tileOf(html, id)).not.toContain('data-testid="board-tile-body"');
+    expect(tileOf(html, id)).not.toContain('min-h-[18px]');
+  });
+
+  it('a running tile shows its current action and its elapsed time', () => {
+    const { id, html } = runningWith({ currentAction: 'Editing invoices.ts' });
+    const tile = tileOf(html, id);
+    expect(tile).toContain('data-testid="board-tile-body"');
+    expect(tile).toContain('data-testid="board-tile-action"');
+    expect(tile).toContain('Editing invoices.ts');
+  });
+
+  it('the completion record puts its four numbers in one compact 2x2 block, not four prose-tall columns', () => {
+    const html = render('complete', { completionText: 'Example outcome.' });
+    const stats = html.split('data-testid="record-stats"')[1] ?? '';
+    expect(stats).not.toBe('');
+    for (const id of ['record-prs', 'record-lines', 'record-ci-fixes', 'record-decisions']) expect(stats).toContain(`data-testid="${id}"`);
+    const section = html.match(/data-testid="mission-completion-record" class="([^"]*)"/)?.[1] ?? '';
+    expect(section).not.toContain('repeat(4,');
+  });
+});
+
+// The docked chat pane and the phone sheet are far narrower than the page:
+// criteria labels, phase headers, tile titles and the landed strip's captions
+// all truncated there. `compact` is the narrow layout.
+describe('MissionBoard — compact (docked pane / phone sheet)', () => {
+  const model = boardFixture('running');
+  const wide = render('running');
+  const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" compact />);
+
+  it('marks the board compact; the wide board is unchanged', () => {
+    expect(html).toContain('data-compact="true"');
+    expect(wide).not.toContain('data-compact');
+    expect(wide).toContain('data-testid="goal-criterion"');
+    expect(wide).not.toContain('data-testid="goal-criterion-pip"');
+  });
+
+  it('draws goal criteria as pips, each named in its title, with no truncated label rows', () => {
+    expect(count(html, 'data-testid="goal-criterion-pip"')).toBe(model.criteria.length);
+    expect(html).not.toContain('data-testid="goal-criterion"');
+    for (const c of model.criteria) expect(html).toContain(`title="${c.label} · ${c.value}"`);
+  });
+
+  it('lets phase headers wrap instead of truncating', () => {
+    const labels = [...html.matchAll(/data-testid="board-phase-label"[^>]*class="([^"]+)"/g)].map(m => m[1]);
+    expect(labels.length).toBe(model.phases.length);
+    for (const cls of labels) expect(cls.split(/\s+/)).not.toContain('truncate');
+  });
+
+  it('tile titles use the short label, wrapped to two lines with the full title on hover', () => {
+    const titles = [...html.matchAll(/data-testid="board-tile-label"[^>]*class="([^"]+)"/g)].map(m => m[1]);
+    expect(titles.length).toBeGreaterThan(0);
+    for (const cls of titles) {
+      expect(cls).toContain('line-clamp-2');
+      expect(cls.split(/\s+/)).not.toContain('truncate');
+    }
+    const t = Object.values(model.tasks).find(x => x.status === 'running')!;
+    expect(html).toContain(`title="${t.title}"`);
+  });
+
+  it('the landed strip captions drop the ordinal and never truncate', () => {
+    const caps = [...html.matchAll(/data-testid="landed-phase-caption"[^>]*class="([^"]+)"[^>]*>([^<]+)</g)];
+    expect(caps.length).toBe(model.phases.length);
+    for (const [, cls, text] of caps) {
+      expect(cls.split(/\s+/)).not.toContain('truncate');
+      expect(text).toMatch(/^\d+\/\d+$/);
+    }
   });
 });

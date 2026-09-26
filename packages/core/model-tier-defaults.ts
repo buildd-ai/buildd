@@ -15,7 +15,9 @@ export type Tier = 'premium-plus' | 'premium' | 'standard' | 'budget';
  * hunting through routes and MCP handlers.
  */
 export const TIERS: readonly Tier[] = ['premium-plus', 'premium', 'standard', 'budget'];
-export type TierProvider = 'anthropic' | 'openai-codex' | 'openrouter';
+// 'openai' is the OpenAI API (an API key: server-side calls such as chat);
+// 'openai-codex' is the Codex subscription backend (runner only).
+export type TierProvider = 'anthropic' | 'openai' | 'openai-codex' | 'openrouter';
 
 export interface TierEntry {
   provider: TierProvider;

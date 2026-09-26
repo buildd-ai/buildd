@@ -37,7 +37,8 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `pushover`, `notify_webhook`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `pushover`, `notify_webhook`, `inference_key`, `decision_key`, `custom`. |
+| `userId` | Nullable. A person's own key (`inference_key` only). `NULL` = not personal. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
 | `tokenExpiresAt` | Nullable. Set for token credentials that expire (`codex_credential`, `oauth_token`). Enables efficient "expiring soon" cron queries. |
@@ -65,6 +66,31 @@ For single-valued credentials (one Codex login per scope) the resolver returns t
 most-specific row. The claim route already applies the team/account/workspace filter for
 `anthropic_api_key` / `oauth_token` / `mcp_credential`; `codex_credential` uses the same
 filter plus the precedence pick.
+
+### API-token model keys (chat, inference, decision calls)
+
+Server-side model calls spend a metered API key, never a subscription seat. They
+resolve it through one function, `resolveInferenceKey` in
+`packages/core/inference-keys.ts`, from `inference_key` rows (provider in `label`:
+`anthropic`, `openai`, `openrouter`), plus `anthropic_api_key` for Anthropic and the
+legacy `decision_key` for OpenRouter. So one OpenRouter key serves chat and decisions.
+
+These rows add a **user** dimension: `secrets.userId` (nullable) marks a person's own
+key. `accountId` can't hold it, because accounts are API-key identities, not people.
+Precedence is caller-first, since the person asking is the one paying:
+
+1. `userId = U` (the caller's own key; never served to anyone else)
+2. `accountId = A` (the calling API account, as decision calls always did)
+3. `workspaceId = W`
+4. team-wide (`userId`, `accountId`, `workspaceId` all NULL)
+5. a legacy account-scoped row, only for callers with no account (cron paths)
+6. the provider env var, only when `NODE_ENV !== 'production'` or
+   `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` (self-hosting)
+
+Personal rows are excluded from `SecretsProvider.list()`, so no team-wide list or
+delete path reaches them. They're managed through `/api/inference-keys` (personal
+scope for any member, team scope for owners/admins), which returns only the last
+four characters and health, never plaintext.
 
 ## Multi-field credentials (Codex)
 

@@ -291,14 +291,13 @@ describe('cause: mission_evaluate', () => {
     expect(out).toContain('mission-sibling-111');
   });
 
-  it('renders parent initiative with KPI state', async () => {
+  it('renders the parent initiative with its status and progress, and no KPI line', async () => {
     const brief: InitiativeBrief = {
       id: INIT_ID,
       title: 'Q3 Platform',
       status: 'active',
       progress: 45,
       description: null,
-      kpiSummary: 'KPIs: 1/2 met',
     };
     const q = makeQuerier({
       async getInitiativeBrief() { q.calls.getInitiativeBrief++; return brief; },
@@ -311,7 +310,8 @@ describe('cause: mission_evaluate', () => {
     });
     expect(out).toContain('Q3 Platform');
     expect(out).toContain('45%');
-    expect(out).toContain('KPIs: 1/2 met');
+    // Initiative KPIs are deprecated: agent prompts carry no KPI verdict.
+    expect(out).not.toContain('KPI');
   });
 
   it('omits initiative section when mission has no initiativeId', async () => {
