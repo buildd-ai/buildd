@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, accounts, workers, workspaces, workspaceSkills, teams } from '@buildd/core/db/schema';
+import { missions, accounts, workers, workspaces, teams } from '@buildd/core/db/schema';
 import { inArray, and, eq, sql, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { loadReleaseFooterData } from '@/lib/release-footer';
@@ -30,6 +30,7 @@ import {
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
 import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
 import { loadWorkerProgress } from '@/lib/worker-progress';
+import { loadTeamRoleColors } from '@/lib/role-colors';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
 
 export const dynamic = 'force-dynamic';
@@ -92,7 +93,7 @@ export default async function MissionsPage({
     teamWorkspaces,
     activeRows,
     completedRowsPage,
-    roleRows,
+    roleColors,
     teamRows,
   ] = await Promise.all([
     // Seat utilization across the active team's accounts. The live-seat count
@@ -122,17 +123,11 @@ export default async function MissionsPage({
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
     // Role colours for the live-agent dots — read from the roles, never hardcoded.
-    db
-      .select({ slug: workspaceSkills.slug, color: workspaceSkills.color })
-      .from(workspaceSkills)
-      .innerJoin(workspaces, eq(workspaceSkills.workspaceId, workspaces.id))
-      .where(and(eq(workspaces.teamId, activeTeamId), eq(workspaceSkills.isRole, true), eq(workspaceSkills.enabled, true))),
+    loadTeamRoleColors(activeTeamId),
     // The header's "Missions · <team>" label.
     db.select({ name: teams.name }).from(teams).where(eq(teams.id, activeTeamId)).limit(1),
   ]);
   const team = teamRows[0] ?? null;
-  const roleColors = new Map<string, string | null>();
-  for (const r of roleRows) if (!roleColors.has(r.slug)) roleColors.set(r.slug, r.color ?? null);
 
   const { maxSeats, activeSeats } = seats;
   const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
