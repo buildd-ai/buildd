@@ -296,8 +296,12 @@ jobs:
         # function wrapper"). The test machine's Bun is not pinned, unlike this
         # job's setup-bun. scripts/prod-server-runtime.test.ts keeps it on Node.
         run: |
-          # Pipe env vars to a file on the remote — avoids all escaping issues
-          printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
+          # Pipe env vars to a file on the remote, shell-quoted (%q): the file is
+          # `source`d, and an unquoted Neon URL's `&channel_binding=...` made
+          # bash background the assignment, so the server ran with no
+          # DATABASE_URL and every authed route returned 500. That stayed
+          # hidden while the API tests were silently not running (see below).
+          printf 'DATABASE_URL=%q\nAUTH_SECRET=%q\n' "$DATABASE_URL" "$AUTH_SECRET" | \
             tailscale ssh "$TEST_USER@$TEST_HOST" \
               "docker exec -i $TEST_CONTAINER bash -c 'cat > /tmp/buildd-ci/.env.test'"
 
@@ -322,6 +326,10 @@ jobs:
             curl -fsSL "$base/$file" | tar -xz -C /tmp/buildd-node --strip-components=1
           fi
           echo "server runtime: node $(node --version) at $(command -v node); bun $(bun --version)"
+          if ! ( set -a; source /tmp/buildd-ci/.env.test; [ -n "${DATABASE_URL:-}" ] && [ -n "${AUTH_SECRET:-}" ] ); then
+            echo "::error::/tmp/buildd-ci/.env.test does not yield DATABASE_URL and AUTH_SECRET when sourced; the server would 500 every authed route."
+            exit 1
+          fi
 
           cat > /tmp/buildd-ci/start-web.sh << 'LAUNCH'
           export PATH=$HOME/.local/bin:$HOME/.bun/bin:/tmp/buildd-node/bin:$PATH

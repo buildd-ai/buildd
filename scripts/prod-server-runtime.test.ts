@@ -64,6 +64,14 @@ describe('prod server runtime', () => {
     expect(wf).toMatch(/PAGE_CODE/);
   });
 
+  it('the server env file survives being sourced', () => {
+    const wf = read('.github/workflows/integration.yml');
+    // A Neon URL carries `&channel_binding=...`; written with %s and then
+    // `source`d, bash backgrounds the assignment and DATABASE_URL is empty.
+    expect(wf).toContain(`printf 'DATABASE_URL=%q\\nAUTH_SECRET=%q\\n'`);
+    expect(wf).not.toMatch(/DATABASE_URL=%s/);
+  });
+
   it('the integration tests cannot pass having run nothing', () => {
     const wf = read('.github/workflows/integration.yml');
     const step = wf.slice(wf.indexOf('- name: Integration tests'), wf.indexOf('- name: E2E tests'));
