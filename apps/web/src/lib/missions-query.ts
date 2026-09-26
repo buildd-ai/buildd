@@ -60,7 +60,7 @@ export function buildActiveMissionsQueryArgs(missionsWhere: SQL | undefined) {
       ...MISSION_WITH_SHARED,
       tasks: {
         // Phase fields order the card's pulse (lib/mission-card-view.ts).
-        columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true },
+        columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true, label: true },
         orderBy: taskOrderBy,
         with: {
           workers: {

@@ -215,7 +215,7 @@ export function buildMissionListCard(
     else if (state === 'queued') counts.queued++;
     else if (state === 'failed') counts.failed++;
 
-    const { label } = taskShortLabel(r.task);
+    const { label } = taskShortLabel(source);
     const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, fill, href: link(r.task.id) };
 
     if (state === 'needs_you' && !question) {

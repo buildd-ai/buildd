@@ -77,6 +77,8 @@ export interface MissionCardWorkerRow {
 export interface MissionCardTaskRow {
   id: string;
   title: string;
+  /** `tasks.label` — the stored short label (`taskDisplayLabel`). */
+  label?: string | null;
   status: string;
   createdAt?: DateLike;
   updatedAt?: DateLike;
