@@ -127,7 +127,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
       <div className="relative">
         <input
           type="text"
-          placeholder={loadingTasks ? 'Loading tasks…' : 'Search tasks to add as dependency…'}
+          placeholder={loadingTasks ? 'Loading tasks…' : 'Search tasks to add a dependency…'}
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
@@ -135,7 +135,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
           }}
           onFocus={() => setOpen(true)}
           disabled={disabled || loadingTasks}
-          className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-sm"
+          className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary text-base md:text-sm"
         />
 
         {/* Dropdown */}
@@ -168,7 +168,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
         )}
       </div>
       <p className="text-xs text-text-muted mt-1">
-        Tasks that must complete before this task can be claimed.
+        Workers claim this task after these tasks complete.
       </p>
     </div>
   );

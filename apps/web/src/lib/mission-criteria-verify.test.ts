@@ -415,7 +415,7 @@ describe('resolveCommandCriterion — a task status is not a verdict', () => {
     const res = await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
 
     expect(res.kind).toBe('pending');
-    if (res.kind === 'pending') expect(res.evidence).toContain('no runner has claimed it');
+    if (res.kind === 'pending') expect(res.evidence).toContain('with no runner claiming it');
   });
 });
 

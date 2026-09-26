@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, getUserWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
+import { isAuditScreenshot } from '@/lib/artifact-prominence';
 
 /**
  * Authorize a request against an artifact for share (make public / revoke) actions.
@@ -68,6 +69,14 @@ export async function POST(
 
   const authz = await authorizeShare(req, artifact);
   if ('response' in authz) return authz.response;
+
+  // Visual-audit screenshots are captures of preview data and can hold real
+  // content (docs/design/visual-qa-auditor.md): they are never published.
+  // After authz, so the refusal tells a stranger nothing about the artifact.
+  // Revoking (DELETE) stays allowed.
+  if (isAuditScreenshot(artifact)) {
+    return NextResponse.json({ error: 'Audit screenshots cannot be shared publicly' }, { status: 409 });
+  }
 
   const token = artifact.shareToken || randomBytes(24).toString('base64url');
 

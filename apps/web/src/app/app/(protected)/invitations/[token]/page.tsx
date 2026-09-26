@@ -20,11 +20,11 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (!invitation) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
         <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Not Found</h1>
           <p className="text-text-secondary mb-6">
-            This invitation link is invalid or has been revoked.
+            This invitation link is invalid or revoked.
           </p>
           <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
             Go to workspaces
@@ -53,11 +53,11 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (invitation.status === 'accepted') {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
         <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <h1 className="text-xl font-semibold text-text-primary mb-2">Already Accepted</h1>
           <p className="text-text-secondary mb-6">
-            This invitation has already been accepted. You are a member of <strong>{team?.name}</strong>.
+            You already accepted this invitation. You're a member of <strong>{team?.name}</strong>.
           </p>
           <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
             Go to workspaces
@@ -71,11 +71,11 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (isExpired) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
         <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Expired</h1>
           <p className="text-text-secondary mb-6">
-            This invitation has expired. Please ask the team admin to send a new invitation.
+            This invitation expired. Ask a team admin to send a new one.
           </p>
           <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
             Go to workspaces
@@ -86,11 +86,11 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
+    <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
       <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
         <h1 className="text-xl font-semibold text-text-primary mb-2">Team Invitation</h1>
         <p className="text-text-secondary mb-1">
-          {inviterName ? <>{inviterName} has invited you to join</> : <>You have been invited to join</>}
+          {inviterName ? <>{inviterName} invited you to join</> : <>You&apos;re invited to join</>}
         </p>
         <p className="text-lg font-semibold text-text-primary mb-1">
           {team?.name}

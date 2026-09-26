@@ -26,8 +26,11 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
+
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -61,6 +64,10 @@ describe('GET /api/workspaces/[id]/config', () => {
     mockAuthenticateApiKey.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
     process.env.NODE_ENV = 'production';
   });
 
@@ -77,9 +84,11 @@ describe('GET /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(401);
   });
 
-  it('allows Bearer token auth', async () => {
+  it('allows an API key of the workspace team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
     mockWorkspacesFindFirst.mockResolvedValue({
       id: 'ws-1',
+      teamId: 'team-1',
       gitConfig: { defaultBranch: 'main' },
       configStatus: 'admin_confirmed',
     });
@@ -92,6 +101,41 @@ describe('GET /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.gitConfig).toBeDefined();
+  });
+
+  it('returns 401 for a Bearer token that authenticates no account', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: {} });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      headers: new Headers({ Authorization: 'Bearer bld_unknown' }),
+    });
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 for an API key of another team without a link', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-2', teamId: 'team-2', level: 'admin' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', accessMode: 'open', gitConfig: {} });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      headers: new Headers({ Authorization: 'Bearer bld_other' }),
+    });
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-2', 'ws-1');
+  });
+
+  it('returns 404 for a session user without access to the workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-2' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: {} });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config');
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 when workspace not found', async () => {
@@ -319,7 +363,7 @@ describe('POST /api/workspaces/[id]/config', () => {
       method: 'POST',
       headers: new Headers({ 'content-type': 'application/json' }),
       body: JSON.stringify({
-        mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500, denyPaths: ['drizzle/'] } },
+        mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500 } },
       }),
     });
     const validRes = await POST(validReq, { params: mockParams });
@@ -532,6 +576,34 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.sandbox.excludedCommands).toEqual(['docker']);
     });
 
+    // Hand-written merge-policy paths are refused; the repo scan owns paths.
+    it('rejects each removed hand-written path field with a 400 that points to Re-scan repo', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+      const cases: Array<[Record<string, unknown>, string]> = [
+        [{ autoMergeDenyPaths: ['drizzle/'] }, 'autoMergeDenyPaths'],
+        [{ escalateToPaths: ['infra/'] }, 'escalateToPaths'],
+        [{ mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } } }, 'mergePolicy.agentReview.escalateToPaths'],
+        [{ mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } }, 'mergePolicy.threshold.denyPaths'],
+        [{ policyConfig: { preset: 'balanced', riskClasses: [{ name: 'auth_and_secrets', detectedPaths: [], userPaths: ['x'] }] } }, 'policyConfig.riskClasses[0].userPaths'],
+      ];
+      for (const [extra, field] of cases) {
+        const res = await post({ ...formBody, ...extra });
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.field).toBe(field);
+        expect(json.error).toContain('Re-scan repo');
+      }
+      expect(setArgs).toHaveLength(0);
+    });
+
+    it('a form save without those fields behaves exactly as before', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { autoMergeMaxLines: 400 } });
+      const res = await post({ ...formBody, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'r' } } });
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.mergePolicy).toEqual({ tier: 'agent-review', agentReview: { reviewerRole: 'r' } });
+      expect(setArgs[0].gitConfig.autoMergeMaxLines).toBe(400);
+    });
+
     it('keeps sandbox credentials when the form disables the sandbox', async () => {
       const credentials = { environment: [{ name: 'GITHUB_TOKEN', mode: 'mask' }] };
       mockWorkspacesFindFirst.mockResolvedValue({
@@ -594,6 +666,43 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.effort).toBeUndefined();
       expect(written.debug).toBeUndefined();
       expect(written.agentInstructions).toBeUndefined();
+    });
+
+    describe('criteriaGrader', () => {
+      it('persists api and runner', async () => {
+        for (const value of ['api', 'runner']) {
+          setArgs.length = 0;
+          mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+          const res = await post({ ...formBody, criteriaGrader: value });
+          expect(res.status).toBe(200);
+          expect(setArgs[0].gitConfig.criteriaGrader).toBe(value);
+        }
+      });
+
+      it("stores 'auto' and null as absent — missing means auto", async () => {
+        for (const value of ['auto', null]) {
+          setArgs.length = 0;
+          mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { criteriaGrader: 'runner' } });
+          const res = await post({ ...formBody, criteriaGrader: value });
+          expect(res.status).toBe(200);
+          expect(setArgs[0].gitConfig.criteriaGrader).toBeUndefined();
+        }
+      });
+
+      it('keeps the existing grader when the body omits the field', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { criteriaGrader: 'api' } });
+        const res = await post(formBody);
+        expect(res.status).toBe(200);
+        expect(setArgs[0].gitConfig.criteriaGrader).toBe('api');
+      });
+
+      it('rejects an unknown grader with 400 and writes nothing', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+        const res = await post({ ...formBody, criteriaGrader: 'llm' });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/Invalid criteriaGrader/);
+        expect(setArgs).toHaveLength(0);
+      });
     });
   });
 
@@ -839,5 +948,111 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     });
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('PATCH /api/workspaces/[id]/config — policyConfig (apply proposed policy)', () => {
+  let setArgs: any[];
+  const policyConfig = {
+    preset: 'balanced',
+    riskClasses: [{ name: 'destructive_schema_change', detectedPaths: ['db/migrations/'] }],
+    reviewerRole: 'reviewer',
+  };
+
+  beforeEach(() => {
+    setArgs = [];
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+    mockWorkspacesUpdate.mockReset();
+    mockWorkspacesUpdate.mockReturnValue({
+      set: mock((arg: any) => {
+        setArgs.push(arg);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  const patch = (body: unknown, headers: Record<string, string> = {}) =>
+    PATCH(
+      new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+        method: 'PATCH',
+        headers: new Headers({ 'content-type': 'application/json', ...headers }),
+        body: JSON.stringify(body),
+      }),
+      { params: mockParams },
+    );
+
+  it('writes gitConfig.policyConfig and confirms the config in one update', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', autoMergeMaxLines: 400 } });
+
+    const res = await patch({ policyConfig });
+    expect(res.status).toBe(200);
+    expect(setArgs).toHaveLength(1);
+    expect(setArgs[0].configStatus).toBe('admin_confirmed');
+    expect(setArgs[0].gitConfig.policyConfig).toEqual(policyConfig);
+    // merge, not rebuild
+    expect(setArgs[0].gitConfig.defaultBranch).toBe('dev');
+    expect(setArgs[0].gitConfig.autoMergeMaxLines).toBe(400);
+  });
+
+  it('refuses a member with 403 and writes nothing', async () => {
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    const res = await patch({ policyConfig });
+    expect(res.status).toBe(403);
+    expect(setArgs).toHaveLength(0);
+  });
+
+  it('refuses a non-admin API key with 403', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'restricted', gitConfig: {} });
+    const res = await patch({ policyConfig }, { authorization: 'Bearer bld_worker' });
+    expect(res.status).toBe(403);
+    expect(setArgs).toHaveLength(0);
+  });
+
+  it('admits an admin API key', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin', teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'restricted', gitConfig: {} });
+    const res = await patch({ policyConfig }, { authorization: 'Bearer bld_admin' });
+    expect(res.status).toBe(200);
+    expect(setArgs[0].configStatus).toBe('admin_confirmed');
+  });
+
+  it('rejects a hand-written userPaths entry with a 400 that points to Re-scan repo', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+    const res = await patch({
+      policyConfig: { ...policyConfig, riskClasses: [{ name: 'destructive_schema_change', detectedPaths: [], userPaths: ['db/seed.sql'] }] },
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.field).toBe('policyConfig.riskClasses[0].userPaths');
+    expect(json.error).toContain('Re-scan repo');
+    expect(setArgs).toHaveLength(0);
+  });
+
+  it('rejects a malformed policyConfig with 400', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+    for (const bad of [
+      null,
+      'balanced',
+      { preset: 'reckless', riskClasses: [] },
+      { preset: 'balanced' },
+      { preset: 'balanced', riskClasses: [{ name: 'not_a_class', detectedPaths: [] }] },
+      { preset: 'balanced', riskClasses: [{ name: 'dependency_bump', detectedPaths: 'x' }] },
+    ]) {
+      const res = await patch({ policyConfig: bad });
+      expect(res.status).toBe(400);
+    }
+    expect(setArgs).toHaveLength(0);
   });
 });

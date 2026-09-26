@@ -231,6 +231,24 @@ describe('buildShellPanel', () => {
     expect(panel.callsPerTask).toBe(15);
   });
 
+  it('never states more shell tasks than the population it is stated against', () => {
+    // t-9 has one exact worker that ran Bash and one pre-histogram worker. A
+    // task's source is its weakest worker's, so t-9 is 'derived' and leaves
+    // the histogram population — its Bash must leave the numerator with it,
+    // or the panel reads "N+1/N tasks used it".
+    const mixed = statsOf([
+      worker({ workerId: 'a', taskId: 't-1', counts: { Bash: 5 } }),
+      worker({ workerId: 'b', taskId: 't-9', counts: { Bash: 7 } }),
+      derivedWorker({ workerId: 'c', taskId: 't-9' }),
+    ]);
+    const panel = buildShellPanel(mixed);
+    expect(panel.histogramTasks).toBe(1);
+    expect(panel.tasks).toBeLessThanOrEqual(panel.histogramTasks);
+    expect(panel.tasks).toBe(1);
+    expect(panel.calls).toBe(5);
+    expect(panel.callsPerTask).toBe(5);
+  });
+
   it('offers no delta field at all — not a null one', () => {
     expect('deltaPct' in buildShellPanel(stats)).toBe(false);
   });

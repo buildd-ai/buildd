@@ -3,6 +3,8 @@ import { db } from '@buildd/core/db';
 import { teamMembers, workspaces, accountWorkspaces, teams, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, sql } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { isValidTimezone } from '@buildd/core/timezone';
+import { getTeamTimezoneSetting } from './team-timezone';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -315,10 +317,12 @@ export const getUserDefaultTeamId = cache(async (userId: string): Promise<string
 /**
  * Resolve the single "active team" for a session from the `buildd-team` cookie.
  *
- * The cookie is honored only when it names a team the user is a member of;
- * otherwise resolution falls back to the user's personal team, then their first
- * team. Returns null only when the user belongs to no team. This is the single
- * source of truth for team-scoped (namespaced) views — see
+ * The cookie is honored only when it names a team the user is a member of.
+ * Otherwise the default applies (pickDefaultTeam below): the first team with
+ * workspaces, personal preferred, then personal, then first team. Returns null
+ * only when the user belongs to no team. This is the single source of truth
+ * for team-scoped (namespaced) views, and matches resolveActiveTeamScope, which
+ * the shell and Home use, so every page agrees with the header — see
  * docs/specs/team-namespace-scoping.md.
  *
  * Cached per-request via React cache() so layout + page share the same result.
@@ -330,11 +334,100 @@ export const resolveActiveTeamId = cache(async (
   const teamIds = await getUserTeamIds(userId);
   if (teamIds.length === 0) return null;
   if (cookieValue && teamIds.includes(cookieValue)) return cookieValue;
+  return (await pickDefaultTeam(userId))?.teamId ?? null;
+});
 
-  const personalId = await getUserDefaultTeamId(userId);
-  if (personalId && teamIds.includes(personalId)) return personalId;
+type DefaultTeamPick = {
+  teamId: string;
+  workspaces: { id: string; name: string }[];
+  timezone: string | null;
+};
 
-  return teamIds[0];
+/**
+ * The default active team when there is no usable cookie: the personal team
+ * if it has workspaces, else the first team (id order) that has workspaces;
+ * when no team has any, the personal team, else the first team. First load
+ * must never land on an empty team while the user has workspaces elsewhere
+ * (#1032). Id order because getUserTeamIds carries no ORDER BY, so row order
+ * is not stable across requests. Null only when the user has no team.
+ *
+ * One round trip after getUserTeamIds: the user's team rows (personal slug +
+ * timezone) and every candidate workspace, together. Cached on userId alone
+ * (primitive key) so a layout and page that both miss the cookie share it.
+ */
+const pickDefaultTeam = cache(async (userId: string): Promise<DefaultTeamPick | null> => {
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return null;
+  const [teamRows, rows] = await Promise.all([
+    db.query.teams.findMany({
+      where: inArray(teams.id, teamIds),
+      columns: { id: true, slug: true, timezone: true },
+    }),
+    db.query.workspaces.findMany({
+      where: inArray(workspaces.teamId, teamIds),
+      columns: { id: true, name: true, teamId: true },
+    }),
+  ]);
+  const personalId = teamRows.find((t) => t.slug === `personal-${userId}`)?.id ?? null;
+  const others = teamIds.filter((id) => id !== personalId).sort();
+  const order = personalId && teamIds.includes(personalId) ? [personalId, ...others] : others;
+  const teamId = order.find((id) => rows.some((w) => w.teamId === id)) ?? order[0];
+  const tz = teamRows.find((t) => t.id === teamId)?.timezone;
+  return {
+    teamId,
+    workspaces: rows.filter((w) => w.teamId === teamId).map((w) => ({ id: w.id, name: w.name })),
+    timezone: isValidTimezone(tz) ? tz : null,
+  };
+});
+
+export type ActiveTeamScope = {
+  /** The resolved active team, or null when the user belongs to no team. */
+  teamId: string | null;
+  /** Every workspace of that team (id + name), in no particular order. */
+  workspaces: { id: string; name: string }[];
+  /** The team's zone as set, or null ("unset" → the viewer's browser zone). */
+  timezone: string | null;
+};
+
+/**
+ * The active team plus its workspaces and timezone — what the app shell (team
+ * switcher, workspace picker, display zone) and Home both scope to. One
+ * resolver for both, so the header can never name a team whose workspaces
+ * Home is not showing.
+ *
+ * A valid cookie wins, even for a team with no workspaces (the user chose it).
+ * Without one (absent, or a team the user left) pickDefaultTeam decides —
+ * the same rule resolveActiveTeamId applies, so the two always agree.
+ *
+ * Two serial round trips on both paths (team ids, then workspaces + timezone
+ * together); the layout awaits this on every /app request, and
+ * team-access.test.ts pins the depth.
+ *
+ * Errors propagate: a caller that shows "no workspaces" on failure would turn
+ * an outage into a false empty state.
+ *
+ * Cached per-request via React cache() so layout + page share the same result.
+ */
+export const resolveActiveTeamScope = cache(async (
+  userId: string,
+  cookieValue: string | null | undefined,
+): Promise<ActiveTeamScope> => {
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return { teamId: null, workspaces: [], timezone: null };
+
+  if (cookieValue && teamIds.includes(cookieValue)) {
+    const [ws, timezone] = await Promise.all([
+      db.query.workspaces.findMany({
+        where: eq(workspaces.teamId, cookieValue),
+        columns: { id: true, name: true },
+      }),
+      // Never throws; null on a lookup failure.
+      getTeamTimezoneSetting(cookieValue),
+    ]);
+    return { teamId: cookieValue, workspaces: ws.map((w) => ({ id: w.id, name: w.name })), timezone };
+  }
+
+  return (await pickDefaultTeam(userId)) ?? { teamId: null, workspaces: [], timezone: null };
 });
 
 export type UserTeam = {

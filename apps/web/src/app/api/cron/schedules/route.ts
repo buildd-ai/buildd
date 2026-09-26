@@ -27,6 +27,7 @@ import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { runStaleWorkerCleanup } from './maintenance/stale-workers';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
+import { sweepAbandonedPathClaims } from './maintenance/path-claims';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
 
@@ -982,11 +983,13 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
     const archivedMissions = await runMissionArchive(now);
 
+    const abandonedClaimsReleased = await sweepAbandonedPathClaims();
+
     report({
       processed,
       changed: created,
       errors,
-      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions },
+      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased },
     });
 
     return NextResponse.json({
@@ -1003,6 +1006,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       healthWatcher,
       archivedMissions,
       overdueHeartbeatAlerts,
+      abandonedClaimsReleased,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

@@ -20,13 +20,18 @@
  * - chip: `deriveMissionStateView(...).chip`, the detail header's accessor.
  */
 import {
-  computeMissionProgress,
   deriveCriteriaGatePresentation,
   hasPendingDeliverableWork,
   isDeliverableTask,
   type MissionFlightStripData,
 } from '@buildd/core/mission-helpers';
-import { deriveMissionStateView, type MissionSituation } from './mission-state-view';
+import {
+  deriveMissionStateView,
+  missionNeedsYou,
+  type MissionSituation,
+  type MissionStateKind,
+  type MissionStateView,
+} from './mission-state-view';
 import {
   deriveMissionHealth,
   deriveTaskHealthSignal,
@@ -36,10 +41,20 @@ import {
   type MissionHealth,
 } from './mission-helpers';
 import { buildMissionFeedGroups, type FeedRow } from './mission-feed-groups';
-import { buildPulseSegments, type MissionFeedTaskInput, type MissionFeedWorkerInput, type PulseSegment } from './mission-pulse';
+import {
+  buildPulseCaption,
+  buildPulseSegments,
+  deriveFeedPrState,
+  missionDeliverableCounts,
+  pulseDoneCounts,
+  type MissionFeedTaskInput,
+  type MissionFeedWorkerInput,
+  type PulseSegment,
+} from './mission-pulse';
 import { missionTaskHref, type MissionOrigin } from './mission-task-href';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
+import { isGreenAutoMergePending } from './auto-merge-grace';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +78,8 @@ export interface MissionCardWorkerRow {
 export interface MissionCardTaskRow {
   id: string;
   title: string;
+  /** `tasks.label` — the stored short label (`taskDisplayLabel`). */
+  label?: string | null;
   status: string;
   createdAt?: DateLike;
   updatedAt?: DateLike;
@@ -159,6 +176,8 @@ export function blockedByPRTaskIds(
 export interface MissionCardSummary {
   health: MissionHealth;
   healthState: Health;
+  /** The card's state (chip, situation) — the same view the card renders. */
+  state: MissionStateView;
   group: MissionGroup;
   /** Workers in `LIVE_WORKER_STATUSES` across the mission's tasks. */
   liveWorkers: number;
@@ -203,8 +222,21 @@ export function missionCardGroup(input: {
   liveWorkers?: number;
   criteriaEscalatedAt?: DateLike;
   hasPendingDeliverableWork?: boolean;
+  /** `missionNeedsYou(state)`: the card's chip asks the owner for something. */
+  needsYou?: boolean;
+  /** The card state's kind, to tell a merge ask (review) from the rest (attention). */
+  stateKind?: MissionStateKind;
 }): MissionGroup {
   if (TERMINAL_MISSION.has(input.status)) return 'completed';
+  // F1: waiting on you is active. Before the start gate, the pause and the
+  // schedule: `deriveMissionHealth` answers `paused` / `on-schedule` / `held`
+  // without reading criteria or PRs, so without this an AWAITING VERIFICATION
+  // card sat under PAUSED / HELD (or SCHEDULED) and "N active" skipped it.
+  // `missionNeedsYou` already excludes a held mission whose only ask is arming.
+  if (input.needsYou) {
+    if ((input.liveWorkers ?? 0) > 0) return 'running';
+    return input.stateKind === 'awaiting_merge' ? 'review' : 'attention';
+  }
   const now = input.now ?? Date.now();
   if (!input.isHeld && input.startAt && new Date(input.startAt).getTime() > now && input.health !== 'active') {
     return 'scheduled';
@@ -223,6 +255,18 @@ export function missionCardGroup(input: {
   return healthToGroup(input.health, input.progress);
 }
 
+/**
+ * THE mission progress: the pulse's count (`pulseDoneCounts` /
+ * `missionDeliverableCounts`, F3) as a percentage. The card's grouping, the
+ * card's criteria gate and the detail page's (`explain`) all read this, so the
+ * n/N the caption prints and the "completion attempted" both gates ask about
+ * cannot come from two definitions. `progress` is 0 when nothing counts.
+ */
+export function missionCardProgress(tasks: readonly MissionCardTaskRow[]): { done: number; total: number; progress: number } {
+  const { done, total } = missionDeliverableCounts(tasks.map(toFeedTask));
+  return { done, total, progress: total > 0 ? Math.round((done / total) * 100) : 0 };
+}
+
 /** Most cards one surface builds in a request (Home, the list). */
 export const MISSION_CARD_VIEW_CAP = 30;
 
@@ -234,7 +278,7 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
   const schedule = row.schedule ?? null;
-  const { totalTasks, completedTasks, progress } = computeMissionProgress(tasks as any);
+  const { done: completedTasks, total: totalTasks, progress } = missionCardProgress(tasks);
   const liveWorkers = opts.liveWorkers ?? countLiveWorkers(tasks);
 
   const nextRunAt = schedule?.nextRunAt ?? null;
@@ -262,6 +306,14 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
   if (pendingUserScheduledAt) lastDeferralReason = null;
 
   const pending = hasPendingDeliverableWork(tasks as any);
+  const healthState = deriveTaskHealthSignal(
+    { dependsOnMissionId: row.dependsOnMissionId, dependencyMetAt: row.dependencyMetAt, heartbeatWaitingUntil },
+    tasks as any,
+  );
+  // The card's state — chip, situation, and whether the next step is yours —
+  // is derived once, here, so the group the header counts and the chip the
+  // card shows cannot come from two derivations (F1, D2).
+  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -278,13 +330,12 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
   const effectiveNext = nextRunAt ?? pendingUserScheduledAt;
   return {
     health,
-    healthState: deriveTaskHealthSignal(
-      { dependsOnMissionId: row.dependsOnMissionId, dependencyMetAt: row.dependencyMetAt, heartbeatWaitingUntil },
-      tasks as any,
-    ),
+    healthState,
+    state,
     group: missionCardGroup({
       status: row.status, health, progress, isHeld: row.isHeld, startAt: row.startAt, now,
       liveWorkers, criteriaEscalatedAt: row.criteriaEscalatedAt, hasPendingDeliverableWork: pending,
+      needsYou: missionNeedsYou(state), stateKind: state.kind,
     }),
     liveWorkers,
     progress,
@@ -296,6 +347,82 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
     hasPendingDeliverableWork: pending,
     heartbeatWaitingUntil,
   };
+}
+
+/**
+ * The card's `deriveMissionStateView` input, from the loaded row. A card has
+ * no completion decision (`canCompleteMission`): the open-task, failed-task and
+ * unmerged-PR facts come straight off the task and worker rows.
+ */
+function deriveCardState(
+  row: MissionCardRow,
+  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number },
+): MissionStateView {
+  const tasks = row.tasks ?? [];
+  const deliverables = tasks.filter(t => isDeliverableTask(t as any));
+  const criteriaState = (row.goalCriteriaState ?? null) as
+    { overall?: string; criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null;
+  const criteriaCount = Array.isArray(row.goalCriteria) ? row.goalCriteria.length : 0;
+  const criteriaGate = TERMINAL_MISSION.has(row.status)
+    ? null
+    : deriveCriteriaGatePresentation({
+        criteriaCount,
+        overall: (criteriaState?.overall as any) ?? null,
+        items: (criteriaState?.criteria ?? []) as any,
+        completionAttempted: s.progress >= 100,
+      });
+  const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
+  // One PR, one fact. A CI-fix attempt adopts its parent's PR, so the same PR
+  // sits on several worker rows — and the webhook stamps the lifecycle on the
+  // OWNER row only; the attempt's copy stays null ("unknown"). Judged per row,
+  // that stale copy read as "yours to merge" and filed the mission under
+  // NEEDS YOU while Home's action queue (one row per PR) said nothing did.
+  // So the PR's state is read across all its rows: any row merged/closed →
+  // gone; any row in CI or just green → the platform's move.
+  const prRows = new Map<string, Array<{ task: MissionCardTaskRow; w: MissionCardWorkerRow }>>();
+  for (const t of tasks) {
+    if (t.status !== 'completed') continue;
+    const w = latestWorker(t.workers);
+    if (!w?.prUrl) continue;
+    const key = w.prNumber != null ? `#${w.prNumber}` : w.prUrl;
+    prRows.set(key, [...(prRows.get(key) ?? []), { task: t, w }]);
+  }
+  const unmergedPrs = [...prRows.values()].flatMap(rowsOfPr => {
+    if (rowsOfPr.some(({ w }) => w.mergedAt || w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged')) return [];
+    // CI has not reported yet: auto-merge evaluates on the green transition,
+    // so the platform owns the next step, not the owner. Same rule as the
+    // pulse (`deriveFeedTaskState`: checks_running → moving).
+    if (rowsOfPr.some(({ w }) => deriveFeedPrState(w)?.state === 'checks_running')) return [];
+    // Just green: the webhook is merging it (same predicate as the pulse and the reviewer gate).
+    if (rowsOfPr.some(({ w }) => isGreenAutoMergePending(w.prLifecycleStatus, w.updatedAt, s.now))) return [];
+    // Name the PR by its owner: the row whose lifecycle the webhook writes.
+    const owner = rowsOfPr.find(({ w }) => w.prLifecycleStatus != null) ?? rowsOfPr[0];
+    return [{ taskId: owner.task.id, title: owner.task.title, prNumber: owner.w.prNumber ?? null, prUrl: owner.w.prUrl ?? null }];
+  });
+  return deriveMissionStateView({
+    status: row.status,
+    isHeld: row.isHeld ?? false,
+    orchestrationMode: row.orchestrationMode ?? null,
+    activeAgents: s.liveWorkers,
+    progress: s.progress,
+    health: s.healthState,
+    dependsOnMissionId: row.dependsOnMissionId ?? null,
+    criteriaEscalatedAt: row.criteriaEscalatedAt ?? null,
+    hasPendingDeliverableWork: s.hasPendingDeliverableWork,
+    criteriaGate,
+    criteriaItems: (criteriaState?.criteria ?? []) as any,
+    openTasks: deliverables
+      .filter(t => OPEN_TASK.has(t.status))
+      .map(t => ({ id: t.id, status: t.status, title: t.title })),
+    failedTasks: deliverables
+      .filter(t => t.status === 'failed')
+      // No `infra`: it only matters with a completion decision, which a card never has.
+      .map(t => ({ id: t.id, title: t.title })),
+    missionPr: integrationPr && integrationPr.state === 'open'
+      ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+      : null,
+    unmergedPrs,
+  });
 }
 
 /** Header "N active": the Active tab's groups, counted with the cards' grouping (D8). */
@@ -404,20 +531,13 @@ function needsYouLabel(row: FeedRow): string {
   return `${NEEDS_YOU_VERB[row.needsYou ?? 'input']}: ${row.task.title}`;
 }
 
-/** The card's pulse caption: `done/total`, plus `· N live` when agents are working. */
+/**
+ * The card's pulse caption: the detail header's caption, over the same count
+ * (`pulseDoneCounts`, F3). Empty for a mission with no work yet (F7a).
+ */
 export function missionCardCaption(segments: readonly PulseSegment[], liveWorkers: number): { caption: string; done: number; total: number } {
-  let done = 0;
-  let total = 0;
-  for (const s of segments) {
-    if (s.kind === 'phase') {
-      total += s.taskIds.length;
-      done += Math.round(s.fill * s.taskIds.length);
-    } else {
-      total += 1;
-      if (s.state === 'done' || s.state === 'skipped') done += 1;
-    }
-  }
-  return { caption: liveWorkers > 0 ? `${done}/${total} · ${liveWorkers} live` : `${done}/${total}`, done, total };
+  const { done, total } = pulseDoneCounts(segments);
+  return { caption: buildPulseCaption(segments, { liveWorkers }), done, total };
 }
 
 /** The mission's own page, carrying the breadcrumb origin. */
@@ -433,51 +553,9 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
   const summary = opts.summary ?? summarizeMissionForCard(row, { now });
-  const deliverables = tasks.filter(t => isDeliverableTask(t as any));
-
-  // ── One chip, one sentence: the detail header's accessor (D2). ──
-  const criteriaState = (row.goalCriteriaState ?? null) as
-    { overall?: string; criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null;
-  const criteriaCount = Array.isArray(row.goalCriteria) ? row.goalCriteria.length : 0;
-  const criteriaGate = TERMINAL_MISSION.has(row.status)
-    ? null
-    : deriveCriteriaGatePresentation({
-        criteriaCount,
-        overall: (criteriaState?.overall as any) ?? null,
-        items: (criteriaState?.criteria ?? []) as any,
-        completionAttempted: summary.progress >= 100,
-      });
-  const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
-  const unmergedPrs = tasks.flatMap(t => {
-    if (t.status !== 'completed') return [];
-    const w = latestWorker(t.workers);
-    if (!w?.prUrl || w.mergedAt || w.prLifecycleStatus === 'closed') return [];
-    return [{ taskId: t.id, title: t.title, prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null }];
-  });
-  const state = deriveMissionStateView({
-    status: row.status,
-    isHeld: row.isHeld ?? false,
-    orchestrationMode: row.orchestrationMode ?? null,
-    activeAgents: summary.liveWorkers,
-    progress: summary.progress,
-    health: summary.healthState,
-    dependsOnMissionId: row.dependsOnMissionId ?? null,
-    criteriaEscalatedAt: row.criteriaEscalatedAt ?? null,
-    hasPendingDeliverableWork: summary.hasPendingDeliverableWork,
-    criteriaGate,
-    criteriaItems: (criteriaState?.criteria ?? []) as any,
-    openTasks: deliverables
-      .filter(t => OPEN_TASK.has(t.status))
-      .map(t => ({ id: t.id, status: t.status, title: t.title })),
-    failedTasks: deliverables
-      .filter(t => t.status === 'failed')
-      // No `infra`: it only matters with a completion decision, which a card never has.
-      .map(t => ({ id: t.id, title: t.title })),
-    missionPr: integrationPr && integrationPr.state === 'open'
-      ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
-      : null,
-    unmergedPrs,
-  });
+  // ── One chip, one sentence: the detail header's accessor (D2), derived once
+  // in the summary so the group and the chip agree (F1). ──
+  const state = summary.state;
 
   // ── Pulse, caption, primary line. ──
   const feedTasks = tasks.map(toFeedTask);

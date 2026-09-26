@@ -271,8 +271,8 @@ export async function GET(_req: NextRequest) {
         policyTier: policy.tier,
         leaseState,
         escalationReason: deadZoneInfo
-          ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
-          : (escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null)),
+          ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
+          : (escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate policy: merge this PR yourself.' : null)),
         verdictSummary: approval?.summary ?? null,
         waitingMinutes,
         // Conflict retry fields — present when an agent is actively resolving conflicts

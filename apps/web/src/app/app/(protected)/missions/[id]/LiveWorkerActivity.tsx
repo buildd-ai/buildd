@@ -147,7 +147,7 @@ export default function LiveWorkerActivity({
       {/* Live background-agents tree (transient, from Pusher) */}
       {tree.length > 0 && (
         <div className="rounded-md border border-border-default/50 bg-surface-3 p-2.5 space-y-1">
-          <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Background Agents</div>
+          <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Background Agents</div>
           {tree.map((tp) => (
             <div key={tp.taskId} className="flex items-center justify-between font-mono text-[11px]">
               <div

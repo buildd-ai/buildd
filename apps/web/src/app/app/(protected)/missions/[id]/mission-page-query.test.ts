@@ -9,6 +9,9 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { asc, desc, type SQL } from 'drizzle-orm';
+import { mapColumnsInSQLToAlias } from 'drizzle-orm/alias';
+import { artifacts } from '@buildd/core/db/schema';
 import { selectMissionCompletionSummary } from '@/lib/mission-helpers';
 import { getHeartbeatStatus } from '@/lib/heartbeat-helpers';
 import { buildAttemptStrips } from '@/lib/attempt-strip';
@@ -16,6 +19,7 @@ import {
   MISSION_ARTIFACT_COLUMNS,
   MISSION_DETAIL_WITH,
   MISSION_TASK_COLUMNS,
+  MISSION_WORKER_COLUMNS,
   MISSION_TASKS_WITH,
   RESULT_DIGEST_SQL,
   CONTEXT_DIGEST_SQL,
@@ -23,6 +27,10 @@ import {
   digestTaskContext,
   digestTaskResult,
   indexTaskDigests,
+  MISSION_VISUAL_SHOT_COLUMNS,
+  MISSION_VISUAL_SHOTS_LIMIT,
+  missionVisualShotsWhere,
+  MISSION_VISUAL_SHOTS_ORDER,
 } from './mission-page-query';
 
 const PAGE = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
@@ -36,9 +44,24 @@ describe('AC-18: mission page query shape', () => {
     expect(MISSION_TASK_COLUMNS.status).toBe(true);
   });
 
+  it('worker columns carry what the Board and Lanes draw', () => {
+    // runner → lanes and fleet slots; milestones → tile notches;
+    // lines → the landed rows and the completion record.
+    for (const k of ['runner', 'milestones', 'linesAdded', 'linesRemoved', 'waitingFor', 'startedAt', 'completedAt'] as const) {
+      expect(MISSION_WORKER_COLUMNS[k]).toBe(true);
+    }
+    expect(MISSION_TASK_COLUMNS.outputRequirement).toBe(true);
+    expect(MISSION_TASK_COLUMNS.label).toBe(true);
+  });
+
   it('artifact columns do not select content', () => {
     expect(Object.keys(MISSION_ARTIFACT_COLUMNS)).not.toContain('content');
     expect(MISSION_ARTIFACT_COLUMNS.title).toBe(true);
+  });
+
+  it('artifact columns select storageKey, which the Records viewer needs to show an upload', () => {
+    // upload-url keeps the object key in the column, not in metadata.
+    expect(MISSION_ARTIFACT_COLUMNS.storageKey).toBe(true);
   });
 
   it('the nested with-tree carries the trimmed column sets', () => {
@@ -72,6 +95,65 @@ describe('AC-18: mission page query shape', () => {
     expect(c.params).toContain('errorType');
     expect(c.params).toContain('driftDiagnosis');
     expect(Object.keys(TASK_DIGEST_SELECTION).sort()).toEqual(['context', 'id', 'result']);
+  });
+});
+
+// docs/design/visual-qa-auditor.md, "Where the screenshots show": audit
+// shots need their own query. The nested with-tree keeps five artifacts per
+// worker, which would silently cut a 40-shot run to five.
+describe('visual review shots query', () => {
+  it('is scoped to this mission, to screenshots, and to rows carrying metadata.qa', () => {
+    const q = dialect.sqlToQuery(missionVisualShotsWhere('mission-1'));
+    const text = q.sql.replace(/\s+/g, ' ');
+    expect(text).toMatch(/"artifacts"\."mission_id" = \$\d+/);
+    expect(text).toMatch(/"artifacts"\."type" = \$\d+/);
+    expect(text).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
+    expect(q.params).toEqual(['mission-1', 'screenshot', 'mission-1', 'visual-auditor']);
+    // AND, not OR: every clause must hold.
+    expect(text).not.toContain(' or ');
+  });
+
+  // Evidence is the auditor's alone: a screenshot another worker on the
+  // mission writes with a hand-made metadata.qa must not become the run.
+  it('counts only shots written by a visual-auditor worker on this mission', () => {
+    const q = dialect.sqlToQuery(missionVisualShotsWhere('mission-1'));
+    const text = q.sql.replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /"artifacts"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = \$3 and "t"\."role_slug" = \$4\)/,
+    );
+    expect(q.params[3]).toBe('visual-auditor');
+  });
+
+  // The relational query (`db.query.artifacts.findMany({ where })`) re-aliases
+  // EVERY column in a raw `where` to the queried table. A subquery written with
+  // workers/tasks column objects became `select "artifacts"."id" from "workers"
+  // … "artifacts"."task_id"` and failed on every mission page render.
+  it('survives the relational query aliasing its where to the artifacts table', () => {
+    const aliased = mapColumnsInSQLToAlias(missionVisualShotsWhere('mission-1'), 'artifacts');
+    const text = dialect.sqlToQuery(aliased).sql.replace(/\s+/g, ' ');
+    expect(text).not.toContain('"artifacts"."task_id"');
+    expect(text).not.toContain('"artifacts"."role_slug"');
+    expect(text).toMatch(/"artifacts"\."worker_id" in \(select /);
+  });
+
+  it('selects no content, carries the worker, and holds up to three 40-shot runs', () => {
+    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'title', 'type', 'workerId']);
+    expect(MISSION_VISUAL_SHOTS_LIMIT).toBeGreaterThanOrEqual(120);
+  });
+
+  // With a limit, the order decides which runs survive: ascending would keep
+  // the OLDEST 120 and silently cut the newest run.
+  it('orders newest first', () => {
+    const [order] = MISSION_VISUAL_SHOTS_ORDER(artifacts, { desc, asc });
+    const text = dialect.sqlToQuery(order as SQL).sql;
+    expect(text).toBe('"artifacts"."created_at" desc');
+  });
+
+  it('page.tsx reads the shots through the dedicated query and helper', () => {
+    expect(PAGE).toContain('missionVisualShotsWhere(');
+    expect(PAGE).toContain('limit: MISSION_VISUAL_SHOTS_LIMIT');
+    expect(PAGE).toContain('orderBy: MISSION_VISUAL_SHOTS_ORDER');
+    expect(PAGE).toContain('missionVisualReview(');
   });
 });
 
@@ -135,6 +217,19 @@ describe('digestTaskContext', () => {
     const b = buildAttemptStrips(slim as never, ctx);
     expect([...b.entries()]).toEqual([...a.entries()]);
     expect(a.get('p')?.total).toBe(3);
+  });
+});
+
+describe('digestTaskContext and the Visual review coverage', () => {
+  // The page shows n/m coverage from auditRequiredRoutes, which reads the
+  // round-2 planner's frozen context.visualQa.requiredRoutes.
+  it('keeps context.visualQa, so required routes read the same from the digest', async () => {
+    const { auditRequiredRoutes } = await import('@/lib/visual-qa-required-routes');
+    const context = { surfaceAuditRound: 2, visualQa: { requiredRoutes: ['/app/tasks'] }, prompt: bulky };
+    const deps = [['apps/web/src/app/app/(protected)/missions/[id]/page.tsx']];
+    expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps))
+      .toEqual(auditRequiredRoutes({ context }, deps));
+    expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps)).toContain('/app/tasks');
   });
 });
 

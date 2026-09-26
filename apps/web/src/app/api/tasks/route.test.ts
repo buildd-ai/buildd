@@ -71,6 +71,13 @@ mock.module('@/lib/mission-loop', () => ({
   reopenCompletedMission: mockReopenCompletedMission,
 }));
 
+// The category shadow is covered by task-category-decision.test.ts; here we only
+// assert WHEN the route schedules it, and that it cannot touch the stored row.
+const mockScheduleTaskCategoryShadow = mock((..._args: any[]) => {});
+mock.module('@/lib/task-category-decision', () => ({
+  scheduleTaskCategoryShadow: mockScheduleTaskCategoryShadow,
+}));
+
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -196,7 +203,7 @@ mock.module('@buildd/core/db/schema', () => ({
     workspaceId: 'workspaceId',
     connectorRefs: 'connectorRefs',
   },
-  missions: { id: 'id' },
+  missions: { id: 'id', teamId: 'teamId' },
 }));
 
 // Import handlers AFTER mocks
@@ -241,6 +248,8 @@ describe('GET /api/tasks', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockMissionsFindFirst.mockReset();
+    // Mission links are team-scoped; default to a mission in the test workspace's team.
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
 
     // Default: session auth gets workspace access
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
@@ -407,6 +416,8 @@ describe('POST /api/tasks', () => {
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDispatchNewTask.mockReset();
     mockMissionsFindFirst.mockReset();
+    // Mission links are team-scoped; default to a mission in the test workspace's team.
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
     mockResolveWorkspace.mockReset();
     mockAutoResolveAccountWorkspace.mockReset();
     mockFindIntakeWarnings.mockReset();
@@ -1207,6 +1218,143 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.project).toBe('@mono/web');
   });
 
+  // ── task category decision shadow ────────────────────────────────────
+  describe('category shadow', () => {
+    async function postWithBody(
+      body: Record<string, unknown>,
+      workspace: Record<string, unknown> = {},
+      opts: { keepMock?: boolean } = {},
+    ) {
+      if (!opts.keepMock) mockScheduleTaskCategoryShadow.mockReset();
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-123',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', ...workspace });
+      let capturedValues: any = null;
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          capturedValues = values;
+          return { returning: mock(() => [{ id: 'task-shadow', ...values }]) };
+        }),
+      });
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', ...body },
+      }));
+      return { response, capturedValues };
+    }
+
+    it('schedules a shadow run when the keyword classifier picked the category', async () => {
+      const { response, capturedValues } = await postWithBody({
+        title: 'Fix crash on save',
+        description: 'Throws on click.',
+      });
+      expect(response.status).toBe(200);
+      expect(capturedValues.category).toBe('bug');
+      expect(mockScheduleTaskCategoryShadow).toHaveBeenCalledTimes(1);
+      const [input, schedule] = mockScheduleTaskCategoryShadow.mock.calls[0] as any[];
+      expect(input).toEqual({
+        taskId: capturedValues.id,
+        teamId: 'team-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-123',
+        title: 'Fix crash on save',
+        description: 'Throws on click.',
+        keywordCategory: 'bug',
+        dataClass: null,
+      });
+      expect(typeof schedule).toBe('function');
+    });
+
+    it('also shadows when the keyword classifier abstained', async () => {
+      const { capturedValues } = await postWithBody({ title: 'Quarterly thing' });
+      expect(capturedValues.category).toBeUndefined();
+      expect((mockScheduleTaskCategoryShadow.mock.calls[0] as any[])[0].keywordCategory).toBeNull();
+    });
+
+    it('does not shadow a caller-supplied category', async () => {
+      const { capturedValues } = await postWithBody({ title: 'Fix crash on save', category: 'docs' });
+      expect(capturedValues.category).toBe('docs');
+      expect(mockScheduleTaskCategoryShadow).not.toHaveBeenCalled();
+    });
+
+    it('passes the workspace data class so sensitive content can be withheld', async () => {
+      await postWithBody({ title: 'Fix crash' }, { gitConfig: { dataClass: 'sensitive' } });
+      expect((mockScheduleTaskCategoryShadow.mock.calls[0] as any[])[0].dataClass).toBe('sensitive');
+    });
+
+    it('never fails task creation when scheduling throws', async () => {
+      mockScheduleTaskCategoryShadow.mockImplementationOnce(() => { throw new Error('boom'); });
+      const { response } = await postWithBody({ title: 'Fix crash on save' }, {}, { keepMock: true });
+      expect(response.status).toBe(200);
+    });
+  });
+
+  // ── short display label ──────────────────────────────────────────────
+  describe('label', () => {
+    async function postWithBody(body: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-123',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      let capturedValues: any = null;
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          capturedValues = values;
+          return { returning: mock(() => [{ id: 'task-lbl', ...values }]) };
+        }),
+      });
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', ...body },
+      }));
+      return { response, capturedValues };
+    }
+
+    it('stores a creator-supplied label (whitespace-normalized)', async () => {
+      const { capturedValues } = await postWithBody({
+        title: 'feat(fx): rates service with a 15-minute cache',
+        label: '  FX   rates ',
+      });
+      expect(capturedValues.label).toBe('FX rates');
+    });
+
+    it('classifier fills the label from the title when the creator omits it', async () => {
+      const { capturedValues } = await postWithBody({
+        title: 'feat(fx): rates service with a 15-minute cache and stale-rate fallback',
+      });
+      expect(capturedValues.label).toBe('rates service');
+    });
+
+    it('classifier fills a blank label too', async () => {
+      const { capturedValues } = await postWithBody({ title: 'docs: rewrite the testing guide', label: '   ' });
+      expect(capturedValues.label).toBe('rewrite testing guide');
+    });
+
+    it('caps an overlong supplied label at the column width', async () => {
+      const { capturedValues } = await postWithBody({ title: 't', label: 'word '.repeat(30) });
+      expect(capturedValues.label.length).toBeLessThanOrEqual(48);
+    });
+
+    it('rejects a non-string label with 400', async () => {
+      const { response } = await postWithBody({ title: 't', label: 42 });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toMatch(/label/);
+    });
+  });
+
   // ── agent backend resolution ─────────────────────────────────────────
 
   function backendCase() {
@@ -1219,6 +1367,49 @@ describe('POST /api/tasks', () => {
     mockTasksInsert.mockReturnValue({ values: mockValues });
     return () => capturedValues;
   }
+
+  it("rejects a missionId owned by another team with 404 and creates nothing", async () => {
+    backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-2' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await POST(request);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Mission not found' });
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missionId that does not exist with the same 404', async () => {
+    backendCase();
+    mockMissionsFindFirst.mockResolvedValue(null);
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await POST(request);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Mission not found' });
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
+  it('links a mission owned by the same team', async () => {
+    const captured = backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    });
+    await POST(request);
+    expect(captured().missionId).toBe('m-1');
+  });
 
   it('inherits backend from the role default when not explicitly set', async () => {
     const captured = backendCase();
@@ -1261,7 +1452,7 @@ describe('POST /api/tasks', () => {
 
   it('inherits backend from the mission default when not explicitly set', async () => {
     const captured = backendCase();
-    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: 'codex' });
 
     const request = createMockRequest({
       method: 'POST',
@@ -1274,7 +1465,7 @@ describe('POST /api/tasks', () => {
 
   it('mission default backend overrides the role default', async () => {
     const captured = backendCase();
-    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: 'codex' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
 
     const request = createMockRequest({
@@ -1288,7 +1479,7 @@ describe('POST /api/tasks', () => {
 
   it('explicit task.backend overrides the mission default', async () => {
     const captured = backendCase();
-    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: 'codex' });
 
     const request = createMockRequest({
       method: 'POST',
@@ -1301,7 +1492,7 @@ describe('POST /api/tasks', () => {
 
   it('falls through to the role default when the mission has no backend', async () => {
     const captured = backendCase();
-    mockMissionsFindFirst.mockResolvedValue({ defaultBackend: null });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: null });
     mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
 
     const request = createMockRequest({
@@ -1360,7 +1551,7 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: 'pr_required' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -1399,7 +1590,7 @@ describe('POST /api/tasks', () => {
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     // Mission has pr_required, but explicit 'none' should win
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: 'pr_required' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -1439,7 +1630,7 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: null });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -2320,11 +2511,11 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: {} });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: {} });
     // 'none' keeps these tests on the exempt path — they exercise the ['**']
     // sentinel-default and overlap-serialization behavior, not the mandatory-
     // manifest gate (covered separately below for 'pr_required'/'auto').
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'none', defaultBackend: null, startAt: null });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: 'none', defaultBackend: null, startAt: null });
     let capturedValues: any = null;
     const mockValues = mock((values: any) => {
       capturedValues = values;
@@ -2542,7 +2733,7 @@ describe('POST /api/tasks', () => {
 
   it('accepts a mission task defaulting to auto output requirement with no pathManifest — auto has no creation-time resolution', async () => {
     const captured = missionPathManifestSetup();
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null, defaultBackend: null, startAt: null });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: null, defaultBackend: null, startAt: null });
     mockTasksFindMany.mockResolvedValue([]);
 
     const response = await POST(createMockRequest({
@@ -3481,7 +3672,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: null });
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({
         returning: mock(() => [{ id: 'task-1', workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1', status: 'pending' }]),

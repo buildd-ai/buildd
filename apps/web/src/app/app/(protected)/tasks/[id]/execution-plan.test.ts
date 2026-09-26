@@ -8,6 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   descriptionDuplicatesSummary,
   isAttemptTask,
+  attemptsNotInPrHistory,
   partitionChildTasks,
   selectExecutionPlan,
 } from './execution-plan';
@@ -53,6 +54,20 @@ describe('selectExecutionPlan', () => {
 
   it('a chain holding only the current task is empty (self-loop)', () => {
     expect(selectExecutionPlan({ id: 'a', taskClass: 'work' }, [work('a')])).toEqual([]);
+  });
+});
+
+// Regression (demo capture, CI-retry task page): "Related tasks · ATTEMPTS (1)"
+// listed the CI-fix attempt the PR history right above already tells.
+describe('attemptsNotInPrHistory', () => {
+  it('drops the attempts PR history shows, keeping the rest in order', () => {
+    const list = [attempt('r1'), attempt('r2'), attempt('r3')];
+    expect(attemptsNotInPrHistory(list, new Set(['r2'])).map(t => t.id)).toEqual(['r1', 'r3']);
+  });
+
+  it('keeps every attempt when there is no PR history', () => {
+    const list = [attempt('r1')];
+    expect(attemptsNotInPrHistory(list, new Set())).toEqual(list);
   });
 });
 

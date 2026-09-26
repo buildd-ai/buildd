@@ -28,7 +28,7 @@ export function MissionContextBarView({
   return (
     <div
       data-testid="mission-context-bar"
-      className="sticky top-0 z-20 -mx-4 -mt-4 mb-4 border-b-2 border-border-strong bg-surface-1 px-4 pt-1 md:-mx-8 md:-mt-8 md:px-8 md:pt-2"
+      className="sticky -top-4 md:-top-8 z-20 -mx-4 -mt-4 mb-4 border-b-2 border-border-strong bg-surface-1 px-4 pt-1 md:-mx-8 md:-mt-8 md:px-8 md:pt-2"
     >
       <MissionMasthead
         size="micro"

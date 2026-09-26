@@ -735,6 +735,62 @@ describe('WorkerManager — state transitions', () => {
       );
       expect(failedCalls.length).toBeGreaterThanOrEqual(1);
     });
+
+    // Regression: an agent waiting on its own background work (a background
+    // test run, an Explore subagent) called AskUserQuestion with an EMPTY
+    // `questions` array as a way to "yield". The runner parked the task as
+    // "Awaiting input", aborted the session — killing the very background
+    // work the agent was waiting for — and pinged the owner with a blank
+    // question. The retry then ran out of closing-turn budget with the work
+    // uncommitted. A call that asks nothing is not a question: it must not
+    // park, abort, or notify.
+    for (const [label, input] of [
+      ['empty questions array', { questions: [] }],
+      ['missing questions field', {}],
+      ['only blank question text', { questions: [{ question: '   ' }] }],
+    ] as const) {
+      test(`AskUserQuestion with ${label} does not park or abort the session`, async () => {
+        mockThrowOnAbort = true;
+        mockMessages = [
+          { type: 'system', subtype: 'init', session_id: 'sess-empty-q' },
+          {
+            type: 'assistant',
+            message: {
+              content: [
+                { type: 'text', text: 'The background test run is still going; waiting for it.' },
+                { type: 'tool_use', id: 'toolu_empty_q', name: 'AskUserQuestion', input },
+              ],
+            },
+          },
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: 'Tests finished, continuing.' }] },
+          },
+          { type: 'result', subtype: 'success', session_id: 'sess-empty-q' },
+        ];
+
+        mockClaimTask.mockImplementation(async () => ({ workers: [{
+          id: 'w-empty-q',
+          branch: 'buildd/empty-q',
+          task: makeTask(),
+        }] }));
+
+        manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+        await manager.claimAndStart(makeTask());
+        await new Promise(r => setTimeout(r, 200));
+
+        const worker = manager.getWorker('w-empty-q');
+        expect(worker?.error ?? '').not.toContain('needs_input');
+        expect(worker?.waitingFor).toBeFalsy();
+        // The session ran to its own result instead of being aborted mid-stream.
+        expect(worker?.output.join('\n')).toContain('Tests finished, continuing.');
+
+        const waitingInputCalls = mockUpdateWorker.mock.calls.filter(
+          (call: any[]) => call[1]?.status === 'waiting_input'
+        );
+        expect(waitingInputCalls.length).toBe(0);
+      });
+    }
   });
 
   describe('Stale recovery', () => {

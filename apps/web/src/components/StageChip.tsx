@@ -2,6 +2,7 @@
 
 import type { LoopState } from '@buildd/shared';
 import { LoopStatusChip } from '@/components/LoopStatus';
+import { ZonedTime } from '@/components/DisplayTimezone';
 import type { Stage } from '@/lib/stage';
 
 // Stage derivation lives in `@/lib/stage` so the server render can call it —
@@ -59,9 +60,22 @@ export interface StageChipProps {
  * filled = active/urgent (pre-PR). soft = informational (has PR artifact). muted = terminal/quiet.
  * No border treatment on any variant — badges, not buttons.
  */
+function loopChipOverrides(loopMaxLoops: number | null | undefined, loopState: LoopState | null | undefined): boolean {
+  return !!loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted';
+}
+
+/**
+ * True when <StageChip> with these props renders `#N`. Callers use it to avoid
+ * repeating the PR number next to the chip (TaskCard's PR link and title).
+ */
+export function stageChipShowsPrNumber({ stage, prNumber, loopMaxLoops, loopState }: Pick<StageChipProps, 'stage' | 'prNumber' | 'loopMaxLoops' | 'loopState'>): boolean {
+  if (!prNumber || loopChipOverrides(loopMaxLoops, loopState)) return false;
+  return STAGE_CONFIG[stage].variant === 'soft';
+}
+
 export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops, loopExitConditionType }: StageChipProps) {
   // Loop chip overrides stage chip when the loop is in flight
-  if (loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted') {
+  if (loopMaxLoops && loopChipOverrides(loopMaxLoops, loopState)) {
     return (
       <LoopStatusChip
         loopIteration={loopIteration ?? 0}
@@ -76,8 +90,8 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
   // Scheduled start overrides QUEUED label
   if (stage === 'QUEUED' && startAt && new Date(startAt).getTime() > Date.now()) {
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide bg-status-info/10 text-status-info shrink-0">
-        Starts {new Date(startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide bg-status-info/10 text-status-info shrink-0">
+        Starts <ZonedTime value={startAt} format="time" />
       </span>
     );
   }
@@ -86,7 +100,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
 
   if (cfg.variant === 'filled') {
     return (
-      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
         {cfg.pulse && <span className="w-1.5 h-1.5 bg-current animate-status-pulse flex-shrink-0" />}
         {cfg.label}
       </span>
@@ -95,7 +109,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
 
   if (cfg.variant === 'soft') {
     return (
-      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
         {cfg.pulse && <span className="w-1.5 h-1.5 bg-current animate-status-pulse flex-shrink-0" />}
         {cfg.label}
         {prNumber && <span className="opacity-70">#{prNumber}</span>}
@@ -105,7 +119,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
 
   // muted — text only, no bg/border
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
       {cfg.label}
     </span>
   );

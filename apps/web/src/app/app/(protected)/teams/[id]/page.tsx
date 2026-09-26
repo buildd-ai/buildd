@@ -69,7 +69,7 @@ export default async function TeamDetailPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <BackButton fallbackHref="/app/settings" label="Settings" />
+        <BackButton fallbackHref="/app/settings/account" label="Profile" />
 
         <TeamDetailClient
           team={{

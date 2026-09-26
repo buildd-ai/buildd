@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
+import PrCard, { type CiCheckRun, type PrOutcome } from '@/components/task/PrCard';
 
 export type StoredPrFacts = {
   prUrl: string;
@@ -11,7 +11,18 @@ export type StoredPrFacts = {
   linesAdded?: number | null;
   linesRemoved?: number | null;
   filesChanged?: number | null;
+  /** Task page outcome view (stored-state lineage); enriched here with check runs per commit. */
+  outcome?: PrOutcome | null;
 };
+
+const toRun = (c: any): CiCheckRun => ({
+  name: c.name,
+  conclusion: c.conclusion ?? null,
+  status: c.status,
+  detailsUrl: c.details_url ?? c.html_url ?? null,
+});
+
+const sameRef = (a: string | undefined, b: string | undefined) => !!a && !!b && (a.startsWith(b) || b.startsWith(a));
 
 /**
  * The PR card as it can be rendered from stored state alone — lifecycle, diff
@@ -58,12 +69,24 @@ export default async function PrDetailsCard({
 
     const pr = await githubApi(installId, `/repos/${repoFullName}/pulls/${facts.prNumber}`);
     const headSha = pr.head?.sha as string | undefined;
-    const [checksResult, reviewsResult] = await Promise.allSettled([
+    // Earlier attempts' heads (a CI retry's failed commit) get their own check
+    // runs, so "Checks by commit" shows what failed, not only what passed.
+    const otherRefs = [...new Set((facts.outcome?.commits ?? [])
+      .map(c => c.ref)
+      .filter((r): r is string => !!r && !sameRef(r, headSha)))];
+    const [checksResult, reviewsResult, ...otherResults] = await Promise.allSettled([
       headSha
         ? githubApi(installId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`)
         : Promise.resolve(null),
       githubApi(installId, `/repos/${repoFullName}/pulls/${facts.prNumber}/reviews`),
+      ...otherRefs.map(ref => githubApi(installId, `/repos/${repoFullName}/commits/${ref}/check-runs?per_page=100`)),
     ]);
+    const runsByRef = new Map<string, CiCheckRun[]>();
+    otherRefs.forEach((ref, i) => {
+      const r = otherResults[i];
+      const list = r?.status === 'fulfilled' && Array.isArray((r.value as any)?.check_runs) ? (r.value as any).check_runs : null;
+      if (list) runsByRef.set(ref, list.map(toRun));
+    });
     const checksData = checksResult.status === 'fulfilled' ? checksResult.value : null;
     const reviewsData = reviewsResult.status === 'fulfilled' ? reviewsResult.value : null;
     const checkRuns: any[] = Array.isArray(checksData?.check_runs) ? checksData.check_runs : [];
@@ -86,12 +109,7 @@ export default async function PrDetailsCard({
           passed: checkRuns.filter(isPassing).length,
           failed: checkRuns.filter(isFailing).length,
           pending: checkRuns.filter((c: any) => !isTerminal(c)).length,
-          runs: checkRuns.map((c: any): CiCheckRun => ({
-            name: c.name,
-            conclusion: c.conclusion ?? null,
-            status: c.status,
-            detailsUrl: c.details_url ?? c.html_url ?? null,
-          })),
+          runs: checkRuns.map(toRun),
         } : null}
         reviews={{
           approved: reviewStates.filter(s => s === 'APPROVED').length,
@@ -100,6 +118,15 @@ export default async function PrDetailsCard({
         }}
         mergeable={typeof pr.mergeable === 'boolean' ? pr.mergeable : null}
         mergeableState={typeof pr.mergeable_state === 'string' ? pr.mergeable_state : null}
+        outcome={facts.outcome ? {
+          ...facts.outcome,
+          commits: facts.outcome.commits.map(c => {
+            const runs = sameRef(c.ref, headSha)
+              ? (checkRuns.length ? checkRuns.map(toRun) : null)
+              : (c.ref ? runsByRef.get(c.ref) ?? null : null);
+            return runs ? { ...c, runs } : c;
+          }),
+        } : facts.outcome}
       />
     );
   } catch {

@@ -56,7 +56,7 @@ export function classifyMissionProductionStatus(
   if (!evidence) {
     return derivedUnavailable(
       'no_baseline',
-      'mission has no single integration-PR merge commit to check — it predates the branch strategy or never opted in',
+      'mission has no single integration-PR merge commit to check: it predates the branch strategy or never opted in',
     );
   }
   if (evidence.prState !== 'merged') return derivedValue('not_yet_in_production');

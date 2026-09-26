@@ -433,6 +433,155 @@ describe('POST /api/workers/heartbeat', () => {
     expect('runnerVersion' in capturedConflictSet).toBe(false);
   });
 
+  it('persists the update-snapshot bundle in heartbeat upsert', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            capturedConflictSet = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://localhost:8766',
+        activeWorkerCount: 1,
+        currentCommit: 'aaa1111',
+        diskCommit: 'bbb2222',
+        commitDrift: true,
+        updating: false,
+        updateAvailable: true,
+        trackedBranch: 'main',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    for (const captured of [capturedValues, capturedConflictSet]) {
+      expect(captured.currentCommit).toBe('aaa1111');
+      expect(captured.diskCommit).toBe('bbb2222');
+      expect(captured.commitDrift).toBe(true);
+      expect(captured.updating).toBe(false);
+      expect(captured.updateAvailable).toBe(true);
+      expect(captured.trackedBranch).toBe('main');
+    }
+  });
+
+  it('sets the update-snapshot bundle to null on first insert when not provided (legacy runner)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { onConflictDoUpdate: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.currentCommit).toBeNull();
+    expect(capturedValues.diskCommit).toBeNull();
+    expect(capturedValues.commitDrift).toBeNull();
+    expect(capturedValues.updating).toBeNull();
+    expect(capturedValues.updateAvailable).toBeNull();
+    expect(capturedValues.trackedBranch).toBeNull();
+  });
+
+  it('does not overwrite a stored update-snapshot when a later heartbeat omits the bundle (update-conflict path)', async () => {
+    // Same rationale as the runnerCommit conflict test above: a heartbeat that
+    // omits the bundle entirely must not null out the last known-good
+    // drift/update status.
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    for (const key of ['currentCommit', 'diskCommit', 'commitDrift', 'updating', 'updateAvailable', 'trackedBranch']) {
+      expect(key in capturedConflictSet).toBe(false);
+    }
+  });
+
+  it('persists a real null inside the bundle (a failed disk read) distinctly from an omitted bundle', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://localhost:8766',
+        activeWorkerCount: 1,
+        currentCommit: null,
+        diskCommit: null,
+        commitDrift: false,
+        updating: false,
+        updateAvailable: false,
+        trackedBranch: 'dev',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    // The bundle WAS sent (trackedBranch is present), so it must be applied —
+    // including nulling out currentCommit/diskCommit, which is a real fact.
+    expect('currentCommit' in capturedConflictSet).toBe(true);
+    expect(capturedConflictSet.currentCommit).toBeNull();
+    expect(capturedConflictSet.trackedBranch).toBe('dev');
+  });
+
   it('defaults activeWorkerCount to 0', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',

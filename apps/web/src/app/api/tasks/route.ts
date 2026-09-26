@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, artifacts } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
+import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -14,7 +15,9 @@ import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
-import { TaskCategory } from '@buildd/shared';
+import { scheduleTaskCategoryShadow } from '@/lib/task-category-decision';
+import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
+import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
@@ -44,6 +47,7 @@ import {
 // registry in here would add a DB dependency to task creation for a constant.
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
+import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -80,7 +84,7 @@ function detectContentBearingSchemaFields(schema: Record<string, unknown>): stri
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({ tasks: [] });
   }
 
@@ -184,6 +188,7 @@ export async function GET(req: NextRequest) {
           id: tasks.id,
           workspaceId: tasks.workspaceId,
           title: tasks.title,
+          label: tasks.label,
           status: tasks.status,
           priority: tasks.priority,
           category: tasks.category,
@@ -191,22 +196,7 @@ export async function GET(req: NextRequest) {
           // Deliverable attribution — only worth the extra columns/join in audit
           // mode, where the whole point is telling a real completion from a
           // fallback summary with nothing shipped.
-          ...(isTerminalAudit ? {
-            updatedAt: tasks.updatedAt,
-            summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
-            // Audit mode reaches the entire terminal history, unbounded by the
-            // 24h window every other query path stays inside — including tasks
-            // completed before this field's shape was settled. A bare ::int
-            // cast throws and kills the whole query the moment one historical
-            // row has a non-numeric value here, so guard it instead of trusting
-            // the shape.
-            prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
-            hasArtifact: sql<boolean>`EXISTS (
-              SELECT 1 FROM ${workers} w
-              JOIN ${artifacts} a ON a.worker_id = w.id
-              WHERE w.task_id = ${tasks.id}
-            )`,
-          } : {}),
+          ...(isTerminalAudit ? terminalAuditFields : {}),
         })
         .from(tasks)
         .where(where)
@@ -288,6 +278,7 @@ export async function GET(req: NextRequest) {
             creationSource: true,
             parentTaskId: true,
             category: true,
+            label: true,
             project: true,
             outputRequirement: true,
             missionId: true,
@@ -335,8 +326,14 @@ export async function GET(req: NextRequest) {
       } : undefined,
     }, undefined, { route: req.nextUrl.pathname });
   } catch (error) {
+    // Audit mode (a terminal ?status) reaches a workspace's entire history with
+    // no 24h window — the one query path where an unusual row shape or a slow
+    // scan is most likely to surface. A bare "Failed to get tasks" discarded
+    // exactly the detail needed to tell those apart, forcing every prior
+    // diagnosis of this endpoint to start from a live repro instead of the log.
+    const detail = error instanceof Error ? error.message : String(error);
     console.error('Get tasks error:', error);
-    return NextResponse.json({ error: 'Failed to get tasks' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to get tasks', detail }, { status: 500 });
   }
 }
 
@@ -372,6 +369,8 @@ export async function POST(req: NextRequest) {
     const {
       workspaceId: rawWorkspaceId,
       title,
+      // Short 2–4 word display label; the classifier below fills it when omitted.
+      label: rawLabel,
       description,
       priority,
       runnerPreference,
@@ -438,6 +437,10 @@ export async function POST(req: NextRequest) {
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    if (rawLabel !== undefined && rawLabel !== null && typeof rawLabel !== 'string') {
+      return NextResponse.json({ error: 'label must be a string (2–4 words, max 48 chars)' }, { status: 400 });
     }
 
     // Routing inputs. Same vocabulary as tasks.kind / tasks.complexity in the
@@ -535,6 +538,11 @@ export async function POST(req: NextRequest) {
     });
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
+    }
+    // A mission link must stay inside the workspace's team (see isMissionLinkable).
+    // Checked before any write, including the friction-dedupe append below.
+    if (missionId && !(await isMissionLinkable(missionId, targetWorkspace.teamId))) {
+      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 
@@ -930,7 +938,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Resolve category: use provided value, or auto-classify
-    type CategoryType = 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design';
+    type CategoryType = TaskCategoryValue;
     const validCategories = Object.values(TaskCategory) as string[];
     let category: CategoryType | null = null;
     if (rawCategory && validCategories.includes(rawCategory)) {
@@ -938,6 +946,14 @@ export async function POST(req: NextRequest) {
     } else if (!rawCategory) {
       category = classifyTask(title, description) as CategoryType | null;
     }
+    // Only a keyword-derived category is shadowed: a caller-supplied one is the
+    // filer's own label, not a classifier output worth comparing against.
+    const categoryWasKeywordClassified = !rawCategory;
+
+    // Short display label: whoever files the task may supply one; otherwise the
+    // classifier derives it from the title. Pure and synchronous — never blocks
+    // or fails creation.
+    const label = normalizeTaskLabel(rawLabel) ?? heuristicTaskLabel(title).label;
 
     // Validate outputRequirement if provided
     const validOutputRequirements = ['pr_required', 'artifact_required', 'none', 'auto'];
@@ -1143,6 +1159,7 @@ export async function POST(req: NextRequest) {
         id: subjectOverrides.id,
         workspaceId,
         title,
+        label,
         description: description || null,
         priority: priority || 0,
         status: 'pending',
@@ -1298,6 +1315,27 @@ export async function POST(req: NextRequest) {
         assignToLocalUiUrl,
         runnerPreference,
       });
+    }
+
+    // Decision-model shadow of the keyword category (observe-only, off unless
+    // the team enabled `task_category_shadow` and stored a decision key). Runs
+    // after the response via after(); it cannot change `category` on the row
+    // and cannot fail this request. See docs/design/decision-calls.md.
+    if (categoryWasKeywordClassified && intake.outcome.action !== 'attached') {
+      try {
+        scheduleTaskCategoryShadow({
+          taskId: task.id,
+          teamId: targetWorkspace.teamId,
+          workspaceId,
+          accountId: creatorContext.createdByAccountId ?? null,
+          title,
+          description: description ?? null,
+          keywordCategory: category,
+          dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
+        }, after);
+      } catch (err) {
+        console.error('[task-create] decision shadow scheduling failed (non-fatal):', err);
+      }
     }
 
     // A task filed against a mission — by the dashboard, a plain API call, or an

@@ -88,6 +88,16 @@ describe('reviewArtifactScope — SQL mirror of isReviewArtifact', () => {
     expect(sql).toContain('"artifacts"."initiative_id" is not null');
   });
 
+  it('admits visual-audit screenshots by qa/ key or metadata.qa, mirroring isAuditScreenshot', () => {
+    const { sql, params } = render(reviewArtifactScope());
+    expect(sql).toContain('"artifacts"."storage_key" like');
+    expect(params).toContain('qa/%');
+    expect(sql).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
+    // Both markers sit under a screenshot-type guard.
+    expect(sql).toMatch(/\("artifacts"\."type" = \$\d+ and \("artifacts"\."storage_key" like/);
+    expect(params).toContain('screenshot');
+  });
+
   it('excludes byproduct types from the keyed/container arm', () => {
     const { sql } = render(reviewArtifactScope());
     expect(sql).toContain('"artifacts"."type" not in');

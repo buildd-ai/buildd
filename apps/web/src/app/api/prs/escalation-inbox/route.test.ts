@@ -414,4 +414,40 @@ describe('GET /api/prs/escalation-inbox', () => {
     const body = await res.json();
     expect(body.count).toBe(0);
   });
+
+  describe('fallback escalation reasons', () => {
+    it('names the Human Gate policy without an em dash', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+      mockMissionNotesFindMany.mockResolvedValue([]);
+      mockWorkspacesFindMany.mockResolvedValue([
+        { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+      ]);
+      const body = await (await GET(makeRequest())).json();
+      expect(body.items[0].escalationReason).toBe('Human Gate policy: merge this PR yourself.');
+    });
+
+    it('says who failed and what to do once conflict retries run out', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkersFindMany.mockResolvedValue([
+        makeWorker({ prLifecycleStatus: 'conflict', task: { id: 't-1', title: 'Build thing', missionId: null, status: 'completed' } }),
+      ]);
+      mockMissionNotesFindMany.mockResolvedValue([]);
+      mockWorkspacesFindMany.mockResolvedValue([
+        { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+      ]);
+      // Only the dead-zone query (it selects status, not context) sees the
+      // finished retries; the live-retry query sees none.
+      mockTasksFindMany.mockImplementation(((args: any) => Promise.resolve(
+        args?.columns?.status && !args?.columns?.context
+          ? [1, 2, 3].map(i => ({ id: `cr-${i}`, workspaceId: 'ws-1', conflictRetryPrNumber: 42, status: 'failed' }))
+          : [],
+      )) as any);
+      const body = await (await GET(makeRequest())).json();
+      expect(body.items[0].deadZoneExhausted).toBe(true);
+      expect(body.items[0].escalationReason).toMatch(/^Agents failed \d+ conflict-resolution attempts\. Resolve the conflict yourself\.$/);
+    });
+  });
 });

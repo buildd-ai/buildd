@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -7,7 +9,7 @@ const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockWorkersFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
 
-const mockUpdateReturning = mock(() => [{ id: 'worker-1' }] as any[]);
+const mockUpdateReturning = mock(() => [{ id: WORKER_ID }] as any[]);
 const mockUpdateWhere = mock(() => ({ returning: mockUpdateReturning }));
 const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
 const mockUpdate = mock(() => ({ set: mockUpdateSet }));
@@ -40,7 +42,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { POST } from './route';
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 function createRequest(body?: any, apiKey?: string): NextRequest {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -53,7 +55,7 @@ function createRequest(body?: any, apiKey?: string): NextRequest {
 }
 
 const baseWorker = {
-  id: 'worker-1',
+  id: WORKER_ID,
   taskId: 'task-1',
   workspaceId: 'workspace-1',
   accountId: 'account-1',
@@ -74,7 +76,7 @@ describe('POST /api/workers/[id]/recover', () => {
     mockUpdateWhere.mockClear();
     mockUpdateReturning.mockClear();
 
-    mockUpdateReturning.mockReturnValue([{ id: 'worker-1' }]);
+    mockUpdateReturning.mockReturnValue([{ id: WORKER_ID }]);
     mockUpdateWhere.mockReturnValue({ returning: mockUpdateReturning });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
     mockUpdate.mockReturnValue({ set: mockUpdateSet });

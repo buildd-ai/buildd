@@ -136,7 +136,7 @@ export default function MissionInitiativeSelector({
           disabled={isPending}
           className="text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
         >
-          <span className="italic">— No initiative</span>
+          <span className="italic">No initiative</span>
           <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
@@ -169,7 +169,7 @@ export default function MissionInitiativeSelector({
                   className={`w-full text-left px-3 py-2 text-[12px] hover:bg-surface-3 transition-colors flex items-center justify-between gap-2 ${initiative.id === currentInitiativeId ? 'bg-surface-3' : ''}`}
                 >
                   <span className="text-text-primary truncate">{initiative.title}</span>
-                  <span className="shrink-0 text-[10px] text-text-muted font-mono tabular-nums">{initiative.progress}%</span>
+                  <span className="shrink-0 text-[11px] md:text-[10px] text-text-muted font-mono tabular-nums">{initiative.progress}%</span>
                 </button>
               ))
             )}

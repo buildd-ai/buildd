@@ -40,7 +40,7 @@ assertions:
 > |---|---|---|
 > | Storage | `workspace_skills.mcpServers` + `requiredEnvVars` | `connectors` + `connector_workspaces` |
 > | Auth | env-var secrets (`mcp_credential`) | `none`/`header`/`oauth` (`mcp_connector_credential`) |
-> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → Connectors, `/app/connections` |
+> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → MCP connectors (`/app/settings/connectors`) |
 > | Injection | R2 role tarball → `.mcp.json` | claim route → `cw.mcpConnectors` |
 > | Scope | per role | per workspace (role-blind, all workers) |
 >
@@ -472,9 +472,9 @@ reconnect. Approaching expiry is deliberately silent.
 
 **Surfaces** (all read the same derivation — no second copy of the rule):
 
-1. Connections page — `Connected` / `Expired` badge + `Reconnect`.
+1. Settings → MCP connectors — `Connected` / `Expired` badge + `Reconnect`.
 2. Home action queue — a `RECONNECT` chip per connector where
-   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/connections`.
+   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/connectors`.
 3. Push — `/api/cron/connector-block-notify` fires
    `notifyTeam(…, 'connectorBlocked')` once per broken episode, deduped by
    `secrets.expiryNotifiedAt`, cleared by the reconnect and refresh-success paths.

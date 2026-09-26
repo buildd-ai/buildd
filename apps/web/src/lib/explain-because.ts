@@ -39,8 +39,27 @@ export interface BecauseSubjectRefs {
 
 /** Row-level detail the chain needs to name what the view only counted. */
 export interface StateBecauseExtras {
-  /** Open deliverable rows, for naming which tasks are holding. */
-  openTasks?: Array<{ id: string; title: string | null; status: string }>;
+  /**
+   * Open deliverable rows, for naming which tasks are holding.
+   *
+   * `live` is per-task: true when a worker in a live status is on this row.
+   * The mission-level `activeAgents` count cannot answer it — a running
+   * mission has open rows both with and without a worker, and "no live
+   * worker" is only true of the latter. Omitted = unknown; see
+   * `openTaskLinks`.
+   */
+  openTasks?: Array<{
+    id: string;
+    title: string | null;
+    status: string;
+    live?: boolean;
+    /**
+     * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
+     * is described as waiting on them (and ref'd to the first), never as
+     * orphaned — and it never leads the chain.
+     */
+    waitingOn?: Array<{ id: string; title: string | null }>;
+  }>;
   /** Failed rows with the signature their failure was bucketed under. */
   failedTasks?: Array<{ id: string; title: string | null; errorSignature?: string | null }>;
   /** Unmerged PRs holding completion. */
@@ -100,8 +119,8 @@ export function buildStateBecause(
     links.push(
       link(
         t.supersedingTaskId
-          ? `Task "${t.title ?? t.id}" failed, but sibling task "${t.supersedingTaskId}" completed the same work via merged PR #${t.prNumber} — not counted as a mission failure.`
-          : `Task "${t.title ?? t.id}" failed, but its target PR #${t.prNumber} merged anyway — not counted as a mission failure.`,
+          ? `Task "${t.title ?? t.id}" failed, but sibling task "${t.supersedingTaskId}" completed the same work via merged PR #${t.prNumber}, so it does not count as a mission failure.`
+          : `Task "${t.title ?? t.id}" failed, but its target PR #${t.prNumber} merged, so it does not count as a mission failure.`,
         'tasks.subjectPrNumber + workers.mergedAt',
         { ...base, taskId: t.id, prNumber: t.prNumber },
       ),
@@ -116,10 +135,60 @@ export function buildStateBecause(
     ? `State is ${view.kind} because ${w.label}.`
     : view.outstanding.length > 0
       ? `State is ${view.kind}, but ${view.outstanding.length} fact(s) are still outstanding: ${view.outstanding.map(o => o.label).join('; ')}.`
-      : `State is ${view.kind}: no source reports anything outstanding.`;
+      : `State is ${view.kind}. No source reports outstanding work.`;
   links.push(link(closing, view.derivedFrom.kind, base));
 
   return orderChain(links);
+}
+
+/**
+ * One link per open deliverable, worded by whether THAT row has a live worker.
+ *
+ * "No live worker" is a claim about a single task. It used to be stamped on
+ * every open row whenever the open-task fact was outstanding — including the
+ * `running` reading of that fact, where by construction something IS live —
+ * so a task a worker was running read as orphaned, and the situation block
+ * offered to "open the blocking task".
+ *
+ * Unknown liveness falls back to the fact's own reading: the `warning` tone is
+ * only produced when nothing in the mission is live, so every row really has
+ * no worker; the `neutral` tone means something is, and the row is described
+ * without guessing which.
+ *
+ * Rows without a worker lead: `because[0]` is the line the situation block
+ * prints, and the task nothing is executing is the one worth reading about.
+ */
+function openTaskLinks(
+  w: Extract<WaitingOnDescriptor, { kind: 'task' }>,
+  base: ExplainRefs,
+  extra: StateBecauseExtras,
+): Link[] {
+  const nothingLive = w.tone === 'warning';
+  type Row = NonNullable<StateBecauseExtras['openTasks']>[number];
+  const depBlocked = (t: Row) => (t.waitingOn?.length ?? 0) > 0;
+  const orphaned = (t: Row) => !depBlocked(t) && (t.live === undefined ? nothingLive : !t.live);
+  const rank = (t: Row) => (orphaned(t) ? 0 : depBlocked(t) ? 2 : 1);
+  const rows = [...(extra.openTasks ?? [])].sort((a, b) => rank(a) - rank(b));
+  return rows.slice(0, 10).map(t => {
+    if (depBlocked(t)) {
+      const deps = t.waitingOn!;
+      const named = deps.map(d => `"${d.title ?? d.id}"`).join(', ');
+      return link(
+        `Task "${t.title ?? t.id}" is waiting on ${deps.length === 1 ? 'its dependency' : 'its dependencies'} ${named}.`,
+        'tasks.dependsOn',
+        { ...base, taskId: deps[0].id },
+      );
+    }
+    return link(
+      orphaned(t)
+        ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`
+        : t.live
+          ? `Task "${t.title ?? t.id}" is ${t.status}. A worker is running it.`
+          : `Task "${t.title ?? t.id}" is ${t.status} and not finished yet.`,
+      'tasks.status + workers.status',
+      { ...base, taskId: t.id },
+    );
+  });
 }
 
 function causeLinksFor(
@@ -146,20 +215,14 @@ function causeLinksFor(
         return [
           link(
             w.attempt.claimed
-              ? `Fix attempt ${name} is ${t?.status ?? 'open'} — a worker has it.`
+              ? `Fix attempt ${name} is ${t?.status ?? 'open'}. A worker has claimed it.`
               : `Fix attempt ${name} is queued with no worker yet.`,
             'tasks.status + workers.status',
             { ...base, taskId: w.taskIds[0] },
           ),
         ];
       }
-      return (extra.openTasks ?? []).slice(0, 10).map(t =>
-        link(
-          `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`,
-          'tasks.status + workers.status',
-          { ...base, taskId: t.id },
-        ),
-      );
+      return openTaskLinks(w, base, extra);
 
     case 'task_failed':
       return (extra.failedTasks ?? []).slice(0, 10).map(t =>
@@ -181,7 +244,7 @@ function causeLinksFor(
         link(
           p.closedUnsuperseded
             ? `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
-              + 'work shipped elsewhere — record_pr_supersession is the remedy if it did.'
+              + 'work shipped elsewhere. If it did, record it with record_pr_supersession.'
             : `Task "${p.title}" is completed but its PR has not merged.`,
           p.closedUnsuperseded ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber' : 'workers.mergedAt',
           {
@@ -222,7 +285,7 @@ function causeLinksFor(
       return [
         link(
           w.waitUntil
-            ? `Every open task is on a known self-resolving wait (${w.reason}); it resumes at ${w.waitUntil}.`
+            ? `Every open task is on a known self-resolving wait (${w.reason}) until ${w.waitUntil}.`
             : `Every open task is on a known self-resolving wait (${w.reason}).`,
           'classifyMissionWait',
           base,
@@ -233,7 +296,7 @@ function causeLinksFor(
       return w.taskIds.slice(0, 10).map(taskId =>
         link(
           `The claim loop refused this task ${w.consecutiveDeferrals} consecutive polls for the same reason (${w.reason})`
-          + `${w.firstDeferredAt ? `, first at ${w.firstDeferredAt}` : ''} — it has not been allowed to start.`,
+          + `${w.firstDeferredAt ? `, first at ${w.firstDeferredAt}` : ''}. The task has not started.`,
           'gate_events.detail.consecutiveDeferrals',
           { ...base, taskId },
         ),
@@ -367,7 +430,7 @@ export function buildConflictBecause(
   } else if (baseSide.length > 0) {
     links.push(
       link(
-        `No stored touch set for those merges overlaps PR #${subject.prNumber}'s — the conflict is in files neither side declared.`,
+        `No stored touch set for those merges overlaps PR #${subject.prNumber}'s. The conflict is in files neither side declared.`,
         'workers.observedTouches ∪ tasks.pathManifest (no intersection)',
         refs,
       ),

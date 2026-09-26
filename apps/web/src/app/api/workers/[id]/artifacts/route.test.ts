@@ -94,7 +94,9 @@ function createMockPostRequest(body?: any, apiKey?: string): NextRequest {
   return new NextRequest('http://localhost:3000/api/workers/worker-1/artifacts', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 describe('GET /api/workers/[id]/artifacts', () => {
   beforeEach(() => {
@@ -128,7 +130,7 @@ describe('GET /api/workers/[id]/artifacts', () => {
   it('returns 403 when worker belongs to different account', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-2',
     });
 
@@ -143,7 +145,7 @@ describe('GET /api/workers/[id]/artifacts', () => {
   it('returns artifacts when authenticated and authorized', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
     });
     const mockArtifacts = [
@@ -211,7 +213,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('returns 403 when worker belongs to different account', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-2',
       task: { id: 'task-1' },
     });
@@ -227,7 +229,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('returns 400 for invalid artifact type', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       task: { id: 'task-1' },
     });
@@ -248,7 +250,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
     async (type) => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         accountId: 'account-1',
         workspaceId: 'ws-1',
         task: { id: 'task-1' },
@@ -264,7 +266,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('returns 400 when title is missing', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       task: { id: 'task-1' },
     });
@@ -280,7 +282,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('returns 400 when link type has no url', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       task: { id: 'task-1' },
     });
@@ -296,7 +298,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('creates artifact successfully', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       task: { id: 'task-1' },
@@ -317,7 +319,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('refreshes the worker lease after creating an artifact', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',
@@ -345,7 +347,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('creates artifact PRIVATE by default with no share token', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',
@@ -380,7 +382,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('artifact created by mission-linked worker gets missionId set', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',
@@ -410,7 +412,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('artifact created by non-mission worker gets missionId null', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',
@@ -439,7 +441,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('accepts a storage key the worker workspace owns', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',
@@ -468,7 +470,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('rejects a storage key outside the worker workspace', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',
@@ -496,7 +498,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('rejects a storage key when the worker has no workspace', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: null,
       taskId: 'task-1',
@@ -515,7 +517,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   it('rejects a foreign storage key on the upsert-by-key path too', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       workspaceId: 'ws-1',
       taskId: 'task-1',

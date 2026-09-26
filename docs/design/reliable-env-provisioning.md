@@ -97,6 +97,44 @@ The same manifest + phases, packaged as a CLI that exits nonzero with a readable
 
 This portability is the reason to build it as a **contract + CLI** rather than bury the logic in the runner — the current best-effort install is exactly the buried-logic mistake.
 
+### Private registry credentials
+
+A repo that installs from a private registry (GitHub Packages, a private npm scope) reads its token from an env var named in its own config, e.g.
+
+```ini
+# .npmrc
+@acme:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+```toml
+# bunfig.toml
+[install.scopes]
+"@acme" = { url = "https://npm.pkg.github.com/", token = "$NODE_AUTH_TOKEN" }
+```
+
+The install has to see that var. There are two install paths, and **both now run with the worker's resolved role env**:
+
+| Repo | Who installs | Env |
+|---|---|---|
+| declares `install.command` in `.buildd/env.yaml` | the provision gate, in `startSession` | `cleanEnv`: the agent's full env (server creds + connector + role env) |
+| undeclared (auto-detected bun lockfile) | `setupWorktree` → `installWorkspaceDeps`, before `cleanEnv` exists | runner env **overlaid with the same role env** the agent gets (`WorkerManager.resolveWorkerRoleEnv`, one resolver for both) |
+
+The undeclared path deliberately gets role env only, not LLM credentials or connector bearers: a package manager's postinstall scripts have no business with those. Values are never logged. Only the key count is, and a `registry-auth` diagnosis records whether the var was *set*, never its value.
+
+**To give a repo its token:**
+
+1. **Get the value to the worker as a role env var.** Declare `ENV_NAME → label` on the role (`requiredEnvVars`, still read for this even though it's deprecated for MCP purposes) and/or as a workspace-wide default (`gitConfig.envMapping`; a role's own mapping wins on a shared key). At claim time (`role-env-injection.ts`) the label is resolved against the `secrets` table under a dedicated `role_env_secret` purpose (team/account/workspace scoping — see docs/credentials-architecture.md; deliberately not `mcp_credential`, which is kept out of the agent env by design) and the value rides the claim response as `roleEnvSecrets`. The runner's `resolveWorkerRoleEnv` merges it with whatever the local `env-mapping.json` resolution provides (today always empty — see below) before both the worktree install and the agent's `cleanEnv` see it; a declared label with no matching secret lands in `roleEnvMissing`/`missing` and surfaces as the same "Role env degraded" milestone. Store the value with `POST /api/secrets` (`purpose: "role_env_secret"`, `label` = the name used on the right of the mapping). Do not add registry tokens to the runner's `RUNNER_ENV_PASSTHROUGH` allowlist — secrets belong in buildd, scoped to the team/workspace that needs them, not in the host container.
+   - The R2 role bundle's own `envMapping` stays packaged empty (`env-mapping.json` on disk resolves to nothing) — `requiredEnvVars` is deprecated in favour of `connectorRefs` for the MCP-config path, and this channel deliberately bypasses the bundle rather than reviving it there.
+2. **Optionally declare it** in `.buildd/env.yaml` so a missing token fails at the gate in under a second, naming the var, instead of as a 401 inside `bun install`:
+   ```yaml
+   env:
+     required: [NODE_AUTH_TOKEN]
+   ```
+   A repo that declares `install.command` also moves its install into the gate, where it runs against the full `cleanEnv`.
+
+**When it still 401s**, the install is classified `registry-auth`, a host-level fault that blocks the session before any budget is spent. The block is written to be actionable from the task card: registry host, the package that was refused, the env var the repo's `.npmrc` / `bunfig.toml` reads (and whether it was set but rejected, or not set at all), and `repo root` rather than `.` for the directory. See `describeInstallFailure` in `apps/runner/src/install-diagnosis.ts`.
+
 ## Why buildd can win here
 
 Buildd already has the agent-native primitives general tools lack: the `secrets` table (scoped credential injection), `requiredEnvVars`, and `role-config.ts` bundling env mappings. Devcontainers/Nix solve the toolchain half but have no notion of *"scoped secrets + a readiness gate tied to who is claiming this task."* The wedge is that second half: **secret contract + readiness gate + fail-before-budget**, layered on top of (not instead of) existing toolchain managers.

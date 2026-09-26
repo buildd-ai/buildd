@@ -62,10 +62,18 @@ function timeUntil(dateStr: string): string {
   return `in ${days}d`;
 }
 
+function nextRunMobileLabel(item: UnifiedScheduleItem): string {
+  if (!item.isEnabled) return 'paused';
+  const runs = item.totalRuns > 0 ? `${item.totalRuns} run${item.totalRuns !== 1 ? 's' : ''}` : 'never run';
+  if (!item.nextRunAt) return runs;
+  const next = timeUntil(item.nextRunAt);
+  return `${next === 'overdue' ? 'overdue' : `next ${next}`} · ${runs}`;
+}
+
 function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
   if (type === 'heartbeat') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-status-success/10 text-status-success border border-status-success/20">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] md:text-[10px] font-medium bg-status-success/10 text-status-success border border-status-success/20">
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
           <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
         </svg>
@@ -75,7 +83,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
   }
   if (type === 'cron-mission') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] md:text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
           <path d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
@@ -84,7 +92,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-3 text-text-secondary border border-border-default">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] md:text-[10px] font-medium bg-surface-3 text-text-secondary border border-border-default">
       <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
       </svg>
@@ -107,6 +115,8 @@ function ToggleSwitch({
       checked={item.isEnabled}
       disabled={loading}
       label={`Enable ${item.name}`}
+      // The 36x20 track is the visual; the tap target extends to 44px+ around it.
+      className="before:absolute before:-inset-x-2 before:-inset-y-3 before:content-['']"
       onChange={(_next, e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -168,7 +178,7 @@ function SuggestionBanner({
               <a
                 href={`/app/tasks/${s.suggestedByTaskId}`}
                 onClick={(e) => e.stopPropagation()}
-                className="text-[10px] text-primary hover:underline ml-auto"
+                className="text-[11px] md:text-[10px] text-primary hover:underline ml-auto"
               >
                 View task
               </a>
@@ -201,37 +211,45 @@ function ScheduleRow({
   const hasFailures = item.consecutiveFailures > 0;
 
   return (
-    <div className={`group p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
+    <div className={`group p-3 sm:p-4 bg-surface-2 border rounded-xl transition-all duration-150 hover:border-primary/20 hover:-translate-y-px shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),0_2px_6px_rgba(0,0,0,0.06)] ${
       !item.isEnabled ? 'opacity-60' : ''
     } ${item.pendingSuggestion ? 'border-status-warning/30' : isOverdue ? 'border-status-warning/30' : 'border-border-default'}`}>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
         {/* Toggle */}
-        <div className="shrink-0">
+        <div className="shrink-0 flex">
           <ToggleSwitch item={item} onToggle={onToggle} loading={toggling} />
         </div>
 
         {/* Main content — click to navigate */}
-        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-3 min-w-0">
+        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-2 sm:gap-3">
           {/* Name + type badge */}
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1">
               <TypeBadge type={item.type} />
               {item.workspaceName && (
-                <span className="text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded">
+                <span className="text-[11px] md:text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded">
                   {item.workspaceName}
                 </span>
               )}
               {hasFailures && (
-                <span className="text-[10px] font-mono text-status-error" title={`${item.consecutiveFailures} consecutive failures`}>
+                <span className="text-[11px] md:text-[10px] font-mono text-status-error" title={`${item.consecutiveFailures} consecutive failures`}>
                   {item.consecutiveFailures} fail{item.consecutiveFailures !== 1 ? 's' : ''}
                 </span>
               )}
               {item.pendingSuggestion && (
-                <span className="text-[10px] font-medium text-status-warning">suggestion</span>
+                <span className="text-[11px] md:text-[10px] font-medium text-status-warning">suggestion</span>
               )}
             </div>
             <div className="text-sm font-medium text-text-primary truncate">{item.name}</div>
-            <code className="text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
+            <code className="text-[11px] md:text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
+            {/* Phone: the stats column is hidden, so the one fact a row owes —
+                when it runs next — rides under the cron instead. */}
+            <div
+              data-testid="schedule-next-run-mobile"
+              className={`sm:hidden text-[11px] mt-0.5 ${isOverdue ? 'text-status-warning' : 'text-text-secondary'}`}
+            >
+              {nextRunMobileLabel(item)}
+            </div>
             {isScheduleErrorLive({ enabled: item.isEnabled, lastError: item.lastError }) && (
               <p className="text-xs text-status-error mt-1 truncate">⚠ {item.lastError}</p>
             )}
@@ -248,16 +266,16 @@ function ScheduleRow({
             ) : (
               <div className="text-xs text-text-muted">paused</div>
             )}
-            <div className="text-[10px] text-text-muted mt-0.5">
+            <div className="text-[11px] md:text-[10px] text-text-muted mt-0.5">
               {item.totalRuns > 0 ? `${item.totalRuns} run${item.totalRuns !== 1 ? 's' : ''}` : 'never run'}
             </div>
             {item.lastRunAt && (
-              <div className="text-[10px] text-text-muted">last {timeAgo(item.lastRunAt)}</div>
+              <div className="text-[11px] md:text-[10px] text-text-muted">last {timeAgo(item.lastRunAt)}</div>
             )}
           </div>
 
           {/* Chevron */}
-          <svg className="w-4 h-4 text-text-muted shrink-0 group-hover:text-text-secondary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="hidden sm:block w-4 h-4 text-text-muted shrink-0 group-hover:text-text-secondary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
         </Link>
@@ -267,7 +285,9 @@ function ScheduleRow({
           <button
             data-testid="schedule-delete-btn"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(item); }}
-            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+            // Hover-reveal only where hover exists (fine pointer, md+). A phone
+            // or tablet always shows it, at a 44px target.
+            className="shrink-0 h-11 w-11 md:h-8 md:w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors md:pointer-fine:opacity-0 md:pointer-fine:group-hover:opacity-100 md:pointer-fine:focus-visible:opacity-100"
             title="Delete schedule"
             aria-label={`Delete ${item.name}`}
           >
@@ -455,7 +475,7 @@ export default function SchedulesUnified({
           </div>
           <h2 className="text-lg font-semibold text-text-primary mb-1">No automation yet</h2>
           <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
-            Set up heartbeats for periodic monitoring or schedule missions to run automatically on a cron.
+            Add a heartbeat for periodic checks, or put a mission on a cron.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
@@ -484,7 +504,7 @@ export default function SchedulesUnified({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Schedules</h1>
-          <p className="text-sm text-text-secondary mt-0.5">All automated task creation across your workspaces</p>
+          <p className="text-sm text-text-secondary mt-0.5">Heartbeats, mission crons and task schedules across your workspaces</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
@@ -508,22 +528,22 @@ export default function SchedulesUnified({
       <div className="flex flex-wrap gap-6 mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
         <div>
           <div className="text-xl font-semibold text-text-primary">{total}</div>
-          <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">total</div>
+          <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">total</div>
         </div>
         <div>
           <div className="text-xl font-semibold text-status-success">{enabled}</div>
-          <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">active</div>
+          <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">active</div>
         </div>
         {paused > 0 && (
           <div>
             <div className="text-xl font-semibold text-status-warning">{paused}</div>
-            <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">paused</div>
+            <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">paused</div>
           </div>
         )}
         {dueIn24h > 0 && (
           <div>
             <div className="text-xl font-semibold text-primary">{dueIn24h}</div>
-            <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">next 24h</div>
+            <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">next 24h</div>
           </div>
         )}
         <div className="sm:ml-auto flex flex-wrap gap-3 text-xs text-text-muted self-center">
@@ -535,12 +555,20 @@ export default function SchedulesUnified({
 
       {/* Filter bar */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        <div className="flex gap-1 border-b border-border-default">
+        {/* Scrolls in place on a phone rather than pushing the page sideways.
+            The bar's rule is an inset shadow, not a border: inside an
+            overflow container a child's -mb-px overlap is clipped, so the
+            active tab's underline could no longer cover a real border. The
+            tab's own border paints over the shadow instead. */}
+        <div
+          data-testid="schedule-filter-tabs"
+          className="flex gap-1 shadow-[inset_0_-1px_0_var(--border)] min-w-0 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           {filterTabs.map(tab => (
             <button
               key={tab.key}
               onClick={() => setFilter(tab.key)}
-              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+              className={`shrink-0 whitespace-nowrap min-h-11 md:min-h-0 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                 filter === tab.key
                   ? 'border-primary text-primary'
                   : 'border-transparent text-text-secondary hover:text-text-primary'
@@ -548,7 +576,7 @@ export default function SchedulesUnified({
             >
               {tab.label}
               {tab.count > 0 && (
-                <span className="ml-1.5 text-[10px] text-text-muted">{tab.count}</span>
+                <span className="ml-1.5 text-[11px] md:text-[10px] text-text-muted">{tab.count}</span>
               )}
             </button>
           ))}
@@ -638,7 +666,7 @@ export default function SchedulesUnified({
               </svg>
               Heartbeat
             </div>
-            Periodic awareness check. Runs with a checklist and suppresses output if nothing needs attention.
+            Periodic check against a checklist. Posts nothing when nothing needs attention.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-primary font-medium">
@@ -647,7 +675,7 @@ export default function SchedulesUnified({
               </svg>
               Mission
             </div>
-            Scheduled goal. Creates a planning task on each run to make progress toward the mission.
+            Scheduled goal. Each run creates a planning task for the mission.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-text-secondary font-medium">
@@ -656,7 +684,7 @@ export default function SchedulesUnified({
               </svg>
               Workspace schedule
             </div>
-            Cron-based task template. Creates a new task directly from a fixed template on each run.
+            Cron task template. Each run creates a task from a fixed template.
           </div>
         </div>
       </div>
@@ -673,10 +701,10 @@ export default function SchedulesUnified({
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
-            <p className="text-sm text-text-secondary mb-4">This is permanent and cannot be undone.</p>
+            <p className="text-sm text-text-secondary mb-4">You can&apos;t undo this.</p>
             <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
               <p className="text-sm font-medium text-text-primary truncate">{itemToDelete.name}</p>
-              <code className="text-[10px] text-text-muted font-mono block">{itemToDelete.cronExpression}</code>
+              <code className="text-[11px] md:text-[10px] text-text-muted font-mono block">{itemToDelete.cronExpression}</code>
               <p className="text-xs text-text-muted">
                 {itemToDelete.totalRuns > 0
                   ? `${itemToDelete.totalRuns} run${itemToDelete.totalRuns !== 1 ? 's' : ''}`

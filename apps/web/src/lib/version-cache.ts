@@ -117,10 +117,22 @@ async function fetchFromGitHub(branch: string): Promise<VersionInfo> {
  *
  * Validation happens here rather than at each call site so a new caller cannot
  * forget it. On failure a stale entry for **that same branch** is served if one
- * exists; another branch's entry is never substituted — that would reintroduce
- * the cross-branch SHA that caused the loop.
+ * exists (`tolerateStale`, default true) — another branch's entry is never
+ * substituted, since that would reintroduce the cross-branch SHA that caused
+ * the loop. The heartbeat route relies on this default: a runner is better off
+ * with a slightly-stale advertised commit than with none at all for one
+ * transient GitHub blip.
+ *
+ * `/api/version` opts out via `tolerateStale: false` — that endpoint promises
+ * to report an explicit error rather than silently serve a cached value that
+ * may be well past its TTL, so a caller can tell "no fresh data" from "here is
+ * the answer".
  */
-export async function getLatestVersion(branch?: string | null): Promise<VersionInfo> {
+export async function getLatestVersion(
+  branch?: string | null,
+  opts: { tolerateStale?: boolean } = {},
+): Promise<VersionInfo> {
+  const { tolerateStale = true } = opts;
   const resolved = resolveVersionBranch(branch);
   const now = Date.now();
   const entry = cache.get(resolved);
@@ -134,7 +146,7 @@ export async function getLatestVersion(branch?: string | null): Promise<VersionI
     return info;
   } catch (err) {
     // If a stale entry for this branch exists, return it rather than failing.
-    if (entry) return entry.info;
+    if (tolerateStale && entry) return entry.info;
     throw err;
   }
 }

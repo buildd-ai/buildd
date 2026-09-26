@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
@@ -44,6 +47,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -57,7 +61,9 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR } from '@/lib/worker-exit-taxonomy';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
+import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
@@ -426,8 +432,8 @@ async function recordCredentialHealthForOutcome(
         if (result?.becameRevoked) {
           void notifyTeam(teamId, 'credentialExpired', {
             title: '🔑 Credential revoked — action required',
-            message: `Backend credential (${backend ?? 'claude'}) was revoked. Re-auth in Settings → Agent Backends.\nError: ${error.slice(0, 150)}`,
-            url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings`,
+            message: `Backend credential (${backend ?? 'claude'}) was revoked. Sign in again under Settings, Runners.\nError: ${error.slice(0, 150)}`,
+            url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings/runners`,
             urlTitle: 'Open settings',
             priority: 1,
           });
@@ -516,9 +522,18 @@ export async function GET(
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const account = await authenticateApiKey(apiKey);
+  // GET also accepts the dashboard session (the in-app chat reads worker
+  // milestones as the signed-in user). PATCH stays worker-key-only. A key,
+  // when present, is authoritative.
+  const sessionUser = account ? null : await getCurrentUser();
 
-  if (!account) {
+  if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // A non-UUID can never name a worker; querying with one throws 22P02 (a 500).
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
   const worker = await db.query.workers.findFirst({
@@ -528,6 +543,21 @@ export async function GET(
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
+
+  if (!account) {
+    // Session: membership of the worker workspace's team, as on the dashboard.
+    // Outside it the worker does not exist for this caller.
+    const access = worker.workspaceId ? await verifyWorkspaceAccess(sessionUser!.id, worker.workspaceId) : null;
+    if (!access) {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
+    // The workspace row carries the webhook dispatch bearer token; a team
+    // member reading a worker has no use for it.
+    const workspace = worker.workspace
+      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
+      : worker.workspace;
+    return NextResponse.json({ ...worker, workspace });
   }
 
   if (worker.accountId !== account.id) {
@@ -550,6 +580,10 @@ export async function PATCH(
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
   const worker = await db.query.workers.findFirst({
@@ -722,7 +756,11 @@ export async function PATCH(
   }
 
   const {
-    status, error, costUsd, turns, localUiUrl, currentAction, milestones,
+    // `let` below, not destructured as const: a completion that lands on a
+    // task already cancelled server-side is rewritten to a `failed` /
+    // task_cancelled report before the output gate runs (see
+    // taskCancelledUnderSession).
+    status: reportedStatus, error: reportedError, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
     appendMcpCalls,
     appendErrorTraces,
@@ -778,6 +816,8 @@ export async function PATCH(
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
   } = body;
+  let status = reportedStatus;
+  let error = reportedError;
 
   // ── Who may consume the human-instruction queue ────────────────────────────
   //
@@ -1023,6 +1063,14 @@ export async function PATCH(
       urlTitle: 'Respond',
       priority: 0,
     });
+    // Agent chat: a mission filed from a conversation gets the question posted
+    // back into it. Lazy + best-effort: never on this PATCH's critical path.
+    if (worker.taskId) {
+      const taskId = worker.taskId;
+      void import('@/lib/chat/mission-events')
+        .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
+        .catch(() => {});
+    }
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
@@ -1137,7 +1185,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1154,7 +1202,7 @@ export async function PATCH(
    * had not, and 400'd on completion.
    *
    * `artifacts` has no taskId column, so mission-level rows are attributed by
-   * (missionId, touched since this worker started). The time bound is what stops
+   * (missionId, no owning worker, touched since this worker started). The time bound is what stops
    * a sibling task's pre-existing mission artifact from satisfying the gate.
    */
   // Captured outside the closure: narrowing of `worker` does not survive into a
@@ -1167,11 +1215,77 @@ export async function PATCH(
     const where = taskMissionId
       ? or(
           eq(artifacts.workerId, id),
-          and(eq(artifacts.missionId, taskMissionId), gte(artifacts.updatedAt, workStart)),
+          // workerId NULL only: a mission-level row (api/missions/[id]/artifacts).
+          // A row another worker owns is ITS deliverable, and every mission
+          // upload now carries missionId (upload-url, create_artifact), so a
+          // sibling's screenshot must not satisfy this task's gate.
+          and(eq(artifacts.missionId, taskMissionId), isNull(artifacts.workerId), gte(artifacts.updatedAt, workStart)),
         )
       : eq(artifacts.workerId, id);
     const rows = await db.query.artifacts.findMany({ where, limit: 1 });
     return rows.length > 0;
+  }
+
+  // The task was cancelled while this session was still running. The cancel's
+  // abort push is best-effort, so the session can outlive it: the agent's own
+  // complete_task is then refused by the MCP write fence (TASK CANCELLED), the
+  // SDK session still ends cleanly, and the runner's fallback completion PATCH
+  // lands here. The output gate below would demand a PR/artifact for a task
+  // nobody wants any more and 400 it — which the runner recorded as a terminal
+  // error and failure analytics counted as a failure.
+  //
+  // So a completion on a cancelled task that delivered nothing is recorded as
+  // what it is — a cancellation — instead of being gated. One that DID deliver
+  // (a PR or artifact made before the cancel landed) keeps completing exactly
+  // as before; that is the same carve-out the MCP write fence makes. Failed /
+  // error reports on a cancelled task take the same exit cause via
+  // classifyReportedFailure below (the runner's abort path reports `failed`).
+  //
+  // "Delivered" includes an open PR on the worker's branch that is not on the
+  // worker row yet (opened via `gh pr create`, not create_pr): the gate's
+  // GitHub auto-detect below is the door that adopts it, so a cancellation
+  // rewrite here must not pre-empt it. Only probed when nothing else counts.
+  const workerBranch = worker.branch;
+  const workerWorkspaceId = worker.workspaceId;
+  async function hasOpenPrOnWorkerBranch(): Promise<boolean> {
+    if (!workerBranch) return false;
+    try {
+      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workerWorkspaceId) });
+      if (!ws?.githubRepoId) return false;
+      const repo = await db.query.githubRepos.findFirst({
+        where: eq(githubRepos.id, ws.githubRepoId),
+        with: { installation: true },
+      }) as { fullName: string; installation: { installationId: number } | null } | undefined;
+      if (!repo?.installation) return false;
+      const owner = repo.fullName.split('/')[0];
+      const prs = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(owner + ':' + workerBranch)}&state=open`,
+      );
+      return Array.isArray(prs) && prs.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  const taskCancelledUnderSession = isTerminalStatus && terminalTaskRow[0]?.status === 'cancelled';
+  if (
+    status === 'completed' && taskCancelledUnderSession && !workerHasPR
+    && !(await hasDeliverableArtifact()) && !(await hasOpenPrOnWorkerBranch())
+  ) {
+    status = 'failed';
+    error = TASK_CANCELLED_UNDER_SESSION_ERROR;
+    updates.status = 'failed';
+    updates.error = error;
+    // Nothing of this worker's shipped; there is no branch to release.
+    skipRelease = true;
+    // The status-transition milestone above was written for the reported
+    // status; keep the audit trail truthful about what was recorded.
+    const trail = updates.milestones as Array<Record<string, unknown>> | undefined;
+    const last = trail?.[trail.length - 1];
+    if (last?.type === 'statusTransition' && last.to === 'completed') {
+      last.to = 'failed';
+      if (typeof last.label === 'string') last.label = `Status: ${worker.status} → failed (task cancelled)`;
+    }
   }
 
   if (status === 'completed') {
@@ -1446,8 +1560,37 @@ export async function PATCH(
         return frictionSignature;
       };
 
+      // A visual-auditor task (the mission's [surface audit]) is gated on its
+      // own evidence, which REPLACES hasDeliverableArtifact: a summary, a PR or
+      // a sibling's mission artifact must not pass an audit that never looked.
+      // Every required route × {mobile, desktop} needs a screenshot from this
+      // worker with a finding and a stored object, and every issue a fix task.
+      // Checked ahead of every outputRequirement arm so no `hasPR` shortcut
+      // can satisfy it. See lib/visual-audit-evidence.ts.
+      const isVisualAuditorTask = terminalTaskRow[0]?.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+      if (isVisualAuditorTask && worker.taskId) {
+        const evidence = await loadVisualAuditEvidence({
+          workerId: id,
+          taskId: worker.taskId,
+          missionId: taskMissionId,
+          workspaceId: worker.workspaceId,
+          workerStartedAt,
+        });
+        if (!evidence.ok) {
+          const frictionSignature = await persistRejectedCompletionPayload('visual_evidence');
+          return NextResponse.json({
+            error: formatVisualEvidenceRejection(evidence),
+            hint: 'visual_evidence',
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        // Screenshots are the deliverable; the auditor ships nothing to merge.
+        skipRelease = true;
+      }
+
       // pr_required: always require a PR (regardless of commits)
-      if (outputReq === 'pr_required' && !hasPR) {
+      if (outputReq === 'pr_required' && !hasPR && !isVisualAuditorTask) {
         const frictionSignature = await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
@@ -1462,7 +1605,7 @@ export async function PATCH(
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
-      if (outputReq === 'artifact_required' && !hasPR) {
+      if (outputReq === 'artifact_required' && !hasPR && !isVisualAuditorTask) {
         if (!(await hasDeliverableArtifact())) {
           const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
@@ -1548,14 +1691,18 @@ export async function PATCH(
         // shape `error` produces.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
+          // Each variant is a complete leading sentence. The no-work variant
+          // used to be spliced into "Task has … but no pull request or
+          // artifact", which read "…without the agent calling complete_task
+          // but no pull request or artifact".
           const workDescription = effectiveCommits > 0
-            ? `${effectiveCommits} commit(s) on branch`
+            ? `Task has ${effectiveCommits} commit(s) on branch but no pull request or artifact.`
             : effectiveDirtyWorktree
-              ? 'uncommitted changes in the worktree'
-              : 'no confirmed outcome — the session ended without the agent calling complete_task';
+              ? 'Task has uncommitted changes in the worktree but no pull request or artifact.'
+              : 'Task has no confirmed outcome: the session ended without the agent calling complete_task, and there is no pull request or artifact.';
           const frictionSignature = await persistRejectedCompletionPayload('auto');
           return NextResponse.json({
-            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
+            error: `${workDescription} Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
             // Machine-readable identity of the refusal, so the runner reports
             // this as the output-gate decision it is instead of unwinding into
@@ -1814,6 +1961,7 @@ export async function PATCH(
   const isUnrecognizedModel = (status === 'failed' || status === 'error') && isUnrecognizedModelError(error);
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
+      taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
@@ -2472,13 +2620,15 @@ export async function PATCH(
 
       // Auto-retry: mission tasks get 1 automatic retry before permanently failing
       let infraStalledFail = false;
+      // A visual-auditor mission task that fails for good (see below).
+      let auditStalledFail = false;
       let infraRetryStartAt: Date | null = null;
       const MAX_INFRA_RETRIES_PATCH = 3;
       const INFRA_BACKOFF_MINUTES_PATCH = [5, 15, 30] as const;
       if (status === 'failed') {
         const taskForRetry = await db.query.tasks.findFirst({
           where: eq(tasks.id, worker.taskId),
-          columns: { missionId: true, context: true, status: true },
+          columns: { missionId: true, context: true, status: true, roleSlug: true },
         });
         taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
         const retryCount = (taskCtxForRetry.retryCount as number) || 0;
@@ -2550,6 +2700,20 @@ export async function PATCH(
             shouldAutoRetry = false;
             infraStalledFail = true;
           }
+        }
+
+        // Visual auditor (docs/design/visual-qa-auditor.md): an audit that
+        // errors before it can park a question has seen nothing. A plain
+        // `failed` is terminal in canCompleteMission and would RELEASE the
+        // mission, so once its retries are spent it is recorded infra_stalled,
+        // which holds the mission until a human looks. A cancel is a human's
+        // call and is left alone.
+        if (
+          !shouldAutoRetry && !infraStalledFail &&
+          taskForRetry?.missionId && taskForRetry.roleSlug === VISUAL_AUDITOR_ROLE_SLUG &&
+          taskForRetry.status !== 'cancelled'
+        ) {
+          auditStalledFail = true;
         }
 
         // Capture branch coordinates from the failing worker for retry continuity.
@@ -2878,6 +3042,13 @@ export async function PATCH(
               error: `Task stalled: infra errors prevented startup on ${MAX_INFRA_RETRIES_PATCH} consecutive attempts`,
               errorType: 'infra_stalled',
               infraRetryCount: MAX_INFRA_RETRIES_PATCH,
+            },
+          } : auditStalledFail ? {
+            result: {
+              error: isSensitive
+                ? 'Visual audit ended without evidence'
+                : `Visual audit ended without evidence: ${error ?? worker.error ?? 'worker failed without an error message'}`,
+              errorType: 'infra_stalled',
             },
           } : isSessionBudgetCap ? {
             result: {
@@ -3417,6 +3588,13 @@ export async function PATCH(
             });
           } else {
             // Sensitive: send a redacted stub — event type only, no task title/workspace prose
+            if (isDone) {
+              // Agent chat: "plan ready" for a chat-filed mission, posted back
+              // into its conversation. Lazy + best-effort.
+              void import('@/lib/chat/mission-events')
+                .then(m => m.postTaskCompletedEvent({ taskId }))
+                .catch(() => {});
+            }
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: isSensitive
@@ -3435,8 +3613,8 @@ export async function PATCH(
             if (!isDone && isCredentialExpiredError(error)) {
               void notifyTeam(notifyTeamId, 'credentialExpired', {
                 title: '🔑 Agent credential expired',
-                message: `Your Claude credential is expired or invalid — re-set it in Settings → Agent Backends.\nTask: ${taskRecord.title}`,
-                url: `https://buildd.dev/app/settings`,
+                message: `Your Claude credential is expired or invalid — set it again under Settings, Runners.\nTask: ${taskRecord.title}`,
+                url: `https://buildd.dev/app/settings/runners`,
                 urlTitle: 'Open settings',
                 priority: 1,
               });
@@ -4390,7 +4568,7 @@ async function handleReviewerOutcomeIfNeeded(
             taskId: originalTaskId,
             authorType: 'system',
             type: 'reviewer_approved',
-            title: `PR #${prNumber} approved — awaiting human merge`,
+            title: approvedAwaitingMergeTitle(prNumber),
             body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
             status: 'open',
           });

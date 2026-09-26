@@ -8,7 +8,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
 import { hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import ExternalLink from '@/components/ExternalLink';
+import { RecentTaskRow, CurrentTaskCard } from './RoleTaskRows';
 import { roleModelLabel } from '@/lib/model-presentation';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
@@ -259,11 +259,13 @@ export default async function RoleProfilePage({
         </Link>
 
         {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
+        {/* Avatar + identity share a row; Edit Config drops below on phones so
+            the description gets the full width. */}
+        <div className="flex flex-wrap sm:flex-nowrap items-start sm:items-center gap-4 mb-8">
           <RoleAvatar name={role.name} color={role.color} size={56} />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-text-primary">{role.name}</h1>
+          <div className="flex-1 min-w-0 basis-[calc(100%-72px)] sm:basis-auto">
+            <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
+              <h1 className="text-2xl font-bold text-text-primary [overflow-wrap:anywhere]">{role.name}</h1>
               <StatusBadge status={overallStatus} />
             </div>
             <div className="flex items-center gap-2 flex-wrap text-sm text-text-muted mt-0.5">
@@ -272,7 +274,7 @@ export default async function RoleProfilePage({
               <span>{modelLabel}</span>
               <span>&middot;</span>
               {scopeWorkspaceName ? (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-surface-3 text-text-muted">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
                     <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                     <polyline points="9,22 9,12 15,12 15,22" />
@@ -280,7 +282,7 @@ export default async function RoleProfilePage({
                   {scopeWorkspaceName}
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
                     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
                   </svg>
@@ -297,7 +299,7 @@ export default async function RoleProfilePage({
               ? `/app/workspaces/${role.workspaceId}/skills/${role.id}`
               : `/app/team/${role.slug}/settings`
             }
-            className="px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary border border-border-default rounded-md hover:bg-surface-2 transition-colors shrink-0"
+            className="w-full sm:w-auto text-center min-h-11 sm:min-h-0 inline-flex sm:inline-block items-center justify-center px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary border border-border-default rounded-md hover:bg-surface-2 transition-colors shrink-0"
           >
             Edit Config
           </Link>
@@ -311,40 +313,17 @@ export default async function RoleProfilePage({
             {currentWorker && currentWorker.task && (
               <section>
                 <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Current Task</h2>
-                <Link
-                  href={`/app/tasks/${(currentWorker.task as any).id}`}
-                  className="block rounded-lg bg-[var(--card)] border border-border-default p-4 hover:bg-surface-2 transition-colors"
-                >
-                  <div className="text-[14px] font-medium text-text-primary mb-1">
-                    {(currentWorker.task as any).title}
-                  </div>
-                  <div className="flex items-center gap-2 text-[12px] text-text-muted">
-                    <span>{(currentWorker.task as any).workspace?.name}</span>
-                    {currentWorker.startedAt && (
-                      <>
-                        <span>&middot;</span>
-                        <span>{timeAgo(currentWorker.startedAt)}</span>
-                      </>
-                    )}
-                    {(currentWorker as any).prUrl && (
-                      <>
-                        <span>&middot;</span>
-                        <ExternalLink
-                          href={(currentWorker as any).prUrl}
-                          className="text-accent-text hover:underline"
-                        >
-                          PR #{(currentWorker as any).prNumber}
-                        </ExternalLink>
-                      </>
-                    )}
-                    {(currentWorker.task as any).mission?.title && (
-                      <>
-                        <span>&middot;</span>
-                        <span className="text-accent-text truncate max-w-[160px]">{(currentWorker.task as any).mission.title}</span>
-                      </>
-                    )}
-                  </div>
-                </Link>
+                <CurrentTaskCard
+                  task={{
+                    id: (currentWorker.task as any).id,
+                    title: (currentWorker.task as any).title,
+                    workspaceName: (currentWorker.task as any).workspace?.name,
+                    missionTitle: (currentWorker.task as any).mission?.title,
+                  }}
+                  startedAgo={currentWorker.startedAt ? timeAgo(currentWorker.startedAt) : null}
+                  prNumber={(currentWorker as any).prNumber}
+                  prUrl={(currentWorker as any).prUrl}
+                />
               </section>
             )}
 
@@ -400,23 +379,14 @@ export default async function RoleProfilePage({
                     const latestWorker = task.workers?.[0];
                     const dotClass = STATUS_DOT[task.status] || STATUS_DOT.pending;
                     return (
-                      <Link
+                      <RecentTaskRow
                         key={task.id}
-                        href={`/app/tasks/${task.id}`}
-                        className="flex items-center gap-3 rounded-md px-3 py-2 hover:bg-surface-2 transition-colors group"
-                      >
-                        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotClass}`} />
-                        <span className="text-[13px] text-text-primary truncate flex-1 group-hover:text-accent-text">
-                          {task.title}
-                        </span>
-                        <span className="text-[11px] text-text-muted shrink-0">{task.status}</span>
-                        {latestWorker?.prNumber && (
-                          latestWorker.prUrl
-                            ? <ExternalLink href={latestWorker.prUrl} className="text-[11px] text-accent-text shrink-0 hover:underline">PR #{latestWorker.prNumber}</ExternalLink>
-                            : <span className="text-[11px] text-accent-text shrink-0">PR #{latestWorker.prNumber}</span>
-                        )}
-                        <span className="text-[11px] text-text-muted shrink-0">{timeAgo(task.createdAt)}</span>
-                      </Link>
+                        task={task}
+                        dotClass={dotClass}
+                        createdAgo={timeAgo(task.createdAt)}
+                        prNumber={latestWorker?.prNumber}
+                        prUrl={latestWorker?.prUrl}
+                      />
                     );
                   })}
                 </div>

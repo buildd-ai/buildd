@@ -1,0 +1,3 @@
+ALTER TABLE "spec_discrepancies" ADD COLUMN "recheck_requested_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "spec_discrepancies" ADD COLUMN "auto_follow_up_task_id" uuid;--> statement-breakpoint
+ALTER TABLE "spec_discrepancies" ADD CONSTRAINT "spec_discrepancies_auto_follow_up_task_id_tasks_id_fk" FOREIGN KEY ("auto_follow_up_task_id") REFERENCES "public"."tasks"("id") ON DELETE set null ON UPDATE no action;

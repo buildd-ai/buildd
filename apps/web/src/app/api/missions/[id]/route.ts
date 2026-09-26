@@ -21,6 +21,7 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
+import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -422,6 +423,13 @@ export async function PATCH(
     }
     if (mergePolicy !== undefined) {
       if (mergePolicy !== null) {
+        const removedField = findRemovedPathFieldInMergePolicy(mergePolicy);
+        if (removedField) {
+          return NextResponse.json(
+            { error: removedPolicyPathFieldError(removedField), field: removedField },
+            { status: 400 },
+          );
+        }
         const result = mergePolicySchema.safeParse(mergePolicy);
         if (!result.success) {
           const msg = result.error.issues[0]?.message ?? 'invalid';

@@ -45,7 +45,7 @@ export default function ModelUsagePanel({
 
   return (
     <div className="mt-3 p-3 bg-surface-3 rounded-[8px] border border-border-default/50">
-      <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
         {tierLabel ? `${tierLabel} · ` : ''}Model Usage
         {multiple ? ` · ${all.length} models` : ''}
       </div>
@@ -72,7 +72,7 @@ export default function ModelUsagePanel({
         })}
       </div>
       {(total > 0 || api > 0) && (
-        <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border-default/30 font-mono text-[10px] text-text-muted">
+        <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border-default/30 font-mono text-[11px] md:text-[10px] text-text-muted">
           {total > 0 && <span>Total: {(total / 1000).toFixed(0)}s</span>}
           {api > 0 && <span>API: {(api / 1000).toFixed(0)}s</span>}
           {terminalReason && terminalReason !== 'completed' && (

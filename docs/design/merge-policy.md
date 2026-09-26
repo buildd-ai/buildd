@@ -71,13 +71,13 @@ interface MergePolicy {
   threshold?: {
     maxLines?: number;           // total additions+deletions; default 800
     maxSourceLines?: number;     // non-test lines only; default = maxLines
-    denyPaths?: string[];        // block if any touched file starts with these prefixes
+    denyPaths?: string[];        // DEPRECATED — refused on write; legacy stored value read for one release (§1.6)
   };
 
   // Tier 2 config (required when tier = 'agent-review')
   agentReview?: {
     reviewerRole: string;        // slug of the reviewer skill registered in workspace_skills
-    escalateToPaths?: string[];  // deny-path-like list; reviewer MUST escalate to human if any touched
+    escalateToPaths?: string[];  // DEPRECATED — refused on write; legacy stored value read for one release (§1.6)
     maxConfidenceThreshold?: number; // 0–1; reviewer escalates if confidence < this value (default 0.6)
     gateCondition?: 'approve-and-merge' | 'approve-only'; // default 'approve-and-merge'
   };
@@ -136,7 +136,7 @@ inherited the `auto-threshold` default anyway — a PR the reviewer had already 
 under `gateCondition: 'approve-and-merge'` could still be refused by an 800-line cap nobody had
 configured for that tier (see PR #2540). **`evaluateAutoMergeSafety` now runs the aggregate
 line-count check only when the resolved policy's `tier` is `auto-threshold`.** Every other check —
-CI status, `threshold.denyPaths` / `agentReview.escalateToPaths`, the migration operation-class
+CI status, legacy stored deny/escalate paths (fallback release, §1.6), the migration operation-class
 inspector, and the conflict / `mergeable_state` check — still runs at every tier; see the table in
 §2.1.
 
@@ -152,6 +152,29 @@ non-`auto-threshold` policy would break this carry-through (confirmed by running
 dropping the tier` test against such a schema), so validation was deliberately left as-is; the
 tier gate inside `evaluateAutoMergeSafety` is what actually closes the bug.
 
+### 1.6 Paths are detected, never typed
+
+Hand-written path lists are gone. Which paths are risky comes only from the repo scan:
+`POST /api/workspaces/[id]/policy-init` (MCP `manage_workspaces action=init`) detects paths per
+risk class into `gitConfig.policyConfig.riskClasses[].detectedPaths`, and applying it is
+`PATCH /api/workspaces/[id]/config { policyConfig }`. The Merge Policy settings page shows the
+detected paths read-only with one **Re-scan repo** button that re-runs the scan and shows the
+added/removed paths per class before applying; the workspace health card reuses the same sheet.
+
+Every write path refuses these fields with HTTP 400 and a message pointing at Re-scan repo —
+config `POST`/`PATCH`, `PATCH /api/workspaces/[id]` `gitConfig`, mission create/update, and MCP
+`manage_workspaces action=update`:
+
+- `gitConfig.autoMergeDenyPaths`, `gitConfig.escalateToPaths`
+- `mergePolicy.threshold.denyPaths`, `mergePolicy.agentReview.escalateToPaths`
+- `policyConfig.riskClasses[].userPaths`
+
+`userPaths` is no longer read when matching. A legacy **stored** `threshold.denyPaths` /
+`agentReview.escalateToPaths` is still honoured, read-only, by `evaluateAutoMergeSafety` and
+`preflightEscalationCheck` for one release (`LEGACY_PATH_FALLBACK_NOTE` in `@buildd/shared`, dated
+2026-09-24), so stored data cannot silently lose coverage; that fallback is removed next release.
+`parseMergePolicy` stays tolerant of the two keys for the same reason — it also backs the read path.
+
 ---
 
 ## 2. Tier 1 — auto-threshold
@@ -161,14 +184,15 @@ This tier is the existing CI-gated mechanism, formalized.
 ### 2.1 Evaluation (unchanged logic, now named)
 
 `evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts` implements this.
-It reads path/line limits from the resolved `MergePolicy` — `threshold.denyPaths` at tier 1,
-`agentReview.escalateToPaths` at tier 2 — rather than directly from `gitConfig` fields.
+It reads line limits from the resolved `MergePolicy`, and — for one fallback release only (§1.6) —
+any legacy stored `threshold.denyPaths` at tier 1 / `agentReview.escalateToPaths` at tier 2.
+Risk-class paths are enforced by the `policyConfig` tier override, not by this list.
 
 Gates (in order):
 1. All CI check suites passed
 2. `mergeable_state` not `dirty` (conflict → attempt rebase; if rebase fails, escalate)
 3. Base freshness: headSha is not behind the base branch's current tip (stale → same rebase-and-retest path as a conflict; see below)
-4. No touched file starts with a `denyPaths` prefix
+4. No touched file starts with a legacy stored `denyPaths` prefix (fallback release only, §1.6)
 5. `additions + deletions` ≤ `maxLines` (or `source lines` ≤ `maxSourceLines` when both set) — **`auto-threshold` only**, see §1.5 and the table below
 
 When all gates pass: squash-merge + branch delete.
@@ -185,7 +209,7 @@ gate and in which path list gates paths:
 | Check | `auto-threshold` | `agent-review` | `human` |
 |---|---|---|---|
 | CI status green | ✅ | ✅ | function not called |
-| Deny/escalate paths (`threshold.denyPaths` / `agentReview.escalateToPaths`) | ✅ | ✅ | function not called |
+| Legacy stored deny/escalate paths (fallback release only, §1.6) | ✅ | ✅ | function not called |
 | Migration operation-class inspector (EXPAND passes, CONTRACT escalates) | ✅ | ✅ | function not called |
 | Conflict / `mergeable_state` check | ✅ | ✅ | function not called |
 | Base freshness (headSha not behind the base branch's current tip) | ✅ | ✅ | function not called |
@@ -296,7 +320,7 @@ Output format:
 
 ESCALATION IS REQUIRED when:
 - The diff touches schema migration files (drizzle/*.sql, packages/core/db/schema.ts)
-- The diff touches paths in the workspace's escalateToPaths list
+- Your task context resolves a touched risk class to human review (the workspace's detected risk-class paths)
 - Your confidence is below the workspace's maxConfidenceThreshold
 - The PR is a release PR (base branch is main or the workspace's prodBranch)
 - You detect a possible security issue
@@ -412,7 +436,7 @@ These override the reviewer's own confidence and force `escalate` regardless:
 | Trigger | Detection |
 |---|---|
 | Schema migration | PR touches `drizzle/*.sql` OR `packages/core/db/schema.ts` |
-| Deny-path | Any touched file path starts with `policy.agentReview.escalateToPaths[]` |
+| Risk class | A touched file is covered by a detected `policyConfig` risk class whose preset action is `human` (a legacy stored `agentReview.escalateToPaths[]` prefix also triggers, fallback release only — §1.6) |
 | Low confidence | Reviewer output `confidence < policy.agentReview.maxConfidenceThreshold` |
 | Release PR | `pr.base.ref` is the workspace's `prodBranch` (main or releaseConfig.prodBranch) |
 

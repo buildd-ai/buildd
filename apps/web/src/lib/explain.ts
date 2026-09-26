@@ -24,7 +24,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, unmetDependencyIds } from '@/lib/mission-helpers';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
@@ -32,6 +32,7 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
+import { missionCardProgress, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import {
   buildStateBecause,
@@ -135,6 +136,8 @@ type LoadedTask = {
   loopState: unknown;
   result: unknown;
   createdAt: Date | null;
+  updatedAt?: Date | null;
+  dependsOn?: string[] | null;
   workers: Array<{
     id: string;
     status: string;
@@ -157,7 +160,7 @@ const TASK_COLUMNS = {
   id: true, title: true, status: true, mode: true, kind: true, taskClass: true,
   parentTaskId: true, creationSource: true, category: true, subjectPrNumber: true,
   pathManifest: true, context: true, startAt: true, loopConfig: true, loopState: true,
-  result: true, createdAt: true,
+  result: true, createdAt: true, updatedAt: true, dependsOn: true,
 } as const;
 
 /**
@@ -176,6 +179,11 @@ const WORKER_WITH = {
 
 const LIVE_WORKER_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
 const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+
+/** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
+function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
+  return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
+}
 
 function iso(d: Date | string | null | undefined): string | null {
   if (!d) return null;
@@ -289,10 +297,11 @@ async function viewForMission(missionId: string): Promise<{
     loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
   );
 
-  const completedDeliverables = deliverables.filter(t => t.status === 'completed').length;
-  const progress = deliverables.length > 0
-    ? Math.round((completedDeliverables / deliverables.length) * 100)
-    : undefined;
+  // The card's n/N (`missionCardProgress`): rows folded (D1), cancelled out of
+  // N, a completed task with an open PR not done. One definition, so the
+  // criteria gate below presents the same on the card and on this page.
+  const counted = missionCardProgress(loaded as unknown as MissionCardTaskRow[]);
+  const progress = counted.total > 0 ? counted.progress : undefined;
 
   const criteria = Array.isArray(m.goalCriteria) ? (m.goalCriteria as unknown[]) : [];
   const criteriaState = (m.goalCriteriaState ?? null) as
@@ -338,6 +347,10 @@ async function viewForMission(missionId: string): Promise<{
 
   const activeAgents = loaded.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
   const openTasks = deliverables.filter(t => OPEN_TASK_STATUSES.has(t.status));
+  // A pending row waiting on an unmet dependency cannot be the blocker; the
+  // accessor cites the dependency instead (same rule as the claim gate).
+  const loadedById = new Map(loaded.map(t => [t.id, t]));
+  const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
@@ -363,7 +376,7 @@ async function viewForMission(missionId: string): Promise<{
     completion,
     wait,
     workState,
-    openTasks: openTasks.map(t => ({ id: t.id, status: t.status, title: t.title })),
+    openTasks: openTasks.map(t => ({ id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t) })),
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
@@ -380,7 +393,13 @@ async function viewForMission(missionId: string): Promise<{
     mission: m,
     loaded,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
+      openTasks: openTasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        live: hasLiveWorker(t),
+        waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
+      })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,
@@ -579,7 +598,7 @@ async function viewForTask(taskId: string): Promise<{
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,

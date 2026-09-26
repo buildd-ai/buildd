@@ -135,6 +135,36 @@ describe('deriveMissionStateView — blocked by a failing criterion', () => {
   });
 });
 
+describe('deriveMissionStateView — a runner verification task nobody claims', () => {
+  const items = [
+    { verdict: 'PENDING', type: 'description', label: 'Contract applied', awaitingRunner: true },
+    { verdict: 'pass', type: 'no_open_tasks' },
+  ];
+
+  it('names the criterion it is waiting for a runner to verify, instead of hanging silently', () => {
+    const gate = deriveCriteriaGatePresentation({ criteriaCount: 2, overall: 'UNVERIFIED', items: items as never });
+    const view = deriveMissionStateView({ ...base, criteriaGate: gate, criteriaItems: items });
+
+    expect(view.kind).toBe('awaiting_verification');
+    const waiting = gated(view);
+    if (waiting.kind !== 'criterion_unverified') throw new Error('unreachable');
+    expect(waiting.awaitingRunner).toEqual(['Contract applied']);
+    expect(waiting.tone).toBe('warning');
+    expect(view.situation.headline.toLowerCase()).toContain('waiting for a runner to verify "contract applied"');
+    expect(view.nextAction).toMatch(/runner/);
+  });
+
+  it('stays the quiet "not yet verified" line while the task is merely in flight', () => {
+    const inFlight = [{ verdict: 'PENDING', type: 'description', label: 'Contract applied' }];
+    const gate = deriveCriteriaGatePresentation({ criteriaCount: 1, overall: 'UNVERIFIED', items: inFlight as never });
+    const view = deriveMissionStateView({ ...base, criteriaGate: gate, criteriaItems: inFlight });
+    const waiting = gated(view);
+    if (waiting.kind !== 'criterion_unverified') throw new Error('unreachable');
+    expect(waiting.awaitingRunner).toBeUndefined();
+    expect(waiting.tone).toBe('neutral');
+  });
+});
+
 describe('deriveMissionStateView — blocked by an unverified criterion', () => {
   const items = [{ verdict: 'UNVERIFIED', label: 'design doc exists' }];
 
@@ -149,7 +179,7 @@ describe('deriveMissionStateView — blocked by an unverified criterion', () => 
     expect(waiting.kind).toBe('criterion_unverified');
     // The whole point: neutral, not warning, not error.
     expect(waiting.tone).toBe('neutral');
-    expect(waiting.label).toBe('1 criterion not yet verified — run verification');
+    expect(waiting.label).toBe('1 criterion not verified yet · run verification');
     expect(view.nextAction).toBe('Run goal-criteria verification to produce a verdict.');
   });
 
@@ -255,7 +285,7 @@ describe('deriveMissionStateView — self-resolving wait', () => {
     expect(waiting.waitUntil).toBe('2026-01-01T12:00:00.000Z');
     expect(waiting.tone).toBe('neutral');
     expect(view.derivedFrom.kind).toBe('classifyMissionWait');
-    expect(view.nextAction).toContain('resumes on its own');
+    expect(view.nextAction).toContain('Work resumes at');
   });
 
   it('reports a heartbeat wait with no known resume time as waiting, not blocked', () => {
@@ -386,7 +416,7 @@ describe('deriveMissionStateView — precedence chain', () => {
     if (waiting.kind !== 'task_failed') throw new Error('unreachable');
     expect(waiting.infra).toBe(true);
     expect(waiting.taskIds).toEqual(['task-f']);
-    expect(view.nextAction).toContain('retries are already exhausted');
+    expect(view.nextAction).toContain('Retries are exhausted');
   });
 });
 

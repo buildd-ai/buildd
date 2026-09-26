@@ -53,7 +53,7 @@ export default function PlanStepTracker({ planMarkdown, milestones, currentActio
         className="w-full flex items-center justify-between px-4 py-3 bg-surface-3/50 rounded-lg hover:bg-surface-3 transition-colors text-left cursor-pointer mb-4"
       >
         <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] font-medium text-text-muted uppercase tracking-[2px]">Plan Progress</span>
+          <span className="font-mono text-[11px] md:text-[10px] font-medium text-text-muted uppercase tracking-[2px]">Plan Progress</span>
           <span className="font-mono text-xs text-primary">{summaryText}</span>
         </div>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" className="text-text-muted">
@@ -67,7 +67,7 @@ export default function PlanStepTracker({ planMarkdown, milestones, currentActio
     <div className="mb-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] font-medium text-text-muted uppercase tracking-[2px]">Plan Progress</span>
+          <span className="font-mono text-[11px] md:text-[10px] font-medium text-text-muted uppercase tracking-[2px]">Plan Progress</span>
           <span className="font-mono text-xs text-primary">{summaryText}</span>
         </div>
         <button

@@ -54,7 +54,6 @@ const ALLOWLIST: string[] = [
   'packages/core/model-display.ts', // humanises model IDs; the IDs in its docstrings ARE the spec of the parser
   'packages/core/model-catalog.ts', // normalises vendor model IDs; every hit is prose in a docstring, the code itself contains no ID literal
   'packages/core/mcp-tools.ts', // help/param documentation strings only
-  'apps/web/src/app/api/qa/judge/route.ts', // judge model pinned deliberately (PR #1029)
   'apps/runner/src/index.ts', // runner UI model dropdown
   'apps/runner/src/backends/codex-backend.ts', // brokers OpenAI/codex model IDs for the SDK
   'apps/web/src/lib/config-helpers.ts', // mission-config UI dropdown options

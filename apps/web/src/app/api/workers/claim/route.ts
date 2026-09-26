@@ -43,13 +43,15 @@ import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { missionNotHeld } from './held-gate';
+import { missionNotHeld, taskNotHeld } from './held-gate';
+import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
+import { attachRoleEnvSecrets } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachExternalContextProviders,
@@ -94,13 +96,18 @@ export async function POST(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   const account = await authenticateApiKey(apiKey);
+  // Incident-responder health probes hit this route once a minute with an empty
+  // body and mark themselves with `X-Probe: true`. They still get the normal
+  // 4xx below, but must not land in the gate ledger — every probe otherwise
+  // records a rejection and skews bypass/false-positive analytics.
+  const isProbe = req.headers.get('x-probe') === 'true';
   if (!account) {
     // Mirrors the runner's local `claim_rejected` log (apps/runner/src/workers.ts)
     // server-side — see #1511. This is the one gate in this route the runner
     // itself already detects (a thrown non-2xx `API error:` in buildd.ts); every
     // other row this route fires below is a per-task deferral the runner never
     // sees at all.
-    fireGateEvent({
+    if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
@@ -112,7 +119,7 @@ export async function POST(req: NextRequest) {
 
   // Trigger-level tokens cannot claim tasks
   if (account.level === 'trigger') {
-    fireGateEvent({
+    if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
@@ -126,7 +133,7 @@ export async function POST(req: NextRequest) {
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
   if (!runner) {
-    fireGateEvent({
+    if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
@@ -410,6 +417,8 @@ export async function POST(req: NextRequest) {
   // until explicitly armed (mission.isHeld=false). Force-starting a single task
   // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
   claimableConditions.push(missionNotHeld());
+  // A single task held by a person (PATCH { held: true }) waits for resume.
+  claimableConditions.push(taskNotHeld());
 
   // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
   // exclude tasks whose subject PR has been reconciled (marked dead by the
@@ -504,14 +513,10 @@ export async function POST(req: NextRequest) {
     )`
   );
 
-  // Filter by roleSlug: tasks with a role_slug are only claimable by runners
-  // that advertise that slug in availableSkills.
-  // If availableSkills is not provided, the runner can claim any task (backward compat).
-  if (availableSkills.length > 0) {
-    claimableConditions.push(
-      or(isNull(tasks.roleSlug), inArray(tasks.roleSlug, availableSkills))
-    );
-  }
+  // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
+  // (visual-auditor) need an explicit availableSkills match; every other role
+  // keeps the legacy rule, where an empty list claims anything.
+  claimableConditions.push(...roleSlugGate(availableSkills));
 
   // Over-fetch candidates so a deferred prefix (e.g. connector-mismatched tasks)
   // cannot exhaust the window and starve valid tasks behind it.
@@ -959,6 +964,7 @@ export async function POST(req: NextRequest) {
   // Used by the path-overlap claim guard below. Fetched once outside the loop
   // so we don't repeat the query for every candidate task.
   const openPrTasksByWorkspace = new Map<string, Array<{
+    taskId: string | null;
     pathManifest: string[] | null;
     prNumber: number | null;
     prUrl: string | null;
@@ -995,7 +1001,7 @@ export async function POST(req: NextRequest) {
 
       for (const w of activeOpenPrWorkers) {
         const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
-        const entry = { pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
+        const entry = { taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
         const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];
         list.push(entry);
         openPrTasksByWorkspace.set(w.workspaceId, list);
@@ -1163,20 +1169,22 @@ export async function POST(req: NextRequest) {
     // parallel when the orchestrator forgot to serialize them with dependsOn edges.
     // (Regression guard for the PRs #1126/#1129 incident.)
     //
-    // Exception: conflict-retry tasks are exempt from blocking on their own PR.
-    // A conflict-retry task works on the same PR as its original (to rebase &
-    // resolve conflicts), so the original's open PR should not block the retry.
-    // Exclude the conflict-retry PR number from the overlap check.
+    // Exception: fix attempts are exempt from blocking on their own PR.
+    // Conflict, review and CI fix attempts all copy the original's pathManifest
+    // and resume on the PR's branch, so that PR always overlaps — it is the
+    // thing being fixed, not a concurrent edit. Exempting only conflict retries
+    // stranded every review/CI fix behind the PR it was dispatched to fix.
+    // Likewise a task never blocks on a PR its own earlier worker opened: a
+    // loopUntilMerged parent re-queues while that PR is open and carries no
+    // *RetryPrNumber, so it deferred behind itself forever.
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
-      const conflictRetryPrNumber = (task as any).conflictRetryPrNumber as number | null | undefined;
-      // Filter out the conflict-retry PR if this task is retrying a conflict.
-      // The original PR is on the same task/branch being worked on, so overlap
-      // is not a conflict risk — it's the expected case.
-      const filterOpenPrTasks = conflictRetryPrNumber
-        ? openPrTasks.filter(pr => pr.prNumber !== conflictRetryPrNumber)
-        : openPrTasks;
+      const ownRetryPrNumber = ((task as any).conflictRetryPrNumber
+        ?? (task as any).reviewerRetryPrNumber
+        ?? (task as any).ciRetryPrNumber) as number | null | undefined;
+      const filterOpenPrTasks = openPrTasks.filter(pr =>
+        pr.taskId !== task.id && (!ownRetryPrNumber || pr.prNumber !== ownRetryPrNumber));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
@@ -1894,7 +1902,7 @@ export async function POST(req: NextRequest) {
         channels.workspace(claimedTask.workspaceId),
         events.TASK_CLAIMED,
         {
-          task: { id: claimedTask.id, title: claimedTask.title, status: 'assigned', workspaceId: claimedTask.workspaceId },
+          task: { id: claimedTask.id, title: claimedTask.title, status: 'assigned', workspaceId: claimedTask.workspaceId, missionId: claimedTask.missionId ?? null },
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
@@ -1936,6 +1944,7 @@ export async function POST(req: NextRequest) {
   // runs under (workspace override > team default). See ./skill-and-role-injection.
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
+  await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
 
   // Predict each task's file area from what similar COMPLETED tasks actually
   // touched, before any block is built — attachKnowledgeContext uses it as its

@@ -47,7 +47,8 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
 
   it('falls back to Related Tasks only when chain is empty', () => {
     // The Related Tasks section (with parent link) only renders when the chain is empty.
-    expect(pageSource).toContain(') : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (');
+    expect(pageSource).toContain(') : hasRelatedTasks && (');
+    expect(pageSource).toContain('const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;');
   });
 });
 
@@ -118,8 +119,26 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(feed).toBeLessThan(description);
   });
 
-  it('the error-count chip keeps the chip radius of its neighbours', () => {
-    expect(pageSource).toMatch(/className="[^"]*\brounded\b[^"]*"\n\s*title="Pattern-matched errors/);
+  it('the error-count chip is square like its neighbours (brutalist: no radius)', () => {
+    expect(pageSource).toMatch(/className="[^"]*"\n\s*title="Pattern-matched errors/);
+    expect(pageSource).not.toMatch(/className="[^"]*\brounded[^"]*"\n\s*title="Pattern-matched errors/);
+  });
+
+  it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
+    const main = pageSource.indexOf('data-testid="task-main"');
+    const worker = pageSource.indexOf('data-testid="task-active-worker"');
+    const aside = pageSource.indexOf('data-testid="task-side-panel"');
+    expect(main).toBeGreaterThan(0);
+    expect(worker).toBeGreaterThan(main);
+    expect(aside).toBeGreaterThan(worker);
+    // The worker view leads the main column at every width.
+    expect(pageSource).toContain('<div className="mb-8 order-first" data-testid="task-active-worker">');
+  });
+
+  it('one question, one surface: the worker view gets the linked note and the feed skips it', () => {
+    expect(pageSource).toContain('linkQuestionNote(openQuestionRows, activeWorker.id)');
+    expect(pageSource).toContain('questionNote={questionNote}');
+    expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
 
   it('passes the failed phase a truncated error excerpt, not the full worker error', () => {
@@ -151,5 +170,47 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
 
   it('keeps the status badge testid (AC-19)', () => {
     expect(pageSource).toContain('<span data-testid="task-header-status" data-status={displayStatus}>');
+  });
+});
+
+// Mobile layout (source-level: the page is a server component, see header).
+describe('mobile layout — tasks/[id]/page.tsx', () => {
+  it('Worker History: badge and PR link share one wrapper that wraps under the text below md', () => {
+    const meta = pageSource.match(/data-testid="worker-history-meta"[\s\S]*?<\/div>/)?.[0] ?? '';
+    expect(meta).toContain('pl-11 md:pl-0');
+    expect(meta).toContain('<StatusBadge');
+    expect(meta).toContain('worker.prUrl &&');
+  });
+
+  it('breadcrumb separator is hidden on mobile, where the task title after it is hidden', () => {
+    expect(pageSource).toContain('<span className="mx-2 hidden md:inline" aria-hidden="true">/</span>');
+  });
+});
+
+describe('"Also running" — tasks/[id]/page.tsx', () => {
+  it("drops the task's own lineage (CI-fix attempts, the task being fixed) from the peers list", async () => {
+    expect(pageSource).toContain("import { loadAlsoRunningWorkers } from './also-running-loader'");
+    expect(pageSource).toContain('loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES })');
+    const loader = await Bun.file(new URL('./also-running-loader.ts', import.meta.url)).text();
+    // The peer query must select the column the lineage walk reads, and filter on it.
+    expect(loader).toContain('missionId: true, parentTaskId: true } } },');
+    expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
+  });
+});
+
+describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
+  it('renders each related task through StatusBadge + deriveDisplayStatus, never the raw status enum', () => {
+    const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
+    expect(related).not.toContain('{sub.status}');
+    expect(related).not.toContain('{task.parentTask.status}');
+    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(sub.status)} />');
+    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />');
+  });
+});
+
+describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
+  it('shows the branch through displayBranchName with the full name in title', () => {
+    expect(pageSource).toContain('title={worker.branch}');
+    expect(pageSource).toContain('{displayBranchName(worker.branch)}');
   });
 });

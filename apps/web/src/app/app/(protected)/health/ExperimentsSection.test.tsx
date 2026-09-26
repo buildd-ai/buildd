@@ -75,7 +75,7 @@ describe('ExperimentsSection — controls are admin-only', () => {
 
     const draft = render({ canManage: true, items: [item({ status: 'draft', startedAt: null }, null)] });
     expect(draft).toContain('data-testid="experiment-start"');
-    expect(draft).toContain('nothing enrolls until it is started');
+    expect(draft).toContain('No tasks enroll until you start it');
 
     const paused = render({ canManage: true, items: [item({ status: 'paused' })] });
     expect(paused).toContain('Resume');

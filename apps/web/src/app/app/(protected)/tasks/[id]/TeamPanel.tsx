@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { ZonedTime } from '@/components/DisplayTimezone';
 
 interface TeamMember {
   name: string;
@@ -121,7 +122,7 @@ export default function TeamPanel({ localUiUrl, viewerToken, workerId }: TeamPan
               {team.messages.slice(-20).map((msg, i) => (
                 <div key={i} className="flex items-start gap-2 text-[11px] font-mono">
                   <span className="text-text-muted whitespace-nowrap">
-                    {new Date(msg.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    <ZonedTime value={msg.timestamp} format="time-seconds" />
                   </span>
                   <span className="text-accent-primary">{msg.from}</span>
                   <span className="text-text-muted">→</span>

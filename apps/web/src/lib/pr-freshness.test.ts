@@ -168,6 +168,19 @@ describe('resolveStaleGate', () => {
     })).toBeNull();
   });
 
+  // Regression: a PR opened minutes ago rendered "STALE 0h old — PR state has
+  // never been verified". Nothing is stale inside its first check window: the
+  // opening report is the observation, and the sweep has not been due yet.
+  it('does not call a PR stale inside its first check window, even unverified', () => {
+    expect(resolveStaleGate({ prOpenedAt: ago(10 * MINUTE_MS), prLifecycleVerifiedAt: null, now: NOW })).toBeNull();
+  });
+
+  it('a never-verified row past its first check window is unverified', () => {
+    const gate = resolveStaleGate({ prOpenedAt: ago(45 * MINUTE_MS), prLifecycleVerifiedAt: null, now: NOW });
+    expect(gate?.kind).toBe('unverified');
+    expect(gate?.reason).toContain('never been verified');
+  });
+
   it('flags a never-verified row as unverified, not open', () => {
     const gate = resolveStaleGate({
       prOpenedAt: ago(3 * HOUR_MS),

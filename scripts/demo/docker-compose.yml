@@ -1,0 +1,45 @@
+# Local, fully synthetic stack for scripts/demo (screenshots of the real dashboard).
+# Everything binds to 127.0.0.1 on non-default ports so it never collides with a
+# real dev setup and is never reachable off-box.
+#
+#   postgres     — plain Postgres, throwaway volume
+#   neon-proxy   — speaks Neon's HTTP /sql protocol in front of it, so the app's
+#                  unchanged drizzle-orm/neon-http client works (see
+#                  NEON_LOCAL_FETCH_ENDPOINT in packages/core/db/neon-local.ts)
+#   soketi       — Pusher-protocol server so live updates actually fire
+name: buildd-demo
+services:
+  postgres:
+    image: pgvector/pgvector:pg17 # migrations need the `vector` extension
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: buildd_demo
+    ports:
+      - "127.0.0.1:${DEMO_PG_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d buildd_demo"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+  neon-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+    environment:
+      PG_CONNECTION_STRING: postgres://demo:demo@postgres:5432/buildd_demo
+    ports:
+      - "127.0.0.1:${DEMO_NEON_PORT:-54444}:4444"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  soketi:
+    image: quay.io/soketi/soketi:1.6-16-debian
+    environment:
+      SOKETI_DEFAULT_APP_ID: demo-app
+      SOKETI_DEFAULT_APP_KEY: demo-key
+      SOKETI_DEFAULT_APP_SECRET: demo-secret
+    ports:
+      - "127.0.0.1:${DEMO_SOKETI_PORT:-56001}:6001"

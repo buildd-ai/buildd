@@ -30,6 +30,7 @@ import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
 import { appendPrActivity } from './pr-activity-comment';
 import { triggerEvent, channels, events } from './pusher';
+import { releaseAndNotify } from './path-claim-release';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import {
@@ -236,7 +237,8 @@ export function isSchemaTouchingFile(filename: string): boolean {
  * BT-10: Check PR files before spawning a reviewer task.
  * Returns shouldEscalate=true when:
  *   - PR touches schema migration files (drizzle/*.sql, packages/core/db/schema.ts)
- *   - PR touches any of policy.agentReview.escalateToPaths
+ *   - PR touches any legacy stored policy.agentReview.escalateToPaths (read-only
+ *     fallback, removed next release; ignored when policyConfig is set)
  *   - PR matches a risk class with action='human' in policyConfig (when set)
  *
  * This is a fail-safe on top of the reviewer agent's own escalation logic.
@@ -272,7 +274,10 @@ export function preflightEscalationCheck(
     return { shouldEscalate: false };
   }
 
-  // Legacy: policy deny-path check
+  // LEGACY FALLBACK (added 2026-09-24, REMOVE NEXT RELEASE — see
+  // LEGACY_PATH_FALLBACK_NOTE in @buildd/shared). Hand-written escalateToPaths
+  // are refused on every write path; this read keeps any stored value
+  // escalating for one release so no workspace silently loses coverage.
   const escalateToPaths = policy.agentReview?.escalateToPaths ?? [];
   if (escalateToPaths.length > 0) {
     for (const f of prFiles) {
@@ -1430,6 +1435,14 @@ export async function supersedeReviewerTaskOnMerge(
       .returning({ id: tasks.id });
 
     if (!cancelled) return { superseded: false, reviewerTaskId: null };
+
+    // This cancellation happens here, not through PATCH /api/tasks/[id], so it
+    // must release the reviewer task's own path claims itself — nothing landed
+    // from a cancelled review, so 'abandoned' is always correct. Without this,
+    // a reviewer that had claimed paths (e.g. via an observed-touch lease while
+    // applying a recommendation) strands them forever once its PR merges out
+    // from under it.
+    await releaseAndNotify(reviewerTask.id, 'abandoned');
 
     // Marking the worker failed does not stop a session that is already
     // running — it keeps spending budget until its next API call. Push the

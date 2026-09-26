@@ -5,7 +5,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, VISUAL_AUDITOR_ROLE_SLUG, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import {
@@ -65,8 +65,14 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true },
+    columns: { status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true },
   });
+  // A visual-auditor mission task is settled only by its own evidence check
+  // (workers/[id]/route.ts): the reaper never completes it from artifacts, and
+  // a permanent failure is infra_stalled, because a plain `failed` releases the
+  // mission as if the audit had looked (docs/design/visual-qa-auditor.md).
+  const isMissionVisualAudit = !!currentTask?.missionId && currentTask.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+  const auditStall = isMissionVisualAudit ? { errorType: 'infra_stalled' } : {};
   if (currentTask?.status === 'cancelled') {
     await resolveCompletedTask(taskId, workspaceId);
     return;
@@ -202,7 +208,7 @@ async function resolveStaleTask(
     } catch { /* non-fatal — artifact count defaults to 0; prUrl still checked below */ }
     deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
   }
-  const hasDeliverables = !!deliverables?.hasAny;
+  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit;
 
   if (hasDeliverables && staleWorker) {
     // B.5: Outcome-first summaries — use structuredOutput.summary when present.
@@ -259,6 +265,7 @@ async function resolveStaleTask(
           status: 'failed',
           result: {
             error: `Task failed after ${silentStarts.length} silent-start sessions (worker started but produced no output) — check the runner log for the last worker id`,
+            ...auditStall,
           } as any,
           updatedAt: new Date(),
         })
@@ -269,7 +276,7 @@ async function resolveStaleTask(
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `Task failed after ${chargeableFailures.length} worker attempts` } as any,
+          result: { error: `Task failed after ${chargeableFailures.length} worker attempts`, ...auditStall } as any,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));
@@ -995,6 +1002,16 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // Routing survives the retry: without it a visual-auditor audit would
+        // be claimable by any runner and skip its evidence check.
+        roleSlug: originalTask.roleSlug,
+        // A visual-auditor's required routes are re-derived at completion from
+        // its dependsOn (lib/visual-audit-evidence.ts). Its deps are the
+        // mission's builder tasks, already done, so copying them gates nothing
+        // new; dropping them would shrink the audit to "any one route".
+        ...(originalTask.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && Array.isArray(originalTask.dependsOn)
+          ? { dependsOn: originalTask.dependsOn }
+          : {}),
       })
       .returning({ id: tasks.id });
 

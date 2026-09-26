@@ -2,7 +2,7 @@
 title: Team / Workspace / Mission Onboarding
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-09-26
 summary: The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx]
@@ -234,8 +234,8 @@ a mission can do useful work.
 - AC-1: GIVEN a team with zero workspaces, WHEN the user views the Settings
   Workspaces section, THEN it MUST render a header with a "+ New Workspace" link
   and an empty state linking to `/app/workspaces/new` that explains workspace =
-  repo. *(Implemented — `settings/page.tsx` Workspaces section no longer hides
-  when empty.)*
+  repo. *(Implemented — `settings/workspaces/page.tsx` renders the list with a
+  "New workspace" link and an empty state.)*
 - AC-2: GIVEN the New Workspace form, WHEN the user has no GitHub App connected,
   THEN a "Connect GitHub" call-to-action MUST be shown (exists today via
   `/api/github/install`).
@@ -247,3 +247,42 @@ a mission can do useful work.
   `workspaces/new/page.tsx`
 
 **Out of scope**: Marketing/first-run tour.
+
+---
+
+## Model provider step for owners and admins ✅
+
+**Capability statement**: A team owner or admin whose team has no model
+provider key MUST see one step on Home that gets chat working, with three
+choices on one screen: Connect OpenRouter (OAuth PKCE, no copy-paste), paste a
+key, or let each person connect their own. Members MUST NOT see it. Chat is on
+as soon as a key resolves; there is no separate "turn on chat" step.
+
+**Acceptance criteria**:
+- AC-1: GIVEN an owner or admin, no key resolving and the team key policy
+  `team` or `team_or_own`, WHEN they open Home, THEN the provider step renders
+  above the fleet with "1 of 2" progress, OpenRouter first.
+- AC-2: GIVEN the step, WHEN the admin chooses "Not now", THEN it folds to one
+  line with "Resume" (per browser, per team) and stays folded on reload; it
+  leaves Home once chat is available.
+- AC-3: GIVEN "Connect OpenRouter", WHEN OpenRouter redirects back with a code,
+  THEN the callback checks the state against the httpOnly flow cookie,
+  re-checks the caller may write that scope, exchanges the code with the PKCE
+  verifier, and stores the key in `secrets` at team scope. The key is never
+  logged or put in a URL.
+- AC-4: GIVEN "Let each person connect their own", THEN the team key policy
+  becomes `own`, and anyone without a key sees a single "Connect OpenRouter to
+  start" card on Home and in place of chat, which uses the same flow at
+  personal scope.
+- AC-5: GIVEN a member of a team with no key and policy `team`, THEN Home shows
+  nothing new.
+
+**Code surface**:
+- UI: `apps/web/src/components/onboarding/ProviderOnboardingCard.tsx`,
+  `apps/web/src/components/onboarding/ConnectOwnKeyCard.tsx`,
+  `apps/web/src/app/app/(protected)/home/home-view.ts` (`homeChatPlacement`)
+- Routes: `apps/web/src/app/api/inference-keys/openrouter/start/route.ts`,
+  `apps/web/src/app/api/inference-keys/openrouter/callback/[state]/route.ts`
+- Lib: `apps/web/src/lib/openrouter-oauth.ts`
+
+**Out of scope**: A multi-step product tour.

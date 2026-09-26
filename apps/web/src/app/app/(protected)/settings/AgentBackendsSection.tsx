@@ -3,11 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import SettingsSection from './SettingsSection';
-import {
-  INFERENCE_CAPABILITIES,
-  ALL_INFERENCE_CAPABILITIES,
-  type InferenceCapability,
-} from '@buildd/core/inference-policy';
 import { useConfirm } from '@/components/useConfirm';
 
 /**
@@ -61,7 +56,7 @@ export function refreshResultMessage(
   }
   if (data?.status === 'refreshed') return { type: 'success', text: 'Token refreshed.' };
   if (data?.status === 'locked') return { type: 'success', text: 'Token was refreshed recently.' };
-  if (data?.status === 'error') return { type: 'error', text: 'Refresh failed — the credential may be invalid.' };
+  if (data?.status === 'error') return { type: 'error', text: 'Refresh failed. The credential may be invalid.' };
   return { type: 'error', text: 'No credential to refresh.' };
 }
 
@@ -248,20 +243,14 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   if (teamWorkspaces.length === 0) return null;
 
   return (
-    <SettingsSection title="Agent backends">
+    <SettingsSection title="Agent backends" id="agent-backends">
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
-          Credentials runners use to authenticate an agent backend. The team is the
-          auth boundary: set one credential for <strong className="text-text-primary">all workspaces</strong> in
-          the team, scope it to a single workspace{multiTeam ? <>, or apply it across <strong className="text-text-primary">all {teamTargets.length} teams</strong> you manage</> : null}.
+          One credential covers every workspace in the team. You can narrow it to one workspace{multiTeam ? <> or copy it to all {teamTargets.length} teams you manage</> : null}.
         </p>
 
         {/* Team provider routing toggle (reversible mask over the resolution chain) */}
         <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} onRoutingChange={refreshStrand} />
-        <div className="border-t border-border-default" />
-
-        {/* Per-action opt-in for metered inference (separate from holding a key) */}
-        <InferenceCapabilitiesToggle teamId={teamId} />
         <div className="border-t border-border-default" />
 
         {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
@@ -281,9 +270,11 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <div>
           <button
             onClick={() => setShowClaudeAlt((v) => !v)}
-            className="btn btn-quiet"
+            // .btn is nowrap + fixed 32px; this label is too long for a phone,
+            // so let it wrap (it used to push /app/settings into a sideways pan).
+            className="btn btn-quiet h-auto min-h-11 md:min-h-8 py-1.5 whitespace-normal text-left justify-start leading-snug max-w-full"
           >
-            {showClaudeAlt ? '▾' : '▸'} Other ways to connect Claude — setup token or API key
+            {showClaudeAlt ? '▾' : '▸'} Other ways to connect Claude: setup token or API key
           </button>
           {showClaudeAlt && (
             <div className="mt-3 pl-3 border-l-2 border-border-default">
@@ -311,123 +302,6 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
  * in one switch, instead of editing every workspace/role.
  */
-/**
- * Per-action opt-in for metered inference calls.
- *
- * Holding an inference key and spending it are separate decisions. An inference
- * call is seconds and cents; the agent path is slower and runs on the
- * subscription seat already being paid for. Which is right differs per action and
- * per team, so this is an allowlist rather than one master switch — and it starts
- * empty, so storing a key changes nothing until an action is opted in.
- */
-function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
-  const [enabled, setEnabled] = useState<InferenceCapability[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  const load = useCallback(async () => {
-    if (!teamId) return;
-    try {
-      const res = await fetch(`/api/teams/${teamId}`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = data.team?.enabledInferenceCapabilities as string[] | null | undefined;
-        setEnabled(ALL_INFERENCE_CAPABILITIES.filter((c) => (list ?? []).includes(c)));
-      }
-    } catch {
-      /* non-fatal */
-    } finally {
-      setLoaded(true);
-    }
-  }, [teamId]);
-
-  useEffect(() => { void load(); }, [load]);
-
-  const isOn = (c: InferenceCapability) => enabled.includes(c);
-
-  async function toggle(c: InferenceCapability) {
-    const next = isOn(c) ? enabled.filter((x) => x !== c) : [...enabled, c];
-    const ordered = ALL_INFERENCE_CAPABILITIES.filter((x) => next.includes(x));
-    const prev = enabled;
-    setEnabled(ordered); // optimistic
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await fetch(`/api/teams/${teamId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabledInferenceCapabilities: ordered }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
-      const d = INFERENCE_CAPABILITIES[c];
-      setMsg({
-        type: 'success',
-        text: isOn(c)
-          ? `${d.label} now uses an inference call (${d.costHint}).`
-          : d.fallback === 'agent'
-            ? `${d.label} is back on the agent path — slower, no metered spend.`
-            : `${d.label} is off. There is no agent fallback for it, so the feature is disabled.`,
-      });
-    } catch (e) {
-      setEnabled(prev); // rollback
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Inference spending</h3>
-        <p className="text-xs text-text-secondary mt-0.5">
-          Which actions may spend a metered inference call instead of dispatching an agent run.
-          Off by default — storing an inference key doesn&apos;t start any spend on its own.
-          Inference is faster; an agent run is slower but uses the subscription seat you already pay for.
-        </p>
-      </div>
-      <div className="space-y-2">
-        {ALL_INFERENCE_CAPABILITIES.map((c) => {
-          const d = INFERENCE_CAPABILITIES[c];
-          const on = isOn(c);
-          return (
-            <div key={c} className="flex items-start justify-between gap-3 inset-panel">
-              <span className="flex flex-col gap-0.5 text-sm text-text-primary">
-                <span className="flex flex-wrap items-center gap-2">
-                  <span className={`w-2 h-2 shrink-0 ${on ? 'bg-status-success' : 'bg-text-muted'}`} />
-                  {d.label}
-                  <span className="text-xs text-text-muted">
-                    {on ? `inference · ${d.costHint}` : d.fallback === 'agent' ? 'agent run' : 'disabled'}
-                  </span>
-                </span>
-                <span className="text-xs text-text-secondary">{d.description}</span>
-                {/* The distinction that must not be flattened: for these, off is
-                    not "slower", it is "gone". */}
-                {d.fallback === 'none' && !on && (
-                  <span className="text-xs text-status-warning">
-                    No agent fallback — this feature stays off until you enable it.
-                  </span>
-                )}
-              </span>
-              <button
-                onClick={() => toggle(c)}
-                disabled={busy || !loaded}
-                className={`btn shrink-0 ${on ? '' : 'btn-accent'}`}
-              >
-                {on ? 'Use agent' : 'Use inference'}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      {msg && (
-        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
-      )}
-    </div>
-  );
-}
-
 function ProviderRoutingToggle({
   teamId,
   workspaceId,
@@ -492,7 +366,7 @@ function ProviderRoutingToggle({
       const unconfigured = next.filter((id) => !(configured[id] ?? false));
       setMsg({
         type: 'error',
-        text: `${unconfigured.map(backendLabel).join(' & ')} ${unconfigured.length === 1 ? 'has' : 'have'} no credentials configured — enabling it alone would strand all pending tasks. Add ${unconfigured.map(backendLabel).join(' & ')} credentials first.`,
+        text: `${unconfigured.map(backendLabel).join(' & ')} ${unconfigured.length === 1 ? 'has' : 'have'} no credentials configured. Enabling it alone would strand all pending tasks. Add ${unconfigured.map(backendLabel).join(' & ')} credentials first.`,
       });
       return;
     }
@@ -514,7 +388,7 @@ function ProviderRoutingToggle({
       setMsg({
         type: 'success',
         text: off.length
-          ? `${off.map(backendLabel).join(' & ')} disabled — those jobs now run on ${next.map(backendLabel).join(' & ')}. Re-enable anytime; per-workspace settings are untouched.`
+          ? `${off.map(backendLabel).join(' & ')} disabled. Those jobs now run on ${next.map(backendLabel).join(' & ')}. Re-enable any time; per-workspace settings are unchanged.`
           : 'Both providers enabled (default routing).',
       });
     } catch (e) {
@@ -530,8 +404,8 @@ function ProviderRoutingToggle({
       <div>
         <h3 className="text-sm font-medium text-text-primary">Provider routing</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Enable or disable a provider team-wide. Disabling one reroutes its jobs to the other —
-          reversible, and it doesn&apos;t change any per-workspace or per-role backend settings.
+          Turn a provider on or off for the whole team. Disabling one reroutes its jobs to the other.
+          You can undo it, and it leaves per-workspace and per-role backend settings alone.
         </p>
       </div>
       <div className="space-y-2">
@@ -540,7 +414,7 @@ function ProviderRoutingToggle({
             <span className="flex flex-wrap items-center gap-2 text-sm text-text-primary">
               <span className={`w-2 h-2 shrink-0 ${isOn(b) ? 'bg-status-success' : 'bg-text-muted'}`} />
               {backendLabel(b)}
-              <span className="text-xs text-text-muted">{isOn(b) ? 'enabled' : 'disabled — jobs reroute'}</span>
+              <span className="text-xs text-text-muted">{isOn(b) ? 'enabled' : 'disabled · jobs reroute'}</span>
             </span>
             <button
               onClick={() => toggle(b)}
@@ -694,7 +568,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       if (data.revoked) {
         // Reads OK but a worker run reported the OAuth session revoked. GET /v1/models
         // can't detect that, so don't show a green pass — direct the user to re-auth.
-        setMsg({ type: 'error', text: 'Token reads OK, but a worker run reported it revoked (logged out / signed in elsewhere). Generate a fresh `claude setup-token` and paste it again.' });
+        setMsg({ type: 'error', text: 'The token reads OK, but a worker run reported it revoked (logged out or signed in elsewhere). Run `claude setup-token` again and paste the new token.' });
       } else if (data.verified) {
         setMsg({ type: 'success', text: 'Credential verified against the Anthropic API.' });
       } else {
@@ -755,7 +629,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       <div>
         <h3 className="text-sm font-medium text-text-primary">Setup token / API key</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          A fallback to the one-tap connect: paste an OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
+          Instead of one-tap connect, paste an OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
           or an Anthropic API key (pay-per-token).
         </p>
       </div>
@@ -766,9 +640,9 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {matching[0].healthStatus === 'revoked' ? (
-              <span className="status-pill status-pill-err">Revoked — re-auth required</span>
+              <span className="status-pill status-pill-err">Revoked · re-auth required</span>
             ) : matching[0].healthStatus === 'degraded' ? (
-              <span className="status-pill status-pill-warn">Degraded — auth failures detected</span>
+              <span className="status-pill status-pill-warn">Degraded · auth failures</span>
             ) : (
               <span className="status-pill status-pill-ok">Connected</span>
             )}
@@ -786,14 +660,14 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
               <div>
                 Last verified: {new Date(matching[0].lastVerifiedAt).toLocaleString()}
                 {matching[0].lastVerificationError
-                  ? <span className="text-status-error"> — failed: {matching[0].lastVerificationError}</span>
-                  : <span className="text-status-success"> — passed</span>}
+                  ? <span className="text-status-error"> · failed: {matching[0].lastVerificationError}</span>
+                  : <span className="text-status-success"> · passed</span>}
               </div>
             )}
             {(matching[0].healthStatus === 'revoked' || matching[0].healthStatus === 'degraded') && matching[0].lastFailureAt && (
               <div className="text-status-error">
                 Last failure: {new Date(matching[0].lastFailureAt).toLocaleString()}
-                {matching[0].lastFailureMessage && ` — ${matching[0].lastFailureMessage.slice(0, 120)}`}
+                {matching[0].lastFailureMessage && ` · ${matching[0].lastFailureMessage.slice(0, 120)}`}
               </div>
             )}
           </div>
@@ -1011,7 +885,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
   }
 
   async function revoke() {
-    if (!(await confirm({ title: 'Remove Claude account?', message: 'This removes the stored Claude connected account.', confirmLabel: 'Remove', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Remove Claude account?', message: 'Deletes the stored Claude connected account.', confirmLabel: 'Remove', variant: 'danger' }))) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -1031,8 +905,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       <div>
         <h3 className="text-sm font-medium text-text-primary">Claude</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Connect with Claude in one tap — approve in the browser and paste the short code back.
-          Tokens are refreshed server-side; workers never rotate them directly.
+          Approve in the browser, then paste the short code back here.
+          buildd refreshes tokens on the server; workers never rotate them.
         </p>
       </div>
 
@@ -1044,7 +918,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             {status.expired ? (
-              <span className="status-pill status-pill-warn">Expired — needs reconnection</span>
+              <span className="status-pill status-pill-warn">Expired · reconnect</span>
             ) : (
               <span className="status-pill status-pill-ok">Connected</span>
             )}
@@ -1060,8 +934,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
               <div>
                 Last verified: {new Date(status.lastVerifiedAt).toLocaleString()}
                 {status.lastVerificationError
-                  ? <span className="text-status-error"> — failed: {status.lastVerificationError}</span>
-                  : <span className="text-status-success"> — passed</span>}
+                  ? <span className="text-status-error"> · failed: {status.lastVerificationError}</span>
+                  : <span className="text-status-success"> · passed</span>}
               </div>
             )}
           </div>
@@ -1089,7 +963,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       ) : (
         <div className="space-y-3">
           {allTeams ? (
-            <span className="text-xs text-text-muted">Approve once — applies the same Claude login to all {teamTargets.length} teams you manage.</span>
+            <span className="text-xs text-text-muted">Approve once to apply the same Claude login to all {teamTargets.length} teams you manage.</span>
           ) : fallbackConnected ? (
             <span className="status-pill status-pill-ok">Connected via setup token / API key</span>
           ) : (
@@ -1110,8 +984,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
                 {allTeams
                   ? `Approve once → applied to all ${teamTargets.length} teams`
                   : fallbackConnected
-                    ? 'Upgrades the setup token to a one-tap login — approve in the browser, paste a short code.'
-                    : 'Approve in the browser, paste a short code — no file.'}
+                    ? 'Replaces the setup token with a one-tap login. Approve in the browser, then paste a short code.'
+                    : 'Approve in the browser, then paste a short code. No file needed.'}
               </p>
             </div>
           )}
@@ -1169,14 +1043,14 @@ function ClaudeOAuthPanel({ authorizeUrl, code, onChange, busy, onSubmit, onCanc
         <button onClick={onCancel} className="btn btn-quiet">Cancel</button>
       </div>
       <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
-        <li>Approve in the Claude tab we opened (<a href={authorizeUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text underline">reopen</a>).</li>
-        <li>Copy the code shown after approving and paste it here:</li>
+        <li>Approve in the Claude tab buildd opened (<a href={authorizeUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text underline">reopen</a>).</li>
+        <li>Copy the code Claude shows and paste it here:</li>
       </ol>
       <input
         type="text"
         value={code}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="paste the code (looks like abc…#def…)"
+        placeholder="Code (looks like abc…#def…)"
         className="w-full px-3 py-2 bg-surface font-mono text-xs"
         onKeyDown={(e) => { if (e.key === 'Enter' && code.trim() && !busy) onSubmit(); }}
       />
@@ -1393,7 +1267,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
   }
 
   async function revoke() {
-    if (!(await confirm({ title: 'Remove Codex credential?', message: 'This removes the stored Codex credential.', confirmLabel: 'Remove', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Remove Codex credential?', message: 'Deletes the stored Codex credential.', confirmLabel: 'Remove', variant: 'danger' }))) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -1415,8 +1289,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       <div>
         <h3 className="text-sm font-medium text-text-primary">Codex</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Paste the contents of <code className="bg-surface-3 px-1 rounded text-[11px]">~/.codex/auth.json</code> from a machine
-          where you&apos;ve authenticated with Codex.
+          Paste <code className="bg-surface-3 px-1 rounded text-[11px]">~/.codex/auth.json</code> from a machine
+          where you&apos;ve signed in to Codex.
         </p>
       </div>
 
@@ -1428,7 +1302,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {status.expired ? (
-              <span className="status-pill status-pill-warn">Expired — needs refresh</span>
+              <span className="status-pill status-pill-warn">Expired · refresh needed</span>
             ) : (
               <span className="status-pill status-pill-ok">Connected</span>
             )}
@@ -1442,8 +1316,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
               <div>
                 Last verified: {new Date(status.lastVerifiedAt).toLocaleString()}
                 {status.lastVerificationError
-                  ? <span className="text-status-error"> — failed: {status.lastVerificationError}</span>
-                  : <span className="text-status-success"> — passed</span>}
+                  ? <span className="text-status-error"> · failed: {status.lastVerificationError}</span>
+                  : <span className="text-status-success"> · passed</span>}
               </div>
             )}
           </div>
@@ -1473,7 +1347,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       ) : (
         <div className="space-y-3">
           {allTeams ? (
-            <span className="text-xs text-text-muted">Paste once — applies the same Codex login to all {teamTargets.length} teams you manage.</span>
+            <span className="text-xs text-text-muted">Paste once to apply the same Codex login to all {teamTargets.length} teams you manage.</span>
           ) : (
             <span className="status-pill status-pill-idle">Not connected</span>
           )}
@@ -1487,7 +1361,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
                 className="btn btn-primary">
                 Sign in with device code
               </button>
-              <span className="text-xs text-text-muted">Recommended — buildd owns the session, no stale paste</span>
+              <span className="text-xs text-text-muted">Recommended: buildd owns the session, so no pasted file goes stale</span>
             </div>
           ))}
           <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
@@ -1545,10 +1419,10 @@ function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: s
       </div>
       <div className="flex items-center gap-2 text-xs text-text-muted">
         <span className="w-2 h-2 bg-accent animate-pulse" />
-        Waiting for approval… buildd will connect automatically.
+        Waiting for approval… buildd connects once you approve.
       </div>
       <p className="text-[11px] text-text-muted">
-        Device-code login must be enabled in ChatGPT → Settings → Security. Signing in here logs Codex out on other devices for this account.
+        Turn on device-code login in ChatGPT → Settings → Security first. Signing in here logs this account out of Codex on other devices.
       </p>
     </div>
   );

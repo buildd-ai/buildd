@@ -22,7 +22,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview, mergePullRequest } from './github';
+import { postPrReview, mergePullRequest, checkSuitesAllPassed } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -231,5 +231,48 @@ describe('mergePullRequest expected head', () => {
     const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
     expect(sent).toEqual({ merge_method: 'squash', sha: 'head-A' });
     expect(result).toEqual({ merged: false, message: 'Head branch was modified', status: 409 });
+  });
+});
+
+describe('checkSuitesAllPassed', () => {
+  const suite = (slug: string, status: string, conclusion: string | null, runs: number) => ({
+    app: { slug },
+    status,
+    conclusion,
+    latest_check_runs_count: runs,
+  });
+
+  it('ignores a third-party app suite that was created but never ran anything', () => {
+    // GitHub creates a suite for every installed app with checks permission;
+    // an app that never reports leaves it queued with zero runs forever.
+    expect(checkSuitesAllPassed([
+      suite('github-actions', 'completed', 'success', 5),
+      suite('vercel', 'completed', 'success', 1),
+      suite('claude', 'queued', null, 0),
+      suite('renovate', 'queued', null, 0),
+    ])).toBe(true);
+  });
+
+  it('never ignores a github-actions suite, even before its runs register', () => {
+    expect(checkSuitesAllPassed([
+      suite('vercel', 'completed', 'success', 1),
+      suite('github-actions', 'queued', null, 0),
+    ])).toBe(false);
+  });
+
+  it('still waits on a third-party suite that has runs in progress', () => {
+    expect(checkSuitesAllPassed([
+      suite('github-actions', 'completed', 'success', 5),
+      suite('vercel', 'in_progress', null, 1),
+    ])).toBe(false);
+  });
+
+  it('is false when nothing real ran', () => {
+    expect(checkSuitesAllPassed([suite('claude', 'queued', null, 0)])).toBe(false);
+    expect(checkSuitesAllPassed([])).toBe(false);
+  });
+
+  it('fails on a failed suite', () => {
+    expect(checkSuitesAllPassed([suite('github-actions', 'completed', 'failure', 3)])).toBe(false);
   });
 });

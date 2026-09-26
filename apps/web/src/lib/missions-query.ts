@@ -36,7 +36,7 @@ export const MISSION_WORKER_BASE_COLUMNS = {
 const MISSION_WITH_SHARED = {
   workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } } as const,
   initiative: { columns: { id: true, title: true } } as const,
-  schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } } as const,
+  schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true } } as const,
 };
 
 const taskOrderBy = (t: any, { desc }: any) => [desc(t.updatedAt)];
@@ -60,11 +60,12 @@ export function buildActiveMissionsQueryArgs(missionsWhere: SQL | undefined) {
       ...MISSION_WITH_SHARED,
       tasks: {
         // Phase fields order the card's pulse (lib/mission-card-view.ts).
-        columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true },
+        columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true, label: true },
         orderBy: taskOrderBy,
         with: {
           workers: {
-            columns: { ...MISSION_WORKER_BASE_COLUMNS, exitCause: true },
+            // waitingFor: the list card answers a parked question inline.
+            columns: { ...MISSION_WORKER_BASE_COLUMNS, exitCause: true, waitingFor: true },
             limit: 5,
             orderBy: workerOrderBy,
           },

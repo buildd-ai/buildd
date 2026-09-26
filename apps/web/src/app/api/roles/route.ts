@@ -11,6 +11,7 @@ import { getWorkspaceRoles } from '@/lib/mission-context';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
+import { normalizeBackend } from '@/lib/normalize-backend';
 
 function generateSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -18,10 +19,6 @@ function generateSlug(name: string): string {
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
-}
-
-function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
-  return raw === 'claude' || raw === 'codex' ? raw : null;
 }
 
 // GET /api/roles — list roles with current load

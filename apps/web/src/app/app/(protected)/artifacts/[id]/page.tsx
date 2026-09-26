@@ -9,6 +9,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import AiFeedback from '@/components/AiFeedback';
 import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
+import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 
 export const dynamic = 'force-dynamic';
@@ -107,7 +108,7 @@ export default async function ArtifactDetailPage({
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
+    <main className="min-h-screen pt-4 px-4 pb-4 md:p-8">
       <div className="max-w-4xl mx-auto">
         {/* Breadcrumb */}
         {from === 'task' && fromTaskId ? (
@@ -172,7 +173,7 @@ export default async function ArtifactDetailPage({
         />
 
         {/* Content */}
-        <div className="bg-surface-2 border border-border-default rounded-[10px] p-6">
+        <div className="min-w-0 bg-surface-2 border border-border-default rounded-[10px] p-4 md:p-6">
           {artifact.type === 'link' && artifactUrl && (
             <div>
               <a
@@ -194,15 +195,7 @@ export default async function ArtifactDetailPage({
           )}
 
           {(artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
-            <pre className="overflow-x-auto text-sm font-mono text-text-secondary">
-              {(() => {
-                try {
-                  return JSON.stringify(JSON.parse(artifact.content), null, 2);
-                } catch {
-                  return artifact.content;
-                }
-              })()}
-            </pre>
+            <ArtifactCodeBody type={artifact.type} content={artifact.content} />
           )}
 
           {isImage && downloadUrl && (

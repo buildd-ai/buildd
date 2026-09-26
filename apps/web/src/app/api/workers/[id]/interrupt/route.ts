@@ -9,6 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -17,6 +18,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +33,11 @@ export async function POST(
   }
 
   const { id } = await params;
+  // workers.id is a uuid column: a non-UUID can never name a worker, and
+  // querying with one throws 22P02, which escaped as a 500.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  }
 
   // cancelQueued (SDK 0.3.219+): opt-in flag to clear the runner's message queue
   // alongside the interrupt, so queued messages do not execute after this call.
@@ -121,6 +128,11 @@ export async function POST(
     .set({ status: 'failed', updatedAt: new Date() })
     .where(eq(tasks.id, worker.taskId));
   await resolveCompletedTask(worker.taskId, worker.workspaceId);
+
+  // This terminal transition happens outside PATCH /api/workers/[id], so it
+  // must release the reviewer's path claims itself — the human takeover means
+  // nothing this worker was doing landed.
+  await releaseAndNotify(worker.taskId, 'abandoned');
 
   // Post a reviewer_escalated note on the original task so the PR surfaces in
   // the human queue with a clear reason ("Agent review interrupted").

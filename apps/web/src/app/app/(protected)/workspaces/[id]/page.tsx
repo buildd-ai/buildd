@@ -3,9 +3,9 @@ import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, w
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 import Link from 'next/link';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
-import DeleteWorkspaceButton from './DeleteWorkspaceButton';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
@@ -15,14 +15,14 @@ export default async function WorkspaceDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const isDev = process.env.NODE_ENV === 'development';
+  const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   if (isDev) {
     return (
       <main className="min-h-screen p-8">
         <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode - no database</p>
+          <p className="text-text-muted">Development mode · no database</p>
         </div>
       </main>
     );
@@ -126,7 +126,7 @@ export default async function WorkspaceDetailPage({
   }
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
         <Link href="/app/workspaces" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
           &larr; Workspaces
@@ -139,80 +139,91 @@ export default async function WorkspaceDetailPage({
               <p className="text-sm md:text-base text-text-muted mt-1 break-all">{workspace.repo}</p>
             )}
           </div>
-          <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 scrollbar-hide shrink-0">
-            <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
-            <Link
-              href={`/app/tasks/new?workspaceId=${workspace.id}`}
+          <div className="flex gap-2 w-full md:w-auto shrink-0">
+            {/* Delete lives in Configure's danger zone, not beside the primary action. */}
+            <NewWorkLink
+              kind="task"
+              workspaceId={workspace.id}
               className="px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base whitespace-nowrap bg-primary text-white hover:bg-primary-hover rounded-[10px]"
             >
               + New Task
-            </Link>
+            </NewWorkLink>
           </div>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex gap-1 border-b border-border-default pb-0 mb-8 overflow-x-auto whitespace-nowrap scrollbar-hide">
+        {/* Tab bar — scrolls sideways on phones; the edge fade signals there
+            is more (Configure is otherwise off-screen). */}
+        <div className="relative mb-8">
+        <div
+          data-testid="workspace-tab-bar"
+          className="flex gap-1 border-b border-border-default pb-0 overflow-x-auto whitespace-nowrap scrollbar-hide pr-12 md:pr-0"
+        >
           <Link
             href={`/app/missions?workspaceId=${workspace.id}`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Missions{missionCount > 0 ? ` (${missionCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/artifacts`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Artifacts{artifactCount > 0 ? ` (${artifactCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/schedules`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Schedules{scheduleCount > 0 ? ` (${scheduleCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/skills`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Skills{skillsCount > 0 ? ` (${skillsCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/runners`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Runners
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/memory`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Memory{memoryCount > 0 ? ` (${memoryCount})` : ''}
           </Link>
           <Link
             href={`/app/workspaces/${workspace.id}/config`}
-            className="px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
+            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
           >
             Configure
           </Link>
+        </div>
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute right-0 top-0 bottom-px w-12 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
+        />
         </div>
 
         {/* Task Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['pending'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Pending</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Pending</div>
           </div>
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['assigned'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Assigned</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Assigned</div>
           </div>
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['completed'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Completed</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Completed</div>
           </div>
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['failed'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Failed</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Failed</div>
           </div>
         </div>
 
@@ -230,7 +241,7 @@ export default async function WorkspaceDetailPage({
         {/* Recent Tasks */}
         {workspace.tasks && workspace.tasks.length > 0 && (
           <div>
-            <div className="flex justify-between items-center font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+            <div className="flex justify-between items-center font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               <span>Recent Tasks</span>
               <Link href={`/app/tasks?workspaceId=${workspace.id}`} className="text-primary hover:underline normal-case tracking-normal font-sans text-sm">
                 View all

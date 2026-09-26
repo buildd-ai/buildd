@@ -70,8 +70,11 @@ describe('MissionPulse render', () => {
 
   it('maps state to design tokens only — no raw colours', () => {
     const html = renderToStaticMarkup(<MissionPulse segments={segments} variant="header" />);
+    // moving is the accent (work in flight is the product's one colour);
+    // needs-you is the warning tone, so the two never read as the same thing.
     expect(html).toContain('bg-accent');
-    expect(html).toContain('bg-status-info');
+    expect(html).toContain('bg-status-warning');
+    expect(html).not.toContain('bg-status-info');
     expect(html).toContain('bg-status-success');
     expect(html).toContain('bg-status-error');
     expect(html).toContain('bg-border-default');

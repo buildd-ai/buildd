@@ -1,6 +1,7 @@
 // The ONE loader for per-workspace release-footer data. Missions list
-// (mission-card footer) and mission detail (MissionReleaseSection) both call
-// this so they cannot disagree about queue depth or last-deploy state — the
+// (mission-card footer) and mission detail (the Shipped step's release
+// baseline) both call this so they cannot disagree about the release
+// baseline or last-deploy state — the
 // data is scoped to the workspace, not the mission, because a workspace's
 // release ledger is shared by every mission under it (spec §8.5, AC-41).
 import { db } from '@buildd/core/db';

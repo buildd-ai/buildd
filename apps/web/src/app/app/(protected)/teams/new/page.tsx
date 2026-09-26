@@ -51,7 +51,7 @@ export default function NewTeamPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-xl mx-auto">
-        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+        <Link href="/app/settings/account" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
           &larr; Settings
         </Link>
         <h1 className="text-3xl font-bold mb-8">New Team</h1>
@@ -80,7 +80,7 @@ export default function NewTeamPage() {
                   setSlug(slugify(e.target.value));
                 }
               }}
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
             />
           </div>
 
@@ -99,7 +99,7 @@ export default function NewTeamPage() {
                 setSlug(e.target.value);
                 setSlugEdited(true);
               }}
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
+              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm"
             />
             <p className="text-xs text-text-secondary mt-1">
               Lowercase letters, numbers, and hyphens only. Used in URLs.
@@ -115,7 +115,7 @@ export default function NewTeamPage() {
               {loading ? 'Creating…' : 'Create Team'}
             </button>
             <Link
-              href="/app/settings"
+              href="/app/settings/account"
               className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
             >
               Cancel

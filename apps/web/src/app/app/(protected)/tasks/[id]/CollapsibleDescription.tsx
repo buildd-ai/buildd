@@ -31,7 +31,7 @@ export default function CollapsibleDescription({ content }: { content: string })
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="mt-2 font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary cursor-pointer"
+        className="mt-2 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary cursor-pointer"
       >
         {expanded ? 'Show less ↑' : 'Show more ↓'}
       </button>

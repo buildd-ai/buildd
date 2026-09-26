@@ -1,4 +1,5 @@
 import Pusher from 'pusher';
+import { CHAT_PUSHER_EVENTS, conversationChannelName } from '@buildd/shared';
 
 // Server-side Pusher client (optional)
 let pusher: Pusher | null = null;
@@ -21,12 +22,16 @@ function getPusher(): Pusher | null {
     return null; // Pusher not configured
   }
 
+  // PUSHER_HOST points at a self-hosted Pusher-protocol server (e.g. soketi in
+  // scripts/demo). Unset = Pusher's hosted cluster, exactly as before.
+  const host = process.env.PUSHER_HOST;
   pusher = new Pusher({
     appId,
     key,
     secret,
     cluster,
-    useTLS: true,
+    useTLS: host ? process.env.PUSHER_USE_TLS === 'true' : true,
+    ...(host ? { host, port: process.env.PUSHER_PORT } : {}),
   });
 
   return pusher;
@@ -87,10 +92,13 @@ export const channels = {
   task: (id: string) => `${CHANNEL_PREFIX}task-${id}`,
   worker: (id: string) => `${CHANNEL_PREFIX}worker-${id}`,
   mission: (id: string) => `${CHANNEL_PREFIX}mission-${id}`,
+  // Agent chat: pings only, never message text (see @buildd/shared chat.ts).
+  conversation: (id: string) => `${CHANNEL_PREFIX}${conversationChannelName(id)}`,
 } as const;
 
 // Event names
 export const events = {
+  CONVERSATION_UPDATED: CHAT_PUSHER_EVENTS.CONVERSATION_UPDATED,
   TASK_CREATED: 'task:created',
   TASK_CLAIMED: 'task:claimed',
   TASK_COMPLETED: 'task:completed',

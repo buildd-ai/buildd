@@ -7,14 +7,25 @@ const tasksInsertReturning = mock(() => Promise.resolve([{ id: 'audit-1', title:
 const tasksInsertValues = mock((_values: any) => ({ returning: tasksInsertReturning }));
 const tasksUpdateWhere = mock(() => Promise.resolve());
 const tasksUpdateSet = mock((_values: any) => ({ where: tasksUpdateWhere }));
+const notesFindFirst = mock(() => Promise.resolve(null as any));
+const notesInsertValues = mock((_values: any) => Promise.resolve());
+
+// The real schema, so the insert mock can tell a mission note from a task.
+const { missionNotes } = await import('@buildd/core/db/schema');
+// A mocked db returns whatever it is given, so ORDER BY and WHERE are only
+// observable by rendering them.
+const { PgDialect } = await import('drizzle-orm/pg-core');
+const dialect = new PgDialect();
+const render = (chunk: any) => dialect.sqlToQuery(chunk);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: missionsFindFirst },
       tasks: { findFirst: tasksFindFirst, findMany: tasksFindMany },
+      missionNotes: { findFirst: notesFindFirst },
     },
-    insert: () => ({ values: tasksInsertValues }),
+    insert: (table: unknown) => (table === missionNotes ? { values: notesInsertValues } : { values: tasksInsertValues }),
     update: () => ({ set: tasksUpdateSet }),
   },
 }));
@@ -28,7 +39,8 @@ const { ensureMissionSurfaceAudit } = await import('./mission-surface-audit');
 
 const MISSION_ID = 'mission-1';
 const WORKSPACE_ID = 'ws-1';
-const targetWorkspace = { id: WORKSPACE_ID, name: 'test-ws', repo: 'buildd-ai/buildd' };
+const TEAM_ID = 'team-1';
+const targetWorkspace = { id: WORKSPACE_ID, name: 'test-ws', repo: 'buildd-ai/buildd', teamId: TEAM_ID };
 
 function uiTask(id: string, overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -41,7 +53,7 @@ function uiTask(id: string, overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 beforeEach(() => {
-  missionsFindFirst.mockReset(); missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: true });
+  missionsFindFirst.mockReset(); missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: true, teamId: TEAM_ID });
   tasksFindFirst.mockReset(); tasksFindFirst.mockResolvedValue(null);
   tasksFindMany.mockReset(); tasksFindMany.mockResolvedValue([]);
   tasksInsertReturning.mockReset(); tasksInsertReturning.mockResolvedValue([{ id: 'audit-1', title: '[surface audit] Mobile nav redesign' }]);
@@ -49,6 +61,8 @@ beforeEach(() => {
   tasksUpdateWhere.mockReset(); tasksUpdateWhere.mockResolvedValue(undefined);
   tasksUpdateSet.mockClear();
   mockDispatchNewTask.mockReset(); mockDispatchNewTask.mockResolvedValue(undefined);
+  notesFindFirst.mockReset(); notesFindFirst.mockResolvedValue(null);
+  notesInsertValues.mockClear();
 });
 
 describe('ensureMissionSurfaceAudit', () => {
@@ -69,7 +83,26 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(inserted.missionId).toBe(MISSION_ID);
     expect(inserted.dependsOn).toEqual(['builder-1']);
     expect(inserted.outputRequirement).toBe('artifact_required');
+    // Routed to the browser-gated auditor, not any builder runner.
+    expect(inserted.roleSlug).toBe('visual-auditor');
     expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists the required routes derived from the builder tasks\' page files', async () => {
+    const created = uiTask('builder-1', {
+      pathManifest: ['apps/web/src/app/app/(protected)/missions/[id]/page.tsx'],
+    });
+    tasksFindMany.mockResolvedValue([created]);
+
+    await ensureMissionSurfaceAudit({
+      missionId: MISSION_ID,
+      workspaceId: WORKSPACE_ID,
+      createdTask: created,
+      targetWorkspace,
+    });
+
+    const inserted = tasksInsertValues.mock.calls[0][0];
+    expect(inserted.description).toContain('`/app/missions/:id`');
   });
 
   it('does not create a second audit task on a later decomposition pass — extends dependsOn instead', async () => {
@@ -160,7 +193,7 @@ describe('ensureMissionSurfaceAudit', () => {
   });
 
   it('honors the per-mission opt-out flag', async () => {
-    missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: false });
+    missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: false, teamId: TEAM_ID });
 
     await ensureMissionSurfaceAudit({
       missionId: MISSION_ID,
@@ -189,5 +222,202 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(inserted.dependsOn).toEqual(['builder-1', 'builder-2']);
     expect(inserted.description).toContain('apps/web/src/components/Foo.tsx');
     expect(inserted.description).toContain('packages/core/mission-helpers.ts');
+  });
+});
+
+describe('ensureMissionSurfaceAudit — re-check rounds', () => {
+  const round1 = (status: string, dependsOn: string[] = ['builder-1']) => ({
+    id: 'audit-1', title: '[surface audit] Mobile nav redesign', status, dependsOn, context: {},
+  });
+  const round2 = (status: string, dependsOn: string[] = ['fix-1']) => ({
+    id: 'audit-2', title: '[surface audit] round 2: Mobile nav redesign', status, dependsOn,
+    context: { surfaceAuditRound: 2, visualQa: { requiredRoutes: ['/app/tasks/:id'] } },
+  });
+  // The auditor's own fix tasks rarely touch a UI path in their manifest.
+  const fixTask = (id: string, route = '/app/tasks/:id', pathManifest: string[] | null = ['apps/web/src/lib/foo.ts']) => ({
+    id,
+    title: `[surface fix] ${route}: header overflows at 390px`,
+    taskClass: 'work',
+    pathManifest,
+  });
+  const run = (createdTask: ReturnType<typeof fixTask>) => ensureMissionSurfaceAudit({
+    missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask, targetWorkspace,
+  });
+
+  it('looks up the NEWEST audit, so a retry clone or a later round is the one extended', async () => {
+    await run(fixTask('fix-1'));
+    const opts = tasksFindFirst.mock.calls[0][0] as any;
+    // Ascending would keep returning the finished round 1, and every later fix
+    // would open yet another round 2.
+    expect(opts.orderBy).toHaveLength(1);
+    expect(render(opts.orderBy[0]).sql).toBe('"tasks"."created_at" desc');
+    expect(opts.columns).toMatchObject({ id: true, status: true, title: true, context: true, dependsOn: true });
+  });
+
+  for (const status of ['completed', 'in_progress']) {
+    it(`a fix filed against a ${status} round-1 audit opens ONE round-2 audit scoped to the issue route`, async () => {
+      tasksFindFirst.mockResolvedValue(round1(status));
+
+      await run(fixTask('fix-1'));
+
+      expect(tasksInsertValues).toHaveBeenCalledTimes(1);
+      const inserted = tasksInsertValues.mock.calls[0][0];
+      expect(inserted.title).toBe('[surface audit] round 2: Mobile nav redesign');
+      expect(inserted.missionId).toBe(MISSION_ID);
+      expect(inserted.dependsOn).toEqual(['fix-1']);
+      expect(inserted.roleSlug).toBe('visual-auditor');
+      expect(inserted.outputRequirement).toBe('artifact_required');
+      expect(inserted.taskClass).toBe('work');
+      expect(inserted.context).toEqual({ surfaceAuditRound: 2, visualQa: { requiredRoutes: ['/app/tasks/:id'] } });
+      expect(inserted.description).toContain('Round 2');
+      expect(inserted.description).toContain('- `/app/tasks/:id`');
+      // The finished round is not touched: extending it would be inert.
+      expect(tasksUpdateSet).not.toHaveBeenCalled();
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(notesInsertValues).not.toHaveBeenCalled();
+    });
+  }
+
+  it('opens round 2 even when the fix task names no route (routes then come from its manifest)', async () => {
+    tasksFindFirst.mockResolvedValue(round1('completed'));
+    await run({ ...fixTask('fix-1'), title: '[surface fix] nav overlaps the header' });
+
+    const inserted = tasksInsertValues.mock.calls[0][0];
+    expect(inserted.dependsOn).toEqual(['fix-1']);
+    expect(inserted.context.visualQa.requiredRoutes).toEqual([]);
+  });
+
+  it('later fixes from the same round extend the pending round-2 audit instead of opening another', async () => {
+    tasksFindFirst.mockResolvedValue(round2('pending'));
+
+    await run(fixTask('fix-2', '/app/missions'));
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet).toHaveBeenCalledTimes(1);
+    const set = tasksUpdateSet.mock.calls[0][0];
+    expect(set.dependsOn).toEqual(['fix-1', 'fix-2']);
+    // The new issue route joins the frozen list the evidence check reads.
+    expect(set.context.visualQa.requiredRoutes).toEqual(['/app/missions', '/app/tasks/:id']);
+    expect(set.context.surfaceAuditRound).toBe(2);
+  });
+
+  it('bound: a fix filed after round 2 looked raises a mission question, never a round 3', async () => {
+    tasksFindFirst.mockResolvedValue(round2('completed'));
+
+    await run(fixTask('fix-9', '/app/missions'));
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(notesInsertValues).toHaveBeenCalledTimes(1);
+    const note = notesInsertValues.mock.calls[0][0];
+    expect(note.missionId).toBe(MISSION_ID);
+    expect(note.type).toBe('question');
+    expect(note.status).toBe('open');
+    expect(note.taskId).toBe('fix-9');
+    expect(note.title).toContain('2 audit rounds');
+    expect(note.body).toContain('fix-9');
+  });
+
+  it('bound: an in-progress round 2 filing several fixes raises the question once, not per fix', async () => {
+    tasksFindFirst.mockResolvedValue(round2('in_progress'));
+    notesFindFirst.mockResolvedValue({ id: 'note-1' });
+
+    await run(fixTask('fix-10'));
+
+    expect(notesInsertValues).not.toHaveBeenCalled();
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('bound: the already-asked lookup is scoped to THIS mission\'s open round-cap question', async () => {
+    tasksFindFirst.mockResolvedValue(round2('completed'));
+
+    await run(fixTask('fix-9'));
+
+    const q = render((notesFindFirst.mock.calls[0] as any)[0].where);
+    expect(q.sql).toContain('"mission_notes"."mission_id" = $');
+    expect(q.sql).toContain('"mission_notes"."title" = $');
+    expect(q.sql).toContain('"mission_notes"."status" = $');
+    expect(q.params).toContain(MISSION_ID);
+    expect(q.params).toContain('open');
+    expect(q.params).toContain('Visual review: issues remain after 2 audit rounds');
+  });
+
+  it('a pending round-1 audit just depends on the fix (it has not looked yet)', async () => {
+    tasksFindFirst.mockResolvedValue(round1('pending'));
+
+    await run(fixTask('fix-1'));
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'fix-1']);
+  });
+
+  it('an ordinary builder task after a completed audit keeps the old extend behaviour (no new round)', async () => {
+    tasksFindFirst.mockResolvedValue(round1('completed'));
+
+    await run({ ...uiTask('builder-2') } as any);
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+  });
+
+  it('a fix task in a mission with no audit is treated like any builder task', async () => {
+    await run(fixTask('fix-1'));
+    // Non-UI manifest and no audit: nothing to mint.
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(notesInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('honours the per-mission opt-out for later rounds too', async () => {
+    missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: false, teamId: TEAM_ID });
+    tasksFindFirst.mockResolvedValue(round1('completed'));
+
+    await run(fixTask('fix-1'));
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('scopes the audit lookup to the mission, so another mission\'s audit is never extended', async () => {
+    await run(fixTask('fix-1'));
+    const q = render((tasksFindFirst.mock.calls[0] as any)[0].where);
+    expect(q.sql).toContain('"tasks"."mission_id" = $');
+    expect(q.params).toContain(MISSION_ID);
+  });
+});
+
+describe('ensureMissionSurfaceAudit — mission belongs to another team', () => {
+  // The mission id comes from the caller's request body. Nothing here may
+  // write into a mission outside the filing workspace's team.
+  beforeEach(() => {
+    missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: true, teamId: 'team-other' });
+  });
+  const cases: Array<[string, any]> = [
+    ['no audit yet (round 1 would be minted)', null],
+    ['pending audit (would be extended)', { id: 'audit-1', title: '[surface audit] M', status: 'pending', dependsOn: [], context: {} }],
+    ['finished round 1 (round 2 would open)', { id: 'audit-1', title: '[surface audit] M', status: 'completed', dependsOn: [], context: {} }],
+    ['finished round 2 (a question would be posted)', { id: 'audit-2', title: '[surface audit] round 2: M', status: 'completed', dependsOn: [], context: { surfaceAuditRound: 2 } }],
+  ];
+  for (const [label, audit] of cases) {
+    it(`writes nothing: ${label}`, async () => {
+      tasksFindFirst.mockResolvedValue(audit);
+      tasksFindMany.mockResolvedValue([uiTask('builder-1')]);
+      for (const createdTask of [uiTask('builder-1'), { id: 'fix-1', title: '[surface fix] /app/x: y', taskClass: 'work', pathManifest: null }]) {
+        await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask, targetWorkspace });
+      }
+      expect(tasksInsertValues).not.toHaveBeenCalled();
+      expect(tasksUpdateSet).not.toHaveBeenCalled();
+      expect(notesInsertValues).not.toHaveBeenCalled();
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+  }
+
+  it('fails closed when the filing workspace\'s team is unknown', async () => {
+    missionsFindFirst.mockResolvedValue({ id: MISSION_ID, title: 'Mobile nav redesign', autoSurfaceAudit: true, teamId: TEAM_ID });
+    tasksFindMany.mockResolvedValue([uiTask('builder-1')]);
+    await ensureMissionSurfaceAudit({
+      missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: uiTask('builder-1'),
+      targetWorkspace: { id: WORKSPACE_ID, name: 'test-ws' },
+    });
+    expect(tasksInsertValues).not.toHaveBeenCalled();
   });
 });

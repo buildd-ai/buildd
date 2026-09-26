@@ -207,7 +207,7 @@ export interface SelfMergeApprovalInput {
 
 /**
  * Whether a stored reviewer verdict, on its own, authorises merging the PR —
- * subject to the SAME diff-safety rails (CI green, escalateToPaths, dirty
+ * subject to the SAME diff-safety rails (CI green, legacy stored deny paths, dirty
  * state) that `evaluateAutoMergeSafety` applies when called without a bound.
  *
  * This is the ONE definition of "does this verdict clear the confidence bar":

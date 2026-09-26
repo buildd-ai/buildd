@@ -41,11 +41,13 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
     expect(html).toContain('checking…');
   });
 
-  it('points manual-trigger help text at mission detail / Home / MCP instead of the removed button', () => {
+  it('points manual-trigger help text at Home / MCP instead of the removed button', () => {
     const html = renderToStaticMarkup(
       <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} />,
     );
-    expect(html).toContain('mission detail or Home');
-    expect(html).toContain('trigger_release via MCP');
+    // Mission detail no longer carries the trigger (a release ships the workspace, not a mission).
+    expect(html).toContain('on Home');
+    expect(html).not.toContain('mission detail');
+    expect(html).toContain('trigger_release over MCP');
   });
 });

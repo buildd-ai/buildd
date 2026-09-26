@@ -141,9 +141,8 @@ export function UsageClient({ view, teamWorkspaces, wsFilter }: Props) {
               </div>
               {perTask.costUsd.kind === 'unavailable' && view.costProxyTokens !== null && (
                 <p data-testid="usage-cost-proxy-note" className="mt-3 text-[11px] text-text-muted">
-                  Seat-based (OAuth) auth reports no per-task cost, so there is no dollar figure to
-                  show — not a small one. Median input tokens per task is the closest measurable
-                  stand-in and moves with the same thing a dollar figure would.
+                  Seat-based (OAuth) auth reports no per-task cost, so this page shows no dollar
+                  figure. Median input tokens per task is the closest measurable stand-in.
                 </p>
               )}
             </div>
@@ -199,7 +198,7 @@ function CodeNavigationPanelView({ view }: { view: UsageDrilldownView }) {
           </p>
         ) : (
           <>
-            <div className="flex items-center gap-2 text-[9px] uppercase tracking-wide text-text-muted">
+            <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
               <span className="flex-1">tool</span>
               <span className="w-14 text-right">calls</span>
               <span className="w-16 text-right">/ task</span>
@@ -230,7 +229,7 @@ function CodeNavigationPanelView({ view }: { view: UsageDrilldownView }) {
               <p
                 data-testid="usage-code-nav-coverage"
                 className="text-[11px] text-text-muted"
-                title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log and the CBM counters, so their counts are a floor — which is what the ≥ marks."
+                title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log and the CBM counters, so their counts are a floor. The ≥ marks those."
               >
                 {coverageLabel(panel.coverage)} tasks measured exactly
               </p>
@@ -300,10 +299,9 @@ function ShellPanelView({ view }: { view: UsageDrilldownView }) {
           because nothing records the command inside the call.
         </p>
         <p data-testid="usage-shell-no-delta" className="text-[11px] text-text-muted">
-          Stated over {shell.histogramTasks} of {shell.allTasks} tasks — the reconstructed rows that
-          the panel above can draw on cannot contain a shell call at all. No delta is shown: that
-          population’s composition shifts as older workers age out of the window, so a change across
-          windows would measure coverage rather than behaviour.
+          Stated over {shell.histogramTasks} of {shell.allTasks} tasks. Reconstructed rows can&apos;t
+          contain a shell call, so they&apos;re left out. No delta: older workers age out of the
+          window and change the population, so a cross-window change would measure coverage.
         </p>
       </div>
     </section>
@@ -400,7 +398,7 @@ function DrilldownWindowPicker({ window: current }: { window: DrilldownWindow })
           type="button"
           onClick={() => select(value)}
           aria-pressed={current === value}
-          className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
+          className={`px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
             current === value
               ? 'bg-surface-3 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'
@@ -486,20 +484,20 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
               <>
                 {' '}
                 <span className="text-status-warning">
-                  This window opens before that date, so a low count here means
-                  &ldquo;not yet recorded&rdquo; rather than &ldquo;quiet&rdquo;.
+                  This window opens before that date. A low count here means
+                  &ldquo;not yet recorded&rdquo;.
                 </span>
               </>
             )}
           </p>
           {p.truncated && (
             <p className="text-[11px] text-text-muted">
-              Row cap reached — counts are floors.
+              Row cap reached. Counts are floors.
             </p>
           )}
           <p className="text-[11px] text-text-muted">
-            No runtime/work split: that classification is task-conditional and
-            its contract is not yet settled here.
+            No runtime/work split: the classification depends on the task and
+            has no settled contract yet.
           </p>
         </div>
       </div>

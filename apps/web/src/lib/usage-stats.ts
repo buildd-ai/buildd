@@ -96,6 +96,15 @@ export interface ToolEntry {
   share: number;
   /** Number of tasks that called it at least once. */
   tasks: number;
+  /**
+   * `calls` / `tasks` restricted to tasks whose source is 'histogram' — the
+   * `coverage.histogram` population. A task is only as exact as its weakest
+   * worker, so a task with one exact and one reconstructed worker is 'derived'
+   * even though its exact worker contributed calls; anything stated against
+   * `coverage.histogram` must use these, or the numerator can exceed it.
+   */
+  exactCalls: number;
+  exactTasks: number;
 }
 
 export interface ServerEntry {
@@ -526,12 +535,19 @@ function perTaskBlock(tasks: TaskAgg[]): PerTaskBlock {
 function buildToolRollup(tasks: TaskAgg[]): UsageStats['tools'] {
   const callsByTool: Record<string, number> = {};
   const tasksByTool: Record<string, number> = {};
+  const exactCallsByTool: Record<string, number> = {};
+  const exactTasksByTool: Record<string, number> = {};
   let totalCalls = 0;
 
   for (const task of tasks) {
+    const exact = task.toolSource === 'histogram';
     for (const [name, n] of Object.entries(task.counts)) {
       callsByTool[name] = (callsByTool[name] ?? 0) + n;
       tasksByTool[name] = (tasksByTool[name] ?? 0) + 1;
+      if (exact) {
+        exactCallsByTool[name] = (exactCallsByTool[name] ?? 0) + n;
+        exactTasksByTool[name] = (exactTasksByTool[name] ?? 0) + 1;
+      }
       totalCalls += n;
     }
   }
@@ -542,6 +558,8 @@ function buildToolRollup(tasks: TaskAgg[]): UsageStats['tools'] {
       calls,
       share: totalCalls > 0 ? calls / totalCalls : 0,
       tasks: tasksByTool[name] ?? 0,
+      exactCalls: exactCallsByTool[name] ?? 0,
+      exactTasks: exactTasksByTool[name] ?? 0,
     }))
     .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 

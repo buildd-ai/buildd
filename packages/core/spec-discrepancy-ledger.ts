@@ -13,7 +13,7 @@
  * select-then-decide-then-write is correct — no concurrent writer to race.
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db } from './db';
 import { specDiscrepancies } from './db/schema';
 import {
@@ -61,6 +61,40 @@ export function classifyAssertion(
   if (result.outcome === 'pass') return isTerminal ? 'clean' : 'code_ahead';
   // outcome === 'fail'
   return isTerminal ? 'contradicted' : 'clean';
+}
+
+/**
+ * Statuses that retire a doc: it no longer makes any live claim, so there is
+ * no declared-vs-derived gap left to measure. docs/specs/SPEC-FORMAT.md retires
+ * a contract by `status: superseded` + `superseded_by`, never by deleting it.
+ */
+export const RETIRED_STATUSES: readonly string[] = ['superseded'];
+
+/**
+ * Why a `skip` classification skipped — which decides what happens to a row
+ * that ALREADY exists for the assertion (a skip never inserts one):
+ *
+ *   suppressed   — `skip_until` in force (§6). The row resolves.
+ *   retired      — the doc declares `superseded`. The row resolves: a
+ *                  re-evaluation that finds the doc retired is a clean result,
+ *                  not a missing one.
+ *   unrecognized — the status is unset or outside every known set (e.g. a
+ *                  doc fix that wrote `shipped` instead of `implemented`). The
+ *                  row stays open but IS rechecked: `last_checked_at` and the
+ *                  evidence move, so the card can say "re-checked, still open"
+ *                  instead of waiting forever on a re-run that already ran.
+ *
+ * Before this existed every skip left an existing row untouched, so a doc fix
+ * that retired its doc, or used a status outside the sets, stranded the row
+ * with a `last_checked_at` older than the fix's merge — for good.
+ */
+export type SkipDisposition = 'suppressed' | 'retired' | 'unrecognized';
+
+export function skipDisposition(declaredStatus: string | null, result: AssertionResult): SkipDisposition {
+  if (result.outcome === 'suppressed') return 'suppressed';
+  const declared = declaredStatus?.toLowerCase() ?? null;
+  if (declared !== null && RETIRED_STATUSES.includes(declared)) return 'retired';
+  return 'unrecognized';
 }
 
 // ─── Promotion gate (§8's table, enforced at the data layer) ───────────────
@@ -219,6 +253,10 @@ export interface LedgerRunSummary {
   keptAccepted: number;
   resolved: number;
   skipped: number;
+  /** Existing rows on an unrecognized status: rechecked, left open. */
+  rechecked: number;
+  /** Of `resolved`: rows whose assertion is no longer declared anywhere. */
+  unasserted: number;
   byDirection: Record<Direction, number>;
 }
 
@@ -230,6 +268,8 @@ function emptySummary(): LedgerRunSummary {
     keptAccepted: 0,
     resolved: 0,
     skipped: 0,
+    rechecked: 0,
+    unasserted: 0,
     byDirection: { spec_ahead: 0, code_ahead: 0, contradicted: 0 },
   };
 }
@@ -247,38 +287,57 @@ function identityFilter(workspaceId: string, specPath: string, assertionId: stri
  * result already computed by Slice 1's checker against whatever row exists
  * for its identity, and applies exactly one of §9's closure actions.
  */
+export interface LedgerWriteOptions {
+  /**
+   * Set only when `evaluations` covers EVERY doc the ledger tracks (the CI
+   * run over the default roots). Rows whose assertion no longer appears in any
+   * evaluated doc — renamed, removed, or the doc deleted — then resolve: the
+   * claim they measured is gone. Without this, a doc fix that corrected an
+   * assertion by renaming its id stranded the old row forever, because nothing
+   * ever evaluated that identity again.
+   */
+  resolveUnasserted?: boolean;
+}
+
 export async function writeLedgerFromEvaluations(
   workspaceId: string,
   evaluations: DocEvaluation[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  options: LedgerWriteOptions = {}
 ): Promise<LedgerRunSummary> {
   const summary = emptySummary();
+  const seen = new Set<string>();
 
   for (const evalDoc of evaluations) {
     for (const result of evalDoc.results) {
+      seen.add(`${evalDoc.path}\u0000${result.id}`);
       const classification = classifyAssertion(evalDoc.docType, evalDoc.declaredStatus, result);
       if (classification === 'skip') {
         summary.skipped++;
-        // When an assertion is suppressed (skip_until not expired), clean up any
-        // existing open/accepted row so it stops being redispatched (§6 + §9).
-        // This prevents perpetual reconcile-spec dispatch for assertions that are
-        // code_ahead under a non-terminal status but intentionally suppressed until
-        // a future target date (e.g., "this passed but the doc stays partially until
-        // the table ships").
-        if (result.outcome === 'suppressed') {
-          const existingRows = await db
-            .select({ status: specDiscrepancies.status })
-            .from(specDiscrepancies)
-            .where(identityFilter(workspaceId, evalDoc.path, result.id));
-          const existing = existingRows[0] as ExistingDiscrepancy | undefined;
-          if (existing && existing.status !== 'resolved') {
-            const evidence = {
-              assertionType: result.type,
-              outcome: result.outcome,
-              detail: result.detail,
-              declaredStatus: evalDoc.declaredStatus,
-              docType: evalDoc.docType,
-            };
+        // A skip never creates a row, but it must not strand one that already
+        // exists — see SkipDisposition for what each case does.
+        const existingRows = await db
+          .select({ status: specDiscrepancies.status })
+          .from(specDiscrepancies)
+          .where(identityFilter(workspaceId, evalDoc.path, result.id));
+        const existing = existingRows[0] as ExistingDiscrepancy | undefined;
+        if (existing && existing.status !== 'resolved') {
+          const disposition = skipDisposition(evalDoc.declaredStatus, result);
+          const evidence = {
+            assertionType: result.type,
+            outcome: result.outcome,
+            detail: result.detail,
+            declaredStatus: evalDoc.declaredStatus,
+            docType: evalDoc.docType,
+            skipDisposition: disposition,
+          };
+          if (disposition === 'unrecognized') {
+            await db
+              .update(specDiscrepancies)
+              .set({ lastCheckedAt: now, evidence })
+              .where(identityFilter(workspaceId, evalDoc.path, result.id));
+            summary.rechecked++;
+          } else {
             await db
               .update(specDiscrepancies)
               .set({ status: 'resolved', lastCheckedAt: now, evidence })
@@ -375,6 +434,29 @@ export async function writeLedgerFromEvaluations(
           summary.resolved++;
           break;
       }
+    }
+  }
+
+  if (options.resolveUnasserted) {
+    const live = await db
+      .select({ specPath: specDiscrepancies.specPath, assertionId: specDiscrepancies.assertionId })
+      .from(specDiscrepancies)
+      .where(and(eq(specDiscrepancies.workspaceId, workspaceId), ne(specDiscrepancies.status, 'resolved')));
+    for (const row of live) {
+      if (seen.has(`${row.specPath}\u0000${row.assertionId}`)) continue;
+      await db
+        .update(specDiscrepancies)
+        .set({
+          status: 'resolved',
+          lastCheckedAt: now,
+          evidence: {
+            outcome: 'not_asserted',
+            detail: 'The assertion is no longer declared in any evaluated doc (removed, renamed, or the doc was deleted).',
+          },
+        })
+        .where(identityFilter(workspaceId, row.specPath, row.assertionId));
+      summary.resolved++;
+      summary.unasserted++;
     }
   }
 

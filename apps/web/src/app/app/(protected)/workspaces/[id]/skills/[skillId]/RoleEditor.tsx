@@ -6,7 +6,10 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ScopeSelector } from '@/components/ScopeSelector';
-import { ModelPicker } from '@/components/ModelPicker';
+import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
+import { ColorSwatches } from '@/components/ColorSwatches';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
+import { ModelPicker, normalizeAlias } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
 
@@ -15,10 +18,8 @@ const AVAILABLE_TOOLS = [
   'WebSearch', 'WebFetch', 'Agent', 'NotebookEdit',
 ];
 
-const COLOR_PALETTE = [
-  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
-  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
-];
+/** Toggle selections: stored order carries no meaning, re-toggling appends. */
+const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo', 'connectorRefs'] as const };
 
 // Role scopes map directly onto ShareScope ('team' | 'workspace'); 'all_teams' not shown.
 type Scope = 'team' | 'workspace';
@@ -90,6 +91,30 @@ interface Skill {
   createdAt: string;
 }
 
+/**
+ * The payload (+ scope) this editor sends, rebuilt from a stored skill with the
+ * same normalisation the form's initial state applies. Used as the post-save
+ * baseline from the server's echo.
+ */
+function payloadFromSkill(s: Skill) {
+  return {
+    name: s.name,
+    description: s.description || null,
+    content: s.content,
+    model: normalizeAlias(s.model),
+    defaultBackend: s.defaultBackend ?? null,
+    allowedTools: s.allowedTools,
+    canDelegateTo: s.canDelegateTo,
+    background: s.background,
+    maxTurns: s.maxTurns || null,
+    color: s.color,
+    connectorRefs: s.connectorRefs ?? [],
+    isRole: s.isRole,
+    repoUrl: s.repoUrl || null,
+    scope: (s.workspaceId === null ? 'team' : 'workspace') as Scope,
+  };
+}
+
 interface WorkspaceOption {
   id: string;
   name: string;
@@ -107,7 +132,7 @@ interface Props {
 function ConnectorBadge({ authMode, status }: { authMode: Connector['authMode']; status: Connector['status'] }) {
   if (authMode === 'none') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-info/10 text-status-info border border-status-info/30">
+      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-info/10 text-status-info border border-status-info/30">
         public
       </span>
     );
@@ -115,20 +140,20 @@ function ConnectorBadge({ authMode, status }: { authMode: Connector['authMode'];
   const label = authMode === 'oauth' ? 'oauth' : 'header';
   if (status === 'connected') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">
+      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">
         {label} · connected
       </span>
     );
   }
   if (status === 'expired') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
+      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
         {label} · expired
       </span>
     );
   }
   return (
-    <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">
+    <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">
       {label} · connect
     </span>
   );
@@ -235,7 +260,7 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
           value={query}
           onChange={(e) => handleInput(e.target.value)}
           placeholder="Search MCP Registry…"
-          className="w-full px-2.5 py-1.5 border border-border-default rounded-md text-[12px] bg-surface-1 text-text-primary"
+          className="w-full px-2.5 py-1.5 border border-border-default rounded-md text-base md:text-[12px] bg-surface-1 text-text-primary"
         />
       </div>
       {loading && (
@@ -264,14 +289,14 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
                     </div>
                     <p className="text-[11px] text-text-muted mt-0.5 line-clamp-2">{s.description}</p>
                     <div className="flex items-center gap-2 mt-1">
-                      {hasRemote && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">HTTP</span>}
-                      {hasPkg && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">npm</span>}
+                      {hasRemote && <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">HTTP</span>}
+                      {hasPkg && <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">npm</span>}
                       {s.repository && (
                         <a
                           href={s.repository.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-[10px] text-text-muted hover:text-text-secondary"
+                          className="text-[11px] md:text-[10px] text-text-muted hover:text-text-secondary"
                           onClick={(e) => e.stopPropagation()}
                         >
                           repo
@@ -299,7 +324,7 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
       )}
       {!searched && !loading && (
         <div className="px-3 py-3 text-[11px] text-text-muted">
-          Search the official MCP Registry for servers like &quot;github&quot;, &quot;slack&quot;, &quot;postgres&quot;...
+          Search the official MCP Registry, for example &quot;github&quot; or &quot;postgres&quot;.
         </div>
       )}
     </div>
@@ -310,6 +335,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflictInfo, setConflictInfo] = useState<{
@@ -452,26 +478,35 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     }
   }
 
+  // What Save would send. Dirty = this (plus scope, since a scope change
+  // promotes the role on save) differs from the last-saved copy.
+  const payload = {
+    name,
+    description: description || null,
+    content,
+    // ModelPicker rewrites legacy aliases (sonnet → standard) on mount; the
+    // two save the same tier, so compare canonically or the form loads dirty.
+    model: normalizeAlias(model),
+    defaultBackend,
+    allowedTools,
+    canDelegateTo,
+    background,
+    maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
+    color,
+    connectorRefs,
+    isRole,
+    repoUrl: repoUrl || null,
+  };
+  const { dirty, snapshot, markSaved, snapshotOf } = useDirtyState({ ...payload, scope }, DIRTY_OPTS);
+  useWarnOnUnload(dirty);
+
   async function handleSave() {
+    const submitted = snapshot;
     setSaving(true);
+    setSaved(false);
     setError(null);
     setConflictInfo(null);
     try {
-      const payload = {
-        name,
-        description: description || null,
-        content,
-        model,
-        defaultBackend,
-        allowedTools,
-        canDelegateTo,
-        background,
-        maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
-        color,
-        connectorRefs,
-        isRole,
-        repoUrl: repoUrl || null,
-      };
 
       let res: Response;
       if (scope === 'team') {
@@ -501,6 +536,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         }
         throw new Error(data.error || 'Failed to save');
       }
+      // Baseline = what the server says it stored; fall back to what we sent.
+      const data = await res.json().catch(() => null) as { skill?: Skill } | null;
+      markSaved(data?.skill ? snapshotOf(payloadFromSkill(data.skill)) : submitted);
 
       // If promoted to team-level, redirect to team role settings
       if (scope === 'team') {
@@ -508,6 +546,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         return;
       }
 
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -517,7 +557,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   }
 
   async function handleDelete() {
-    if (!(await confirm({ title: `Delete role "${skill.name}"?`, message: 'This cannot be undone.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
+    if (!(await confirm({ title: `Delete role "${skill.name}"?`, message: 'You can\'t undo this.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/skills/${skill.id}`, {
@@ -557,17 +597,17 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         {/* Header: Avatar + Name + Save */}
         <div className="flex items-center gap-4 mb-8">
           <div
-            className="w-14 h-14 rounded-full flex items-center justify-center flex-shrink-0"
+            className="w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center flex-shrink-0"
             style={{ backgroundColor: color }}
           >
             <span className="text-white text-2xl font-bold">{initial}</span>
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-text-primary">{name}</h1>
-            <div className="flex items-center gap-2 flex-wrap text-[13px] text-text-muted mt-0.5">
+            <h1 className="text-xl md:text-2xl font-bold text-text-primary [overflow-wrap:anywhere]">{name}</h1>
+            <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[13px] text-text-muted mt-0.5">
               <span className="font-mono text-xs">{skill.slug}</span>
               <span>&middot;</span>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-surface-3 text-text-muted">
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
                   <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                   <polyline points="9,22 9,12 15,12 15,22" />
@@ -578,13 +618,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               <span>Created {createdDate}</span>
             </div>
           </div>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
+          {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
+          <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} />
         </div>
 
         {error && (
@@ -596,17 +631,17 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                   A team-level role <strong>{conflictInfo.name}</strong> (<code>{conflictInfo.slug}</code>) already exists for this team.
                 </p>
                 <p className="text-text-secondary">
-                  Options:
+                  You can:
                 </p>
                 <ul className="list-disc list-inside space-y-0.5 text-text-secondary">
                   <li>
                     <Link href={conflictInfo.editPath} className="text-accent-text hover:underline">
                       Edit the existing team default
                     </Link>{' '}
-                    to incorporate your changes there.
+                    and make your changes there.
                   </li>
                   <li>
-                    Keep this role as a <strong>workspace override</strong> — change &ldquo;Applies to&rdquo; back to &ldquo;One workspace&rdquo; and save to keep it scoped to {workspaceName}.
+                    Keep this role as a <strong>workspace override</strong>: set &ldquo;Applies to&rdquo; back to &ldquo;One workspace&rdquo; and save. It stays scoped to {workspaceName}.
                   </li>
                 </ul>
               </div>
@@ -626,7 +661,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           />
           {scope === 'team' && (
             <p className="text-xs text-text-muted mt-3">
-              Saving will promote this role to team-level, making it the default for all workspaces.
+              Saving makes this a team-level role and the default for every workspace.
             </p>
           )}
         </div>
@@ -641,7 +676,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Builder"
               />
             </div>
@@ -652,8 +687,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary"
-                placeholder="Describe this role's core purpose (one sentence)"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
+                placeholder="This role's purpose, in one sentence"
               />
               <p className="text-xs text-text-muted mt-1">Shown on the Team page and in task routing.</p>
             </div>
@@ -664,10 +699,10 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 rows={14}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
-              <p className="text-xs text-text-muted mt-1">Full SKILL.md content. This becomes the agent&apos;s system prompt.</p>
+              <p className="text-xs text-text-muted mt-1">The full SKILL.md, used as the agent&apos;s system prompt.</p>
             </div>
           </div>
 
@@ -684,7 +719,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               <label className="block text-sm font-medium text-text-primary mb-2">Agent backend</label>
               <BackendSelect value={defaultBackend} onChange={setDefaultBackend} inheritLabel="Inherit" />
               <p className="text-xs text-text-muted mt-1.5">
-                Default backend for tasks routed to this role. Requires that backend&apos;s credentials in Settings.
+                Backend for tasks routed to this role. Add that backend&apos;s credentials in Settings.
               </p>
             </div>
 
@@ -700,7 +735,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                         key={opt.slug}
                         type="button"
                         onClick={() => toggleDelegate(opt.slug)}
-                        className={`px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
+                        className={`min-h-11 md:min-h-0 px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
                           active
                             ? 'bg-text-primary border-text-primary text-surface-1'
                             : 'bg-transparent border-border-strong text-text-secondary hover:text-text-primary'
@@ -724,7 +759,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       type="button"
                       onClick={checkConnectorHealth}
                       disabled={healthChecking}
-                      className="text-[12px] text-text-muted hover:text-text-secondary font-medium disabled:opacity-50"
+                      className="min-h-11 md:min-h-0 text-[12px] text-text-muted hover:text-text-secondary font-medium disabled:opacity-50"
                     >
                       {healthChecking ? 'Checking…' : healthStatus.size > 0 ? 'Recheck health' : 'Check health'}
                     </button>
@@ -732,7 +767,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                   <button
                     type="button"
                     onClick={() => setShowBrowse(!showBrowse)}
-                    className="text-[12px] text-primary hover:text-primary-hover font-medium"
+                    className="min-h-11 md:min-h-0 text-[12px] text-primary hover:text-primary-hover font-medium"
                   >
                     {showBrowse ? 'Hide Registry' : 'Browse Registry'}
                   </button>
@@ -756,7 +791,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 )}
                 {!connectorsLoading && teamConnectors.length === 0 && (
                   <p className="text-[12px] text-text-muted">
-                    No team connectors yet. Browse the registry above or add one in Settings → Connectors.
+                    No team connectors yet. Browse the registry above, or add one in Settings → Connectors.
                   </p>
                 )}
                 {teamConnectors.map((connector) => {
@@ -773,7 +808,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       <button
                         type="button"
                         onClick={() => toggleConnector(connector.id)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors"
+                        className="w-full flex items-center gap-2 px-3 py-2 min-h-11 text-left hover:bg-surface-2 transition-colors"
                       >
                         <span
                           className={`w-4 h-4 flex-shrink-0 border-2 flex items-center justify-center ${
@@ -790,20 +825,20 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           <div className="flex items-center gap-1.5">
                             <span className="text-[13px] font-medium text-text-primary truncate">{connector.name}</span>
                             {connector.transport === 'stdio' && (
-                              <span className="text-[10px] text-text-muted font-mono">stdio</span>
+                              <span className="text-[11px] md:text-[10px] text-text-muted font-mono">stdio</span>
                             )}
                           </div>
                           {connector.url && (
                             <span className="block text-[11px] text-text-muted font-mono truncate">{connector.url}</span>
                           )}
                           {/* Scope label — mirrors the connector-add ScopeSelector vocab */}
-                          <span className={`text-[10px] font-medium ${enabledHere ? 'text-status-success' : 'text-text-muted'}`}>
-                            {enabledHere ? 'Enabled for this workspace' : 'Not yet enabled for this workspace'}
+                          <span className={`text-[11px] md:text-[10px] font-medium ${enabledHere ? 'text-status-success' : 'text-text-muted'}`}>
+                            {enabledHere ? 'Enabled for this workspace' : 'Not enabled for this workspace'}
                           </span>
                         </div>
                         <div className="flex-shrink-0 flex items-center gap-1.5">
                           {connector.needsReview && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
+                            <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
                               needs review
                             </span>
                           )}
@@ -811,16 +846,16 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           {healthStatus.has(connector.id) && (() => {
                             const hs = healthStatus.get(connector.id)!;
                             if (hs === 'ok') return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">OK</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">OK</span>
                             );
                             if (hs === 'auth_expired') return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
                             );
                             if (hs === 'server_unreachable') return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>
                             );
                             return (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">not configured</span>
+                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">not configured</span>
                             );
                           })()}
                         </div>
@@ -855,9 +890,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                         key={tool}
                         type="button"
                         onClick={() => toggleTool(tool)}
-                        className={`px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
+                        className={`min-h-11 md:min-h-0 px-3 md:px-2.5 py-1 rounded-md text-[12px] font-mono border transition-colors ${
                           active
-                            ? 'bg-text-primary text-white border-text-primary'
+                            ? 'bg-text-primary text-surface-1 border-text-primary'
                             : 'bg-surface-2 border-border-default text-text-muted hover:text-text-secondary'
                         }`}
                       >
@@ -896,7 +931,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       ]}
                       size="sm"
                     />
-                    <p className="text-[11px] text-text-muted mt-1">Link to a workspace for builder roles</p>
+                    <p className="text-[11px] text-text-muted mt-1">Link a workspace for builder roles</p>
                   </div>
                 )}
 
@@ -916,7 +951,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                     type="number"
                     value={maxTurns}
                     onChange={(e) => setMaxTurns(e.target.value)}
-                    className="w-20 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-sm text-text-primary"
+                    className="w-20 min-h-11 md:min-h-0 px-2 py-1 border border-border-default rounded-md bg-surface-1 text-base md:text-sm text-text-primary"
                     placeholder="--"
                     min="1"
                   />
@@ -927,19 +962,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             {/* Color */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Avatar Color</label>
-              <div className="flex gap-2">
-                {COLOR_PALETTE.map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    className={`w-7 h-7 rounded-full transition-all ${
-                      color === c ? 'ring-2 ring-offset-2 ring-text-primary scale-110' : 'hover:scale-110'
-                    }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
+              <ColorSwatches value={color} onChange={setColor} size="md" />
             </div>
 
             {/* Delete */}
@@ -954,6 +977,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             </div>
           </div>
         </div>
+
+        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save role" />
       </div>
       {confirmDialog}
     </main>

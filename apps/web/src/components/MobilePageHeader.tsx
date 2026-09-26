@@ -1,10 +1,13 @@
 'use client';
 
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceFilter } from './WorkspaceFilter';
-import { mobilePageTitle } from '@/lib/nav-config';
+import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
+import { isAccountRoute } from '@/lib/nav-active';
 
 interface HeaderTeam {
   id: string;
@@ -17,22 +20,42 @@ export default function MobilePageHeader({
   currentTeamId = null,
   userInitial = 'U',
   workspaces = [],
+  banners,
 }: {
   teams?: HeaderTeam[];
   currentTeamId?: string | null;
   userInitial?: string;
   workspaces?: { id: string; name: string }[];
+  /**
+   * Shell-wide banners (needs-input, connector reconnect). On mobile top-level
+   * pages they ride in the same fixed stack as the header — rendered in flow they
+   * sat under the fixed header, invisible.
+   */
+  banners?: ReactNode;
 }) {
   const pathname = usePathname();
   const title = mobilePageTitle(pathname);
+  const backHref = mobileBackHref(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
+  const bannersRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const bannerHeight = useElementHeight(bannersRef, title !== null);
+  const headerHeight = useElementHeight(headerRef, title !== null);
 
-  // Only render on top-level pages (where the title resolves). Detail pages
-  // (e.g. /app/missions/[id]) render their own headers.
-  if (!title) return null;
+  // Sticky bands inside <main> offset themselves by `--mobile-header-h` (e.g.
+  // GroupSection's `top-[var(--mobile-header-h,53px)]`). Banners don't count:
+  // the spacer already pushes <main> below them. 0 on desktop (header hidden)
+  // and on detail pages (no header).
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty('--mobile-header-h', `${headerHeight}px`);
+  }, [headerHeight]);
 
-  return (
-    <div className="md:hidden fixed top-0 left-0 right-0 z-10 flex items-center justify-between gap-2 px-4 py-2.5 bg-surface-2 border-b border-border-default">
+  // Only render the header on top-level pages (where the title resolves). Detail
+  // pages (e.g. /app/missions/[id]) render their own headers; banners stay in flow.
+  if (!title) return <>{banners}</>;
+
+  const headerRow = (
+    <div ref={headerRef} data-testid="mobile-page-header" className="md:hidden flex items-center justify-between gap-2 px-4 py-1 bg-surface-2 border-b border-border-default">
       {/* Breadcrumb cluster: `Page · Team ⌄`, where the team segment is itself the
           switcher (turbopuffer/Vercel pattern) rather than a separate glyph in the
           right-hand cluster. Anchoring the menu here also keeps it on-screen. */}
@@ -42,6 +65,17 @@ export default function MobilePageHeader({
             segment that gives way (TeamSwitcher caps itself at 140px), which is
             why this is `shrink-0` — as a flex sibling it used to surrender
             characters first and render `Initiativ…`. */}
+        {backHref && (
+          <Link
+            href={backHref}
+            aria-label={`Back to ${mobilePageTitle(backHref) ?? 'the previous page'}`}
+            className="-ml-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <polyline points="15,5 8,12 15,19" />
+            </svg>
+          </Link>
+        )}
         <span className="shrink-0 font-semibold text-text-primary">{title}</span>
         {currentTeam && (
           <>
@@ -51,9 +85,51 @@ export default function MobilePageHeader({
         )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {workspaces.length > 0 && <WorkspaceFilter workspaces={workspaces} />}
-        <UserAvatarMenu userInitial={userInitial} direction="down" />
+        {workspaces.length > 0 && showsWorkspaceFilter(pathname) && <WorkspaceFilter workspaces={workspaces} />}
+        <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
       </div>
     </div>
   );
+
+  return (
+    <>
+      {/* Fixed on mobile, in flow on desktop (the header row is md:hidden there,
+          so desktop sees just the banners at the top of the column). */}
+      <div data-testid="mobile-top-stack" className="max-md:fixed max-md:top-0 max-md:inset-x-0 max-md:z-10">
+        {headerRow}
+        {/* Opaque base: the banners use translucent tints, and fixed over
+            scrolling content they would let the page show through. */}
+        <div ref={bannersRef} className="max-md:bg-surface-1">{banners}</div>
+      </div>
+      {/* Pages clear the header with their own pt-14; this pushes <main> down by
+          the banners' height so a banner never covers page content. */}
+      <div
+        data-testid="mobile-banner-spacer"
+        aria-hidden="true"
+        className="md:hidden shrink-0"
+        style={{ height: bannerHeight }}
+      />
+    </>
+  );
+}
+
+/** Live offsetHeight of `ref` (0 until measured, or while `enabled` is false). */
+function useElementHeight(ref: RefObject<HTMLElement | null>, enabled: boolean): number {
+  const [height, setHeight] = useState(0);
+  // Layout effect: measured before paint, so the spacer and --mobile-header-h
+  // never show a frame at 0.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!enabled || !el) {
+      setHeight(0);
+      return;
+    }
+    const measure = () => setHeight(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, enabled]);
+  return height;
 }

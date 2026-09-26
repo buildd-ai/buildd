@@ -102,7 +102,7 @@ export function MissionReleaseFooter({
   return (
     <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1.5">
-        <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border ${badge.cls}`}>
+        <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border ${badge.cls}`}>
           {badge.label}
         </span>
         {refDate && (

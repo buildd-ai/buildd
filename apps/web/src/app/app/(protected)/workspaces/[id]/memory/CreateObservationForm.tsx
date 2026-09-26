@@ -5,11 +5,11 @@ import { useState } from 'react';
 const TYPES = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'] as const;
 
 const TYPE_DESCRIPTIONS: Record<string, string> = {
-  gotcha: 'A pitfall or common mistake to avoid',
-  pattern: 'A recurring solution or best practice',
-  decision: 'An architectural or design decision',
-  discovery: 'A new learning or insight',
-  architecture: 'How components or systems are structured',
+  gotcha: 'A pitfall or mistake to avoid',
+  pattern: 'A solution or practice you reuse',
+  decision: 'An architecture or design choice',
+  discovery: 'Something you learned',
+  architecture: 'How components fit together',
 };
 
 interface CreateObservationFormProps {
@@ -140,8 +140,8 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="Short descriptive title"
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+            placeholder="Short title"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
           />
         </div>
 
@@ -152,9 +152,9 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             id="obs-content"
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder="Detailed observation content…"
+            placeholder="What you observed, with detail…"
             rows={4}
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm resize-y"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm resize-y"
           />
         </div>
 
@@ -169,7 +169,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={filesInput}
             onChange={(e) => setFilesInput(e.target.value)}
             placeholder="src/api/auth.ts, lib/utils.ts (comma-separated)"
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
           />
         </div>
 
@@ -184,7 +184,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             value={conceptsInput}
             onChange={(e) => setConceptsInput(e.target.value)}
             placeholder="authentication, caching, performance (comma-separated)"
-            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
+            className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
           />
         </div>
 

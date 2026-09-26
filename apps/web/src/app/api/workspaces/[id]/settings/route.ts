@@ -24,9 +24,11 @@ async function verifyAccess(auth: { user: any; apiAccount: any }, workspaceId: s
   if (apiAccount) {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
-      columns: { teamId: true, accessMode: true },
+      columns: { teamId: true },
     });
-    return Boolean(ws && (ws.teamId === apiAccount.teamId || ws.accessMode === 'open'));
+    // The workspace must belong to the API key's own team (same check as
+    // PATCH /api/workspaces/[id]); `accessMode: 'open'` does not widen it.
+    return Boolean(ws && ws.teamId === apiAccount.teamId);
   }
   return false;
 }

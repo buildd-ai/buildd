@@ -319,6 +319,7 @@ describe('assertion coverage over the real migration corpus', () => {
     // parser has lost ground against a new SQL form.
     // 7: 0155_backfill_orphaned_mission_schedules added a DO-block data cleanup
     // with no ALTER/CREATE for the parser to derive an assertion from.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(7);
+    // 8: *_role_colours_off_accent is a pure data fix (UPDATE workspace_skills).
+    expect(withoutAssertions.length).toBeLessThanOrEqual(8);
   });
 });

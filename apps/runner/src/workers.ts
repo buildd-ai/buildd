@@ -23,11 +23,13 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
-import { hostUserMemoryExcludes } from './host-memory-excludes';
+import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memory-excludes';
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
+import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -45,12 +47,16 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
+import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { advertisedRoleSlugs } from './role-advertising';
+import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
-import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
+import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
+import { claimsHaltedForUpdate } from './update-drain';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { ClaimLogEntry } from './session-logger';
@@ -108,6 +114,7 @@ import {
 } from './bwrap-mount-allowlist';
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
+import { asksAQuestion } from './ask-user-question.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -977,7 +984,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot());
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1239,6 +1246,8 @@ export class WorkerManager {
     // Post-update canary tripped: this build fails a role deterministically.
     // Claiming more work would only fail it too while the rollback drains.
     if (getUpdateCanary()?.claimsHalted()) return [];
+    // Draining for a self-update: running work finishes, nothing new starts.
+    if (claimsHaltedForUpdate()) return [];
     // NOTE: we intentionally do NOT gate on `hasCredentials` here. A runner with
     // zero local creds must still poll — server-managed credentials arrive inline
     // on the claim response and bootstrap it. The burn-loop guard below (auth-error
@@ -1278,7 +1287,7 @@ export class WorkerManager {
         }>;
       };
       try {
-        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
+        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment);
       } catch (err: any) {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
@@ -1571,6 +1580,10 @@ export class WorkerManager {
       console.log(`[WorkerManager] Update canary tripped — not claiming task ${task.id}`);
       return null;
     }
+    if (claimsHaltedForUpdate()) {
+      console.log(`[WorkerManager] Draining for update — not claiming task ${task.id}`);
+      return null;
+    }
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
     // quota exhausted), skip without re-claiming — tenant tasks can still run.
     // pausedContextFor fails toward claiming when the payload carries no
@@ -1601,7 +1614,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, undefined, false, this.environment);
+      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment);
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -1672,7 +1685,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; skillBundles?: SkillBundle[] },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[] },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1838,6 +1851,13 @@ export class WorkerManager {
       worker.roleInstructions = claimedWorker.roleInstructions;
       console.log(`[Worker ${claimedWorker.id}] Received role persona: ${claimedWorker.roleInstructions.slug} (${claimedWorker.roleInstructions.content.length} chars)`);
     }
+    if (claimedWorker.roleEnvSecrets && Object.keys(claimedWorker.roleEnvSecrets).length > 0) {
+      worker.roleEnvSecrets = claimedWorker.roleEnvSecrets;
+      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.roleEnvSecrets).length} role env secret(s): ${Object.keys(claimedWorker.roleEnvSecrets).join(', ')}`);
+    }
+    if (claimedWorker.roleEnvMissing && claimedWorker.roleEnvMissing.length > 0) {
+      worker.roleEnvMissing = claimedWorker.roleEnvMissing;
+    }
     if (claimedWorker.skillBundles && claimedWorker.skillBundles.length > 0) {
       worker.skillBundles = claimedWorker.skillBundles;
       console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.skillBundles.length} skill bundle(s): ${claimedWorker.skillBundles.map(b => b.slug).join(', ')}`);
@@ -1902,6 +1922,19 @@ export class WorkerManager {
       setupsInFlight.set(workspacePath, (setupsInFlight.get(workspacePath) ?? 0) + 1);
       let setupResult: Awaited<ReturnType<typeof setupWorktree>>;
       try {
+        // The tolerant install for an undeclared repo runs inside setupWorktree,
+        // long before cleanEnv exists. Hand it the same role env the agent will
+        // get, so a private registry token mapped on the role reaches `bun
+        // install` instead of only the host container env. (Declared repos
+        // install in the provision gate, against cleanEnv itself.) Deliberately
+        // role env only: LLM creds and connector bearers have no business in a
+        // package manager's postinstall scripts.
+        let installEnv: Record<string, string> | undefined;
+        try {
+          installEnv = (await this.resolveWorkerRoleEnv(worker)).resolved;
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] Could not resolve role env for install (continuing without): ${err instanceof Error ? err.message : String(err)}`);
+        }
         setupResult = await setupWorktree(
           workspacePath,
           claimedWorker.branch,
@@ -1911,6 +1944,7 @@ export class WorkerManager {
           // Live-worker view: a path another running session owns must never be
           // reclaimed, not even when its tree reads clean (committed-but-unpushed).
           this.workers,
+          installEnv,
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -1959,13 +1993,14 @@ export class WorkerManager {
         // false-alarm noise.
         const install = setupResult.install;
         if (install?.status === 'failed') {
-          const label = `Dependency install failed (${install.failure}) at ${install.dir} — imports may fail`;
+          const where = formatInstallDir(install.dir);
+          const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
           console.warn(`[Worker ${worker.id}] ${label}`);
           this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           this.buildd.updateWorker(worker.id, {
             appendErrorTraces: [{
               pattern: 'worktree_install_failed',
-              excerpt: `${install.failure} installing at "${install.dir}": ${install.message}`,
+              excerpt: `${install.failure} installing at ${where}: ${install.message}`,
               source: 'git-operations',
             }],
           }).catch(() => {});
@@ -1978,7 +2013,9 @@ export class WorkerManager {
             // host fault instead of one per worker. Raised through the
             // session-start boundary below so it gets the same server report
             // and worktree cleanup as any other start failure.
-            installBlock = `Provision failed: dependency install (${install.failure}) at ${install.dir}`;
+            // registry-auth names host, package and the env var the repo's
+            // registry config reads, so the fix is readable off the task card.
+            installBlock = describeInstallFailure(install);
           } else {
             // Drift / timeout / unknown: proceed, but visibly. The banner goes
             // in the prompt (see startSession) and the flag rides the worker
@@ -2204,13 +2241,42 @@ export class WorkerManager {
    * race on the failure side.
    */
   private async isAlreadyTerminalOnServer(worker: LocalWorker): Promise<boolean> {
-    if (worker.status === 'done') return true;
+    return (await this.remoteSessionState(worker)).workerTerminal;
+  }
+
+  /**
+   * Same read as isAlreadyTerminalOnServer, plus whether the worker's TASK has
+   * been cancelled server-side. A cancel's abort push is best-effort, so a
+   * session can outlive its task; the MCP write fence then refuses the
+   * agent's complete_task, which makes a closing turn pointless.
+   */
+  private async remoteSessionState(worker: LocalWorker): Promise<{ workerTerminal: boolean; taskCancelled: boolean }> {
+    if (worker.status === 'done') return { workerTerminal: true, taskCancelled: false };
     try {
       const remote = await this.buildd.getWorkerRemote(worker.id);
-      return remote?.status === 'completed' || remote?.status === 'failed';
+      return {
+        workerTerminal: remote?.status === 'completed' || remote?.status === 'failed',
+        taskCancelled: remote?.task?.status === 'cancelled',
+      };
     } catch {
-      return false;
+      return { workerTerminal: false, taskCancelled: false };
     }
+  }
+
+  /**
+   * End a worker whose task was cancelled under its running session. Not an
+   * error: nothing about the work failed, the task simply stopped being
+   * wanted. Local status is `done` (the runner has no `cancelled` state);
+   * the server records it as exitCause `task_cancelled`.
+   */
+  private markCancelledUnderSession(worker: LocalWorker, detail: string): void {
+    console.log(`[Worker ${worker.id}] Task was cancelled while the session was running — ${detail}`);
+    sessionLog(worker.id, 'info', 'task_cancelled', detail, worker.taskId);
+    this.addMilestone(worker, { type: 'status', label: 'Task cancelled on server', ts: Date.now() });
+    worker.status = 'done';
+    worker.currentAction = 'Cancelled';
+    worker.hasNewActivity = true;
+    worker.completedAt = worker.completedAt || Date.now();
   }
 
   /**
@@ -2471,8 +2537,31 @@ export class WorkerManager {
    * the main session already produced, so the closing turn's completion
    * payload still carries it even if the resumed turn emits none.
    */
+  /**
+   * The role's env (secret labels → values). One resolver for both consumers —
+   * the worktree dependency install and the agent's cleanEnv — so the install
+   * can never see a different set of secrets from the agent.
+   *
+   * Two sources, merged: the local env-mapping.json resolved against process
+   * env (file-based, requires a packaged `roleConfig` bundle — today always
+   * empty, see roles.ts), and `roleEnvSecrets`/`roleEnvMissing` delivered
+   * inline at claim time against the `secrets` table (role-env-injection.ts on
+   * the server). The claim-delivered source is independent of `roleConfig` so
+   * an MCP-registered role with no R2 bundle still gets its declared vars.
+   */
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    const fileBased = worker.roleConfig
+      ? await resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>)
+      : { resolved: {}, missing: [] };
+    return {
+      resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
+      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? [])],
+    };
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId}${isClosingTurn ? ' closingTurn=true' : ''} cwd=${cwd}`, task.id);
+    worker.sessionCwd = cwd;
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
@@ -2482,6 +2571,7 @@ export class WorkerManager {
     const secretValues = [
       { label: 'BUILDD_API_KEY', value: this.config.apiKey },
       ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
+      ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
     ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
@@ -2552,6 +2642,8 @@ export class WorkerManager {
     let cbmRuntimeDir: string | undefined;
     // Shared cache is host-wide and seeded — it must survive this worker's cleanup.
     let cbmSharedCache = false;
+    // Per-session throwaway BUILDD_HOME for the agent env; removed in finally.
+    let agentRunnerHome: string | undefined;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
     // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
@@ -2717,7 +2809,7 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + [
           '## ⚠ Degraded Environment — Dependencies NOT Installed',
           '',
-          `Dependency install failed in this worktree (\`${failure}\` at \`${dir}\`).`,
+          `Dependency install failed in this worktree (\`${failure}\` at ${formatInstallDir(dir)}).`,
           '`node_modules` is absent or incomplete, so workspace imports and any',
           'command that needs them will fail.',
           '',
@@ -2763,6 +2855,10 @@ export class WorkerManager {
         const val = process.env[key];
         if (val !== undefined) cleanEnv[key] = val;
       }
+      // Any runner code the agent runs (its tests, from any checkout on this
+      // host, including ones that predate the in-repo test-home guard) would
+      // otherwise fall back to ~/.buildd, which is THIS runner's live store.
+      agentRunnerHome = isolateAgentRunnerHome(cleanEnv, worker.id);
 
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
@@ -3156,21 +3252,21 @@ export class WorkerManager {
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
-      // Resolve role env vars (secret labels → actual values)
-      if (worker.roleConfig) {
+      // Resolve role env vars (secret labels → actual values). Not gated on
+      // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
+      // independently of the packaged R2 bundle (see resolveWorkerRoleEnv).
+      if (worker.roleConfig || worker.roleEnvSecrets || worker.roleEnvMissing) {
         try {
-          const { resolved: roleEnv, missing } = await resolveRoleEnv(
-            getRoleDir(worker.roleConfig.slug),
-            process.env as Record<string, string>,
-          );
+          const { resolved: roleEnv, missing } = await this.resolveWorkerRoleEnv(worker);
           Object.assign(cleanEnv, roleEnv);
-          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
+          const roleLabel = worker.roleConfig?.slug ?? worker.roleInstructions?.slug ?? 'role';
+          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${roleLabel}`);
           if (missing.length > 0) {
             // A role that declares a requirement and loses it is worse than one
             // that declares nothing — record it as a visible degraded milestone
             // instead of letting the session start looking identical to a role
             // with no requirements at all.
-            const label = `Role env degraded: ${worker.roleConfig.slug} missing ${missing.join(', ')}`;
+            const label = `Role env degraded: ${roleLabel} missing ${missing.join(', ')}`;
             console.warn(`[Worker ${worker.id}] ${label}`);
             this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           }
@@ -3691,8 +3787,16 @@ export class WorkerManager {
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
         // 'user' is needed for skills in ~/.claude/skills, but must not carry
-        // the host operator's own CLAUDE.md / rules into the worker.
-        settings: { claudeMdExcludes: hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR) },
+        // the host operator's own CLAUDE.md / rules into the worker. 'project'
+        // walks every ancestor of the cwd, which for a nested worktree includes
+        // the primary clone — its CLAUDE.md arrived headed with the primary path
+        // and sent agents there (see primaryCloneMemoryExcludes).
+        settings: {
+          claudeMdExcludes: [
+            ...hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR),
+            ...primaryCloneMemoryExcludes(cwd, repoPath),
+          ],
+        },
         permissionMode,
         systemPrompt,
         enableFileCheckpointing: true,
@@ -3935,6 +4039,12 @@ export class WorkerManager {
         PreToolUse: [
           ...(readJailPrefixes
             ? [{ hooks: [this.hookFactory.createReadJailHook(worker, cwd, readJailPrefixes)] }]
+            : []),
+          // Worktree confinement: a nested worktree's session must not cd into,
+          // run in, or edit the primary clone (or a sibling worktree). Claude
+          // only — Codex has no PreToolUse seam. See worktree-confinement.ts.
+          ...(!isCodexTask && cwd !== repoPath
+            ? [{ hooks: [this.hookFactory.createWorktreeConfinementHook(worker, cwd, repoPath)] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
           // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
@@ -4202,25 +4312,23 @@ export class WorkerManager {
           // while the session is still alive rather than failing post-loop.
           let outputReqNudged = false;
           const outputReq = task.outputRequirement || 'auto';
-          if ((outputReq === 'pr_required' || outputReq === 'artifact_required') && outputReqNudgeCount < maxOutputReqNudges) {
+          if (outputReqNudgeCount < maxOutputReqNudges) {
             // A create_pr *call* is not proof of a PR — GitHub can reject it
             // (e.g. 422 when the branch was never pushed). Only count a PR that
             // a create_pr result actually confirmed (worker.prCreated, set in
             // handleMessage from the tool result), or a commit carrying PR info.
             const hasPR = worker.prCreated === true ||
               worker.commits.some((c: any) => c.prUrl || c.prNumber);
-            const hasArtifact = worker.toolCalls?.some((tc: any) =>
-              tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_artifact');
+            const nudge = outputRequirementNudge({
+              outputRequirement: outputReq,
+              roleSlug: task.roleSlug,
+              hasPR,
+              toolCalls: worker.toolCalls,
+            });
 
-            const unmet = outputReq === 'pr_required' ? !hasPR :
-              /* artifact_required */ !hasPR && !hasArtifact;
-
-            if (unmet) {
+            if (nudge) {
               const sessionRef = this.sessions.get(worker.id);
               if (sessionRef) {
-                const nudge = outputReq === 'pr_required'
-                  ? 'You are not done yet — this task requires a pull request. Create one using `buildd` action: create_pr, then call complete_task.'
-                  : 'You are not done yet — this task requires a deliverable. Create a PR (create_pr) or artifact (create_artifact), then call complete_task.';
                 console.log(`[Worker ${worker.id}] Output requirement not met (${outputReq}) — nudging agent`);
                 sessionLog(worker.id, 'info', 'output_requirement_nudge', outputReq, worker.taskId);
                 this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });
@@ -4397,6 +4505,7 @@ export class WorkerManager {
         // authored or not — recursing a second time would turn a bounded
         // one-shot into an unbounded chain.
         let closingTurnOutcome: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}` | undefined;
+        let remoteState: { workerTerminal: boolean; taskCancelled: boolean } | undefined;
         if (isClosingTurn) {
           // Server state is the authority on whether complete_task landed —
           // so a closing turn that made the call and THEN ran out of turns
@@ -4414,9 +4523,15 @@ export class WorkerManager {
           // carries no structuredOutput — terminalising the worker without
           // the verdict and refusing this payload, which has it.
           closingTurnOutcome = 'skipped:structured_output';
-        } else if (!(await this.isAlreadyTerminalOnServer(worker))) {
+        } else if (!(remoteState = await this.remoteSessionState(worker)).workerTerminal) {
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
-          if (!resumeId) {
+          if (remoteState.taskCancelled) {
+            // The task was cancelled under this session. A closing turn
+            // would only ask the agent to call complete_task, which the MCP
+            // write fence refuses for a cancelled task — a whole extra turn
+            // spent to be told TASK CANCELLED again.
+            closingTurnOutcome = 'skipped:task_cancelled';
+          } else if (!resumeId) {
             closingTurnOutcome = 'skipped:not_resumable';
           } else {
             sessionLog(worker.id, 'info', 'closing_turn_attempt', `resume=${resumeId}`, worker.taskId);
@@ -4619,7 +4734,7 @@ export class WorkerManager {
           backgroundAgentMs,
         };
         const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
-          { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
+          { abort?: boolean; actualStatus?: string; reason?: string; exitCause?: string | null } | null | undefined;
 
         // The server refused the status write because the row is ALREADY
         // terminal — the normal outcome when the agent called the buildd MCP
@@ -4634,6 +4749,12 @@ export class WorkerManager {
         // IT expired (stale cleanup / reassign / takeover).
         if (completionResult?.abort === true) {
           await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
+        }
+        // The task was cancelled under this session and the server recorded
+        // the completion as a cancellation rather than gating it — say so
+        // locally instead of reading as an ordinary completion.
+        if (completionResult?.exitCause === 'task_cancelled') {
+          this.markCancelledUnderSession(worker, 'completion recorded as task_cancelled');
         }
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
@@ -4679,8 +4800,10 @@ export class WorkerManager {
 
       // Before marking as failed, check if server already has this as completed.
       // This handles the race where complete_task succeeded but sync abort threw.
+      let remoteTaskCancelled = false;
       try {
         const remote = await this.buildd.getWorkerRemote(worker.id);
+        remoteTaskCancelled = remote?.task?.status === 'cancelled';
         if (remote?.status === 'completed') {
           console.log(`[Worker ${worker.id}] Server shows completed despite local error — honoring server state`);
           sessionLog(worker.id, 'info', 'session_reconciled', 'Server confirms completed, local error ignored', worker.taskId);
@@ -4714,6 +4837,25 @@ export class WorkerManager {
       // we already reported its terminal outcome, and re-running it would
       // spend a whole second session arguing with a decision the server has
       // already made. Same shape as the needs_input park above.
+      // A refusal of a session whose task was cancelled under it (e.g. the
+      // output gate asking for a PR the task no longer wants) is not a
+      // refusal of the work — report the cancellation, without the refusal
+      // flags that would book it as output_unmet / server_refused. The server
+      // classifies it task_cancelled from the task's own status.
+      if (refusal && remoteTaskCancelled) {
+        this.markCancelledUnderSession(worker, `server refused ${refusal.method} ${refusal.endpoint} (${refusal.gate ?? `HTTP ${refusal.status}`}) after the task was cancelled`);
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: 'Task was cancelled while the session was running',
+          ...this.terminalAttributionPayload(worker),
+        }).catch(err => {
+          console.error(`[Worker ${worker.id}] Failed to report cancellation:`, err);
+        });
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+        return;
+      }
+
       if (refusal) {
         await this.reportServerRefusal(worker, refusal);
         return;
@@ -4805,6 +4947,12 @@ export class WorkerManager {
       }
     } finally {
       if (isSensitive) deactivateRedaction();
+      // This invocation's own throwaway BUILDD_HOME. First and unconditional:
+      // it is unique to this call, so neither the closing-turn early return
+      // below nor a superseded/deregistered session may skip it.
+      if (agentRunnerHome) {
+        cleanupAgentRunnerHome(agentRunnerHome);
+      }
       if (delegatedToClosingTurn) {
         // The nested closing-turn call above already ran ITS OWN full
         // try/catch/finally to completion — including this exact cleanup
@@ -5453,18 +5601,10 @@ export class WorkerManager {
             this.addCheckpoint(worker, CheckpointEvent.FIRST_EDIT);
           }
 
-          // Emit action milestones for notable tool calls (Edit, Write, Bash)
-          if (toolName === 'Edit' || toolName === 'Write') {
-            const filePath = input.file_path as string;
-            const shortPath = filePath ? filePath.split('/').pop() || filePath : 'file';
-            this.addMilestone(worker, { type: 'action', label: `${toolName === 'Edit' ? 'Edited' : 'Wrote'} ${shortPath}`, ts: Date.now() });
-          } else if (toolName === 'Bash') {
-            const cmd = (input.command as string) || '';
-            // Only emit for notable bash commands, skip trivial ones
-            if (cmd.includes('git commit') || cmd.includes('npm') || cmd.includes('bun') || cmd.includes('test') || cmd.includes('build')) {
-              this.addMilestone(worker, { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts: Date.now() });
-            }
-          }
+          // Emit structured action milestones for tool calls (Edit, Write,
+          // MultiEdit, Read, notable Bash) — see tool-milestones.ts.
+          const actionMilestone = toolActionMilestone(toolName, input, worker.sessionCwd ?? worker.worktreePath);
+          if (actionMilestone) this.addMilestone(worker, actionMilestone);
 
           // Update currentAction (still useful for live display)
           const redactAction = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
@@ -5494,6 +5634,11 @@ export class WorkerManager {
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName === 'AskUserQuestion' && !asksAQuestion(input)) {
+            // Asks nothing (e.g. `questions: []` used to "wait" on background
+            // work). Not a question: never park, abort, or notify — the
+            // PreToolUse hook denies it and the session continues.
+            console.log(`[Worker ${worker.id}] AskUserQuestion with no question text — not parking (toolUseId=${block.id})`);
           } else if (toolName === 'AskUserQuestion') {
             // Agent is asking a question — standalone status milestone + waiting state
             const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
@@ -5960,17 +6105,18 @@ export class WorkerManager {
     if (redact && 'label' in milestone && typeof milestone.label === 'string') {
       milestone = { ...milestone, label: redact(milestone.label) };
     }
-    worker.milestones.push(milestone);
-    // Keep last 50 milestones; prioritize phases/checkpoints over actions when trimming
-    if (worker.milestones.length > 50) {
-      const actionIdx = worker.milestones.findIndex(m => m.type === 'action');
-      if (actionIdx >= 0) {
-        worker.milestones.splice(actionIdx, 1);
-      } else {
-        worker.milestones.shift();
-      }
+    if (redact && milestone.type === 'action') {
+      if (typeof milestone.cmd === 'string') milestone = { ...milestone, cmd: redact(milestone.cmd) };
+      if (typeof milestone.path === 'string') milestone = { ...milestone, path: redact(milestone.path) };
     }
-    this.emit({ type: 'milestone', workerId: worker.id, milestone });
+    // Cap 100; same-path consecutive Reads fold; trims Reads, then other
+    // actions, then oldest (see appendMilestone).
+    const { folded } = appendMilestone(worker.milestones, milestone);
+    if (!folded) this.emit({ type: 'milestone', workerId: worker.id, milestone });
+
+    // Reads are high-frequency — leave them to the 10s periodic sync rather
+    // than PATCHing on every file read.
+    if (milestone.type === 'action' && milestone.tool === 'Read') return;
 
     // Sync this worker immediately so web dashboard sees milestones right away
     if (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting') {

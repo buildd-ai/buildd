@@ -44,3 +44,11 @@ describe('TeamSwitcher', () => {
     expect(renderToStaticMarkup(<TeamSwitcher teams={[]} currentTeamId={null} />)).toBe('');
   });
 });
+
+describe('TeamSwitcher tap target', () => {
+  it('the switcher button is at least 44px tall below md', () => {
+    const html = renderToStaticMarkup(<TeamSwitcher teams={TEAMS} currentTeamId="t1" />);
+    const button = html.match(/<button[^>]*>/)?.[0] ?? '';
+    expect(button).toContain('max-md:min-h-11');
+  });
+});

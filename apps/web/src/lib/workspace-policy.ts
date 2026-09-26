@@ -1,7 +1,7 @@
 /**
  * Workspace policy — semantic risk class detection and resolution.
  *
- * Replaces hand-authored path globs (`escalateToPaths`) with:
+ * Replaces hand-authored path lists (`escalateToPaths`, `userPaths`, deny paths) with:
  *   1. A preset tier (cautious / balanced / autonomous) chosen by the user.
  *   2. Auto-detected paths per semantic class (never user-typed).
  *   3. Intent-readable prompts for the reviewer agent.
@@ -56,106 +56,112 @@ export function getClassAction(preset: WorkspacePolicyPreset, className: RiskCla
 // ── Path detection ────────────────────────────────────────────────────────────
 
 /**
- * Regex tests that classify a file path into a risk class.
+ * How a matcher's hits are stored.
  *
- * Detection strategy: find the DIRECTORIES that satisfy each class, then
- * deduplicate to directory prefixes so the stored list stays compact.
+ *   - `dir`:  the regex's first capture group is the matched directory
+ *             (ending in `/`). Stored as that prefix so future files in the
+ *             same directory are covered. Never widened to the parent — a
+ *             `lib/auth/` hit must not become `lib/`.
+ *   - `file`: the file path itself is stored, verbatim. A single-file hit
+ *             (`middleware.ts`, `vercel.json`, `db/schema.ts`) collapsed to
+ *             its parent would put every sibling behind the class — one
+ *             middleware file would escalate the whole app.
  */
-const CLASS_MATCHERS: Record<RiskClassName, RegExp[]> = {
+type ClassMatcher = { kind: 'dir' | 'file'; rx: RegExp };
+
+const dir = (rx: RegExp): ClassMatcher => ({ kind: 'dir', rx });
+const file = (rx: RegExp): ClassMatcher => ({ kind: 'file', rx });
+
+/** Regex tests that classify a file path into a risk class. */
+const CLASS_MATCHERS: Record<RiskClassName, ClassMatcher[]> = {
   destructive_schema_change: [
     // Drizzle: any directory named "drizzle" that contains numbered SQL migrations
-    /(?:^|\/)drizzle\/\d+_/,
+    dir(/^((?:.*\/)?drizzle\/)\d+_/),
     // Prisma: prisma/migrations
-    /(?:^|\/)prisma\/migrations?\//,
+    dir(/^((?:.*\/)?prisma\/migrations?\/)/),
     // Alembic
-    /(?:^|\/)alembic\/versions?\//,
+    dir(/^((?:.*\/)?alembic\/versions?\/)/),
     // Generic: a "migrations" dir with SQL files
-    /(?:^|\/)migrations?\/[^/]+\.sql$/,
+    dir(/^((?:.*\/)?migrations?\/)[^/]+\.sql$/),
     // Schema source files (ORM definitions)
-    /(?:^|\/)(?:db\/schema|models\/schema|prisma\/schema)\.(?:ts|js|prisma)$/,
+    file(/(?:^|\/)(?:db\/schema|models\/schema|prisma\/schema)\.(?:ts|js|prisma)$/),
   ],
   ci_deploy_config: [
-    /^\.github\/workflows\//,
-    /^\.github\/actions\//,
-    /^\.circleci\//,
-    /^\.gitlab-ci\.ya?ml$/,
-    /^Jenkinsfile/,
-    /(?:^|\/)vercel\.json$/,
-    /(?:^|\/)netlify\.toml$/,
-    /(?:^|\/)Dockerfile(?:\.\w+)?$/,
-    /(?:^|\/)docker-compose(?:\.override)?\.ya?ml$/,
-    /(?:^|\/)railway\.toml$/,
-    /(?:^|\/)fly\.toml$/,
-    /(?:^|\/)render\.ya?ml$/,
+    dir(/^(\.github\/workflows\/)/),
+    dir(/^(\.github\/actions\/)/),
+    dir(/^(\.circleci\/)/),
+    file(/^\.gitlab-ci\.ya?ml$/),
+    file(/^Jenkinsfile/),
+    file(/(?:^|\/)vercel\.json$/),
+    file(/(?:^|\/)netlify\.toml$/),
+    file(/(?:^|\/)Dockerfile(?:\.\w+)?$/),
+    file(/(?:^|\/)docker-compose(?:\.override)?\.ya?ml$/),
+    file(/(?:^|\/)railway\.toml$/),
+    file(/(?:^|\/)fly\.toml$/),
+    file(/(?:^|\/)render\.ya?ml$/),
   ],
   auth_and_secrets: [
     // Auth directories
-    /(?:^|\/)(?:lib|src)\/auth(?:\/|$)/,
-    /(?:^|\/)(?:lib|src)\/authentication(?:\/|$)/,
-    /(?:^|\/)middleware\.(?:ts|js)$/,
+    dir(/^((?:.*\/)?(?:lib|src)\/auth\/)/),
+    dir(/^((?:.*\/)?(?:lib|src)\/authentication\/)/),
+    file(/(?:^|\/)(?:lib|src)\/auth(?:entication)?$/),
+    file(/(?:^|\/)middleware\.(?:ts|js)$/),
     // Env schema files (typed env loaders)
-    /(?:^|\/)(?:env|config)\.(?:schema|types?)\.(?:ts|js)$/,
-    /(?:^|\/)(?:src|lib)\/env(?:\.ts|\.js|\/)/,
+    file(/(?:^|\/)(?:env|config)\.(?:schema|types?)\.(?:ts|js)$/),
+    file(/(?:^|\/)(?:src|lib)\/env\.(?:ts|js)$/),
+    dir(/^((?:.*\/)?(?:src|lib)\/env\/)/),
     // Secret loaders
-    /(?:^|\/)(?:secrets?|credentials?)\/[^/]+\.(?:ts|js)$/,
+    dir(/^((?:.*\/)?(?:secrets?|credentials?)\/)[^/]+\.(?:ts|js)$/),
   ],
   dependency_bump: [
     // Lockfiles
-    /(?:^|\/)(?:package-lock|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|composer\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|Pipfile\.lock)$/,
-    // Manifest (coarser — only match at root or workspace root)
-    /^package\.json$/,
+    file(
+      /(?:^|\/)(?:package-lock\.json|yarn\.lock|bun\.lockb?|pnpm-lock\.yaml|composer\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|Pipfile\.lock)$/,
+    ),
+    // Manifest (coarser — only match at root)
+    file(/^package\.json$/),
   ],
   public_api_contract: [
     // OpenAPI / Swagger specs
-    /(?:^|\/)openapi(?:\.v\d+)?\.(?:ya?ml|json)$/,
-    /(?:^|\/)swagger(?:\.v\d+)?\.(?:ya?ml|json)$/,
+    file(/(?:^|\/)openapi(?:\.v\d+)?\.(?:ya?ml|json)$/),
+    file(/(?:^|\/)swagger(?:\.v\d+)?\.(?:ya?ml|json)$/),
     // Shared type packages (mono-repo convention)
-    /^packages\/shared\/src\//,
-    /^packages\/types\/src\//,
-    /^packages\/api-types\/src\//,
+    dir(/^(packages\/shared\/src\/)/),
+    dir(/^(packages\/types\/src\/)/),
+    dir(/^(packages\/api-types\/src\/)/),
     // Public-surface type roots
-    /(?:^|\/)types\/(?:api|public|shared)\//,
+    dir(/^((?:.*\/)?types\/(?:api|public|shared)\/)/),
   ],
 };
 
 /**
- * Given a full repo file listing, return the deduplicated directory prefixes
- * that satisfy the given risk class.
+ * Given a full repo file listing, return the paths that satisfy the given
+ * risk class: directory prefixes (ending in `/`) for directory-form matchers,
+ * exact file paths for file-form matchers.
  *
- * Returns prefixes rather than individual file paths so the stored list stays
- * compact and covers future files in the same directories.
+ * Deduplication: a prefix inside another kept prefix is dropped, and a file
+ * already covered by a kept prefix is dropped.
  */
 export function detectRiskClassPaths(files: string[], className: RiskClassName): string[] {
   const matchers = CLASS_MATCHERS[className];
-  const matchedFiles = files.filter((f) => matchers.some((rx) => rx.test(f)));
-  if (matchedFiles.length === 0) return [];
-
-  // Deduplicate: for each matched file, find the deepest common directory prefix
-  // that covers all files of this class. We use a simple approach: collect all
-  // matched paths, extract directory prefixes (depth ≤ 3), and keep the most
-  // specific ones that cover everything.
-  const prefixes = new Set<string>();
-  for (const file of matchedFiles) {
-    const parts = file.split('/');
-    // For single-component files (e.g. "Dockerfile"), use the file itself
-    if (parts.length === 1) {
-      prefixes.add(file);
-      continue;
-    }
-    // Prefer the first 2-3 path components as the "prefix"
-    const depth = Math.min(parts.length - 1, 3);
-    prefixes.add(parts.slice(0, depth).join('/') + '/');
-  }
-
-  // Remove redundant prefixes (where one is a prefix of another)
-  const sorted = [...prefixes].sort();
-  const deduped: string[] = [];
-  for (const p of sorted) {
-    if (!deduped.some((prev) => p.startsWith(prev))) {
-      deduped.push(p);
+  const dirs = new Set<string>();
+  const exact = new Set<string>();
+  for (const f of files) {
+    for (const m of matchers) {
+      const hit = m.rx.exec(f);
+      if (!hit) continue;
+      if (m.kind === 'dir' && hit[1]) dirs.add(hit[1]);
+      else exact.add(f);
+      break;
     }
   }
-  return deduped;
+
+  const keptDirs: string[] = [];
+  for (const d of [...dirs].sort()) {
+    if (!keptDirs.some((prev) => d.startsWith(prev))) keptDirs.push(d);
+  }
+  const keptFiles = [...exact].filter((f) => !keptDirs.some((d) => f.startsWith(d)));
+  return [...keptDirs, ...keptFiles].sort();
 }
 
 /** Detect all risk classes in one pass over the file listing. */
@@ -176,30 +182,34 @@ export function detectAllRiskClasses(files: string[]): RiskClassEntry[] {
 // ── Policy resolution (per-PR) ────────────────────────────────────────────────
 
 /**
- * Get all effective paths for a risk class (detected + user overrides).
+ * Get all effective paths for a risk class — the detected paths only.
+ * Hand-written `userPaths` are no longer read: paths come from the repo scan.
  *
- * `detectedPaths` is required by the type but this config is jsonb, and
- * `PATCH /api/workspaces/[id]` accepts a hand-authored `gitConfig.policyConfig`
- * that TypeScript never sees. An unguarded spread over a missing array threw
+ * `detectedPaths` is required by the type but this config is jsonb, so a
+ * stored entry may lack it. An unguarded spread over a missing array threw
  * inside `preflightEscalationCheck`, whose caller catches and returns "no
  * reviewer dispatched" — which the webhook then follows into the auto-merge
  * path. A crashing escalation gate must not read as an absent one.
  */
 export function effectivePathsForClass(entry: RiskClassEntry): string[] {
-  return [...(entry.detectedPaths ?? []), ...(entry.userPaths ?? [])];
+  return [...(entry.detectedPaths ?? [])];
+}
+
+/**
+ * Whether a detected path entry covers a PR file.
+ *
+ * An entry ending in `/` is a directory prefix; anything else is an exact
+ * file path. Detection emits a trailing `/` for every directory it stores, and
+ * a file entry must not cover a same-named directory.
+ */
+function pathEntryCovers(entry: string, filePath: string): boolean {
+  if (entry.endsWith('/')) return filePath.startsWith(entry);
+  return filePath === entry;
 }
 
 /** Check whether a file path is covered by a risk class entry. */
 function fileCoveredByClass(filePath: string, entry: RiskClassEntry): boolean {
-  const paths = effectivePathsForClass(entry);
-  return paths.some((p) => {
-    // Exact match
-    if (filePath === p) return true;
-    // Directory prefix (with or without trailing slash)
-    const prefix = p.endsWith('/') ? p : p + '/';
-    if (filePath.startsWith(prefix)) return true;
-    return false;
-  });
+  return (entry.detectedPaths ?? []).some((p) => pathEntryCovers(p, filePath));
 }
 
 export interface PRPolicyMatch {
@@ -375,8 +385,8 @@ const BROAD_CLASS_MATCHERS: Record<RiskClassName, RegExp[]> = {
  */
 export function guessRiskClass(path: string): RiskClassName | null {
   // Try precise matchers first
-  for (const [name, matchers] of Object.entries(CLASS_MATCHERS) as [RiskClassName, RegExp[]][]) {
-    if (matchers.some((rx) => rx.test(path))) return name;
+  for (const [name, matchers] of Object.entries(CLASS_MATCHERS) as [RiskClassName, ClassMatcher[]][]) {
+    if (matchers.some((m) => m.rx.test(path))) return name;
   }
   // Try broad matchers (covers directory-form paths)
   for (const [name, matchers] of Object.entries(BROAD_CLASS_MATCHERS) as [RiskClassName, RegExp[]][]) {
@@ -408,46 +418,6 @@ export function findUncoveredRiskPaths(
     }
   }
   return proposals;
-}
-
-// ── Legacy migration helper ───────────────────────────────────────────────────
-
-/**
- * Infer a WorkspacePolicyConfig from legacy hand-authored paths.
- *
- * Existing workspaces with escalateToPaths or denyPaths keep full coverage — we
- * classify their paths into risk classes and show the inferred tier for confirmation.
- * Never called on the write path; used only to propose a migration to the user.
- */
-export function inferPolicyConfigFromLegacy(
-  escalateToPaths: string[],
-  reviewerRole: string,
-  suggestedPreset: WorkspacePolicyPreset = 'balanced',
-): WorkspacePolicyConfig {
-  const classMap: Partial<Record<RiskClassName, Set<string>>> = {};
-
-  for (const p of escalateToPaths) {
-    const guessed = guessRiskClass(p);
-    if (guessed) {
-      if (!classMap[guessed]) classMap[guessed] = new Set();
-      classMap[guessed]!.add(p);
-    }
-  }
-
-  const riskClasses: RiskClassEntry[] = [];
-  for (const [name, paths] of Object.entries(classMap) as [RiskClassName, Set<string>][]) {
-    riskClasses.push({
-      name,
-      detectedPaths: [],
-      userPaths: [...paths],
-    });
-  }
-
-  return {
-    preset: suggestedPreset,
-    riskClasses,
-    reviewerRole,
-  };
 }
 
 // ── Policy integration: resolve MergePolicy for a PR ─────────────────────────
@@ -498,8 +468,9 @@ export function applyPolicyConfigToMergePolicy(
       effectiveTier === 'agent-review'
         ? {
             reviewerRole,
-            // escalateToPaths is empty — we use policyConfig instead
-            escalateToPaths: base.agentReview?.escalateToPaths ?? [],
+            // Legacy stored escalateToPaths carried through (read-only
+            // fallback, LEGACY_PATH_FALLBACK_NOTE — remove next release).
+            ...(base.agentReview?.escalateToPaths ? { escalateToPaths: base.agentReview.escalateToPaths } : {}),
             maxConfidenceThreshold: base.agentReview?.maxConfidenceThreshold,
             gateCondition: base.agentReview?.gateCondition,
           }

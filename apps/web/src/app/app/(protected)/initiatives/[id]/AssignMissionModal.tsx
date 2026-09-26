@@ -124,7 +124,7 @@ export default function AssignMissionModal({ initiativeId, initiativeTitle, assi
                 <>
                   {unassigned.length > 0 && (
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2">Unassigned</p>
+                      <p className="text-[11px] md:text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2">Unassigned</p>
                       <div className="space-y-1">
                         {unassigned.map(m => (
                           <label key={m.id} className="flex items-start gap-3 p-2.5 rounded hover:bg-surface-3 cursor-pointer transition-colors">
@@ -148,7 +148,7 @@ export default function AssignMissionModal({ initiativeId, initiativeTitle, assi
 
                   {inOther.length > 0 && (
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2">In other initiatives</p>
+                      <p className="text-[11px] md:text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2">In other initiatives</p>
                       <div className="space-y-1">
                         {inOther.map(m => (
                           <label key={m.id} className="flex items-start gap-3 p-2.5 rounded hover:bg-surface-3 cursor-pointer transition-colors">

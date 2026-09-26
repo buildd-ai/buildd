@@ -129,7 +129,7 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
           <option value="all_prs_merged">All PRs merged</option>
           <option value="no_open_tasks">No open tasks</option>
           <option value="artifact_exists">Artifact exists</option>
-          <option value="description">Description (LLM-graded — last resort)</option>
+          <option value="description">Description (LLM-graded, last resort)</option>
         </select>
       </div>
 
@@ -315,7 +315,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd. Criteria were not evaluated.');
+      setRunError('Could not reach buildd to evaluate criteria.');
     } finally {
       setIsRunning(false);
     }
@@ -342,7 +342,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd. Criteria were not saved.');
+      setRunError('Could not reach buildd to save criteria.');
       setCriteria(criteria);
     } finally {
       setSavingCriteria(false);
@@ -393,7 +393,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="section-label">Goal criteria</h2>
           {overallVerdict && (
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
             </span>
           )}
@@ -437,7 +437,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
 
       {/* Criteria list */}
       {criteria.length === 0 ? (
-        <p className="text-[13px] text-text-muted mb-3">No criteria set. Add one to gate mission completion on measurable outcomes.</p>
+        <p className="text-[13px] text-text-muted mb-3">No criteria. Add one to gate completion on a measurable outcome.</p>
       ) : (
         <div className="space-y-2 mb-3">
           {criteria.map((c, i) => {
@@ -463,7 +463,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                 </span>
                 {/* Content */}
                 <div className="flex-1 min-w-0">
-                  <span className="inline-block text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm mb-1">
+                  <span className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm mb-1">
                     {typeLabel}
                   </span>
                   <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
@@ -471,13 +471,13 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                   </p>
                   {isExpanded && c.type === 'description' && c.notMechanizableReason && (
                     <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
-                      Prose (needs a model to grade) because: {c.notMechanizableReason}
+                      Prose (graded by {c.grader === 'api' ? 'an API call' : c.grader === 'runner' ? 'a runner agent' : 'an API call, or a runner agent when no key is set'}) because: {c.notMechanizableReason}
                     </p>
                   )}
                   {/* Inline CI-block annotation for all_prs_merged — derived from live worker state */}
                   {c.type === 'all_prs_merged' && failingCiPrNumbers && failingCiPrNumbers.length > 0 && verdict !== 'pass' && (
                     <p className="text-[11px] text-status-error mt-0.5 leading-snug font-mono">
-                      blocked — {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
+                      blocked: {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
                       {failingCiPrNumbers.map((n, idx) => (
                         <span key={n}>
                           {idx > 0 && ', '}
@@ -491,10 +491,19 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                       {cs.evidence}
                     </p>
                   )}
+                  {cs?.workerTaskId && (
+                    <a
+                      href={`/app/tasks/${cs.workerTaskId}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
+                    >
+                      verification task {cs.workerTaskId.slice(0, 8)}{cs.evaluatedAt ? ` · ${formatRelativeTime(cs.evaluatedAt)}` : ''}
+                    </a>
+                  )}
                   {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">
                       {cs.evidenceRefs.map((ref, ri) => (
-                        <span key={ri} className="text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
+                        <span key={ri} className="text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
                           {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
                         </span>
                       ))}
@@ -552,7 +561,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         <div className="mt-3 pt-3 border-t border-border-default flex items-center justify-between gap-3">
           <div className="min-w-0">
             <span className="text-[12px] text-text-secondary">Auto-verify on completion</span>
-            <p className="text-[11px] text-text-muted mt-0.5">Automatically check criteria when the mission completes.</p>
+            <p className="text-[11px] text-text-muted mt-0.5">Check criteria when the mission completes.</p>
           </div>
           <Switch
             checked={autoVerify}

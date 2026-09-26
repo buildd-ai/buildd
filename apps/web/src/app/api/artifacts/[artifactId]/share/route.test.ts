@@ -164,6 +164,84 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
     expect(res.status).toBe(200);
     expect(capturedSet.shareToken).toBe('existing-token');
   });
+
+  // docs/design/visual-qa-auditor.md: shots of preview data can contain real
+  // content, so an audit screenshot never gets a public link.
+  const qaMeta = { runKey: 'run-1', route: '/app/tasks', viewport: 'mobile', finding: 'ok', verdict: 'ok' };
+
+  it('refuses (409) to publish a screenshot in the qa/ audit area, even for its owner', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      type: 'screenshot',
+      storageKey: 'qa/ws-1/u1/tasks-mobile.png',
+      metadata: {},
+      shareToken: null,
+      visibility: 'private',
+      worker: { accountId: 'account-1' },
+    });
+
+    const res = await POST(createRequest('POST', 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/audit screenshot/i);
+    expect(mockArtifactsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('refuses (409) to publish a screenshot carrying metadata.qa', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      type: 'screenshot',
+      storageKey: 'artifacts/ws-1/u1/tasks-mobile.png',
+      metadata: { qa: qaMeta },
+      shareToken: null,
+      visibility: 'private',
+      worker: null,
+    });
+
+    const res = await POST(createRequest('POST'), { params: mockParams });
+    expect(res.status).toBe(409);
+    expect(mockArtifactsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('checks authorization before the audit refusal, so a stranger learns nothing', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-2' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-other']);
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      type: 'screenshot',
+      storageKey: 'qa/ws-1/u1/tasks-mobile.png',
+      metadata: { qa: qaMeta },
+      shareToken: null,
+      visibility: 'private',
+      worker: null,
+    });
+
+    const res = await POST(createRequest('POST'), { params: mockParams });
+    expect(res.status).toBe(403);
+  });
+
+  it('still publishes an ordinary screenshot', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      type: 'screenshot',
+      storageKey: 'artifacts/ws-1/u1/shot.png',
+      metadata: {},
+      shareToken: null,
+      visibility: 'private',
+      worker: { accountId: 'account-1' },
+    });
+
+    const res = await POST(createRequest('POST', 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(capturedSet.visibility).toBe('public');
+  });
 });
 
 describe('DELETE /api/artifacts/[artifactId]/share', () => {
@@ -216,5 +294,23 @@ describe('DELETE /api/artifacts/[artifactId]/share', () => {
     expect(data.ok).toBe(true);
     expect(capturedSet.visibility).toBe('private');
     expect(capturedSet.shareToken).toBeNull();
+  });
+
+  it('still lets an owner make an audit screenshot private', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      type: 'screenshot',
+      storageKey: 'qa/ws-1/u1/tasks-mobile.png',
+      metadata: {},
+      shareToken: 'legacy-token',
+      visibility: 'public',
+      worker: { accountId: 'account-1' },
+    });
+
+    const res = await DELETE(createRequest('DELETE', 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(capturedSet.visibility).toBe('private');
   });
 });

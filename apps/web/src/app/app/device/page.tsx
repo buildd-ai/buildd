@@ -86,7 +86,7 @@ function DeviceContent() {
           {status === 'success' ? (
             <div className="text-center">
               <div className="mb-4 bg-status-success/10 border border-status-success/20 rounded-lg p-4 text-status-success">
-                Device authorized. You can close this tab and return to your terminal.
+                Device approved. Close this tab and go back to your terminal.
               </div>
             </div>
           ) : (
@@ -122,7 +122,7 @@ function DeviceContent() {
           )}
 
           <p className="mt-6 text-center text-sm text-text-muted">
-            Only approve codes you initiated from your own terminal.
+            Approve only codes you started from your own terminal.
           </p>
         </div>
       </div>

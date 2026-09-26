@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (37)
+## Active (38)
 
 ### auth (4)
 
@@ -49,7 +49,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-15
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-21
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-25
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
 ### releases (4)
@@ -73,24 +73,26 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-08-25
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-11
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-25
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (8)
+### surfaces (9)
 
+- [Initiatives](./initiatives.md) · @max — verified 2026-09-26
+  An initiative MUST be a container above missions with a human-set status, owner and optional target date; progress MUST be missions done over missions, and attention MUST come from its missions.
 - [Mission Feed](./mission-feed.md) · @builder — verified 2026-09-23
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-23
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-15
-  Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-26
+  Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
-  Home MUST aggregate across every team the user belongs to, while the missions and workspaces views MUST show only the single active team resolved server-side from the buildd-team cookie.
-- [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
+  Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
+- [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-09-26
   The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-30
   The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.

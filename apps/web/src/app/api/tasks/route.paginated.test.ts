@@ -189,6 +189,8 @@ mock.module('@buildd/core/db/schema', () => ({
   // dynamic import chain even though the runtime value is never dereferenced by
   // the paginated GET tests.
   taskSubjectReports: {},
+  // Same reason: @/lib/mission-surface-audit posts the round-cap question.
+  missionNotes: {},
 }));
 
 // Re-export real implementations of pure @buildd/core packages so that mocks
@@ -204,7 +206,8 @@ mock.module('@buildd/core/subject-anchor-extractor', () => _subjectAnchorExtract
 mock.module('@buildd/core/friction-manifest', () => _frictionManifestMod);
 mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock(() => 'healthy') }));
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
-mock.module('@buildd/shared', () => ({ TaskCategory: {} }));
+// VISUAL_AUDITOR_ROLE_SLUG: read at import by lib/mission-surface-audit.
+mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor' }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 
@@ -416,6 +419,27 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
 
       // Falls into the default branch, which still calls notInArray for the OR condition.
       expect(notInArrayCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('query failure', () => {
+    // Regression: a bare "Failed to get tasks" discarded the real Postgres error,
+    // so every prior investigation of this 500 had to start from a live repro
+    // instead of the response body. Audit mode is the path most likely to hit an
+    // unusual row shape or a slow scan (no 24h window), so this needs to surface
+    // the actual cause instead of hiding it again next time.
+    it('returns a detail field carrying the underlying error message instead of a bare 500', async () => {
+      mockDbSelect.mockImplementation(() => {
+        throw new Error('relation "tasks" does not exist');
+      });
+
+      const req = makeRequest({ limit: '5', status: 'failed' });
+      const res = await GET(req);
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe('Failed to get tasks');
+      expect(body.detail).toBe('relation "tasks" does not exist');
     });
   });
 });

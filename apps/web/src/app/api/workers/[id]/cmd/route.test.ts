@@ -66,7 +66,9 @@ function createMockRequest(body?: any, apiKey?: string): NextRequest {
   return new NextRequest('http://localhost:3000/api/workers/worker-1/cmd', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 describe('POST /api/workers/[id]/cmd', () => {
   beforeEach(() => {
@@ -104,7 +106,7 @@ describe('POST /api/workers/[id]/cmd', () => {
   it('returns 403 when worker belongs to different account', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-2',
     });
 
@@ -117,7 +119,7 @@ describe('POST /api/workers/[id]/cmd', () => {
   it('returns 400 for invalid action', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
     });
 
@@ -132,7 +134,7 @@ describe('POST /api/workers/[id]/cmd', () => {
   it('sends pause command via Pusher', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
     });
 
@@ -144,7 +146,7 @@ describe('POST /api/workers/[id]/cmd', () => {
     expect(data.ok).toBe(true);
     expect(data.action).toBe('pause');
     expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'worker-worker-1',
+      `worker-${WORKER_ID}`,
       'worker:command',
       expect.objectContaining({ action: 'pause' })
     );
@@ -153,7 +155,7 @@ describe('POST /api/workers/[id]/cmd', () => {
   it('sends abort command via Pusher', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
     });
 
@@ -162,7 +164,7 @@ describe('POST /api/workers/[id]/cmd', () => {
 
     expect(res.status).toBe(200);
     expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'worker-worker-1',
+      `worker-${WORKER_ID}`,
       'worker:command',
       expect.objectContaining({ action: 'abort' })
     );
@@ -171,7 +173,7 @@ describe('POST /api/workers/[id]/cmd', () => {
   it('sends message command with text', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
     });
 
@@ -180,7 +182,7 @@ describe('POST /api/workers/[id]/cmd', () => {
 
     expect(res.status).toBe(200);
     expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'worker-worker-1',
+      `worker-${WORKER_ID}`,
       'worker:command',
       expect.objectContaining({ action: 'message', text: 'Hello worker' })
     );
@@ -193,7 +195,7 @@ describe('POST /api/workers/[id]/cmd', () => {
     it('records the message in instructionHistory', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         accountId: 'account-1',
         workspace: { dataClass: 'standard' },
         instructionHistory: [{ type: 'response', message: 'earlier', timestamp: 1 }],
@@ -217,7 +219,7 @@ describe('POST /api/workers/[id]/cmd', () => {
     it('redacts the text for sensitive workspaces', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         accountId: 'account-1',
         workspace: { dataClass: 'sensitive' },
         instructionHistory: [],
@@ -235,7 +237,7 @@ describe('POST /api/workers/[id]/cmd', () => {
     it('records delivered for a runner that cannot confirm delivery', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         accountId: 'account-1',
         workspace: { dataClass: 'standard' },
         instructionHistory: [],
@@ -251,7 +253,7 @@ describe('POST /api/workers/[id]/cmd', () => {
     it('writes no history for non-message commands', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1',
+        id: WORKER_ID,
         accountId: 'account-1',
         workspace: { dataClass: 'standard' },
         instructionHistory: [],
@@ -267,7 +269,7 @@ describe('POST /api/workers/[id]/cmd', () => {
   it('accepts resume command', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
     });
 

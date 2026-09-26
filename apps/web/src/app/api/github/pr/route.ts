@@ -13,7 +13,11 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getTeamWorkspaceIds } from '@/lib/team-access';
+import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
+// GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
+import { resolveWorkerByPrNumberInWorkspaces } from '@/lib/pr-resolve';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import {
   resolveMatchedSurfaces,
@@ -37,6 +41,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 
 
 /**
@@ -191,10 +196,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    // Verify the account's team has access to this worker's workspace.
-    // accountId equality is wrong for multi-account teams — the runner's account
-    // differs from the MCP OAuth account. Team membership is the correct boundary.
-    if (worker.workspace?.teamId !== account.teamId) {
+    // Team membership OR being the account that runs the worker — see
+    // canActOnWorkerPr for why neither check alone is enough.
+    if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -947,7 +951,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    if (worker.workspace?.teamId !== account.teamId) {
+    if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -1020,7 +1024,7 @@ export async function PUT(req: NextRequest) {
       if (!worker) {
         return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
       }
-      if (worker.workspace?.teamId !== account.teamId) {
+      if (!(await canActOnWorkerPr(account, worker))) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
       }
     } else {
@@ -1203,7 +1207,7 @@ export async function PUT(req: NextRequest) {
         // recourse: consult the stored verdict rather than refusing on tier
         // alone. A terminal approve whose confidence clears the workspace
         // threshold makes the PR self-mergeable, subject to the SAME safety
-        // rails auto-threshold uses below (CI, escalateToPaths as deny paths,
+        // rails auto-threshold uses below (CI, legacy stored deny paths,
         // the migration operation-class inspector).
         const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber });
         const selfMergeable =
@@ -1454,12 +1458,19 @@ export async function PUT(req: NextRequest) {
 }
 
 // GET /api/github/pr?workerId=...&prNumber=... - Read PR details
+//
+// Auth: API key, or the dashboard session (GET only — merge/close/create stay
+// key-only). A session reads a worker's PR when the user is a member of the
+// worker workspace's team; by prNumber it searches the user's teams, or just
+// `teamId` when given. Anything outside that scope 404s. A key, when present,
+// is authoritative and `teamId` is ignored.
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   const account = await authenticateApiKey(apiKey);
-  if (!account) {
+  const sessionUser = account ? null : await getCurrentUser();
+  if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
 
@@ -1486,7 +1497,13 @@ export async function GET(req: NextRequest) {
       if (!worker) {
         return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
       }
-      if (worker.workspace?.teamId !== account.teamId) {
+      if (sessionUser) {
+        const access = worker.workspaceId ? await verifyWorkspaceAccess(sessionUser.id, worker.workspaceId) : null;
+        const pinTeamId = searchParams.get('teamId');
+        if (!access || (pinTeamId && access.teamId !== pinTeamId)) {
+          return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+        }
+      } else if (!(await canActOnWorkerPr(account!, worker))) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
       }
       const parsed = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
@@ -1503,7 +1520,14 @@ export async function GET(req: NextRequest) {
       if (isNaN(prNum)) {
         return NextResponse.json({ error: 'Invalid prNumber' }, { status: 400 });
       }
-      const resolved = await resolveWorkerByPrNumber(account, prNum, workspaceIdParam);
+      let resolved: Awaited<ReturnType<typeof resolveWorkerByPrNumber>>;
+      if (sessionUser) {
+        const teamIds = await resolveSessionTeamIds(sessionUser.id, searchParams.get('teamId'));
+        if (!teamIds) return NextResponse.json({ error: 'PR not found' }, { status: 404 });
+        resolved = await resolveWorkerByPrNumberInWorkspaces(await workspaceIdsForTeams(teamIds), prNum, workspaceIdParam);
+      } else {
+        resolved = await resolveWorkerByPrNumber(account!, prNum, workspaceIdParam);
+      }
       // Discriminate on numeric status: error descriptors carry { error: string, status: number }
       // while Drizzle worker rows carry status as a text column ('idle', 'active', etc.).
       // 'error' in resolved is always true for DB rows because the error column always exists.

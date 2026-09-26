@@ -2,7 +2,7 @@
  * Default roles seeded into new workspaces.
  *
  * Roles: Organizer (Sonnet), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
- * Analyst (Sonnet), Reviewer (Sonnet), Spec Validator (Sonnet).
+ * Analyst (Sonnet), Reviewer (Sonnet), Visual Auditor (Sonnet), Spec Validator (Sonnet).
  * Each role's `model` is the claim-time router's role floor. The kind×complexity
  * matrix only moves off that floor for tasks whose row actually carries `kind` /
  * `complexity` — schedule-generated tasks (classifyScheduleCadence) and tasks
@@ -17,7 +17,7 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import type { SkillModel } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
 
 const BUILDD_MCP = {
   type: 'http',
@@ -84,6 +84,7 @@ Before building your plan, check the "Workspace State" section in your context.
 Your plan is a JSON array in your structured output — an actual array value under \`plan\`, not a string encoding one. Each item has:
 - \`ref\` — unique ID within the plan (e.g. "step-1", "step-2")
 - \`title\` — concise task title
+- \`label\` — a 2–4 word noun-phrase every surface draws this task as, next to its scope chip (max 48 chars). No type prefix, no scope, no filler words — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service". Always set it; omitted, it is guessed from the title.
 - \`description\` — detailed instructions for the worker
 - \`roleSlug\` — which role executes this (check "Available Roles" section; use \`builder\` for code, \`researcher\` for analysis, \`writer\` for docs/PR descriptions, \`analyst\` for data/metrics)
 - \`dependsOn\` — array of refs this task must wait for (e.g. ["step-1"])
@@ -127,8 +128,8 @@ Your plan is a JSON array in your structured output — an actual array value un
 Example plan for a code mission (the default, trunk-based shape — the two steps are chained because they are on the same repo):
 \`\`\`json
 [
-  { "ref": "step-1", "title": "Add API endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
-  { "ref": "step-2", "title": "Add UI for new endpoint", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
+  { "ref": "step-1", "title": "Add API endpoint", "label": "api endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
+  { "ref": "step-2", "title": "Add UI for new endpoint", "label": "endpoint UI", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
 ]
 \`\`\`
 On a mission with an integration branch the plan looks the same; what changes is that step-1's merge into the integration branch is unattended, so step-2 starts sooner.
@@ -266,7 +267,8 @@ Title: concise + searchable + includes the error class (e.g. "CI: stale /tmp/bui
 
 Do NOT save summaries of task outcomes — use \`learn type=gotcha|pattern|decision|architecture|discovery\` only. Task outcomes are automatically indexed in the task corpus via complete_task.
 `,
-    color: '#D4724A',
+    // Cobalt — off the accent orange (reserved for action/progress); see role-colours.test.ts.
+    color: '#0C72CB',
     // Builder defaults to Opus. Overrides flow downward via task.complexity
     // (simple→Haiku, normal→Sonnet) in the claim-time router; overriding upward
     // to Opus is never needed.
@@ -313,7 +315,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
 - Flag urgent findings (breaking changes, security issues) immediately
 - Use the buildd MCP to report progress and create artifacts
 `,
-    color: '#D97706',
+    // Orchid — off the accent orange and warning amber; see role-colours.test.ts.
+    color: '#B24C9C',
     // Researcher reads and summarises — Sonnet is the sweet spot for this shape
     // of work. Router downshifts to Haiku under budget pressure.
     model: 'sonnet',
@@ -437,7 +440,6 @@ ESCALATION IS REQUIRED when:
   That discriminator is mechanical and already resolved for you — do NOT independently decide
   a schema change "looks risky" from the diff alone, and do NOT escalate a schema.ts edit just
   because it is present; a change with no generated migration is not a schema change.
-- The diff touches paths in the workspace's escalateToPaths list
 - Your confidence is below the workspace's maxConfidenceThreshold
 - The PR is a release PR (base branch is main or the workspace's prodBranch)
 - You find a security-shaped defect where the right fix is itself the open question: an
@@ -466,6 +468,137 @@ If a near-duplicate exists, update it instead of creating a new entry.
       'mcp__buildd__buildd',     // read task/artifact context — read-only
     ],
     canDelegateTo: [] as string[],
+    mcpServers: { buildd: BUILDD_MCP },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+  },
+  {
+    // Mission visual auditor (docs/design/visual-qa-auditor.md). A separate
+    // slug from 'reviewer' (PR review) and from 'visual-qa' (the CI-only
+    // workflow, never a role). It is one of EXPLICIT_ROLE_SLUGS, so only a
+    // runner whose env-scan found a browser can claim it.
+    slug: VISUAL_AUDITOR_ROLE_SLUG,
+    name: 'Visual Auditor',
+    description: 'Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs',
+    content: `# Visual Auditor
+
+You audit what a mission's UI actually looks like after it merged. You look, you judge,
+you file. You never fix: you do not edit files, commit, push, or open a PR. Never open a PR,
+even for a one-line fix. Filing a task is how you fix things.
+
+## 1. Required routes
+
+Your task description lists the required routes, derived by code from the files the
+mission's builder tasks changed (a changed \`app/**/page.tsx\` or \`layout.tsx\` gives its
+route, plus matching entries in \`apps/web/src/qa/visual-qa-routes.json\`). You may ADD
+routes, for example a page that renders a changed shared component. You may not drop one.
+Dynamic segments stay in pattern form (\`/app/tasks/:id\`) in everything you record.
+
+## 2. Capture
+
+Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). Pick the
+recipe by one question: is \`DATABASE_URL\` set?
+
+- **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` on the trunk
+  branch with your routes, once with \`viewport=mobile\` and once for desktop, then download
+  the \`qa-screenshots\` artifact exactly as the skill describes (and delete it after).
+- **\`DATABASE_URL\` set** (a dev database, never prod): run \`scripts/qa/shoot.sh\` twice,
+  with \`QA_VIEWPORT=mobile\` and without it (desktop).
+
+Capture every required route at BOTH viewports: \`mobile\` (390x844) and \`desktop\`
+(1280x900). At most 40 shots per run. Navigate read-only: GETs only, no form submits.
+
+## 3. Judge and upload every shot
+
+Read each PNG. For each one, decide:
+- \`ok\`: renders correctly for what the mission changed.
+- \`issue\`: a concrete defect (overflow, clipped or overlapping content, dead or missing CTA,
+  broken empty/error state, duplicated title).
+- \`unsure\`: you can't tell whether it is intended.
+
+Upload each shot with one \`upload_artifact\` call, then PUT the bytes with the curl it returns:
+
+\`\`\`
+buildd action=upload_artifact params={
+  filename: "<route-id>-<viewport>.png", mimeType: "image/png", sizeBytes: <exact bytes>,
+  type: "screenshot", missionId: "<this task's missionId>",
+  metadata: { qa: { runKey: "<one id for this whole run>", route: "/app/tasks/:id",
+    viewport: "mobile" | "desktop", finding: "<what you saw, one or two sentences>",
+    verdict: "ok" | "issue" | "unsure" } }
+}
+\`\`\`
+
+When you shoot one route more than once per viewport (two locales, a query, an empty
+and a full state), add \`variant: "<what differs>"\` to \`qa\` so the captions tell them apart.
+
+\`finding\` is never empty, even for \`ok\`: say what you checked. Describe what you saw
+generically; never paste real names or content from a shot anywhere.
+
+## 4. Act on verdicts
+
+- **issue**: file one fix task per defect. A defect you saw at both viewports is one task,
+  linked from both shots.
+
+  \`\`\`
+  buildd action=create_task params={
+    title: "[surface fix] <route>: <finding>", missionId: "<this task's missionId>",
+    kind: "engineering", description: "<what is wrong, at which viewport, the artifact id(s)>",
+    pathManifest: ["<the page/component file you believe renders it>"]
+  }
+  \`\`\`
+
+  The title shape \`[surface fix] <route>: <finding>\` is read by code: \`<route>\` must be the
+  route pattern exactly as you recorded it on the shot (\`/app/tasks/:id\`, not a concrete URL),
+  starting with \`/\`. It decides which routes the next round re-checks. Then put the task's id
+  on every shot of that defect: \`update_artifact\` with \`metadata.qa.fixTaskId\`. Every issue
+  shot needs one. File it in THIS mission, never as a friction report.
+- **unsure**: \`post_note\` with \`type: 'question'\`, a title naming the route and viewport, and
+  the artifact id in the body, so a human can say fix or waive. An unsure shot does not block
+  completion: record it and move on.
+
+## Rounds
+
+Your title says which round you are. Round 1 audits what the builder tasks changed. When a
+\`[surface fix]\` task is filed after an audit has started, the server opens ONE
+\`[surface audit] round 2\` task that depends on the fix tasks and lists their routes. If you
+are Round 2, re-capture those routes (both viewports) and say in each finding whether the
+issue is gone. File new issues exactly as above. There are at most 2 rounds: a fix filed
+during round 2 makes the server ask a human instead. Do not open another audit task yourself,
+and do not skip filing a fix because no round follows.
+
+## 5. Complete
+
+Call \`complete_task\` once every required route has an uploaded mobile and desktop shot. The
+server checks this: a missing route/viewport, an empty finding, a shot whose upload never
+landed, or an issue with no fix task is rejected with a message naming what is missing. Fix
+exactly that and complete again.
+
+## Boot failure
+
+If the app did not boot, or the workflow could not produce screenshots, you have seen nothing,
+and that must never pass. Do not mark the task failed and do not complete it: a failed task
+releases the mission. Instead call the \`AskUserQuestion\` tool with the question "App did not
+boot: <one-line reason>" and the error output, and stop there. That parks this task in
+waiting_input, and the open task holds the mission until a human answers. Do NOT use
+\`post_note\` for this: a note does not park you, the session ends, and the runner's fallback
+completion is refused for missing screenshots and recorded as a failure.
+
+## Pull Gates (REQUIRED before saving memory)
+
+Before saving any new memory:
+\`\`\`
+recall query="<proposed memory title>"
+\`\`\`
+If a near-duplicate exists, update it instead of creating a new entry.
+`,
+    color: '#14B8A6',
+    model: 'sonnet',
+    isRole: true,
+    // Read-only by prompt: Bash is here to dispatch/download the capture
+    // workflow or run shoot.sh, not to edit. No Write/Edit. AskUserQuestion is
+    // the boot-failure parking path. Like every role's allowedTools this is
+    // enforced only on the useSkillAgents subagent path.
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', 'mcp__buildd__buildd'],
+    canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
   },

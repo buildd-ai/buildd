@@ -72,3 +72,56 @@ describe('SchedulesUnified — stale lastError suppression (AC-4)', () => {
     expect(html).toContain('boom: connection refused');
   });
 });
+
+// Mobile QA: below `sm` the row hid its whole stats column, leaving only a raw
+// cron string, and Delete was opacity-0 until hover — which a phone never has.
+describe('SchedulesUnified — mobile row', () => {
+  const inAnHour = () => new Date(Date.now() + 60 * 60_000 + 30_000).toISOString();
+
+  /** The class attribute of the first element carrying `data-testid`. */
+  const classOf = (html: string, testid: string) => {
+    const m = html.match(new RegExp(`<[^>]*data-testid="${testid}"[^>]*>`));
+    if (!m) return null;
+    return m[0].match(/class="([^"]*)"/)?.[1] ?? '';
+  };
+
+  it('shows the next-run time on mobile, not just the cron', () => {
+    const html = render([item({ id: 'w-1', nextRunAt: inAnHour() })]);
+    const cls = classOf(html, 'schedule-next-run-mobile');
+    expect(cls).not.toBeNull();
+    expect(cls!.split(/\s+/)).toContain('sm:hidden');
+    expect(html).toMatch(/data-testid="schedule-next-run-mobile"[^>]*>[^<]*(next )?in 1h/);
+  });
+
+  it('says paused on mobile for a disabled schedule', () => {
+    const html = render([item({ id: 'w-1', isEnabled: false, nextRunAt: inAnHour() })]);
+    expect(html).toMatch(/data-testid="schedule-next-run-mobile"[^>]*>[^<]*paused/);
+  });
+
+  it('the delete button is not hover-gated on touch or at phone width', () => {
+    const html = render([item({ id: 'w-1', apiType: 'taskSchedule' })]);
+    const tokens = classOf(html, 'schedule-delete-btn')!.split(/\s+/);
+    // Any hiding must be scoped to a fine pointer at md+, never unconditional.
+    for (const t of tokens.filter(t => /(^|:)opacity-0$/.test(t))) {
+      expect(t.startsWith('md:pointer-fine:')).toBe(true);
+    }
+    expect(tokens).toContain('h-11');
+    expect(tokens).toContain('w-11');
+  });
+
+  it('the filter tabs scroll inside their bar instead of widening the page', () => {
+    const html = render([item({ id: 'w-1' })]);
+    const tokens = classOf(html, 'schedule-filter-tabs')!.split(/\s+/);
+    expect(tokens).toContain('overflow-x-auto');
+    expect(tokens).toContain('min-w-0');
+  });
+
+  // Desktop regression from the scroller: the active tab's underline must sit
+  // on the bar's rule, which a clipped -mb-px overlap can no longer reach.
+  it('draws the bar rule as an inset shadow the active underline paints over', () => {
+    const html = render([item({ id: 'w-1' })]);
+    const tokens = classOf(html, 'schedule-filter-tabs')!.split(/\s+/);
+    expect(tokens).not.toContain('border-b');
+    expect(tokens).toContain('shadow-[inset_0_-1px_0_var(--border)]');
+  });
+});

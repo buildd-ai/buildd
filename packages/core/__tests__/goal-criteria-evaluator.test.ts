@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { evaluateGoalCriteria, evaluateInitiativeKPIs, type GoalCriterion } from '../mission-helpers';
+import { evaluateGoalCriteria, isNoOpenTasksCandidate, type GoalCriterion } from '../mission-helpers';
 
 // ─── evaluateGoalCriteria ──────────────────────────────────────────────────────
 
@@ -73,6 +73,35 @@ describe('evaluateGoalCriteria — no_open_tasks', () => {
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
     expect(state.criteria[0].verdict).toBe('fail');
     expect(state.criteria[0].evidence).toContain('1 task(s) still open');
+  });
+
+  // Orchestrator ticks, planning passes and retry/reviewer attempts are
+  // bookkeeping: an open one must never hold "no open tasks" at FAIL.
+  it('does not count open bookkeeping rows or attempts', () => {
+    const tasks = [
+      { id: 't1', title: 'Build the thing', status: 'completed', taskClass: 'work' },
+      { id: 't2', title: 'Mission: Claim loop', status: 'in_progress', taskClass: 'bookkeeping' },
+      { id: 't3', title: 'Evaluate goal criteria: Claim loop', status: 'pending', taskClass: 'bookkeeping' },
+      { id: 't4', title: '[reviewer] PR #7: Build the thing', status: 'pending', taskClass: 'attempt' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
+    expect(state.criteria[0].verdict).toBe('pass');
+  });
+
+  it('names the open deliverables in its evidence (title and status)', () => {
+    const tasks = [
+      { id: 't1', title: 'Build the thing', status: 'in_progress', taskClass: 'work' },
+      { id: 't2', title: 'Write the doc', status: 'pending', taskClass: 'work' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks }));
+    expect(state.criteria[0].evidence).toBe('2 task(s) still open: Build the thing (in_progress), Write the doc (pending)');
+  });
+
+  it('isNoOpenTasksCandidate is the predicate the evaluator counts with', () => {
+    expect(isNoOpenTasksCandidate({ title: 'Build', taskClass: 'work' })).toBe(true);
+    expect(isNoOpenTasksCandidate({ title: '[surface audit] M', taskClass: 'work' })).toBe(false);
+    expect(isNoOpenTasksCandidate({ title: 'Mission: M', taskClass: 'bookkeeping' })).toBe(false);
+    expect(isNoOpenTasksCandidate({ title: 'Retry', taskClass: 'attempt' })).toBe(false);
   });
 
   it('passes when the only tasks are coordination (non-deliverable) tasks', () => {
@@ -197,6 +226,68 @@ describe('evaluateGoalCriteria — all_prs_merged', () => {
     const criterion: GoalCriterion = { type: 'all_prs_merged', requireBranchDeleted: true };
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
     expect(state.criteria[0].evidence).toContain('branch deletion is not verified');
+  });
+});
+
+// PR supersession was taught to `canCompleteMission` and never to this
+// criterion, so a mission whose closed PRs all carried recorded edges to merged
+// PRs still read "N PR(s) not yet merged" forever. Both now share
+// `@buildd/core/pr-shipped`.
+describe('evaluateGoalCriteria — all_prs_merged honours PR supersession', () => {
+  const criterion: GoalCriterion = { type: 'all_prs_merged' };
+  const pr = (n: number) => `https://github.com/org/repo/pull/${n}`;
+
+  it('passes when a closed PR carries an edge to a merged PR', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(10), prNumber: 10, prLifecycleStatus: 'closed', supersededByPrNumber: 12 },
+      { taskId: 't2', mergedAt: new Date('2026-01-01'), prUrl: pr(12), prNumber: 12, prLifecycleStatus: 'merged' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain('superseded');
+  });
+
+  it('fails a closed PR with no edge, naming it and saying no supersession is recorded', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(10), prNumber: 10, prLifecycleStatus: 'closed' },
+      { taskId: 't2', mergedAt: new Date('2026-01-01'), prUrl: pr(12), prNumber: 12 },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('fail');
+    expect(state.criteria[0].evidence).toContain('closed, no supersession recorded: #10');
+    expect(state.criteria[0].evidence).not.toContain('open:');
+  });
+
+  it('regression (M4): an open PR with changes requested still fails, listed as open', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(20), prNumber: 20, prLifecycleStatus: 'pr_open' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('fail');
+    expect(state.criteria[0].evidence).toContain('open: #20');
+  });
+
+  it('derives supersession from the attempt lineage: closed PR, then a merged retry PR', () => {
+    const tasks = [
+      { id: 'root', status: 'completed', title: 'Build', taskClass: 'work', parentTaskId: null },
+      { id: 'retry', status: 'completed', title: 'Build (after review)', taskClass: 'attempt', parentTaskId: 'root' },
+    ];
+    const workers = [
+      { taskId: 'root', mergedAt: null, prUrl: pr(30), prNumber: 30, prLifecycleStatus: 'closed' },
+      { taskId: 'retry', mergedAt: new Date('2026-01-01'), prUrl: pr(31), prNumber: 31 },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ tasks, workers }));
+    expect(state.criteria[0].verdict).toBe('pass');
+  });
+
+  it('counts a PR once when two worker rows carry it and only one saw the merge', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: null, prUrl: pr(40), prNumber: 40 },
+      { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: pr(40), prNumber: 40 },
+    ];
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain('All 1 PR(s) merged');
   });
 });
 
@@ -354,6 +445,37 @@ describe("evaluateGoalCriteria — all_prs_merged under Option A'", () => {
     expect(state.criteria[0].verdict).toBe('UNVERIFIED');
     expect(state.criteria[0].evidence).toContain('No PRs found');
   });
+
+  // Regression: a CI-retry task pushes to its parent's PR, so two worker rows
+  // carry one PR. The evidence counted rows ("All 2 task PR(s)").
+  it('counts a task PR a CI retry also pushed to once', () => {
+    const RETRY_TASK = { id: 'task-a-ci', status: 'completed', taskClass: 'attempt', parentTaskId: 'task-a', title: '[builder · after CI #1] Do the work' };
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, RETRY_TASK, MISSION_PR_TASK],
+        workers: [taskPrWorker(), taskPrWorker({ taskId: 'task-a-ci', mergedAt: null }), missionPrWorker()],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain('All 1 task PR(s) merged');
+  });
+});
+
+describe('evaluateGoalCriteria — all_prs_merged counts PRs, not worker rows', () => {
+  it('a parent and its CI retry sharing one PR read as one merged PR', () => {
+    const state = evaluateGoalCriteria(
+      NOT_OPTED_IN,
+      [{ type: 'all_prs_merged' }],
+      makeCtx({
+        tasks: [TASK_PR_TASK, { id: 'task-a-ci', status: 'completed', taskClass: 'attempt', parentTaskId: 'task-a', title: '[builder · after CI #1] Do the work' }],
+        workers: [taskPrWorker(), taskPrWorker({ taskId: 'task-a-ci', mergedAt: null })],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toBe('All 1 PR(s) merged');
+  });
 });
 
 describe('evaluateGoalCriteria — command criterion', () => {
@@ -505,55 +627,3 @@ describe('evaluateGoalCriteria — evaluatedBy attribution', () => {
   });
 });
 
-// ─── evaluateInitiativeKPIs ────────────────────────────────────────────────────
-
-describe('evaluateInitiativeKPIs', () => {
-  it('returns empty kpis array and pass overall when no KPIs set', async () => {
-    const state = await evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'manual', now: NOW });
-    expect(state.kpis).toHaveLength(0);
-    expect(state.overall).toBe('pass');
-  });
-
-  it('all KPIs return UNVERIFIED when no resolver provided', async () => {
-    const kpis = [
-      { name: 'Latency p95 under 200ms', metric: 'latency_p95', operator: 'lt' as const, threshold: 200 },
-      { name: 'Error rate under 1%', metric: 'error_rate', operator: 'lt' as const, threshold: 0.01 },
-    ];
-    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
-    expect(state.kpis).toHaveLength(2);
-    expect(state.kpis[0].verdict).toBe('UNVERIFIED');
-    expect(state.kpis[1].verdict).toBe('UNVERIFIED');
-  });
-
-  it('overall=UNVERIFIED when blocking KPIs are UNVERIFIED', async () => {
-    const kpis = [
-      { name: 'Latency', metric: 'latency', operator: 'lt' as const, threshold: 200, blocking: true },
-    ];
-    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
-    expect(state.overall).toBe('UNVERIFIED');
-  });
-
-  it('overall=pass when all KPIs are non-blocking (no blocking KPIs)', async () => {
-    const kpis = [
-      { name: 'Revenue metric', metric: 'revenue', operator: 'gt' as const, threshold: 1000, blocking: false },
-    ];
-    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'manual', now: NOW });
-    // Non-blocking only → no blocker → overall pass
-    expect(state.overall).toBe('pass');
-  });
-
-  it('records kpi names in output', async () => {
-    const kpis = [
-      { name: 'P95 latency', metric: 'latency', operator: 'lt' as const, threshold: 200 },
-    ];
-    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'mcp', now: NOW });
-    expect(state.kpis[0].name).toBe('P95 latency');
-    expect(state.kpis[0].index).toBe(0);
-  });
-
-  it('records evaluatedAt and evaluatedBy', async () => {
-    const state = await evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'mcp', now: NOW });
-    expect(state.evaluatedAt).toBe(NOW);
-    expect(state.evaluatedBy).toBe('mcp');
-  });
-});

@@ -20,8 +20,10 @@
  *
  * Pure: no `db` import. The page runs the queries.
  */
-import { sql, eq, type SQL } from 'drizzle-orm';
-import { tasks } from '@buildd/core/db/schema';
+import { sql, eq, and, type SQL } from 'drizzle-orm';
+import { artifacts, tasks } from '@buildd/core/db/schema';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
+import { ArtifactType } from '@buildd/shared';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -33,6 +35,8 @@ export const MISSION_ARTIFACT_COLUMNS = {
   shareToken: true,
   visibility: true,
   metadata: true,
+  // The object key for uploads (upload-url writes the column, not metadata).
+  storageKey: true,
   createdAt: true,
 } as const;
 
@@ -52,11 +56,23 @@ export const MISSION_WORKER_COLUMNS = {
   turns: true,
   completedAt: true,
   startedAt: true,
+  // A claimed worker's lane starts at the claim until the runner stamps startedAt.
+  createdAt: true,
   updatedAt: true,
   exitCause: true,
   currentAction: true,
   commitCount: true,
   filesChanged: true,
+  // Board and Lanes (MissionBoard / MissionLanes): the runner a worker ran on
+  // (lanes, fleet slots), its milestones (a tile's notches), and its diff size
+  // (landed rows, completion record).
+  runner: true,
+  // With runner, joins the runner's heartbeat for its hostname (runner-display).
+  accountId: true,
+  localUiUrl: true,
+  milestones: true,
+  linesAdded: true,
+  linesRemoved: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {
@@ -93,6 +109,10 @@ export const MISSION_TASK_COLUMNS = {
   missionPhaseIndex: true,
   missionPhaseLabel: true,
   kind: true,
+  // Board: which tasks the "PRs merged" criterion counts before they open one.
+  outputRequirement: true,
+  // Board / Lanes: the short label a tile and a bar draw (taskDisplayLabel).
+  label: true,
 } as const;
 
 /** `mission.tasks` for the detail page: newest first, three workers each, five artifacts per worker. */
@@ -122,6 +142,50 @@ export const MISSION_DETAIL_WITH = {
   schedule: true,
 } as const;
 
+// ── The visual review shots ─────────────────────────────────────────────────
+
+/**
+ * Audit screenshots for the Visual review step (docs/design/visual-qa-auditor.md,
+ * "Where the screenshots show"). A dedicated query, because the with-tree above
+ * keeps five artifacts per worker and would cut a 40-shot run to five. Keyed on
+ * `artifacts.mission_id`, which upload-url sets for an auditor's uploads.
+ */
+export const MISSION_VISUAL_SHOT_COLUMNS = {
+  id: true,
+  workerId: true,
+  // The filename by default: the caption's variant when two shots share a
+  // route and viewport (`withVariants`).
+  title: true,
+  type: true,
+  metadata: true,
+  createdAt: true,
+} as const;
+
+/** Newest first: 40 shots a run (20 routes × 2 viewports) × up to three runs. */
+export const MISSION_VISUAL_SHOTS_LIMIT = 120;
+
+/** Newest first. With the limit above, ascending would keep the oldest runs and cut the newest. */
+export const MISSION_VISUAL_SHOTS_ORDER = (
+  a: { createdAt: typeof artifacts.createdAt },
+  { desc }: { desc: (c: typeof artifacts.createdAt) => SQL },
+) => [desc(a.createdAt)];
+
+/**
+ * Only the auditor's shots are evidence. Any worker on the mission can upload
+ * a screenshot with a hand-made `metadata.qa`, so the rows are limited to
+ * workers of this mission's `visual-auditor` tasks.
+ */
+export const missionVisualShotsWhere = (missionId: string): SQL =>
+  and(
+    eq(artifacts.missionId, missionId),
+    eq(artifacts.type, ArtifactType.SCREENSHOT),
+    sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
+    // Plain aliased identifiers, not workers/tasks column objects: the
+    // relational query maps every column in a raw `where` onto the queried
+    // table, which turned `workers.id` into `"artifacts"."id"`.
+    sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
+  )!;
+
 // ── The digest query ─────────────────────────────────────────────────────────
 
 /**
@@ -135,7 +199,8 @@ export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary'] as const;
 /**
  * `tasks.context` keys the attempt strip reads (`attemptKind`,
  * `deriveTaskOrigin`, the iteration counters in `attempt-strip.ts`), plus
- * `failureContext.errorType` for the failure reason.
+ * `failureContext.errorType` for the failure reason, plus `visualQa` for the
+ * Visual review's required routes.
  */
 export const CONTEXT_DIGEST_KEYS = [
   'driftDiagnosis',
@@ -148,6 +213,9 @@ export const CONTEXT_DIGEST_KEYS = [
   'prNumber',
   'prUrl',
   'ciRunUrl',
+  // Visual review n/m coverage: the round-2 planner's frozen
+  // visualQa.requiredRoutes (auditRequiredRoutes). Small: a route list.
+  'visualQa',
 ] as const;
 export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
 

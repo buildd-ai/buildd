@@ -290,6 +290,18 @@ export interface PromptBuildResult {
  * must record its composition, so handing back the text alone invites a caller
  * that silently drops the denominator.
  */
+/**
+ * The one place the agent is told where it works. Names the worktree only —
+ * never the primary clone it is nested in: agents that learned the primary's
+ * path (it used to arrive via the ancestor CLAUDE.md) ran `cd <primary> && …`
+ * and worked in the checkout every worker shares.
+ */
+export function worktreeLocationLine(worktreePath: string): string {
+  return `- Your worktree is \`${worktreePath}\` — run every command, test and git operation from there, `
+    + 'and edit only files under it. Do not `cd` into the directories that contain it: they are a checkout '
+    + 'shared with other workers, and the runner refuses commands and edits there.';
+}
+
 export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResult {
   const { task, worker, gitConfig, isConfigured, compactResult, taskSearchResults, fullObservations, inputPolicy, hasApiKey, inputAsRetry } = ctx;
   const promptParts: string[] = [];
@@ -356,6 +368,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       const checkedOutFrom = prBaseResolution.base || gitConfig.defaultBranch;
       gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${checkedOutFrom}\``);
       gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
+      gitContext.push(worktreeLocationLine(worker.worktreePath));
     }
 
     if (gitConfig.requiresPR) {
@@ -398,6 +411,10 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     addSection('git-workflow', gitContext.join('\n'));
   } else {
     sections.push({ name: 'git-workflow', bytes: 0, rendered: false, truncated: false });
+    // No git block to carry it, but the agent still needs to know where it is.
+    if (worker.worktreePath) {
+      addSection('worktree-location', `## Working Directory\n${worktreeLocationLine(worker.worktreePath)}`);
+    }
   }
 
   // Add rich workspace memory context. The workspace-wide digest (identical

@@ -43,7 +43,9 @@ function createMockRequest(body?: any, apiKey?: string): NextRequest {
   return new NextRequest('http://localhost:3000/api/workers/worker-1/activity', init);
 }
 
-const mockParams = Promise.resolve({ id: 'worker-1' });
+// workers.id is a uuid column; the route 404s a non-UUID id before any lookup.
+const WORKER_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: WORKER_ID });
 
 describe('POST /api/workers/[id]/activity', () => {
   beforeEach(() => {
@@ -80,7 +82,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('returns 404 for an account that neither runs the worker nor administers its team', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2', teamId: 'team-2', level: 'admin' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
       workspace: { teamId: 'team-1' },
@@ -96,7 +98,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('returns 404 for a non-admin account of the same team that does not run the worker', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-3', teamId: 'team-1', level: 'worker' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
       workspace: { teamId: 'team-1' },
@@ -111,7 +113,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('accepts an admin-level account of the worker\'s team', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-9', teamId: 'team-1', level: 'admin' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
       workspace: { teamId: 'team-1' },
@@ -126,7 +128,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('returns 400 when toolName missing', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
     });
@@ -142,7 +144,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('records activity milestone for Read tool', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
     });
@@ -162,7 +164,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('records activity milestone for Bash tool', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
     });
@@ -181,7 +183,7 @@ describe('POST /api/workers/[id]/activity', () => {
   it('records activity milestone for Grep tool', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [],
     });
@@ -201,7 +203,7 @@ describe('POST /api/workers/[id]/activity', () => {
     const now = Date.now();
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
-      id: 'worker-1',
+      id: WORKER_ID,
       accountId: 'account-1',
       milestones: [{ label: 'Read api.ts', timestamp: now }],
     });

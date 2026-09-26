@@ -86,6 +86,21 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
+const mockGetCurrentUser = mock(async () => null as any);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
+
+// Session scope: user-1 belongs to TEAM_ID (owns VALID_UUID) and TEAM_B (owns WS_B).
+const TEAM_B = 'team-b';
+const WS_B = '00000000-0000-0000-0000-00000000000b';
+const mockGetUserTeamIds = mock(async (_userId: string) => [] as string[]);
+const mockGetTeamWorkspaceIds = mock(async (_teamId: string) => [] as string[]);
+const mockResolveActiveTeamId = mock(async (_userId: string, _cookie: string | null | undefined) => null as string | null);
+mock.module('@/lib/team-access', () => ({
+  getUserTeamIds: mockGetUserTeamIds,
+  getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
+  resolveActiveTeamId: mockResolveActiveTeamId,
+}));
+
 import { GET } from './route';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -545,5 +560,86 @@ describe('GET /api/health/failures — signature-family rollup', () => {
     const sentPrefix = mockGetFailureSignatureFamily.mock.calls[0][2] as string;
     expect(sentPrefix.length).toBeLessThanOrEqual(200);
     expect(sentPrefix.startsWith('needs_input:')).toBe(true);
+  });
+});
+
+describe('GET /api/health/failures — dashboard session', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetTeamWorkspaceIds.mockReset();
+    mockResolveActiveTeamId.mockReset();
+
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockImplementation(async () => [TEAM_ID, TEAM_B]);
+    mockGetTeamWorkspaceIds.mockImplementation(async (teamId: string) => (teamId === TEAM_ID ? [VALID_UUID] : [WS_B]));
+    mockResolveActiveTeamId.mockImplementation(async () => TEAM_ID);
+    mockGetFailureAnalytics.mockReset();
+    mockGetFailureAnalytics.mockResolvedValue(EMPTY_ANALYTICS);
+  });
+
+  it('scopes to every workspace of every team the user belongs to', async () => {
+    const res = await GET(makeRequest(URL_BASE));
+    expect(res.status).toBe(200);
+    expect(mockGetUserTeamIds).toHaveBeenCalledWith('user-1');
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([VALID_UUID, WS_B]);
+  });
+
+  it('scopes to one workspace of the user teams', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: WS_B, teamId: TEAM_B });
+    const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${WS_B}`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([WS_B]);
+  });
+
+  it('404s a workspace outside the user teams before any aggregation', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: VALID_UUID, teamId: 'other-team' });
+    const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${VALID_UUID}`));
+    expect(res.status).toBe(404);
+    expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('?teamId pins the scope to that team: no team-B workspace reaches the aggregation', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?teamId=${TEAM_ID}`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([VALID_UUID]);
+  });
+
+  it('?teamId also bounds an explicit workspaceId', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: WS_B, teamId: TEAM_B });
+    const res = await GET(makeRequest(`${URL_BASE}?teamId=${TEAM_ID}&workspaceId=${WS_B}`));
+    expect(res.status).toBe(404);
+    expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('404s a pin to a team the user is not in', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?teamId=team-z`));
+    expect(res.status).toBe(404);
+    expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('400s a user with no team, like a key with no team', async () => {
+    mockGetUserTeamIds.mockImplementation(async () => []);
+    const res = await GET(makeRequest(URL_BASE));
+    expect(res.status).toBe(400);
+  });
+
+  it('401s with neither a session nor a key', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const res = await GET(makeRequest(URL_BASE));
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps a present key authoritative (team-wide = the key team only, teamId ignored)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount());
+    mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
+    const res = await GET(makeRequest(`${URL_BASE}?teamId=${TEAM_B}`, { authorization: 'Bearer bld_test' }));
+    expect(res.status).toBe(200);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([VALID_UUID]);
   });
 });

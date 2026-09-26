@@ -47,6 +47,7 @@ import {
   installationIdForRepo,
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
+import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
   TIER_SLA_MS,
@@ -98,6 +99,13 @@ export async function refreshWorkerMergeStateIfStale(
           updatedAt: now,
         })
         .where(eq(workers.id, worker.id));
+      // Any other row carrying this PR (a retry attempt that adopted it) is
+      // merged too; see lib/pr-merge-stamp.
+      await stampPrMergedOnAllRows({
+        prUrl: worker.prUrl,
+        prNumber: worker.prNumber,
+        mergedAt: new Date(pr.merged_at),
+      });
       return true;
     }
     return false;
@@ -432,6 +440,21 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             updatedAt: new Date(),
           }, { verified: true });
           result.stamped++;
+          // The merge belongs to the PR: stamp any other row carrying it (a
+          // retry attempt that adopted the PR number) and nudge their tasks'
+          // dependents too. See lib/pr-merge-stamp.
+          const siblings = await stampPrMergedOnAllRows({
+            prUrl: worker.prUrl,
+            prNumber: worker.prNumber,
+            mergedAt: new Date(pr.merged_at),
+          });
+          for (const s of siblings) {
+            if (s.taskId && s.taskId !== worker.taskId) {
+              await notifyDependents(s.taskId).catch(err =>
+                console.error(`[pr-reconcile] checkDependsOnResolved failed for task ${s.taskId}:`, err),
+              );
+            }
+          }
           // Option A': the webhook was the only trigger for the mission PR, and
           // `workers.mergedAt` is documented as lossy. Healing the row without
           // re-attempting the opener leaves an opted-in mission whose work is

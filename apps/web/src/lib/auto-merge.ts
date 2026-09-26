@@ -48,8 +48,10 @@ export function isBehindBaseRefusal(reason: string): boolean {
  * Returns `{ ok: true }` when all safety rails pass, `{ ok: false, reason }` otherwise.
  *
  * Path checks are routed through the resolved policy:
- *   - tier 1 (auto-threshold): threshold.denyPaths
- *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
+ *   - tier 1 (auto-threshold): threshold.denyPaths (legacy stored value only)
+ *   - tier 2 (agent-review): agentReview.escalateToPaths (legacy stored value
+ *     only, treated as block paths here)
+ * Both are a read-only fallback, removed next release.
  *
  * ## The aggregate line-count cap is auto-threshold ONLY
  *
@@ -164,6 +166,12 @@ export async function evaluateAutoMergeSafety(
     };
   }
 
+  // LEGACY FALLBACK (added 2026-09-24, REMOVE NEXT RELEASE — see
+  // LEGACY_PATH_FALLBACK_NOTE in @buildd/shared). Hand-written denyPaths /
+  // escalateToPaths are refused on every write path; stored values are still
+  // honoured here for one release so no workspace silently loses coverage.
+  // Risk-class paths are detected, and enforced by the policyConfig tier
+  // override upstream, not by this list.
   const denyPaths =
     policy.tier === 'agent-review'
       ? (policy.agentReview?.escalateToPaths ?? [])

@@ -1,199 +1,110 @@
 'use client';
 
+/**
+ * Rename, inside the mission Settings panel (F5).
+ *
+ * The masthead already shows the title, so Settings does not render it a
+ * second time: it offers "Rename mission", which opens an input prefilled with
+ * the current title. The description is not here — it has one place on the
+ * page, under the masthead (`MissionDescription`).
+ */
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 
 interface MissionInlineEditProps {
   missionId: string;
   initialTitle: string;
-  initialDescription: string | null;
-  healthPill: React.ReactNode;
 }
 
-export default function MissionInlineEdit({
-  missionId,
-  initialTitle,
-  initialDescription,
-  healthPill,
-}: MissionInlineEditProps) {
+export default function MissionInlineEdit({ missionId, initialTitle }: MissionInlineEditProps) {
+  const router = useRouter();
   const [title, setTitle] = useState(initialTitle);
-  const [description, setDescription] = useState(initialDescription || '');
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [editingDescription, setEditingDescription] = useState(false);
-  const [savingTitle, setSavingTitle] = useState(false);
-  const [savingDescription, setSavingDescription] = useState(false);
-  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-
-  const titleInputRef = useRef<HTMLInputElement>(null);
-  const descriptionRef = useRef<HTMLTextAreaElement>(null);
-  const titleBeforeEdit = useRef(title);
-  const descriptionBeforeEdit = useRef(description);
-
-  useEffect(() => {
-    if (editingTitle && titleInputRef.current) {
-      titleInputRef.current.focus();
-      titleInputRef.current.select();
-    }
-  }, [editingTitle]);
+  const [draft, setDraft] = useState(initialTitle);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Re-sync after a server refresh when the title changed elsewhere (not mid-edit).
+  const [syncedFrom, setSyncedFrom] = useState(initialTitle);
+  if (!editing && initialTitle !== syncedFrom) {
+    setSyncedFrom(initialTitle);
+    setTitle(initialTitle);
+  }
 
   useEffect(() => {
-    if (editingDescription && descriptionRef.current) {
-      descriptionRef.current.focus();
-      // Auto-resize on open
-      const el = descriptionRef.current;
-      el.style.height = 'auto';
-      el.style.height = el.scrollHeight + 'px';
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
     }
-  }, [editingDescription]);
+  }, [editing]);
 
-  const saveField = useCallback(
-    async (field: 'title' | 'description', value: string) => {
-      const setter = field === 'title' ? setSavingTitle : setSavingDescription;
-      setter(true);
-      try {
-        const res = await fetch(`/api/missions/${missionId}`, {
-          method: 'PATCH',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [field]: value }),
-        });
-        if (!res.ok) {
-          // Revert on failure
-          if (field === 'title') setTitle(titleBeforeEdit.current);
-          else setDescription(descriptionBeforeEdit.current);
-        }
-      } catch {
-        if (field === 'title') setTitle(titleBeforeEdit.current);
-        else setDescription(descriptionBeforeEdit.current);
-      } finally {
-        setter(false);
+  const save = useCallback(async () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (!next || next === title) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/missions/${missionId}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: next }),
+      });
+      if (!res.ok) {
+        setError('Rename failed');
+        return;
       }
-    },
-    [missionId],
-  );
-
-  const handleTitleBlur = useCallback(() => {
-    setEditingTitle(false);
-    const trimmed = title.trim();
-    if (!trimmed) {
-      setTitle(titleBeforeEdit.current);
-      return;
+      setTitle(next);
+      // The masthead (a server render) owns the visible title.
+      router.refresh();
+    } catch {
+      setError('Rename failed');
+    } finally {
+      setSaving(false);
     }
-    if (trimmed !== titleBeforeEdit.current) {
-      setTitle(trimmed);
-      saveField('title', trimmed);
-    }
-  }, [title, saveField]);
+  }, [draft, title, missionId, router]);
 
-  const handleTitleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        (e.target as HTMLInputElement).blur();
-      }
-      if (e.key === 'Escape') {
-        setTitle(titleBeforeEdit.current);
-        setEditingTitle(false);
-      }
-    },
-    [],
-  );
-
-  const handleDescriptionBlur = useCallback(() => {
-    setEditingDescription(false);
-    const trimmed = description.trim();
-    if (trimmed !== descriptionBeforeEdit.current) {
-      setDescription(trimmed);
-      saveField('description', trimmed);
-    }
-  }, [description, saveField]);
-
-  const handleDescriptionKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setDescription(descriptionBeforeEdit.current);
-        setEditingDescription(false);
-      }
-    },
-    [],
-  );
-
-  const handleDescriptionInput = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setDescription(e.target.value);
-      // Auto-resize
-      e.target.style.height = 'auto';
-      e.target.style.height = e.target.scrollHeight + 'px';
-    },
-    [],
-  );
+  if (editing) {
+    return (
+      <div className="flex items-center gap-3">
+        <input
+          ref={inputRef}
+          value={draft}
+          aria-label="Mission title"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => void save()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+            if (e.key === 'Escape') {
+              setDraft(title);
+              setEditing(false);
+            }
+          }}
+          className="min-h-11 w-full border border-border-default bg-surface-2 px-2 text-[14px] text-text-primary outline-none focus:border-accent-text"
+        />
+      </div>
+    );
+  }
 
   return (
-    <>
-      {/* Title row */}
-      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-2">
-        {editingTitle ? (
-          <input
-            ref={titleInputRef}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={handleTitleBlur}
-            onKeyDown={handleTitleKeyDown}
-            className="text-xl font-semibold text-text-primary font-sans bg-transparent outline-none border-b border-text-muted/30 focus:border-accent-text w-full max-w-[calc(100%-80px)] transition-colors"
-          />
-        ) : (
-          <h1
-            onClick={() => {
-              titleBeforeEdit.current = title;
-              setEditingTitle(true);
-            }}
-            className={`text-lg sm:text-xl font-semibold text-text-primary font-sans cursor-text hover:border-b hover:border-text-muted/20 transition-colors line-clamp-2 sm:line-clamp-none ${savingTitle ? 'opacity-60' : ''}`}
-          >
-            {title}
-          </h1>
-        )}
-        {healthPill}
-      </div>
-
-      {/* Description */}
-      {editingDescription ? (
-        <textarea
-          ref={descriptionRef}
-          value={description}
-          onChange={handleDescriptionInput}
-          onBlur={handleDescriptionBlur}
-          onKeyDown={handleDescriptionKeyDown}
-          rows={1}
-          className="text-[13px] text-text-desc leading-relaxed bg-transparent outline-none border-b border-text-muted/30 focus:border-accent-text w-full resize-none mb-4 transition-colors"
-        />
-      ) : (
-        <div className="mb-4">
-          <p
-            onClick={() => {
-              descriptionBeforeEdit.current = description;
-              setEditingDescription(true);
-            }}
-            className={`text-[13px] leading-relaxed cursor-text hover:border-b hover:border-text-muted/20 transition-colors ${
-              description ? 'text-text-desc' : 'text-text-muted italic'
-            } ${savingDescription ? 'opacity-60' : ''} ${
-              description && !descriptionExpanded ? 'line-clamp-3' : ''
-            }`}
-          >
-            {description || 'Add a description…'}
-          </p>
-          {description && description.length > 180 && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setDescriptionExpanded(!descriptionExpanded);
-              }}
-              className="text-[11px] text-text-muted hover:text-text-secondary mt-0.5 transition-colors"
-            >
-              {descriptionExpanded ? 'Show less' : 'Show more'}
-            </button>
-          )}
-        </div>
-      )}
-    </>
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        data-testid="mission-rename"
+        disabled={saving}
+        onClick={() => {
+          setDraft(title);
+          setEditing(true);
+        }}
+        className="inline-flex min-h-11 items-center font-mono text-[12px] text-accent-text hover:underline disabled:opacity-60"
+      >
+        {saving ? 'Renaming…' : 'Rename mission'}
+      </button>
+      {error && <span className="font-mono text-[11px] text-status-error">{error}</span>}
+    </div>
   );
 }

@@ -68,7 +68,7 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     const { view, html } = render({ ...missionPrOpen, activeAgents: 1 });
 
     expect(view.kind).toBe('running');
-    expect(html).toContain('Running (1 agent) — but waiting on you to merge the mission PR #4242.');
+    expect(html).toContain('Running (1 agent). Waiting on you to merge the mission PR #4242.');
     expect(html).toContain('data-testid="mission-primary-action"');
   });
 
@@ -93,7 +93,7 @@ describe('mission header — genuinely mid-flight, nothing outstanding', () => {
   it('says running and offers no action at all', () => {
     const { html } = render({ ...base, activeAgents: 3 });
 
-    expect(html).toContain('Running — 3 agents in flight, nothing outstanding.');
+    expect(html).toContain('Running: 3 agents in flight, nothing outstanding.');
     expect(html).not.toContain('data-testid="mission-primary-action"');
     expect(html).not.toContain('data-testid="mission-also-outstanding"');
   });
@@ -101,7 +101,7 @@ describe('mission header — genuinely mid-flight, nothing outstanding', () => {
   it('says nothing-to-do plainly when idle', () => {
     const { html } = render(base);
 
-    expect(html).toContain('Nothing to do — no source reports anything outstanding.');
+    expect(html).toContain('Nothing to do. No source reports outstanding work.');
     expect(html).not.toContain('data-testid="mission-primary-action"');
   });
 });
@@ -140,6 +140,36 @@ describe('the why, with its hard ref linked', () => {
     expect(html).toContain('Wire the route');
     expect(html).toContain('#9001');
     expect(html).toContain('https://example.invalid/pr/9001');
+  });
+});
+
+describe('F2: a failing criterion is said once, and names what holds it', () => {
+  const failing = {
+    ...base,
+    progress: 100,
+    criteriaItems: [{ verdict: 'fail', type: 'no_open_tasks', label: 'no open tasks' }],
+    criteriaGate: { state: 'failing' as const, label: 'Criteria failing', tone: 'warning' as const, detail: 'no open tasks' },
+  };
+
+  it('stale verdict: headline plus the re-run instruction, no restated causal claim', () => {
+    const { html, view } = render({ ...failing, openTasks: [] });
+    expect(html).toContain('no task is open.');
+    expect(html).toContain(view.situation.nextAction!);
+    expect(html).not.toContain('returned a failing verdict');
+    expect(html.split('no open tasks').length - 1).toBe(1);
+  });
+
+  it('open blockers: up to three linked into the task sheet, then +N more', () => {
+    const openTasks = ['a', 'b', 'c', 'd'].map(id => ({ id: `t-${id}`, status: 'pending', title: `Blocker ${id}` }));
+    const { html } = render({ ...failing, openTasks });
+    expect(html).toContain('data-testid="mission-situation-blockers"');
+    expect(html).toContain('Blocker a');
+    expect(html).toContain('Blocker c');
+    expect(html).not.toContain('Blocker d');
+    expect(html).toContain('+1 more');
+    expect(html).toContain('data-task-id="t-a"');
+    expect(html).toContain('/app/missions/m-1?');
+    expect(html).toContain('· queued');
   });
 });
 
@@ -217,6 +247,59 @@ describe('affordanceFor', () => {
       <MissionSituationBlock missionId="m-1" situation={view.situation} because={[]} criteriaReachable={false} />,
     );
     expect(html).not.toContain('#mission-criteria');
+  });
+
+  // Regression: a running mission's open task was offered as "the blocking
+  // task" — the same false claim as "no live worker", in button form.
+  it('does not call an open task "blocking" while agents are running on the mission', () => {
+    const running = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      openTasks: [{ id: 't-1', status: 'in_progress', title: 'Build the page' }],
+    });
+    expect(running.situation.focus?.kind).toBe('task');
+    expect(affordanceFor(running.situation.focus, { missionId: 'm-1' })?.label).toBe('View the open task');
+
+    const stalled = deriveMissionStateView({
+      ...base,
+      health: 'STALLED',
+      openTasks: [{ id: 't-1', status: 'in_progress', title: 'Build the page' }],
+    });
+    expect(stalled.situation.focus?.kind).toBe('task');
+    expect(affordanceFor(stalled.situation.focus, { missionId: 'm-1' })?.label).toBe('Open the blocking task');
+  });
+
+  // Regression: a stalled mission offered "Open the blocking task" on a task
+  // that was only waiting on its dependency — the one row that cannot be
+  // blocking anything.
+  it('never cites a dependency-blocked task as the blocker', () => {
+    const stalled = deriveMissionStateView({
+      ...base,
+      health: 'STALLED',
+      openTasks: [
+        { id: 't-dep', status: 'pending', title: 'Second step', waitingOnTaskIds: ['t-first'] },
+        { id: 't-first', status: 'pending', title: 'First step' },
+      ],
+    });
+    const focus = stalled.situation.focus;
+    if (focus?.kind !== 'task') throw new Error('expected a task focus');
+    expect(focus.taskIds[0]).toBe('t-first');
+    expect(focus.taskIds).not.toContain('t-dep');
+    expect(affordanceFor(focus, { missionId: 'm-1' })).toMatchObject({ taskId: 't-first' });
+  });
+
+  it('cites the unmet dependency when every open row is waiting on one', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      health: 'NOMINAL',
+      completion: { ok: false, code: 'pending_deliverables', reason: '1 open', pendingDeliverables: 1, pendingByStatus: { pending: 1 } },
+      openTasks: [{ id: 't-dep', status: 'pending', title: 'Second step', waitingOnTaskIds: ['t-first'] }],
+    });
+    const focus = view.situation.focus;
+    if (focus?.kind !== 'task') throw new Error('expected a task focus');
+    expect(focus.taskIds).toEqual(['t-first']);
+    expect(focus.tone).not.toBe('warning');
+    expect(affordanceFor(focus, { missionId: 'm-1' })?.label).not.toBe('Open the blocking task');
   });
 
   it("opens a mission task in the sheet over the mission, never a bare task-page push", () => {

@@ -172,6 +172,7 @@ mock.module('drizzle-orm', () => ({
     },
   ),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
@@ -188,7 +189,7 @@ const mockAccountsTable = { id: 'id', activeSessions: 'activeSessions', teamId: 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: mockAccountsTable,
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest', roleSlug: 'roleSlug' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
   missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
@@ -245,9 +246,10 @@ mock.module('@buildd/core/path-claim', () => ({
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
 const mockFireDeferralEvent = mock((_input: any) => {});
+const mockFireGateEvent = mock((_input: any) => 'sig');
 mock.module('@/lib/gate-ledger', () => ({
   fireDeferralEvent: mockFireDeferralEvent,
-  fireGateEvent: mock(() => 'sig'),
+  fireGateEvent: mockFireGateEvent,
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
@@ -370,6 +372,66 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe('runner is required');
+  });
+
+  describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
+    const gateReasons = () => mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason);
+    const userAccount = { id: 'account-1', maxConcurrentWorkers: 3, type: 'user' };
+
+    beforeEach(() => mockFireGateEvent.mockClear());
+
+    it('probe with invalid API key: 401, no gate event', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      const res = await POST(createMockRequest({ headers: { 'X-Probe': 'true' }, body: {} }));
+      expect(res.status).toBe(401);
+      expect(gateReasons()).not.toContain('invalid_api_key');
+    });
+
+    it('non-probe with invalid API key still records invalid_api_key', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      const res = await POST(createMockRequest({ body: {} }));
+      expect(res.status).toBe(401);
+      expect(gateReasons()).toContain('invalid_api_key');
+    });
+
+    it('probe with trigger token: 403, no gate event', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...userAccount, level: 'trigger' });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'X-Probe': 'true' },
+        body: {},
+      }));
+      expect(res.status).toBe(403);
+      expect(gateReasons()).not.toContain('trigger_token_cannot_claim');
+    });
+
+    it('probe missing runner: 400, no gate event', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'X-Probe': 'true' },
+        body: {},
+      }));
+      expect(res.status).toBe(400);
+      expect(gateReasons()).not.toContain('runner_field_missing');
+    });
+
+    it('non-probe missing runner still records runner_field_missing', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {},
+      }));
+      expect(res.status).toBe(400);
+      expect(gateReasons()).toContain('runner_field_missing');
+    });
+
+    it('X-Probe with a value other than "true" is not treated as a probe', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'X-Probe': 'false' },
+        body: {},
+      }));
+      expect(gateReasons()).toContain('runner_field_missing');
+    });
   });
 
   it('returns 429 when max concurrent workers limit reached', async () => {
@@ -4216,6 +4278,148 @@ describe('path-overlap claim guard', () => {
     expect(data.workers[0].taskId).toBe('conflict-retry-task');
   });
 
+  // Review-fix and CI-fix attempts are the same shape as conflict retries: they
+  // copy the original's pathManifest and resume on the same branch, so their own
+  // open PR always overlaps. Exempting only conflictRetryPrNumber stranded every
+  // "[builder · after review]" fix behind the PR it was dispatched to fix.
+  for (const [column, label] of [
+    ['reviewerRetryPrNumber', 'after review'],
+    ['ciRetryPrNumber', 'after CI'],
+  ] as const) {
+    it(`claims a ${label} fix task despite its own PR being open with the same pathManifest`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([  // open PR pre-fetch: the PR this attempt fixes
+          { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['.github/workflows/integration.yml']),
+        id: 'fix-task',
+        title: `[builder · ${label} #1] Fix`,
+        priority: 8,
+        [column]: 2659,
+        context: null,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['.github/workflows/integration.yml'] }]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('fix-task');
+    });
+
+    it(`still defers a ${label} fix task whose manifest overlaps a DIFFERENT open PR`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['.github/workflows/integration.yml']),
+        id: 'fix-task',
+        [column]: 2659,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'original-task', pathManifest: ['.github/workflows/integration.yml'] },
+          { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+        ]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+  }
+
+  // A loopUntilMerged parent re-queues as pending while its own earlier worker's
+  // PR is still open. It carries no *RetryPrNumber, so without a task-id check
+  // its own PR deferred it on every claim and the fleet sat idle.
+  it('claims a task despite an open PR from its OWN earlier worker with the same pathManifest', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: this task's own earlier worker
+        { workspaceId: 'ws-1', taskId: 'loop-task', prNumber: 2729, prUrl: 'https://github.com/org/repo/pull/2729', status: 'completed', prLifecycleStatus: 'open' },
+      ]);
+
+    const loopTask = {
+      ...taskWithManifest(['.github/workflows/integration.yml']),
+      id: 'loop-task',
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([loopTask])
+      .mockResolvedValueOnce([{ id: 'loop-task', pathManifest: ['.github/workflows/integration.yml'] }]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('loop-task');
+  });
+
+  it('still defers a task behind ANOTHER task\'s open PR even when it has its own open PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'loop-task', prNumber: 2729, prUrl: 'https://github.com/org/repo/pull/2729', status: 'completed', prLifecycleStatus: 'open' },
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ ...taskWithManifest(['.github/workflows/integration.yml']), id: 'loop-task' }])
+      .mockResolvedValueOnce([
+        { id: 'loop-task', pathManifest: ['.github/workflows/integration.yml'] },
+        { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+      ]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
   it('still defers a conflict-retry task whose manifest overlaps a DIFFERENT open PR', async () => {
     // The exemption covers only the PR being retried. Another task's open PR
     // touching the same files is a genuine concurrent-edit risk and must block.
@@ -5350,6 +5554,48 @@ describe('claim gate overrides', () => {
 
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
+    });
+  });
+
+  describe('role slug gate (EXPLICIT_ROLE_SLUGS)', () => {
+    /** Every mocked drizzle node of `type` reachable from the WHERE tree. */
+    function nodesOfType(node: any, type: string, out: any[] = [], seen = new Set<any>()): any[] {
+      if (!node || typeof node !== 'object' || seen.has(node)) return out;
+      seen.add(node);
+      if (node.type === type) out.push(node);
+      for (const value of Array.isArray(node) ? node : Object.values(node)) nodesOfType(value, type, out, seen);
+      return out;
+    }
+
+    async function claimWhere(body: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([]);
+      await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', ...body } }));
+      return (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+    }
+
+    // Mocked db returns rows regardless of WHERE, so assert the predicate.
+    it('a runner sending no availableSkills is still barred from visual-auditor tasks', async () => {
+      const where = await claimWhere({});
+      const barred = nodesOfType(where, 'notInArray').filter((n) => n.field === 'roleSlug');
+      expect(barred).toHaveLength(1);
+      expect(barred[0].values).toEqual(['visual-auditor']);
+      // ...and gets no legacy restriction (backward compat for other roles).
+      expect(nodesOfType(where, 'inArray').filter((n) => n.field === 'roleSlug')).toHaveLength(0);
+    });
+
+    it("a runner advertising ['visual-auditor'] opts in without restricting other roles", async () => {
+      const where = await claimWhere({ availableSkills: ['visual-auditor'] });
+      const opened = nodesOfType(where, 'inArray').filter((n) => n.field === 'roleSlug');
+      expect(opened.map((n) => n.values)).toEqual([['visual-auditor']]);
+    });
+
+    it("a runner advertising ['builder'] keeps today's strict routing", async () => {
+      const where = await claimWhere({ availableSkills: ['builder'] });
+      const lists = nodesOfType(where, 'inArray').filter((n) => n.field === 'roleSlug').map((n) => n.values);
+      expect(lists).toContainEqual(['builder']);
     });
   });
 

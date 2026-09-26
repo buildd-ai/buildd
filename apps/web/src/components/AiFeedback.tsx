@@ -82,7 +82,7 @@ export default function AiFeedback({
 
   if (dismissed && showUndo) {
     return (
-      <div className={`flex items-center gap-2 ${compact ? 'text-[10px]' : 'text-[11px]'} text-text-muted`}>
+      <div className={`flex items-center gap-2 ${compact ? 'text-[11px] md:text-[10px]' : 'text-[11px]'} text-text-muted`}>
         <span>Dismissed</span>
         <button
           onClick={undoDismiss}
@@ -101,7 +101,7 @@ export default function AiFeedback({
 
   const btnBase = compact
     ? 'p-0.5 rounded transition-colors disabled:opacity-40'
-    : 'p-1 rounded transition-colors disabled:opacity-40';
+    : 'inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 p-1 rounded transition-colors disabled:opacity-40';
 
   const iconSize = compact ? 'w-3 h-3' : 'w-3.5 h-3.5';
 

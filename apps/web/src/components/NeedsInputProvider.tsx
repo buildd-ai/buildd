@@ -26,7 +26,7 @@ interface NeedsInputContextValue {
   enableAlerts: () => void;
 }
 
-const NeedsInputContext = createContext<NeedsInputContextValue>({
+export const NeedsInputContext = createContext<NeedsInputContextValue>({
   tasks: [],
   count: 0,
   alertPermission: 'unsupported',

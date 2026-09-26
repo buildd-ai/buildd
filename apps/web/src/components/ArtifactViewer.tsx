@@ -9,6 +9,12 @@ export interface ArtifactViewerItem {
   type: string; // 'content' | 'report' | 'summary' | 'data' | 'link' | 'file' | others
   title: string | null;
   content: string | null;
+  /**
+   * The object key, from the `artifacts.storage_key` column. upload-url
+   * writes it there, not into `metadata`; `metadata.storageKey` is read only
+   * as a fallback for older rows.
+   */
+  storageKey?: string | null;
   shareToken: string | null;
   visibility: 'private' | 'public';
   metadata: Record<string, unknown>;
@@ -38,6 +44,7 @@ const TYPE_LABELS: Record<string, string> = {
   link: 'Link',
   summary: 'Summary',
   file: 'File',
+  screenshot: 'Screenshot',
 };
 
 const MD_BREAKPOINT = 768; // Tailwind `md`
@@ -218,7 +225,7 @@ export default function ArtifactViewer({
       aria-label="Artifacts"
       className="hidden md:flex w-56 shrink-0 flex-col overflow-y-auto border-r border-card-border bg-surface-2"
     >
-      <div className="px-3 py-2 text-[10px] font-mono uppercase tracking-widest text-text-muted">
+      <div className="px-3 py-2 text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
         Artifacts
       </div>
       {items.map((a, i) => {
@@ -236,7 +243,7 @@ export default function ArtifactViewer({
             }`}
           >
             <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-mono uppercase tracking-wider text-text-muted shrink-0">
+              <span className="text-[11px] md:text-[9px] font-mono uppercase tracking-wider text-text-muted shrink-0">
                 {TYPE_LABELS[a.type] || a.type}
               </span>
             </div>
@@ -278,6 +285,7 @@ export default function ArtifactViewer({
     >
       <div
         ref={panelRef}
+        data-testid="artifact-viewer"
         role="dialog"
         aria-modal="true"
         aria-label={active.title || 'Artifact'}
@@ -400,7 +408,8 @@ function ArtifactBody({ artifact }: { artifact: ArtifactViewerItem }) {
   const { type, content, metadata } = artifact;
   const url = metadata?.url as string | undefined;
   const mimeType = metadata?.mimeType as string | undefined;
-  const storageKey = metadata?.storageKey as string | undefined;
+  const storageKey =
+    artifact.storageKey || (typeof metadata?.storageKey === 'string' ? metadata.storageKey : undefined);
   const fileName = metadata?.filename as string | undefined;
   const sizeBytes = metadata?.sizeBytes as number | undefined;
 

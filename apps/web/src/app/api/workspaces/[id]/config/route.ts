@@ -5,11 +5,44 @@ import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-st
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { parseMergePolicy } from '@buildd/shared';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
 const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
+const VALID_CRITERIA_GRADERS = ['auto', 'api', 'runner'] as const;
+const VALID_POLICY_PRESETS: WorkspacePolicyPreset[] = ['cautious', 'balanced', 'autonomous'];
+const VALID_RISK_CLASSES: RiskClassName[] = [
+    'destructive_schema_change', 'ci_deploy_config', 'auth_and_secrets', 'dependency_bump', 'public_api_contract',
+];
+
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string');
+
+/**
+ * Shape-check a policyConfig (the output of POST /policy-init). Enough that the
+ * merge gate never reads a malformed entry; not a second copy of the detector.
+ */
+function parsePolicyConfig(pc: unknown): { ok: true; config: WorkspacePolicyConfig } | { ok: false; error: string } {
+    if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return { ok: false, error: 'policyConfig must be an object' };
+    const p = pc as Record<string, unknown>;
+    if (!VALID_POLICY_PRESETS.includes(p.preset as WorkspacePolicyPreset)) {
+        return { ok: false, error: `policyConfig.preset must be one of: ${VALID_POLICY_PRESETS.join(', ')}` };
+    }
+    if (!Array.isArray(p.riskClasses)) return { ok: false, error: 'policyConfig.riskClasses must be an array' };
+    for (const entry of p.riskClasses as Array<Record<string, unknown>>) {
+        if (!entry || typeof entry !== 'object' || !VALID_RISK_CLASSES.includes(entry.name as RiskClassName)) {
+            return { ok: false, error: `policyConfig.riskClasses: unknown class '${String(entry?.name)}'` };
+        }
+        if (!isStringArray(entry.detectedPaths)) {
+            return { ok: false, error: `policyConfig.riskClasses.${entry.name}: paths must be string arrays` };
+        }
+    }
+    if (p.reviewerRole !== undefined && typeof p.reviewerRole !== 'string') {
+        return { ok: false, error: 'policyConfig.reviewerRole must be a string' };
+    }
+    return { ok: true, config: p as unknown as WorkspacePolicyConfig };
+}
 
 // Parse + validate the releaseConfig body fragment. Returns the sanitized config or
 // a string error message the caller can surface to the UI.
@@ -94,6 +127,11 @@ async function resolveWriteAuth(req: NextRequest) {
  * `accessMode: 'open'` workspace resolves ANY authenticated user to role
  * 'member', and this route writes release config, so a member could otherwise
  * retarget where the workspace deploys.
+ *
+ * API keys: the workspace must belong to the key's own team (same check as
+ * PATCH /api/workspaces/[id]; `accessMode: 'open'` does not widen it — open
+ * means open within the owning team), and the key must be admin level. The
+ * team check comes first so a key of another team always gets a 404.
  */
 async function verifyWriteAccess(
     auth: { user: any; apiAccount: any },
@@ -108,10 +146,10 @@ async function verifyWriteAccess(
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({
             where: eq(workspaces.id, workspaceId),
-            columns: { teamId: true, accessMode: true },
+            columns: { teamId: true },
         });
-        if (!ws) return 'not_found';
-        return ws.teamId === apiAccount.teamId || ws.accessMode === 'open' ? 'ok' : 'not_found';
+        if (!ws || ws.teamId !== apiAccount.teamId) return 'not_found';
+        return apiAccount.level === 'admin' ? 'ok' : 'forbidden';
     }
     return 'not_found';
 }
@@ -123,18 +161,38 @@ export async function GET(
 ) {
     const { id } = await params;
 
-    // In development, allow without auth for runner
     const authHeader = req.headers.get('authorization');
     const isApiAuth = authHeader?.startsWith('Bearer ');
 
-    if (!isApiAuth && process.env.NODE_ENV !== 'development') {
-        const user = await getCurrentUser();
-        if (!user) {
-            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-        }
-    }
-
     try {
+        if (isApiAuth) {
+            // An API key reads the config of its own team's workspaces (same
+            // check as PATCH /api/workspaces/[id]), or of a workspace it has an
+            // explicit accountWorkspaces link to — a runner account linked to
+            // run workers there. `accessMode: 'open'` does not widen this.
+            const apiAccount = await authenticateApiKey(authHeader!.replace('Bearer ', ''));
+            if (!apiAccount) {
+                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+            }
+            const ws = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { teamId: true },
+            });
+            if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount.id, id)))) {
+                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+            }
+        } else if (process.env.NODE_ENV !== 'development') {
+            // In development, allow without auth for the local runner.
+            const user = await getCurrentUser();
+            if (!user) {
+                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+            }
+            const access = await verifyWorkspaceAccess(user.id, id);
+            if (!access) {
+                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+            }
+        }
+
         const workspace = await db.query.workspaces.findFirst({
             where: eq(workspaces.id, id),
             columns: {
@@ -209,38 +267,26 @@ export async function POST(
     }
 
     try {
-        // For session auth, verify workspace access via team membership.
-        //
-        // This handler writes `bypassPermissions`, so bare access is not enough:
-        // an `accessMode: 'open'` workspace resolves ANY authenticated user to
-        // role 'member', and a member must not be able to widen what agents may
-        // do. Admin or owner only. The role is compared here rather than passed
-        // to verifyWorkspaceAccess so a real member gets a 403 that says why,
-        // instead of a 404 for a workspace they can plainly see.
-        if (user && !apiAccount) {
-            const access = await verifyWorkspaceAccess(user.id, id);
-            if (!access) {
-                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-            }
-            if (access.role !== 'owner' && access.role !== 'admin') {
-                return NextResponse.json(
-                    { error: 'Requires workspace admin' },
-                    { status: 403 },
-                );
-            }
+        // This handler writes `bypassPermissions` and release config, so bare
+        // access is not enough — see verifyWriteAccess (owner/admin session, or
+        // an admin-level key of the workspace's own team). A member who can see
+        // the workspace gets a 403 that says why, not a 404.
+        const access = await verifyWriteAccess({ user, apiAccount }, id);
+        if (access === 'not_found') {
+            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }
-        // For API key/OAuth auth, verify workspace belongs to the key's team
-        if (apiAccount) {
-            const ws = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
-                columns: { teamId: true, accessMode: true },
-            });
-            if (!ws || (ws.teamId !== apiAccount.teamId && ws.accessMode !== 'open')) {
-                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-            }
+        if (access === 'forbidden') {
+            return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
         }
 
         const body = await req.json();
+
+        // Hand-written merge-policy paths are gone: paths come from the repo scan.
+        // Stored legacy values survive the merge below untouched (read-only fallback).
+        const removedField = findRemovedPathFieldInGitConfig(body);
+        if (removedField) {
+            return NextResponse.json({ error: removedPolicyPathFieldError(removedField), field: removedField }, { status: 400 });
+        }
 
         if (
             body.defaultBackend !== undefined && body.defaultBackend !== null &&
@@ -248,6 +294,16 @@ export async function POST(
         ) {
             return NextResponse.json(
                 { error: `Invalid defaultBackend '${body.defaultBackend}'. Valid: claude, codex, default` },
+                { status: 400 },
+            );
+        }
+
+        if (
+            body.criteriaGrader !== undefined && body.criteriaGrader !== null &&
+            !VALID_CRITERIA_GRADERS.includes(body.criteriaGrader)
+        ) {
+            return NextResponse.json(
+                { error: `Invalid criteriaGrader '${body.criteriaGrader}'. Valid: ${VALID_CRITERIA_GRADERS.join(', ')}` },
                 { status: 400 },
             );
         }
@@ -375,6 +431,13 @@ export async function POST(
         // enforceGreenCI — surfaced via the workspace CI policy toggle
         if (typeof body.enforceGreenCI === 'boolean') gitConfig.enforceGreenCI = body.enforceGreenCI;
         if (typeof body.autoMergeOnGreenCI === 'boolean') gitConfig.autoMergeOnGreenCI = body.autoMergeOnGreenCI;
+        // Prose goal-criteria grader (validated above). Absent keeps the existing
+        // value; 'auto' and null clear it, because missing already means auto.
+        if (body.criteriaGrader !== undefined) {
+            gitConfig.criteriaGrader = body.criteriaGrader === 'api' || body.criteriaGrader === 'runner'
+                ? body.criteriaGrader
+                : undefined;
+        }
 
         // mergePolicy write-path validation: unknown keys rejected, not silently stripped
         if (body.mergePolicy !== undefined) {
@@ -439,6 +502,10 @@ export async function POST(
 //
 // branchStrategy: 'mission-branch' | 'direct' | null (null clears the override,
 // falling back to 'mission-branch' at runtime — see resolveBranchStrategy()).
+//
+// policyConfig: a WorkspacePolicyConfig (the proposal POST /policy-init returns).
+// Sets gitConfig.policyConfig AND configStatus='admin_confirmed' in one write.
+// Admin only (session owner/admin, or an admin-level API key).
 export async function PATCH(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
@@ -468,11 +535,41 @@ export async function PATCH(
 
         const hasReleaseConfig = !!body && typeof body === 'object' && 'releaseConfig' in body;
         const hasBranchStrategy = !!body && typeof body === 'object' && 'branchStrategy' in body;
-        if (!hasReleaseConfig && !hasBranchStrategy) {
-            return NextResponse.json({ error: 'Body must contain releaseConfig or branchStrategy' }, { status: 400 });
+        const hasPolicyConfig = !!body && typeof body === 'object' && 'policyConfig' in body;
+        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy or policyConfig' }, { status: 400 });
+        }
+
+        const removedField = findRemovedPathFieldInGitConfig(body);
+        if (removedField) {
+            return NextResponse.json({ error: removedPolicyPathFieldError(removedField), field: removedField }, { status: 400 });
         }
 
         let responseBody: Record<string, unknown> = { success: true };
+
+        // policyConfig: apply a proposal from POST /policy-init. Writing it is the
+        // admin's confirmation of the workspace policy, so configStatus flips to
+        // admin_confirmed in the same UPDATE. Merges into gitConfig — the POST path
+        // would reset every form-managed field to its default instead.
+        if (hasPolicyConfig) {
+            const parsed = parsePolicyConfig((body as Record<string, unknown>).policyConfig);
+            if (!parsed.ok) {
+                return NextResponse.json({ error: parsed.error }, { status: 400 });
+            }
+            const existing = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { gitConfig: true },
+            });
+            const gitConfig: WorkspaceGitConfig = {
+                ...(existing?.gitConfig ?? {} as WorkspaceGitConfig),
+                policyConfig: parsed.config,
+            };
+            await db
+                .update(workspaces)
+                .set({ gitConfig, configStatus: 'admin_confirmed', updatedAt: new Date() })
+                .where(eq(workspaces.id, id));
+            responseBody = { ...responseBody, gitConfig, configStatus: 'admin_confirmed' };
+        }
 
         if (hasBranchStrategy) {
             const bs = (body as Record<string, unknown>).branchStrategy;

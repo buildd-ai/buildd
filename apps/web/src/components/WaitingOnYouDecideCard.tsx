@@ -19,7 +19,7 @@ export function WaitingOnYouDecideCard({ item }: WaitingOnYouDecideCardProps) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
+            <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">
               Decide
             </span>
           </div>
