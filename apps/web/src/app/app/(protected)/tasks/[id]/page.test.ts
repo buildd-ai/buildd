@@ -47,7 +47,8 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
 
   it('falls back to Related Tasks only when chain is empty', () => {
     // The Related Tasks section (with parent link) only renders when the chain is empty.
-    expect(pageSource).toContain(') : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (');
+    expect(pageSource).toContain(') : hasRelatedTasks && (');
+    expect(pageSource).toContain('const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;');
   });
 });
 
