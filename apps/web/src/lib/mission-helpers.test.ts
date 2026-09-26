@@ -5,6 +5,8 @@ import {
   deriveMissionHealth,
   deriveDriveState,
   deriveTaskHealthSignal,
+  unmetDependencyIds,
+  STALL_GRACE_MS,
   getDrivePresentation,
   selectInFlightTasks,
   computeGateChipMaxWaitMins,
@@ -629,6 +631,68 @@ describe('deriveTaskHealthSignal', () => {
       { status: 'completed', taskClass: 'work', title: 'Done it', workers: [{ status: 'running' }] },
       { status: 'pending', taskClass: 'work', title: 'Build it', workers: [] },
     ])).toBe<Health>('STALLED');
+  });
+
+  // ── Grace period + dependency-blocked rows ──
+  // Regression: a mission read STALLED seconds after planning, before any
+  // runner had had a chance to claim, and named a task that was merely waiting
+  // on a dependency as the blocker.
+
+  describe('stall grace period and dependency-blocked tasks', () => {
+    const now = new Date('2026-09-26T12:00:00Z');
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+
+    it('does not read STALLED seconds after the tasks became claimable', () => {
+      expect(deriveTaskHealthSignal(noDepMission, [
+        { id: 'a', status: 'pending', taskClass: 'work', title: 'Build it', workers: [], createdAt: ago(20_000) },
+      ], { now })).toBe<Health>('NOMINAL');
+    });
+
+    it('reads STALLED once the grace period has passed with nothing claimed', () => {
+      expect(deriveTaskHealthSignal(noDepMission, [
+        { id: 'a', status: 'pending', taskClass: 'work', title: 'Build it', workers: [], createdAt: ago(STALL_GRACE_MS + 60_000) },
+      ], { now })).toBe<Health>('STALLED');
+    });
+
+    it('measures grace from the newest claimable time, not the oldest task', () => {
+      // `b` was planned long ago but only became claimable when its dependency
+      // `a` merged a few seconds ago.
+      expect(deriveTaskHealthSignal(noDepMission, [
+        { id: 'a', status: 'completed', taskClass: 'work', title: 'First', workers: [{ status: 'completed', prUrl: 'x', mergedAt: ago(10_000) }], createdAt: ago(3_600_000) },
+        { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['a'], createdAt: ago(3_600_000) },
+      ], { now })).toBe<Health>('NOMINAL');
+    });
+
+    it('a mission whose only open rows wait on an unmet dependency is not STALLED', () => {
+      // `a` finished but its PR has not merged — `b` cannot be claimed, and
+      // no runner capacity would change that.
+      expect(deriveTaskHealthSignal(noDepMission, [
+        { id: 'a', status: 'completed', taskClass: 'work', title: 'First', workers: [{ status: 'completed', prUrl: 'x', mergedAt: null }], createdAt: ago(3_600_000) },
+        { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['a'], createdAt: ago(3_600_000) },
+      ], { now })).toBe<Health>('NOMINAL');
+    });
+
+    it('still reads STALLED when a claimable row has sat past the grace period', () => {
+      expect(deriveTaskHealthSignal(noDepMission, [
+        { id: 'a', status: 'pending', taskClass: 'work', title: 'First', workers: [], createdAt: ago(3_600_000) },
+        { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['a'], createdAt: ago(3_600_000) },
+      ], { now })).toBe<Health>('STALLED');
+    });
+
+    it('unmetDependencyIds follows the claim gate: completed+merged or cancelled is met', () => {
+      const rows = [
+        { id: 'open', status: 'pending' },
+        { id: 'unmerged', status: 'completed', workers: [{ status: 'completed', prUrl: 'x', mergedAt: null }] },
+        { id: 'merged', status: 'completed', workers: [{ status: 'completed', prUrl: 'x', mergedAt: now }] },
+        { id: 'noPr', status: 'completed', workers: [] },
+        { id: 'cancelled', status: 'cancelled' },
+      ];
+      const byId = new Map(rows.map(r => [r.id, r]));
+      expect(unmetDependencyIds(
+        { dependsOn: ['open', 'unmerged', 'merged', 'noPr', 'cancelled', 'not-loaded'] },
+        byId,
+      )).toEqual(['open', 'unmerged']);
+    });
   });
 
   it("family scope still counts attempts: a task's failed attempt reads FAILING", () => {

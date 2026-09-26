@@ -56,6 +56,7 @@ export type ExplainSource = MissionStateSource | (string & {});
 export type CausalLinkSource =
   | 'missions.dependsOnMissionId'
   | 'tasks.status + workers.status'
+  | 'tasks.dependsOn'
   | 'tasks.status + tasks.result.errorType'
   | 'workers.mergedAt'
   | 'missions.goalCriteriaState'

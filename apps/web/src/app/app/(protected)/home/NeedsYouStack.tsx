@@ -5,7 +5,7 @@
  * decide, …) as `children`, which page.tsx renders from lib/action-queue.ts.
  */
 import Link from 'next/link';
-import type { ReactNode } from 'react';
+import { Children, type ReactNode } from 'react';
 import { shortDuration } from '@/lib/mission-list-card';
 import { HeldMissionCard, QuestionCard, type HomeHeldMission, type HomeQuestion } from './NeedsYouCards';
 
@@ -75,7 +75,11 @@ export function NeedsYouStack({
   timeZone?: string | null;
   children?: ReactNode;
 }) {
-  const empty = questions.length === 0 && held.length === 0 && shipped.length === 0;
+  // page.tsx passes `{cond && <…/>}` children, so "no children" arrives as
+  // `[false, false]` — truthy. `Children.toArray` drops false/null/undefined,
+  // which is the question that matters: will anything render under the heading?
+  const hasChildren = Children.toArray(children).length > 0;
+  const empty = questions.length === 0 && held.length === 0 && shipped.length === 0 && !hasChildren;
   return (
     <section data-testid="home-waiting-on-you" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -91,7 +95,7 @@ export function NeedsYouStack({
         {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
         {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
         {children}
-        {empty && !children && (
+        {empty && (
           <p className="font-mono text-[13px] text-text-muted">Nothing needs you. The fleet is on it.</p>
         )}
       </div>
