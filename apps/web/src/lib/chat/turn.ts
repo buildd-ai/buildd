@@ -22,7 +22,7 @@ import {
   type ToolSet,
   type UIMessage,
 } from 'ai';
-import type { ActionContext, ApiFn } from '@buildd/core/mcp-tools';
+import type { ActionContext } from '@buildd/core/mcp-tools';
 import {
   CHAT_EVENT_PART_TYPE,
   type ChatMessagePart,
@@ -36,9 +36,9 @@ import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
 import { resolveChatModel, turnCostUsd, type ChatTier, type ResolvedChatModel } from './models';
-import { buildChatTools } from './tools';
+import { buildChatTools, CORE_GROUPS, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
+import type { ToolGroup } from './registry';
 import type { LimitVerdict } from './limits';
-import type { ApiCall } from './in-process-api';
 import {
   HISTORY_LIMIT,
   insertMessage,
@@ -70,8 +70,10 @@ export interface TurnDeps {
   limits: (args: { teamId: string; userId: string; now: Date }) => Promise<LimitVerdict>;
   route?: (input: Parameters<typeof routeTurn>[0]) => Promise<TurnRoute>;
   resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string }) => Promise<ResolvedChatModel>;
-  makeApi: (onCall: (c: ApiCall) => void) => ApiFn;
+  makeApi: ChatToolDeps['makeApi'];
   actionContext: ActionContext;
+  /** Team memory for recall/learn (see ChatToolDeps.memory). */
+  memory?: ChatToolDeps['memory'];
   decide?: DecideFn;
   /** Link a filed mission to this conversation (missions.conversation_id). */
   linkMission: (missionId: string) => Promise<void>;
@@ -213,18 +215,33 @@ export async function runChatTurn(args: {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
   }
 
+  const canAdmin = user.teamRole === 'owner' || user.teamRole === 'admin';
   const tools: ToolSet = buildChatTools({
     ctx: deps.actionContext,
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
+    canAdmin,
     authorizedToolCallIds,
+    memory: deps.memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
     },
   });
+  const activeTools = toolNamesForGroups(tools, turnGroups({ route, continuing, canAdmin }));
 
   let approvalsThisTurn = 0;
+  const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
+    name,
+    (input: unknown) => {
+      if (!needsApproval(name, input)) return 'not-applicable' as const;
+      // At most one approval card per turn; a second write waits.
+      approvalsThisTurn += 1;
+      return approvalsThisTurn === 1
+        ? 'user-approval' as const
+        : { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
+    },
+  ]));
   const instructions = `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
     now,
     timeZone: user.timeZone,
@@ -241,18 +258,12 @@ export async function runChatTurn(args: {
     instructions,
     messages: await convertToModelMessages(uiMessages, { tools, ignoreIncompleteToolCalls: true }),
     tools,
+    // Only this turn's groups are sent to the model; every tool stays defined,
+    // so an approved call from an earlier turn still executes.
+    activeTools,
     stopWhen: isStepCount(MAX_STEPS),
     abortSignal: AbortSignal.timeout(TURN_BUDGET_MS),
-    toolApproval: {
-      manage_missions: (input: { action?: string }) => {
-        if (input?.action !== 'create') return 'not-applicable';
-        // At most one approval card per turn; a second write waits.
-        approvalsThisTurn += 1;
-        return approvalsThisTurn === 1
-          ? 'user-approval'
-          : { type: 'denied', reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
-      },
-    },
+    toolApproval,
   });
 
   const stream = toUIMessageStream({
@@ -312,4 +323,31 @@ export async function runChatTurn(args: {
     consumeSseStream: ({ stream: s }) => consumeStream({ stream: s }),
     headers: { 'x-buildd-chat-tier': resolved.tier },
   });
+}
+
+/**
+ * Which tool groups this turn sends to the model (docs/design/agent-chat.md →
+ * Tool groups): the core groups, plus the area routing named when confident,
+ * else the fallback set. Admin tools only for an owner/admin. A continuation
+ * adds the groups of the tools it's answering, so the approved call's tool is
+ * active.
+ */
+export function turnGroups(args: {
+  route: TurnRoute;
+  continuing: MessageRow | null;
+  canAdmin: boolean;
+  /** Groups implied by the docked object (a mission or task pane). */
+  dockGroups?: readonly ToolGroup[];
+}): Set<ToolGroup> {
+  const groups = new Set<ToolGroup>(CORE_GROUPS);
+  for (const g of args.route.area ? [args.route.area] : FALLBACK_GROUPS) groups.add(g);
+  for (const g of args.dockGroups ?? []) groups.add(g);
+  for (const p of args.continuing?.parts ?? []) {
+    if (isToolPart(p)) {
+      const g = groupOf(p.type.slice('tool-'.length));
+      if (g) groups.add(g);
+    }
+  }
+  if (!args.canAdmin) groups.delete('admin');
+  return groups;
 }

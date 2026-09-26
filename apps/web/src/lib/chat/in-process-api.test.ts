@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { createInProcessApi, matchChatRoute, CHAT_ROUTES } from './in-process-api';
+import { createInProcessApi, matchChatRoute, routesFor, CHAT_ROUTES } from './in-process-api';
 import type { RouteReach } from './reach-rules';
 
 const TEST_REACH: RouteReach = { unpinned: 'test route with no team data', result: 'rows' };
@@ -17,17 +17,25 @@ describe('matchChatRoute (the reachable surface)', () => {
     expect(matchChatRoute('GET', '/api/workspaces/w/schedules/s')?.params).toEqual({ id: 'w', scheduleId: 's' });
   });
 
-  it('mission creation is the only write reachable', () => {
-    const writes = CHAT_ROUTES.flatMap(r => r.methods.filter(m => m !== 'GET').map(m => `${m} ${r.pattern}`));
-    expect(writes).toEqual(['POST /api/missions']);
+  it('refuses anything else: other methods, other routes', () => {
+    expect(matchChatRoute('DELETE', '/api/tasks/t1')).toBeNull();
+    expect(matchChatRoute('GET', '/api/secrets')).toBeNull();
+    expect(matchChatRoute('POST', '/api/secrets')).toBeNull();
+    expect(matchChatRoute('POST', '/api/workers/claim')).toBeNull();
+    expect(matchChatRoute('PATCH', '/api/workers/w1')).toBeNull();
+    expect(matchChatRoute('PUT', '/api/github/pr')).toBeNull();
   });
 
-  it('refuses anything else: other methods, other routes', () => {
-    expect(matchChatRoute('PATCH', '/api/missions/m1')).toBeNull();
-    expect(matchChatRoute('DELETE', '/api/tasks/t1')).toBeNull();
-    expect(matchChatRoute('POST', '/api/tasks')).toBeNull();
-    expect(matchChatRoute('GET', '/api/secrets')).toBeNull();
-    expect(matchChatRoute('GET', '/api/workers/w1')).toBeNull();
+  it('a static segment wins over a param one (capabilities is not a mission id)', () => {
+    expect(matchChatRoute('GET', '/api/missions/capabilities')?.entry.pattern).toBe('/api/missions/capabilities');
+    expect(matchChatRoute('GET', '/api/releases/status')?.entry.pattern).toBe('/api/releases/status');
+  });
+
+  it('routesFor narrows to exactly the declared (method, pattern) pairs', () => {
+    const r = routesFor(['GET /api/tasks/:id', 'PATCH /api/missions/:id']);
+    expect(r.map(e => `${e.methods.join(',')} ${e.pattern}`)).toEqual(['GET /api/tasks/:id', 'PATCH /api/missions/:id']);
+    expect(matchChatRoute('PATCH', '/api/tasks/t1', r)).toBeNull();
+    expect(matchChatRoute('DELETE', '/api/missions/m1', r)).toBeNull();
   });
 });
 

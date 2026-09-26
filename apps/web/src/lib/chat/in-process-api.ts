@@ -18,7 +18,7 @@
 
 import { NextRequest } from 'next/server';
 import type { ApiFn } from '@buildd/core/mcp-tools';
-import { SCOPE_FIELDS, type OwnedKind, type RouteReach, type ScopeClaim } from './reach-rules';
+import { SCOPE_FIELDS, type OwnedKind, type PathTarget, type RouteReach, type ScopeClaim } from './reach-rules';
 
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>;
 type RouteModule = Record<string, unknown>;
@@ -34,31 +34,112 @@ export interface RouteEntry {
 
 const ROWS = { result: 'rows' } as const;
 
-/** The whole reachable surface. Adding a chat tool means adding its routes here. */
+/**
+ * The whole reachable surface. Adding a chat tool means adding its routes here
+ * (with a reach declaration — reach-rules.test.ts fails otherwise) and naming
+ * them in the op's `routes` in registry.ts. Write methods are listed here, but
+ * a call only gets the routes its own op declares, and write ops only run
+ * after an approval card this request won.
+ */
+const path = (...p: Array<[string, PathTarget['is']]>) => p.map(([param, is]) => ({ param, is }));
+const byTask = { path: path(['id', 'task']), ...ROWS };
+const byMission = { path: path(['id', 'mission']), ...ROWS };
+const byWorkspace = { path: path(['id', 'workspace']), ...ROWS };
+const byWorker = { path: path(['id', 'worker']), ...ROWS };
+
 export const CHAT_ROUTES: readonly RouteEntry[] = [
+  // ── tasks ──
   {
-    pattern: '/api/tasks', methods: ['GET'], load: () => import('@/app/api/tasks/route'),
-    reach: { unpinned: 'lists the caller\'s tasks; every row carries its workspaceId and is filtered', ...ROWS },
+    pattern: '/api/tasks', methods: ['GET', 'POST'], load: () => import('@/app/api/tasks/route'),
+    reach: { unpinned: 'lists the caller\'s tasks; every row carries its workspaceId and is filtered', requireBody: ['workspaceId'], ...ROWS },
   },
-  { pattern: '/api/tasks/:id', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/route'), reach: { path: [{ param: 'id', is: 'task' }], ...ROWS } },
-  // POST is mission creation — reached only through an approved approval card.
+  { pattern: '/api/tasks/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/tasks/[id]/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/messages', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/messages/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/notes', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/notes/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/approve-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/approve-plan/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/reject-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/reject-plan/route'), reach: byTask },
+
+  // ── missions and initiatives ──
   { pattern: '/api/missions', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/route'), reach: { pinTeam: true, ...ROWS } },
-  { pattern: '/api/missions/:id', methods: ['GET'], load: () => import('@/app/api/missions/[id]/route'), reach: { path: [{ param: 'id', is: 'mission' }], ...ROWS } },
-  { pattern: '/api/missions/:id/evaluate', methods: ['GET'], load: () => import('@/app/api/missions/[id]/evaluate/route'), reach: { path: [{ param: 'id', is: 'mission' }], ...ROWS } },
   {
-    pattern: '/api/workspaces', methods: ['GET'], load: () => import('@/app/api/workspaces/route'),
-    reach: { unpinned: 'lists the caller\'s workspaces; every row is filtered by its own id', ...ROWS },
+    pattern: '/api/missions/capabilities', methods: ['GET'], load: () => import('@/app/api/missions/capabilities/route'),
+    reach: { unpinned: 'a static list of mission controls this server supports; no team data', ...ROWS },
   },
-  { pattern: '/api/workspaces/:id/schedules', methods: ['GET'], load: () => import('@/app/api/workspaces/[id]/schedules/route'), reach: { path: [{ param: 'id', is: 'workspace' }], ...ROWS } },
+  { pattern: '/api/missions/:id', methods: ['GET', 'PATCH', 'DELETE'], load: () => import('@/app/api/missions/[id]/route'), reach: byMission },
+  { pattern: '/api/missions/:id/evaluate', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/[id]/evaluate/route'), reach: byMission },
+  { pattern: '/api/missions/:id/notes', methods: ['POST'], load: () => import('@/app/api/missions/[id]/notes/route'), reach: byMission },
+  { pattern: '/api/missions/:id/link', methods: ['POST'], load: () => import('@/app/api/missions/[id]/link/route'), reach: byMission },
+  { pattern: '/api/missions/:id/artifacts', methods: ['POST'], load: () => import('@/app/api/missions/[id]/artifacts/route'), reach: byMission },
+  { pattern: '/api/initiatives', methods: ['GET', 'POST'], load: () => import('@/app/api/initiatives/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/initiatives/:id', methods: ['GET', 'PATCH', 'DELETE'], load: () => import('@/app/api/initiatives/[id]/route'), reach: { path: path(['id', 'initiative']), ...ROWS } },
+  { pattern: '/api/initiatives/:id/artifacts', methods: ['GET', 'POST'], load: () => import('@/app/api/initiatives/[id]/artifacts/route'), reach: { path: path(['id', 'initiative']), ...ROWS } },
+  { pattern: '/api/discrepancies', methods: ['GET'], load: () => import('@/app/api/discrepancies/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
+  { pattern: '/api/discrepancies/:id', methods: ['GET'], load: () => import('@/app/api/discrepancies/[id]/route'), reach: { path: path(['id', 'discrepancy']), ...ROWS } },
+  { pattern: '/api/discrepancies/:id/adjudicate', methods: ['POST'], load: () => import('@/app/api/discrepancies/[id]/adjudicate/route'), reach: { path: path(['id', 'discrepancy']), ...ROWS } },
+  { pattern: '/api/discrepancies/:id/promote', methods: ['POST'], load: () => import('@/app/api/discrepancies/[id]/promote/route'), reach: { path: path(['id', 'discrepancy']), ...ROWS } },
+
+  // ── workers ──
+  { pattern: '/api/workers/:id', methods: ['GET'], load: () => import('@/app/api/workers/[id]/route'), reach: byWorker },
+  { pattern: '/api/workers/:id/instruct', methods: ['POST'], load: () => import('@/app/api/workers/[id]/instruct/route'), reach: byWorker },
+  { pattern: '/api/workers/:id/respond', methods: ['POST'], load: () => import('@/app/api/workers/[id]/respond/route'), reach: byWorker },
+  // Team-wide reads: the route limits results to ?teamId (session path), which the guard pins.
+  { pattern: '/api/explain', methods: ['GET'], load: () => import('@/app/api/explain/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/health/failures', methods: ['GET'], load: () => import('@/app/api/health/failures/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/health/budget', methods: ['GET'], load: () => import('@/app/api/health/budget/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/connectors/mounted', methods: ['GET'], load: () => import('@/app/api/connectors/mounted/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
+
+  // ── PRs and releases ──
+  { pattern: '/api/github/pr', methods: ['GET'], load: () => import('@/app/api/github/pr/route'), reach: { pinTeam: true, requireQuery: ['workerId', 'workspaceId'], ...ROWS } },
+  { pattern: '/api/github/pr/review', methods: ['GET'], load: () => import('@/app/api/github/pr/review/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/releases', methods: ['GET'], load: () => import('@/app/api/releases/route'), reach: { requireQuery: ['workspaceId', 'missionId'], ...ROWS } },
+  { pattern: '/api/releases/status', methods: ['GET'], load: () => import('@/app/api/releases/status/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
+  { pattern: '/api/releases/trigger', methods: ['POST'], load: () => import('@/app/api/releases/trigger/route'), reach: { requireBody: ['workspaceId'], ...ROWS } },
+  { pattern: '/api/releases/:id', methods: ['GET'], load: () => import('@/app/api/releases/[id]/route'), reach: { path: path(['id', 'release']), ...ROWS } },
+
+  // ── workspaces, schedules, artifacts, skills ──
+  {
+    pattern: '/api/workspaces', methods: ['GET', 'POST'], load: () => import('@/app/api/workspaces/route'),
+    reach: { pinTeam: true, ...ROWS },
+  },
+  { pattern: '/api/workspaces/:id', methods: ['PATCH'], load: () => import('@/app/api/workspaces/[id]/route'), reach: byWorkspace },
+  { pattern: '/api/workspaces/:id/config', methods: ['GET', 'POST'], load: () => import('@/app/api/workspaces/[id]/config/route'), reach: byWorkspace },
+  { pattern: '/api/workspaces/:id/create-repo', methods: ['POST'], load: () => import('@/app/api/workspaces/[id]/create-repo/route'), reach: byWorkspace },
+  { pattern: '/api/workspaces/:id/policy-init', methods: ['POST'], load: () => import('@/app/api/workspaces/[id]/policy-init/route'), reach: byWorkspace },
+  { pattern: '/api/workspaces/:id/error-traces', methods: ['GET'], load: () => import('@/app/api/workspaces/[id]/error-traces/route'), reach: byWorkspace },
+  { pattern: '/api/workspaces/:id/schedules', methods: ['GET', 'POST'], load: () => import('@/app/api/workspaces/[id]/schedules/route'), reach: byWorkspace },
   {
     pattern: '/api/workspaces/:id/schedules/:scheduleId',
-    methods: ['GET'],
+    methods: ['GET', 'PATCH', 'DELETE'],
     load: () => import('@/app/api/workspaces/[id]/schedules/[scheduleId]/route'),
-    reach: { path: [{ param: 'id', is: 'workspace' }, { param: 'scheduleId', is: 'schedule' }], ...ROWS },
+    reach: { path: path(['id', 'workspace'], ['scheduleId', 'schedule']), ...ROWS },
   },
-  { pattern: '/api/workspaces/:id/artifacts', methods: ['GET'], load: () => import('@/app/api/workspaces/[id]/artifacts/route'), reach: { path: [{ param: 'id', is: 'workspace' }], ...ROWS } },
-  { pattern: '/api/initiatives/:id/artifacts', methods: ['GET'], load: () => import('@/app/api/initiatives/[id]/artifacts/route'), reach: { path: [{ param: 'id', is: 'initiative' }], ...ROWS } },
+  { pattern: '/api/workspaces/:id/artifacts', methods: ['GET'], load: () => import('@/app/api/workspaces/[id]/artifacts/route'), reach: byWorkspace },
+  { pattern: '/api/artifacts/:artifactId', methods: ['GET'], load: () => import('@/app/api/artifacts/[artifactId]/route'), reach: { path: path(['artifactId', 'artifact']), ...ROWS } },
+  { pattern: '/api/workspaces/:id/skills', methods: ['GET', 'POST'], load: () => import('@/app/api/workspaces/[id]/skills/route'), reach: byWorkspace },
+  {
+    pattern: '/api/workspaces/:id/skills/:skillId', methods: ['GET', 'PATCH', 'DELETE'],
+    load: () => import('@/app/api/workspaces/[id]/skills/[skillId]/route'),
+    reach: { path: path(['id', 'workspace'], ['skillId', 'skill']), ...ROWS },
+  },
+  { pattern: '/api/workspaces/:id/watched-projects', methods: ['GET', 'POST'], load: () => import('@/app/api/workspaces/[id]/watched-projects/route'), reach: byWorkspace },
+  { pattern: '/api/watched-projects/:id', methods: ['PATCH', 'DELETE'], load: () => import('@/app/api/watched-projects/[id]/route'), reach: { path: path(['id', 'watched_project']), ...ROWS } },
+  { pattern: '/api/watched-projects/:id/run', methods: ['POST'], load: () => import('@/app/api/watched-projects/[id]/run/route'), reach: { path: path(['id', 'watched_project']), ...ROWS } },
+
+  // ── experiments ──
+  { pattern: '/api/experiments', methods: ['GET', 'POST'], load: () => import('@/app/api/experiments/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
+  { pattern: '/api/experiments/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/experiments/[id]/route'), reach: { path: path(['id', 'experiment']), ...ROWS } },
+  { pattern: '/api/experiments/:id/readout', methods: ['GET'], load: () => import('@/app/api/experiments/[id]/readout/route'), reach: { path: path(['id', 'experiment']), ...ROWS } },
 ];
+
+/** A copy of the routes narrowed to exactly the `METHOD /pattern` refs an op declares. */
+export function routesFor(refs: readonly string[], routes: readonly RouteEntry[] = CHAT_ROUTES): RouteEntry[] {
+  const out: RouteEntry[] = [];
+  for (const r of routes) {
+    const methods = r.methods.filter(m => refs.includes(`${m} ${r.pattern}`));
+    if (methods.length) out.push({ ...r, methods });
+  }
+  return out;
+}
 
 export function matchChatRoute(
   method: string,
@@ -182,6 +263,10 @@ async function guardRequest(
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) outOfReach();
   }
   await assertFieldsInReach(reach, Object.entries(parsed));
+  const pinnedByRequest = (r.path?.length ?? 0) > 0 || r.pinTeam || (r.requireQuery ?? []).some(q => url.searchParams.get(q));
+  if (!pinnedByRequest && r.requireBody?.length && !r.requireBody.some(f => parsed[f] != null && parsed[f] !== '')) {
+    throw new Error(`API error: 400 - from chat, ${method} ${url.pathname} needs ${r.requireBody.join(' or ')}`);
+  }
   return r.pinTeam ? JSON.stringify({ ...parsed, teamId: reach.teamId }) : body;
 }
 

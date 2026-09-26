@@ -28,7 +28,7 @@
 
 export type OwnedKind =
   | 'task' | 'mission' | 'initiative' | 'worker' | 'artifact' | 'schedule' | 'skill'
-  | 'watched_project' | 'discrepancy' | 'experiment';
+  | 'watched_project' | 'discrepancy' | 'experiment' | 'release';
 
 export type PathTarget = { param: string; is: 'workspace' | OwnedKind };
 
@@ -42,6 +42,8 @@ export interface RouteReach {
   path?: readonly PathTarget[];
   pinTeam?: boolean;
   requireQuery?: readonly string[];
+  /** A write addressed only by its body; at least one of these fields must be present (and is reach-checked). */
+  requireBody?: readonly string[];
   /** Why this GET needs no request-side pin (rows self-scoped, or no team data). */
   unpinned?: string;
   /**
@@ -81,11 +83,15 @@ export function routeReachProblems(route: { pattern: string; methods: readonly s
   for (const t of r.path ?? []) {
     if (!params.includes(t.param)) out.push(`${route.pattern}: reach names :${t.param}, which the pattern lacks`);
   }
-  const pinned = (r.path?.length ?? 0) > 0 || r.pinTeam || (r.requireQuery?.length ?? 0) > 0;
-  if (!pinned && !r.unpinned) {
-    out.push(`${route.pattern}: nothing pins its scope (declare path, pinTeam, requireQuery, or unpinned with a reason)`);
+  const pathOrTeam = (r.path?.length ?? 0) > 0 || !!r.pinTeam;
+  const readPinned = pathOrTeam || (r.requireQuery?.length ?? 0) > 0 || !!r.unpinned;
+  const writePinned = pathOrTeam || (r.requireQuery?.length ?? 0) > 0 || (r.requireBody?.length ?? 0) > 0;
+  const hasRead = route.methods.includes('GET');
+  const hasWrite = route.methods.some(m => m !== 'GET');
+  if ((hasRead && !readPinned) || (hasWrite && !writePinned && !r.unpinned) || (!hasRead && !hasWrite)) {
+    out.push(`${route.pattern}: nothing pins its scope (declare path, pinTeam, requireQuery, requireBody, or unpinned with a reason)`);
   }
   if (r.unpinned !== undefined && r.unpinned.trim().length < 10) out.push(`${route.pattern}: unpinned needs a reason`);
-  if (r.unpinned && route.methods.some(m => m !== 'GET')) out.push(`${route.pattern}: a write route can't be unpinned`);
+  if (hasWrite && !writePinned) out.push(`${route.pattern}: a write route can't be unpinned`);
   return out;
 }

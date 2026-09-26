@@ -4,6 +4,9 @@ import { NextRequest } from 'next/server';
 const own = { id: 'c-1', teamId: 't-1', workspaceId: null, createdByUserId: 'u-1', title: null, archivedAt: null } as any;
 // The caller's own conversation in a team they have since left.
 const formerTeam = { ...own, id: 'c-left', teamId: 't-left' };
+// Started in a workspace that is sensitive now (so it is out of reach).
+const inSensitive = { ...own, id: 'c-sens', workspaceId: 'ws-sensitive' };
+const inOk = { ...own, id: 'c-ok', workspaceId: 'ws-ok' };
 const apiOpts: any[] = [];
 const turnCalls: any[] = [];
 const titles: Array<[string, string, string]> = [];
@@ -18,7 +21,7 @@ mock.module('@/lib/chat/session', () => ({
 mock.module('@/lib/chat/store', () => ({
   // Conversations are personal: anyone else's id resolves to nothing.
   getOwnConversation: async (id: string, userId: string) =>
-    (userId !== 'u-1' ? null : id === 'c-1' ? own : id === 'c-left' ? formerTeam : null),
+    (userId !== 'u-1' ? null : id === 'c-1' ? own : id === 'c-left' ? formerTeam : id === 'c-sens' ? inSensitive : id === 'c-ok' ? inOk : null),
   loadMessages: async () => [],
   loadApprovals: async () => [],
   pingConversation: async () => {},
@@ -37,6 +40,8 @@ mock.module('@/lib/chat/reach', () => ({
   loadChatReach: async (teamId: string) => ({ teamId, workspaceIds: new Set(['ws-ok']), ownerOf: async () => null }),
 }));
 mock.module('@/lib/chat/auto-title', () => ({ autoTitleConversation: async () => {} }));
+mock.module('@/lib/memory-helper', () => ({ getMemoryStoreForTeam: async () => ({ fake: 'store' }) }));
+mock.module('@buildd/core/knowledge-store', () => ({ PgVectorStore: class {}, getVoyageEmbedder: () => null, getVoyageReranker: () => null }));
 
 const { GET, PATCH, POST } = await import('./route');
 
@@ -98,5 +103,32 @@ describe('/api/chat/[id]', () => {
     turnCalls[0].deps.makeApi(() => {});
     expect(apiOpts[0].reach).toMatchObject({ teamId: 't-1' });
     expect([...apiOpts[0].reach.workspaceIds]).toEqual(['ws-ok']);
+  });
+
+  it('each tool call gets only the routes its op declares', async () => {
+    const body = { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } };
+    await POST(req('POST', body), ctx('c-1'));
+    const routes = [{ pattern: '/api/tasks', methods: ['GET'] }];
+    turnCalls[0].deps.makeApi(() => {}, { routes });
+    expect(apiOpts[0].routes).toBe(routes);
+  });
+
+  it('a default workspace that is out of reach (marked sensitive) is no default at all', async () => {
+    const body = { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } };
+    await POST(req('POST', body), ctx('c-sens'));
+    const d = turnCalls[0].deps;
+    expect(d.actionContext.workspaceId).toBeUndefined();
+    expect(await d.actionContext.getWorkspaceId()).toBeNull();
+    expect(turnCalls[0].workspace).toBeNull();
+    // Knowledge reads refuse it too, whether defaulted or named.
+    expect(await d.memory(null)).toBeNull();
+    expect(await d.memory('ws-sensitive')).toBeNull();
+  });
+
+  it('knowledge tools get the team store for an in-reach workspace', async () => {
+    const body = { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } };
+    await POST(req('POST', body), ctx('c-ok'));
+    const mem = await turnCalls[0].deps.memory(null);
+    expect(mem.ctx).toMatchObject({ workspaceId: 'ws-ok', teamId: 't-1', isSensitive: false });
   });
 });

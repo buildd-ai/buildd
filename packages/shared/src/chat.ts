@@ -201,48 +201,59 @@ export interface ChatToolResult<T = unknown> {
   summary?: string;
 }
 
-// ── Tools ─────────────────────────────────────────────────────────────────────
-
 /**
  * Tool naming convention: a chat tool is named after the MCP action it wraps
  * (`packages/core/mcp-tools.ts`), so the UI part type is `tool-{action}` —
  * `tool-list_tasks`, `tool-manage_missions`. Actions with sub-operations carry
  * them in `input.action` (`manage_missions` + `{ action: 'create' }`), and the
  * approval card header renders `manage_missions · create`.
+ *
+ * The server's registry (apps/web/src/lib/chat/registry.ts) is the source of
+ * these lists; a test there fails if they drift.
  */
+/** Single-op tools in the read class: they run straight away, shown as rows. */
 export const CHAT_READ_TOOLS = [
-  // The design's read class: renders as a tool row and runs straight away.
-  // The server exposes a subset today (see CHAT_TOOL_ACTIONS in
-  // apps/web/src/lib/chat/tools.ts); the rest arrive as their routes accept a
-  // dashboard session. check_path_claim needs a worker context, so it's out.
-  'list_tasks',
-  'get_task',
-  'manage_missions', // list | get | get_criteria_state run straight away
-  'list_schedules',
-  'trace_schedule',
-  'list_artifacts',
-  'get_artifact',
-  'get_pr',
-  'get_pr_review',
-  'query_events',
-  'get_budget_forecast',
-  'explain',
-  'recall',
+  'list_tasks', 'get_task', 'get_task_messages',
+  'list_discrepancies', 'get_discrepancy',
+  'query_events', 'explain', 'get_error_traces', 'get_failure_analytics', 'get_budget_forecast', 'list_connectors',
+  'get_pr', 'get_pr_review', 'list_releases', 'get_release', 'release_status',
+  'spec_compare', 'recall',
+  'list_schedules', 'trace_schedule',
+  'list_artifacts', 'get_artifact', 'list_artifact_templates',
+  'list_skills', 'get_skill',
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
+/** Multi-op tools: the sub-actions that are reads. */
+export const CHAT_READ_OPS: Readonly<Record<string, readonly string[]>> = {
+  manage_missions: ['list', 'get', 'get_criteria_state'],
+  manage_initiatives: ['list', 'get'],
+  manage_workspaces: ['list', 'get'],
+  manage_watched_projects: ['list'],
+  manage_experiments: ['list', 'get', 'readout'],
+};
+
 /**
  * (tool, sub-action) pairs that render as an approval card instead of running.
- * P1 ships exactly one: filing a mission.
+ * `''` is the single op of a tool without sub-actions.
  */
 export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = {
   manage_missions: ['create'],
 };
 
+/** Is this tool call a read (runs at once, grouped as a read-only row)? */
+export function chatToolIsRead(tool: string, input: unknown): boolean {
+  if ((CHAT_READ_TOOLS as readonly string[]).includes(tool)) return true;
+  const ops = CHAT_READ_OPS[tool];
+  const action = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
+  return !!ops && typeof action === 'string' && ops.includes(action);
+}
+
 /** Does this tool call need an approval card before it runs? */
 export function chatToolNeedsApproval(tool: string, input: unknown): boolean {
   const subs = CHAT_APPROVAL_TOOLS[tool];
   if (!subs) return false;
+  if (subs.includes('')) return true;
   const action = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
   return typeof action === 'string' && subs.includes(action);
 }
