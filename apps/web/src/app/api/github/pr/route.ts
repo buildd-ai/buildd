@@ -41,6 +41,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 
 
 /**
@@ -195,10 +196,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    // Verify the account's team has access to this worker's workspace.
-    // accountId equality is wrong for multi-account teams — the runner's account
-    // differs from the MCP OAuth account. Team membership is the correct boundary.
-    if (worker.workspace?.teamId !== account.teamId) {
+    // Team membership OR being the account that runs the worker — see
+    // canActOnWorkerPr for why neither check alone is enough.
+    if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -951,7 +951,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    if (worker.workspace?.teamId !== account.teamId) {
+    if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -1024,7 +1024,7 @@ export async function PUT(req: NextRequest) {
       if (!worker) {
         return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
       }
-      if (worker.workspace?.teamId !== account.teamId) {
+      if (!(await canActOnWorkerPr(account, worker))) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
       }
     } else {
@@ -1503,7 +1503,7 @@ export async function GET(req: NextRequest) {
         if (!access || (pinTeamId && access.teamId !== pinTeamId)) {
           return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
         }
-      } else if (worker.workspace?.teamId !== account!.teamId) {
+      } else if (!(await canActOnWorkerPr(account!, worker))) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
       }
       const parsed = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
