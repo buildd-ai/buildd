@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { isModelListed } from '@buildd/core/model-tier-liveness';
 
 /** Legacy alias → canonical tier */
 const ALIAS_MAP: Record<string, string> = {
@@ -41,7 +42,7 @@ export function detectStalePin(
   if (KNOWN_TIERS.has(normalized)) return false;
   if (!catalogComplete) return false;
   if (liveModelIds.length === 0) return false;
-  return !liveModelIds.includes(normalized);
+  return !isModelListed(normalized, liveModelIds);
 }
 
 interface ModelEntry {

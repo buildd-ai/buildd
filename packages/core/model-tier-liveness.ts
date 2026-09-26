@@ -52,6 +52,26 @@ export function parseAnthropicModelId(id: string): ParsedModel | null {
   return { family: m[1], major: Number(m[2]), minor: m[3] ? Number(m[3]) : 0 };
 }
 
+/**
+ * True when `id` is in `liveIds`, treating an undated alias
+ * (`claude-haiku-4-5`) and its dated snapshot (`claude-haiku-4-5-20251001`) as
+ * the same model. Pure, so the client picker can share it.
+ */
+export function isModelListed(id: string, liveIds: readonly string[]): boolean {
+  if (liveIds.includes(id)) return true;
+  const mine = parseAnthropicModelId(id);
+  if (!mine) return false;
+  const key = versionKey(mine);
+  return liveIds.some((live) => {
+    const parsed = parseAnthropicModelId(live);
+    return parsed !== null && versionKey(parsed) === key;
+  });
+}
+
+function versionKey(m: ParsedModel): string {
+  return `${m.family}-${m.major}-${m.minor}`;
+}
+
 function isNewer(a: ParsedModel, b: ParsedModel): boolean {
   if (a.major !== b.major) return a.major > b.major;
   return a.minor > b.minor;
@@ -66,10 +86,14 @@ export function auditTierModels(
   // mistake as a gate that passes because it measured nothing.
   if (live.length === 0) return { checked: false, unknown: [], superseded: [] };
 
-  const liveIds = new Set(live.map((m) => m.id));
   const parsedLive = live
     .map((m) => ({ id: m.id, parsed: parseAnthropicModelId(m.id) }))
     .filter((m): m is { id: string; parsed: ParsedModel } => m.parsed !== null);
+  // An undated alias (`claude-haiku-4-5`) and its dated snapshot
+  // (`claude-haiku-4-5-20251001`) are the same model, so a pin is live when
+  // either form is listed.
+  const liveIds = live.map((m) => m.id);
+  const isLive = (id: string) => isModelListed(id, liveIds);
 
   const unknown: TierAudit['unknown'] = [];
   const superseded: TierAudit['superseded'] = [];
@@ -78,7 +102,7 @@ export function auditTierModels(
     // /v1/models is Anthropic's catalog; it cannot speak for Codex or OpenRouter.
     if (entry.provider !== 'anthropic') continue;
 
-    if (!liveIds.has(entry.model)) {
+    if (!isLive(entry.model)) {
       unknown.push({ tier, model: entry.model });
       continue;
     }
