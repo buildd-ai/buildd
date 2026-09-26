@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, highlightTargets, resolveViewports, stepViewports } from './storyboard';
+import { captureFile, captureKey, highlightTargets, isRendered, resolveViewports, stepViewports } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -41,5 +41,25 @@ describe('highlightTargets', () => {
       { target: 'goal-band', required: true },
       { target: 'home-fleet', required: false },
     ]);
+  });
+});
+
+describe('isRendered', () => {
+  // A closed <details> keeps its content in layout (content-visibility: hidden),
+  // so Playwright still reports a non-empty boundingBox for it. The collapsed
+  // "all idle" home fleet hides its slot table that way.
+  test('an element the browser reports as not visible is not rendered', () => {
+    expect(isRendered({ checkVisibility: () => false })).toBe(false);
+  });
+  test('a visible element is rendered', () => {
+    expect(isRendered({ checkVisibility: () => true })).toBe(true);
+  });
+  test('asks the browser to account for content-visibility and visibility', () => {
+    let opts: unknown;
+    isRendered({ checkVisibility: (o?: unknown) => { opts = o; return true; } });
+    expect(opts).toMatchObject({ contentVisibilityAuto: true, visibilityProperty: true });
+  });
+  test('without checkVisibility (older engines) it falls back to rendered', () => {
+    expect(isRendered({})).toBe(true);
   });
 });
