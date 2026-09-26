@@ -19,8 +19,8 @@
   },
   "roles": [
     { "key": "organizer", "slug": "organizer", "name": "Organizer", "color": "#6366F1", "model": "sonnet", "isRole": true, "description": "Plans missions into tasks" },
-    { "key": "builder", "slug": "builder", "name": "Builder", "color": "#D4724A", "model": "opus", "isRole": true, "description": "Writes code and opens PRs" },
-    { "key": "researcher", "slug": "researcher", "name": "Researcher", "color": "#D97706", "model": "sonnet", "isRole": true, "description": "Investigates and reports" }
+    { "key": "builder", "slug": "builder", "name": "Builder", "color": "#0C72CB", "model": "opus", "isRole": true, "description": "Writes code and opens PRs" },
+    { "key": "researcher", "slug": "researcher", "name": "Researcher", "color": "#B24C9C", "model": "sonnet", "isRole": true, "description": "Investigates and reports" }
   ],
   "missions": [
     {
