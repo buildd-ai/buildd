@@ -143,8 +143,8 @@ export async function POST(req: NextRequest) {
     if (!tier || !TIERS.includes(tier as Tier)) {
       return NextResponse.json({ error: `tier must be one of ${TIERS.join(', ')}` }, { status: 400 });
     }
-    if (!provider || !['anthropic', 'openai-codex', 'openrouter'].includes(provider)) {
-      return NextResponse.json({ error: 'provider must be anthropic, openai-codex, or openrouter' }, { status: 400 });
+    if (!provider || !['anthropic', 'openai', 'openai-codex', 'openrouter'].includes(provider)) {
+      return NextResponse.json({ error: 'provider must be anthropic, openai, openai-codex, or openrouter' }, { status: 400 });
     }
     if (!model || typeof model !== 'string') {
       return NextResponse.json({ error: 'model is required' }, { status: 400 });

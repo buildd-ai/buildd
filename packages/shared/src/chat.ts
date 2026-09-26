@@ -217,14 +217,10 @@ export const CHAT_READ_TOOLS = [
   'list_schedules',
   'trace_schedule',
   'list_artifacts',
-  'get_artifact',
-  'get_pr',
-  'get_pr_review',
-  'query_events',
-  'get_budget_forecast',
-  'explain',
-  'recall',
-  // check_path_claim is left out: it needs a worker context, and chat has none.
+  // Not yet: get_artifact, get_pr, get_pr_review, query_events,
+  // get_budget_forecast and explain sit on routes that don't accept a
+  // dashboard session yet (chat tools run as the signed-in user); recall
+  // arrives with memory tiers (P2). check_path_claim needs a worker context.
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 

@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => ['t-1'] as string[]);
 const mockGetUserAdminTeamIds = mock(async () => [] as string[]);
+const mockResolveActiveTeamId = mock(async (_u: string, cookie: string | null) => cookie ?? 't-1');
 const mockList = mock(async (teamId: string, userId: string, canManage: boolean) => ({
   teamId, canManageTeamKeys: canManage, providers: [], _userId: userId,
 }));
@@ -16,6 +17,7 @@ mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessio
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
   getUserAdminTeamIds: mockGetUserAdminTeamIds,
+  resolveActiveTeamId: mockResolveActiveTeamId,
 }));
 mock.module('@/lib/provider-keys', () => ({
   listProviderKeys: mockList,
@@ -65,6 +67,13 @@ describe('GET', () => {
     const res = await GET(req('GET', '/api/inference-keys?teamId=t-1'));
     expect(res.status).toBe(200);
     expect(mockList).toHaveBeenCalledWith('t-1', 'u-1', true);
+  });
+
+  it('with no teamId, uses the active team from the buildd-team cookie, not the first membership', async () => {
+    mockGetUserTeamIds.mockResolvedValue(['t-1', 't-2']);
+    const r = new NextRequest('http://localhost:3000/api/inference-keys', { headers: { cookie: 'buildd-team=t-2' } });
+    await GET(r);
+    expect(mockList.mock.calls.at(-1)![0]).toBe('t-2');
   });
 
   it('members get canManageTeamKeys false', async () => {

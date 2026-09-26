@@ -444,6 +444,8 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   workspaceId?: string | null;
   /** The acting user's account, for account-scoped keys. */
   accountId?: string | null;
+  /** The signed-in person the call is for, so their own OpenRouter key is spent first. */
+  userId?: string | null;
   /** Keep it small: accuracy falls as irrelevant state grows. */
   state: string | Record<string, unknown> | unknown[];
   questions: Q;
@@ -485,6 +487,7 @@ export async function decisionCall<Q extends DecisionQuestions>(
     }
     apiKey = await resolveDecisionKey({
       teamId: params.teamId, workspaceId: params.workspaceId, accountId: params.accountId,
+      userId: params.userId,
     });
     if (!apiKey) return fail({ kind: 'missing_key' }, 0);
   }

@@ -1042,6 +1042,14 @@ export async function PATCH(
       urlTitle: 'Respond',
       priority: 0,
     });
+    // Agent chat: a mission filed from a conversation gets the question posted
+    // back into it. Lazy + best-effort: never on this PATCH's critical path.
+    if (worker.taskId) {
+      const taskId = worker.taskId;
+      void import('@/lib/chat/mission-events')
+        .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
+        .catch(() => {});
+    }
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
@@ -3559,6 +3567,13 @@ export async function PATCH(
             });
           } else {
             // Sensitive: send a redacted stub — event type only, no task title/workspace prose
+            if (isDone) {
+              // Agent chat: "plan ready" for a chat-filed mission, posted back
+              // into its conversation. Lazy + best-effort.
+              void import('@/lib/chat/mission-events')
+                .then(m => m.postTaskCompletedEvent({ taskId }))
+                .catch(() => {});
+            }
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: isSensitive
