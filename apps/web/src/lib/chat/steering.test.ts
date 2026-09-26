@@ -4,6 +4,7 @@ import { approvalChangeLine, approvalHeadline, type ChatApprovalPreview } from '
 import { buildChatTools, ENABLED_WRITE_OPS } from './tools';
 import { buildPreview, type PreviewEnv } from './previews';
 import { loadDocked } from './docked';
+import { resolveTaskRef } from './targets';
 import { chatReadRoutes, createInProcessApi, CHAT_ROUTES, type ApiCall, type ChatReach, type RouteEntry } from './in-process-api';
 
 /**
@@ -150,6 +151,7 @@ function toolsFor(opts: { authorized?: string[]; previews?: Map<string, ChatAppr
     authorizedToolCallIds: new Set(opts.authorized ?? []),
     approvedPreviews: opts.previews ?? new Map(),
     preview: (tool, input) => buildPreview(tool, input, docked, { confirmAdmin: tool === 'manage_missions' && input.action === 'delete' }),
+    resolveTask: ref => resolveTaskRef(read, ref, docked.scope),
   });
 }
 
@@ -252,6 +254,17 @@ describe('the owner\'s examples', () => {
     expect(writes[0]).toStartWith(`PATCH /api/missions/${MISSION.slice(0, 8)}`);
   });
 
+  it('addGoalCriteria appends to the CURRENT list (nothing the model couldn\'t see is dropped)', async () => {
+    const { preview } = await proposeAndApprove('manage_missions', {
+      action: 'update', addGoalCriteria: [{ type: 'command', label: 'JPY e2e passes', command: 'bun test e2e/jpy' }],
+    });
+    expect(preview.changes.map(approvalChangeLine)).toEqual(['Goal criteria: + JPY e2e passes']);
+    const body = JSON.parse(writes[0].slice(writes[0].indexOf('{')));
+    expect(body.goalCriteria.map((c: Obj) => c.label)).toEqual(['EUR e2e passes', 'JPY e2e passes']);
+    expect(body.goalCriteria[0].command).toBe('bun test e2e/eur');
+    expect(body.addGoalCriteria).toBeUndefined();
+  });
+
   it('arming a held mission', async () => {
     const { preview } = await proposeAndApprove('manage_missions', { action: 'arm', missionId: MISSION_HELD });
     expect(approvalHeadline(preview)).toBe('Arm mission: Rounding rollout (held)');
@@ -268,9 +281,41 @@ describe('the owner\'s examples', () => {
 
   it('"schedule a weekly dependency sweep" → New schedule card', async () => {
     const { preview } = await proposeAndApprove('create_schedule', { name: 'Weekly dependency sweep', cronExpression: '0 9 * * 1', timezone: 'Pacific/Auckland', title: 'Dependency sweep' });
-    expect(approvalHeadline(preview)).toBe('New schedule in: this workspace');
+    expect(approvalHeadline(preview)).toBe('New schedule in: harborline-web');
     expect(preview.changes.map(approvalChangeLine)).toEqual(['Name: + Weekly dependency sweep', 'Runs: + 0 9 * * 1 (Pacific/Auckland)', 'Each run files: + Dependency sweep']);
     expect(writes).toEqual(['POST schedule Weekly dependency sweep 0 9 * * 1 Pacific/Auckland']);
+  });
+});
+
+describe('inputs the way models actually send them', () => {
+  it('hold as the string "false" resumes; dependsOn and pathManifest as one string are lists of one', async () => {
+    tasks[T_STRIPE].context = { heldBy: { at: 'then' } };
+    const { preview } = await proposeAndApprove('hold_task', { taskId: T_STRIPE, hold: 'false' });
+    expect(preview.verb).toBe('Resume task');
+    expect(writes[0]).toContain('{"held":false}');
+    writes = [];
+    const created = await proposeAndApprove('create_task', { title: 'JPY e2e', description: 'x', dependsOn: 'export', pathManifest: 'e2e/pay-jpy.spec.ts' });
+    expect(created.preview.changes.map(approvalChangeLine)).toContain('After: + export · ledger CSV');
+    expect(created.preview.changes.map(approvalChangeLine)).toContain('Paths: + e2e/pay-jpy.spec.ts');
+    expect(writes[0]).toContain(`"dependsOn":["${T_EXPORT}"]`);
+  });
+
+  it('a runner registered by URL reads as its host name on the card', async () => {
+    tasks[T_EXPORT].workers[0].runner = 'http://reef.local:8766';
+    const p = await buildPreview('send_agent_message', { taskId: 'export', message: 'hi' }, docked);
+    if (!p.ok) throw new Error('card expected');
+    expect(approvalHeadline(p.preview)).toBe('Message the agent on: export · ledger CSV (running on reef)');
+  });
+});
+
+describe('reads name tasks the way the docked list shows them', () => {
+  it('get_task with a short id or words resolves to the one task; several matches ask', async () => {
+    const tools = toolsFor();
+    const byShort = await (tools.get_task as any).execute({ taskId: T_EXPORT.slice(0, 8) }, { toolCallId: 'r1', messages: [] });
+    expect(byShort.data).not.toContain('Needs clarification');
+    expect(byShort.data).toContain('export · ledger CSV');
+    const ambiguous = await (tools.get_task as any).execute({ taskId: 'checkout' }, { toolCallId: 'r2', messages: [] });
+    expect(ambiguous.data).toStartWith('Needs clarification');
   });
 });
 
@@ -301,6 +346,12 @@ describe('reach: the target is checked before the card and again at the write', 
     expect(await loadDocked(read, { kind: 'task', id: T_SENS }, null)).toBeNull();
     const ok = await loadDocked(read, { kind: 'mission', id: MISSION }, null);
     expect(ok?.tasks.map(t => t.title)).toContain('checkout · Stripe in currency');
+  });
+
+  it('a schedule for a sensitive workspace, named by its name, gets a question, not a card', async () => {
+    const p = await buildPreview('create_schedule', { name: 'n', cronExpression: '0 9 * * 1', workspaceId: 'harborline-payroll' }, docked);
+    expect(p.ok).toBe(false);
+    expect(writes).toEqual([]);
   });
 
   it('a write body that points at an out-of-reach object is refused by the route guard', async () => {
