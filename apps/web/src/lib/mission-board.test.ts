@@ -154,6 +154,17 @@ describe('buildMissionBoard — fleet and lanes', () => {
     expect(m.tasks.b.slot).toBe(1);
   });
 
+  it('divides live by the FLEET capacity when it is known, not by the slots this mission drew', () => {
+    // Regression: Lanes read "LIVE 5 /5 slots" while Home said 5/8 — the
+    // denominator was the overlap-derived slot count of this mission's bars.
+    const a = task('a', { status: 'in_progress', workers: [worker({ runner: 'atlas', startedAt: min(1) })] });
+    const b = task('b', { status: 'in_progress', workers: [worker({ runner: 'birch', startedAt: min(1) })] });
+    expect(board([a, b]).capacity).toBe(2);
+    expect(board([a, b], { fleetCapacity: 8 }).capacity).toBe(8);
+    // Never below what is visibly live (a stale heartbeat must not read 5/3).
+    expect(board([a, b], { fleetCapacity: 1 }).capacity).toBe(2);
+  });
+
   it('counts a claimed worker that has not started yet in the fleet band, as its tile does', () => {
     // A claim inserts the worker (status idle) before the runner stamps
     // startedAt. The tile already shows it running on its runner; the band

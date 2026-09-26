@@ -107,7 +107,7 @@ describe('SlotLanes', () => {
     expect(outside).not.toContain('left:');
   });
 
-  it('with no room before it, a short live bar keeps its label inside rather than spilling past NOW', () => {
+  it('with no room before it, a short live bar is a titled marker: no clipped "mon"/"rese" label, never spilling past NOW', () => {
     const packed: SlotLane[] = [{
       id: 'alpha', label: 'alpha',
       bars: [
@@ -117,7 +117,30 @@ describe('SlotLanes', () => {
     }];
     const html = renderToStaticMarkup(<SlotLanes lanes={packed} from={m(0)} to={m(20)} now={m(10)} />);
     expect(html).not.toContain('pointer-events-none absolute top-[9px] flex h-8');
-    expect(html).toMatch(/data-bar-id="new"[^>]*>(?:(?!<\/a>|<\/span><\/span>).)*CI fix/);
+    const tag = html.match(/<[a-z]+ [^>]*data-bar-id="new"[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('data-shape="short"');
+    expect(tag).toContain('title="checkout CI fix"');
+    expect(html).not.toMatch(/data-bar-id="new"[^>]*>(?:(?!<\/a>|<\/span><\/span>).)*CI fix/);
+  });
+
+  it('a bar narrower than its label box (a fresh claim) keeps its label out of the box, even with a little room', () => {
+    // 0.8m of a 12m axis: a live bar ~7% wide used to draw "mon"/"rese" inside.
+    const html = renderToStaticMarkup(
+      <SlotLanes lanes={[{ id: 'a', label: 'a', bars: [{ id: 'fresh', start: m(10.2), end: null, tone: 'live', scope: 'money', label: 'formatMoney' }] }]} from={m(0)} to={m(12)} now={m(11)} />,
+    );
+    const tag = html.match(/<[a-z]+ [^>]*data-bar-id="fresh"[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('data-shape="short"');
+    // The gap before it is wide, so the label is drawn beside it, left of the bar.
+    expect(html).toMatch(/pointer-events-none absolute top-\[9px\][^>]*>(?:(?!<\/span><\/span>).)*formatMoney/);
+  });
+
+  it('a just-claimed bar ends AT the NOW line: right-anchored, never poking past it', () => {
+    const html = renderToStaticMarkup(
+      <SlotLanes lanes={[{ id: 'a', label: 'a', bars: [{ id: 'j', start: m(9.95), end: null, tone: 'live', label: 'checkout' }] }]} from={m(0)} to={m(20)} now={m(10)} />,
+    );
+    const style = html.match(/data-bar-id="j"[^>]*style="([^"]*)"/)?.[1] ?? '';
+    expect(style).toContain('right:50%');
+    expect(style).not.toContain('left:');
   });
 
   it('a finished bar too short to hold its label draws as a titled marker, not an empty box', () => {

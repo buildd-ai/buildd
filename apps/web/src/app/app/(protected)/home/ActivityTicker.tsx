@@ -3,6 +3,7 @@
  * The newest row is highlighted; a folded run of identical rows shows ×N.
  */
 import Link from 'next/link';
+import { Fragment } from 'react';
 import type { TickerEvent, TickerKind } from '@/lib/home-ticker';
 
 const GLYPH: Record<TickerKind, { char: string; cls: string; label: string }> = {
@@ -16,6 +17,14 @@ const GLYPH: Record<TickerKind, { char: string; cls: string; label: string }> = 
 
 function hhmm(ms: number, tz?: string | null): string {
   return new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(tz ? { timeZone: tz } : {}) });
+}
+
+/** A quiet stretch at least this long between two rows gets a divider. */
+export const TICKER_GAP_MS = 60 * 60_000;
+
+function gapLabel(ms: number): string {
+  const h = Math.round(ms / 3_600_000);
+  return h < 48 ? `${h}h earlier` : `${Math.round(h / 24)}d earlier`;
 }
 
 export function ActivityTicker({ events, timeZone }: { events: readonly TickerEvent[]; timeZone?: string | null }) {
@@ -46,10 +55,22 @@ export function ActivityTicker({ events, timeZone }: { events: readonly TickerEv
               </>
             );
             const cls = `flex min-h-11 items-center gap-3 border-b border-border-default px-3.5 last:border-b-0 md:min-h-10 ${i === 0 ? 'bg-accent/10' : ''}`;
+            // During a live burst a row from hours ago reads as part of it;
+            // a divider says the stretch between them was quiet.
+            const gap = i > 0 ? events[i - 1].at - e.at : 0;
             return (
-              <li key={e.id} data-testid="ticker-row" data-kind={e.kind}>
-                {e.href ? <Link href={e.href} className={`${cls} hover:bg-surface-3`}>{row}</Link> : <div className={cls}>{row}</div>}
-              </li>
+              <Fragment key={e.id}>
+                {gap >= TICKER_GAP_MS && (
+                  <li data-testid="ticker-gap" className="flex items-center gap-3 border-b border-border-default bg-surface-2 px-3.5 py-1 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">
+                    <span aria-hidden="true" className="h-px flex-1 bg-border-default" />
+                    {gapLabel(gap)}
+                    <span aria-hidden="true" className="h-px flex-1 bg-border-default" />
+                  </li>
+                )}
+                <li data-testid="ticker-row" data-kind={e.kind}>
+                  {e.href ? <Link href={e.href} className={`${cls} hover:bg-surface-3`}>{row}</Link> : <div className={cls}>{row}</div>}
+                </li>
+              </Fragment>
             );
           })}
         </ol>

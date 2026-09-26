@@ -74,6 +74,22 @@ function barState(status: string): LaneBar['state'] {
   return 'done';
 }
 
+/**
+ * THE fleet capacity: `maxConcurrentWorkers` summed over the runners whose
+ * heartbeat is fresh. Home's "AGENTS LIVE n/N" and the mission Lanes band's
+ * "LIVE n/N slots" both read this, so the two denominators cannot disagree.
+ */
+export function fleetCapacity(
+  heartbeats: readonly Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'>[],
+  opts: { now?: number; onlineThresholdMs?: number } = {},
+): number {
+  const now = opts.now ?? Date.now();
+  const onlineMs = opts.onlineThresholdMs ?? 90_000;
+  let n = 0;
+  for (const hb of heartbeats) if (now - ms(hb.lastHeartbeatAt) <= onlineMs) n += hb.maxConcurrentWorkers ?? 0;
+  return n;
+}
+
 export function buildFleetSnapshot(
   heartbeats: readonly FleetHeartbeatRow[],
   workerRows: readonly FleetWorkerRow[],
@@ -100,7 +116,7 @@ export function buildFleetSnapshot(
 
   const runners: FleetRunner[] = [];
   let live = 0;
-  let capacity = 0;
+  const capacity = fleetCapacity(heartbeats, { now, onlineThresholdMs: onlineMs });
 
   for (const [gid, g] of groups) {
     const liveHere = g.workers.filter(w => LIVE.has(w.status));
@@ -156,7 +172,6 @@ export function buildFleetSnapshot(
         };
       }
     }
-    if (online) capacity += g.hb?.maxConcurrentWorkers ?? 0;
     runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots });
   }
 

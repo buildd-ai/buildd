@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { assignSlots, axisFraction, axisTicks, fitLaneWindowStart, formatAxisMinutes, LANE_WINDOW_MIN_SPAN_MS, occupiedSlots } from './slot-lanes-layout';
+import { dependencyEdge } from './slot-lanes-layout';
 
 const m = (min: number) => min * 60_000;
 
@@ -118,5 +119,24 @@ describe('fitLaneWindowStart', () => {
     const anchor = minAgo(33) + 17_000;
     const from = fitLaneWindowStart({ earliest: anchor + 60_000, now: NOW, anchor });
     expect(from).toBe(anchor);
+  });
+});
+
+describe('dependencyEdge — never through the dependent bar\'s label band', () => {
+  // Source ends at x=300 two rows up; target bar starts at x=600, with its
+  // outside label drawn to its left in the same band (y 109..141).
+  const src = { left: 100, right: 300, top: 9, bottom: 41 };
+  const target = { left: 600, right: 640, top: 109, bottom: 141 };
+  it('the run toward the target travels below the bar band, then enters it from beneath', () => {
+    const e = dependencyEdge(src, target);
+    const ys = [...e.d.matchAll(/V(-?[\d.]+)/g)].map(m => Number(m[1]));
+    const horizontals = e.d.split(/(?=[MHV])/);
+    // After the drop, the long horizontal run happens at a y outside [top, bottom].
+    const runY = ys[0];
+    expect(runY > target.bottom || runY < target.top).toBe(true);
+    expect(horizontals.length).toBeGreaterThan(3);
+    expect(e.y).toBe(target.bottom);
+    expect(e.x).toBeGreaterThan(target.left);
+    expect(e.x).toBeLessThan(target.right);
   });
 });

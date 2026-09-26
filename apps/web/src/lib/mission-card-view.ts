@@ -54,6 +54,7 @@ import {
 import { missionTaskHref, type MissionOrigin } from './mission-task-href';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
+import { isGreenAutoMergePending } from './auto-merge-grace';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -312,7 +313,7 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
   // card shows cannot come from two derivations (F1, D2).
-  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending });
+  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -355,7 +356,7 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean },
+  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
@@ -371,15 +372,32 @@ function deriveCardState(
         completionAttempted: s.progress >= 100,
       });
   const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
-  const unmergedPrs = tasks.flatMap(t => {
-    if (t.status !== 'completed') return [];
+  // One PR, one fact. A CI-fix attempt adopts its parent's PR, so the same PR
+  // sits on several worker rows — and the webhook stamps the lifecycle on the
+  // OWNER row only; the attempt's copy stays null ("unknown"). Judged per row,
+  // that stale copy read as "yours to merge" and filed the mission under
+  // NEEDS YOU while Home's action queue (one row per PR) said nothing did.
+  // So the PR's state is read across all its rows: any row merged/closed →
+  // gone; any row in CI or just green → the platform's move.
+  const prRows = new Map<string, Array<{ task: MissionCardTaskRow; w: MissionCardWorkerRow }>>();
+  for (const t of tasks) {
+    if (t.status !== 'completed') continue;
     const w = latestWorker(t.workers);
-    if (!w?.prUrl || w.mergedAt || w.prLifecycleStatus === 'closed') return [];
+    if (!w?.prUrl) continue;
+    const key = w.prNumber != null ? `#${w.prNumber}` : w.prUrl;
+    prRows.set(key, [...(prRows.get(key) ?? []), { task: t, w }]);
+  }
+  const unmergedPrs = [...prRows.values()].flatMap(rowsOfPr => {
+    if (rowsOfPr.some(({ w }) => w.mergedAt || w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged')) return [];
     // CI has not reported yet: auto-merge evaluates on the green transition,
     // so the platform owns the next step, not the owner. Same rule as the
     // pulse (`deriveFeedTaskState`: checks_running → moving).
-    if (deriveFeedPrState(w)?.state === 'checks_running') return [];
-    return [{ taskId: t.id, title: t.title, prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null }];
+    if (rowsOfPr.some(({ w }) => deriveFeedPrState(w)?.state === 'checks_running')) return [];
+    // Just green: the webhook is merging it (same predicate as the pulse and the reviewer gate).
+    if (rowsOfPr.some(({ w }) => isGreenAutoMergePending(w.prLifecycleStatus, w.updatedAt, s.now))) return [];
+    // Name the PR by its owner: the row whose lifecycle the webhook writes.
+    const owner = rowsOfPr.find(({ w }) => w.prLifecycleStatus != null) ?? rowsOfPr[0];
+    return [{ taskId: owner.task.id, title: owner.task.title, prNumber: owner.w.prNumber ?? null, prUrl: owner.w.prUrl ?? null }];
   });
   return deriveMissionStateView({
     status: row.status,
