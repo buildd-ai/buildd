@@ -112,7 +112,7 @@ export function ProviderKeyCard({
           aria-hidden
         />
         <b className="text-[13px] font-semibold text-text-primary">{info.label}</b>
-        {recommended && <span className="text-[10px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span>}
+        {recommended && <span className="text-[11px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span>}
         <span className="flex-1" />
         <span className={`status-pill status-pill-${pill.tone} shrink-0`} data-testid="provider-key-health">{pill.label}</span>
       </div>
