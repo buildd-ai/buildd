@@ -31,6 +31,8 @@ import type { GoalCriterion } from './types';
 export interface PlanStep {
   ref: string;
   title: string;
+  /** Short 2–4 word display label for the task chip — see Task.label. */
+  label?: string;
   description: string;
   dependsOn?: string[];
   baseBranch?: string;
@@ -104,6 +106,13 @@ export const planningOutputSchema = {
               'Other steps reference it in dependsOn. It is resolved to the real task id after the plan is approved.',
           },
           title: { type: 'string', description: 'Imperative one-line title for the task.' },
+          label: {
+            type: 'string',
+            description:
+              'A 2–4 word noun-phrase label every surface draws this task as, next to its scope chip — e.g. ' +
+              'title "feat(fx): rates service with a 15-minute cache" → label "rates service". No type prefix, ' +
+              'no scope, no filler words (the/a/with/and), at most 48 characters. Always provide it; omitted, it is guessed from the title.',
+          },
           description: {
             type: 'string',
             description:

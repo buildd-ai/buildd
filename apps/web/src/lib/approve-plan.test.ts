@@ -600,3 +600,23 @@ describe('approvePlan — the planner\'s declared kind reaches the row', () => {
     expect(insertedValues[0].kind).toBeUndefined();
   });
 });
+
+// ─── Short display label carry-through ────────────────────────────────────────
+
+describe('approvePlan — the planner\'s short label reaches the row', () => {
+  beforeEach(reset);
+
+  it('writes PlanStep.label onto the created task', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'feat(fx): rates service with a 15-minute cache', label: 'rates service' },
+    ] as any);
+    expect(insertedValues[0].label).toBe('rates service');
+  });
+
+  it('falls back to the title heuristic when the planner omits it', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'docs: rewrite the testing guide' },
+    ] as any);
+    expect(insertedValues[0].label).toBe('rewrite testing guide');
+  });
+});

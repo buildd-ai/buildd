@@ -15,6 +15,7 @@ import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
+import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
@@ -185,6 +186,7 @@ export async function GET(req: NextRequest) {
           id: tasks.id,
           workspaceId: tasks.workspaceId,
           title: tasks.title,
+          label: tasks.label,
           status: tasks.status,
           priority: tasks.priority,
           category: tasks.category,
@@ -289,6 +291,7 @@ export async function GET(req: NextRequest) {
             creationSource: true,
             parentTaskId: true,
             category: true,
+            label: true,
             project: true,
             outputRequirement: true,
             missionId: true,
@@ -379,6 +382,8 @@ export async function POST(req: NextRequest) {
     const {
       workspaceId: rawWorkspaceId,
       title,
+      // Short 2–4 word display label; the classifier below fills it when omitted.
+      label: rawLabel,
       description,
       priority,
       runnerPreference,
@@ -445,6 +450,10 @@ export async function POST(req: NextRequest) {
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    if (rawLabel !== undefined && rawLabel !== null && typeof rawLabel !== 'string') {
+      return NextResponse.json({ error: 'label must be a string (2–4 words, max 48 chars)' }, { status: 400 });
     }
 
     // Routing inputs. Same vocabulary as tasks.kind / tasks.complexity in the
@@ -951,6 +960,11 @@ export async function POST(req: NextRequest) {
       category = classifyTask(title, description) as CategoryType | null;
     }
 
+    // Short display label: whoever files the task may supply one; otherwise the
+    // classifier derives it from the title. Pure and synchronous — never blocks
+    // or fails creation.
+    const label = normalizeTaskLabel(rawLabel) ?? heuristicTaskLabel(title).label;
+
     // Validate outputRequirement if provided
     const validOutputRequirements = ['pr_required', 'artifact_required', 'none', 'auto'];
     const explicitOutputRequirement = rawOutputRequirement && validOutputRequirements.includes(rawOutputRequirement)
@@ -1155,6 +1169,7 @@ export async function POST(req: NextRequest) {
         id: subjectOverrides.id,
         workspaceId,
         title,
+        label,
         description: description || null,
         priority: priority || 0,
         status: 'pending',

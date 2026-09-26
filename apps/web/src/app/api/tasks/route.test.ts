@@ -1211,6 +1211,65 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.project).toBe('@mono/web');
   });
 
+  // ── short display label ──────────────────────────────────────────────
+  describe('label', () => {
+    async function postWithBody(body: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-123',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      let capturedValues: any = null;
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          capturedValues = values;
+          return { returning: mock(() => [{ id: 'task-lbl', ...values }]) };
+        }),
+      });
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', ...body },
+      }));
+      return { response, capturedValues };
+    }
+
+    it('stores a creator-supplied label (whitespace-normalized)', async () => {
+      const { capturedValues } = await postWithBody({
+        title: 'feat(fx): rates service with a 15-minute cache',
+        label: '  FX   rates ',
+      });
+      expect(capturedValues.label).toBe('FX rates');
+    });
+
+    it('classifier fills the label from the title when the creator omits it', async () => {
+      const { capturedValues } = await postWithBody({
+        title: 'feat(fx): rates service with a 15-minute cache and stale-rate fallback',
+      });
+      expect(capturedValues.label).toBe('rates service');
+    });
+
+    it('classifier fills a blank label too', async () => {
+      const { capturedValues } = await postWithBody({ title: 'docs: rewrite the testing guide', label: '   ' });
+      expect(capturedValues.label).toBe('rewrite testing guide');
+    });
+
+    it('caps an overlong supplied label at the column width', async () => {
+      const { capturedValues } = await postWithBody({ title: 't', label: 'word '.repeat(30) });
+      expect(capturedValues.label.length).toBeLessThanOrEqual(48);
+    });
+
+    it('rejects a non-string label with 400', async () => {
+      const { response } = await postWithBody({ title: 't', label: 42 });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toMatch(/label/);
+    });
+  });
+
   // ── agent backend resolution ─────────────────────────────────────────
 
   function backendCase() {
