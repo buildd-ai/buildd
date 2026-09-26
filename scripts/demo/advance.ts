@@ -20,6 +20,7 @@ import { artifactRow, seedStory } from './seed';
 import { triggerPusher } from './lib/pusher';
 import { toolMilestone } from './lib/tool-milestone';
 import { taskClaimedPush, taskCreatedPush, webhookPrNudge } from './lib/realtime';
+import { confirmChatApproval } from './lib/chat';
 
 type Ctx = { db: LocalDb; story: Story; ids: IdMap; state: DemoState; at: (t: number) => Date; ms: (t: number) => number; pushes: Array<[string, string, unknown]> };
 
@@ -102,6 +103,11 @@ const handlers: Record<string, (c: Ctx, e: TimelineEvent) => Promise<void>> = {
       createdByUserId: m.createdByUserId ? c.ids.ref(m.createdByUserId) : user ? c.ids.get(user.key) : null,
       createdAt: c.at(e.t), updatedAt: c.at(e.t),
     }) as any);
+    // Filed from chat: the approval card confirms and becomes the live mission.
+    if (e.conversation) {
+      const conversationId = await confirmChatApproval(c.db, c.story, c.ids, e.conversation, m.key!, c.at(e.t));
+      c.pushes.push([`conversation-${conversationId}`, 'conversation:updated', { conversationId, reason: 'approval' }]);
+    }
   },
 
   async task_create(c, e) {
