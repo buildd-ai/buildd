@@ -154,6 +154,22 @@ describe('buildMissionBoard — fleet and lanes', () => {
     expect(m.tasks.b.slot).toBe(1);
   });
 
+  it('counts a claimed worker that has not started yet in the fleet band, as its tile does', () => {
+    // A claim inserts the worker (status idle) before the runner stamps
+    // startedAt. The tile already shows it running on its runner; the band
+    // must agree rather than read "0 agents · idle".
+    const plan = task('plan', { mode: 'planning', status: 'completed', workers: [worker({ runner: 'atlas', startedAt: min(0), completedAt: min(1), status: 'completed' })] });
+    const a = task('a', { status: 'assigned', workers: [worker({ runner: 'atlas', status: 'idle', startedAt: null, createdAt: min(1) })] });
+    const b = task('b', { status: 'assigned', workers: [worker({ runner: 'birch', status: 'idle', startedAt: null, createdAt: min(1) })] });
+    const m = board([plan, a, b], { now: min(1) + 2_000 });
+    expect(m.tasks.a.runner).toBe('atlas');
+    expect(m.tasks.b.runner).toBe('birch');
+    expect(m.live).toBe(2);
+    expect(m.runners.map(r => r.name)).toEqual(['atlas', 'birch']);
+    expect(m.runners.find(r => r.name === 'birch')!.slots).toEqual([{ taskId: 'b', waiting: false }]);
+    expect(m.runners.find(r => r.name === 'atlas')!.slots).toContainEqual({ taskId: 'a', waiting: false });
+  });
+
   it('names a runner that claimed with its URL by host, not by the URL (avatar is not "H")', () => {
     const a = task('a', { status: 'in_progress', workers: [worker({ runner: 'http://atlas.local:8766', startedAt: min(1) })] });
     const m = board([a]);

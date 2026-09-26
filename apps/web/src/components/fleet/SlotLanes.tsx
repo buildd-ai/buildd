@@ -223,13 +223,20 @@ export default function SlotLanes({
           ) : <div />}
           <div className="relative overflow-hidden">
             {grid}
-            {bars.map(b => {
+            {bars.map((b, bi) => {
               const end = drawEnd(b);
               // Wholly outside the axis: clamped, it would draw as an empty
               // box at the edge. Its slot still counts (rows line up).
               if (end <= from || b.start >= to) return null;
-              const frac = axisFraction(end, from, to) - axisFraction(b.start, from, to);
-              const outside = b.end == null && frac < OUTSIDE_LABEL_FRACTION;
+              const startFrac = axisFraction(b.start, from, to);
+              const frac = axisFraction(end, from, to) - startFrac;
+              // An open bar too short for its label ends at NOW, so the space to
+              // its right is the future hatch. Its label goes to its left, into
+              // the gap since the slot's previous bar; with no gap it stays
+              // inside the bar and truncates.
+              const prevEnd = bars.slice(0, bi).reduce((mx, p) => Math.max(mx, drawEnd(p)), from);
+              const gap = startFrac - axisFraction(prevEnd, from, to);
+              const outside = b.end == null && frac < OUTSIDE_LABEL_FRACTION && gap >= OUTSIDE_LABEL_FRACTION;
               const isActive = active?.id === b.id || (!!b.group && activeGroups.has(b.group));
               const content = (
                 <>
@@ -264,7 +271,10 @@ export default function SlotLanes({
                     <span aria-hidden="true" className="absolute top-[9px] z-[5] grid h-8 w-[22px] place-items-center bg-accent text-[13px] font-bold text-white" style={{ left: `calc(${pct(end)} - 22px)` }}>?</span>
                   )}
                   {outside && (
-                    <span className="pointer-events-none absolute top-[9px] flex h-8 items-center gap-1.5 whitespace-nowrap font-mono text-[11.5px]" style={{ left: `calc(${pct(end)} + 8px)` }}>
+                    <span
+                      className="pointer-events-none absolute top-[9px] flex h-8 items-center justify-end gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[11.5px]"
+                      style={{ right: `calc(${(1 - startFrac) * 100}% + 8px)`, maxWidth: `calc(${gap * 100}% - 16px)` }}
+                    >
                       <BarLabel bar={b} />
                     </span>
                   )}

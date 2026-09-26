@@ -414,6 +414,9 @@ export function deriveVerificationNeighbour(opts: {
 }): VerificationNeighbour | null {
   if (TERMINAL_MISSION_STATUSES.has(opts.missionStatus)) return null;
   if (opts.criteriaCount <= 0) return null;
+  // Nothing has evaluated the criteria yet (a planning or running mission):
+  // there is no verification state to report.
+  if (opts.overall == null) return null;
   if (opts.overall === 'NOT_EVALUATED') {
     return { icon: '–', text: 'No evaluator', title: 'Criteria set, no evaluator available', cls: 'border-border-default text-text-muted/60' };
   }

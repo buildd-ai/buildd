@@ -47,6 +47,8 @@ export interface BoardWorkerInput {
   accountId?: string | null;
   localUiUrl?: string | null;
   startedAt: number | null;
+  /** When the claim inserted the row: where a claimed, not-yet-started worker's bar begins. */
+  createdAt?: number | null;
   completedAt: number | null;
   updatedAt: number | null;
   mergedAt: number | null;
@@ -331,6 +333,7 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     accountId: str(w.accountId),
     localUiUrl: str(w.localUiUrl),
     startedAt: epoch(w.startedAt),
+    createdAt: epoch(w.createdAt),
     completedAt: epoch(w.completedAt),
     updatedAt: epoch(w.updatedAt),
     mergedAt: epoch(w.mergedAt),
@@ -591,9 +594,13 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     const lbl = labelOf.get(t.id)!;
     // Oldest first so the newest span wins its slot's later position.
     for (const w of [...t.workers].reverse()) {
-      if (w.startedAt == null || !w.runner) continue;
       const live = isLiveWorker(w);
-      const end = live ? null : w.completedAt ?? w.updatedAt ?? w.startedAt;
+      // A claim inserts the worker (idle) before the runner stamps startedAt;
+      // the tile already shows it on its runner, so the lane and the fleet
+      // band count it from the claim.
+      const start = w.startedAt ?? (live ? w.createdAt ?? w.updatedAt ?? now : null);
+      if (start == null || !w.runner) continue;
+      const end = live ? null : w.completedAt ?? w.updatedAt ?? start;
       const rowMerged = (rowId ? tasks[rowId] : undefined)?.status === 'merged';
       const endGlyph: MissionLaneBar['endMark'] = live || isPlan
         ? null
@@ -609,7 +616,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
         taskId: rowId ?? t.id,
         runner: displayOf(w)?.name ?? w.runner,
         runnerId: runnerKey(w) ?? w.runner,
-        start: w.startedAt,
+        start,
         end,
         tone: w.status === 'waiting_input' ? 'waiting' : live ? 'live' : isPlan ? 'plan' : 'done',
         scope: retry ? labelOf.get(rowId!)?.scope ?? lbl.scope : isPlan && t.mode === 'planning' ? null : lbl.scope,
