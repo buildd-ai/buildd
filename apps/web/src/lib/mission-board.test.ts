@@ -154,6 +154,32 @@ describe('buildMissionBoard — fleet and lanes', () => {
     expect(m.tasks.b.slot).toBe(1);
   });
 
+  it('names a runner that claimed with its URL by host, not by the URL (avatar is not "H")', () => {
+    const a = task('a', { status: 'in_progress', workers: [worker({ runner: 'http://atlas.local:8766', startedAt: min(1) })] });
+    const m = board([a]);
+    expect(m.runners.map(r => [r.name, r.initial])).toEqual([['atlas', 'A']]);
+    expect(m.tasks.a.runner).toBe('atlas');
+    expect(m.bars[0].runner).toBe('atlas');
+    expect(m.ticker.find(e => e.kind === 'claimed')?.text).toMatch(/→ A$/);
+  });
+
+  it('prefers the runner heartbeat hostname, joined on account', () => {
+    const a = task('a', { status: 'in_progress', workers: [worker({ runner: 'http://localhost:8766', accountId: 'acct-1', startedAt: min(1) })] });
+    const m = board([a], {
+      runnerHeartbeats: [{ accountId: 'acct-1', localUiUrl: 'http://localhost:8766', environment: { labels: { hostname: 'birch', machine: 'Mac Studio' } } }],
+    });
+    expect(m.runners[0]).toMatchObject({ name: 'birch', initial: 'B', machine: 'Mac Studio' });
+    expect(m.tasks.a.runner).toBe('birch');
+  });
+
+  it('two runners on one host stay two lanes', () => {
+    const a = task('a', { status: 'in_progress', workers: [worker({ runner: 'http://atlas.local:8766', startedAt: min(1) })] });
+    const b = task('b', { status: 'in_progress', workers: [worker({ runner: 'http://atlas.local:8767', startedAt: min(1) })] });
+    const m = board([a, b]);
+    expect(m.runners).toHaveLength(2);
+    expect(new Set(m.bars.map(x => x.runnerId)).size).toBe(2);
+  });
+
   it('marks a merged bar ok and a bar in CI as pending', () => {
     const merged = task('m', { status: 'completed', workers: [worker({ status: 'completed', completedAt: min(4), prNumber: 1, mergedAt: min(5) })] });
     const ci = task('c', { status: 'completed', workers: [worker({ status: 'completed', completedAt: min(4), prNumber: 2, prLifecycleStatus: 'ci_running' })] });

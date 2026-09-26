@@ -9,7 +9,8 @@
  * so the slot a row describes here is the slot the lanes chart draws.
  */
 import type { FleetRunner, FleetSlot, FleetSnapshot, LaneBar } from '@buildd/shared';
-import { assignSlots } from '@/components/fleet/slot-lanes-layout';
+import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
+import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -62,23 +63,8 @@ export interface BuildFleetOptions {
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const ms = (d: DateLike) => (d == null ? NaN : new Date(d).getTime());
 
-/** "atlas" from `http://atlas.local:8766`. */
-export function runnerNameFromUrl(url: string): string {
-  const host = url.replace(/^[a-z]+:\/\//i, '').split(/[/:?#]/)[0] ?? url;
-  if (/^\d+(\.\d+){3}$/.test(host)) return host;
-  return host.split('.')[0] || url;
-}
-
-const OS_NAME: Record<string, string> = { darwin: 'macOS', linux: 'Linux', win32: 'Windows' };
-
-export function runnerIdentity(hb: Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment'>): { name: string; machine: string | null } {
-  const labels = hb.environment?.labels ?? {};
-  const name = labels.hostname || runnerNameFromUrl(hb.localUiUrl);
-  const machine = labels.machine
-    || [labels.os ? OS_NAME[labels.os] ?? labels.os : null, labels.arch].filter(Boolean).join(' · ')
-    || null;
-  return { name, machine };
-}
+// Runner naming is shared with the Board, Lanes and task page.
+export { runnerIdentity, runnerNameFromUrl } from './runner-display';
 
 function barState(status: string): LaneBar['state'] {
   if (status === 'waiting_input') return 'waiting';
@@ -165,18 +151,18 @@ export function buildFleetSnapshot(
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
-  // The window frames the current burst: the earliest start among runs still
-  // live or ended in the last hour (so an idle-since-lunch fleet does not
-  // stretch the axis to breakfast), at least 30 minutes, at most `maxWindowMs`.
+  // The window frames the current burst: from just before the earliest run
+  // still live or ended in the last hour (so an idle-since-lunch fleet does
+  // not stretch the axis to breakfast), at least `LANE_WINDOW_MIN_SPAN_MS`,
+  // at most `maxWindowMs`. Older bars fall outside and SlotLanes drops them.
   const maxWindow = opts.maxWindowMs ?? 8 * 3_600_000;
-  const minSpan = 30 * 60_000;
   const recentCut = now - 60 * 60_000;
-  let burst = now - minSpan;
+  let earliest: number | null = null;
   for (const r of runners) for (const sl of r.slots) for (const b of sl.lane.bars) {
-    if (b.end == null || b.end >= recentCut) burst = Math.min(burst, b.start);
+    if (b.end == null || b.end >= recentCut) earliest = earliest == null ? b.start : Math.min(earliest, b.start);
   }
-  const from = Math.max(now - maxWindow, burst);
-  return { runners, live, capacity, window: { from: Math.floor(from / 300_000) * 300_000, to: now } };
+  const from = fitLaneWindowStart({ earliest, now, maxSpanMs: maxWindow });
+  return { runners, live, capacity, window: { from, to: now } };
 }
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };

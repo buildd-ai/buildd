@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { assignSlots, axisFraction, axisTicks, formatAxisMinutes, occupiedSlots } from './slot-lanes-layout';
+import { assignSlots, axisFraction, axisTicks, fitLaneWindowStart, formatAxisMinutes, LANE_WINDOW_MIN_SPAN_MS, occupiedSlots } from './slot-lanes-layout';
 
 const m = (min: number) => min * 60_000;
 
@@ -81,5 +81,42 @@ describe('axis', () => {
     expect(formatAxisMinutes(120)).toBe('2h');
     expect(formatAxisMinutes(90)).toBe('1h 30m');
     expect(formatAxisMinutes(2880)).toBe('2d');
+  });
+});
+
+describe('fitLaneWindowStart', () => {
+  const NOW = Date.UTC(2026, 0, 10, 14, 12);
+  const minAgo = (n: number) => NOW - n * 60_000;
+
+  it('a fleet that started two minutes ago gets the small minimum span, not half an hour', () => {
+    const from = fitLaneWindowStart({ earliest: minAgo(2), now: NOW });
+    expect(NOW - from).toBeGreaterThanOrEqual(LANE_WINDOW_MIN_SPAN_MS);
+    expect(NOW - from).toBeLessThan(12 * 60_000);
+    expect(LANE_WINDOW_MIN_SPAN_MS).toBe(10 * 60_000);
+  });
+
+  it('starts just before the earliest bar, on a whole axis step', () => {
+    const from = fitLaneWindowStart({ earliest: minAgo(47), now: NOW });
+    expect(from).toBeLessThan(minAgo(47));
+    expect(from).toBeGreaterThanOrEqual(minAgo(55));
+    const { stepMin } = axisTicks(NOW - from, 10);
+    expect(from % (stepMin * 60_000)).toBe(0);
+  });
+
+  it('never reaches back past the cap', () => {
+    const from = fitLaneWindowStart({ earliest: minAgo(20 * 60), now: NOW, maxSpanMs: 8 * 3_600_000 });
+    expect(from).toBeGreaterThanOrEqual(NOW - 8 * 3_600_000);
+    expect(from).toBeLessThan(NOW - 7 * 3_600_000);
+  });
+
+  it('no bars: the minimum span ending now', () => {
+    expect(NOW - fitLaneWindowStart({ earliest: null, now: NOW })).toBeGreaterThanOrEqual(LANE_WINDOW_MIN_SPAN_MS);
+    expect(NOW - fitLaneWindowStart({ earliest: null, now: NOW })).toBeLessThan(12 * 60_000);
+  });
+
+  it('snaps relative to an anchor, and never before the anchor when the data does not', () => {
+    const anchor = minAgo(33) + 17_000;
+    const from = fitLaneWindowStart({ earliest: anchor + 60_000, now: NOW, anchor });
+    expect(from).toBe(anchor);
   });
 });

@@ -74,6 +74,37 @@ export function axisFraction(t: number, from: number, to: number): number {
   return Math.min(1, Math.max(0, (t - from) / (to - from)));
 }
 
+/** The shortest axis a lane chart draws, so a fresh fleet still fills it. */
+export const LANE_WINDOW_MIN_SPAN_MS = 10 * 60_000;
+
+/**
+ * Where a lane chart's axis starts: just before the earliest bar (a small pad,
+ * 4% of the span or a minute), so the data fills the chart instead of the
+ * right edge of a fixed window. At least `minSpanMs` before `now`, at most
+ * `maxSpanMs`, floored to a whole axis step counted from `anchor` (epoch 0 by
+ * default; a mission passes its start so ticks read T+). Never before the
+ * anchor unless the data itself is. Shared by every SlotLanes consumer.
+ */
+export function fitLaneWindowStart(input: {
+  earliest: number | null;
+  now: number;
+  minSpanMs?: number;
+  maxSpanMs?: number;
+  anchor?: number;
+}): number {
+  const { now, minSpanMs = LANE_WINDOW_MIN_SPAN_MS, maxSpanMs = Number.POSITIVE_INFINITY, anchor = 0 } = input;
+  const base = input.earliest ?? now;
+  const pad = Math.max(60_000, Math.max(0, now - base) * 0.04);
+  let from = Math.min(base - pad, now - minSpanMs);
+  from = Math.max(from, now - maxSpanMs);
+  const floorAt = Math.min(anchor, base);
+  from = Math.max(from, floorAt);
+  const step = axisTicks(now - from, 10).stepMin * 60_000;
+  from = anchor + Math.floor((from - anchor) / step) * step;
+  if (from < now - maxSpanMs) from = anchor + Math.ceil((now - maxSpanMs - anchor) / step) * step;
+  return from;
+}
+
 /**
  * Axis ticks in minutes. Picks the smallest step from the ladder that keeps
  * the axis at or under `maxTicks` labels.

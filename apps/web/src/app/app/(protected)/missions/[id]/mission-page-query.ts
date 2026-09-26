@@ -63,6 +63,9 @@ export const MISSION_WORKER_COLUMNS = {
   // (lanes, fleet slots), its milestones (a tile's notches), and its diff size
   // (landed rows, completion record).
   runner: true,
+  // With runner, joins the runner's heartbeat for its hostname (runner-display).
+  accountId: true,
+  localUiUrl: true,
   milestones: true,
   linesAdded: true,
   linesRemoved: true,

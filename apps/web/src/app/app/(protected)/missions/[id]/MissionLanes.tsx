@@ -9,6 +9,7 @@
  */
 import { useMemo, useState } from 'react';
 import SlotLanes, { type SlotLane, type SlotLaneBar } from '@/components/fleet/SlotLanes';
+import { fitLaneWindowStart, formatAxisMinutes, LANE_WINDOW_MIN_SPAN_MS } from '@/components/fleet/slot-lanes-layout';
 import { formatAge, formatClock, type BoardTask, type MissionBoardModel, type MissionLaneBar } from '@/lib/mission-board';
 import {
   AnswerButtons, CriterionBox, LandedMeter, RunnerAvatar, ScopeChip, SectionLabel,
@@ -21,17 +22,22 @@ export interface MissionLanesProps extends BoardLinkContext {
   completionText?: string | null;
 }
 
-/** Minimum axis while running, and the look-ahead past NOW. */
-const MIN_WINDOW_MS = 20 * 60_000;
+/** Look-ahead past NOW while running. */
 const LOOKAHEAD_MS = 5 * 60_000;
 
+/**
+ * The axis: from just before the mission's first run (the mission start when
+ * that is sooner), to NOW plus a look-ahead, at least `LANE_WINDOW_MIN_SPAN_MS`
+ * wide; a finished run is fitted with a little air.
+ */
 export function laneWindow(model: Pick<MissionBoardModel, 'startedAt' | 'complete' | 'bars' | 'merges'>, now: number): { from: number; to: number } {
-  const from = model.startedAt;
+  const earliest = model.bars.length ? Math.min(...model.bars.map(b => b.start)) : model.startedAt;
+  const from = fitLaneWindowStart({ earliest, now, minSpanMs: 0, anchor: model.startedAt });
   if (model.complete) {
     const last = Math.max(from + 60_000, ...model.bars.map(b => b.end ?? now), ...model.merges.map(m => m.at));
     return { from, to: from + (last - from) * 1.03 };
   }
-  return { from, to: Math.max(from + MIN_WINDOW_MS, now + LOOKAHEAD_MS) };
+  return { from, to: Math.max(from + LANE_WINDOW_MIN_SPAN_MS, now + LOOKAHEAD_MS) };
 }
 
 export default function MissionLanes({ model: serverModel, completionText, ...link }: MissionLanesProps) {
@@ -41,13 +47,13 @@ export default function MissionLanes({ model: serverModel, completionText, ...li
 
   const lanes: SlotLane[] = useMemo(() => {
     const byRunner = new Map<string, MissionLaneBar[]>();
-    for (const b of model.bars) byRunner.set(b.runner, [...(byRunner.get(b.runner) ?? []), b]);
+    for (const b of model.bars) byRunner.set(b.runnerId, [...(byRunner.get(b.runnerId) ?? []), b]);
     return model.runners.map(r => ({
-      id: r.name,
+      id: r.id,
       label: r.name,
       badge: r.initial,
       minSlots: r.capacity,
-      bars: (byRunner.get(r.name) ?? []).map((b): SlotLaneBar => ({
+      bars: (byRunner.get(r.id) ?? []).map((b): SlotLaneBar => ({
         id: b.id,
         start: b.start,
         end: b.end,
@@ -109,6 +115,7 @@ export default function MissionLanes({ model: serverModel, completionText, ...li
                 to={to}
                 now={model.complete ? null : now}
                 nowLabel={`NOW ${formatClock(now - model.startedAt)}`}
+                tickLabel={at => formatAxisMinutes(Math.round((at - model.startedAt) / 60_000))}
                 phases={phases}
                 marks={marks}
                 marksLabel={`Merged ${model.merges.length}`}

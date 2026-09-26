@@ -72,6 +72,24 @@ describe('SlotLanes', () => {
     expect(html).not.toContain('>4m<');
   });
 
+  it('drops a bar that ended before the window instead of drawing an empty box at the left edge', () => {
+    const early: SlotLane[] = [{
+      id: 'alpha', label: 'alpha',
+      bars: [
+        { id: 'gone', start: m(-120), end: m(-118), tone: 'done', label: 'tick' },
+        { id: 'edge', start: m(-5), end: m(4), tone: 'done', label: 'straddles' },
+        { id: 'here', start: m(6), end: null, tone: 'live', label: 'api' },
+      ],
+    }];
+    const html = renderToStaticMarkup(<SlotLanes lanes={early} from={m(0)} to={m(20)} now={m(10)} />);
+    expect(html).not.toContain('data-bar-id="gone"');
+    // A bar that straddles the window start is clipped to it, not dropped.
+    expect(html).toMatch(/data-bar-id="edge"[^>]*style="left:0%;width:calc\(20% - 2px\)"/);
+    expect(html).toContain('data-bar-id="here"');
+    // Slots still come from every bar, so rows line up with a caller's own slot rows.
+    expect(count(html, 'data-testid="slot-lane-row"')).toBe(1);
+  });
+
   it('imports nothing mission-specific, so other surfaces can reuse it', () => {
     const src = readFileSync(join(import.meta.dir, 'SlotLanes.tsx'), 'utf8');
     const imports = [...src.matchAll(/from '([^']+)'/g)].map(x => x[1]);

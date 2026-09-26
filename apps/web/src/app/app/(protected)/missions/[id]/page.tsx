@@ -53,6 +53,7 @@ import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './Mis
 import MissionBoard from './MissionBoard';
 import MissionLanes from './MissionLanes';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { parseMissionLayout } from '@/lib/mission-layout';
 import MissionDelivery from './MissionDelivery';
 import VisualReviewStrip from './VisualReviewStrip';
@@ -178,6 +179,7 @@ export default async function MissionDetailPage({
     humanSteeringNotes,
     workspaceForPolicy,
     missionFollowupTasks,
+    runnerHeartbeats,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -258,6 +260,8 @@ export default async function MissionDetailPage({
       completedAt: (mission as any).completedAt ?? null,
       taskIds: (mission.tasks || []).map(t => t.id),
     }]),
+    // Runner hostnames for the Board and Lanes (runner-display).
+    loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -1302,6 +1306,7 @@ export default async function MissionDetailPage({
   // One model for both, from the same rows the feed reads; `buildMissionBoard`
   // folds and states them with the feed's own rules, so the counts agree.
   const boardModel = buildMissionBoard({
+    runnerHeartbeats,
     tasks: allTasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
