@@ -12,7 +12,9 @@ import { cache } from 'react';
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teams } from '@buildd/core/db/schema';
-import { INFERENCE_KEY_PROVIDERS, loadInferenceKeyPolicy, resolveInferenceKey, type InferenceKeyPolicy } from '@buildd/core/inference-keys';
+import { loadInferenceKeyPolicy, type InferenceKeyPolicy } from '@buildd/core/inference-keys';
+import { resolveChatModel } from '@/lib/chat/models';
+import { FALLBACK_TIER } from '@/lib/chat/routing';
 import type { ChatAvailabilityResponse } from '@buildd/shared';
 import { getUserTeamRole } from '@/lib/team-access';
 
@@ -29,12 +31,12 @@ const defaultDeps: ChatAvailabilityDeps = {
     return row ? row.chatDisabled === true : true;
   },
   keyPolicy: (teamId) => loadInferenceKeyPolicy(teamId),
-  async hasKey(teamId, userId, keyPolicy) {
-    // One policy read for all three providers; the resolver enforces it.
-    const keys = await Promise.all(
-      INFERENCE_KEY_PROVIDERS.map(provider => resolveInferenceKey({ provider, teamId, userId, keyPolicy }).catch(() => null)),
-    );
-    return keys.some(Boolean);
+  // The same check a turn makes: can the default tier resolve a model for this
+  // person (resolveChatModel, which falls back to OpenRouter and applies the
+  // team's key policy through resolveInferenceCredential)?
+  async hasKey(teamId, userId) {
+    const model = await resolveChatModel({ tier: FALLBACK_TIER, teamId, workspaceId: null, userId });
+    return model.ok;
   },
   role: (userId, teamId) => getUserTeamRole(userId, teamId),
 };
@@ -58,5 +60,8 @@ export async function computeChatAvailability(
   }
 }
 
-/** Per request: the layout (nav) and the page (home, /app/chat) share one answer. */
+/**
+ * The one availability answer. Per request: the layout (nav), the pages (home,
+ * /app/chat, settings) and GET /api/chat/availability all read it.
+ */
 export const getChatAvailability = cache((userId: string, teamId: string | null) => computeChatAvailability(userId, teamId));

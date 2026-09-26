@@ -8,11 +8,8 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, teams, workspaces } from '@buildd/core/db/schema';
 import { resolveTimezone } from '@buildd/core/timezone';
-import type { ChatAvailabilityResponse } from '@buildd/shared';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
-import { resolveChatModel } from './models';
-import { FALLBACK_TIER } from './routing';
 import type { TurnUser } from './turn';
 import { isStandardWorkspace } from './reach';
 
@@ -54,20 +51,6 @@ export async function turnUserFor(user: CurrentUser, teamId: string, teamTimezon
     teamRole: role,
     timeZone: resolveTimezone(user.timezone, teamTimezone),
   };
-}
-
-/**
- * Should the UI show a Chat entry point for this user in this team? When a key
- * resolves for the default tier under the team's key policy, unless an admin
- * switched chat off.
- */
-export async function chatAvailability(teamId: string, userId: string, role: string | null): Promise<ChatAvailabilityResponse> {
-  const canManageTeamKeys = role === 'owner' || role === 'admin';
-  const settings = await loadTeamChatSettings(teamId);
-  if (!settings.chatEnabled) return { available: false, reason: 'capability_disabled', canManageTeamKeys };
-  const model = await resolveChatModel({ tier: FALLBACK_TIER, teamId, workspaceId: null, userId });
-  if (!model.ok) return { available: false, reason: 'no_key', canManageTeamKeys };
-  return { available: true, reason: null, canManageTeamKeys };
 }
 
 /**
