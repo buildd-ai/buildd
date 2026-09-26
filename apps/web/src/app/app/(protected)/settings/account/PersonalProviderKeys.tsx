@@ -68,13 +68,21 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
         </span>
       </div>
 
+      {/* Everyone brings their own key and you have none: one button, the
+          paste field behind a quiet disclosure. */}
       {view && required && !hasOwn && (
-        <div className="mt-3">
+        <div className="mt-3 space-y-3">
           <ConnectOpenRouterButton scope="user" teamId={teamId} returnTo="/app/settings/account" />
+          <details className="group">
+            <summary className="cursor-pointer text-xs text-text-secondary hover:text-text-primary list-none">
+              <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Paste a key instead
+            </summary>
+            <div className="mt-2.5 space-y-2.5">{cards(offered)}</div>
+          </details>
         </div>
       )}
-      {view && required && (
-        <div className="mt-3 space-y-2.5">{cards(['openrouter', ...offered.filter((p) => p !== 'openrouter' && view.providers.find((c) => c.provider === p)?.mine)])}</div>
+      {view && required && hasOwn && (
+        <div className="mt-3 space-y-2.5">{cards(offered.filter((p) => view.providers.find((c) => c.provider === p)?.mine))}</div>
       )}
 
       {view && ownAllowed && !required && (

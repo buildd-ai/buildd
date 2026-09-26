@@ -100,11 +100,15 @@ describe('Account chat row', () => {
     expect(details.querySelector('summary')?.textContent).toContain('Use my own key instead');
   });
 
-  it('when everyone brings their own key, asks for yours with one OpenRouter field', async () => {
+  it('when everyone brings their own key, leads with Connect OpenRouter and tucks the paste field away', async () => {
     body = { ...body, keyPolicy: 'own' };
     await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
     expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Add your OpenRouter key to use chat');
-    const cards = [...host.querySelectorAll('[data-testid^="provider-key-"][data-configured]')].map((e) => e.getAttribute('data-testid'));
+    expect(host.querySelector('[data-testid="connect-openrouter"]')?.getAttribute('href')).toContain('scope=user');
+    const details = host.querySelector('details')!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector('summary')?.textContent).toContain('Paste a key instead');
+    const cards = [...details.querySelectorAll('[data-testid^="provider-key-"][data-configured]')].map((e) => e.getAttribute('data-testid'));
     expect(cards).toEqual(['provider-key-openrouter']);
   });
 });
