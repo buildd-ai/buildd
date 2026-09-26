@@ -100,7 +100,17 @@ export interface ReviewerGateInput {
    * fail-visible answer: human.
    */
   prLifecycleStatus?: string | null;
+  /**
+   * When the row's lifecycle was last written (`workers.updatedAt`). Gives a
+   * just-green PR a short grace window: the webhook that stamps `ci_green`
+   * calls the merge in the same delivery, so a PR that turned green seconds
+   * ago is still mid-merge, not held.
+   */
+  prLifecycleUpdatedAt?: Date | null;
 }
+
+/** How long a `ci_green` auto-threshold PR may stay open before it counts as held. */
+const AUTO_MERGE_GREEN_GRACE_MS = 5 * 60_000;
 
 export interface ReviewerGateResult {
   actor: ReviewerGateActor;
@@ -225,6 +235,12 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
         return { actor: 'platform', platformState: 'auto_merge', reason: 'Auto-merges when CI passes' };
       }
       if (input.prLifecycleStatus === 'ci_green') {
+        const greenFor = input.prLifecycleUpdatedAt
+          ? input.now.getTime() - input.prLifecycleUpdatedAt.getTime()
+          : Number.POSITIVE_INFINITY;
+        if (greenFor < AUTO_MERGE_GREEN_GRACE_MS) {
+          return { actor: 'platform', platformState: 'auto_merge', reason: 'CI passed — merging' };
+        }
         return { actor: 'human', reason: 'CI passed but auto-merge did not land it — a merge rail held it' };
       }
       if (input.prLifecycleStatus === 'ci_failed') {

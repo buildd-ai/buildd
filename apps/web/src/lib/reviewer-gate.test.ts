@@ -669,10 +669,26 @@ describe('resolveReviewerGate — auto-threshold PRs merge themselves on green',
     });
   }
 
-  it('CI green but still open → human: a merge rail held the auto-merge', () => {
-    const gate = resolveReviewerGate(autoInput('ci_green'));
+  it('CI green but still open well past the grace window → human: a merge rail held the auto-merge', () => {
+    const gate = resolveReviewerGate({
+      ...autoInput('ci_green'),
+      prLifecycleUpdatedAt: new Date(NOW.getTime() - 30 * MINUTE_MS),
+    });
     expect(gate.actor).toBe('human');
     expect(gate.reason).toContain('auto-merge');
+  });
+
+  it('CI just went green → still in flight: the webhook merges in the same delivery', () => {
+    const gate = resolveReviewerGate({
+      ...autoInput('ci_green'),
+      prLifecycleUpdatedAt: new Date(NOW.getTime() - 20 * 1000),
+    });
+    expect(gate.actor).toBe('platform');
+    expect(gate.platformState).toBe('auto_merge');
+  });
+
+  it('CI green with no known transition time → human (fail visible)', () => {
+    expect(resolveReviewerGate(autoInput('ci_green')).actor).toBe('human');
   });
 
   it('CI failed → human, so the CI gate (fixing / blocked) decides the card', () => {

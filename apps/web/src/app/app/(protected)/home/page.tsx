@@ -777,6 +777,9 @@ export default async function HomePage({
               // Freshness inputs for the action-queue invariant: how old the PR
               // is (which tier it falls in) and when its state was last verified.
               createdAt: true, prLastVerifiedAt: true,
+              // When the lifecycle was last written: a just-green auto-merge PR
+              // is still merging (see resolveReviewerGate).
+              updatedAt: true,
               // Where this PR points. Needed by resolvePolicy to tell a task PR
               // into a mission integration branch (no human gate — the gate is on
               // the mission PR) from a PR into trunk (gate applies).
@@ -956,6 +959,7 @@ export default async function HomePage({
                 // Under auto-threshold this decides "auto-merge still pending"
                 // (in flight) vs "auto-merge was held" (needs you).
                 prLifecycleStatus: w.prLifecycleStatus ?? null,
+                prLifecycleUpdatedAt: w.updatedAt ?? null,
                 // Option A′: the tier drop in resolvePolicy is also what removes
                 // the reviewer, and "no reviewer will ever run" otherwise reads
                 // as "a human must merge this" — the exact inverse of the intent.
