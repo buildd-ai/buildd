@@ -59,7 +59,9 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   (story.accounts ?? []).forEach(reg);
   reg(story.workspace);
   (story.roles ?? []).forEach(reg);
+  (story.initiatives ?? []).forEach(reg);
   (story.missions ?? []).forEach(reg);
+  (story.specDiscrepancies ?? []).forEach(reg);
   (story.taskSchedules ?? []).forEach(reg);
   (story.tasks ?? []).forEach(reg);
   (story.workers ?? []).forEach(reg);
@@ -127,6 +129,16 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
       } as any);
     }
 
+  // ── initiatives (missions point at them) ──────────────────────────────────
+  checkColumns('initiatives', s.initiatives, story.initiatives ?? []);
+  for (const ini of story.initiatives ?? []) {
+    await db.insert(s.initiatives).values(toRow(ini, ids, {
+      id: ids.get(ini.key), teamId: ids.get(team.key), workspaceId: ids.get(ws.key),
+      createdByUserId: story.users?.[0]?.key ? ids.get(story.users[0].key) : null,
+      createdAt: at(ini._createdAgo, 30 * 86_400_000), updatedAt: at(ini._updatedAgo, 86_400_000),
+    }) as any);
+  }
+
   // ── schedules + missions that exist before t=0 ────────────────────────────
   // The story's primary mission is created by a `mission_create` event.
   const createdByEvent = new Set((story.timeline ?? []).filter((e) => e.op === 'mission_create').map((e) => e.mission));
@@ -167,10 +179,14 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
     const doneMs = mission._completedAgo ? at(mission._completedAgo).getTime() : createdMs + 3_600_000;
     const tasks = bm.tasks ?? [];
     tasks.forEach((t: Entity, i: number) => {
-      // Spread task lifetimes across the mission's window.
+      // Spread task lifetimes across the mission's window, unless the task
+      // pins its own (`_startedAgo` / `_endedAgo`, e.g. a two-minute run today).
       const span = Math.max(doneMs - createdMs, 600_000);
       t.__start = Math.round(createdMs + (span * i) / Math.max(tasks.length, 1));
       t.__end = Math.round(Math.min(t.__start + (span / Math.max(tasks.length, 1)) * 0.9, doneMs));
+      if (t._startedAgo) t.__start = at(t._startedAgo).getTime();
+      if (t._endedAgo) t.__end = at(t._endedAgo).getTime();
+      else if (t._startedAgo) t.__end = Math.max(t.__start + 60_000, Math.min(t.__end, anchorMs));
     });
     checkColumns(`background ${bm.missionKey} tasks`, s.tasks, tasks);
     await insertAll(db, s.tasks, tasks.map((t: Entity) => toRow(t, ids, {
@@ -183,26 +199,48 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
     const workers = tasks.filter((t: Entity) => t._worker).map((t: Entity) => {
       const w = t._worker;
       const shortId = ids.get(t.key!).slice(0, 8);
+      const live = ['running', 'starting', 'waiting_input'].includes(w.status);
       return {
         id: ids.register(`${t.key}__w`), taskId: ids.get(t.key!), workspaceId: ids.get(ws.key), accountId: account ? ids.get(account.key) : null,
         name: `${account?.name ?? 'demo'}-${shortId}`, runner: runnerUrl(story, w.runner ?? 'atlas'), localUiUrl: runnerUrl(story, w.runner ?? 'atlas'),
         branch: `buildd/${shortId}-${String(t.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30)}`,
-        status: w.status ?? 'completed', startedAt: new Date(t.__start), completedAt: w.status === 'completed' ? new Date(t.__end) : null,
-        updatedAt: new Date(t.__end), createdAt: new Date(t.__start),
+        status: w.status ?? 'completed', startedAt: new Date(t.__start), completedAt: (w.status ?? 'completed') === 'completed' ? new Date(t.__end) : null,
+        updatedAt: live ? new Date(anchorMs) : new Date(t.__end), createdAt: new Date(t.__start),
+        waitingFor: w.status === 'waiting_input' ? { type: 'question', prompt: w.question ?? 'Which way?', options: w.options ?? [] } : null,
         prUrl: w.prUrl ?? null, prNumber: w.prNumber ?? null, prLifecycleStatus: w.prLifecycleStatus ?? null,
-        mergedAt: w.prLifecycleStatus === 'merged' ? new Date(t.__end) : null,
+        mergedAt: w.prLifecycleStatus === 'merged' ? (w._mergedAgo ? at(w._mergedAgo) : new Date(t.__end)) : null,
         linesAdded: w.linesAdded ?? 0, linesRemoved: w.linesRemoved ?? 0, filesChanged: w.filesChanged ?? (w.prNumber ? 4 + (prSeq++ % 7) : 0),
         commitCount: w.prNumber ? 2 + (prSeq % 3) : 0, turns: 18 + (prSeq % 23), inputTokens: 180_000 + prSeq * 9_000, outputTokens: 12_000 + prSeq * 700,
         costUsd: (0.8 + (prSeq % 5) * 0.37).toFixed(4),
         error: w.status === 'error' ? w.error ?? 'Paused: mission is held for review' : null,
-        milestones: [
-          { type: 'checkpoint', event: 'session_started', label: 'Session started', ts: t.__start },
-          { type: 'status', label: 'Done', progress: 100, ts: t.__end },
-        ],
+        milestones: live
+          ? [
+              { type: 'checkpoint', event: 'session_started', label: 'Session started', ts: t.__start },
+              { type: 'status', label: w.progressLabel ?? 'Working', progress: w.progress ?? 40, ts: anchorMs - 20_000 },
+            ]
+          : [
+              { type: 'checkpoint', event: 'session_started', label: 'Session started', ts: t.__start },
+              { type: 'status', label: 'Done', progress: 100, ts: t.__end },
+            ],
       };
     });
     await insertAll(db, s.workers, workers);
   }
+
+  // Runners report how many workers they hold right now.
+  for (const r of story.runners ?? []) {
+    await db.execute(sql`
+      update worker_heartbeats set active_worker_count = (
+        select count(*) from workers where runner = ${r.localUiUrl} and status in ('idle','starting','running','waiting_input'))
+      where local_ui_url = ${r.localUiUrl}`);
+  }
+
+  // ── spec-conformance ledger rows (doc-fix cards on Home) ──────────────────
+  checkColumns('specDiscrepancies', s.specDiscrepancies, story.specDiscrepancies ?? []);
+  await insertAll(db, s.specDiscrepancies, (story.specDiscrepancies ?? []).map((d: Entity) => toRow(d, ids, {
+    id: ids.get(d.key!), workspaceId: ids.get(ws.key),
+    firstSeenAt: at(d._firstSeenAgo, 3 * 86_400_000), lastCheckedAt: at(d._lastCheckedAgo, 86_400_000),
+  })));
 
   // ── heartbeat history for the recurring mission ───────────────────────────
   const hbMission = (story.missions ?? []).find((m) => m.scheduleId);
@@ -226,7 +264,7 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
     } as any);
     await db.insert(s.workers).values({
       id: ids.register(`${tKey}__w`), taskId: tId, workspaceId: ids.get(ws.key), accountId: account ? ids.get(account.key) : null,
-      name: `${account?.name ?? 'demo'}-${tId.slice(0, 8)}`, runner: runnerUrl(story, 'dune'), localUiUrl: runnerUrl(story, 'dune'), branch: `buildd/${tId.slice(0, 8)}-mission-keep-dependencies-curr`,
+      name: `${account?.name ?? 'demo'}-${tId.slice(0, 8)}`, runner: runnerUrl(story, story.heartbeatRunner ?? 'dune'), localUiUrl: runnerUrl(story, story.heartbeatRunner ?? 'dune'), branch: `buildd/${tId.slice(0, 8)}-mission-keep-dependencies-curr`,
       status: 'completed', startedAt: new Date(startMs), completedAt: new Date(startMs + 70_000), createdAt: new Date(startMs), updatedAt: new Date(startMs + 70_000),
       turns: 9, inputTokens: 60_000, outputTokens: 3_000, costUsd: '0.21', milestones: [{ type: 'status', label: tick.summary, progress: 100, ts: startMs + 60_000 }],
     } as any);

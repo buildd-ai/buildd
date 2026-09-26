@@ -57,6 +57,12 @@ export interface SlotLane {
   bars: readonly SlotLaneBar[];
   /** Draw at least this many slot rows. */
   minSlots?: number;
+  /**
+   * Pre-assigned slot rows, drawn as given instead of derived from `bars` —
+   * for a caller that folds some slots away and draws its own labels beside
+   * the rows it kept (Home's fleet table).
+   */
+  rows?: ReadonlyArray<readonly SlotLaneBar[]>;
 }
 
 export interface SlotLanesProps {
@@ -92,6 +98,12 @@ const LABEL_COL_PX = 104;
 const ROW_PX = SLOT_LANE_ROW_PX;
 /** Below this share of the axis a live bar's label goes beside it. */
 const OUTSIDE_LABEL_FRACTION = 0.06;
+/**
+ * Below this share of the axis a finished bar has no room for a single
+ * character, so it draws as a marker (label in its tooltip) instead of an
+ * empty box with a tick in it.
+ */
+const DOT_FRACTION = 0.03;
 
 const TONE_CLASS: Record<SlotLaneTone, string> = {
   live: 'border-accent bg-accent-soft',
@@ -118,6 +130,7 @@ export default function SlotLanes({
   const drawEnd = (b: { end: number | null }) => b.end ?? now ?? to;
 
   const rows = useMemo(() => lanes.flatMap(lane => {
+    if (lane.rows) return lane.rows.map((bars, slot) => ({ lane, slot, bars: [...bars] }));
     const a = assignSlots(lane.bars);
     const n = Math.max(a.slots, lane.minSlots ?? 1);
     return Array.from({ length: n }, (_, slot) => ({ lane, slot, bars: a.bySlot[slot] ?? [] }));
@@ -237,21 +250,28 @@ export default function SlotLanes({
               const prevEnd = bars.slice(0, bi).reduce((mx, p) => Math.max(mx, drawEnd(p)), from);
               const gap = startFrac - axisFraction(prevEnd, from, to);
               const outside = b.end == null && frac < OUTSIDE_LABEL_FRACTION && gap >= OUTSIDE_LABEL_FRACTION;
+              const dot = b.end != null && frac < DOT_FRACTION;
+              const tooltip = [b.label, b.title && b.title !== b.label ? b.title : null].filter(Boolean).join(' · ');
               const isActive = active?.id === b.id || (!!b.group && activeGroups.has(b.group));
-              const content = (
+              const content = dot ? null : (
                 <>
                   {!outside && <BarLabel bar={b} />}
                   {b.endMark && <span className={`ml-auto shrink-0 text-[11px] font-bold ${END_MARK[b.endMark].cls}`}>{END_MARK[b.endMark].glyph}</span>}
                 </>
               );
-              const cls = `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] px-[7px] font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
-              const style = { left: pct(b.start), width: `calc(${width(b.start, end)} - 2px)` };
+              const cls = dot
+                ? `absolute top-[20px] z-[1] block h-2.5 w-2.5 -translate-x-1/2 border-[1.5px] ${b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-border-strong bg-surface-3'} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
+                : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] px-[7px] font-mono text-[11.5px] text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
+              const style = dot
+                ? { left: pct((b.start + end) / 2) }
+                : { left: pct(b.start), width: `calc(${width(b.start, end)} - 2px)` };
               const common = {
                 'data-testid': 'lane-bar',
                 'data-bar-id': b.id,
                 'data-bar-group': b.group ?? b.id,
                 'data-tone': b.tone,
-                title: b.title,
+                ...(dot ? { 'data-shape': 'dot', 'aria-label': tooltip } : {}),
+                title: dot ? tooltip : b.title,
                 className: cls,
                 style,
                 onMouseEnter: () => hover(b),

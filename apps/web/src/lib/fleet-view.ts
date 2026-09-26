@@ -13,6 +13,7 @@ import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-l
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
+import { taskDisplayLabel } from '@buildd/core/task-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 
 type DateLike = Date | string | null | undefined;
@@ -127,9 +128,15 @@ export function buildFleetSnapshot(
       const slot = slots[laneOf.get(iv.id) ?? 0];
       const t = w.task ?? null;
       const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
+      // The task's own short label ("reconcile exports spec") names the run;
+      // the one-word pick is only a chip beside it. "untitled" names nothing.
+      const shown = t ? taskDisplayLabel({ title: t.title ?? '', label: t.label ?? null }).label : null;
+      const taskLabel = shown && shown !== 'untitled' ? shown : null;
       const role = t?.roleSlug ? roles.get(t.roleSlug) : undefined;
       slot.lane.bars.push({
-        id: w.id, start: iv.start, end: iv.end, label,
+        id: w.id, start: iv.start, end: iv.end, label: taskLabel ?? label,
+        scope: taskLabel && label !== taskLabel.split(/\s+/)[0]?.toLowerCase() ? label : null,
+        title: t?.title ?? null,
         color: role?.color ?? null, roleSlug: t?.roleSlug ?? null, state: barState(w.status),
         href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
       });
@@ -143,7 +150,10 @@ export function buildFleetSnapshot(
           question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Waiting on you' : null,
         };
       } else {
-        slot.last = { label, prNumber: w.prNumber ?? null, fix: t?.taskClass === 'attempt' };
+        slot.last = {
+          label: taskLabel, scope: label || null, prNumber: w.prNumber ?? null, fix: t?.taskClass === 'attempt',
+          failed: barState(w.status) === 'failed', at: iv.end,
+        };
       }
     }
     if (online) capacity += g.hb?.maxConcurrentWorkers ?? 0;
@@ -163,6 +173,60 @@ export function buildFleetSnapshot(
   }
   const from = fitLaneWindowStart({ earliest, now, maxSpanMs: maxWindow });
   return { runners, live, capacity, window: { from, to: now } };
+}
+
+/** One row of a runner's slot table: a slot, or every quiet slot folded into a count. */
+export type FleetDisplayRow =
+  | { kind: 'slot'; slot: FleetSlot }
+  | { kind: 'idle'; count: number; slots: FleetSlot[] };
+
+/**
+ * Which of a runner's slots get their own row. Ten rows of "idle" bury the one
+ * slot doing something, so: busy slots first (slot order), then up to
+ * `recentIdle` idle slots whose last run ended inside the chart window (most
+ * recent first), then everything else folded into one "N idle slots" row. A
+ * single leftover slot keeps its row — folding one row into one row hides a
+ * name for nothing.
+ */
+export function fleetDisplayRows(runner: FleetRunner, opts: { since?: number; recentIdle?: number } = {}): FleetDisplayRow[] {
+  const recentIdle = opts.recentIdle ?? 2;
+  const since = opts.since ?? -Infinity;
+  const busy = runner.slots.filter(s => s.worker);
+  const idle = runner.slots.filter(s => !s.worker);
+  const recent = idle
+    .filter(s => s.last?.at != null && s.last.at >= since)
+    .sort((a, b) => (b.last!.at ?? 0) - (a.last!.at ?? 0))
+    .slice(0, recentIdle);
+  const rest = idle.filter(s => !recent.includes(s));
+  const rows: FleetDisplayRow[] = [...busy, ...recent].map(slot => ({ kind: 'slot', slot }));
+  if (rest.length === 1) rows.push({ kind: 'slot', slot: rest[0] });
+  else if (rest.length > 1) rows.push({ kind: 'idle', count: rest.length, slots: rest });
+  return rows;
+}
+
+export interface FleetSummary {
+  busy: number;
+  slots: number;
+  online: number;
+  runnerNames: string[];
+  /** The most recent finished run anywhere in the fleet. */
+  last: { label: string; at: number; failed: boolean } | null;
+}
+
+/** The one-line fleet summary: slots busy, runners, and the last thing that finished. */
+export function fleetSummary(fleet: FleetSnapshot): FleetSummary {
+  let last: FleetSummary['last'] = null;
+  for (const r of fleet.runners) for (const sl of r.slots) for (const b of sl.lane.bars) {
+    if (b.end == null || b.state === 'running' || b.state === 'waiting') continue;
+    if (!last || b.end > last.at) last = { label: b.label, at: b.end, failed: b.state === 'failed' };
+  }
+  return {
+    busy: fleet.runners.reduce((n, r) => n + r.slots.filter(s => s.worker).length, 0),
+    slots: fleet.runners.reduce((n, r) => n + r.maxSlots, 0),
+    online: fleet.runners.filter(r => r.online).length,
+    runnerNames: fleet.runners.map(r => r.name),
+    last,
+  };
 }
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };

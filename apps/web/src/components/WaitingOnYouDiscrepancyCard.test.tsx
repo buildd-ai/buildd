@@ -35,7 +35,7 @@ function item(partial: Partial<ActionQueueItem> = {}): ActionQueueItem {
  */
 function ctas(html: string): string[] {
   const found: string[] = [];
-  for (const label of ['Dispatch doc fix', '>Promote<', 'Flip direction', '>Accept<', 'View mission']) {
+  for (const label of ['Dispatch doc fix', '>Promote<', 'Flip direction', '>Accept<', '>Accept the gap<', 'View mission']) {
     if (html.includes(label)) found.push(label.replace(/[<>]/g, ''));
   }
   return found;
@@ -174,21 +174,28 @@ describe('WaitingOnYouDiscrepancyCard', () => {
         item={item({ chip: 'DISCREPANCY', direction: 'code_ahead', mergedDocFixTaskId: 'task-merged' })}
       />,
     );
-    expect(ctas(html)).toEqual(['Accept']);
+    expect(ctas(html)).toEqual(['Accept the gap']);
     expect(html).toContain('/app/tasks/task-merged');
-    expect(html).toContain('Doc fix merged');
+    expect(html).toContain('doc fix merged');
   });
 
-  it('the merged-fix link says where it goes; the decision lives on the Accept button below it', () => {
+  it('the one decision left is the primary button; the task link is a quiet reference, not a second CTA', () => {
     // It used to read "Accept, or correct the assertion →" while opening the
-    // task, with the real Accept button right under it.
+    // task, and later an orange "Open the doc-fix task →" that still out-shouted
+    // the grey Accept button under it.
     const html = renderToStaticMarkup(
       <WaitingOnYouDiscrepancyCard
         item={item({ chip: 'DISCREPANCY', direction: 'code_ahead', mergedDocFixTaskId: 'task-merged' })}
       />,
     );
-    expect(html).toContain('Open the doc-fix task →');
     expect(html).not.toContain('Accept, or correct the assertion');
+    expect(html).not.toContain('Open the doc-fix task →');
+    expect(html).toContain('See the doc fix');
+    const accept = html.match(/<button[^>]*data-testid="discrepancy-accept"[^>]*>/)?.[0] ?? '';
+    expect(accept).toContain('bg-accent');
+    // The task link carries no accent colour of its own.
+    const link = html.match(/<a[^>]*href="\/app\/tasks\/task-merged"[^>]*>/)?.[0] ?? '';
+    expect(link).not.toContain('text-accent-text');
   });
 
   it('a long spec path wraps at any point without break-all, and the age separator is not a text glyph', () => {

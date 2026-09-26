@@ -7,6 +7,7 @@ import {
   buildMissionListCard,
   describeCadence,
   missionsHeadline,
+  nextRunLabel,
   shortAgo,
   shortDuration,
   type ListMissionRow,
@@ -182,5 +183,37 @@ describe('shortAgo', () => {
     expect(shortAgo(new Date(now - 12 * 60_000).toISOString(), now)).toBe('12m');
     expect(shortAgo(new Date(now - 3 * 86_400_000).toISOString(), now)).toBe('3d');
     expect(shortAgo(null, now)).toBe('');
+  });
+});
+
+describe('nextRunLabel', () => {
+  const now = Date.UTC(2026, 8, 26, 12, 0);
+  const at = (mins: number) => new Date(now + mins * 60_000).toISOString();
+  const text = (mins: number | null, tz?: string) => {
+    const l = nextRunLabel(mins, mins == null ? null : at(mins), { now, timeZone: tz });
+    return l ? [l.lead, l.value].filter(Boolean).join(' ') : null;
+  };
+  it('near runs read in minutes and hours', () => {
+    expect(text(null)).toBeNull();
+    expect(text(0)).toBe('due now');
+    expect(text(45)).toBe('next 45m');
+    expect(text(200)).toBe('next 3h 20m');
+    expect(text(47 * 60)).toBe('next 47h');
+  });
+  it('days out read as a count of days, never thousands of hours', () => {
+    expect(text(3 * 1440 + 100)).toBe('in 3 days');
+    expect(text(13 * 1440)).toBe('in 13 days');
+  });
+  it('months out read as a date', () => {
+    // 111 days after Sep 26 is Jan 15 (next year, so the year shows).
+    expect(text(111 * 1440, 'UTC')).toBe('next Jan 15, 2027');
+    expect(text(40 * 1440, 'UTC')).toBe('next Nov 5');
+  });
+});
+
+describe('shortDuration for elapsed minutes', () => {
+  it('turns 8640 minutes into days, not a wall of minutes', () => {
+    expect(shortDuration(8640 * 60_000)).toBe('6d');
+    expect(shortDuration(1620 * 60_000)).toBe('1d');
   });
 });
