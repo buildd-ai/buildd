@@ -4,17 +4,9 @@ import { useEffect, useState } from 'react';
 import ArtifactCard from '@/components/ArtifactCard';
 import ArtifactViewer from '@/components/ArtifactViewer';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
+import type { TaskArtifactItem } from './task-artifact-items';
 
-interface ArtifactItem {
-  id: string;
-  type: string;
-  title: string | null;
-  content: string | null;
-  shareToken: string | null;
-  visibility: 'private' | 'public';
-  metadata: Record<string, unknown>;
-  createdAt: string;
-}
+type ArtifactItem = TaskArtifactItem;
 
 interface Props {
   artifacts: ArtifactItem[];
@@ -53,6 +45,7 @@ export default function TaskArtifactsSection({
     type: a.type,
     title: a.title,
     content: a.content,
+    storageKey: a.storageKey,
     shareToken: a.shareToken,
     visibility: a.visibility,
     metadata: a.metadata,
