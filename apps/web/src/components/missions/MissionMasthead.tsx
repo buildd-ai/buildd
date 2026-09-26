@@ -286,10 +286,13 @@ export default function MissionMasthead(props: MissionMastheadProps) {
         <StateChip chip={chip} />
       </div>
       <div className="flex items-center gap-2">
-        <MissionPulse variant="context" segments={segments} selectedTaskId={selectedTaskId} className="flex-1" />
+        {/* The pulse keeps a floor width and never shrinks below it: squeezed to
+            ~0px beside a long phase label, its ringed segment's outline painted
+            over the count. The position text is what gives way (truncates). */}
+        <MissionPulse variant="context" segments={segments} selectedTaskId={selectedTaskId} className="flex-[1_0_5rem]" />
         {position && (
           <>
-            <span className="shrink-0 font-mono text-[11px] text-text-muted">
+            <span className="min-w-0 truncate font-mono text-[11px] text-text-muted">
               {`${position.n} / ${position.total}${position.phaseLabel ? ` · ${position.phaseLabel}` : ''}`}
             </span>
             <StepLink dir="prev" href={position.prevHref} onStep={onStep} />
