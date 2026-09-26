@@ -24,12 +24,16 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
  * Any new chip must name which of these two patterns it uses — re-derive on
  * every build, or gate a persisted flag against a second, independently-live
  * signal — before it ships.
+ *
+ * AUTO_MERGE is agent-handled, so it asks nothing of the human and the freshness
+ * rule has nothing to guard. It is still re-derived on every build, from the
+ * resolved merge policy and the open PR row, like MERGE.
  */
 
 export type ActionChip =
   | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
-  | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING' | 'FIXING_SPEC';
+  | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
 export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
@@ -40,7 +44,7 @@ export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
  * above work that genuinely needs a human.
  */
 const AGENT_HANDLED_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>([
-  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'FIXING_SPEC',
+  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ]);
 
 export function isActionableChip(chip: ActionChip): boolean {
@@ -171,6 +175,12 @@ export interface EscalationRawItem {
   prUrl: string | null;
   policyTier: string;
   escalationReason: string | null;
+  /**
+   * The platform will merge this PR by itself once CI is green (reviewer gate
+   * `platformState === 'auto_merge'`). Renders as the in-flight AUTO_MERGE
+   * chip, unless a CI or conflict state outranks it.
+   */
+  autoMerge?: boolean;
   /**
    * True only when an OPEN `reviewer_escalated` mission note exists for this
    * task — as opposed to `escalationReason` being set from pure reviewer-task-
@@ -366,7 +376,7 @@ export interface ActionQueueItem {
 const CHIP_ORDER: ActionChip[] = [
   'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
-  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'FIXING_SPEC',
+  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
 
 /**
@@ -791,7 +801,9 @@ export function buildActionQueue(
             ? 'CI_RUNNING'
             : ciGate?.kind === 'blocked'
               ? 'BLOCKED'
-              : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
+              : item.autoMerge
+                ? 'AUTO_MERGE'
+                : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
 
     // Fail CLOSED. Only a merge CTA is gated — a BLOCKED or agent-handled card
     // makes no claim that the PR is still open, so staleness does not change

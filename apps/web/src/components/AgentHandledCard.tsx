@@ -5,13 +5,15 @@ import type { ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 
 /**
- * Informational card for work an agent already owns — a live CI fix, or a check
- * suite still running. It stays in the queue so a stuck agent is visible, but
+ * Informational card for work an agent already owns — a live CI fix, a check
+ * suite still running, or a PR the platform will merge by itself on green. It stays in the queue so a stuck agent is visible, but
  * carries no merge affordance and no count: nothing here is waiting on a human.
  */
 export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   const gate = item.ciGate;
-  const label = gate && gate.kind !== 'blocked' ? gate.label : 'Agent working';
+  const label = gate && gate.kind !== 'blocked'
+    ? gate.label
+    : item.chip === 'AUTO_MERGE' ? (item.escalationReason ?? 'Auto-merges when CI passes') : 'Agent working';
   const fixTaskId = gate?.kind === 'fixing' ? gate.taskId : null;
   const spinning = gate?.kind === 'fixing';
 
