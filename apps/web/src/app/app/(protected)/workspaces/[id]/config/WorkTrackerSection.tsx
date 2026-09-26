@@ -151,7 +151,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
             value={selection}
             onChange={e => setSelection(e.target.value)}
           >
-            <option value="">— None (disable work tracker) —</option>
+            <option value="">None (work tracker off)</option>
             <option value={GITHUB_APP}>GitHub (this repo&apos;s App)</option>
             {connectors.map(c => (
               <option key={c.id} value={c.id}>
@@ -184,8 +184,8 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
             onChange={e => setInboundLabel(e.target.value)}
           />
           <p className="mt-1 text-xs text-text-muted">
-            A GitHub issue with this label opens a linked task; closing the issue cancels an open
-            task. Defaults to <code className="bg-surface-3 px-1 rounded">buildd</code> when blank.
+            Labeling a GitHub issue with this opens a linked task. Closing the issue cancels the open
+            task. Leave blank to use <code className="bg-surface-3 px-1 rounded">buildd</code>.
           </p>
         </div>
       )}
@@ -203,8 +203,8 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
 function errorLabel(code: unknown): string | null {
   if (typeof code !== 'string') return null;
   const map: Record<string, string> = {
-    github_app_not_installed: 'This workspace has no GitHub App installation. Install the buildd GitHub App on the repo first.',
-    unsupported_provider: 'That tracker provider is not supported.',
+    github_app_not_installed: 'Install the buildd GitHub App on this repo first.',
+    unsupported_provider: 'buildd doesn\'t support that tracker.',
   };
   return map[code] ?? code;
 }

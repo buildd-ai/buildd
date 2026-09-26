@@ -23,8 +23,8 @@ interface NotificationsState {
 
 const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
   { key: 'taskClaimed', label: 'Task claimed', hint: 'A worker picked up a task.' },
-  { key: 'taskCompleted', label: 'Task completed', hint: 'A task finished successfully.' },
-  { key: 'taskFailed', label: 'Task failed', hint: 'A task failed (or is auto-retrying).' },
+  { key: 'taskCompleted', label: 'Task completed', hint: 'A task finished.' },
+  { key: 'taskFailed', label: 'Task failed', hint: 'A task failed or is retrying.' },
   { key: 'credentialExpired', label: 'Credential expired', hint: 'A Claude/Codex credential is invalid or expired.' },
 ];
 
@@ -136,7 +136,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
           Route alerts to <strong className="text-text-primary">this team&apos;s</strong> own channel. Set a Pushover
-          user/group key and/or a webhook URL, then choose which events fire. Teams with no channel configured receive nothing.
+          user/group key, a webhook URL, or both, then pick the events. A team with no channel gets no alerts.
         </p>
 
         {loading ? (
@@ -174,8 +174,8 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                   className="w-full h-10 px-3 bg-surface font-mono text-xs"
                 />
                 <p className="text-xs text-text-muted">
-                  Both come from your own Pushover account — create an application to get the app token, and use your user
-                  or group key as the recipient. Alerts send through your app, not buildd&apos;s.
+                  Both come from your Pushover account. Create an application to get the app token, and use your user
+                  or group key as the recipient. Alerts go out through your Pushover app.
                 </p>
               </div>
 

@@ -60,7 +60,7 @@ export default function RepoPicker({ repos, selectedRepos, onToggle, loading }: 
     return (
       <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
         <p className="text-text-muted">No repositories found</p>
-        <p className="text-xs text-text-muted mt-1">Make sure the GitHub App has access to your repos</p>
+        <p className="text-xs text-text-muted mt-1">Give the GitHub App access to your repos, then reload.</p>
       </div>
     );
   }

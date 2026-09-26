@@ -134,7 +134,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               placeholder="builder"
               pattern="^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
             />
-            <p className="text-xs text-text-muted mt-1">Auto-generated from name.</p>
+            <p className="text-xs text-text-muted mt-1">Generated from the name.</p>
           </div>
 
           <div>
@@ -175,7 +175,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
             <label className="block text-sm font-medium mb-1.5">Agent backend</label>
             <BackendSelect value={defaultBackend} onChange={setDefaultBackend} inheritLabel="Inherit" />
             <p className="text-xs text-text-muted mt-1">
-              Default backend for tasks routed to this role. Requires that backend&apos;s credentials in Settings.
+              Backend for tasks routed to this role. Add that backend&apos;s credentials in Settings.
             </p>
           </div>
 

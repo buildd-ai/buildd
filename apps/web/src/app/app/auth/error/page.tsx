@@ -9,10 +9,10 @@ function ErrorContent() {
   const error = searchParams.get('error');
 
   const errorMessages: Record<string, string> = {
-    Configuration: 'There is a problem with the server configuration.',
+    Configuration: 'Sign-in is misconfigured on the server.',
     AccessDenied: 'Access denied. Your email is not on the allowed list.',
-    Verification: 'The verification link has expired or has already been used.',
-    Default: 'An error occurred during authentication.',
+    Verification: 'This sign-in link expired or was already used.',
+    Default: 'Sign-in failed.',
   };
 
   const message = errorMessages[error || 'Default'] || errorMessages.Default;

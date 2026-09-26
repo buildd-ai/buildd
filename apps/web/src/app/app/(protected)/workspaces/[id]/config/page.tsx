@@ -64,7 +64,7 @@ export default async function WorkspaceConfigPage({
                 <div className="mb-8">
                     <h1 className="text-2xl md:text-3xl font-bold">Git Workflow Configuration</h1>
                     <p className="text-text-muted mt-1">
-                        Configure how agents should work with git in this workspace.
+                        Set how agents use git in this workspace.
                     </p>
                 </div>
 
@@ -129,7 +129,7 @@ export default async function WorkspaceConfigPage({
                     <div className="min-w-0">
                         <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
                         <p className="text-xs text-text-muted mt-1">
-                            Deletes the workspace with all of its tasks and workers. This cannot be undone.
+                            Deletes the workspace and its tasks and workers. You can&apos;t undo this.
                         </p>
                     </div>
                     <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />

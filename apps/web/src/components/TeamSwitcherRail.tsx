@@ -54,14 +54,14 @@ export default function TeamSwitcherRail({
         className={`group relative w-10 h-10 flex items-center justify-center text-xs font-semibold bg-accent-soft text-accent-text border-2 border-accent transition-colors ${
           multi ? 'cursor-pointer hover:bg-accent' : 'cursor-default'
         }`}
-        aria-label={multi ? `Team: ${currentTeam.name} — click to switch` : `Team: ${currentTeam.name}`}
+        aria-label={multi ? `Team: ${currentTeam.name} · click to switch` : `Team: ${currentTeam.name}`}
         aria-expanded={multi ? open : undefined}
         aria-controls={multi && open ? panelId : undefined}
       >
         {teamInitial(currentTeam)}
         {/* Hover tooltip — same pattern as sidebar nav items */}
         <span className="pointer-events-none absolute left-[52px] top-1/2 -translate-y-1/2 bg-card text-text-primary border border-border-strong text-[11px] font-medium px-2.5 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-          {multi ? `Team: ${currentTeam.name} — click to switch` : `Team: ${currentTeam.name}`}
+          {multi ? `Team: ${currentTeam.name} · click to switch` : `Team: ${currentTeam.name}`}
         </span>
       </button>
 

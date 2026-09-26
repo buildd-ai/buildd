@@ -101,7 +101,7 @@ function OutcomeList({ outcomes, failed = false }: { outcomes: ExecuteOutcome[];
               {ok ? '✓' : failed ? '✕' : '•'}
             </span>
             <span className="text-text-secondary">{formatPhaseLabel(o.phase)}</span>
-            {detail && <span className="text-text-muted text-xs">— {detail}</span>}
+            {detail && <span className="text-text-muted text-xs">· {detail}</span>}
           </li>
         );
       })}
@@ -230,14 +230,14 @@ export default function WorkspaceMigrationModal({
       }
       // Error handling by status + error code.
       if (res.status === 400 && data.error === 'invalid_token') {
-        setError('This dry run has expired. Please re-run the dry run before migrating.');
+        setError('This dry run expired. Run it again before migrating.');
         setStep('confirm');
       } else if (res.status === 400 && data.error === 'unconfirmed_items') {
         const missing = Array.isArray(data.missing) ? data.missing.join(', ') : '';
         setError(`Some required items are not confirmed${missing ? `: ${missing}` : ''}.`);
         setStep('confirm');
       } else if (res.status === 409 && data.error === 'precheck_failed') {
-        setError('The precheck no longer passes. Please re-run the dry run.');
+        setError('The precheck no longer passes. Run the dry run again.');
         setStep('confirm');
       } else if (res.status === 403) {
         setError(data.error || 'You do not have permission to migrate this workspace.');
@@ -431,7 +431,7 @@ export default function WorkspaceMigrationModal({
           {step === 'confirm' && report && (
             <div className="space-y-4">
               <p className="text-sm text-text-secondary">
-                Confirm each item below before migrating. These actions cannot be automatically undone.
+                Confirm each item before migrating. You can't undo these actions.
               </p>
 
               {report.requiredAcks.length > 0 && (

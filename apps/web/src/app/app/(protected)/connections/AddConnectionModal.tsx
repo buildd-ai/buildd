@@ -296,7 +296,7 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
               )}
               {discoveredAuthMode === 'none' && (
                 <div className="px-3 py-2 rounded-md text-xs border font-mono bg-status-info/10 text-status-info border-status-info/30">
-                  No auth required — connector is ready
+                  No auth required · connector ready
                 </div>
               )}
 
