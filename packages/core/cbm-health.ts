@@ -80,6 +80,16 @@ function isUnhealthy(cbm: unknown): boolean {
   return c.outcome === 'enforced' && c.bootstrapResult === 'failed';
 }
 
+/**
+ * A task in the cbm_access experiment's withheld arm. CBM is off on purpose, so
+ * the row is not evidence about fleet health either way: it neither fires nor
+ * breaks a streak (at a 20% share, counting it as healthy would keep resetting
+ * a real outage's streak; counting it as unhealthy would page on the draw).
+ */
+function isExperimentWithheld(cbm: unknown): boolean {
+  return !!cbm && typeof cbm === 'object' && (cbm as Record<string, unknown>).disableReason === 'experiment_withheld';
+}
+
 function reasonOf(cbm: Record<string, unknown>): string {
   if (typeof cbm.disableReason === 'string') return cbm.disableReason;
   if (cbm.outcome === 'enforced' && cbm.bootstrapResult === 'failed') {
@@ -137,7 +147,7 @@ export async function detectCbmFleetDisabled(
     if (!opsEnabled()) return;
 
     // Short-circuit: current worker is healthy, so the streak is broken.
-    if (!isUnhealthy(currentCbm)) return;
+    if (!isUnhealthy(currentCbm) || isExperimentWithheld(currentCbm)) return;
 
     // Query the last (N-1) completed workers with CBM metrics.
     const rows = await db.query.workers.findMany({
@@ -152,7 +162,7 @@ export async function detectCbmFleetDisabled(
       limit: scanLimit(CBM_FLEET_THRESHOLD),
     });
 
-    const prior = cbmWindow(rows, CBM_FLEET_THRESHOLD - 1);
+    const prior = cbmWindow(rows, CBM_FLEET_THRESHOLD - 1, c => !isExperimentWithheld(c));
     if (prior.length < CBM_FLEET_THRESHOLD - 1) return; // not enough history yet
 
     const allPriorUnhealthy = prior.every(isUnhealthy);

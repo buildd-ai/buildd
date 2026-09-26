@@ -51,6 +51,7 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
+import { attachCbmExperimentArm } from './cbm-experiment';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachExternalContextProviders,
@@ -1941,6 +1942,13 @@ export async function POST(req: NextRequest) {
   // runs under (workspace override > team default). See ./skill-and-role-injection.
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
+  // CBM-access experiment: after role config (eligibility reads the role's CBM
+  // opt-out) and before the prompt-context blocks (the task-area hint drops its
+  // graph mention for a withheld task). No-op without a running experiment.
+  await attachCbmExperimentArm(claimedWorkers, {
+    cliVersion: body.environment?.claudeCliVersion,
+    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
+  });
 
   // Predict each task's file area from what similar COMPLETED tasks actually
   // touched, before any block is built — attachKnowledgeContext uses it as its

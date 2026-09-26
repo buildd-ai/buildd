@@ -62,6 +62,10 @@ export const BY_DESIGN_SKIP_REASONS: ReadonlySet<string> = new Set([
   'codex_task',
   'no_worktree',
   'role_opt_out',
+  // Withheld by the cbm_access experiment. A decision, not breakage; the
+  // experiment's own readout (/api/experiments/[id]/readout) is where the
+  // randomised comparison lives, not this observational one.
+  'experiment_withheld',
 ]);
 
 /** Minimum cohort size on BOTH sides before a delta is reported at all. */

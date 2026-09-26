@@ -22,6 +22,9 @@ import {
   CBM_SERVER_NAME,
   CBM_TOOL_SURFACE,
   applyCbmToolBlocklist,
+  applyCbmWithholding,
+  withoutCbmConnectors,
+  CBM_WITHHELD_DENY,
   deriveCbmBlockedTools,
   type CbmContext,
 } from '../../src/cbm-enforcement';
@@ -115,6 +118,17 @@ describe('buildCbmActivation', () => {
     ];
     expect(reasons).toEqual(['no_worktree', 'role_opt_out', 'codex_task', 'binary_absent']);
     expect(buildCbmActivation(BASE).disableReason).toBeUndefined();
+  });
+
+  test('a task withheld by the cbm_access experiment is not enforced, and says why', () => {
+    const result = buildCbmActivation({ ...BASE, cbmExperimentWithheld: true });
+    expect(result).toEqual({ enforced: false, disableReason: 'experiment_withheld' });
+  });
+
+  test('experiment_withheld yields only to no_worktree, and wins over every later gate', () => {
+    expect(buildCbmActivation({ ...BASE, worktreePath: undefined, cbmExperimentWithheld: true }).disableReason).toBe('no_worktree');
+    expect(buildCbmActivation({ ...BASE, cbmExperimentWithheld: true, cbmRoleDisabled: true }).disableReason).toBe('experiment_withheld');
+    expect(buildCbmActivation({ ...BASE, cbmExperimentWithheld: true, pathExists: binaryAbsent }).disableReason).toBe('experiment_withheld');
   });
 
   test('cache dir is scoped per worker id (no shared-state collision)', () => {
@@ -477,5 +491,27 @@ describe('CBM tool classification', () => {
       expect(CBM_TOOL_SURFACE).toContain(tool as any);
       expect(CBM_ALLOWED_TOOLS).not.toContain(tool as any);
     }
+  });
+});
+
+describe('applyCbmWithholding (cbm_access withheld arm)', () => {
+  test('removes a codebase-memory server that arrived by any route and denies every CBM tool', () => {
+    const mcpServers: Record<string, unknown> = {
+      buildd: { type: 'http' },
+      [CBM_SERVER_NAME]: { type: 'stdio', command: 'cbm' },
+    };
+    const denied = applyCbmWithholding({ mcpServers, disallowedTools: ['Bash(gh pr merge:*)'] });
+    expect(Object.keys(mcpServers)).toEqual(['buildd']);
+    expect(denied).toContain('Bash(gh pr merge:*)');
+    expect(denied).toContain('mcp__codebase-memory');
+    for (const tool of CBM_TOOL_SURFACE) expect(denied).toContain(`mcp__codebase-memory__${tool}`);
+    // Superset of the always-on blocklist, so ordering with applyCbmToolBlocklist does not matter.
+    for (const t of CBM_BLOCKED_TOOLS) expect(CBM_WITHHELD_DENY).toContain(t);
+  });
+
+  test('drops only the codebase-memory connector from the claim', () => {
+    const conns = [{ name: 'codebase-memory' }, { name: 'linear' }];
+    expect(withoutCbmConnectors(conns)).toEqual([{ name: 'linear' }]);
+    expect(withoutCbmConnectors(undefined)).toBeUndefined();
   });
 });

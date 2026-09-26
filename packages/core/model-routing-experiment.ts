@@ -28,8 +28,13 @@
  *   tasks that landed on old runners — a selection effect on the arm.
  */
 import { assignExperimentArm, resolveEnrolmentFraction } from './experiment-randomizer';
+import { isReviewerTask, resolveInheritanceParent } from './experiment-lineage';
 import { mapRouterAlias } from './model-tier-registry';
 import { TIERS, type Tier as RegistryTier } from './model-tier-defaults';
+
+// Lineage rules are shared with the CBM-access experiment; re-exported so
+// existing importers of this module keep resolving.
+export { isReviewerTask, resolveInheritanceParent };
 
 export const MODEL_ROUTING_EXPERIMENT_KIND = 'model_routing' as const;
 
@@ -132,10 +137,6 @@ export type EligibilityResult =
   | { eligible: true; reason: null }
   | { eligible: false; reason: IneligibleReason };
 
-export function isReviewerTask(category: string | null | undefined, reviewerFor: unknown): boolean {
-  return category === 'review' || (typeof reviewerFor === 'string' && reviewerFor.length > 0);
-}
-
 /**
  * Is this task in the population the experiment compares?
  *
@@ -203,27 +204,7 @@ export function assignArm(args: {
 
 // ── Inheritance ─────────────────────────────────────────────────────────────
 
-/**
- * The task whose assignment an attempt should inherit, or null when the task
- * draws (or is judged) on its own.
- *
- * Only `taskClass: 'attempt'` tasks inherit: CI retries, conflict retries and
- * reviewer-requested rework all carry `parentTaskId` + class `attempt`.
- * `parentTaskId` on a `work` task is NOT retry lineage (a task created by a
- * worker records its creator there), so it must not inherit. Reviewer tasks
- * are attempts too but are never enrolled — the reviewer model is held fixed
- * while an experiment runs.
- */
-export function resolveInheritanceParent(task: {
-  parentTaskId?: string | null;
-  taskClass?: string | null;
-  category?: string | null;
-  reviewerFor?: unknown;
-}): string | null {
-  if (task.taskClass !== 'attempt') return null;
-  if (isReviewerTask(task.category, task.reviewerFor)) return null;
-  return task.parentTaskId || null;
-}
+// resolveInheritanceParent lives in ./experiment-lineage (re-exported above).
 
 /** An existing assignment row, reduced to what inheritance needs. */
 export interface PriorAssignment {

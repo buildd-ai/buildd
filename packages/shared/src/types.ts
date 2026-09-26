@@ -1201,6 +1201,12 @@ export interface ClaimTasksInput {
   // Distinguishes a deliberate cross-workspace runner poll from an accidental
   // ambiguous claim (the 2026-05-25 misroute class), which stays rejected.
   claimAcrossAccessible?: boolean;
+  /**
+   * Protocol features this runner build implements, so the server does not send
+   * a payload field an older runner would silently ignore. See
+   * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
+   */
+  runnerFeatures?: string[];
 }
 
 export type ClaimDiagnosticReason =
@@ -1322,6 +1328,12 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
+    /**
+     * Set when the task is enrolled in a running `cbm_access` experiment.
+     * `withheld: true` means the runner must run it WITHOUT codebase-memory:
+     * no mount, no steering, every CBM tool denied.
+     */
+    cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline) */
@@ -2150,7 +2162,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing';
+export type ExperimentKind = 'model_routing' | 'cbm_access';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {

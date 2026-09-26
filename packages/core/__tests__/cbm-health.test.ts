@@ -124,6 +124,24 @@ describe('detectCbmFleetDisabled', () => {
     expect(String(call.dedupeKey)).toBe(`cbm-fleet-disabled:${WS}`);
   });
 
+  it('a task withheld by the cbm_access experiment never fires the alert', async () => {
+    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBinaryAbsentRow());
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'experiment_withheld' });
+    expect(reportOpsCalls).toHaveLength(0);
+  });
+
+  it('withheld rows are skipped, not counted, so they neither page nor hide a real outage', async () => {
+    const withheld = { resultMeta: { cbm: { outcome: 'disabled', disableReason: 'experiment_withheld' } } };
+    // An all-withheld history is not a streak.
+    findManyResult = Array(CBM_FLEET_THRESHOLD * 2).fill(withheld);
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'binary_absent' });
+    expect(reportOpsCalls).toHaveLength(0);
+    // A real outage interleaved with withheld rows still fires.
+    findManyResult = [withheld, makeBinaryAbsentRow(), withheld, makeBinaryAbsentRow(), makeBinaryAbsentRow(), withheld, makeBinaryAbsentRow()];
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'binary_absent' });
+    expect(reportOpsCalls).toHaveLength(1);
+    expect(String((reportOpsCalls[0] as any).message)).not.toContain('experiment_withheld');
+  });
 
   it('counts failed and error workers in the streak, not only completed ones', async () => {
     // A workspace where every worker DIES is exactly what binary_absent causes;

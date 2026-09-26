@@ -16,6 +16,8 @@
  *
  * Degradation rules (precedence order — see buildCbmActivation):
  *   - No worktree (coordination workspaces, service roles): skipped — nothing to index
+ *   - Withheld by the cbm_access experiment (cbmExperimentWithheld): skipped,
+ *     and applyCbmWithholding strips any other route to the tools
  *   - Role opted out (cbmDisabled): skipped
  *   - Codex with CBM-for-Codex switched off (BUILDD_CBM_CODEX=0): skipped
  *   - Binary absent from image: skipped silently (existsSync guard)
@@ -137,6 +139,39 @@ export function applyCbmToolBlocklist(existing: readonly string[] | undefined): 
   return [...new Set([...(existing ?? []), ...CBM_BLOCKED_TOOLS])];
 }
 
+/**
+ * Deny rules that remove codebase-memory entirely: the server-level rule plus
+ * every classified tool by name, so the deny holds even if a permission layer
+ * only matches exact tool names.
+ */
+export const CBM_WITHHELD_DENY: readonly string[] = [
+  'mcp__codebase-memory',
+  ...CBM_TOOL_SURFACE.map(tool => `mcp__codebase-memory__${tool}`),
+];
+
+/**
+ * Withhold CBM from a Claude session in the cbm_access experiment's withheld arm.
+ *
+ * Refusing activation (`experiment_withheld`) stops the runner's own mount and
+ * its steering block, but CBM has other ways in: a connector or the project's
+ * `.mcp.json` can put `codebase-memory` into `mcpServers`, and the SDK loads a
+ * stdio `.mcp.json` entry itself via settingSources without it ever appearing
+ * in that map. A withheld task that still reached the graph would contaminate
+ * the arm, so this removes the entry and denies every CBM tool.
+ */
+export function applyCbmWithholding(opts: {
+  mcpServers: Record<string, unknown> | undefined;
+  disallowedTools: readonly string[] | undefined;
+}): string[] {
+  if (opts.mcpServers) delete opts.mcpServers[CBM_SERVER_NAME];
+  return [...new Set([...(opts.disallowedTools ?? []), ...CBM_WITHHELD_DENY])];
+}
+
+/** Claim-time connectors minus any codebase-memory one (withheld arm only). */
+export function withoutCbmConnectors<T extends { name: string }>(connectors: T[] | undefined): T[] | undefined {
+  return connectors?.filter(c => c.name !== CBM_SERVER_NAME);
+}
+
 export interface CbmContext {
   workerId: string;
   /** Absolute path of the worker's git worktree (undefined when no repo checkout). */
@@ -168,6 +203,11 @@ export interface CbmContext {
   codexSupported?: boolean;
   /** True when the role's DB record has mcpServers['codebase-memory'] === false. */
   cbmRoleDisabled: boolean;
+  /**
+   * True when the claim drew this task into the CBM-withheld arm of a running
+   * `cbm_access` experiment (packages/core/cbm-access-experiment.ts).
+   */
+  cbmExperimentWithheld?: boolean;
   /** Injectable for testing; defaults to existsSync in production. */
   pathExists?: (path: string) => boolean;
 }
@@ -180,7 +220,9 @@ export interface CbmContext {
  * are deliberately at different granularities:
  *   - per role, with no redeploy and no restart: the DB role opt-out
  *     (`mcpServers['codebase-memory'] === false`, surfaced as `cbmRoleDisabled`).
- *     This is the lever to reach for first; the `builder-nocbm` role exists for it.
+ *     This is the lever to reach for first. It is NOT how CBM is A/B tested:
+ *     roles do not self-enrol, so a role-based control never gathered a task.
+ *     Randomised withholding goes through the `cbm_access` experiment.
  *   - per runner, for the whole fleet: `BUILDD_CBM_CODEX=0` + a runner restart.
  */
 export function isCbmCodexEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -188,11 +230,11 @@ export function isCbmCodexEnabled(env: NodeJS.ProcessEnv = process.env): boolean
 }
 
 /**
- * Why CBM is not active for a task. Exactly these four, no unlabelled disable.
+ * Why CBM is not active for a task. Exactly these five, no unlabelled disable.
  * `mount_unavailable` is NOT here: it is decided later, by the sandbox argv
  * build, on a task whose activation gates all passed.
  */
-export type CbmDisableReason = 'no_worktree' | 'role_opt_out' | 'codex_task' | 'binary_absent';
+export type CbmDisableReason = 'no_worktree' | 'experiment_withheld' | 'role_opt_out' | 'codex_task' | 'binary_absent';
 
 export interface CbmActivation {
   enforced: boolean;
@@ -747,6 +789,9 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
   // Codex through config.toml + AGENTS.md, so only the kill switch produces it.
   const codexBlocked = ctx.isCodexTask && !(ctx.codexSupported ?? isCbmCodexEnabled());
   if (!ctx.worktreePath) return { enforced: false, disableReason: 'no_worktree' };
+  // After no_worktree (a task with nothing to index is CBM-off in both arms, and
+  // should say so), before everything else: the experiment decided this task.
+  if (ctx.cbmExperimentWithheld) return { enforced: false, disableReason: 'experiment_withheld' };
   if (ctx.cbmRoleDisabled) return { enforced: false, disableReason: 'role_opt_out' };
   if (codexBlocked) return { enforced: false, disableReason: 'codex_task' };
   if (!pathExists(CBM_BINARY_PATH)) return { enforced: false, disableReason: 'binary_absent' };

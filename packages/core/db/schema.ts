@@ -591,7 +591,7 @@ export interface CbmMetrics {
   /** How CBM was activated for this task. */
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
   /** Why CBM was not active (only set when outcome='disabled'). */
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
   /**
    * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
    * outcome='enforced'.
@@ -2265,14 +2265,15 @@ export const experiments = pgTable('experiments', {
   title: text('title').notNull(),
   hypothesis: text('hypothesis'),
   status: text('status').notNull().default('draft').$type<'draft' | 'running' | 'paused' | 'concluded'>(),
-  kind: text('kind').notNull().$type<'model_routing'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
   treatmentFraction: real('treatment_fraction').notNull().default(0.5),
   policyVersion: integer('policy_version').notNull().default(1),
   // Kind-specific shape; for model_routing see ModelRoutingExperimentConfig in
-  // packages/core/model-routing-experiment.ts.
+  // packages/core/model-routing-experiment.ts, for cbm_access see
+  // CbmAccessExperimentConfig in packages/core/cbm-access-experiment.ts.
   config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
   visibility: text('visibility').notNull().default('admins').$type<'admins' | 'team'>(),
   decision: text('decision'),

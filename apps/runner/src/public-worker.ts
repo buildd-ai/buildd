@@ -93,6 +93,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   reportedModel: true,
   resultMeta: true,
   cbmOutcome: true,
+  cbmExperimentWithheld: true,
   cbmDisableReason: true,
   cbmBootstrapResult: true,
   cbmBootstrapFailReason: true,
