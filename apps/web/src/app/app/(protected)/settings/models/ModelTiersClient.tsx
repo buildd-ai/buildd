@@ -82,7 +82,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         <section aria-label="Tiers">
           {loadError && <div className="notice notice-err mb-3">{loadError}</div>}
           <div className="card" data-testid="tier-table">
-            <div className="hidden md:grid grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-3 px-3 py-2 border-b-2 border-border-strong text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
+            <div className="hidden md:grid grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
               <span>Tier</span><span>Provider</span><span>Model</span><span className="text-right">Mode</span>
             </div>
             {TIERS.map((tier) => (
