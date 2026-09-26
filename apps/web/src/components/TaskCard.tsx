@@ -205,7 +205,7 @@ function TaskTypeBadge({
     const cfg = ATTEMPT_TYPE_BADGE[taskType];
     return (
       <span
-        className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
+        className={`font-mono text-[11px] md:text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
         title={cfg.label}
         aria-label={cfg.label}
       >
@@ -219,7 +219,7 @@ function TaskTypeBadge({
   if (!result) return null;
   return (
     <span
-      className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
+      className={`font-mono text-[11px] md:text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
       title={result.label}
       aria-label={result.label}
     >
@@ -375,14 +375,14 @@ export function TaskCard({
 
         {/* T3 — elapsed time for queued tasks (right side empty otherwise) */}
         {!showChip && !showInlinePr && (
-          <span className="font-mono text-[10px] text-text-muted tabular-nums shrink-0 pointer-events-none">
+          <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums shrink-0 pointer-events-none">
             {timestampLabel}
           </span>
         )}
 
         {/* T4 — inline PR for done-group tasks (merged / closed): single line */}
         {showInlinePr && (
-          <span className="shrink-0 flex items-center gap-1 font-mono text-[10px] pointer-events-none">
+          <span className="shrink-0 flex items-center gap-1 font-mono text-[11px] md:text-[10px] pointer-events-none">
             <a
               href={prUrl!}
               target="_blank"
@@ -433,13 +433,13 @@ export function TaskCard({
             <div className="text-[11px] text-text-muted mt-0.5 truncate">
               {missionTitle && <span>{missionTitle}</span>}
               {missionTitle && workspaceName && <span className="mx-1">·</span>}
-              {workspaceName && <span className="font-mono uppercase tracking-wide text-[9px]">{workspaceName}</span>}
+              {workspaceName && <span className="font-mono uppercase tracking-wide text-[11px] md:text-[9px]">{workspaceName}</span>}
             </div>
           )}
           {/* workspace only when inside group (missionTitle suppressed) */}
           {groupScoped && workspaceName && (
             <div className="text-[11px] text-text-muted mt-0.5 truncate">
-              <span className="font-mono uppercase tracking-wide text-[9px]">{workspaceName}</span>
+              <span className="font-mono uppercase tracking-wide text-[11px] md:text-[9px]">{workspaceName}</span>
             </div>
           )}
 
@@ -461,7 +461,7 @@ export function TaskCard({
           <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
 
           {/* T3 — elapsed */}
-          <span className={`font-mono text-[10px] tabular-nums ${tierColor}`}>
+          <span className={`font-mono text-[11px] md:text-[10px] tabular-nums ${tierColor}`}>
             {timestampLabel}
             {stale && <span className="ml-1 text-status-warning">!</span>}
           </span>
@@ -472,7 +472,7 @@ export function TaskCard({
               <Sparkline data={intensity.sparkline} tier={intensity.tier} />
             )}
             {showAttempt && (
-              <span className="font-mono text-[10px] text-text-muted tabular-nums">
+              <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums">
                 {attemptCurrent}/{attemptTotal}
               </span>
             )}
@@ -489,7 +489,7 @@ export function TaskCard({
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
               aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
-              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
+              className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
             >
               {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
             </a>
@@ -524,7 +524,7 @@ export function TaskCard({
           )}
           {missionTitle && workspaceName && <span className="shrink-0">·</span>}
           {workspaceName && (
-            <span className="font-mono text-[9px] uppercase tracking-wide shrink-0">{workspaceName}</span>
+            <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide shrink-0">{workspaceName}</span>
           )}
         </div>
       )}
@@ -540,7 +540,7 @@ export function TaskCard({
             />
           )}
           {chain.unblocks > 0 && chain.blockedBy.length === 0 && (
-            <span className="text-[10px] text-text-muted">
+            <span className="text-[11px] md:text-[10px] text-text-muted">
               → unblocks {chain.unblocks}
             </span>
           )}
@@ -553,13 +553,13 @@ export function TaskCard({
           {timestampLabel}
         </span>
         {stale && (
-          <span className="font-mono text-[10px] text-status-warning uppercase tracking-wide">stale</span>
+          <span className="font-mono text-[11px] md:text-[10px] text-status-warning uppercase tracking-wide">stale</span>
         )}
         {intensity && intensity.sparkline.length > 0 && (
           <Sparkline data={intensity.sparkline} tier={intensity.tier} />
         )}
         {showAttempt && (
-          <span className="font-mono text-[10px] text-text-muted tabular-nums">
+          <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums">
             attempt {attemptCurrent}/{attemptTotal}
           </span>
         )}
@@ -568,7 +568,7 @@ export function TaskCard({
       {/* T4 — runner (last) + PR link */}
       <div className="flex items-center justify-between gap-2">
         {runnerName ? (
-          <span className="font-mono text-[10px] text-text-muted truncate pointer-events-none">{runnerName}</span>
+          <span className="font-mono text-[11px] md:text-[10px] text-text-muted truncate pointer-events-none">{runnerName}</span>
         ) : (
           <span />
         )}
@@ -579,7 +579,7 @@ export function TaskCard({
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
             aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
-            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0 max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-3 max-md:after:content-['']"
+            className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline shrink-0 max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-3 max-md:after:content-['']"
           >
             {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
           </a>

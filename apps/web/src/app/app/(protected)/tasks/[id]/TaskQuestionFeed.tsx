@@ -134,7 +134,7 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
         </div>
       )}
 
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Agent Questions
       </div>
 
@@ -148,7 +148,7 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
             <div key={note.id} className="rounded-[10px] border border-status-warning/30 bg-status-warning/[0.04] overflow-hidden">
               <div className="px-4 py-3">
                 <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-[9px] font-bold tracking-wider text-status-warning uppercase">Question</span>
+                  <span className="text-[11px] md:text-[9px] font-bold tracking-wider text-status-warning uppercase">Question</span>
                   <span className="flex-1" />
                   <span className="text-[11px] text-text-muted tabular-nums">{timeAgo(note.createdAt)}</span>
                 </div>
@@ -233,7 +233,7 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
             <div key={note.id} className="rounded-[10px] border border-border-default overflow-hidden">
               <div className="px-4 py-3 bg-surface-2">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[9px] font-bold tracking-wider text-status-warning/60 uppercase">Question</span>
+                  <span className="text-[11px] md:text-[9px] font-bold tracking-wider text-status-warning/60 uppercase">Question</span>
                   <svg className="w-3 h-3 text-status-success shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
@@ -244,7 +244,7 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
               {reply && (
                 <div className="px-4 py-3 border-t border-border-default/50">
                   <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-[9px] font-bold tracking-wider text-accent-text uppercase">Your Answer</span>
+                    <span className="text-[11px] md:text-[9px] font-bold tracking-wider text-accent-text uppercase">Your Answer</span>
                     <span className="flex-1" />
                     <span className="text-[11px] text-text-muted tabular-nums">{timeAgo(reply.createdAt)}</span>
                   </div>

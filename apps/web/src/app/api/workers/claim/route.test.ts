@@ -172,6 +172,7 @@ mock.module('drizzle-orm', () => ({
     },
   ),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
@@ -188,7 +189,7 @@ const mockAccountsTable = { id: 'id', activeSessions: 'activeSessions', teamId: 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: mockAccountsTable,
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest', roleSlug: 'roleSlug' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
   missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
@@ -5553,6 +5554,48 @@ describe('claim gate overrides', () => {
 
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
+    });
+  });
+
+  describe('role slug gate (EXPLICIT_ROLE_SLUGS)', () => {
+    /** Every mocked drizzle node of `type` reachable from the WHERE tree. */
+    function nodesOfType(node: any, type: string, out: any[] = [], seen = new Set<any>()): any[] {
+      if (!node || typeof node !== 'object' || seen.has(node)) return out;
+      seen.add(node);
+      if (node.type === type) out.push(node);
+      for (const value of Array.isArray(node) ? node : Object.values(node)) nodesOfType(value, type, out, seen);
+      return out;
+    }
+
+    async function claimWhere(body: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([]);
+      await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', ...body } }));
+      return (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+    }
+
+    // Mocked db returns rows regardless of WHERE, so assert the predicate.
+    it('a runner sending no availableSkills is still barred from visual-auditor tasks', async () => {
+      const where = await claimWhere({});
+      const barred = nodesOfType(where, 'notInArray').filter((n) => n.field === 'roleSlug');
+      expect(barred).toHaveLength(1);
+      expect(barred[0].values).toEqual(['visual-auditor']);
+      // ...and gets no legacy restriction (backward compat for other roles).
+      expect(nodesOfType(where, 'inArray').filter((n) => n.field === 'roleSlug')).toHaveLength(0);
+    });
+
+    it("a runner advertising ['visual-auditor'] opts in without restricting other roles", async () => {
+      const where = await claimWhere({ availableSkills: ['visual-auditor'] });
+      const opened = nodesOfType(where, 'inArray').filter((n) => n.field === 'roleSlug');
+      expect(opened.map((n) => n.values)).toEqual([['visual-auditor']]);
+    });
+
+    it("a runner advertising ['builder'] keeps today's strict routing", async () => {
+      const where = await claimWhere({ availableSkills: ['builder'] });
+      const lists = nodesOfType(where, 'inArray').filter((n) => n.field === 'roleSlug').map((n) => n.values);
+      expect(lists).toContainEqual(['builder']);
     });
   });
 

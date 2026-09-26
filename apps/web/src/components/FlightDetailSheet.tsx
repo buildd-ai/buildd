@@ -312,7 +312,7 @@ function StatTile({ value, label, accent }: StatTileProps) {
   return (
     <div className="border border-border-default px-2.5 py-2 flex flex-col gap-1">
       <span className={`text-base ${accent ? 'text-accent-text' : 'text-text-primary'}`}>{value}</span>
-      <span className="text-[10px] text-text-muted">{label}</span>
+      <span className="text-[11px] md:text-[10px] text-text-muted">{label}</span>
     </div>
   );
 }

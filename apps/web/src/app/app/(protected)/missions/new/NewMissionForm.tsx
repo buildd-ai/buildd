@@ -134,7 +134,7 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
 const FIELD_CLS =
   'min-w-0 w-full flex-1 bg-surface-1 border border-border-default text-base md:text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-primary';
 const FIELD_LABEL_CLS =
-  'text-[10px] text-text-muted font-mono uppercase tracking-wide w-24 shrink-0 pt-1';
+  'text-[11px] md:text-[10px] text-text-muted font-mono uppercase tracking-wide w-24 shrink-0 pt-1';
 
 export function CriterionRow({
   draft,
@@ -176,7 +176,7 @@ export function CriterionRow({
         </button>
       </div>
 
-      {option && <p className="text-[10px] text-text-muted/80">{option.hint}</p>}
+      {option && <p className="text-[11px] md:text-[10px] text-text-muted/80">{option.hint}</p>}
 
       {draft.type === 'command' && (
         <div className="flex items-start gap-2">

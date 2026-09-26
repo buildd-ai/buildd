@@ -58,6 +58,8 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
@@ -1153,7 +1155,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1170,7 +1172,7 @@ export async function PATCH(
    * had not, and 400'd on completion.
    *
    * `artifacts` has no taskId column, so mission-level rows are attributed by
-   * (missionId, touched since this worker started). The time bound is what stops
+   * (missionId, no owning worker, touched since this worker started). The time bound is what stops
    * a sibling task's pre-existing mission artifact from satisfying the gate.
    */
   // Captured outside the closure: narrowing of `worker` does not survive into a
@@ -1183,7 +1185,11 @@ export async function PATCH(
     const where = taskMissionId
       ? or(
           eq(artifacts.workerId, id),
-          and(eq(artifacts.missionId, taskMissionId), gte(artifacts.updatedAt, workStart)),
+          // workerId NULL only: a mission-level row (api/missions/[id]/artifacts).
+          // A row another worker owns is ITS deliverable, and every mission
+          // upload now carries missionId (upload-url, create_artifact), so a
+          // sibling's screenshot must not satisfy this task's gate.
+          and(eq(artifacts.missionId, taskMissionId), isNull(artifacts.workerId), gte(artifacts.updatedAt, workStart)),
         )
       : eq(artifacts.workerId, id);
     const rows = await db.query.artifacts.findMany({ where, limit: 1 });
@@ -1524,8 +1530,37 @@ export async function PATCH(
         return frictionSignature;
       };
 
+      // A visual-auditor task (the mission's [surface audit]) is gated on its
+      // own evidence, which REPLACES hasDeliverableArtifact: a summary, a PR or
+      // a sibling's mission artifact must not pass an audit that never looked.
+      // Every required route × {mobile, desktop} needs a screenshot from this
+      // worker with a finding and a stored object, and every issue a fix task.
+      // Checked ahead of every outputRequirement arm so no `hasPR` shortcut
+      // can satisfy it. See lib/visual-audit-evidence.ts.
+      const isVisualAuditorTask = terminalTaskRow[0]?.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+      if (isVisualAuditorTask && worker.taskId) {
+        const evidence = await loadVisualAuditEvidence({
+          workerId: id,
+          taskId: worker.taskId,
+          missionId: taskMissionId,
+          workspaceId: worker.workspaceId,
+          workerStartedAt,
+        });
+        if (!evidence.ok) {
+          const frictionSignature = await persistRejectedCompletionPayload('visual_evidence');
+          return NextResponse.json({
+            error: formatVisualEvidenceRejection(evidence),
+            hint: 'visual_evidence',
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        // Screenshots are the deliverable; the auditor ships nothing to merge.
+        skipRelease = true;
+      }
+
       // pr_required: always require a PR (regardless of commits)
-      if (outputReq === 'pr_required' && !hasPR) {
+      if (outputReq === 'pr_required' && !hasPR && !isVisualAuditorTask) {
         const frictionSignature = await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
@@ -1540,7 +1575,7 @@ export async function PATCH(
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
-      if (outputReq === 'artifact_required' && !hasPR) {
+      if (outputReq === 'artifact_required' && !hasPR && !isVisualAuditorTask) {
         if (!(await hasDeliverableArtifact())) {
           const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
@@ -2555,13 +2590,15 @@ export async function PATCH(
 
       // Auto-retry: mission tasks get 1 automatic retry before permanently failing
       let infraStalledFail = false;
+      // A visual-auditor mission task that fails for good (see below).
+      let auditStalledFail = false;
       let infraRetryStartAt: Date | null = null;
       const MAX_INFRA_RETRIES_PATCH = 3;
       const INFRA_BACKOFF_MINUTES_PATCH = [5, 15, 30] as const;
       if (status === 'failed') {
         const taskForRetry = await db.query.tasks.findFirst({
           where: eq(tasks.id, worker.taskId),
-          columns: { missionId: true, context: true, status: true },
+          columns: { missionId: true, context: true, status: true, roleSlug: true },
         });
         taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
         const retryCount = (taskCtxForRetry.retryCount as number) || 0;
@@ -2633,6 +2670,20 @@ export async function PATCH(
             shouldAutoRetry = false;
             infraStalledFail = true;
           }
+        }
+
+        // Visual auditor (docs/design/visual-qa-auditor.md): an audit that
+        // errors before it can park a question has seen nothing. A plain
+        // `failed` is terminal in canCompleteMission and would RELEASE the
+        // mission, so once its retries are spent it is recorded infra_stalled,
+        // which holds the mission until a human looks. A cancel is a human's
+        // call and is left alone.
+        if (
+          !shouldAutoRetry && !infraStalledFail &&
+          taskForRetry?.missionId && taskForRetry.roleSlug === VISUAL_AUDITOR_ROLE_SLUG &&
+          taskForRetry.status !== 'cancelled'
+        ) {
+          auditStalledFail = true;
         }
 
         // Capture branch coordinates from the failing worker for retry continuity.
@@ -2961,6 +3012,13 @@ export async function PATCH(
               error: `Task stalled: infra errors prevented startup on ${MAX_INFRA_RETRIES_PATCH} consecutive attempts`,
               errorType: 'infra_stalled',
               infraRetryCount: MAX_INFRA_RETRIES_PATCH,
+            },
+          } : auditStalledFail ? {
+            result: {
+              error: isSensitive
+                ? 'Visual audit ended without evidence'
+                : `Visual audit ended without evidence: ${error ?? worker.error ?? 'worker failed without an error message'}`,
+              errorType: 'infra_stalled',
             },
           } : isSessionBudgetCap ? {
             result: {

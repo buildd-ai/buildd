@@ -189,6 +189,8 @@ mock.module('@buildd/core/db/schema', () => ({
   // dynamic import chain even though the runtime value is never dereferenced by
   // the paginated GET tests.
   taskSubjectReports: {},
+  // Same reason: @/lib/mission-surface-audit posts the round-cap question.
+  missionNotes: {},
 }));
 
 // Re-export real implementations of pure @buildd/core packages so that mocks
@@ -204,7 +206,8 @@ mock.module('@buildd/core/subject-anchor-extractor', () => _subjectAnchorExtract
 mock.module('@buildd/core/friction-manifest', () => _frictionManifestMod);
 mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock(() => 'healthy') }));
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
-mock.module('@buildd/shared', () => ({ TaskCategory: {} }));
+// VISUAL_AUDITOR_ROLE_SLUG: read at import by lib/mission-surface-audit.
+mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor' }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 

@@ -941,7 +941,7 @@ export default async function TaskDetailPage({
         {errorTraces.length > 0 && (
           <div className="mb-6" id="agent-error-traces">
             <details className="card">
-              <summary className="cursor-pointer p-4 font-mono text-[10px] uppercase tracking-[2.5px] text-red-400 hover:text-red-300 select-none">
+              <summary className="cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-red-400 hover:text-red-300 select-none">
                 Agent errors · {errorTraces.length}
               </summary>
               <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
@@ -980,13 +980,13 @@ export default async function TaskDetailPage({
           />
         ) : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (
           <div className="mb-6">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Related Tasks
             </div>
             <div className="card p-4 space-y-3">
               {task.parentTask && (
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="w-full md:w-auto font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
+                  <span className="w-full md:w-auto font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
                   <Link
                     href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
                     className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
@@ -1003,7 +1003,7 @@ export default async function TaskDetailPage({
                 ['Attempts', childTasks.attempts],
               ] as const).map(([label, list]) => list.length > 0 && (
                 <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
-                  <span className="font-mono text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
+                  <span className="font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
                   <div className="mt-2 space-y-1 ml-2 md:ml-4">
                     {list.map((sub) => (
                       <div key={sub.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -1031,7 +1031,7 @@ export default async function TaskDetailPage({
             segment. Renders nothing when nothing is recorded. */}
         {(!origin.isEmpty || origin.shipped) && (
           <div className="mb-6" data-testid="task-origin">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Origin
             </div>
             <div className="card p-4 space-y-2">
@@ -1085,7 +1085,7 @@ export default async function TaskDetailPage({
             templated prompt, i.e. reference material, so it sits below the plan. */}
         {task.description && !descriptionIsSummary && (
           <div className="mb-6">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Description
             </div>
             <CollapsibleDescription content={task.description} />
@@ -1105,7 +1105,7 @@ export default async function TaskDetailPage({
           const allResolved = unresolvedDeps.length === 0;
           return (
             <div className="mb-6">
-              <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
                 Dependencies
               </div>
               <div className="card p-4 space-y-2">
@@ -1145,7 +1145,7 @@ export default async function TaskDetailPage({
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
           <div className="mb-6">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
               Attachments
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1225,7 +1225,7 @@ export default async function TaskDetailPage({
         {/* Active Worker */}
         {activeWorker && (
           <div className="mb-8 order-first md:order-none">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6 flex items-center gap-2">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6 flex items-center gap-2">
               <Spinner size="xs" className="text-status-running" aria-label="Running" />
               Active Worker
             </div>
@@ -1272,7 +1272,7 @@ export default async function TaskDetailPage({
             href={taskPageHref({ taskId: nextChainTask.id })}
             className="group mb-8 flex items-center gap-3 p-4 rounded-[10px] border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
           >
-            <span className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
+            <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
             <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
             <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
               {nextChainTask.status}
@@ -1295,7 +1295,7 @@ export default async function TaskDetailPage({
           };
           return (
             <div className="mb-8">
-              <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
                 Pull Request
               </div>
               {/* The GitHub-derived half of this card (CI runs, reviews,
@@ -1317,14 +1317,14 @@ export default async function TaskDetailPage({
             const hasCodeDeliverables = (result.commits ?? 0) > 0 || !!result.prUrl || !!result.branch;
             const isFallbackSummary = result.summarySource === 'fallback';
             const fallbackChip = (
-              <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+              <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
                 unauthored · last message
               </span>
             );
 
             return (
               <div className="mb-8">
-                <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+                <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
                   Deliverables
                 </div>
 
@@ -1407,7 +1407,7 @@ export default async function TaskDetailPage({
                 {/* Structured Output */}
                 {result.structuredOutput && (
                   <div className="mt-4">
-                    <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
+                    <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
                       Structured Output
                     </div>
                     <pre className="p-4 bg-surface-2 border border-border-default rounded-[10px] overflow-x-auto text-sm font-mono text-text-primary">
@@ -1442,7 +1442,7 @@ export default async function TaskDetailPage({
         {/* Worker History */}
         {taskWorkers.length > 0 && (
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               Worker History
             </div>
             <div className="border border-border-default rounded-[10px] overflow-hidden">
@@ -1496,7 +1496,7 @@ export default async function TaskDetailPage({
                         };
                         return (
                           <div className="mt-1 rounded-[6px] border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
-                            <p className="font-mono text-[10px] uppercase tracking-wide text-status-warning">
+                            <p className="font-mono text-[11px] md:text-[10px] uppercase tracking-wide text-status-warning">
                               ⚠ Rejected deliverable — not a satisfied outcome
                               {rejected.reason ? ` (${rejected.reason})` : ''}
                             </p>
@@ -1504,7 +1504,7 @@ export default async function TaskDetailPage({
                               <p className="text-[11px] text-text-muted mt-0.5 whitespace-pre-wrap break-words line-clamp-4">{rejected.summary}</p>
                             )}
                             {rejected.salvagedArtifactId && (
-                              <p className="font-mono text-[10px] text-text-muted mt-0.5">Salvaged as artifact {rejected.salvagedArtifactId}</p>
+                              <p className="font-mono text-[11px] md:text-[10px] text-text-muted mt-0.5">Salvaged as artifact {rejected.salvagedArtifactId}</p>
                             )}
                           </div>
                         );
@@ -1551,7 +1551,7 @@ export default async function TaskDetailPage({
                       </div>
                       {/* Per-model usage breakdown — hidden on mobile for density */}
                       {(worker.resultMeta as any)?.modelUsage && Object.keys((worker.resultMeta as any).modelUsage).length > 0 && (
-                        <div className="hidden md:flex mt-1.5 flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-text-muted">
+                        <div className="hidden md:flex mt-1.5 flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] md:text-[10px] text-text-muted">
                           {Object.entries((worker.resultMeta as any).modelUsage as Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; costUSD: number }>).map(([model, usage]) => (
                             <span key={model} className="inline-flex items-center gap-1">
                               <span className="text-text-secondary">{getModelDisplayName(model)}</span>
@@ -1597,7 +1597,7 @@ export default async function TaskDetailPage({
             cards. Kept one tap away for when it's actually needed (billing, routing,
             debugging) without letting it crowd out the phase-relevant content. */}
         <details className="mt-8 group">
-          <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-secondary select-none">
+          <summary className="cursor-pointer font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-secondary select-none">
             Details
           </summary>
           <dl className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-[13px]">

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 import { listInstallationRepos } from '@/lib/github';
 import { syncInstallationRepos } from '@/lib/github-repo-link';
@@ -13,12 +13,16 @@ export async function GET(
 ) {
   const { id } = await params;
 
+  // Stays gated in dev even with DATABASE_URL + DEV_USER_EMAIL: listing repos
+  // mints a GitHub installation token and, when the cached one is near expiry,
+  // persists the new one to github_installations (getInstallationToken). Local
+  // dev must not write to the DB it points at, which is often production.
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ repos: [] });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -32,7 +36,7 @@ export async function GET(
     }
 
     // Listed only for members of a team the installation belongs to (or its installer).
-    const access = await getInstallationAccessForUser(session.user.id!, installation);
+    const access = await getInstallationAccessForUser(user.id, installation);
     if (!access.canView) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }
@@ -91,8 +95,13 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  const session = await auth();
-  if (!session?.user) {
+  // Sync writes github_repos rows and back-links workspaces. Never from dev.
+  if (process.env.NODE_ENV === 'development') {
+    return NextResponse.json({ synced: 0, linked: 0, linkedWorkspaceIds: [] });
+  }
+
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -104,7 +113,7 @@ export async function POST(
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }
 
-    const access = await getInstallationAccessForUser(session.user.id!, installation);
+    const access = await getInstallationAccessForUser(user.id, installation);
     if (!access.canView) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }

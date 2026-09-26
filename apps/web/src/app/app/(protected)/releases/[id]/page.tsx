@@ -150,11 +150,11 @@ export default async function ReleaseDetailPage({
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
             <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
+              <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
                 {stateBadge.label}
               </span>
               {release.archetype && (
-                <span className="text-[10px] font-mono px-1.5 py-0.5 border border-border-default text-text-muted uppercase tracking-wide">
+                <span className="text-[11px] md:text-[10px] font-mono px-1.5 py-0.5 border border-border-default text-text-muted uppercase tracking-wide">
                   {release.archetype}
                 </span>
               )}
@@ -242,7 +242,7 @@ export default async function ReleaseDetailPage({
           <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-2">CI & Deploy</div>
           <div className="flex flex-wrap gap-3 items-center">
             {ciBadge && (
-              <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border ${ciBadge.cls}`}>
+              <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border ${ciBadge.cls}`}>
                 {ciBadge.label}
               </span>
             )}
@@ -280,13 +280,13 @@ export default async function ReleaseDetailPage({
         <div className="card p-4 mb-4">
           <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-2">Verification</div>
           {release.state === 'deploying' && (
-            <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-info border-status-info/30 animate-pulse">
+            <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-info border-status-info/30 animate-pulse">
               Verifying…
             </span>
           )}
           {release.state === 'healthy' && (
             <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-success border-status-success/30">
+              <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-success border-status-success/30">
                 Healthy
               </span>
               {watchRemainingMin > 0 && (
@@ -298,7 +298,7 @@ export default async function ReleaseDetailPage({
           )}
           {release.state === 'degraded' && (
             <div className="flex flex-col gap-2">
-              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-warning border-status-warning/30 w-fit">
+              <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-warning border-status-warning/30 w-fit">
                 Degraded
               </span>
               {release.failureReason && (
@@ -313,7 +313,7 @@ export default async function ReleaseDetailPage({
           )}
           {release.state === 'failed' && (
             <div className="flex flex-col gap-2">
-              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-error border-status-error/30 w-fit">
+              <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-error border-status-error/30 w-fit">
                 Failed
               </span>
               {release.failureReason && (
@@ -334,7 +334,7 @@ export default async function ReleaseDetailPage({
             {edges.map((edge) => (
               <div key={edge.taskId} className="flex items-center justify-between gap-3 text-[12px]">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className={`shrink-0 font-mono text-[10px] ${TASK_STATUS_CLS[edge.taskStatus ?? ''] ?? 'text-text-muted'}`}>
+                  <span className={`shrink-0 font-mono text-[11px] md:text-[10px] ${TASK_STATUS_CLS[edge.taskStatus ?? ''] ?? 'text-text-muted'}`}>
                     {edge.taskStatus ?? '—'}
                   </span>
                   <Link
@@ -346,10 +346,10 @@ export default async function ReleaseDetailPage({
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {edge.prNumber && (
-                    <span className="font-mono text-[10px] text-text-muted">PR #{edge.prNumber}</span>
+                    <span className="font-mono text-[11px] md:text-[10px] text-text-muted">PR #{edge.prNumber}</span>
                   )}
                   {edge.commitSha && (
-                    <span className="font-mono text-[10px] text-text-muted">{edge.commitSha.slice(0, 7)}</span>
+                    <span className="font-mono text-[11px] md:text-[10px] text-text-muted">{edge.commitSha.slice(0, 7)}</span>
                   )}
                 </div>
               </div>

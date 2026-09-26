@@ -44,6 +44,7 @@ import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld } from './held-gate';
+import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
@@ -509,14 +510,10 @@ export async function POST(req: NextRequest) {
     )`
   );
 
-  // Filter by roleSlug: tasks with a role_slug are only claimable by runners
-  // that advertise that slug in availableSkills.
-  // If availableSkills is not provided, the runner can claim any task (backward compat).
-  if (availableSkills.length > 0) {
-    claimableConditions.push(
-      or(isNull(tasks.roleSlug), inArray(tasks.roleSlug, availableSkills))
-    );
-  }
+  // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
+  // (visual-auditor) need an explicit availableSkills match; every other role
+  // keeps the legacy rule, where an empty list claims anything.
+  claimableConditions.push(...roleSlugGate(availableSkills));
 
   // Over-fetch candidates so a deferred prefix (e.g. connector-mismatched tasks)
   // cannot exhaust the window and starve valid tasks behind it.

@@ -40,7 +40,7 @@ export function LoopStatusChip({
     return (
       <span
         data-loop-status="waiting-merge"
-        className="inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide border text-status-info border-status-info shrink-0"
+        className="inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase tracking-wide border text-status-info border-status-info shrink-0"
       >
         <span className="w-1.5 h-1.5 rounded-full bg-current animate-status-pulse" />
         Waiting · merge
@@ -57,7 +57,7 @@ export function LoopStatusChip({
   return (
     <span
       data-loop-status={deferred ? 'deferred' : terminal ? loopState : 'active'}
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide border ${color} shrink-0`}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase tracking-wide border ${color} shrink-0`}
     >
       {!terminal && <span className="w-1.5 h-1.5 rounded-full bg-current animate-status-pulse" />}
       {loopState === 'exhausted'
@@ -85,7 +85,7 @@ export function LoopHistory({
 }) {
   return (
     <section className="mb-6" data-testid="loop-history">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Loop history
       </div>
       {loopState === 'exhausted' && (
@@ -110,7 +110,7 @@ export function LoopHistory({
                       <span className={`text-xs font-medium ${entry.satisfied ? 'text-status-success' : 'text-status-error'}`}>
                         {entry.satisfied ? 'Condition met' : 'Condition unmet'}
                       </span>
-                      <span className="font-mono text-[10px] uppercase text-text-muted">{entry.conditionType}</span>
+                      <span className="font-mono text-[11px] md:text-[10px] uppercase text-text-muted">{entry.conditionType}</span>
                     </div>
                     <p className="mt-1 text-sm text-text-secondary">{entry.summary}</p>
                   </div>

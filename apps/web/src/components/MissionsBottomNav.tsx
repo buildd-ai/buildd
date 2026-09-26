@@ -33,12 +33,12 @@ export default function MissionsBottomNav() {
                     opacity wrapper so an alert count stays full-strength. */}
                 <span className={`block w-full h-full ${active ? 'opacity-100' : 'opacity-35'}`}>{tab.icon}</span>
                 {showBadge && (
-                  <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-error text-white">
+                  <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-4 h-4 px-0.5 text-[11px] leading-none font-bold rounded-full bg-status-error text-white">
                     {badgeCount}
                   </span>
                 )}
               </span>
-              <span className={`text-[10px] tracking-[0.3px] ${active ? 'font-medium' : 'font-normal'}`}>
+              <span className={`text-[11px] md:text-[10px] tracking-[0.3px] ${active ? 'font-medium' : 'font-normal'}`}>
                 {tab.label}
               </span>
             </Link>

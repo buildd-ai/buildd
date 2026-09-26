@@ -34,7 +34,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     {item.workspaceName && (
-                      <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
+                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
                         {item.workspaceName}
                       </span>
                     )}
@@ -67,12 +67,12 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     {item.workspaceName && (
-                      <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
+                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
                         {item.workspaceName}
                       </span>
                     )}
                     {item.baselineSource !== 'healthy' && (
-                      <span className="text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
                     )}
                     <span className="text-[13px] text-text-secondary">
                       <DerivedMetricDisplay
@@ -89,7 +89,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       />
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border border-status-warning/30 text-status-warning shrink-0">
+                  <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border border-status-warning/30 text-status-warning shrink-0">
                     CI {item.ciState}
                   </span>
                 </div>
@@ -105,12 +105,12 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   {item.workspaceName && (
-                    <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
+                    <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
                       {item.workspaceName}
                     </span>
                   )}
                   {item.baselineSource !== 'healthy' && (
-                    <span className="text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
+                    <span className="text-[11px] md:text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
                   )}
                   <span className="text-[13px] font-medium text-text-primary">
                     <DerivedMetricDisplay

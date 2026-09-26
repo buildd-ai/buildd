@@ -102,7 +102,13 @@ export function affordanceFor(
     case 'claim_deferral':
       return taskAffordance('Open the deferred task', focus.taskIds[0], ctx.missionId);
     case 'task':
-      return taskAffordance('Open the blocking task', focus.taskIds[0], ctx.missionId);
+      // `warning` is the stall reading (nothing live on the mission); `neutral`
+      // is open work with agents running, which is not blocking anything.
+      return taskAffordance(
+        focus.tone === 'warning' ? 'Open the blocking task' : 'View the open task',
+        focus.taskIds[0],
+        ctx.missionId,
+      );
     case 'dependency':
       return { kind: 'internal', label: 'Open the upstream mission', href: `/app/missions/${focus.missionId}` };
     case 'human_decision':

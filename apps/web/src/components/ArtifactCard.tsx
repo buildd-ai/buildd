@@ -139,7 +139,7 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
             a phone-width title is not squeezed to a few characters. */}
         <div data-testid="artifact-card-title-row" className="flex items-start gap-2 mb-1.5">
           <span
-            className={`shrink-0 mt-px px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wider rounded ${style.bg} ${style.text}`}
+            className={`shrink-0 mt-px px-2 py-0.5 text-[11px] md:text-[10px] font-mono font-semibold uppercase tracking-wider rounded ${style.bg} ${style.text}`}
           >
             {artifact.type}
           </span>
@@ -167,7 +167,7 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
       <div className="hidden sm:flex flex-col p-4">
         {/* Type badge row */}
         <div className="flex items-center gap-2 mb-2">
-          <span className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded ${style.bg} ${style.text}`}>
+          <span className={`px-2 py-0.5 text-[11px] md:text-[10px] font-mono uppercase tracking-wider rounded ${style.bg} ${style.text}`}>
             {artifact.type}
           </span>
         </div>

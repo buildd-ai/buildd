@@ -35,7 +35,7 @@ export function InterruptReviewButton({ workerId }: { workerId: string }) {
       >
         {pending ? 'Interrupting…' : 'Interrupt & take over'}
       </button>
-      {error && <p className="mt-1 max-w-44 text-[10px] text-status-error">{error}</p>}
+      {error && <p className="mt-1 max-w-44 text-[11px] md:text-[10px] text-status-error">{error}</p>}
     </div>
   );
 }

@@ -393,7 +393,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="section-label">Goal criteria</h2>
           {overallVerdict && (
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
             </span>
           )}
@@ -463,7 +463,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                 </span>
                 {/* Content */}
                 <div className="flex-1 min-w-0">
-                  <span className="inline-block text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm mb-1">
+                  <span className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm mb-1">
                     {typeLabel}
                   </span>
                   <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
@@ -495,7 +495,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                     <a
                       href={`/app/tasks/${cs.workerTaskId}`}
                       onClick={(e) => e.stopPropagation()}
-                      className="inline-block text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
+                      className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
                     >
                       verification task {cs.workerTaskId.slice(0, 8)}{cs.evaluatedAt ? ` · ${formatRelativeTime(cs.evaluatedAt)}` : ''}
                     </a>
@@ -503,7 +503,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                   {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">
                       {cs.evidenceRefs.map((ref, ri) => (
-                        <span key={ri} className="text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
+                        <span key={ri} className="text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
                           {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
                         </span>
                       ))}

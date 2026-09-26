@@ -162,13 +162,13 @@ function PrStatusLine({
           href={lw.prUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-[10px] text-accent-text hover:underline"
+          className="font-mono text-[11px] md:text-[10px] text-accent-text hover:underline"
         >
           #{lw.prNumber}
         </a>
-        <span className="text-[10px] text-text-muted">·</span>
+        <span className="text-[11px] md:text-[10px] text-text-muted">·</span>
         {lw.supersededByPrNumber ? (
-          <span className="text-[10px] text-status-success">
+          <span className="text-[11px] md:text-[10px] text-status-success">
             landed as{' '}
             {lw.supersededByPrUrl ? (
               <a href={lw.supersededByPrUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
@@ -177,7 +177,7 @@ function PrStatusLine({
             ) : `#${lw.supersededByPrNumber}`}
           </span>
         ) : (
-          <span className="text-[10px] text-status-error">closed — not merged</span>
+          <span className="text-[11px] md:text-[10px] text-status-error">closed — not merged</span>
         )}
       </div>
     );
@@ -194,12 +194,12 @@ function PrStatusLine({
         href={lw.prUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-mono text-[10px] text-accent-text hover:underline"
+        className="font-mono text-[11px] md:text-[10px] text-accent-text hover:underline"
       >
         #{lw.prNumber}
       </a>
-      <span className="text-[10px] text-text-muted">·</span>
-      <span className={`text-[10px] ${statusCls}`}>{statusWord}</span>
+      <span className="text-[11px] md:text-[10px] text-text-muted">·</span>
+      <span className={`text-[11px] md:text-[10px] ${statusCls}`}>{statusWord}</span>
       {isWaitingMerge && (
         <MergeConfirmButton
           prNumber={lw.prNumber}
@@ -216,7 +216,7 @@ function PrStatusLine({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-2">
+    <div className="text-[11px] md:text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-2">
       {children}
     </div>
   );
@@ -243,7 +243,7 @@ function ApprovedVerdictChip({
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="inline-flex items-center gap-1 text-[10px] text-status-success font-mono hover:underline"
+          className="inline-flex items-center gap-1 text-[11px] md:text-[10px] text-status-success font-mono hover:underline"
           title="Tap to expand approved verdict"
         >
           <span>✓</span>
@@ -262,17 +262,17 @@ function ApprovedVerdictChip({
           ) : (
             <span className="text-status-success text-[11px] font-semibold">🤖 Approved</span>
           )}
-          {confidence && <span className="text-[10px] text-status-success/70">(confidence {confidence})</span>}
+          {confidence && <span className="text-[11px] md:text-[10px] text-status-success/70">(confidence {confidence})</span>}
           <button
             type="button"
             onClick={() => setExpanded(false)}
-            className="ml-auto text-[10px] text-text-muted hover:text-text-secondary"
+            className="ml-auto text-[11px] md:text-[10px] text-text-muted hover:text-text-secondary"
           >
             ✕
           </button>
         </div>
         <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={note.body ?? note.title}>{note.body ?? note.title}</p>
-        <p className="text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Merging automatically…'}</p>
+        <p className="text-[11px] md:text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Merging automatically…'}</p>
       </div>
     </div>
   );
@@ -400,32 +400,32 @@ function TaskRow({
             );
             if (retryTask.status === 'completed') {
               retryLine = (
-                <p className="text-[10px] text-status-success mt-0.5">
+                <p className="text-[11px] md:text-[10px] text-status-success mt-0.5">
                   → {taskLink} done{retryTask.prNumber ? ` — pushed to #${retryTask.prNumber}` : ''}
                 </p>
               );
             } else if (retryTask.status === 'failed') {
               retryLine = (
-                <p className="text-[10px] text-status-error mt-0.5">
+                <p className="text-[11px] md:text-[10px] text-status-error mt-0.5">
                   → {taskLink} failed
                 </p>
               );
             } else if (retryTask.status === 'running' || retryTask.status === 'waiting_input') {
               retryLine = (
-                <p className="text-[10px] text-text-muted mt-0.5">
+                <p className="text-[11px] md:text-[10px] text-text-muted mt-0.5">
                   → {taskLink} running
                 </p>
               );
             } else {
               retryLine = (
-                <p className="text-[10px] text-text-muted mt-0.5">
+                <p className="text-[11px] md:text-[10px] text-text-muted mt-0.5">
                   → {taskLink} queued{lw?.branch ? ` on same branch (${lw.branch})` : ''}
                 </p>
               );
             }
           } else if (lw?.branch) {
             retryLine = (
-              <p className="text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({lw.branch})</p>
+              <p className="text-[11px] md:text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({lw.branch})</p>
             );
           }
           return (
@@ -437,7 +437,7 @@ function TaskRow({
                   ) : (
                     <span className="text-[#D97706] text-[11px] font-semibold">🤖 Changes Requested</span>
                   )}
-                  {iteration && <span className="text-[10px] text-[#D97706]/70">(iteration {iteration})</span>}
+                  {iteration && <span className="text-[11px] md:text-[10px] text-[#D97706]/70">(iteration {iteration})</span>}
                 </div>
                 <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={note.body ?? note.title}>{note.body ?? note.title}</p>
                 {retryLine}
@@ -573,7 +573,7 @@ function BookkeepingFooter({ tasks }: { tasks: BookkeepingTask[] }) {
         <button
           type="button"
           onClick={() => setExpanded(v => !v)}
-          className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-text-secondary transition-colors font-mono shrink-0"
+          className="flex items-center gap-1.5 text-[11px] md:text-[10px] text-text-muted hover:text-text-secondary transition-colors font-mono shrink-0"
         >
           <span
             className="text-[9px] transition-transform duration-200"
@@ -591,13 +591,13 @@ function BookkeepingFooter({ tasks }: { tasks: BookkeepingTask[] }) {
           {sortedDesc.map(task => (
             <div key={task.id} className="flex items-center gap-2 text-[11px] text-text-muted py-0.5">
               <span className="flex-1 min-w-0 truncate">{task.title}</span>
-              <span className="shrink-0 text-[10px]">{timeAgo(task.taskUpdatedAt)}</span>
+              <span className="shrink-0 text-[11px] md:text-[10px]">{timeAgo(task.taskUpdatedAt)}</span>
               {task.latestWorker?.prUrl && (
                 <a
                   href={task.latestWorker.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="shrink-0 text-accent-text hover:underline text-[10px]"
+                  className="shrink-0 text-accent-text hover:underline text-[11px] md:text-[10px]"
                   aria-label="PR"
                 >
                   ↗
@@ -661,9 +661,14 @@ function WaveBandedDone({
         const isOpen = isBandExpanded(band.label);
         const bandChains = band.items.map(item => item.chain);
         const bandSegs = getSegments(bandChains);
-        const prCount = bandChains.filter(c =>
-          c.head.latestWorker?.prUrl && (c.head.latestWorker.mergedAt || c.head.latestWorker.prLifecycleStatus === 'merged')
-        ).length;
+        // Distinct merged PRs, not chains: a CI-retry task pushes to its
+        // parent's PR, and both rows can sit in the same band.
+        const prCount = new Set(
+          bandChains
+            .map(c => c.head.latestWorker)
+            .filter(w => w?.prUrl && (w.mergedAt || w.prLifecycleStatus === 'merged'))
+            .map(w => w!.prUrl),
+        ).size;
 
         return (
           <div key={band.label}>
@@ -692,8 +697,8 @@ function WaveBandedDone({
               >
                 <span className="text-[10px]">▶</span>
                 <span>{band.label}</span>
-                <span className="text-[10px]">· {band.items.length} {band.items.length === 1 ? 'task' : 'tasks'}</span>
-                {prCount > 0 && <span className="text-[10px]">· {prCount} PR{prCount !== 1 ? 's' : ''}</span>}
+                <span className="text-[11px] md:text-[10px]">· {band.items.length} {band.items.length === 1 ? 'task' : 'tasks'}</span>
+                {prCount > 0 && <span className="text-[11px] md:text-[10px]">· {prCount} PR{prCount !== 1 ? 's' : ''}</span>}
                 {bandSegs.length > 0 && (
                   <span className="ml-auto flex-shrink-0">
                     <MissionProgressBar density="mini" segments={bandSegs} maxWidth={80} />
@@ -724,7 +729,7 @@ function WaveBandedDone({
             className="flex items-center gap-2 w-full text-left px-2 py-1.5 mt-0.5 text-[12px] text-text-muted hover:text-text-secondary transition-colors rounded"
           >
             <span
-              className="text-[10px] transition-transform duration-200"
+              className="text-[11px] md:text-[10px] transition-transform duration-200"
               style={{ transform: failedExpanded ? 'rotate(90deg)' : 'none' }}
             >
               ▶
@@ -747,7 +752,7 @@ function WaveBandedDone({
           className="flex items-center gap-2 w-full text-left px-2 py-1.5 text-[12px] text-text-muted hover:text-text-secondary transition-colors rounded"
         >
           <span
-            className="text-[10px] transition-transform duration-200"
+            className="text-[11px] md:text-[10px] transition-transform duration-200"
             style={{ transform: isBandExpanded('_legacy') ? 'rotate(90deg)' : 'none' }}
           >
             ▶
@@ -873,7 +878,7 @@ function TimelineView({
                 className="flex items-center gap-2 w-full text-left px-2 py-1.5 mt-0.5 text-[12px] text-text-muted hover:text-text-secondary transition-colors rounded"
               >
                 <span
-                  className="text-[10px] transition-transform duration-200"
+                  className="text-[11px] md:text-[10px] transition-transform duration-200"
                   style={{ transform: moreQueuedExpanded ? 'rotate(90deg)' : 'none' }}
                 >
                   ▶

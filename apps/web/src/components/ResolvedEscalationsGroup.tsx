@@ -76,11 +76,11 @@ export function ResolvedEscalationsGroup({ items }: Props) {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                    <span className="text-[10px] font-mono text-text-muted tracking-wide uppercase">
+                    <span className="text-[11px] md:text-[10px] font-mono text-text-muted tracking-wide uppercase">
                       {item.prLifecycleStatus === 'merged' ? 'Merged' : 'Closed'}
                     </span>
                     {item.workspaceName && (
-                      <span className="text-[10px] text-text-muted">{item.workspaceName}</span>
+                      <span className="text-[11px] md:text-[10px] text-text-muted">{item.workspaceName}</span>
                     )}
                   </div>
                   {item.taskId ? (

@@ -26,7 +26,7 @@ export function SpecSourceBlock({ specSource }: SpecSourceBlockProps) {
 
   return (
     <div className="mb-6" data-testid="task-spec-source">
-      <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Spec
       </div>
       <div className="card p-4 space-y-1">

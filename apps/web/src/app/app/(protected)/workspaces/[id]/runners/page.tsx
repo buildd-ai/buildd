@@ -115,7 +115,7 @@ export default function RunnersPage() {
                           <span className="font-medium text-text-primary truncate">
                             {runner.accountName}
                           </span>
-                          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border ${typeInfo.color}`}>
+                          <span className={`px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded border ${typeInfo.color}`}>
                             {typeInfo.label}
                           </span>
                           <span className={`flex items-center gap-1 text-xs ${
@@ -127,7 +127,7 @@ export default function RunnersPage() {
                             {runner.status === 'online' ? 'Online' : 'Stale'}
                           </span>
                           {runner.environment?.envKeys?.includes('browser') && (
-                            <span className="px-1.5 py-0.5 text-[10px] font-medium rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/30" title="Headless Chromium available">
+                            <span className="px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/30" title="Headless Chromium available">
                               Browser
                             </span>
                           )}
@@ -142,7 +142,7 @@ export default function RunnersPage() {
                         <div className="text-sm font-medium">
                           {runner.activeWorkerCount}/{runner.maxConcurrentWorkers}
                         </div>
-                        <div className="text-[10px] text-text-muted uppercase tracking-wide">
+                        <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wide">
                           workers
                         </div>
                       </div>
@@ -154,7 +154,7 @@ export default function RunnersPage() {
                         {Object.entries(runner.environment.labels).map(([key, value]) => (
                           <span
                             key={key}
-                            className="px-1.5 py-0.5 text-[10px] bg-surface-3 text-text-secondary rounded"
+                            className="px-1.5 py-0.5 text-[11px] md:text-[10px] bg-surface-3 text-text-secondary rounded"
                           >
                             {key}: {value}
                           </span>

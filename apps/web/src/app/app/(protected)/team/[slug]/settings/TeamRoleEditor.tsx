@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
-import { ModelPicker } from '@/components/ModelPicker';
+import { ModelPicker, normalizeAlias } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 import { useConfirm } from '@/components/useConfirm';
-import { MobileSaveBar } from '@/components/MobileSaveBar';
+import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
+import { ColorSwatches } from '@/components/ColorSwatches';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type Scope = 'team' | 'workspace';
 
@@ -17,10 +19,8 @@ const AVAILABLE_TOOLS = [
   'WebSearch', 'WebFetch', 'Agent', 'NotebookEdit',
 ];
 
-const COLOR_PALETTE = [
-  '#D4724A', '#5B7BB3', '#6B8E5E', '#C4963B',
-  '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
-];
+/** Toggle selections: stored order carries no meaning, re-toggling appends. */
+const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo'] as const };
 
 interface Role {
   id: string;
@@ -62,6 +62,27 @@ interface Props {
   delegateOptions: DelegateOption[];
 }
 
+/**
+ * The payload this editor sends, rebuilt from a stored role with the same
+ * normalisation the form's initial state applies. Used as the post-save
+ * baseline from the server's echo.
+ */
+function payloadFromRole(r: Role) {
+  return {
+    name: r.name,
+    description: r.description || null,
+    content: r.content,
+    model: normalizeAlias(r.model),
+    defaultBackend: r.defaultBackend ?? null,
+    allowedTools: r.allowedTools,
+    canDelegateTo: r.canDelegateTo,
+    background: r.background,
+    maxTurns: r.maxTurns || null,
+    color: r.color,
+    workspaceId: undefined as string | undefined,
+  };
+}
+
 /** Fields that can be individually overridden per workspace */
 type OverridableField = 'allowedTools' | 'content' | 'mcpServers';
 const OVERRIDABLE_FIELDS: { key: OverridableField; label: string }[] = [
@@ -73,7 +94,7 @@ const OVERRIDABLE_FIELDS: { key: OverridableField; label: string }[] = [
 /** Shows an inherited field value from the team default */
 function InheritedBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-surface-3 text-text-muted">
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
         <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z M4 22v-7" />
       </svg>
@@ -85,7 +106,7 @@ function InheritedBadge() {
 /** Shows an overridden field badge */
 function OverrideBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
       Override
     </span>
   );
@@ -168,12 +189,12 @@ function WorkspaceOverrideEditor({
           </svg>
           <span className="text-[13px] font-medium text-text-primary">{workspaceName}</span>
           {overriddenFields.size > 0 && (
-            <span className="text-[10px] text-text-muted">
+            <span className="text-[11px] md:text-[10px] text-text-muted">
               {overriddenFields.size} field{overriddenFields.size !== 1 ? 's' : ''} overridden
             </span>
           )}
           {overriddenFields.size === 0 && (
-            <span className="text-[10px] text-text-muted">All inherited</span>
+            <span className="text-[11px] md:text-[10px] text-text-muted">All inherited</span>
           )}
         </div>
         <svg
@@ -366,28 +387,35 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     );
   };
 
+  // What Save would send. Dirty = this differs from the last-saved copy.
+  // Workspace overrides save independently and are deliberately not in here.
+  const payload = {
+    name,
+    description: description || null,
+    content,
+    // ModelPicker rewrites legacy aliases (sonnet → standard) on mount; the
+    // two save the same tier, so compare canonically or the form loads dirty.
+    model: normalizeAlias(model),
+    defaultBackend,
+    allowedTools,
+    canDelegateTo,
+    background,
+    maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
+    color,
+    // Only a move to a workspace changes anything on save.
+    workspaceId: scope === 'workspace' && targetWorkspaceId ? targetWorkspaceId : undefined,
+  };
+  const { dirty, snapshot, markSaved, snapshotOf } = useDirtyState(payload, DIRTY_OPTS);
+  useWarnOnUnload(dirty);
+
   async function handleSave() {
+    const submitted = snapshot;
     setSaving(true);
     setSaved(false);
     setError(null);
     try {
-      const body: Record<string, unknown> = {
-        name,
-        description: description || null,
-        content,
-        model,
-        defaultBackend,
-        allowedTools,
-        canDelegateTo,
-        background,
-        maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
-        color,
-      };
-
-      // Include scope change if applicable
-      if (scope === 'workspace' && targetWorkspaceId) {
-        body.workspaceId = targetWorkspaceId;
-      }
+      const body: Record<string, unknown> = { ...payload };
+      if (body.workspaceId === undefined) delete body.workspaceId;
 
       const res = await fetch(`/api/roles/${role.id}`, {
         method: 'PATCH',
@@ -398,6 +426,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         const data = await res.json();
         throw new Error(data.error || 'Failed to save');
       }
+      // Baseline = what the server says it stored; fall back to what we sent.
+      const data = await res.json().catch(() => null) as { skill?: Role } | null;
+      markSaved(data?.skill ? snapshotOf(payloadFromRole(data.skill)) : submitted);
 
       // If scope changed to workspace, redirect to workspace skills editor
       if (scope === 'workspace' && targetWorkspaceId) {
@@ -505,19 +536,13 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               <span className="font-mono text-xs">{role.slug}</span>
               <span>&middot;</span>
               <span className="text-[11px] text-text-muted">Applies to</span>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
                 All workspaces
               </span>
             </div>
           </div>
           {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="hidden md:inline-flex flex-shrink-0 px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
+          <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} />
         </div>
 
         {error && (
@@ -735,19 +760,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             {/* Color */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Avatar Color</label>
-              <div className="flex gap-2">
-                {COLOR_PALETTE.map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    className={`w-7 h-7 rounded-full transition-all ${
-                      color === c ? 'ring-2 ring-offset-2 ring-text-primary scale-110' : 'hover:scale-110'
-                    }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
+              <ColorSwatches value={color} onChange={setColor} size="md" />
             </div>
 
             {/* Delete */}
@@ -852,11 +865,11 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                     <div key={ws.id} className="flex items-center justify-between text-[12px]">
                       <span className="text-text-primary">{ws.name}</span>
                       {override ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-text/10 text-accent-text text-[10px] font-medium">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-text/10 text-accent-text text-[11px] md:text-[10px] font-medium">
                           Workspace override
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-3 text-text-muted text-[10px]">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-3 text-text-muted text-[11px] md:text-[10px]">
                           Team default
                         </span>
                       )}
@@ -870,7 +883,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
         {/* Sits below Workspace Overrides but saves the team role above, so it
             says so; overrides keep their own "Save override" buttons. */}
-        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} label="Save role" />
+        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save role" />
       </div>
       {confirmDialog}
     </main>

@@ -351,6 +351,49 @@ describe('canCompleteMission — task rows', () => {
     expect(d.reason).toContain('Deploy the worker');
   });
 
+  // Visual QA auditor (docs/design/visual-qa-auditor.md): an audit that dies
+  // before it can park a question is recorded infra_stalled by the worker
+  // PATCH route, so nobody-looked can never read as looked-and-passed.
+  describe('a visual audit that errored before it could ask', () => {
+    const audit = (status: string, result: unknown, title = '[surface audit] Mobile nav') =>
+      work(status, title, { roleSlug: 'visual-auditor', result });
+
+    it('keeps the mission blocked as infra_stalled, naming the audit', async () => {
+      activeMission();
+      taskRows = [
+        work('completed', 'Build the nav'),
+        audit('failed', { errorType: 'infra_stalled', error: 'Visual audit ended without evidence: boom' }),
+      ];
+
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(false);
+      expect(d.code).toBe('infra_stalled');
+      expect(d.infraStalledTitles).toEqual(['[surface audit] Mobile nav']);
+    });
+
+    it('a stalled round-2 re-check blocks the same way', async () => {
+      activeMission();
+      taskRows = [
+        work('completed', 'Build the nav'),
+        audit('completed', null),
+        work('completed', '[surface fix] /app/tasks/:id: header overflows'),
+        audit('failed', { errorType: 'infra_stalled' }, '[surface audit] round 2: Mobile nav'),
+      ];
+
+      const d = await canCompleteMission('m1');
+      expect(d.code).toBe('infra_stalled');
+      expect(d.infraStalledTitles).toEqual(['[surface audit] round 2: Mobile nav']);
+    });
+
+    it('why the write side matters: a plain failed audit would release the mission', async () => {
+      activeMission();
+      taskRows = [work('completed', 'Build the nav'), audit('failed', { error: 'boom' })];
+
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(true);
+    });
+  });
+
   it('allows completion when deliverables are a mix of completed and (non-infra) failed', async () => {
     activeMission();
     taskRows = [work('completed', 'A'), work('failed', 'B')];

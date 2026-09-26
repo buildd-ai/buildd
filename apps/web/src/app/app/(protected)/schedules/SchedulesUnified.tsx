@@ -73,7 +73,7 @@ function nextRunMobileLabel(item: UnifiedScheduleItem): string {
 function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
   if (type === 'heartbeat') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-status-success/10 text-status-success border border-status-success/20">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] md:text-[10px] font-medium bg-status-success/10 text-status-success border border-status-success/20">
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
           <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
         </svg>
@@ -83,7 +83,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
   }
   if (type === 'cron-mission') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] md:text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
           <path d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
@@ -92,7 +92,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-3 text-text-secondary border border-border-default">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] md:text-[10px] font-medium bg-surface-3 text-text-secondary border border-border-default">
       <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
       </svg>
@@ -178,7 +178,7 @@ function SuggestionBanner({
               <a
                 href={`/app/tasks/${s.suggestedByTaskId}`}
                 onClick={(e) => e.stopPropagation()}
-                className="text-[10px] text-primary hover:underline ml-auto"
+                className="text-[11px] md:text-[10px] text-primary hover:underline ml-auto"
               >
                 View task
               </a>
@@ -224,24 +224,24 @@ function ScheduleRow({
         <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-2 sm:gap-3">
           {/* Name + type badge */}
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1">
               <TypeBadge type={item.type} />
               {item.workspaceName && (
-                <span className="text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded">
+                <span className="text-[11px] md:text-[10px] font-mono text-text-muted px-1.5 py-0.5 bg-surface-3 rounded">
                   {item.workspaceName}
                 </span>
               )}
               {hasFailures && (
-                <span className="text-[10px] font-mono text-status-error" title={`${item.consecutiveFailures} consecutive failures`}>
+                <span className="text-[11px] md:text-[10px] font-mono text-status-error" title={`${item.consecutiveFailures} consecutive failures`}>
                   {item.consecutiveFailures} fail{item.consecutiveFailures !== 1 ? 's' : ''}
                 </span>
               )}
               {item.pendingSuggestion && (
-                <span className="text-[10px] font-medium text-status-warning">suggestion</span>
+                <span className="text-[11px] md:text-[10px] font-medium text-status-warning">suggestion</span>
               )}
             </div>
             <div className="text-sm font-medium text-text-primary truncate">{item.name}</div>
-            <code className="text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
+            <code className="text-[11px] md:text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
             {/* Phone: the stats column is hidden, so the one fact a row owes —
                 when it runs next — rides under the cron instead. */}
             <div
@@ -266,11 +266,11 @@ function ScheduleRow({
             ) : (
               <div className="text-xs text-text-muted">paused</div>
             )}
-            <div className="text-[10px] text-text-muted mt-0.5">
+            <div className="text-[11px] md:text-[10px] text-text-muted mt-0.5">
               {item.totalRuns > 0 ? `${item.totalRuns} run${item.totalRuns !== 1 ? 's' : ''}` : 'never run'}
             </div>
             {item.lastRunAt && (
-              <div className="text-[10px] text-text-muted">last {timeAgo(item.lastRunAt)}</div>
+              <div className="text-[11px] md:text-[10px] text-text-muted">last {timeAgo(item.lastRunAt)}</div>
             )}
           </div>
 
@@ -528,22 +528,22 @@ export default function SchedulesUnified({
       <div className="flex flex-wrap gap-6 mb-6 p-4 bg-surface-2 rounded-lg border border-border-default">
         <div>
           <div className="text-xl font-semibold text-text-primary">{total}</div>
-          <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">total</div>
+          <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">total</div>
         </div>
         <div>
           <div className="text-xl font-semibold text-status-success">{enabled}</div>
-          <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">active</div>
+          <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">active</div>
         </div>
         {paused > 0 && (
           <div>
             <div className="text-xl font-semibold text-status-warning">{paused}</div>
-            <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">paused</div>
+            <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">paused</div>
           </div>
         )}
         {dueIn24h > 0 && (
           <div>
             <div className="text-xl font-semibold text-primary">{dueIn24h}</div>
-            <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider">next 24h</div>
+            <div className="text-[11px] md:text-[10px] font-mono text-text-muted uppercase tracking-wider">next 24h</div>
           </div>
         )}
         <div className="sm:ml-auto flex flex-wrap gap-3 text-xs text-text-muted self-center">
@@ -576,7 +576,7 @@ export default function SchedulesUnified({
             >
               {tab.label}
               {tab.count > 0 && (
-                <span className="ml-1.5 text-[10px] text-text-muted">{tab.count}</span>
+                <span className="ml-1.5 text-[11px] md:text-[10px] text-text-muted">{tab.count}</span>
               )}
             </button>
           ))}
@@ -704,7 +704,7 @@ export default function SchedulesUnified({
             <p className="text-sm text-text-secondary mb-4">This is permanent and cannot be undone.</p>
             <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
               <p className="text-sm font-medium text-text-primary truncate">{itemToDelete.name}</p>
-              <code className="text-[10px] text-text-muted font-mono block">{itemToDelete.cronExpression}</code>
+              <code className="text-[11px] md:text-[10px] text-text-muted font-mono block">{itemToDelete.cronExpression}</code>
               <p className="text-xs text-text-muted">
                 {itemToDelete.totalRuns > 0
                   ? `${itemToDelete.totalRuns} run${itemToDelete.totalRuns !== 1 ? 's' : ''}`

@@ -436,17 +436,17 @@ export default function MissionSettings({
               </button>
             ) : (
               <span className="flex items-center gap-1">
-                <span className="text-[10px] text-text-muted">Confirm?</span>
+                <span className="text-[11px] md:text-[10px] text-text-muted">Confirm?</span>
                 <button
                   onClick={handleDelete}
                   disabled={deleteLoading}
-                  className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[11px] md:text-[10px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
                 >
                   {deleteLoading ? '…' : 'Delete'}
                 </button>
                 <button
                   onClick={() => setDeleteConfirm(false)}
-                  className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[10px] text-text-secondary hover:text-text-primary"
+                  className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[11px] md:text-[10px] text-text-secondary hover:text-text-primary"
                 >
                   No
                 </button>
@@ -466,10 +466,10 @@ export default function MissionSettings({
             </button>
           ) : (
             <span className="flex items-center gap-1">
-              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
+              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[11px] md:text-[10px] text-status-error disabled:opacity-50">
                 {deleteLoading ? '…' : 'Delete'}
               </button>
-              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[10px] text-text-secondary">No</button>
+              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[11px] md:text-[10px] text-text-secondary">No</button>
             </span>
           )}
         </div>
@@ -491,10 +491,10 @@ export default function MissionSettings({
             </button>
           ) : (
             <span className="flex items-center gap-1">
-              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
+              <button onClick={handleDelete} disabled={deleteLoading} className="inline-flex min-h-11 items-center md:min-h-0 px-1.5 py-0.5 rounded bg-status-error/10 text-[11px] md:text-[10px] text-status-error disabled:opacity-50">
                 {deleteLoading ? '…' : 'Delete'}
               </button>
-              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[10px] text-text-secondary">No</button>
+              <button onClick={() => setDeleteConfirm(false)} className="inline-flex min-h-11 items-center md:min-h-0 px-1 text-[11px] md:text-[10px] text-text-secondary">No</button>
             </span>
           )}
         </div>

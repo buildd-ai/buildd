@@ -7,7 +7,7 @@ import {
   missionIntegrationBase,
 } from './mission-integration';
 import { isSurfaceAuditTask } from './surface-audit';
-import { deriveLineageSupersession, prShipState, summarizePrShipStates } from './pr-shipped';
+import { countDistinctPrs, deriveLineageSupersession, prShipState, summarizePrShipStates } from './pr-shipped';
 export type { DerivedMetric } from './derived-metric';
 
 // ─── Task type detection ───────────────────────────────────────────────────────
@@ -428,7 +428,8 @@ export function evaluateGoalCriteria(
         }
 
         verdict = 'pass';
-        const taskPrCount = prWorkers.filter(w => !isMissionPrWorker(w)).length;
+        // Distinct PRs: a CI retry pushing to its parent's PR is one PR.
+        const taskPrCount = countDistinctPrs(prWorkers.filter(w => !isMissionPrWorker(w)));
         evidence = `All ${taskPrCount} task PR(s) merged into \`${integrationBase}\`, and the mission PR `
           + `merged into \`${landedOnTrunk[0].prBaseRef}\`${branchNote}`;
         break;

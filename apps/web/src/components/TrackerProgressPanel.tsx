@@ -95,7 +95,7 @@ export function TrackerCard({
     <div className="card p-4" data-testid="tracker-card">
       <div className="flex items-center justify-between mb-3">
         <h2 className="section-label">{providerLabel(provider)}</h2>
-        <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted">
+        <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wide text-text-muted">
           {items.length} {items.length === 1 ? 'item' : 'items'}
         </span>
       </div>
@@ -109,7 +109,7 @@ export function TrackerCard({
             return (
               <li key={`${item.kind}:${item.externalId}`} className="min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted shrink-0">
+                  <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wide text-text-muted shrink-0">
                     {item.kind}
                   </span>
                   {item.url ? (
@@ -135,11 +135,11 @@ export function TrackerCard({
                       />
                     )}
                   </div>
-                  <span className="shrink-0 font-mono text-[10px] tabular-nums text-text-muted w-8 text-right">
+                  <span className="shrink-0 font-mono text-[11px] md:text-[10px] tabular-nums text-text-muted w-8 text-right">
                     {pct != null ? `${Math.round(pct)}%` : '—'}
                   </span>
                   {item.state && (
-                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-text-secondary">
+                    <span className="shrink-0 text-[11px] md:text-[10px] uppercase tracking-wide text-text-secondary">
                       {item.state}
                     </span>
                   )}

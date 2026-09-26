@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, artifacts } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
+import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -541,6 +542,11 @@ export async function POST(req: NextRequest) {
     });
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
+    }
+    // A mission link must stay inside the workspace's team (see isMissionLinkable).
+    // Checked before any write, including the friction-dedupe append below.
+    if (missionId && !(await isMissionLinkable(missionId, targetWorkspace.teamId))) {
+      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 

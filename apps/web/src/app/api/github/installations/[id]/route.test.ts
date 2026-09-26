@@ -1,5 +1,8 @@
-// Ensure production mode — route short-circuits in development
+// Auth runs through the REAL getCurrentUser: only next-auth `auth()` and the
+// users table are stubbed, so these tests pin what the helper accepts.
 const originalNodeEnv = process.env.NODE_ENV;
+const originalDbUrl = process.env.DATABASE_URL;
+const originalDevUser = process.env.DEV_USER_EMAIL;
 process.env.NODE_ENV = 'production';
 
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
@@ -12,6 +15,11 @@ const mockDeleteWhere = mock(() => Promise.resolve());
 const mockDelete = mock(() => ({
   where: mockDeleteWhere,
 }));
+
+const USERS = [{ id: 'user-1', email: 'user@test.com', name: null, image: null, timezone: null }];
+const mockUsersFindFirst = mock(async ({ where }: any) => USERS.find((u) => (u as any)[where.field] === where.value) ?? null);
+const mockAuthenticateApiKey = mock(async () => ({ id: 'acct-key', name: 'k', teamId: 't', level: 'admin' }) as any);
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 
 const defaultAccess = { canView: true, canManage: true, otherTeamsUsingIt: [] as string[] };
 const mockGetAccess = mock(async () => defaultAccess as any);
@@ -29,6 +37,7 @@ mock.module('@/lib/github-installation-access', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
+      users: { findFirst: mockUsersFindFirst },
       githubInstallations: {
         findFirst: mockFindFirst,
       },
@@ -44,6 +53,7 @@ mock.module('drizzle-orm', () => ({
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
+  users: { id: 'id', email: 'email' },
   githubInstallations: { id: 'id' },
 }));
 
@@ -56,8 +66,15 @@ function createRequest(): NextRequest {
   });
 }
 
+function restore(key: string, value: string | undefined) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 afterAll(() => {
-  process.env.NODE_ENV = originalNodeEnv;
+  restore('NODE_ENV', originalNodeEnv);
+  restore('DATABASE_URL', originalDbUrl);
+  restore('DEV_USER_EMAIL', originalDevUser);
 });
 
 describe('DELETE /api/github/installations/[id]', () => {
@@ -72,19 +89,72 @@ describe('DELETE /api/github/installations/[id]', () => {
     mockDeleteWhere.mockResolvedValue(undefined);
     mockGetAccess.mockReset();
     mockGetAccess.mockImplementation(async () => defaultAccess);
+    mockUsersFindFirst.mockClear();
+    mockAuthenticateApiKey.mockClear();
     // Keep production mode for each test
     process.env.NODE_ENV = 'production';
+    delete process.env.DATABASE_URL;
+    delete process.env.DEV_USER_EMAIL;
   });
 
-  it('returns ok in development mode', async () => {
+  it('development never deletes, even with a DATABASE_URL and DEV_USER_EMAIL', async () => {
     process.env.NODE_ENV = 'development';
+    process.env.DATABASE_URL = 'postgres://example.test/db';
+    process.env.DEV_USER_EMAIL = 'user@test.com';
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
-    const response = await DELETE(createRequest(), { params: mockParams });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
     expect(response.status).toBe(200);
+    expect((await response.json()).ok).toBe(true);
+    expect(mockFindFirst).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockUsersFindFirst).not.toHaveBeenCalled();
+  });
 
-    const data = await response.json();
-    expect(data.ok).toBe(true);
+  it('returns 401 for an API key with no session — bearer credentials are not accepted here', async () => {
+    mockAuth.mockResolvedValue(null);
+    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1', {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer bld_example' },
+    });
+    const response = await DELETE(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(401);
+    expect(mockAuthenticateApiKey).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 for a session whose user no longer exists', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-gone' } });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(401);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('checks access as the session user', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
+  });
+
+  it('denied for the session user: canManage false → 404, nothing deleted', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    // canView alone is not enough to disconnect.
+    mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: false, otherTeamsUsingIt: [] }));
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
+    expect(response.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+  });
+
+  it('denied for the session user: neither view nor manage → 404, nothing deleted', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
+    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 
   it('returns 401 when not authenticated', async () => {

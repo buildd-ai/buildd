@@ -366,12 +366,12 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{opt.label}</span>
                         {opt.badge && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary/15 text-primary">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] md:text-[10px] font-semibold bg-primary/15 text-primary">
                             {opt.badge}
                           </span>
                         )}
                         {opt.disabled && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-4 text-text-muted">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] md:text-[10px] font-medium bg-surface-4 text-text-muted">
                             coming soon
                           </span>
                         )}

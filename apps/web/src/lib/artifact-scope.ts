@@ -4,12 +4,14 @@
  * `./artifact-prominence` there instead.
  */
 import { artifacts, workers } from '@buildd/core/db/schema';
-import { and, inArray, isNotNull, notInArray, or, eq, sql, type SQL } from 'drizzle-orm';
+import { and, inArray, isNotNull, like, notInArray, or, eq, sql, type SQL } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { ArtifactType } from '@buildd/shared';
 import {
   BYPRODUCT_ARTIFACT_TYPES,
   REVIEW_ARTIFACT_TYPES,
 } from './artifact-prominence';
+import { AUDIT_SCREENSHOT_KEY_PREFIX } from './storage-keys';
 
 /** A predicate that matches no row. Used so an empty access set fails closed. */
 const MATCHES_NOTHING = sql`false`;
@@ -56,6 +58,9 @@ export function workspaceArtifactScope(workspaceIds: readonly string[]): SQL {
  * the two representations cannot drift apart on the vocabulary:
  *
  *   visibility = 'public'
+ *   OR (type = 'screenshot' AND (storage_key LIKE 'qa/%'
+ *                                OR jsonb_typeof(metadata->'qa') = 'object'))
+ *                                             -- isAuditScreenshot
  *   OR type IN (review types)
  *   OR (type NOT IN (byproduct types) AND (key IS NOT NULL
  *                                          OR mission_id IS NOT NULL
@@ -70,6 +75,13 @@ export function workspaceArtifactScope(workspaceIds: readonly string[]): SQL {
 export function reviewArtifactScope(): SQL {
   return or(
     eq(artifacts.visibility, 'public'),
+    and(
+      eq(artifacts.type, ArtifactType.SCREENSHOT),
+      or(
+        like(artifacts.storageKey, `${AUDIT_SCREENSHOT_KEY_PREFIX}/%`),
+        sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
+      ),
+    ),
     inArray(artifacts.type, [...REVIEW_ARTIFACT_TYPES]),
     and(
       notInArray(artifacts.type, [...BYPRODUCT_ARTIFACT_TYPES]),

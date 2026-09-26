@@ -18,11 +18,9 @@ const nextConfig = {
   },
   async redirects() {
     return [
-      {
-        source: '/',
-        destination: '/app/home',
-        permanent: false,
-      },
+      // `/` is handled in src/proxy.ts, not here: next.config redirects run
+      // before the proxy, and the apex root now depends on the session cookie
+      // (logged-out -> www marketing site, logged-in -> /app/home).
       {
         source: '/app',
         destination: '/app/home',
@@ -33,18 +31,9 @@ const nextConfig = {
         destination: '/app/home',
         permanent: false,
       },
-      // The standalone /memory marketing page is gone. Unlike /app/dashboard it
-      // was a live route, not one shadowed by a redirect, so real inbound links
-      // may exist — it kept an id="pricing" anchor for links predating the move
-      // to a built-in feature. Send that traffic to the docs page it used to
-      // link out to. Deliberately a 307, not a 308: browsers cache a permanent
-      // redirect indefinitely, and deleting a page that was serving traffic is
-      // the kind of call worth being able to take back.
-      {
-        source: '/memory',
-        destination: 'https://docs.buildd.dev/docs/features/memory',
-        permanent: false,
-      },
+      // /memory is handled in src/proxy.ts: on the apex it goes to the
+      // marketing site's /memory page; elsewhere it keeps the old 307 to the
+      // docs page. It can't live here — config redirects run before the proxy.
     ];
   },
 };

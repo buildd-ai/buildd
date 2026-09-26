@@ -13,8 +13,15 @@
  * assembling its own.
  */
 
-/** Object-key areas that caller-initiated uploads may write to. */
-export const TENANT_KEY_PREFIXES = ['artifacts', 'attachments'] as const;
+/**
+ * Object-key areas that caller-initiated uploads may write to. `qa` holds
+ * visual-audit screenshots (`buildAuditScreenshotKey`); it is a tenant area
+ * like the others, so `isOwnedStorageKey` still checks its workspace segment.
+ */
+export const TENANT_KEY_PREFIXES = ['artifacts', 'attachments', 'qa'] as const;
+
+/** Leading segment of every visual-audit screenshot key. */
+export const AUDIT_SCREENSHOT_KEY_PREFIX = 'qa';
 
 /** Longest trailing name segment we will keep from a caller-supplied name. */
 export const MAX_OBJECT_FILENAME_LENGTH = 200;
@@ -108,6 +115,30 @@ export function buildArtifactKey(
   return buildTenantKey('artifacts', workspaceId, uploadId, filename);
 }
 
+/**
+ * Is `key` exactly the artifact key `buildArtifactKey` mints for this
+ * workspace and upload id (one trailing name segment, nothing deeper)?
+ */
+export function isArtifactKeyForUpload(key: unknown, workspaceId: unknown, uploadId: unknown): boolean {
+  return isTenantKeyForUpload('artifacts', key, workspaceId, uploadId);
+}
+
+function isTenantKeyForUpload(
+  prefix: (typeof TENANT_KEY_PREFIXES)[number],
+  key: unknown,
+  workspaceId: unknown,
+  uploadId: unknown,
+): boolean {
+  if (typeof key !== 'string' || typeof workspaceId !== 'string' || typeof uploadId !== 'string') return false;
+  const parts = key.split('/');
+  return parts.length === 4
+    && parts[0] === prefix
+    && parts[1] === workspaceId
+    && parts[2] === uploadId
+    && SAFE_SEGMENT.test(parts[3])
+    && !parts[3].includes('..');
+}
+
 /** `attachments/<workspaceId>/<uploadId>/<name>` */
 export function buildAttachmentKey(
   workspaceId: unknown,
@@ -115,6 +146,43 @@ export function buildAttachmentKey(
   filename: unknown,
 ): string {
   return buildTenantKey('attachments', workspaceId, uploadId, filename);
+}
+
+/**
+ * `qa/<workspaceId>/<uploadId>/<name>` — a visual-audit screenshot
+ * (docs/design/visual-qa-auditor.md, "Decay").
+ *
+ * The `qa` segment leads the key so one bucket-wide R2 lifecycle rule can
+ * expire every audit shot by prefix; `artifacts/<ws>/qa/...` could not be
+ * matched across workspaces. It is also the marker the share refusal and the
+ * prominence rule read: artifact PATCH can rewrite `metadata` wholesale but
+ * never touches `storageKey`, so the key survives a metadata edit.
+ */
+export function buildAuditScreenshotKey(
+  workspaceId: unknown,
+  uploadId: unknown,
+  filename: unknown,
+): string {
+  return buildTenantKey(AUDIT_SCREENSHOT_KEY_PREFIX, workspaceId, uploadId, filename);
+}
+
+/**
+ * Is `key` exactly the audit key `buildAuditScreenshotKey` mints for this
+ * workspace and upload id? The qa-area twin of `isArtifactKeyForUpload`.
+ */
+export function isAuditScreenshotKeyForUpload(key: unknown, workspaceId: unknown, uploadId: unknown): boolean {
+  return isTenantKeyForUpload(AUDIT_SCREENSHOT_KEY_PREFIX, key, workspaceId, uploadId);
+}
+
+/** True for a well-formed key in the visual-audit area. Pure; safe on the client. */
+export function isAuditStorageKey(key: unknown): boolean {
+  if (typeof key !== 'string' || !key.startsWith(`${AUDIT_SCREENSHOT_KEY_PREFIX}/`)) return false;
+  try {
+    assertNormalizedObjectKey(key);
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 /**

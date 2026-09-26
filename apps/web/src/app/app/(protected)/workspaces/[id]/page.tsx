@@ -209,19 +209,19 @@ export default async function WorkspaceDetailPage({
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['pending'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Pending</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Pending</div>
           </div>
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['assigned'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Assigned</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Assigned</div>
           </div>
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['completed'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Completed</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Completed</div>
           </div>
           <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
             <div className="text-2xl font-semibold">{taskCountMap['failed'] || 0}</div>
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted">Failed</div>
+            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Failed</div>
           </div>
         </div>
 
@@ -239,7 +239,7 @@ export default async function WorkspaceDetailPage({
         {/* Recent Tasks */}
         {workspace.tasks && workspace.tasks.length > 0 && (
           <div>
-            <div className="flex justify-between items-center font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+            <div className="flex justify-between items-center font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
               <span>Recent Tasks</span>
               <Link href={`/app/tasks?workspaceId=${workspace.id}`} className="text-primary hover:underline normal-case tracking-normal font-sans text-sm">
                 View all

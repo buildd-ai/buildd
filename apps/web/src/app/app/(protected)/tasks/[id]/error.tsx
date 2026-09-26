@@ -10,7 +10,7 @@ export default function TaskError({ error, reset }: { error: Error & { digest?: 
       {(error.digest || error.stack) && (
         <details className="max-w-lg w-full text-left">
           <summary className="text-xs text-text-muted cursor-pointer hover:text-text-secondary font-mono">Details</summary>
-          <pre className="mt-2 text-[10px] font-mono text-text-muted bg-surface-3 rounded p-3 overflow-x-auto whitespace-pre-wrap break-words">
+          <pre className="mt-2 text-[11px] md:text-[10px] font-mono text-text-muted bg-surface-3 rounded p-3 overflow-x-auto whitespace-pre-wrap break-words">
             {error.digest && `digest: ${error.digest}\n`}{error.stack || error.message}
           </pre>
         </details>

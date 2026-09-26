@@ -4,6 +4,7 @@ import {
   BYPRODUCT_ARTIFACT_TYPES,
   REVIEW_ARTIFACT_TYPES,
   WORKING_ARTIFACT_TYPES,
+  isAuditScreenshot,
   isReviewArtifact,
   partitionByReview,
 } from './artifact-prominence';
@@ -77,6 +78,39 @@ describe('isReviewArtifact — byproduct types stay out, even when keyed', () =>
 
   it('excludes a mission-scoped screenshot', () => {
     expect(isReviewArtifact({ type: 'screenshot', missionId: 'm1' })).toBe(false);
+  });
+});
+
+describe('isReviewArtifact — visual-audit screenshots are review evidence', () => {
+  // docs/design/visual-qa-auditor.md, "Where the screenshots show": an audit
+  // shot is the evidence a human reviews, not the exhaust of doing the work.
+  const qa = { runKey: 'run-1', route: '/app/tasks', viewport: 'mobile', finding: 'ok', verdict: 'ok' };
+
+  it('promotes a screenshot whose key is in the qa/ audit area', () => {
+    expect(isReviewArtifact({ type: 'screenshot', storageKey: 'qa/ws-1/u1/a.png' })).toBe(true);
+  });
+
+  it('promotes a screenshot carrying metadata.qa, even without the qa/ key', () => {
+    expect(isReviewArtifact({ type: 'screenshot', storageKey: 'artifacts/ws-1/u1/a.png', metadata: { qa } })).toBe(true);
+  });
+
+  it('does not promote a qa key or metadata.qa on a non-screenshot', () => {
+    expect(isReviewArtifact({ type: 'file', storageKey: 'qa/ws-1/u1/a.png' })).toBe(false);
+    expect(isReviewArtifact({ type: 'data', metadata: { qa } })).toBe(false);
+  });
+
+  it('ignores a malformed metadata.qa and a qa segment that does not lead the key', () => {
+    expect(isReviewArtifact({ type: 'screenshot', metadata: { qa: 'yes' } })).toBe(false);
+    expect(isReviewArtifact({ type: 'screenshot', metadata: { qa: null } })).toBe(false);
+    expect(isReviewArtifact({ type: 'screenshot', metadata: { qa: [] } })).toBe(false);
+    expect(isReviewArtifact({ type: 'screenshot', storageKey: 'artifacts/ws-1/qa/a.png' })).toBe(false);
+  });
+
+  it('isAuditScreenshot matches either marker on a screenshot only', () => {
+    expect(isAuditScreenshot({ type: 'screenshot', storageKey: 'qa/ws-1/u1/a.png' })).toBe(true);
+    expect(isAuditScreenshot({ type: 'screenshot', metadata: { qa } })).toBe(true);
+    expect(isAuditScreenshot({ type: 'screenshot' })).toBe(false);
+    expect(isAuditScreenshot({ type: 'report', metadata: { qa } })).toBe(false);
   });
 });
 

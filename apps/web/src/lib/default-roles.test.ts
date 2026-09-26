@@ -1,19 +1,101 @@
 import { describe, it, expect } from 'bun:test';
 import { DEFAULT_ROLES } from './default-roles';
+import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
   const bySlug = Object.fromEntries(DEFAULT_ROLES.map(r => [r.slug, r]));
 
-  it('seeds the full seven-role set', () => {
+  it('seeds the full eight-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([
-      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'writer',
+      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
     ]);
   });
 
   // Visual QA is a CI workflow only (visual-qa.yml) — NOT a routable agent role.
-  // If this fails, remove the 'visual-qa' entry from DEFAULT_ROLES.
+  // 'visual-auditor' (the mission audit role, below) is a different slug and
+  // must not be renamed to it. If this fails, remove the 'visual-qa' entry.
   it('does NOT seed a visual-qa role (CI-only workflow, not an agent role)', () => {
     expect(bySlug['visual-qa']).toBeUndefined();
+  });
+
+  describe('visual-auditor (mission surface audit role)', () => {
+    const role = () => bySlug[VISUAL_AUDITOR_ROLE_SLUG];
+
+    it('is seeded under the shared slug constant the claim gate routes on', () => {
+      expect(role()).toBeDefined();
+      expect(EXPLICIT_ROLE_SLUGS).toContain(role().slug);
+    });
+
+    it('is a separate role from the PR reviewer', () => {
+      expect(role().slug).not.toBe(bySlug.reviewer.slug);
+      expect(role().content).not.toBe(bySlug.reviewer.content);
+    });
+
+    it('is read-only: can look and capture, cannot edit files or delegate', () => {
+      expect([...role().allowedTools].sort()).toEqual(['AskUserQuestion', 'Bash', 'Glob', 'Grep', 'Read', 'mcp__buildd__buildd']);
+      for (const t of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) expect(role().allowedTools).not.toContain(t);
+      expect(role().canDelegateTo).toEqual([]);
+    });
+
+    it('prompt carries the capture recipe and the evidence contract', () => {
+      const c = role().content;
+      expect(c).toContain('visual-review');
+      expect(c).toContain('visual-qa.yml');
+      expect(c).toContain('scripts/qa/shoot.sh');
+      expect(c).toContain('DATABASE_URL');
+      expect(c).toContain('upload_artifact');
+      expect(c).toContain('missionId');
+      for (const key of ['runKey', 'route', 'viewport', 'finding', 'verdict']) expect(c).toContain(key);
+      expect(c).toContain('mobile');
+      expect(c).toContain('desktop');
+      expect(c).toContain('[surface fix]');
+      expect(c).toMatch(/never open (a )?PR/i);
+    });
+
+    // The fix-task title is parsed by ensureMissionSurfaceAudit
+    // (surfaceFixRoute) to scope the round-2 re-check, so its shape is
+    // load-bearing, not a style preference.
+    it('prompt files each issue as a routed [surface fix] task in this mission, and asks about unsure shots', () => {
+      const c = role().content;
+      const act = c.slice(c.indexOf('## 4. Act on verdicts'), c.indexOf('## 5. Complete'));
+      expect(act).toContain('create_task');
+      expect(act).toContain('[surface fix] <route>: <finding>');
+      expect(act).toContain('missionId');
+      expect(act).toMatch(/route pattern/i);
+      expect(act).toContain('fixTaskId');
+      expect(act).toMatch(/one fix task per (distinct )?defect/i);
+      expect(act).toMatch(/unsure[\s\S]*post_note[\s\S]*type: 'question'/);
+      expect(act).toMatch(/does not block/i);
+    });
+
+    it('prompt explains re-check rounds and that the server, not the auditor, bounds them', () => {
+      const c = role().content;
+      expect(c).toMatch(/Round 2/);
+      expect(c).toMatch(/at most 2 rounds/i);
+      expect(c).toMatch(/do not (open|create) (another|a new) (\[surface audit\]|audit)/i);
+    });
+
+    // post_note is non-blocking: the session would end, the runner's fallback
+    // completion would hit the visual_evidence 400, and the worker would be
+    // recorded failed (output_unmet). AskUserQuestion is what the runner parks
+    // as waiting_input, which keeps the task open and the mission held.
+    it('prompt parks a boot failure with AskUserQuestion, never a failed task or a note', () => {
+      const c = role().content;
+      const boot = c.slice(c.indexOf('## Boot failure'), c.indexOf('## Pull Gates'));
+      expect(boot).toMatch(/did not\s+boot/i);
+      expect(boot).toContain('AskUserQuestion');
+      expect(boot).toContain('waiting_input');
+      expect(boot).toMatch(/do not (mark|fail|complete)/i);
+      expect(boot).toMatch(/do not use\s+`post_note`/i);
+    });
+
+    // The mission page's Visual review turns "blocked" by matching this
+    // question prefix on the parked worker (auditBootFailed).
+    it('prompt asks the exact boot-failure question the Visual review step detects', async () => {
+      const { BOOT_FAILURE_QUESTION_PREFIX } = await import('./mission-visual-review');
+      const c = role().content.replace(/\s+/g, ' ');
+      expect(c).toContain(`question "${BOOT_FAILURE_QUESTION_PREFIX}:`);
+    });
   });
 
   it('Organizer defaults to Sonnet (router upshifts to Opus for complex coordination)', () => {

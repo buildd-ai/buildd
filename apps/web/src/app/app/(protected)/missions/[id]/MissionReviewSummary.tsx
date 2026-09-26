@@ -15,11 +15,31 @@ interface MissionReviewSummaryProps {
   missionId: string;
 }
 
+/**
+ * One row per PR, keyed by `prUrl`. A CI-retry task pushes to its parent's
+ * PR, so two task rows can name one PR; the first row (the parent, in task
+ * order) keeps the title, and the PR reads merged when any row saw the merge —
+ * only one worker row gets `mergedAt`.
+ */
+function distinctByPr(rows: ReviewSummaryTask[]): ReviewSummaryTask[] {
+  const byUrl = new Map<string, ReviewSummaryTask>();
+  for (const r of rows) {
+    const prev = byUrl.get(r.prUrl!);
+    if (!prev) {
+      byUrl.set(r.prUrl!, r);
+      continue;
+    }
+    const prMerged = prev.prMerged || r.prMerged;
+    byUrl.set(r.prUrl!, { ...prev, prNumber: prev.prNumber ?? r.prNumber, prMerged, prClosed: !prMerged && (prev.prClosed || r.prClosed) });
+  }
+  return [...byUrl.values()];
+}
+
 export default function MissionReviewSummary({ tasks, missionId }: MissionReviewSummaryProps) {
   const deliverable = tasks.filter(t => t.status !== 'cancelled');
   if (deliverable.length === 0) return null;
 
-  const completedWithPr = deliverable.filter(t => t.status === 'completed' && t.prUrl);
+  const completedWithPr = distinctByPr(deliverable.filter(t => t.status === 'completed' && t.prUrl));
   const completedNoPr = deliverable.filter(t => t.status === 'completed' && !t.prUrl);
   const failed = deliverable.filter(t => t.status === 'failed');
   const inProgress = deliverable.filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status));
@@ -29,7 +49,7 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
 
   return (
     <div className="card p-4 mb-4 border-l-2 border-status-success/40">
-      <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-3">
+      <h3 className="text-[11px] md:text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-3">
         Outcome summary
       </h3>
 
@@ -37,14 +57,14 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
         <div className="mb-3">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="text-[11px] font-semibold text-text-secondary">Pull Requests</span>
-            <span className="text-[10px] font-mono text-text-muted">
+            <span className="text-[11px] md:text-[10px] font-mono text-text-muted">
               {mergedCount} merged{openPrCount > 0 ? ` · ${openPrCount} open` : ''}
             </span>
           </div>
           <div className="space-y-1.5">
             {completedWithPr.map(t => (
               <div key={t.id} className="flex items-center gap-2 min-w-0">
-                <span className={`shrink-0 w-3 text-center text-[10px] font-mono ${t.prMerged ? 'text-status-success' : t.prClosed ? 'text-text-muted' : 'text-status-warning'}`}>
+                <span className={`shrink-0 w-3 text-center text-[11px] md:text-[10px] font-mono ${t.prMerged ? 'text-status-success' : t.prClosed ? 'text-text-muted' : 'text-status-warning'}`}>
                   {t.prMerged ? '✓' : t.prClosed ? '×' : '○'}
                 </span>
                 <Link href={`/app/tasks/${t.id}`} className="min-w-0 truncate text-[12px] text-text-secondary hover:text-accent-text">
@@ -55,7 +75,7 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
                     href={t.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="shrink-0 text-[10px] font-mono text-text-muted hover:text-accent-text"
+                    className="shrink-0 text-[11px] md:text-[10px] font-mono text-text-muted hover:text-accent-text"
                   >
                     #{t.prNumber}{t.prMerged ? ' merged' : t.prClosed ? ' closed' : ' open'}
                   </a>

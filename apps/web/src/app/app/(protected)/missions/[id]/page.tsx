@@ -35,7 +35,7 @@ import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
-import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
+import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests, MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -50,9 +50,12 @@ import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionDelivery from './MissionDelivery';
+import VisualReviewStrip from './VisualReviewStrip';
+import { missionVisualReview } from '@/lib/mission-visual-review';
+import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionFlightStripInline, MissionStripExpand } from './MissionStripControls';
-import { buildDeliverySteps, deliveryReleaseInput, missionTrunkMergedAt } from '@/lib/mission-delivery';
+import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
 import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
@@ -103,12 +106,20 @@ export default async function MissionDetailPage({
   // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
   // or task `context`; the few fields the page reads from those two JSON
   // columns arrive as a projected digest, read alongside (mission-page-query.ts).
-  const [missionRow, digestRows] = await Promise.all([
+  const [missionRow, digestRows, visualShotRows] = await Promise.all([
     db.query.missions.findFirst({
       where: eq(missions.id, id),
       with: MISSION_DETAIL_WITH,
     }),
     db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
+    // Visual review: its own query, since the with-tree keeps five artifacts
+    // per worker. Rendered only after the team check below.
+    db.query.artifacts.findMany({
+      where: missionVisualShotsWhere(id),
+      columns: MISSION_VISUAL_SHOT_COLUMNS,
+      orderBy: MISSION_VISUAL_SHOTS_ORDER,
+      limit: MISSION_VISUAL_SHOTS_LIMIT,
+    }),
   ]);
   let mission = missionRow;
   const taskDigests = indexTaskDigests(digestRows);
@@ -301,7 +312,7 @@ export default async function MissionDetailPage({
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
   // filter is still overcollapsing or the PR counter is double-counting.
   if (process.env.NODE_ENV === 'development' && totalTasks > 0) {
-    const prCount = (mission.tasks ?? []).flatMap(t => (t.workers as any[] ?? [])).filter(w => w.prUrl).length;
+    const prCount = missionPrCount((mission.tasks ?? []) as Array<{ workers?: Array<{ prUrl?: string | null }> | null }>);
     if (prCount > totalTasks) {
       console.error(`[mission-invariant] mission ${id}: PRS (${prCount}) > TASKS (${totalTasks}) — check attempt-filter logic in computeMissionProgress.`);
     }
@@ -884,10 +895,23 @@ export default async function MissionDetailPage({
     ? classifyReleaseState({ archetype: releaseArchetype, data: releaseFooterData })
     : ({ state: 'none' } as const);
   const budgetUsd = costBudgetUsd != null ? parseFloat(costBudgetUsd) : null;
-  const prCount = allWorkers.filter(w => w.prUrl).length;
+  // Distinct PRs, not worker rows — a CI retry pushes to its parent's PR.
+  const prCount = missionPrCount(allTasks as Array<{ workers?: Array<{ prUrl?: string | null }> | null }>);
   const durationLabel = mission.status === 'completed'
     ? (flightStripData.agentTimeMin > 0 ? fmtMin(flightStripData.agentTimeMin) : flightStripData.axisSpanMin > 0 ? fmtMin(flightStripData.axisSpanMin) : null)
     : null;
+  // Visual review (docs/design/visual-qa-auditor.md): the latest audit run,
+  // or null when there is nothing to show (rule in `missionVisualReview`).
+  // Required routes come from the run's audit task, recomputed the way the
+  // completion gate does (auditRequiredRoutes), so the step can show n/m.
+  const visualReviewState = missionVisualReview(visualShotRows, mission.tasks ?? [], {
+    requiredRoutesOf: t => auditRequiredRoutes(
+      { context: digestOf(t.id).context },
+      ((t.dependsOn as string[] | null) ?? []).map(d => (taskMap.get(d) as { pathManifest?: unknown } | undefined)?.pathManifest ?? null),
+    ),
+  });
+  const visualRun = visualReviewState?.run ?? [];
+  const visualReview = visualReviewState?.summary ?? null;
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
     // F3: Integrated counts what the header pulse counts (`pulseDoneCounts`).
@@ -896,6 +920,7 @@ export default async function MissionDetailPage({
     awaitingMerge,
     integrationPr: missionIntegrationPr,
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
+    visual: visualReview,
     // D6: this mission's own trunk merges, read against the release baseline.
     mergedAt: missionTrunkMergedAt(
       (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
@@ -916,11 +941,11 @@ export default async function MissionDetailPage({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
+            <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
               {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
             </span>
-            <span className="text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
+            <span className="text-[11px] md:text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
@@ -1083,11 +1108,11 @@ export default async function MissionDetailPage({
       {completionPick && (
         <div className="card p-3 mb-3 border-l-2 border-status-success/40">
           <div className="flex items-center gap-2 mb-1.5">
-            <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
+            <h3 className="text-[11px] md:text-[10px] font-semibold tracking-wider text-text-muted uppercase">
               Completed <ZonedTime value={mission.updatedAt} format="date" />
             </h3>
             {completionPick.source === 'completion_record' && (
-              <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+              <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
                 completion record
               </span>
             )}
@@ -1117,6 +1142,7 @@ export default async function MissionDetailPage({
             <span aria-hidden="true">›</span>
           </a>
         ) : undefined,
+        visual: visualReview ? <VisualReviewStrip shots={visualRun} missionId={mission.id} /> : undefined,
         budget: budgetDetail ?? undefined,
       }}
       rows={{
@@ -1151,7 +1177,7 @@ export default async function MissionDetailPage({
         {mission.workspaceId && (hasPolicyOverride || awaitingMerge > 0) && (
           <Link
             href={`/app/settings/workspace/${mission.workspaceId}`}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
             title={`Merge policy: ${policyLabel}${hasPolicyOverride ? ' (overridden)' : ' (inherited)'}`}
           >
             {policyLabel}

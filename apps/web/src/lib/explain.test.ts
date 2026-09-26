@@ -208,6 +208,33 @@ describe('explainMission', () => {
     expect(['AUTO', 'RUNNING']).not.toContain(answer.chip.label);
   });
 
+  // Regression: a running mission's panel said "Task X is in_progress with no
+  // live worker" for the task a worker was running. Liveness is per row.
+  it('never says "no live worker" about a task a worker is running', async () => {
+    missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+    taskRows = [
+      task({ id: 'task-live', status: 'in_progress', title: 'Build the page', workers: [worker({ id: 'w-live', status: 'running' })] }),
+      task({ id: 'task-orphan', status: 'in_progress', title: 'Write the docs', workers: [worker({ id: 'w-dead', status: 'failed' })] }),
+    ];
+    completionDecision = {
+      ok: false,
+      code: 'pending_deliverables',
+      reason: '2 task(s) still open (2 in_progress)',
+      pendingDeliverables: 2,
+      pendingByStatus: { in_progress: 2 },
+      awaitingMergeDetails: [],
+    };
+
+    const answer = (await explainMission('mission-1'))!.subjects[0];
+    const live = answer.because.find(l => l.refs.taskId === 'task-live');
+    const orphan = answer.because.find(l => l.refs.taskId === 'task-orphan');
+    expect(live?.claim).toBeDefined();
+    expect(live!.claim).not.toContain('no live worker');
+    expect(orphan?.claim).toBe('Task "Write the docs" is in_progress with no live worker.');
+    // The situation block prints because[0]: the orphan, not the running task.
+    expect(answer.because[0].refs.taskId).toBe('task-orphan');
+  });
+
   it('collapses attempts under their parent rather than listing them as siblings', async () => {
     missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
     taskRows = [

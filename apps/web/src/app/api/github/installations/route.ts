@@ -2,17 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray, or } from 'drizzle-orm';
-import { auth } from '@/auth';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 
 export async function GET(req: NextRequest) {
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({ installations: [], configured: false });
   }
 
-  const session = await auth();
-  if (!session?.user) {
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     // App before creating any workspace left the installation unreachable —
     // absent from Settings (so its "Sync" button was unclickable) and absent
     // from the /workspaces/new picker (so no workspace could point at it).
-    const wsIds = await getUserWorkspaceIds(session.user.id!);
+    const wsIds = await getUserWorkspaceIds(user.id);
 
     const userWorkspaces = wsIds.length
       ? await db.query.workspaces.findMany({
@@ -52,9 +52,9 @@ export async function GET(req: NextRequest) {
       where: installationIds.length
         ? or(
             inArray(githubInstallations.id, installationIds),
-            eq(githubInstallations.installedByUserId, session.user.id!)
+            eq(githubInstallations.installedByUserId, user.id)
           )
-        : eq(githubInstallations.installedByUserId, session.user.id!),
+        : eq(githubInstallations.installedByUserId, user.id),
       orderBy: desc(githubInstallations.createdAt),
     });
 

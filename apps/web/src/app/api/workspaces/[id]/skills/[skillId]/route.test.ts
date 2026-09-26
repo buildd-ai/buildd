@@ -525,6 +525,50 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     expect(capturedUpdates.contentHash).not.toBe('old-hash');
   });
 
+  describe('defaultBackend', () => {
+    const existingSkill = {
+      id: 'skill-1', workspaceId: 'ws-1', name: 'Builder', slug: 'builder',
+      content: '# Builder', isRole: false, defaultBackend: null, enabled: true,
+    };
+    async function patch(body: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue(true);
+      mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
+      let captured: any = null;
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...existingSkill, ...captured }]) }));
+      mockSkillsUpdate.mockReturnValue({ set: mock((u: any) => { captured = u; return { where: mockWhere }; }) });
+      const response = await PATCH(
+        createMockRequest({ method: 'PATCH', body }),
+        { params: Promise.resolve({ id: 'ws-1', skillId: 'skill-1' }) },
+      );
+      return { response, captured };
+    }
+
+    it('persists a backend change (was silently dropped)', async () => {
+      const { response, captured } = await patch({ defaultBackend: 'codex' });
+      expect(response.status).toBe(200);
+      expect(captured.defaultBackend).toBe('codex');
+      expect((await response.json()).skill.defaultBackend).toBe('codex');
+    });
+
+    it('normalises unknown values to null (inherit), like /api/roles/[id]', async () => {
+      const { captured } = await patch({ defaultBackend: 'gpt' });
+      expect(captured.defaultBackend).toBeNull();
+    });
+
+    it('explicit null clears it back to inherit', async () => {
+      const { captured } = await patch({ defaultBackend: null });
+      expect('defaultBackend' in captured).toBe(true);
+      expect(captured.defaultBackend).toBeNull();
+    });
+
+    it('leaves it untouched when omitted', async () => {
+      const { captured } = await patch({ name: 'Builder 2' });
+      expect('defaultBackend' in captured).toBe(false);
+    });
+  });
+
   it('persists connectorRefs on PATCH (spec §2)', async () => {
     const existingSkill = {
       id: 'skill-1',

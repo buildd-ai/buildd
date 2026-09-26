@@ -202,7 +202,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
                         {note.actorLabel}
                       </span>
                     )}
-                    <span className={`text-[9px] font-bold tracking-wider ${style.color}`}>
+                    <span className={`text-[11px] md:text-[9px] font-bold tracking-wider ${style.color}`}>
                       {style.label}
                     </span>
                     <span className="flex-1" />

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.228.2",
+  "version": "0.229.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -88,6 +88,7 @@
     "./path-claim": "./path-claim.ts",
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
+    "./visual-qa-routes": "./visual-qa-routes.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",
     "./friction-manifest": "./friction-manifest.ts",
