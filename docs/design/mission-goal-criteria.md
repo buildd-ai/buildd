@@ -29,10 +29,6 @@ assertions:
     type: symbol
     name: InitiativeKPI
     path: packages/shared/src/types.ts
-  - id: evaluate-initiative-kpis-fn
-    type: symbol
-    name: evaluateInitiativeKPIs
-    path: packages/core/mission-helpers.ts
 ---
 
 # Mission Goal Criteria & Initiative KPIs
@@ -46,6 +42,10 @@ assertions:
 > completion REQUESTS a verdict, the verdict GATES completion, no verdict is not
 > a pass — is `docs/specs/mission-task-lifecycle.md` § Mission Completion Gate.
 > Read that for current behaviour; read this only for why the fields exist.
+>
+> **Initiative KPIs were removed on 2026-09-26** (`docs/design/initiatives-as-containers.md`):
+> the evaluator, the evaluate route and the MCP actions are gone, and the
+> `kpis` / `kpi_state` / `auto_verify` columns are unread pending a drop.
 
 **Status:** Superseded (was: Proposed)
 **Related:**

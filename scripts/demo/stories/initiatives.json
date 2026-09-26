@@ -110,31 +110,7 @@
    "ownerUserId": "u_marek",
    "_targetIn": "+2d",
    "_createdAgo": "-20d",
-   "_updatedAgo": "-1d",
-   "kpis": [
-    {
-     "name": "Checkout completion",
-     "metric": "checkout.completion_rate_pct",
-     "operator": "gte",
-     "threshold": 70,
-     "unit": "%",
-     "blocking": true
-    }
-   ],
-   "kpiState": {
-    "evaluatedBy": "auto",
-    "overall": "fail",
-    "kpis": [
-     {
-      "index": 0,
-      "name": "Checkout completion",
-      "verdict": "fail",
-      "observedValue": 61,
-      "evidence": "61% over the last 7 days"
-     }
-    ]
-   },
-   "_kpiEvaluatedAgo": "-1d"
+   "_updatedAgo": "-1d"
   },
   {
    "key": "I_a11y",

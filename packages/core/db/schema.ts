@@ -993,21 +993,15 @@ export const initiatives = pgTable('initiatives', {
   ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
   // Optional calendar target, no time of day ('YYYY-MM-DD').
   targetDate: date('target_date', { mode: 'string' }),
-  // DEPRECATED: never written or read. Scheduled for drop (schema-change skill, "dropping things safely").
+  // DEPRECATED — unread and unwritten. Drop in a later release (schema-change
+  // skill, "Dropping a table or column").
   progressCache: jsonb('progress_cache').$type<InitiativeProgressCache | null>(),
   // Curated artifact-id pointers for context assembly (mirrors missions.contextArtifactIds).
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
-  // DEPRECATED (kpis, kpiState, autoVerify): no longer rendered; the API/MCP
-  // still accept them until a later release drops them. Mission goal criteria
-  // cover what buildd can check.
-  // KPIs: outcome-oriented indicators that gate initiative completion.
-  // null = no KPIs (completion driven by child-mission rollup alone).
-  // A blocking KPI (blocking: true, the default) holds status='active' until met.
+  // DEPRECATED — initiative KPIs were removed; nothing reads or writes these
+  // three columns. Drop in a later release (schema-change skill).
   kpis: jsonb('kpis').$type<import('@buildd/shared').InitiativeKPI[] | null>(),
-  // Last KPI evaluation result.
   kpiState: jsonb('kpi_state').$type<import('@buildd/shared').InitiativeKPIState | null>(),
-  // When false, organizer never auto-evaluates KPIs; on-demand still works.
-  // null reads as true (default: auto-verify ON when KPIs are set).
   autoVerify: boolean('auto_verify'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

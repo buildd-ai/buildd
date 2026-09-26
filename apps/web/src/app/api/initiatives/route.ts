@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, teamId: requestedTeamId, priority, status: requestedStatus, contextArtifactIds, targetDate, ownerUserId, kpis, autoVerify } = body;
+    const { title, description, workspaceId, teamId: requestedTeamId, priority, status: requestedStatus, contextArtifactIds, targetDate, ownerUserId } = body;
 
     if (!title || typeof title !== 'string') {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -133,14 +133,6 @@ export async function POST(req: NextRequest) {
       effectiveOwner = parsed.value;
     }
 
-    // DEPRECATED: kpis / autoVerify are still stored for API compatibility but
-    // no surface renders or evaluates them for the initiative any more.
-    if (kpis !== undefined && kpis !== null) {
-      if (!Array.isArray(kpis)) {
-        return NextResponse.json({ error: 'kpis must be an array' }, { status: 400 });
-      }
-    }
-
     const [initiative] = await db
       .insert(initiatives)
       .values({
@@ -154,8 +146,6 @@ export async function POST(req: NextRequest) {
         createdByUserId: user?.id || null,
         ownerUserId: effectiveOwner,
         targetDate: effectiveTargetDate,
-        ...(kpis !== undefined ? { kpis: kpis ?? null } : {}),
-        ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
       })
       .returning();
 

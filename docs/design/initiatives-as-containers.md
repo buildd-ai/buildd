@@ -87,11 +87,12 @@ the effort sparkline, `GET /api/initiatives/effort`, the detail page's verdict
 block, KPI panel and close control, and the display-status helpers in
 `initiative-presentation.ts`.
 
-Deprecated, still working: initiative KPIs (`kpis`, `kpiState`, `autoVerify`,
-the evaluate route, MCP `evaluate` and `get_kpi_state`). Buildd cannot enforce a
-metric that lives outside it, and mission goal criteria cover what it can check.
-A follow-up removes them and starts the column-drop protocol for `kpis`,
-`kpi_state`, `auto_verify` and the never-written `progress_cache`.
+Initiative KPIs went next (`kpis`, `kpiState`, `autoVerify`, the evaluate
+route, MCP `evaluate` and `get_kpi_state`, `evaluateInitiativeKPIs` and the
+metric registry). Buildd cannot enforce a metric that lives outside it, and
+mission goal criteria cover what it can check. Their columns, and the
+never-written `progress_cache`, stay in the schema unread until a later release
+drops them.
 
 Kept: `loadInitiativeList` for `GET /api/initiatives` and Home's
 `<title> crossed 75%` headline; the Linear tracking panel; initiative artifacts.

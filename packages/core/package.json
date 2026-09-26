@@ -120,7 +120,6 @@
     "./terminal-records": "./terminal-records.ts",
     "./terminal-records-query": "./terminal-records-query.ts",
     "./release-baseline": "./release-baseline.ts",
-    "./initiative-metric-registry": "./initiative-metric-registry.ts",
     "./signal-registry": "./signal-registry.ts"
   },
   "dependencies": {

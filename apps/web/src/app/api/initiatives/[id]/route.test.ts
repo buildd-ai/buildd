@@ -101,6 +101,17 @@ describe('GET /api/initiatives/[id]', () => {
     expect(body.artifacts).toHaveLength(1);
   });
 
+  it('does not read the deprecated columns', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({
+      id: 'init-1', title: 'Platform', status: 'active', teamId: 'team-1', workspaceId: null, missions: [],
+    });
+    await GET(new NextRequest('http://localhost/api/initiatives/init-1'), ctx('init-1'));
+    const opts = (mockInitiativesFindFirst.mock.calls.at(-1) as any[])[0];
+    expect(opts.columns).toBeDefined();
+    for (const col of ['kpis', 'kpiState', 'autoVerify', 'progressCache']) expect(opts.columns[col]).toBeUndefined();
+    expect(opts.columns.targetDate).toBe(true);
+  });
+
   it('404 when the initiative is on another team', async () => {
     mockInitiativesFindFirst.mockResolvedValue({ id: 'init-x', teamId: 'team-other', workspaceId: null, missions: [] });
     mockWorkspacesFindFirst.mockResolvedValue(null);
@@ -133,6 +144,16 @@ describe('PATCH /api/initiatives/[id]', () => {
       method: 'PATCH', body: JSON.stringify({ status: 'bogus' }),
     }), ctx('init-1'));
     expect(res.status).toBe(400);
+  });
+
+  it('ignores the removed KPI fields: nothing writes kpis or autoVerify', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-1', workspaceId: null });
+    const res = await PATCH(new NextRequest('http://localhost/api/initiatives/init-1', {
+      method: 'PATCH', body: JSON.stringify({ title: 'T', kpis: [], autoVerify: false }),
+    }), ctx('init-1'));
+    expect(res.status).toBe(200);
+    expect('kpis' in updatedValues).toBe(false);
+    expect('autoVerify' in updatedValues).toBe(false);
   });
 
   it('accepts the planned status', async () => {

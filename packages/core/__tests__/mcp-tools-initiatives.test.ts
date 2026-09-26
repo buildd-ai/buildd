@@ -111,12 +111,11 @@ describe('manage_initiatives', () => {
     expect(text).toContain('Owner: user-2');
   });
 
-  it('describes the planned status and marks the KPI params deprecated', () => {
+  it('describes the planned status, the owner and the target date', () => {
     const desc = buildParamsDescription(['manage_initiatives']);
     expect(desc).toContain('"planned"');
     expect(desc).toContain('targetDate');
     expect(desc).toContain('ownerUserId');
-    expect(desc).toMatch(/DEPRECATED[^.]*kpis/);
   });
 
   it('link_mission PATCHes the mission with initiativeId', async () => {
@@ -155,129 +154,36 @@ describe('manage_initiatives', () => {
       { action: 'get' }, createMockContext())).rejects.toThrow('initiativeId is required');
   });
 
-  it('passes kpis array in create body', async () => {
-    const kpis = [{ name: 'P95 latency < 200ms', metric: 'latency_p95', operator: 'lt', threshold: 200, blocking: true }];
-    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Perf', status: 'active', priority: 0 });
+  it('no longer passes initiative KPI fields through', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'P', status: 'active', priority: 0 });
     await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
-      { action: 'create', title: 'Perf', kpis }, createMockContext());
+      { action: 'create', title: 'P', kpis: [{ name: 'x', metric: 'm', operator: 'gt', threshold: 1 }], autoVerify: false }, createMockContext());
     const body = JSON.parse(mockApi.mock.calls[0][1].body);
-    expect(body.kpis).toEqual(kpis);
+    expect(body.kpis).toBeUndefined();
+    expect(body.autoVerify).toBeUndefined();
   });
 
-  it('passes kpis=null to clear KPIs on update', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Perf', status: 'active' });
-    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
-      { action: 'update', initiativeId: 'init-1', kpis: null }, createMockContext());
-    const body = JSON.parse(mockApi.mock.calls[0][1].body);
-    expect(body.kpis).toBeNull();
+  it('evaluate and get_kpi_state are gone', async () => {
+    for (const action of ['evaluate', 'get_kpi_state']) {
+      await expect(handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+        { action, initiativeId: 'init-1' }, createMockContext())).rejects.toThrow(/Unknown initiatives action/);
+    }
+    expect(mockApi).not.toHaveBeenCalled();
   });
 
-  it('passes autoVerify=false in update body (toggling off auto-evaluation)', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Perf', status: 'active' });
-    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
-      { action: 'update', initiativeId: 'init-1', autoVerify: false }, createMockContext());
-    const body = JSON.parse(mockApi.mock.calls[0][1].body);
-    expect(body.autoVerify).toBe(false);
+  it('the tool description no longer offers KPIs', () => {
+    const desc = buildParamsDescription(['manage_initiatives']);
+    expect(desc).not.toMatch(/kpis|get_kpi_state|"evaluate"/);
   });
 
-  it('evaluate POSTs to /api/initiatives/:id/evaluate and formats KPI verdicts', async () => {
+  it('get prints no KPI section even if an old response carries one', async () => {
     mockApi.mockResolvedValueOnce({
-      kpiState: {
-        overall: 'UNVERIFIED',
-        evaluatedAt: '2026-08-08T12:00:00.000Z',
-        evaluatedBy: 'mcp',
-        kpis: [
-          { index: 0, name: 'P95 latency < 200ms', verdict: 'UNVERIFIED', evidence: 'Metric query not implemented', blocking: true },
-        ],
-      },
+      id: 'init-1', title: 'P', status: 'active', progress: { progress: 0 }, missions: [], artifacts: [],
+      kpis: [{ name: 'x' }], kpiState: { overall: 'fail', kpis: [{ name: 'x', verdict: 'fail' }] },
     });
-
-    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
-      { action: 'evaluate', initiativeId: 'init-1' }, createMockContext());
-
-    expect(mockApi.mock.calls[0][0]).toBe('/api/initiatives/init-1/evaluate');
-    expect(mockApi.mock.calls[0][1]?.method).toBe('POST');
-
-    const text = (result as any).content[0].text;
-    expect(text).toContain('UNVERIFIED');
-    expect(text).toContain('P95 latency < 200ms');
-  });
-
-  it('get_kpi_state GETs last state without re-evaluating', async () => {
-    mockApi.mockResolvedValueOnce({
-      kpiState: {
-        overall: 'pass',
-        evaluatedAt: '2026-08-07T10:00:00.000Z',
-        evaluatedBy: 'auto',
-        kpis: [
-          { index: 0, name: 'Error rate < 1%', verdict: 'pass', evidence: null, blocking: true },
-        ],
-      },
-    });
-
-    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
-      { action: 'get_kpi_state', initiativeId: 'init-1' }, createMockContext());
-
-    expect(mockApi.mock.calls[0][0]).toBe('/api/initiatives/init-1/evaluate');
-    expect(mockApi.mock.calls[0][1]?.method).toBeUndefined();
-
-    const text = (result as any).content[0].text;
-    expect(text).toContain('pass');
-    expect(text).toContain('Error rate < 1%');
-  });
-
-  it('get response includes kpis section when KPIs are set and evaluated', async () => {
-    mockApi.mockResolvedValueOnce({
-      id: 'init-1', title: 'Perf', status: 'active', description: null,
-      kpis: [
-        { name: 'P95 latency < 200ms', metric: 'latency_p95', operator: 'lt', threshold: 200, blocking: true },
-      ],
-      autoVerify: true,
-      kpiState: {
-        overall: 'UNVERIFIED',
-        evaluatedAt: '2026-08-08T11:00:00.000Z',
-        evaluatedBy: 'mcp',
-        kpis: [
-          { index: 0, name: 'P95 latency < 200ms', verdict: 'UNVERIFIED', evidence: 'Metric query not implemented', blocking: true },
-        ],
-      },
-      progress: { progress: 50, completedMissions: 1, totalMissions: 2, completedTasks: 5, totalTasks: 10, status: 'active' },
-      missions: [],
-      artifacts: [],
-    });
-
-    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
       { action: 'get', initiativeId: 'init-1' }, createMockContext());
-
-    const text = (result as any).content[0].text;
-    expect(text).toContain('KPIs');
-    expect(text).toContain('autoVerify=auto');
-    expect(text).toContain('overall=UNVERIFIED');
-    expect(text).toContain('P95 latency < 200ms');
-  });
-
-  it('get response shows unevaluated KPIs when no kpiState yet', async () => {
-    mockApi.mockResolvedValueOnce({
-      id: 'init-2', title: 'Scale', status: 'active', description: null,
-      kpis: [
-        { name: 'Revenue > $10k MRR', metric: 'revenue', operator: 'gt', threshold: 10000, blocking: false },
-      ],
-      autoVerify: false,
-      kpiState: null,
-      progress: { progress: 0, completedMissions: 0, totalMissions: 1, completedTasks: 0, totalTasks: 3, status: 'active' },
-      missions: [],
-      artifacts: [],
-    });
-
-    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
-      { action: 'get', initiativeId: 'init-2' }, createMockContext());
-
-    const text = (result as any).content[0].text;
-    expect(text).toContain('KPIs');
-    expect(text).toContain('autoVerify=manual-only');
-    expect(text).toContain('not yet evaluated');
-    expect(text).toContain('Revenue > $10k MRR');
-    expect(text).toContain('[info]'); // non-blocking KPI
+    expect((res as any).content[0].text).not.toContain('KPI');
   });
 });
 

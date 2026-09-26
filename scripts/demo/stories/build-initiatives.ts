@@ -8,7 +8,7 @@
  * honestly:
  *
  *   - in flight, with one mission waiting on an answer and one held
- *   - every mission done, a KPI evaluated as failing afterwards
+ *   - every mission done, initiative still active
  *   - one mission done with one task failed, nothing checked it
  *   - paused, every mission done, one mission still flagged held
  *   - planned, with a target date and a mission that has not started
@@ -188,9 +188,6 @@ const story = {
     { key: 'I_api', title: 'Public API v2', description: 'Let customers build on us without asking for a key by email.', status: 'active', priority: 5, ownerUserId: 'u_ines', _targetIn: '+18d', _createdAgo: '-12d', _updatedAgo: '-1d' },
     {
       key: 'I_checkout', title: 'Faster checkout', description: 'Fewer people should drop off between cart and payment.', status: 'active', priority: 4, ownerUserId: 'u_marek', _targetIn: '+2d', _createdAgo: '-20d', _updatedAgo: '-1d',
-      kpis: [{ name: 'Checkout completion', metric: 'checkout.completion_rate_pct', operator: 'gte', threshold: 70, unit: '%', blocking: true }],
-      kpiState: { evaluatedBy: 'auto', overall: 'fail', kpis: [{ index: 0, name: 'Checkout completion', verdict: 'fail', observedValue: 61, evidence: '61% over the last 7 days' }] },
-      _kpiEvaluatedAgo: '-1d',
     },
     { key: 'I_a11y', title: 'Accessibility pass', description: 'Every screen usable with a keyboard and a screen reader.', status: 'active', priority: 3, ownerUserId: 'u_ines', _createdAgo: '-8d', _updatedAgo: '-3d' },
     { key: 'I_offline', title: 'Offline mode', description: 'Keep working on a train.', status: 'paused', priority: 2, ownerUserId: 'u_marek', _createdAgo: '-45d', _updatedAgo: '-29d' },

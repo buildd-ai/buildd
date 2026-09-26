@@ -127,6 +127,15 @@ describe('POST /api/initiatives', () => {
     expect(stranger.status).toBe(400);
   });
 
+  it('ignores the removed KPI fields on create', async () => {
+    const res = await POST(new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST', body: JSON.stringify({ title: 'X', kpis: [], autoVerify: true }),
+    }));
+    expect(res.status).toBe(201);
+    expect('kpis' in insertedInitiativeValues).toBe(false);
+    expect('autoVerify' in insertedInitiativeValues).toBe(false);
+  });
+
   it('rejects a missing title', async () => {
     const req = new NextRequest('http://localhost/api/initiatives', {
       method: 'POST',
