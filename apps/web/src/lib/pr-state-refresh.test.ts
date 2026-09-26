@@ -71,6 +71,14 @@ mock.module('@/lib/pusher', () => ({
   events: { WORKER_PROGRESS: 'worker:progress' },
 }));
 
+// ─── Sibling-row merge stamp (predicate covered in pr-merge-stamp.test.ts) ───
+
+const mockStampPrMergedOnAllRows = mock(async (_input: any) => [] as Array<{ id: string; taskId: string | null }>);
+mock.module('@/lib/pr-merge-stamp', () => ({
+  stampPrMergedOnAllRows: mockStampPrMergedOnAllRows,
+  noRowOfPrMerged: () => ({ type: 'noRowOfPrMerged' }),
+}));
+
 // ─── Task dependencies mock ───────────────────────────────────────────────────
 
 const mockCheckDependsOnResolved = mock(() => Promise.resolve());
@@ -161,6 +169,27 @@ describe('refreshStaleWorkersForWorkspaces', () => {
       expect.objectContaining({ taskId: 'task1' }),
     );
     expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
+  });
+
+  it('heals every other row carrying the merged PR too (a CI-retry attempt that adopted it)', async () => {
+    mockStampPrMergedOnAllRows.mockClear();
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([{ id: 'w-retry', taskId: 'task-retry' }]);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, prUrl: 'https://github.com/owner/repo/pull/42', workspaceId: 'ws1', taskId: 'task1' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      mergedAt: new Date('2026-01-01T00:00:00Z'),
+    }));
+    // The sibling's task gets the same dependency nudge as the row itself.
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-retry');
   });
 
   it('stamps mergedAt when webhook was missed for an externally-merged PR (pr_open + null prLastCheckedAt)', async () => {

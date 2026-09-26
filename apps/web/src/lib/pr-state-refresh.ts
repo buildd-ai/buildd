@@ -30,6 +30,7 @@ import {
   installationIdForRepo,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
+import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -317,6 +318,26 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           checkDependsOnResolved(worker.taskId).catch(err =>
             console.error(`[pr-state-refresh] checkDependsOnResolved failed for task ${worker.taskId}:`, err),
           );
+        }
+
+        if (didMerge) {
+          // The merge belongs to the PR: stamp any other row carrying it (a
+          // retry attempt that adopted the PR number). See lib/pr-merge-stamp.
+          const siblings = await stampPrMergedOnAllRows({
+            prUrl: worker.prUrl,
+            prNumber: worker.prNumber,
+            mergedAt: new Date(pr.merged_at!),
+          }).catch(err => {
+            console.error(`[pr-state-refresh] sibling merge stamp failed for PR #${worker.prNumber}:`, err);
+            return [] as Array<{ id: string; taskId: string | null }>;
+          });
+          for (const s of siblings) {
+            if (s.taskId && s.taskId !== worker.taskId) {
+              checkDependsOnResolved(s.taskId).catch(err =>
+                console.error(`[pr-state-refresh] checkDependsOnResolved failed for task ${s.taskId}:`, err),
+              );
+            }
+          }
         }
       } catch (err) {
         if (isGithubRateLimitError(err)) {

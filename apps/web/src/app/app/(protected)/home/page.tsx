@@ -12,6 +12,7 @@ import { resolveActiveTeamScope } from '@/lib/team-access';
 import { splitWaitingOnYou, rightNowState, recordBestEffort } from './home-view';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
+import { noRowOfPrMerged, oneRowPerPr } from '@/lib/pr-merge-stamp';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
@@ -764,11 +765,15 @@ export default async function HomePage({
 
         // Escalation inbox (BT-15) + agent-review lease detection
         {
-          const openPrWorkers = await db.query.workers.findMany({
+          // One PR can sit on several worker rows (a CI-retry attempt adopts
+          // its parent's PR). A merge seen by any of them means the PR merged,
+          // and the rest collapse to the owner row: one PR, one card.
+          const openPrWorkers = oneRowPerPr(await db.query.workers.findMany({
             where: and(
               inArray(workers.workspaceId, wsIds),
               isNotNull(workers.prUrl),
               isNull(workers.mergedAt),
+              noRowOfPrMerged(),
               sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
             ),
             columns: {
@@ -792,7 +797,7 @@ export default async function HomePage({
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
-          });
+          }));
 
           if (openPrWorkers.length > 0) {
             const openTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
@@ -1351,6 +1356,9 @@ export default async function HomePage({
                     where: and(
                       isNotNull(workers.prUrl),
                       isNull(workers.mergedAt),
+                      // A sibling row (e.g. a CI-retry attempt) may be the one
+                      // that recorded the merge.
+                      noRowOfPrMerged(),
                     ),
                     columns: {
                       prUrl: true, prNumber: true, prLifecycleStatus: true,
