@@ -84,6 +84,7 @@ Before building your plan, check the "Workspace State" section in your context.
 Your plan is a JSON array in your structured output — an actual array value under \`plan\`, not a string encoding one. Each item has:
 - \`ref\` — unique ID within the plan (e.g. "step-1", "step-2")
 - \`title\` — concise task title
+- \`label\` — a 2–4 word noun-phrase every surface draws this task as, next to its scope chip (max 48 chars). No type prefix, no scope, no filler words — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service". Always set it; omitted, it is guessed from the title.
 - \`description\` — detailed instructions for the worker
 - \`roleSlug\` — which role executes this (check "Available Roles" section; use \`builder\` for code, \`researcher\` for analysis, \`writer\` for docs/PR descriptions, \`analyst\` for data/metrics)
 - \`dependsOn\` — array of refs this task must wait for (e.g. ["step-1"])
@@ -127,8 +128,8 @@ Your plan is a JSON array in your structured output — an actual array value un
 Example plan for a code mission (the default, trunk-based shape — the two steps are chained because they are on the same repo):
 \`\`\`json
 [
-  { "ref": "step-1", "title": "Add API endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
-  { "ref": "step-2", "title": "Add UI for new endpoint", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
+  { "ref": "step-1", "title": "Add API endpoint", "label": "api endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
+  { "ref": "step-2", "title": "Add UI for new endpoint", "label": "endpoint UI", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
 ]
 \`\`\`
 On a mission with an integration branch the plan looks the same; what changes is that step-1's merge into the integration branch is unattended, so step-2 starts sooner.
@@ -266,7 +267,8 @@ Title: concise + searchable + includes the error class (e.g. "CI: stale /tmp/bui
 
 Do NOT save summaries of task outcomes — use \`learn type=gotcha|pattern|decision|architecture|discovery\` only. Task outcomes are automatically indexed in the task corpus via complete_task.
 `,
-    color: '#D4724A',
+    // Cobalt — off the accent orange (reserved for action/progress); see role-colours.test.ts.
+    color: '#0C72CB',
     // Builder defaults to Opus. Overrides flow downward via task.complexity
     // (simple→Haiku, normal→Sonnet) in the claim-time router; overriding upward
     // to Opus is never needed.
@@ -313,7 +315,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
 - Flag urgent findings (breaking changes, security issues) immediately
 - Use the buildd MCP to report progress and create artifacts
 `,
-    color: '#D97706',
+    // Orchid — off the accent orange and warning amber; see role-colours.test.ts.
+    color: '#B24C9C',
     // Researcher reads and summarises — Sonnet is the sweet spot for this shape
     // of work. Router downshifts to Haiku under budget pressure.
     model: 'sonnet',

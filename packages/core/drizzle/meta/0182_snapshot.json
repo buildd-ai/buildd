@@ -1,6 +1,6 @@
 {
-  "id": "9a47b521-3c98-434f-b1e1-867efa1f3870",
-  "prevId": "a76341b8-241b-4388-94b4-331f9c28e320",
+  "id": "e0a99676-afff-4ea4-a042-4b53b71e7cc9",
+  "prevId": "b1547b2b-fcc3-41cf-9992-dabe24cd0847",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10531,6 +10531,42 @@
         },
         "runner_version": {
           "name": "runner_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "current_commit": {
+          "name": "current_commit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "disk_commit": {
+          "name": "disk_commit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commit_drift": {
+          "name": "commit_drift",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updating": {
+          "name": "updating",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "update_available": {
+          "name": "update_available",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tracked_branch": {
+          "name": "tracked_branch",
           "type": "text",
           "primaryKey": false,
           "notNull": false
