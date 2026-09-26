@@ -185,3 +185,14 @@ describe('mobile layout — tasks/[id]/page.tsx', () => {
     expect(pageSource).toContain('<span className="mx-2 hidden md:inline" aria-hidden="true">/</span>');
   });
 });
+
+describe('"Also running" — tasks/[id]/page.tsx', () => {
+  it("drops the task's own lineage (CI-fix attempts, the task being fixed) from the peers list", async () => {
+    expect(pageSource).toContain("import { loadAlsoRunningWorkers } from './also-running-loader'");
+    expect(pageSource).toContain('loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES })');
+    const loader = await Bun.file(new URL('./also-running-loader.ts', import.meta.url)).text();
+    // The peer query must select the column the lineage walk reads, and filter on it.
+    expect(loader).toContain('missionId: true, parentTaskId: true } } },');
+    expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
+  });
+});

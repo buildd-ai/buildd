@@ -77,6 +77,28 @@ describe('NeedsYouStack', () => {
     expect(html).toContain('data-testid="mission-arm-button"');
     expect(html).toContain('>2</span>');
   });
+  // Regression: page.tsx always passes `{cond && <…/>}` children, so with
+  // nothing waiting `children` was `[false, false]` — truthy — and the heading
+  // rendered over an empty column with no empty state.
+  it('shows the empty state when every child renders nothing', () => {
+    const empty = renderToStaticMarkup(
+      <NeedsYouStack count={0} questions={[]} held={[]} shipped={[]}>
+        {false}
+        {null}
+      </NeedsYouStack>,
+    );
+    expect(empty).toContain('Nothing needs you');
+    expect(empty).not.toContain('data-testid="needs-you-count"');
+  });
+  it('does not show the empty state when the action queue renders', () => {
+    const withQueue = renderToStaticMarkup(
+      <NeedsYouStack count={1} questions={[]} held={[]} shipped={[]}>
+        <div data-testid="home-action-queue" />
+        {false}
+      </NeedsYouStack>,
+    );
+    expect(withQueue).not.toContain('Nothing needs you');
+  });
   it('splits an option into its answer and its reason', () => {
     expect(splitOption('Per line — match Stripe')).toEqual({ main: 'Per line', sub: 'match Stripe' });
     expect(splitOption('Total only')).toEqual({ main: 'Total only', sub: null });

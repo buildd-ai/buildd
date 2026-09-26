@@ -125,6 +125,75 @@ function isFamilyHealthTask(t: { status: string; kind?: string | null; title?: s
  * (`taskClass: 'attempt'`) or a bookkeeping row cannot make a mission read
  * FAILING/STALLED while its progress bar reads healthy.
  */
+/**
+ * How long open, claimable work may sit with no live worker before the mission
+ * reads STALLED. Planning files tasks and runners pick them up on their next
+ * claim tick; without a grace window a freshly planned mission read STALLED
+ * in the seconds before any runner had a chance to claim.
+ */
+export const STALL_GRACE_MS = 5 * 60_000;
+
+type DependencyRow = {
+  id?: string;
+  status: string;
+  updatedAt?: Date | string | null;
+  workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null }> | null;
+};
+
+/**
+ * The same "satisfied" rule the claim route's `dependenciesSatisfied()` gate
+ * applies: a dependency is met when it is cancelled, or completed with its PR
+ * (if any) merged. A dependency that is not in `byId` is unknown here and is
+ * treated as met — this is a display read, and it must never invent a block.
+ */
+function dependencyMet(dep: DependencyRow): boolean {
+  if (dep.status === 'cancelled') return true;
+  if (dep.status !== 'completed') return false;
+  const latest = dep.workers?.[0];
+  return !latest?.prUrl || !!latest.mergedAt;
+}
+
+/** Ids of `task.dependsOn` entries that would still keep it out of the claim query. */
+export function unmetDependencyIds(
+  task: { dependsOn?: string[] | null },
+  byId: ReadonlyMap<string, DependencyRow>,
+): string[] {
+  const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+  return deps.filter(id => {
+    const dep = byId.get(id);
+    return dep !== undefined && !dependencyMet(dep);
+  });
+}
+
+function ms(d: Date | string | null | undefined): number | null {
+  if (!d) return null;
+  const t = new Date(d).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * When an open task became claimable: the latest of its creation, its start
+ * floor, and the moment its last dependency was satisfied. Null when the row
+ * carries no timestamps (callers that did not select them get no grace).
+ */
+function claimableSince(
+  task: { createdAt?: Date | string | null; startAt?: Date | string | null; dependsOn?: string[] | null },
+  byId: ReadonlyMap<string, DependencyRow>,
+): number | null {
+  const times: number[] = [];
+  const created = ms(task.createdAt);
+  if (created !== null) times.push(created);
+  const start = ms(task.startAt);
+  if (start !== null) times.push(start);
+  for (const id of Array.isArray(task.dependsOn) ? task.dependsOn : []) {
+    const dep = byId.get(id);
+    if (!dep) continue;
+    const t = ms(dep.workers?.[0]?.mergedAt) ?? ms(dep.updatedAt);
+    if (t !== null) times.push(t);
+  }
+  return times.length > 0 ? Math.max(...times) : null;
+}
+
 function isMissionHealthTask(t: Parameters<typeof isDeliverableTask>[0] & { status: string }): boolean {
   return t.status !== 'cancelled' && isDeliverableTask(t);
 }
@@ -152,15 +221,21 @@ export function deriveTaskHealthSignal(
     heartbeatWaitingUntil?: Date | string | null;
   },
   tasks: Array<{
+    id?: string;
     status: string;
     kind?: string | null;
     title?: string | null;
     mode?: string | null;
     creationSource?: string | null;
+    /** `tasks.dependsOn` — a row waiting on an unmet dependency is not stalled. */
+    dependsOn?: string[] | null;
+    createdAt?: Date | string | null;
+    updatedAt?: Date | string | null;
+    startAt?: Date | string | null;
     /** Select it: without it, pre-migration title heuristics decide what counts. */
     taskClass?: string | null;
     category?: string | null;
-    workers?: Array<{ status: string }>;
+    workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null }> | null;
     /**
      * True when this failed task's deliverable shipped anyway — its target PR
      * merged, or a title-equivalent sibling task completed with a merged PR
@@ -176,6 +251,8 @@ export function deriveTaskHealthSignal(
      * 'family': one task plus its own attempts — the attempts count.
      */
     scope?: 'mission' | 'family';
+    /** Clock for the stall grace window. Defaults to `Date.now()`. */
+    now?: Date;
   } = {},
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
@@ -196,6 +273,19 @@ export function deriveTaskHealthSignal(
     activeTasks.length > 0 &&
     !tasks.some(t => OPEN_TASK_STATUSES.has(t.status) && t.workers?.some(w => LIVE_STATUSES.has(w.status)))
   ) {
+    const byId = new Map<string, DependencyRow>();
+    for (const t of tasks) if (t.id) byId.set(t.id, t);
+    // A row waiting on an unmet dependency cannot be claimed, so it is not
+    // evidence the platform failed to progress anything. If every open row is
+    // in that state the mission is moving through its DAG (the dependency is
+    // either unmerged — a merge fact — or failed — FAILING above).
+    const claimable = activeTasks.filter(t => t.status !== 'pending' || unmetDependencyIds(t, byId).length === 0);
+    if (claimable.length === 0) return 'NOMINAL';
+    // Grace: runners claim on a tick. Work that became claimable moments ago
+    // with nothing on it yet is queued, not stalled.
+    const now = (opts.now ?? new Date()).getTime();
+    const since = claimable.map(t => claimableSince(t, byId)).filter((t): t is number => t !== null);
+    if (since.length > 0 && now - Math.max(...since) < STALL_GRACE_MS) return 'NOMINAL';
     return 'STALLED';
   }
 

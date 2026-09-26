@@ -64,6 +64,7 @@ import { findTaskRole } from './role-lookup';
 import { taskHeading } from './task-header';
 import { linkQuestionNote } from './question-hero';
 import { buildLineage } from './pr-lineage';
+import { loadAlsoRunningWorkers } from './also-running-loader';
 import type { PrOutcome } from '@/components/task/PrCard';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 
@@ -300,13 +301,9 @@ export default async function TaskDetailPage({
     // Role name/colour come from the workspace's role row, never a local map.
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as any)?.teamId, slug: task.roleSlug }),
     // Other live agents in this workspace — "Also running" / "While you decide".
-    db.query.workers.findMany({
-      where: and(eq(workers.workspaceId, task.workspaceId), inArray(workers.status, LIVE_WORKER_STATUSES), ne(workers.taskId, id)),
-      columns: { id: true, taskId: true, status: true, milestones: true },
-      with: { task: { columns: { id: true, title: true, label: true, missionId: true } } },
-      orderBy: desc(workers.updatedAt),
-      limit: 12,
-    }),
+    // The task's own lineage (its CI-fix/review attempts, the task it is
+    // fixing) is this work, not a peer, and is dropped by the loader.
+    loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES }),
     // CI-retry attempts at this task's PR: each is a fresh worker handed the
     // failure excerpt, on the same branch. They make "How it landed".
     prWorker?.prNumber

@@ -24,7 +24,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, unmetDependencyIds } from '@/lib/mission-helpers';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
@@ -136,6 +136,8 @@ type LoadedTask = {
   loopState: unknown;
   result: unknown;
   createdAt: Date | null;
+  updatedAt?: Date | null;
+  dependsOn?: string[] | null;
   workers: Array<{
     id: string;
     status: string;
@@ -158,7 +160,7 @@ const TASK_COLUMNS = {
   id: true, title: true, status: true, mode: true, kind: true, taskClass: true,
   parentTaskId: true, creationSource: true, category: true, subjectPrNumber: true,
   pathManifest: true, context: true, startAt: true, loopConfig: true, loopState: true,
-  result: true, createdAt: true,
+  result: true, createdAt: true, updatedAt: true, dependsOn: true,
 } as const;
 
 /**
@@ -345,6 +347,10 @@ async function viewForMission(missionId: string): Promise<{
 
   const activeAgents = loaded.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
   const openTasks = deliverables.filter(t => OPEN_TASK_STATUSES.has(t.status));
+  // A pending row waiting on an unmet dependency cannot be the blocker; the
+  // accessor cites the dependency instead (same rule as the claim gate).
+  const loadedById = new Map(loaded.map(t => [t.id, t]));
+  const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
@@ -370,7 +376,7 @@ async function viewForMission(missionId: string): Promise<{
     completion,
     wait,
     workState,
-    openTasks: openTasks.map(t => ({ id: t.id, status: t.status, title: t.title })),
+    openTasks: openTasks.map(t => ({ id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t) })),
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
@@ -387,7 +393,13 @@ async function viewForMission(missionId: string): Promise<{
     mission: m,
     loaded,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: hasLiveWorker(t) })),
+      openTasks: openTasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        live: hasLiveWorker(t),
+        waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
+      })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,
