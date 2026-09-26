@@ -60,6 +60,19 @@ describe('MissionLanes — question and complete', () => {
     expect(html).toContain('data-testid="lanes-criteria"');
     expect(html).not.toContain('data-testid="lanes-up-next"');
   });
+
+  it('the completion record drops a zero CI auto-fix count and counts screens reviewed', () => {
+    const plain = render('complete');
+    expect(plain).not.toContain('CI auto-fixed');
+    const shots = [{ id: 's', createdAt: '2026-01-01T12:00:00.000Z', src: '/x', qa: { runKey: '', route: '/a', viewport: 'desktop' as const, finding: 'f', verdict: 'ok' as const } }];
+    const html = renderToStaticMarkup(
+      <MissionLanes model={boardFixture('complete')} missionId="mission-1" completionText="x" visual={{ shots, taskId: null }} />,
+    );
+    expect(html.replace(/<[^>]+>/g, ' ')).toMatch(/1\/1\s+screens ok/);
+    const m = boardFixture('complete');
+    m.record.ciFixes = 1;
+    expect(renderToStaticMarkup(<MissionLanes model={m} missionId="mission-1" />)).toContain('CI auto-fixed');
+  });
 });
 
 describe('laneWindow', () => {

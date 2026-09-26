@@ -42,6 +42,42 @@ describe('StatStrip', () => {
     expect(html).toContain('data-testid="stat-self-healed"');
     expect(html).not.toContain('data-testid="stat-prs-in-ci"');
   });
+
+  const quiet = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(
+    <StatStrip live={0} capacity={8} runners={1} needsYou={0} needsYouDetail={null} mergedToday={3} mergedDetail={null} prsInCi={[]} selfHealed={0} {...extra} />,
+  );
+
+  it('does not lead with "Self-healed 0" when nothing failed', () => {
+    const html = quiet();
+    expect(html).not.toContain('data-testid="stat-self-healed"');
+    expect(html).not.toMatch(/self-healed/i);
+  });
+
+  it('shows the screens reviewed in that slot when there was a visual review', () => {
+    const html = quiet({ screensReviewed: { shots: 6, ok: 6, issues: 0, unsure: 0 } });
+    expect(html).toContain('data-testid="stat-screens-reviewed"');
+    expect(html.replace(/<[^>]+>/g, ' ')).toMatch(/Screens reviewed\s+6\s+all ok/);
+  });
+});
+
+describe('NeedsYouStack shipped card', () => {
+  const shipped = (over: Record<string, unknown> = {}) => ({
+    id: 'm1', title: 'Example mission', href: '/app/missions/m1', completedAt: '2026-01-10T14:00:00.000Z',
+    prs: 11, fixes: 0, durationMs: 37 * 60_000, criteria: null, ...over,
+  });
+  const text = (over: Record<string, unknown> = {}) => renderToStaticMarkup(
+    <NeedsYouStack count={0} questions={[]} held={[]} shipped={[shipped(over)]} timeZone="UTC" />,
+  ).replace(/<[^>]+>/g, ' ');
+
+  it('drops "0 auto-fixes" and shows the visual review instead', () => {
+    const t = text({ screens: { shots: 6, ok: 6, issues: 0, unsure: 0 } });
+    expect(t).not.toMatch(/auto-fix/);
+    expect(t).toMatch(/6\/6\s+screens ok/);
+  });
+
+  it('keeps auto-fixes when there were some', () => {
+    expect(text({ fixes: 2 })).toMatch(/2\s+auto-fixes/);
+  });
 });
 
 describe('FleetStrip', () => {

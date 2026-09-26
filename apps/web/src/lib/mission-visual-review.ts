@@ -43,6 +43,12 @@ export interface QaMeta {
   verdict: QaVerdict;
   theme?: string;
   fixTaskId?: string;
+  /**
+   * What else sets this shot apart from another at the same route and
+   * viewport: `qa.variant`, else `qa.locale`, else `qa.label`. Optional; see
+   * `withVariants` for the fallback that reads the title.
+   */
+  variant?: string;
 }
 
 export interface VisualShot {
@@ -52,7 +58,15 @@ export interface VisualShot {
   createdAt: string;
   /** Image URL. The download route for real rows; fixtures pass their own. */
   src: string;
+  /** `artifacts.title` (the upload's filename, by default). */
+  title?: string | null;
   qa: QaMeta;
+  /**
+   * The distinguishing variant shown in the caption. Set by `withVariants`:
+   * the explicit `qa.variant`, or, when two shots share a route and viewport,
+   * what their titles have that the route and viewport do not.
+   */
+  variant?: string | null;
 }
 
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
@@ -81,6 +95,8 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
   };
   if (nonEmpty(q.theme)) meta.theme = q.theme;
   if (nonEmpty(q.fixTaskId)) meta.fixTaskId = q.fixTaskId;
+  const variant = [q.variant, q.locale, q.label].find(nonEmpty);
+  if (variant) meta.variant = variant.trim();
   return meta;
 }
 
@@ -98,6 +114,7 @@ interface ArtifactRowLike {
   createdAt: string | Date;
   metadata: unknown;
   workerId?: string | null;
+  title?: string | null;
 }
 
 /** Audit screenshots with a valid `metadata.qa`, oldest first. */
@@ -108,9 +125,66 @@ export function toVisualShots(rows: readonly ArtifactRowLike[]): VisualShot[] {
     const qa = parseQaMeta(row.metadata);
     if (!qa) continue;
     const createdAt = typeof row.createdAt === 'string' ? row.createdAt : row.createdAt.toISOString();
-    shots.push({ id: row.id, workerId: row.workerId ?? null, createdAt, src: thumbSrc(row.id), qa });
+    shots.push({ id: row.id, workerId: row.workerId ?? null, createdAt, src: thumbSrc(row.id), title: row.title ?? null, qa });
   }
   return shots.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+const VIEWPORT_WORDS = new Set(['desktop', 'mobile', 'phone', 'tablet']);
+const FILLER_WORDS = new Set(['screenshot', 'shot', 'screen', 'png', 'jpg', 'jpeg', 'webp']);
+
+/**
+ * What a shot's title says beyond its route and viewport:
+ * `invoices-eur-desktop.png` at `/invoices/:id` → `eur`. Null when nothing is
+ * left.
+ */
+export function titleVariant(shot: Pick<VisualShot, 'title' | 'qa'>): string | null {
+  if (!nonEmpty(shot.title)) return null;
+  const routeWords = new Set(
+    shot.qa.route.toLowerCase().split(/[/?&=#._-]+/).filter(w => w && !w.startsWith(':')),
+  );
+  const theme = shot.qa.theme?.toLowerCase();
+  const words = shot.title
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .filter((w) => {
+      const lw = w.toLowerCase();
+      return !VIEWPORT_WORDS.has(lw) && !FILLER_WORDS.has(lw) && !routeWords.has(lw) && lw !== theme;
+    });
+  return words.length > 0 ? words.join(' ') : null;
+}
+
+/**
+ * Fill each shot's `variant`: the explicit `qa.variant` always; otherwise the
+ * title's variant, for shots whose route and viewport collide with another
+ * shot's (EUR and JPY invoices both read `/invoices/:id · desktop`). A route
+ * with one shot per viewport gets none, so captions only grow where they must.
+ */
+export function withVariants(shots: readonly VisualShot[]): VisualShot[] {
+  const perCell = new Map<string, number>();
+  const cell = (s: VisualShot) => `${s.qa.route}\u0000${s.qa.viewport}`;
+  for (const s of shots) perCell.set(cell(s), (perCell.get(cell(s)) ?? 0) + 1);
+  const collidingRoutes = new Set(shots.filter(s => (perCell.get(cell(s)) ?? 0) > 1).map(s => s.qa.route));
+  return shots.map((s) => {
+    const variant = s.qa.variant ?? (collidingRoutes.has(s.qa.route) ? titleVariant(s) : null);
+    return variant === (s.variant ?? null) ? s : { ...s, variant };
+  });
+}
+
+/** `route · variant · viewport`, or `route · viewport` with no variant. */
+export function shotCaption(shot: Pick<VisualShot, 'qa' | 'variant'>): string {
+  return [shot.qa.route, shot.variant, shot.qa.viewport].filter(Boolean).join(' · ');
+}
+
+/** "6 of 6 ok", "4 of 6 ok · 2 issues", "no shots". */
+export function verdictLine(summary: { shots: number; ok: number; issues: number; unsure: number }): string {
+  if (summary.shots === 0) return 'no shots';
+  return [
+    `${summary.ok} of ${summary.shots} ok`,
+    summary.issues > 0 ? `${summary.issues} issue${summary.issues === 1 ? '' : 's'}` : null,
+    summary.unsure > 0 ? `${summary.unsure} unsure` : null,
+  ].filter(Boolean).join(' · ');
 }
 
 /** A run's identity: the worker and its `runKey`, so another worker reusing a key never merges in. */
@@ -261,17 +335,21 @@ export function missionVisualReview<T extends TaskLike>(
      */
     requiredRoutesOf?: (task: T) => readonly string[];
   } = {},
-): { run: VisualShot[]; summary: DeliveryVisual } | null {
-  const run = selectLatestRun(toVisualShots(shotRows));
+): { run: VisualShot[]; summary: DeliveryVisual; taskId: string | null } | null {
+  const run = withVariants(selectLatestRun(toVisualShots(shotRows)));
   const openAudit = tasks.some(
     t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status),
   );
   const bootFailed = auditBootFailed(tasks);
   if (run.length === 0 && !openAudit && !bootFailed) return null;
   const runWorker = run[0]?.workerId ?? null;
-  const runTask = runWorker && opts.requiredRoutesOf
+  const runTask = runWorker
     ? tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && (t.workers ?? []).some(w => w.id === runWorker))
     : undefined;
-  const coverage = runTask ? requiredCoverage(run, opts.requiredRoutesOf!(runTask)) : null;
-  return { run, summary: summarizeVisualRun(run, { ...(coverage ?? {}), bootFailed }) };
+  const coverage = runTask && opts.requiredRoutesOf ? requiredCoverage(run, opts.requiredRoutesOf(runTask)) : null;
+  // The task the run belongs to, else the one open audit, so the Board can
+  // put the shots under that task's tile.
+  const auditTask = runTask
+    ?? (run.length === 0 ? tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status)) : undefined);
+  return { run, summary: summarizeVisualRun(run, { ...(coverage ?? {}), bootFailed }), taskId: auditTask?.id ?? null };
 }

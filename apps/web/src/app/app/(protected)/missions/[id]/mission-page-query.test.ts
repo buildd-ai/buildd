@@ -137,7 +137,7 @@ describe('visual review shots query', () => {
   });
 
   it('selects no content, carries the worker, and holds up to three 40-shot runs', () => {
-    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'type', 'workerId']);
+    expect(Object.keys(MISSION_VISUAL_SHOT_COLUMNS).sort()).toEqual(['createdAt', 'id', 'metadata', 'title', 'type', 'workerId']);
     expect(MISSION_VISUAL_SHOTS_LIMIT).toBeGreaterThanOrEqual(120);
   });
 

@@ -13,6 +13,7 @@ mock.module('next/navigation', () => ({
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionBoard } = await import('./MissionBoard');
 const { boardFixture } = await import('@/lib/mission-board.fixtures');
+const { toVisualShots } = await import('@/lib/mission-visual-review');
 
 const render = (moment: Parameters<typeof boardFixture>[0], extra: Record<string, unknown> = {}) =>
   renderToStaticMarkup(<MissionBoard model={boardFixture(moment)} missionId="mission-1" {...extra} />);
@@ -135,7 +136,7 @@ describe('MissionBoard — demo v5 polish', () => {
     const html = render('complete', { completionText: 'Example outcome.' });
     const stats = html.split('data-testid="record-stats"')[1] ?? '';
     expect(stats).not.toBe('');
-    for (const id of ['record-prs', 'record-lines', 'record-ci-fixes', 'record-decisions']) expect(stats).toContain(`data-testid="${id}"`);
+    for (const id of ['record-prs', 'record-lines', 'record-decisions']) expect(stats).toContain(`data-testid="${id}"`);
     const section = html.match(/data-testid="mission-completion-record" class="([^"]*)"/)?.[1] ?? '';
     expect(section).not.toContain('repeat(4,');
   });
@@ -186,5 +187,54 @@ describe('MissionBoard — compact (docked pane / phone sheet)', () => {
       expect(cls.split(/\s+/)).not.toContain('truncate');
       expect(text).toMatch(/^\d+\/\d+$/);
     }
+  });
+});
+
+// Visual review on the Board: before, the auditor showed only as a landed row
+// marked "report", and the shots rendered in the Feed layout alone.
+describe('MissionBoard — visual review', () => {
+  const qa = (id: string, verdict: string, viewport = 'desktop') => ({
+    id, type: 'screenshot', workerId: 'w-va', title: `${id}.png`,
+    createdAt: `2026-01-01T12:0${id.length}:00.000Z`,
+    metadata: { qa: { runKey: 'r1', route: '/invoices/:id', viewport, verdict, finding: `Checked ${id}.` } },
+  });
+  const shots = toVisualShots([qa('a', 'ok'), qa('bb', 'ok', 'mobile'), qa('ccc', 'ok')]);
+
+  it('shows the shots and the verdict under the auditor task in its column', () => {
+    const html = render('complete', { completionText: 'x', visual: { shots, taskId: 'guide' } });
+    expect(html).toContain('data-testid="board-visual-shots"');
+    expect(count(html, 'data-testid="board-visual-thumb"')).toBe(3);
+    expect(html).toMatch(/data-testid="board-visual-verdict"[^>]*>3 of 3 ok</);
+    // Directly after the auditor's own row, inside the columns.
+    const cols = html.split('data-testid="mission-board-columns"')[1].split('data-testid="mission-concurrency"')[0];
+    const afterGuide = cols.split('data-task-id="guide"')[1] ?? '';
+    expect(afterGuide).toContain('data-testid="board-visual-shots"');
+  });
+
+  it('falls back to under the columns when the task is not on the board', () => {
+    const html = render('running', { visual: { shots, taskId: null } });
+    expect(html).toContain('data-testid="board-visual-shots"');
+  });
+
+  it('draws nothing without shots', () => {
+    const html = render('running', { visual: { shots: [], taskId: 'guide' } });
+    expect(html).not.toContain('data-testid="board-visual-shots"');
+  });
+
+  it('the completion record hides a zero CI auto-fix count and shows screens reviewed', () => {
+    const html = render('complete', { completionText: 'x', visual: { shots, taskId: 'guide' } });
+    const stats = html.split('data-testid="record-stats"')[1] ?? '';
+    expect(stats).not.toContain('data-testid="record-ci-fixes"');
+    expect(stats).not.toMatch(/CI auto-fix/i);
+    const screens = stats.split('data-testid="record-screens"')[1]?.split('data-testid="record-')[0] ?? '';
+    expect(screens.replace(/<[^>]+>/g, ' ')).toMatch(/Screens reviewed\s+3\s+all ok/);
+  });
+
+  it('the completion record keeps CI auto-fix when something was fixed', () => {
+    const model = boardFixture('complete');
+    model.record.ciFixes = 2;
+    const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" completionText="x" />);
+    expect(html).toContain('data-testid="record-ci-fixes"');
+    expect(html).not.toContain('data-testid="record-screens"');
   });
 });

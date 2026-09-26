@@ -527,6 +527,9 @@ buildd action=upload_artifact params={
 }
 \`\`\`
 
+When you shoot one route more than once per viewport (two locales, a query, an empty
+and a full state), add \`variant: "<what differs>"\` to \`qa\` so the captions tell them apart.
+
 \`finding\` is never empty, even for \`ok\`: say what you checked. Describe what you saw
 generically; never paste real names or content from a shot anywhere.
 

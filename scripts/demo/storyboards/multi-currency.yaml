@@ -241,8 +241,8 @@ steps:
   # Delivery line gains "Visual review", which expands into the shots strip.
   - id: 18-mission-visual-review
     advance: "25:40"
-    # The Delivery line (and so the Visual review) renders in the Feed layout,
-    # not on the Board.
+    # The full strip (captions, legend) is the Feed layout's Delivery line; the
+    # Board shows the same run compactly under the auditor's row (24, 27).
     goto: /app/missions/{M1}?layout=feed
     viewports: [desktop, phone]
     waitFor: mission-delivery
@@ -267,20 +267,29 @@ steps:
   - id: 20-task-visual-review
     goto: /app/tasks/{VA}
     viewports: [desktop, phone]
-    waitFor: task-artifacts
+    waitFor: task-visual-shots
     scrollTo: task-artifacts
-    highlight: [task-artifacts, artifact-card]
+    highlight: [task-visual-shots, visual-review-thumb, visual-review-finding]
     hold: 900
     caption: "The reviewer's own page: the shots it took, the verdict it posted."
 
   - id: 21-task-visual-shot
     goto: /app/tasks/{VA}
     viewports: [desktop, phone]
-    waitFor: task-artifacts
-    click: '[data-testid="artifact-card"][data-kind="screenshot"]'
-    highlight: [artifact-viewer]
+    waitFor: task-visual-shots
+    click: '[data-testid="task-visual-shots"] [data-testid="visual-review-thumb"]'
+    highlight: [visual-review-lightbox-route]
     hold: 900
     caption: "Open any shot from the task."
+
+  # A shared ?artifact= link opens the artifact viewer on the uploaded image.
+  - id: 21b-task-artifact-link
+    goto: /app/tasks/{VA}?artifact={a_shot3}
+    viewports: [desktop, phone]
+    waitFor: artifact-viewer
+    highlight: [artifact-viewer]
+    hold: 900
+    caption: "A link to one shot opens it directly."
 
   # ── prove it, done ─────────────────────────────────────────────────────────
   - id: 24-board-2600

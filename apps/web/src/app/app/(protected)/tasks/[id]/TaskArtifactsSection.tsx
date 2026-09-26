@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ArtifactCard from '@/components/ArtifactCard';
 import ArtifactViewer from '@/components/ArtifactViewer';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
+import VisualReviewStrip from '@/app/app/(protected)/missions/[id]/VisualReviewStrip';
+import { toVisualShots, withVariants } from '@/lib/mission-visual-review';
 import type { TaskArtifactItem } from './task-artifact-items';
 
 type ArtifactItem = TaskArtifactItem;
@@ -14,6 +16,8 @@ interface Props {
   baseUrl: string;
   /** If set, open the viewer to this artifact on mount (from ?artifact= param). */
   initialOpenArtifactId?: string | null;
+  /** The task's mission, for the lightbox's fix-task link. */
+  missionId?: string | null;
 }
 
 export default function TaskArtifactsSection({
@@ -21,6 +25,7 @@ export default function TaskArtifactsSection({
   taskId,
   baseUrl,
   initialOpenArtifactId,
+  missionId,
 }: Props) {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -37,6 +42,11 @@ export default function TaskArtifactsSection({
   // Only run on mount
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Audit screenshots (a valid metadata.qa) show as a thumbnail grid with
+  // their caption, verdict and finding; everything else keeps its card.
+  const shots = useMemo(() => withVariants(toVisualShots(items)), [items]);
+  const shotIds = useMemo(() => new Set(shots.map(s => s.id)), [shots]);
 
   if (artifacts.length === 0) return null;
 
@@ -62,8 +72,13 @@ export default function TaskArtifactsSection({
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Artifacts ({artifacts.length})
       </div>
+      {shots.length > 0 && (
+        <div data-testid="task-visual-shots" className="mb-4">
+          <VisualReviewStrip shots={shots} missionId={missionId} layout="grid" />
+        </div>
+      )}
       <div className="space-y-3">
-        {items.map((art, index) => (
+        {items.map((art, index) => shotIds.has(art.id) ? null : (
           <ArtifactCard
             key={art.id}
             artifact={art}
