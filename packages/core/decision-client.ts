@@ -32,10 +32,10 @@
  * An OpenRouter key in the `secrets` table (never a new table — see
  * `docs/credentials-architecture.md`) with purpose `decision_key`. An existing
  * `inference_key` row labelled `openrouter` is accepted as a fallback so a team
- * does not paste the same key twice. Resolution is most-specific-first:
- * account (the acting user's account) → workspace → team-wide. The
- * `OPENROUTER_API_KEY` env var is honoured **outside production only**, for
- * local development and the offline eval script.
+ * does not paste the same key twice. Resolution goes through the shared
+ * `resolveInferenceKey` (`inference-keys.ts`): user → account → workspace →
+ * team-wide, and `OPENROUTER_API_KEY` **outside production only**, for local
+ * development and the offline eval script.
  *
  * ## Transport
  *
@@ -49,14 +49,14 @@
  *
  * ## Module loading
  *
- * The DB client (and `./secrets`, which pulls it in) is imported lazily, on the
+ * The DB client (and `./inference-keys`, which pulls it in) is imported lazily, on the
  * key-resolution path only. The DB client imports `server-only`, which throws
  * outside Next, so a static import would make this module unusable from a plain
  * bun script — the offline benchmark, and any caller passing its own `apiKey`.
  */
 
-import { secrets, teams } from './db/schema';
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { teams } from './db/schema';
+import { eq } from 'drizzle-orm';
 import {
   TypeSafeClient,
   APIError,
@@ -328,66 +328,30 @@ export function gateChoice<L extends string>(
 
 // ── Key resolution ───────────────────────────────────────────────────────────
 
-const KEY_PURPOSES = [DECISION_KEY_PURPOSE, 'inference_key'] as const;
-
+/**
+ * The OpenRouter key a decision call spends. Resolved through the one shared
+ * resolver (`inference-keys.ts`), so the same key serves chat, inference calls
+ * and decisions: an `inference_key` labelled `openrouter`, or the legacy
+ * `decision_key`, which is still preferred at the same scope so a team that
+ * set one keeps spending it. Precedence is the shared one: the acting user's
+ * key, then the account's, then the workspace's, then the team's, then
+ * `OPENROUTER_API_KEY` outside production.
+ */
 export async function resolveDecisionKey(opts: {
   teamId: string;
   workspaceId?: string | null;
   accountId?: string | null;
+  userId?: string | null;
 }): Promise<string | null> {
-  try {
-    const { db } = await import('./db');
-    const { decrypt } = await import('./secrets');
-    const rows = await db.query.secrets.findMany({
-      where: and(
-        eq(secrets.teamId, opts.teamId),
-        or(...KEY_PURPOSES.map(p => eq(secrets.purpose, p as never))),
-        or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
-        or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-      ),
-      columns: {
-        id: true, purpose: true, label: true, encryptedValue: true, accountId: true,
-        workspaceId: true, healthStatus: true, updatedAt: true,
-      },
-    });
-
-    // Re-checked in JS rather than trusted to the `where`: a key must never be
-    // sent to a provider it was not issued for, and must never cross into
-    // another account's or workspace's scope.
-    const candidates = rows.filter(r =>
-      (KEY_PURPOSES as readonly string[]).includes(r.purpose) &&
-      (r.purpose === DECISION_KEY_PURPOSE || (r.label ?? '').toLowerCase() === 'openrouter') &&
-      (r.accountId == null || r.accountId === opts.accountId) &&
-      (r.workspaceId == null || r.workspaceId === opts.workspaceId),
-    );
-
-    // user → workspace → team, then the dedicated purpose, healthy over revoked,
-    // newest first.
-    const scopeRank = (r: { accountId: string | null; workspaceId: string | null }) =>
-      r.accountId ? 0 : r.workspaceId ? 1 : 2;
-    const best = candidates.sort((a, b) =>
-      scopeRank(a) - scopeRank(b) ||
-      KEY_PURPOSES.indexOf(a.purpose as never) - KEY_PURPOSES.indexOf(b.purpose as never) ||
-      ((a.healthStatus as string) === 'revoked' ? 1 : 0) - ((b.healthStatus as string) === 'revoked' ? 1 : 0) ||
-      (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0),
-    )[0];
-
-    if (best) {
-      try {
-        const value = decrypt(best.encryptedValue);
-        if (value) return value;
-      } catch (e) {
-        console.error(`[decision] failed to decrypt secret ${best.id}:`, e);
-      }
-    }
-  } catch (e) {
-    console.warn('[decision] key lookup failed:', e);
-  }
-
-  // Dev-only fallback. In production the key must live in `secrets`, so a
-  // stray env var can never silently start spending on every team.
-  if (process.env.NODE_ENV !== 'production') return process.env.OPENROUTER_API_KEY || null;
-  return null;
+  const { resolveInferenceKey } = await import('./inference-keys');
+  return resolveInferenceKey({
+    provider: 'openrouter',
+    teamId: opts.teamId,
+    workspaceId: opts.workspaceId,
+    accountId: opts.accountId,
+    userId: opts.userId,
+    purposes: [DECISION_KEY_PURPOSE, 'inference_key'],
+  });
 }
 
 /** Fails closed: a failed lookup means "not enabled", never "spend anyway". */

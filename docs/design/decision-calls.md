@@ -124,6 +124,8 @@ The key is an OpenRouter key stored in the `secrets` table under a new purpose, 
 - An existing `inference_key` row labelled `openrouter` is accepted as a fallback, so a team that already stored an OpenRouter key for `inferenceCall` does not paste it twice.
 - A key must never go to a provider it was not issued for. Rows with any other purpose, or `inference_key` rows labelled for another provider, are rejected in JS even if the query returns them.
 
+**Since agent chat P1**, `resolveDecisionKey` is a thin wrapper over the shared `resolveInferenceKey` (`packages/core/inference-keys.ts`), so one OpenRouter key serves chat, inference and decision calls. `decision_key` stays preferred over `inference_key` at the same scope, and a personal key (`secrets.userId`) ranks first when the call names the acting user.
+
 **Resolution order: acting user's account → workspace → team.** An account-scoped row whose `accountId` equals the caller's account wins, then a workspace-scoped row, then the team-wide row. Rows scoped to *another* account or workspace are never considered.
 
 This intentionally differs from the credentials doc's workspace → account → team order. That order is for runner credentials; the order here is for a key that a person pays for. If a user has brought their own key, that key should be the one spent (Open Question 1).

@@ -33,6 +33,7 @@
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
     "./decision-client": "./decision-client.ts",
+    "./inference-keys": "./inference-keys.ts",
     "./routing-analytics": "./routing-analytics.ts",
     "./report-ops": "./report-ops.ts",
     "./describe-error": "./describe-error.ts",

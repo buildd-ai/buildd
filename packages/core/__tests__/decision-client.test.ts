@@ -426,6 +426,18 @@ describe('resolveDecisionKey', () => {
     expect(await resolveDecisionKey({ teamId: 'team-1' })).toBe('dec');
   });
 
+  it('resolves through the shared resolver: a personal OpenRouter inference key serves decisions', async () => {
+    // One OpenRouter key serves chat and decisions. A user's own key (set for
+    // chat) is spent for that user's decisions; nobody else's.
+    secretRows = [
+      secretRow({ id: 'team', encryptedValue: 'enc:team-dec' }),
+      secretRow({ id: 'mine', purpose: 'inference_key', label: 'openrouter', userId: 'u-1', encryptedValue: 'enc:mine' }),
+    ];
+    expect(await resolveDecisionKey({ teamId: 'team-1', userId: 'u-1' })).toBe('mine');
+    expect(await resolveDecisionKey({ teamId: 'team-1', userId: 'u-2' })).toBe('team-dec');
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBe('team-dec');
+  });
+
   it('never reads a non-OpenRouter purpose even if the query returns one', async () => {
     secretRows = [secretRow({ purpose: 'anthropic_api_key', encryptedValue: 'enc:sk-ant' })];
     expect(await resolveDecisionKey({ teamId: 'team-1' })).toBeNull();

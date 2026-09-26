@@ -37,7 +37,8 @@ export type InferenceCapability =
   | 'visual_qa'
   | 'task_classification'
   | 'mission_summary'
-  | 'task_category_shadow';
+  | 'task_category_shadow'
+  | 'chat';
 
 export interface CapabilityDescriptor {
   id: InferenceCapability;
@@ -100,6 +101,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     // Nothing depends on it: turning it off stops the comparison, nothing else.
     fallback: 'none',
     costHint: '~$0.00002 per task',
+  },
+  chat: {
+    id: 'chat',
+    label: 'Agent chat',
+    description:
+      'Talk to your buildd agent: answers from live fleet state and files missions through approval cards. Runs on the server against a provider API key (yours or the team\'s), never on a runner or a subscription seat.',
+    // No agent run can stand in for a streaming chat turn: off means no chat.
+    fallback: 'none',
+    costHint: '~$0.005–0.05 per turn, by tier',
   },
 };
 
