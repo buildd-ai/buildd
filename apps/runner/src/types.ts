@@ -351,6 +351,16 @@ export interface LocalWorker {
   // row, packaged or not; the only source of the agent's persona on both the
   // Claude (systemPrompt.append) and Codex (AGENTS.md) paths.
   roleInstructions?: RoleInstructions;
+  // Role/workspace env secrets (ENV_NAME → value) resolved server-side against
+  // the `secrets` table (purpose='role_env_secret') and delivered inline at
+  // claim time. Merged into role env by resolveWorkerRoleEnv — independent of
+  // roleConfig, so an MCP-registered role with no packaged R2 bundle still
+  // gets its declared env vars.
+  roleEnvSecrets?: Record<string, string>;
+  // ENV_NAME keys the role/workspace mapping declared with no matching secrets
+  // row — merged into resolveWorkerRoleEnv's `missing` so a declared-but-unmet
+  // requirement still records the existing "Role env degraded" milestone.
+  roleEnvMissing?: string[];
   // Skill bundles resolved by the claim route for task.context.skillSlugs.
   // Materialized to disk by syncSkillToLocal in startSession so the SDK's
   // native Skill tool can find them — without this, a task instructed to

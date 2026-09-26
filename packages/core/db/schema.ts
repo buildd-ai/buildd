@@ -226,6 +226,13 @@ export interface WorkspaceGitConfig {
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
   defaultBackend?: 'claude' | 'codex';
 
+  // Workspace-wide ENV_NAME → secret label mapping, resolved at claim time
+  // against the `secrets` table (purpose='role_env_secret') the same way a
+  // role's own `requiredEnvVars` is. Applies to every role in the workspace as
+  // a base; a role's own `requiredEnvVars` overrides the same key. See
+  // docs/design/reliable-env-provisioning.md → "Private registry credentials".
+  envMapping?: Record<string, string>;
+
   // Who grades prose (`description`) goal criteria in this workspace:
   // 'api' (inference call, per-token), 'runner' (read-only task on a runner's
   // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
@@ -2435,7 +2442,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
