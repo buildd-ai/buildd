@@ -21,7 +21,8 @@
  * - **Bounded.** One overall deadline covers every attempt (default 5s), with at
  *   most one retry on a transient failure (429 / 5xx / 529 / network) and only
  *   if the deadline still has room. There is no way to make this block for
- *   minutes.
+ *   minutes. The SDK's own retry is switched off (`maxRetries: 0`): its budget
+ *   is per attempt with no total ceiling, and two retry loops would stack.
  * - **Gated before spend.** The team's inference capability allowlist
  *   (`teams.enabledInferenceCapabilities`) is checked before the key is even
  *   resolved, exactly as `inferenceCall` does. Default empty ⇒ nothing runs.
@@ -35,16 +36,45 @@
  * account (the acting user's account) → workspace → team-wide. The
  * `OPENROUTER_API_KEY` env var is honoured **outside production only**, for
  * local development and the offline eval script.
+ *
+ * ## Transport
+ *
+ * The official TypeSafe SDK (`@typesafe-ai/sdk`, MIT, pinned) pointed at
+ * OpenRouter's System One API (`baseURL` `https://openrouter.ai/api`; the SDK
+ * appends `/v1/systemone`). Everything else here — validation, gating, key
+ * resolution, the deadline, retries and error mapping — is ours. Every SDK
+ * setting is passed explicitly, because the SDK otherwise falls back to
+ * `TYPESAFE_*` env vars and a stray `TYPESAFE_BASE_URL` would send a team's key
+ * somewhere else.
+ *
+ * ## Module loading
+ *
+ * The DB client (and `./secrets`, which pulls it in) is imported lazily, on the
+ * key-resolution path only. The DB client imports `server-only`, which throws
+ * outside Next, so a static import would make this module unusable from a plain
+ * bun script — the offline benchmark, and any caller passing its own `apiKey`.
  */
 
-import { db } from './db';
 import { secrets, teams } from './db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import { decrypt } from './secrets';
+import {
+  TypeSafeClient,
+  APIError,
+  APIConnectionError,
+  APITimeoutError,
+  APIUserAbortError,
+  type Fetch,
+} from '@typesafe-ai/sdk';
 import { isInferenceEnabled, type InferenceCapability } from './inference-policy';
 
-/** OpenRouter's Decisions API. Verified against the published API reference. */
-export const DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
+/** OpenRouter's System One API root, per OpenRouter's TypeSafe SDK guide. */
+export const DECISIONS_BASE_URL = 'https://openrouter.ai/api';
+
+/** Where the SDK sends a decision (`baseURL` + `/v1/systemone`). */
+export const DECISIONS_URL = `${DECISIONS_BASE_URL}/v1/systemone`;
+
+/** Sent on every call so OpenRouter attributes usage to buildd. */
+const ATTRIBUTION_HEADERS = { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' } as const;
 
 /**
  * Pinned, not the `~typesafe/jev-latest` alias: confidence thresholds are tuned
@@ -306,6 +336,8 @@ export async function resolveDecisionKey(opts: {
   accountId?: string | null;
 }): Promise<string | null> {
   try {
+    const { db } = await import('./db');
+    const { decrypt } = await import('./secrets');
     const rows = await db.query.secrets.findMany({
       where: and(
         eq(secrets.teamId, opts.teamId),
@@ -361,6 +393,7 @@ export async function resolveDecisionKey(opts: {
 /** Fails closed: a failed lookup means "not enabled", never "spend anyway". */
 async function teamAllowsCapability(teamId: string, capability: InferenceCapability): Promise<boolean> {
   try {
+    const { db } = await import('./db');
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
       columns: { enabledInferenceCapabilities: true },
@@ -379,6 +412,65 @@ type Fetcher = typeof fetch;
 /** Statuses worth one retry: rate limit, overload, gateway and edge timeouts. */
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+function isAbortLike(e: unknown): boolean {
+  const name = (e as { name?: string } | null)?.name;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+function bodyText(body: unknown): string {
+  if (body === undefined || body === null) return '';
+  return typeof body === 'string' ? body : JSON.stringify(body);
+}
+
+/**
+ * One SDK client per call: the key differs per team, and construction is cheap
+ * (no I/O). Every option is explicit so no `TYPESAFE_*` env var can change where
+ * the key goes, which model answers, or whether request bodies get logged.
+ */
+function makeClient(apiKey: string, model: string, fetcher: Fetcher): TypeSafeClient {
+  return new TypeSafeClient({
+    apiKey,
+    baseURL: DECISIONS_BASE_URL,
+    defaultModel: model,
+    logLevel: 'warn',
+    retry: { maxRetries: 0 },
+    defaultHeaders: { ...ATTRIBUTION_HEADERS },
+    fetch: fetcher as unknown as Fetch,
+  });
+}
+
+/** Map an SDK throw to our error kinds. `retryable` feeds our own one-retry loop. */
+function mapSdkError(e: unknown, timeoutMs: number): { error: DecisionError; retryable: boolean } {
+  if (e instanceof APIError) {
+    if (e.status === 429) {
+      const retryAfter = Number(e.headers.get('retry-after'));
+      return {
+        error: { kind: 'rate_limited', ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfter } : {}) },
+        retryable: true,
+      };
+    }
+    return {
+      error: { kind: 'provider_error', status: e.status, body: bodyText(e.body).slice(0, 500) },
+      retryable: isRetryableStatus(e.status),
+    };
+  }
+  // The SDK's per-attempt timer is set to our remaining deadline, so its timeout
+  // is ours. A custom fetch that throws an abort-shaped error is the same thing.
+  if (e instanceof APITimeoutError || e instanceof APIUserAbortError || isAbortLike(e) ||
+      (e instanceof APIConnectionError && isAbortLike((e as { cause?: unknown }).cause))) {
+    return { error: { kind: 'timeout', timeoutMs }, retryable: false };
+  }
+  if (e instanceof APIConnectionError) {
+    const cause = (e as { cause?: unknown }).cause;
+    return {
+      error: { kind: 'transport', message: cause instanceof Error ? cause.message : e.message },
+      retryable: true,
+    };
+  }
+  // Anything else (e.g. the SDK's own local validation) — never retried.
+  return { error: { kind: 'transport', message: e instanceof Error ? e.message : String(e) }, retryable: false };
 }
 
 export interface DecisionCallParams<Q extends DecisionQuestions> {
@@ -433,11 +525,13 @@ export async function decisionCall<Q extends DecisionQuestions>(
     if (!apiKey) return fail({ kind: 'missing_key' }, 0);
   }
 
-  const body = JSON.stringify({
-    model: params.model ?? DEFAULT_DECISION_MODEL,
-    state: params.state,
-    questions: params.questions,
-  });
+  const model = params.model ?? DEFAULT_DECISION_MODEL;
+  let client: TypeSafeClient;
+  try {
+    client = makeClient(apiKey, model, fetcher);
+  } catch (e) {
+    return fail({ kind: 'transport', message: e instanceof Error ? e.message : String(e) }, 0);
+  }
 
   let attempts = 0;
   let lastError: DecisionError = { kind: 'transport', message: 'not attempted' };
@@ -448,57 +542,40 @@ export async function decisionCall<Q extends DecisionQuestions>(
     if (attempts > 0 && remaining < MIN_RETRY_BUDGET_MS) break;
     attempts++;
 
-    let res: Response;
+    let data: unknown;
     try {
-      res = await fetcher(DECISIONS_URL, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-          'http-referer': 'https://buildd.dev',
-          'x-title': 'buildd',
-        },
-        body,
-        signal: AbortSignal.timeout(remaining),
-      });
+      // `timeout` is per attempt in the SDK; bounding it by what is left of our
+      // deadline makes the whole call bounded. The signal is belt and braces.
+      data = await client.systemOne(
+        { model, state: params.state as never, questions: params.questions as never },
+        { timeout: remaining, signal: AbortSignal.timeout(remaining) },
+      );
     } catch (e) {
-      const name = (e as { name?: string })?.name;
-      if (name === 'TimeoutError' || name === 'AbortError') return fail({ kind: 'timeout', timeoutMs }, attempts);
-      lastError = { kind: 'transport', message: e instanceof Error ? e.message : String(e) };
+      const mapped = mapSdkError(e, timeoutMs);
+      lastError = mapped.error;
+      if (!mapped.retryable) return fail(lastError, attempts);
       if (attempts < 2) await sleep(RETRY_BACKOFF_MS);
       continue;
     }
 
-    if (!res.ok) {
-      if (res.status === 429) {
-        const retryAfter = Number(res.headers.get('retry-after'));
-        lastError = { kind: 'rate_limited', ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfter } : {}) };
-      } else {
-        const text = await res.text().catch(() => '');
-        lastError = { kind: 'provider_error', status: res.status, body: text.slice(0, 500) };
-      }
-      if (!isRetryableStatus(res.status)) return fail(lastError, attempts);
-      if (attempts < 2) await sleep(RETRY_BACKOFF_MS);
-      continue;
-    }
-
-    let data: any;
-    try {
-      data = await res.json();
-    } catch {
+    // The SDK hands back text when a 2xx body is not JSON.
+    if (!data || typeof data !== 'object') {
       return fail({ kind: 'parse', message: 'response was not JSON' }, attempts);
     }
-    const parsed = parseDecisionAnswers(params.questions, data?.answers);
+    // OpenRouter adds `usage.cost` beyond the SDK's typed `Usage`; the SDK passes
+    // the parsed body through untouched, so read it defensively.
+    const d = data as { model?: unknown; answers?: unknown; usage?: Record<string, unknown> };
+    const parsed = parseDecisionAnswers(params.questions, d.answers);
     if (!parsed.ok) return fail({ kind: 'parse', message: parsed.message }, attempts);
 
-    const cost = data?.usage?.cost;
+    const cost = d.usage?.cost;
     return {
       ok: true,
       answers: parsed.answers,
-      model: typeof data?.model === 'string' ? data.model : (params.model ?? DEFAULT_DECISION_MODEL),
+      model: typeof d.model === 'string' ? d.model : model,
       usage: {
-        inputTokens: Number(data?.usage?.input_tokens) || 0,
-        outputTokens: Number(data?.usage?.output_tokens) || 0,
+        inputTokens: Number(d.usage?.input_tokens) || 0,
+        outputTokens: Number(d.usage?.output_tokens) || 0,
         costUsd: typeof cost === 'number' && Number.isFinite(cost) ? cost : null,
       },
       latencyMs: now() - started,

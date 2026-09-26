@@ -84,10 +84,12 @@ decisionCall<Q extends DecisionQuestions>({
   The answer map is keyed by the question names, and its types come from the question types. `answers.category.choice` has the type of the label union the caller declared.
 - **Validated both ways.** The request is checked locally before any network I/O. That includes the label and level bounds and an estimated token ceiling, so an oversized state is refused for free. The response is checked too: a choice outside the caller's label set, a missing answer or a type mismatch is a `parse` error. It is never passed through as a new label.
 - **Never throws.** The error kinds are `capability_disabled`, `missing_key`, `invalid_request`, `timeout`, `transport`, `rate_limited`, `provider_error` and `parse`. `latencyMs` and `attempts` are returned on both success and failure.
-- **Transport.** The client calls the Decisions REST API directly: `POST https://openrouter.ai/api/alpha/decisions` with `{ model, state, questions }` and a bearer token. It does not use `@typesafe-ai/sdk`, for three reasons:
-  - It adds nothing buildd needs. The SDK's retry policy is one small loop here, and its model listing is incompatible with OpenRouter anyway, according to the OpenRouter SDK guide.
-  - A direct call keeps the deadline under buildd's control. The SDK's own retry-with-backoff could otherwise hold a request open.
-  - There is one less dependency to pin.
+- **Transport.** The client uses the official MIT TypeSafe SDK (`@typesafe-ai/sdk`, pinned to an exact version) pointed at OpenRouter's System One API: `baseURL` `https://openrouter.ai/api`, to which the SDK appends `/v1/systemone`, with `{ model, state, questions }` and the OpenRouter key as the bearer token (see OpenRouter's TypeSafe SDK guide). The SDK owns the wire format and error classes. Buildd owns the rest:
+  - **The SDK's retry is off** (`maxRetries: 0`). Its timeout is per attempt, with no total budget, so its default retry-with-backoff could hold a call open well past buildd's deadline, and it would stack on buildd's own retry. The single retry described under Point 3 is buildd's, and each attempt's SDK timeout is set to what is left of the deadline.
+  - **Every SDK option is passed explicitly** (key, base URL, model, log level). Otherwise the SDK falls back to `TYPESAFE_*` env vars, and a stray `TYPESAFE_BASE_URL` would send a team's key to another host.
+  - **`usage.cost`** is an OpenRouter addition outside the SDK's typed `Usage`. The SDK passes the parsed body through unchanged, so the client reads it defensively.
+  - The SDK's model listing (`client.models.list()`) is incompatible with OpenRouter, according to the same guide. It is not used.
+- **Lazy DB import.** The DB client, which imports `server-only`, is loaded only on the key-lookup path. Importing the module, or calling it with an explicit `apiKey` (the offline benchmark), works from a plain bun process.
 
 ### Point 2: Confidence gating and fallback
 

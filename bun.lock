@@ -31,7 +31,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.229.0",
+      "version": "0.230.1",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@buildd/core": "workspace:*",
@@ -51,7 +51,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.229.0",
+      "version": "0.230.1",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.985.0",
         "@aws-sdk/s3-request-presigner": "^3.985.0",
@@ -94,13 +94,14 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.229.0",
+      "version": "0.230.1",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@ast-grep/napi": "^0.45.0",
         "@buildd/shared": "workspace:*",
         "@neondatabase/serverless": "^1.0.0",
         "@openai/codex-sdk": "^0.157.0",
+        "@typesafe-ai/sdk": "0.6.0",
         "dotenv": "^18.0.0",
         "drizzle-orm": "^0.45.2",
         "server-only": "^0.0.1",
@@ -124,7 +125,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.229.0",
+      "version": "0.230.1",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -528,6 +529,8 @@
     "@types/whatwg-mimetype": ["@types/whatwg-mimetype@3.0.2", "", {}, "sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA=="],
 
     "@types/ws": ["@types/ws@8.18.1", "", { "dependencies": { "@types/node": "*" } }, "sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg=="],
+
+    "@typesafe-ai/sdk": ["@typesafe-ai/sdk@0.6.0", "", {}, "sha512-IddX+Q0XM+VagOUZFeP7wZjaO4SHMdvnh2zEBdrZZnXedWI3BNK1lKhMx3ayrkFWvVLbVcUHJy6AVZlY+e6Jaw=="],
 
     "@ungap/structured-clone": ["@ungap/structured-clone@1.3.3", "", {}, "sha512-60YRaenCQcVjYEKOcG824+DRGGIQ3VKErcBoAEDJZz5bKIs2ZG+X/H9Nk+Q6EVkwJk5QNApxbrc5QtBSwtrXAg=="],
 

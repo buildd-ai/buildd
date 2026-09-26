@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 /**
  * The decision primitive: typed questions → typed, calibrated answers from a
- * System One model on OpenRouter. HTTP is mocked; the request shape asserted
- * here is the one in OpenRouter's Decisions API reference
- * (`POST /api/alpha/decisions`, body `{ model, state, questions }`).
+ * System One model on OpenRouter. Transport is the official `@typesafe-ai/sdk`
+ * pointed at OpenRouter; HTTP is mocked underneath it via the SDK's own `fetch`
+ * option, so these tests exercise the real SDK. The request shape asserted here
+ * is the one in OpenRouter's TypeSafe SDK guide (`POST /api/v1/systemone`, body
+ * `{ model, state, questions }`).
  */
 
 let secretRows: any[] = [];
@@ -141,11 +143,14 @@ describe('decisionCall request', () => {
     expect(res.ok).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(seen!.url).toBe(DECISIONS_URL);
-    expect(DECISIONS_URL).toBe('https://openrouter.ai/api/alpha/decisions');
+    expect(DECISIONS_URL).toBe('https://openrouter.ai/api/v1/systemone');
     expect(seen!.init.method).toBe('POST');
-    const headers = seen!.init.headers as Record<string, string>;
-    expect(headers.authorization).toBe('Bearer sk-or-team');
-    expect(headers['content-type']).toBe('application/json');
+    const headers = new Headers(seen!.init.headers);
+    expect(headers.get('authorization')).toBe('Bearer sk-or-team');
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(headers.get('x-title')).toBe('buildd');
+    // Proves the request went through the SDK, not a hand-rolled fetch.
+    expect(headers.get('x-typesafe-sdk')).toBe('typesafe-sdk/0.6.0');
 
     const body = JSON.parse(seen!.init.body as string);
     expect(Object.keys(body).sort()).toEqual(['model', 'questions', 'state']);
@@ -246,7 +251,7 @@ describe('decisionCall gating', () => {
     const res = await decisionCall(params({
       apiKey: 'sk-or-eval',
       fetcher: async (_u: string, init: RequestInit) => {
-        auth = (init.headers as Record<string, string>).authorization;
+        auth = new Headers(init.headers).get('authorization') ?? '';
         return jsonResponse(OK_BODY);
       },
     }));
@@ -309,12 +314,78 @@ describe('decisionCall retry contract', () => {
     expect(!res.ok && res.error.kind).toBe('provider_error');
   });
 
+  it('enforces the deadline on a hung request: one attempt, reported as timeout', async () => {
+    const fetcher = mock((_u: string, init: RequestInit) => new Promise<Response>((_r, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal!.reason ?? new Error('aborted')));
+    }));
+    const t0 = Date.now();
+    const res = await decisionCall(params({ fetcher, timeoutMs: 80 }));
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(!res.ok && res.error).toEqual({ kind: 'timeout', timeoutMs: 80 });
+  });
+
+  it('never lets the SDK retry on its own (retries are ours, bounded to one)', async () => {
+    const fetcher = mock(async () => jsonResponse({ error: { code: 503 } }, 503));
+    const res = await decisionCall(params({ fetcher }));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(!res.ok && res.error).toMatchObject({ kind: 'provider_error', status: 503 });
+  });
+
   it('passes an abort signal bounded by the remaining deadline', async () => {
     let signal: AbortSignal | undefined;
     await decisionCall(params({
       fetcher: async (_u: string, init: RequestInit) => { signal = init.signal ?? undefined; return jsonResponse(OK_BODY); },
     }));
     expect(signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+// ── SDK configuration ────────────────────────────────────────────────────────
+
+describe('decisionCall SDK configuration', () => {
+  const ENV_KEYS = ['TYPESAFE_BASE_URL', 'TYPESAFE_API_KEY', 'TYPESAFE_DEFAULT_MODEL', 'TYPESAFE_LOG_LEVEL'];
+  afterEach(() => { for (const k of ENV_KEYS) delete process.env[k]; });
+
+  it('ignores TYPESAFE_* env vars: a stray env var cannot redirect the key or dump bodies', async () => {
+    process.env.TYPESAFE_BASE_URL = 'https://attacker.example';
+    process.env.TYPESAFE_API_KEY = 'sk-wrong';
+    process.env.TYPESAFE_DEFAULT_MODEL = 'jev-latest';
+    process.env.TYPESAFE_LOG_LEVEL = 'debug';
+    const debug = mock(() => {});
+    const origDebug = console.debug;
+    console.debug = debug;
+    try {
+      let seen: { url: string; init: RequestInit } | null = null;
+      const res = await decisionCall(params({
+        fetcher: async (url: string, init: RequestInit) => { seen = { url, init }; return jsonResponse(OK_BODY); },
+      }));
+      expect(res.ok).toBe(true);
+      expect(seen!.url).toBe(DECISIONS_URL);
+      expect(new Headers(seen!.init.headers).get('authorization')).toBe('Bearer sk-or-team');
+      expect(JSON.parse(seen!.init.body as string).model).toBe(DEFAULT_DECISION_MODEL);
+      expect(debug).not.toHaveBeenCalled();
+    } finally {
+      console.debug = origDebug;
+    }
+  });
+
+  it('reports a non-JSON 200 body as a parse error', async () => {
+    const res = await decisionCall(params({
+      fetcher: async () => new Response('<html>oops</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    }));
+    expect(!res.ok && res.error).toEqual({ kind: 'parse', message: 'response was not JSON' });
+  });
+
+  it('keeps the provider error body (truncated) on a non-retryable status', async () => {
+    const res = await decisionCall(params({
+      fetcher: async () => jsonResponse({ error: { message: 'Insufficient credits' } }, 402),
+    }));
+    if (res.ok) throw new Error('expected failure');
+    expect(res.error.kind).toBe('provider_error');
+    if (res.error.kind !== 'provider_error') return;
+    expect(res.error.status).toBe(402);
+    expect(res.error.body).toContain('Insufficient credits');
   });
 });
 
