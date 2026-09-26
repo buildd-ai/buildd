@@ -33,27 +33,66 @@ export function languageModelFor(provider: ChatProvider, modelId: string, apiKey
   }
 }
 
-export async function resolveChatModel(opts: {
-  tier: ChatTier;
-  teamId: string;
-  workspaceId: string | null;
-  userId: string;
-}): Promise<ResolvedChatModel> {
-  const entry = await resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
+/**
+ * The OpenRouter slug for a native model id. OpenRouter writes Anthropic
+ * versions with a dot and no snapshot date (`claude-haiku-4-5-20251001` ->
+ * `anthropic/claude-haiku-4.5`); OpenAI ids keep their own dots.
+ */
+export function openRouterModelId(provider: string, modelId: string): string {
+  if (provider === 'openrouter' || modelId.includes('/')) return modelId;
+  if (provider === 'anthropic') {
+    const undated = modelId.replace(/-\d{8}$/, '');
+    return `anthropic/${undated.replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
+  }
+  return `${provider}/${modelId}`;
+}
+
+interface ResolveDeps {
+  resolveTierEntry: typeof resolveTierEntry;
+  resolveInferenceCredential: typeof resolveInferenceCredential;
+}
+
+export async function resolveChatModel(
+  opts: {
+    tier: ChatTier;
+    teamId: string;
+    workspaceId: string | null;
+    userId: string;
+  },
+  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential },
+): Promise<ResolvedChatModel> {
+  const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
   const provider = entry.provider as string;
   if (!isInferenceKeyProvider(provider)) return { ok: false, reason: 'unsupported_provider', provider, tier: opts.tier };
-  const cred = await resolveInferenceCredential({
-    provider, teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId,
-  });
-  if (!cred) return { ok: false, reason: 'no_key', provider, tier: opts.tier };
-  return {
-    ok: true,
-    model: languageModelFor(provider, entry.model, cred.key),
-    provider,
-    modelId: entry.model,
-    tier: opts.tier,
-    keyScope: cred.scope,
-  };
+  const scope = { teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId };
+  const cred = await deps.resolveInferenceCredential({ provider, ...scope });
+  if (cred) {
+    return {
+      ok: true,
+      model: languageModelFor(provider, entry.model, cred.key),
+      provider,
+      modelId: entry.model,
+      tier: opts.tier,
+      keyScope: cred.scope,
+    };
+  }
+  // OpenRouter serves the same Anthropic and OpenAI models, so a team whose
+  // only key is OpenRouter still gets the tier's model through it.
+  if (provider !== 'openrouter') {
+    const orCred = await deps.resolveInferenceCredential({ provider: 'openrouter', ...scope });
+    if (orCred) {
+      const modelId = openRouterModelId(provider, entry.model);
+      return {
+        ok: true,
+        model: languageModelFor('openrouter', modelId, orCred.key),
+        provider: 'openrouter',
+        modelId,
+        tier: opts.tier,
+        keyScope: orCred.scope,
+      };
+    }
+  }
+  return { ok: false, reason: 'no_key', provider, tier: opts.tier };
 }
 
 /**
