@@ -322,3 +322,44 @@ describe('limits', () => {
     expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
   });
 });
+
+describe('tool groups: the model sees only this turn\'s groups', () => {
+  const sentTools = (model: MockLanguageModelV4) => ((model.doStreamCalls[0] as any).tools ?? []).map((t: any) => t.name).sort();
+
+  it('a confident area adds its group to the core groups', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async () => ({ tier: 'standard', allowWrites: true, source: 'decision', area: 'schedules' }) });
+    await turn(userMsg('what schedules fired today?'));
+    const names = sentTools(model);
+    expect(names).toContain('list_schedules');
+    expect(names).toContain('list_tasks');
+    expect(names).toContain('manage_missions');
+    expect(names).not.toContain('get_pr');
+    expect(names).not.toContain('explain');
+  });
+
+  it('no area ⇒ the fallback groups (missions, tasks, workers); admin tools never for a member', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model });
+    await turn(userMsg('hi'));
+    const names = sentTools(model);
+    expect(names).toContain('explain');
+    expect(names).not.toContain('list_schedules');
+    expect(names).not.toContain('manage_workspaces');
+  });
+
+  it('turnGroups: a member never gets admin, even when routing names it', async () => {
+    const { turnGroups } = await import('./turn');
+    const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: false });
+    expect([...g].sort()).toEqual(['missions', 'tasks']);
+    const a = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: true });
+    expect(a.has('admin')).toBe(true);
+  });
+
+  it('turnGroups: a continuation keeps the answered tool\'s group active', async () => {
+    const { turnGroups } = await import('./turn');
+    const continuing = { parts: [{ type: 'tool-create_schedule', toolCallId: 'c', state: 'approval-responded' }] } as any;
+    const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'fallback' }, continuing, canAdmin: false });
+    expect(g.has('schedules')).toBe(true);
+  });
+});

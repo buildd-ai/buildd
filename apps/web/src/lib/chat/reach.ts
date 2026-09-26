@@ -13,7 +13,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
-  artifacts, experiments, initiatives, missions, specDiscrepancies, taskSchedules, tasks,
+  artifacts, experiments, initiatives, missions, releases, specDiscrepancies, taskSchedules, tasks,
   watchedProjects, workers, workspaceSkills, workspaces,
 } from '@buildd/core/db/schema';
 import type { ChatObjectOwner, ChatReach } from './in-process-api';
@@ -76,6 +76,10 @@ export const OWNER_LOOKUPS: Record<OwnedKind, (id: string) => Promise<Owner | nu
   },
   discrepancy: async (id) => {
     const row = await one(db.select({ workspaceId: specDiscrepancies.workspaceId }).from(specDiscrepancies).where(eq(specDiscrepancies.id, id)).limit(1));
+    return row ? { teamId: null, workspaceId: row.workspaceId } : null;
+  },
+  release: async (id) => {
+    const row = await one(db.select({ workspaceId: releases.workspaceId }).from(releases).where(eq(releases.id, id)).limit(1));
     return row ? { teamId: null, workspaceId: row.workspaceId } : null;
   },
   experiment: async (id) => {

@@ -25,6 +25,7 @@ import {
 export {
   CHAT_EVENT_PART_TYPE,
   CHAT_READ_TOOLS,
+  chatToolIsRead,
   chatToolNeedsApproval,
   type BuilddObjectKind,
   type BuilddObjectRef,

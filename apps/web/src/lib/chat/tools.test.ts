@@ -1,6 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { allActions } from '@buildd/core/mcp-tools';
-import { CHAT_READ_TOOLS } from '@buildd/shared';
 import { buildChatTools, CHAT_TOOL_ACTIONS } from './tools';
 
 function setup(opts: { allowWrites?: boolean; authorized?: string[]; respond?: (endpoint: string, init?: RequestInit) => unknown } = {}) {
@@ -40,15 +39,29 @@ describe('allowlist parity', () => {
     for (const a of CHAT_TOOL_ACTIONS) expect(allActions as readonly string[]).toContain(a);
   });
 
-  it('every tool the server exposes is in the shared read class (the UI groups by it)', () => {
-    for (const a of CHAT_TOOL_ACTIONS) expect(CHAT_READ_TOOLS as readonly string[]).toContain(a);
-  });
-
-  it('never exposes a never-from-chat action', () => {
+  it('never exposes a never-in-chat, worker-only or deferred action', () => {
     const { tools } = setup();
-    for (const banned of ['manage_secrets', 'manage_model_tiers', 'manage_workspaces', 'trigger_release', 'send_agent_message', 'merge_pr', 'create_task']) {
+    for (const banned of ['manage_secrets', 'claim_task', 'complete_task', 'create_pr', 'manage_model_tiers', 'merge_pr', 'update_artifact', 'get_usage_stats']) {
       expect(Object.keys(tools)).not.toContain(banned);
     }
+  });
+
+  it('admin ops are not even in the schema for a member', () => {
+    const member = setup().tools;
+    expect((member.manage_workspaces as any).inputSchema.safeParse({ action: 'list' }).success).toBe(true);
+    expect((member.manage_missions as any).inputSchema.safeParse({ action: 'delete', missionId: 'm' }).success).toBe(false);
+  });
+
+  it('a read op gets an API with only its declared routes', async () => {
+    const seen: any[] = [];
+    const tools = buildChatTools({
+      ctx: { getWorkspaceId: async () => 'ws', getLevel: async () => 'admin' } as any,
+      allowWrites: true, authorizedToolCallIds: new Set(),
+      handle: (async () => ({ content: [{ type: 'text', text: 'ok' }] })) as any,
+      makeApi: (_onCall, opts) => { seen.push(opts?.routes?.map(r => `${r.methods.join(',')} ${r.pattern}`)); return async () => ({}); },
+    });
+    await (tools.get_task as any).execute({ taskId: 'x' }, { toolCallId: 'c', messages: [] });
+    expect(seen[0]).toEqual(['GET /api/tasks/:id', 'GET /api/workspaces']);
   });
 });
 
