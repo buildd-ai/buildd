@@ -6,7 +6,7 @@ import ThemeToggle from './ThemeToggle';
 import UserAvatarMenu from './UserAvatarMenu';
 import TeamSwitcherRail from './TeamSwitcherRail';
 import { isNavActive } from '@/lib/nav-active';
-import { NAV_ITEMS } from '@/lib/nav-config';
+import { navItemsFor, type NavContext } from '@/lib/nav-config';
 import { useEscalation } from './EscalationProvider';
 
 interface SidebarTeam {
@@ -19,9 +19,13 @@ interface MissionsSidebarProps {
   userInitial?: string;
   teams?: SidebarTeam[];
   currentTeamId?: string | null;
+  /** Who is looking and whether chat is on: decides the Chat item and its place. */
+  nav?: NavContext;
 }
 
-export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null }: MissionsSidebarProps) {
+const NO_CHAT: NavContext = { chat: false, audience: 'operator' };
+
+export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null, nav = NO_CHAT }: MissionsSidebarProps) {
   const pathname = usePathname();
   const connectionsActive = isNavActive(pathname, '/app/settings');
   const { count: escalationCount } = useEscalation();
@@ -35,7 +39,7 @@ export default function MissionsSidebar({ userInitial = 'M', teams = [], current
         </>
       )}
 
-      {NAV_ITEMS.map((item) => {
+      {navItemsFor(nav, 'desktop').map((item) => {
         const active = isNavActive(pathname, item.href);
         const showEscalationBadge = item.href === '/app/home' && escalationCount > 0;
         return (

@@ -1,22 +1,20 @@
-import { db } from '@buildd/core/db';
-import { tasks, workers, missionNotes } from '@buildd/core/db/schema';
-import { eq, desc, and, asc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { loadQuestionContext } from '@/lib/chat-objects/load-question-object';
 import RespondForm from './RespondForm';
 import RespondHeading from './RespondHeading';
 import { respondBackLink } from './respond-links';
 import { taskPageHref } from '@/lib/mission-task-href';
-import { linkQuestionNote, unifyWorkerQuestion } from '../question-hero';
-import { findTaskRole } from '../role-lookup';
 import { taskHeading } from '../task-header';
-import type { WorkerWaitingFor } from '@buildd/core/db/schema';
+import { getChatAvailability } from '@/lib/chat-availability';
+import { ownConversationForMission, questionFocusHref } from '@/lib/chat/conversations';
 
 // Focused landing page for the "Agent needs your input" push notification.
 // Renders the question + options with no extra chrome, so the user can answer
 // in one tap. Falls through to the full task page if there's nothing to answer.
+// The question comes from the same loader the chat feed's question card reads
+// (lib/chat-objects/load-question-object.ts), so both show one question alike.
 export default async function RespondPage({
   params,
 }: {
@@ -26,55 +24,30 @@ export default async function RespondPage({
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
-    with: {
-      workspace: { columns: { id: true, name: true, teamId: true } },
-      mission: { columns: { id: true, title: true } },
-    },
-  });
-  if (!task) notFound();
-
-  const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
-  if (!access) notFound();
-
-  // Find the most recent worker that still has an unanswered question.
-  // Status-agnostic on purpose — inputAsRetry leaves the worker in error.
-  const taskWorkers = await db.query.workers.findMany({
-    where: eq(workers.taskId, id),
-    orderBy: desc(workers.createdAt),
-  });
-  const pending = taskWorkers.find(w => w.waitingFor);
+  // Null for a missing task or one outside the user's workspaces.
+  const ctx = await loadQuestionContext(id, user.id);
+  if (!ctx) notFound();
+  const { task, view } = ctx;
 
   // Nothing to answer — bounce to the full task page so the user sees state.
-  if (!pending) redirect(taskPageHref({ taskId: id, missionId: task.missionId }));
+  if (!view.open || !view.workerId) redirect(taskPageHref({ taskId: id, missionId: task.missionId }));
 
-  const waitingFor = pending.waitingFor as WorkerWaitingFor;
+  // The question folds into the chat (docs/design/agent-chat.md, "The respond
+  // page folds in"): when this mission was filed from the reader's own
+  // conversation and chat is on for them, the deep link opens that
+  // conversation with the question card in focus. Otherwise, this page.
+  if (task.missionId) {
+    const conversationId = await ownConversationForMission(task.missionId, user.id).catch(() => null);
+    if (conversationId && (await getChatAvailability(user.id, task.teamId ?? null)).available) {
+      redirect(questionFocusHref(conversationId, { workerId: view.workerId, taskId: id }));
+    }
+  }
 
-  // The same ask may also be a question note: one question, one surface.
-  const [openNotes, role] = await Promise.all([
-    db
-      .select({
-        id: missionNotes.id,
-        workerId: missionNotes.workerId,
-        type: missionNotes.type,
-        status: missionNotes.status,
-        title: missionNotes.title,
-        body: missionNotes.body,
-        defaultChoice: missionNotes.defaultChoice,
-      })
-      .from(missionNotes)
-      .where(and(eq(missionNotes.taskId, id), eq(missionNotes.type, 'question'), eq(missionNotes.status, 'open')))
-      .orderBy(asc(missionNotes.createdAt)),
-    findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as any)?.teamId, slug: task.roleSlug }),
-  ]);
-  const question = unifyWorkerQuestion(waitingFor, linkQuestionNote(openNotes, pending.id));
-  const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, null);
-  const asker = `The ${(role?.name || 'agent').toLowerCase()} asks`;
+  const heading = taskHeading({ title: task.title, label: task.label }, null);
 
   // A mission task returns to its row on the mission; the back link names the
   // mission, not the workspace (docs/design/mission-feed-mobile-continuity.md W6).
-  const back = respondBackLink({ taskId: id, mission: task.mission, workspaceName: task.workspace.name });
+  const back = respondBackLink({ taskId: id, mission: task.mission, workspaceName: task.workspaceName });
 
   return (
     <div className="min-h-screen bg-surface-1 py-8 px-4 sm:px-6">
@@ -90,7 +63,7 @@ export default async function RespondPage({
         <RespondHeading eyebrow={heading.eyebrow} heading={heading.heading} />
 
         <div className="mt-6">
-          <RespondForm workerId={pending.id} taskId={id} missionId={task.missionId} question={question} askerLabel={asker} />
+          <RespondForm workerId={view.workerId} taskId={id} missionId={task.missionId} question={view.question} askerLabel={view.askerLabel} />
         </div>
 
         <div className="mt-6 text-center">

@@ -5,9 +5,11 @@ import { usePathname } from 'next/navigation';
 import { useNeedsInput } from './NeedsInputProvider';
 import { useEscalation } from './EscalationProvider';
 import { isNavActive } from '@/lib/nav-active';
-import { NAV_ITEMS } from '@/lib/nav-config';
+import { navItemsFor, type NavContext } from '@/lib/nav-config';
 
-export default function MissionsBottomNav() {
+const NO_CHAT: NavContext = { chat: false, audience: 'operator' };
+
+export default function MissionsBottomNav({ nav = NO_CHAT }: { nav?: NavContext }) {
   const pathname = usePathname();
   const { count: needsInputCount } = useNeedsInput();
   const { count: escalationCount } = useEscalation();
@@ -15,7 +17,7 @@ export default function MissionsBottomNav() {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] backdrop-blur-[12px] border-t border-border-strong pb-[env(safe-area-inset-bottom)] md:hidden">
       <div className="flex items-center justify-around h-14">
-        {NAV_ITEMS.filter((tab) => !tab.desktopOnly).map((tab) => {
+        {navItemsFor(nav, 'mobile').map((tab) => {
           const active = isNavActive(pathname, tab.href);
           const showBadge = (tab.href === '/app/tasks' && needsInputCount > 0) || (tab.href === '/app/home' && escalationCount > 0);
           const badgeCount = tab.href === '/app/home' ? escalationCount : needsInputCount;

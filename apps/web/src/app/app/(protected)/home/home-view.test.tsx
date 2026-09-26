@@ -17,6 +17,7 @@ import {
   homeSubheading,
   groupInFlight,
   homeAudience,
+  homeChatPlacement,
 } from './home-view';
 
 const item = (chip: ActionQueueItem['chip'], key: string) => ({ chip, subjectKey: key }) as ActionQueueItem;
@@ -186,5 +187,23 @@ describe('homeAudience', () => {
   });
   it('an unknown role reads as a member (the lighter layout)', () => {
     expect(homeAudience(null)).toBe('member');
+  });
+});
+
+describe('homeChatPlacement — chat on Home, and the fallback', () => {
+  const on = { available: true, reason: null, canManageTeamKeys: false };
+  it('available: a member opens on chat; an operator keeps the fleet first', () => {
+    expect(homeChatPlacement('member', on)).toEqual({ kind: 'member-first' });
+    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'operator-after-fleet' });
+  });
+  it('capability off (every team by default): Home is unchanged for everyone, admins included', () => {
+    const off = { available: false, reason: 'capability_disabled', canManageTeamKeys: true };
+    expect(homeChatPlacement('operator', off)).toEqual({ kind: 'none' });
+    expect(homeChatPlacement('member', { ...off, canManageTeamKeys: false })).toEqual({ kind: 'none' });
+    expect(homeChatPlacement('operator', null)).toEqual({ kind: 'none' });
+  });
+  it('turned on but no key (an OAuth-only team): the admin gets the setup card, a member gets nothing', () => {
+    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true })).toEqual({ kind: 'setup', reason: 'no_key' });
+    expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false })).toEqual({ kind: 'none' });
   });
 });
