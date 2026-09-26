@@ -171,10 +171,9 @@ function TierRow({
 
   return (
     <div className="border-b border-border-default last:border-b-0 px-3 py-2.5" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
-      <div className="grid grid-cols-2 md:grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 items-center">
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 items-center">
         <div className="min-w-0" title={tierBandLabel(tier)}>
           <span className="text-[13px] font-bold text-text-primary">{tier}</span>
-          {TIER_TAG[tier] && <span className="ml-1.5 text-[10px] uppercase tracking-[1px] text-text-muted">{TIER_TAG[tier]}</span>}
         </div>
 
         {/* Mode sits top-right on a phone, last column on desktop. */}
@@ -234,6 +233,7 @@ function TierRow({
       </div>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
+        {TIER_TAG[tier] && <span className="uppercase tracking-[1px] text-text-secondary">{TIER_TAG[tier]}</span>}
         <span data-testid="tier-used-by">{tierUsedBy(provider)}</span>
         {suggestion?.kind === 'newer' && (
           <span className="flex items-center gap-1.5 text-text-secondary" data-testid="tier-suggestion">
