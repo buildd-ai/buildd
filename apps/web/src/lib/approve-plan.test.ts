@@ -117,6 +117,16 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+/** Role slugs effective for the planning task's workspace (role-routing §3.1). */
+let effectiveRoles = new Set<string>();
+const resolveEffectiveRoleSlugsCalls: string[] = [];
+mock.module('./effective-roles', () => ({
+  resolveEffectiveRoleSlugs: (workspaceId: string) => {
+    resolveEffectiveRoleSlugsCalls.push(workspaceId);
+    return Promise.resolve(effectiveRoles);
+  },
+}));
+
 import { approvePlan } from './approve-plan';
 
 const PLANNING_TASK_ID = 'eeeeeeee-0000-4000-8000-00000000000f';
@@ -131,6 +141,8 @@ function reset() {
   existingMissionTasksRows = [];
   insertedValues.length = 0;
   updateCalls.length = 0;
+  effectiveRoles = new Set();
+  resolveEffectiveRoleSlugsCalls.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
   workspaceRow = { gitConfig: null };
   missionRow = null;
@@ -620,3 +632,36 @@ describe('approvePlan — the planner\'s short label reaches the row', () => {
     expect(insertedValues[0].label).toBe('rewrite testing guide');
   });
 });
+
+// ─── Step roles (docs/design/role-routing.md §1 row 6) ────────────────────────
+
+describe('approvePlan — a plan step\'s role reaches the row only if the workspace has it', () => {
+  beforeEach(reset);
+
+  it('keeps a step roleSlug the workspace resolves', async () => {
+    effectiveRoles = new Set(['builder', 'researcher']);
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Add columns', roleSlug: 'builder' },
+      { ref: 'b', title: 'Audit plan shapes', roleSlug: 'researcher' },
+    ] as any);
+    expect(resolveEffectiveRoleSlugsCalls).toEqual(['ws-1']);
+    expect(insertedValues.map(v => v.roleSlug)).toEqual(['builder', 'researcher']);
+    expect(insertedValues[0].context.planRoleSlugRejected).toBeUndefined();
+  });
+
+  it('files an unknown step roleSlug role-less and records the rejected slug', async () => {
+    // A slug no role row backs would strand the child at claim.
+    effectiveRoles = new Set(['builder']);
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Add columns', roleSlug: 'backend-dev' }] as any);
+    expect(insertedValues[0].roleSlug).toBeNull();
+    expect(insertedValues[0].context.planRoleSlugRejected).toBe('backend-dev');
+  });
+
+  it('leaves a step with no roleSlug role-less, without reading roles or inheriting the planner\'s', async () => {
+    planningTaskRow.roleSlug = 'organizer';
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Add columns' }] as any);
+    expect(resolveEffectiveRoleSlugsCalls).toEqual([]);
+    expect(insertedValues[0].roleSlug).toBeNull();
+  });
+});
+

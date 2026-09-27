@@ -1,8 +1,9 @@
 import { db as _db } from '@buildd/core/db';
-import { releases, tasks, workspaces } from '@buildd/core/db/schema';
+import { releases, tasks, watchedProjects, workspaces } from '@buildd/core/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 
 type DB = typeof _db;
 
@@ -93,6 +94,19 @@ Investigate the failure and restore the service to a healthy state.`;
 
   const workspace = ws[0] ?? null;
 
+  // A release-health task runs as the role the workspace's watched projects
+  // already file their health tasks under (health-watcher.ts), when they all
+  // agree on one; else Builder — restoring service is a code change. Either
+  // only when it resolves in this workspace (role-routing §1 row 9, §3.1).
+  const watched = await db
+    .select({ roleSlug: watchedProjects.roleSlug })
+    .from(watchedProjects)
+    .where(and(eq(watchedProjects.workspaceId, release.workspaceId), eq(watchedProjects.enabled, true)))
+    .limit(20);
+  const watchedRoles = new Set(watched.map(w => w.roleSlug));
+  const watchedRole = watchedRoles.size === 1 ? [...watchedRoles][0] : null;
+  const roleSlug = await pickEffectiveRole(release.workspaceId, [watchedRole, 'builder']);
+
   const [newTask] = await db
     .insert(tasks)
     .values({
@@ -104,6 +118,7 @@ Investigate the failure and restore the service to a healthy state.`;
       mode: 'execution',
       creationSource: 'webhook',
       category: 'bug',
+      roleSlug,
       context: {
         releaseId: release.id,
         type: 'degradation',

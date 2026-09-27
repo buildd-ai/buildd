@@ -4,6 +4,7 @@ import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
@@ -348,7 +349,7 @@ async function maybeCreateAggregationTask(
   // Fetch parent to check if it's a planning task
   const parent = await db.query.tasks.findFirst({
     where: eq(tasks.id, parentTaskId),
-    columns: { id: true, mode: true, title: true, workspaceId: true, missionId: true },
+    columns: { id: true, mode: true, title: true, workspaceId: true, missionId: true, roleSlug: true },
   });
 
   if (!parent || parent.mode !== 'planning') return;
@@ -431,12 +432,18 @@ async function maybeCreateAggregationTask(
     return;
   }
 
+  // The aggregator finishes the parent's work, so it runs as the parent's role;
+  // a role-less parent (the plan that fanned out) falls back to the Organizer.
+  // Either only when it resolves in this workspace (role-routing §1 row 9, §3.1).
+  const roleSlug = await pickEffectiveRole(parent.workspaceId, [parent.roleSlug, 'organizer']);
+
   await db.insert(tasks).values({
     workspaceId: parent.workspaceId,
     title: `Aggregate results: ${parent.title}`,
     description: 'Synthesize the results from all completed sub-tasks into a final deliverable.',
     mode: 'execution',
     taskClass: 'bookkeeping',
+    roleSlug,
     parentTaskId,
     missionId: parent.missionId,
     status: 'pending',

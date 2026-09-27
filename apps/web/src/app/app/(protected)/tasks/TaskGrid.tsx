@@ -283,6 +283,27 @@ interface TaskGridProps {
   initiativeMissionIds?: string[];
 }
 
+/**
+ * Split tasks: roots are 'work' tasks (genuine deliverables), children are
+ * 'attempt' tasks (CI retries, reviewer runs) that nest under their parent work
+ * task. An attempt whose parent is not a visible work task is a root itself —
+ * a review or CI fix on an adopted PR hangs off a bookkeeping placeholder that
+ * is never listed, and would otherwise vanish with it.
+ */
+export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; childrenByParentId: Map<string, GridTask[]> } {
+  const workIds = new Set(tasks.filter(t => t.taskClass === 'work').map(t => t.id));
+  const rootTasks: GridTask[] = [];
+  const childrenByParentId = new Map<string, GridTask[]>();
+  for (const t of tasks) {
+    if (t.taskClass === 'attempt' && t.parentTaskId && workIds.has(t.parentTaskId)) {
+      childrenByParentId.set(t.parentTaskId, [...(childrenByParentId.get(t.parentTaskId) ?? []), t]);
+    } else if (t.taskClass === 'work' || t.taskClass === 'attempt') {
+      rootTasks.push(t);
+    }
+  }
+  return { rootTasks, childrenByParentId };
+}
+
 export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
   const router = useRouter();
 
@@ -294,20 +315,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return tasks;
   }, [tasks, missionFilter, initiativeMissionIds]);
 
-  // Split tasks: roots are 'work' tasks (genuine deliverables), children are 'attempt' tasks
-  // (CI retries, reviewer runs) that nest under their parent work task.
-  const rootTasks = useMemo(() => visibleTasks.filter(t => t.taskClass === 'work'), [visibleTasks]);
-  const childrenByParentId = useMemo(() => {
-    const map = new Map<string, GridTask[]>();
-    for (const t of visibleTasks) {
-      if (t.taskClass === 'attempt' && t.parentTaskId) {
-        const existing = map.get(t.parentTaskId) ?? [];
-        existing.push(t);
-        map.set(t.parentTaskId, existing);
-      }
-    }
-    return map;
-  }, [visibleTasks]);
+  const { rootTasks, childrenByParentId } = useMemo(() => splitTaskRoots(visibleTasks), [visibleTasks]);
 
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
