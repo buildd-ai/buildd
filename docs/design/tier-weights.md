@@ -1,8 +1,20 @@
 # Tier weights: weight-based splits, buildd-controlled explore, external priors
 
-**Status:** Proposed (W1–W4 implemented: split-mode weights, the schema
-column, the server write path and the settings UI. W5–W12 — explore,
-popularity and succession — remain proposed.)
+**Status:** Proposed (W1–W9 implemented: split-mode weights, the schema
+column, the server write path, the settings UI, the pure explore-policy core
+(`tier-explore.ts`), family succession (`model-succession.ts`), the
+OpenRouter rankings prior (`openrouter-rankings.ts`/`-source.ts`) and the
+`/api/cron/tier-pools` daily step (`tier-pool-daily.ts`/`-source.ts`), all
+wired together — PR #2954. Known gaps in that landing, still open: the
+allocate step runs at 06:00 UTC, not the team's own local time; the
+auto-challenger's 30-day removal (§3, pools design) and the "held at
+`challengerMin` for 14 days" removal suggestion (§3b) are not built; the
+`explore → split` `nearestWeights` mapping (§3d) does not exist, so a pool
+cannot leave `explore` once it enters it; and the challenger daily budget cap
+(pools §6, `tier_pools.challenger_daily_cap`) is a schema column nobody reads.
+A split pool's harm cut and expiry now also flip the arm's `weights` entry to
+`off`, not just its allocation, now that W3 has landed. W10–W12 — the explore
+UI, retiring the bound columns, and closing the doc loop — remain proposed.)
 **Amends:** `docs/design/tier-model-pools.md` (§3 traffic modes and bounds, §3 auto-challenger, §6 auto-shift bounds, §8 data model, §9 admin screen). Where the two disagree, this doc wins.
 **Amended by:** `docs/design/model-quality-signals.md` adds Artificial Analysis as a quality prior (§4c step 2b), a succession veto (§4b), and a price fallback plus a `med → low` quality rule for the suggested weight (§2).
 **Related:** `packages/core/tier-pool.ts`, `packages/core/tier-pool-admin.ts`, `packages/core/tier-pool-source.ts`, `packages/core/model-catalog.ts`, `packages/core/model-catalog-cache.ts`, `packages/core/model-prices.ts`, `packages/core/model-capability-requirements.ts`, `packages/core/experiment-randomizer.ts`, `packages/core/db/schema.ts` (`tierPools`, `tierPoolArms`, `tierPoolChanges`, `systemCache`), `apps/web/src/app/api/model-tiers/pools/route.ts`, `apps/web/src/app/api/model-tiers/pools/[id]/route.ts`, `apps/web/src/lib/tier-pools-view.ts`, `apps/web/src/app/app/(protected)/settings/models/TierPoolsSection.tsx`, `cron-manifest.json`, `docs/design/model-tiers.md`, `docs/design/decision-calls.md`
