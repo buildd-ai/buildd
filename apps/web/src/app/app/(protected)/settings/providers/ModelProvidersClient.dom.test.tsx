@@ -56,9 +56,35 @@ describe('ModelProvidersClient', () => {
 
   it('reports the real reason, not "turn on chat"', async () => {
     await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
-    expect(host.querySelector('[data-testid="chat-status"]')?.textContent).toContain('Connect a provider below to start interactive AI');
+    expect(host.querySelector('[data-testid="chat-status"]')?.textContent).toContain('Chat needs a key. Add one below.');
     expect(host.textContent).not.toContain('Turn on chat');
     expect(host.textContent).not.toContain('Which key a chat turn uses');
+  });
+
+  it('offers one Connect OpenRouter CTA, inside the OpenRouter card', async () => {
+    await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
+    expect(host.querySelector('[data-testid="connect-openrouter-row"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="connect-openrouter"]').length).toBe(1);
+    const card = host.querySelector('[data-testid="provider-key-openrouter"]')!;
+    expect(card.querySelector('[data-testid="connect-openrouter"]')).not.toBeNull();
+    expect([...card.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Add team key');
+  });
+
+  it('has no stacked explanation paragraphs', async () => {
+    await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
+    expect(host.querySelector('[data-testid="key-unlocks"]')).toBeNull();
+  });
+
+  it('draws the "Whose key" radios as square custom controls, not native circles', async () => {
+    await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
+    const radios = [...host.querySelectorAll('input[name="key-policy"]')] as HTMLInputElement[];
+    expect(radios.length).toBe(2);
+    for (const r of radios) {
+      expect(r.className).toContain('appearance-none');
+      expect(r.className).not.toMatch(/rounded/);
+    }
+    const box = host.querySelector('[data-testid="key-policy"] input[type="checkbox"]') as HTMLInputElement;
+    expect(box.className).toContain('appearance-none');
   });
 
   it('names the options plainly: Team key / Each person\'s own key', async () => {
@@ -91,6 +117,18 @@ describe('Account chat row', () => {
     expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('OpenRouter · team key');
     expect(host.querySelectorAll('[data-testid^="provider-key-"][data-configured]').length).toBe(0);
     expect(host.textContent).not.toContain('Use my own key instead');
+  });
+
+  it('is one line that links to Model providers, with no section of its own', async () => {
+    body = { ...body, canManageTeamKeys: false, providers: [{ provider: 'anthropic', team: { ...teamKey, provider: 'anthropic' }, mine: null, membersWithOwnKey: null }] };
+    await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
+    const row = host.querySelector('[data-testid="chat-key-row"]')!;
+    expect(row.tagName).toBe('A');
+    expect(row.getAttribute('href')).toBe('/app/settings/providers');
+    expect(row.textContent).toContain('Chat uses');
+    expect(row.textContent).toContain('Anthropic · team key');
+    expect(host.querySelector('h2')).toBeNull();
+    expect(host.textContent).not.toMatch(/interactive ai/i);
   });
 
   it('with no team key, a member is told to ask an admin', async () => {

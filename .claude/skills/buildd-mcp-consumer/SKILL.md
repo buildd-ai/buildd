@@ -21,7 +21,11 @@ recall (check prior context) → claim_task → work → update_progress (milest
    — surfaces prior gotchas, patterns, and how similar tasks were solved.
 2. **Claim:** `buildd action=claim_task`. Response includes your worker ID
    (save it — every later call needs it, though most auto-resolve it from
-   context), the branch to check out, and the task description.
+   context), the branch to check out, and the task description. Pass
+   `params={ taskId }` to pick up one specific pending task instead of the
+   highest-priority one. If nothing is claimed, the reply starts
+   `Nothing claimed:` and names why (a held mission, unmet dependencies, no
+   free slots): read it before retrying.
 3. **Work it.** Check out the returned branch and make the change.
 4. **Report progress at milestones** (roughly 25%, 50%, 75%):
    `buildd action=update_progress params={ progress, message }`.

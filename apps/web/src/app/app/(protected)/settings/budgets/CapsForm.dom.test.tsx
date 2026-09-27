@@ -47,14 +47,25 @@ function type(el: HTMLInputElement, value: string) {
 }
 
 describe('CapsForm', () => {
-  it('shows the defaults as placeholders, with no paragraph', async () => {
+  it('leaves an unset cap empty and names the default beside the label', async () => {
     await mount('team');
-    expect(input('cap-team')!.placeholder).toBe('$20/day');
-    expect(input('cap-user')!.placeholder).toBe('$10/day');
+    expect(input('cap-team')!.value).toBe('');
+    expect(input('cap-team')!.placeholder).toBe('');
+    expect(input('cap-user')!.placeholder).toBe('');
+    expect(host.querySelector('[data-testid="cap-team-default"]')!.textContent).toBe('Default $20/day');
+    expect(host.querySelector('[data-testid="cap-user-default"]')!.textContent).toBe('Default $10/day');
     expect(host.textContent).not.toMatch(/leave empty|midnight|chat/i);
   });
 
-  it('saves what was typed, in the placeholder form', async () => {
+  it('draws a set cap in ink, even read-only', async () => {
+    team = { chatDailyBudgetUsd: '12.50', chatUserDailyBudgetUsd: null };
+    await mount('team', false);
+    const el = input('cap-team')!;
+    expect(el.className).toContain('text-text-primary');
+    expect(el.className).not.toMatch(/disabled:opacity-(?!100)/);
+  });
+
+  it('saves what was typed, in the $N/day form', async () => {
     await mount('team');
     await act(async () => { type(input('cap-team')!, '$40/day'); });
     await act(async () => { (host.querySelector('[data-testid="caps-save"]') as HTMLButtonElement).click(); });
@@ -64,7 +75,7 @@ describe('CapsForm', () => {
   it("under each person's own key: no team cap, per-person optional", async () => {
     await mount('own');
     expect(input('cap-team')).toBeNull();
-    expect(input('cap-user')!.placeholder).toBe('No cap');
+    expect(host.querySelector('[data-testid="cap-user-default"]')!.textContent).toBe('No cap');
     await act(async () => { (host.querySelector('[data-testid="caps-save"]') as HTMLButtonElement).click(); });
     expect(patches).toEqual([{ chatUserDailyBudgetUsd: null }]);
   });

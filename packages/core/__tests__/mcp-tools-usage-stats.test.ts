@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { handleBuilddAction, workerActions, type ApiFn, type ActionContext } from '../mcp-tools';
+import { handleBuilddAction, workerActions, buildParamsDescription, type ApiFn, type ActionContext } from '../mcp-tools';
 
 const MOCK_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
 const OTHER_WORKSPACE_ID = '00000000-0000-0000-0000-0000000000aa';
@@ -236,7 +236,33 @@ describe('get_usage_stats', () => {
 
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
       .content[0].text;
-    expect(out).toMatch(/Builder: 8 task\(s\) · no tokens recorded · 75% success/);
+    expect(out).toMatch(/Builder: 8 task\(s\) · 6 completed · no tokens recorded · 75% success/);
+  });
+
+  it('splits interactive MCP sessions from runners with groupBy=executor, with completed counts', async () => {
+    mockApi.mockResolvedValueOnce({
+      ...statsPayload,
+      groupBy: 'executor',
+      groups: [
+        { ...statsPayload.groups[0], key: 'runner', label: 'Runner', tasks: 9, completed: 7, failed: 1, successRate: 0.875 },
+        { ...statsPayload.groups[0], key: 'interactive', label: 'Interactive (MCP session)', tasks: 3, completed: 2, failed: 0, successRate: 1 },
+      ],
+    });
+    const res = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_usage_stats',
+      { groupBy: 'executor' },
+      ctx(),
+    );
+    expect(mockApi.mock.calls[0][0]).toContain('groupBy=executor');
+    const out = res.content[0].text;
+    expect(out).toMatch(/By executor:/);
+    expect(out).toMatch(/Runner: 9 task\(s\) · 7 completed/);
+    expect(out).toMatch(/Interactive \(MCP session\): 3 task\(s\) · 2 completed/);
+  });
+
+  it('documents groupBy=executor in the params description', () => {
+    expect(buildParamsDescription(['get_usage_stats'])).toContain('"executor"');
   });
 
   it('does not crash when a group has no terminal tasks yet', async () => {

@@ -16,47 +16,51 @@ export default function SettingsSubNav() {
   const pathname = usePathname();
   const active = settingsItemFor(pathname);
 
+  // The fill and rule live on a wrapper that stretches to the page height; the
+  // nav inside stays sticky, so the column never stops partway down a long page.
   return (
-    <nav
-      aria-label="Settings"
-      data-testid="settings-subnav"
-      className="hidden md:block w-56 shrink-0 sticky top-0 h-screen overflow-y-auto border-r border-border-default bg-surface-2 px-3 py-6"
-    >
-      <Link
-        href={SETTINGS_INDEX_HREF}
-        aria-current={pathname === SETTINGS_INDEX_HREF ? 'page' : undefined}
-        className="block px-2 mb-5 text-[15px] font-semibold text-text-primary hover:text-accent-text"
+    <div className="hidden md:block w-56 shrink-0 border-r border-border-default bg-surface-2">
+      <nav
+        aria-label="Settings"
+        data-testid="settings-subnav"
+        className="sticky top-0 max-h-screen overflow-y-auto px-3 py-6"
       >
-        Settings
-      </Link>
-      <div className="space-y-5">
-        {SETTINGS_NAV.map((group) => (
-          <div key={group.label}>
-            <div className="section-label px-2 mb-1.5">{group.label}</div>
-            <ul className="space-y-0.5">
-              {group.items.map((item) => {
-                const isActive = active?.id === item.id;
-                return (
-                  <li key={item.id}>
-                    <Link
-                      href={item.href}
-                      aria-current={isActive ? 'page' : undefined}
-                      data-active={isActive ? 'true' : undefined}
-                      className={`block px-2 py-1.5 text-[13px] border-l-2 transition-colors ${
-                        isActive
-                          ? 'border-accent text-accent-text bg-accent-soft font-medium'
-                          : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
-                      }`}
-                    >
-                      {item.label}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ))}
-      </div>
-    </nav>
+        <Link
+          href={SETTINGS_INDEX_HREF}
+          aria-current={pathname === SETTINGS_INDEX_HREF ? 'page' : undefined}
+          className="block px-2 mb-5 text-[15px] font-semibold text-text-primary hover:text-accent-text"
+        >
+          Settings
+        </Link>
+        <div className="space-y-5">
+          {SETTINGS_NAV.map((group) => (
+            <div key={group.label}>
+              <div className="section-label px-2 mb-1.5">{group.label}</div>
+              <ul className="space-y-0.5">
+                {group.items.map((item) => {
+                  const isActive = active?.id === item.id;
+                  return (
+                    <li key={item.id}>
+                      <Link
+                        href={item.href}
+                        aria-current={isActive ? 'page' : undefined}
+                        data-active={isActive ? 'true' : undefined}
+                        className={`block px-2 py-1.5 text-[13px] border-l-2 transition-colors ${
+                          isActive
+                            ? 'border-accent text-accent-text bg-accent-soft font-medium'
+                            : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
+                        }`}
+                      >
+                        {item.label}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </nav>
+    </div>
   );
 }

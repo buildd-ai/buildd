@@ -18,7 +18,7 @@ export default async function ModelProvidersPage() {
   return (
     <SettingsPage
       title="Model providers"
-      description="Connect OpenRouter, Anthropic or OpenAI with an API key. OpenRouter reaches every model the tiers name with one key."
+      description="OpenRouter reaches every model tier with one key."
     >
       {currentTeam ? (
         <ModelProvidersClient

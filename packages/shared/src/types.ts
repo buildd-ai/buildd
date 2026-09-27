@@ -1253,8 +1253,39 @@ export type ClaimDiagnosticReason =
   | 'context_paused'
   | 'path_overlap_blocked';
 
+/**
+ * Which gate excluded an explicitly requested task (claim with `taskId`) from
+ * the claim query. See apps/web/src/app/api/workers/claim/explicit-task-exclusion.ts.
+ */
+export type ClaimTaskExclusionCode =
+  | 'not_found'
+  | 'not_pending'
+  | 'already_claimed'
+  | 'deferred'
+  | 'active_worker'
+  | 'task_held'
+  | 'mission_held'
+  | 'deps_blocked'
+  | 'subject_dead'
+  | 'runner_preference'
+  | 'role_mismatch'
+  | 'runner_cooldown'
+  | 'workspace_cap'
+  | 'unknown';
+
+export interface ClaimTaskExclusion {
+  code: ClaimTaskExclusionCode;
+  /** One human sentence, including the override when there is one. */
+  detail: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
+  /**
+   * Set only for an explicit `taskId` claim whose task the claim query filtered
+   * out (reason `no_pending_tasks`): the specific gate that excluded it.
+   */
+  taskExclusion?: ClaimTaskExclusion;
   pendingTasks?: number;
   matchedTasks?: number;
   activeWorkers?: number;
