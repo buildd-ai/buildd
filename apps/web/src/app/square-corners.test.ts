@@ -6,7 +6,8 @@
  * real curve, which is how the Home "In flight" and action cards came out
  * rounded against square neighbours.
  *
- * No `rounded*-[...]` token may appear in app source.
+ * No `rounded*-[...]` token may appear in app source, except in the chat
+ * conversation layer (see isSoftConversationSurface below).
  */
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -34,12 +35,35 @@ describe('arbitraryRadiusTokens', () => {
   });
 });
 
+/**
+ * The one deliberate exception: the chat conversation layer is soft by design
+ * (docs/design/agent-chat.md, the canvas: "soft, unboxed conversation; hard
+ * fleet objects"). Conversation files under components/chat/ may round, and so
+ * may a line styled with the conversation tokens (`--convo-*`), such as the
+ * composer's workspace chip. Fleet objects rendered inside chat
+ * (components/chat/objects/) stay square like everywhere else.
+ */
+export function isSoftConversationSurface(file: string, line: string): boolean {
+  const conversationFile = file.startsWith('components/chat/') && !file.startsWith('components/chat/objects/');
+  return conversationFile || line.includes('var(--convo-');
+}
+
+describe('isSoftConversationSurface', () => {
+  it('allows the conversation layer and convo-token lines, not fleet objects', () => {
+    expect(isSoftConversationSurface('components/chat/ChatFeed.tsx', 'rounded-[18px]')).toBe(true);
+    expect(isSoftConversationSurface('components/chat/objects/MissionObject.tsx', 'rounded-[8px]')).toBe(false);
+    expect(isSoftConversationSurface('components/WorkspaceSwitcher.tsx', 'rounded-[999px] bg-[var(--convo-soft)]')).toBe(true);
+    expect(isSoftConversationSurface('app/app/(protected)/home/page.tsx', 'rounded-[10px]')).toBe(false);
+  });
+});
+
 describe('square corners', () => {
-  it('no source file uses an arbitrary border radius', () => {
+  it('no source file outside the conversation layer uses an arbitrary border radius', () => {
     const hits: string[] = [];
     for (const f of new Glob('**/*.{ts,tsx}').scanSync(SRC)) {
       if (/\.test\.tsx?$/.test(f) || f.includes('/__tests__/')) continue;
       readFileSync(join(SRC, f), 'utf8').split('\n').forEach((line, i) => {
+        if (isSoftConversationSurface(f, line)) return;
         for (const t of arbitraryRadiusTokens(line)) hits.push(`${f}:${i + 1} ${t}`);
       });
     }
