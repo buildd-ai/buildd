@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { UsageReport } from '../models/index';
+import type { UsageReceipt } from '../models/index';
 import {
   choice,
   defineDecision,
@@ -12,6 +12,7 @@ import {
   score,
   type DecisionReceipt,
   type DecisionRun,
+  toModelsUsage,
 } from './index';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -185,12 +186,24 @@ describe('decision.runEach', () => {
 });
 
 describe('receipts fit /models', () => {
-  it('a DecisionReceipt is assignable to UsageReport', () => {
-    const receipt: DecisionReceipt = {
-      kind: 'decision', decisionId: null, provider: 'openrouter', model: JEV_MODEL,
-      usage: { inputTokens: 1, outputTokens: 0, costUsd: null }, latencyMs: 1, outcome: 'ok', attempts: 1,
-    };
-    const report: UsageReport = receipt;
-    expect(report.outcome).toBe('ok');
+  const receipt: DecisionReceipt = {
+    kind: 'decision', decisionId: 'test.email', provider: 'openrouter', model: 'typesafe/jev-1.13-20260917',
+    usage: { inputTokens: 400, outputTokens: 50, costUsd: 0.00002 }, latencyMs: 212.4, outcome: 'ok', attempts: 1,
+  };
+
+  it('toModelsUsage produces a recordUsage input', () => {
+    const input: UsageReceipt = toModelsUsage(receipt);
+    expect(input).toEqual({
+      plan: { planId: null, planSource: 'fallback', model: 'typesafe/jev-1.13-20260917', provider: 'openrouter', tier: 'budget' },
+      tokens: { input: 400, output: 50 },
+      costUsd: 0.00002,
+      latencyMs: 212,
+      outcome: 'ok',
+    });
+  });
+
+  it('carries a plan id and tier when the app has one', () => {
+    const input = toModelsUsage(receipt, { planId: '00000000-0000-4000-8000-000000000000', tier: 'standard' });
+    expect(input.plan).toMatchObject({ planSource: 'default', tier: 'standard' });
   });
 });

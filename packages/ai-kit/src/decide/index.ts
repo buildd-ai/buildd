@@ -13,7 +13,7 @@
  *   `expectDecisionPinned` checks so a changed definition fails a test until
  *   its version is bumped.
  * - `runDecisionEval`: accuracy and coverage at thresholds over labelled rows.
- * - Receipts (`DecisionReceipt`) are metadata only and fit `/models`' usage sink.
+ * - Receipts (`DecisionReceipt`) are metadata only; `toModelsUsage` feeds `/models`' `recordUsage`.
  *
  * The caller passes its OpenRouter key; the kit never reads env vars.
  *
@@ -308,10 +308,10 @@ export function gateChoice<L extends string>(
 
 /**
  * Usage receipts for decision calls: metadata only, never state, questions or
- * answers. The shape is assignable to `/models`' `UsageReport`
- * (`usage` + `latencyMs` + `outcome`), so an app can pass a receipt straight to
- * its model client's `report` / `recordUsage` sink and its own ledger. The kit
- * does not import `/models` for this, so `/decide` has no dependency on it.
+ * answers. `toModelsUsage` turns one into the input of `/models`'
+ * `recordUsage`, so decision spend lands in the same buildd receipts and app
+ * ledger as generative calls. `/decide` does not import `/models`: the shape
+ * is structural, and a test asserts it stays assignable.
  */
 
 export interface DecisionReceipt {
@@ -346,6 +346,52 @@ export function toDecisionReceipt<Q extends DecisionQuestions>(
 }
 
 /** Fire-and-forget: a sink that throws or rejects never affects the decision. */
+/** The `/models` tiers, restated so `/decide` needs no import from `/models`. */
+export type ModelsTier = 'premium-plus' | 'premium' | 'standard' | 'budget';
+
+/** Structurally `/models`' `UsageReceipt` (the input of `recordUsage`). */
+export interface ModelsUsageInput {
+  plan: {
+    planId: string | null;
+    planSource: 'registry' | 'pool' | 'catalog' | 'default' | 'cached' | 'fallback';
+    model: string;
+    provider: 'openrouter';
+    tier: ModelsTier;
+  };
+  tokens: { input: number; output: number };
+  costUsd: number | null;
+  latencyMs: number;
+  outcome: 'ok' | 'error';
+}
+
+/**
+ * A decision receipt as `/models`' `recordUsage` input:
+ * `models.recordUsage(toModelsUsage(receipt))`.
+ *
+ * Jev is not a tier and has no buildd plan, so the receipt says `planId: null`
+ * and `planSource: 'fallback'` (buildd issued no plan) and names a tier for
+ * attribution only: `budget` by default, since a decision call costs a
+ * fraction of a cent.
+ */
+export function toModelsUsage(
+  receipt: DecisionReceipt,
+  opts: { tier?: ModelsTier; planId?: string | null } = {},
+): ModelsUsageInput {
+  return {
+    plan: {
+      planId: opts.planId ?? null,
+      planSource: opts.planId ? 'default' : 'fallback',
+      model: receipt.model,
+      provider: 'openrouter',
+      tier: opts.tier ?? 'budget',
+    },
+    tokens: { input: receipt.usage.inputTokens, output: receipt.usage.outputTokens },
+    costUsd: receipt.usage.costUsd,
+    latencyMs: Math.max(0, Math.round(receipt.latencyMs)),
+    outcome: receipt.outcome,
+  };
+}
+
 export function emitReceipt(sink: UsageSink | undefined, receipt: DecisionReceipt): void {
   if (!sink) return;
   try {

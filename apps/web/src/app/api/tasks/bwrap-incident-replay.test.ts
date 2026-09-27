@@ -82,6 +82,16 @@ mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mockResolveCreatorContext,
 }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts.
+mock.module('@/lib/workspace-access', () => ({
+  listReachableWorkspaceIds: async () => ['ws-1'],
+  resolveWorkspaceAccess: async (raw: string) => {
+    const workspace = await (mockResolveWorkspace as any)(raw);
+    return workspace
+      ? { ok: true, workspace }
+      : { ok: false, reason: 'not_found', status: 404, error: `No workspace found matching "${raw}"` };
+  },
+}));
 mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: mockResolveWorkspace,
   autoResolveAccountWorkspace: mockAutoResolveAccountWorkspace,
