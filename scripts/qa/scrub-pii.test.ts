@@ -85,7 +85,7 @@ function sqlCoverage(sql: string) {
 // ids, timestamps-as-text, cron/timezone, colours, counts, numeric/uuid json.
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
-  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities'],
+  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes'],
   team_members: [],
   users: ['timezone'],
   accounts: ['monthly_cost_month', 'budget_alerts_sent'],

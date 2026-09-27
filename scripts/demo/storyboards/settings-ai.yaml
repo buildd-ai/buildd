@@ -1,0 +1,37 @@
+# Settings → AI features, Model providers, Budgets and Profile, shot against the
+# multi-currency story (a team with a provider key). Review shots for the
+# settings cleanup; not a demo storyboard.
+#
+#   bun run scripts/demo/run-storyboard.ts scripts/demo/storyboards/settings-ai.yaml --out <dir>
+story: ../stories/multi-currency.json
+name: settings-ai
+viewport: { width: 1280, height: 900, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark, light]
+steps:
+  - id: ai
+    goto: /app/settings/ai
+    viewports: [desktop, phone]
+    waitFor: interactive-switch
+    fullPage: true
+  - id: ai-advanced
+    goto: /app/settings/ai
+    viewports: [desktop, phone]
+    waitFor: feature-advanced
+    click: "[data-testid=feature-advanced] summary"
+    fullPage: true
+  - id: providers
+    goto: /app/settings/providers
+    viewports: [desktop, phone]
+    waitFor: key-policy
+    fullPage: true
+  - id: budgets
+    goto: /app/settings/budgets
+    viewports: [desktop, phone]
+    waitFor: caps
+    fullPage: true
+  - id: account
+    goto: /app/settings/account
+    viewports: [desktop, phone]
+    waitFor: chat-key-row
+    fullPage: true

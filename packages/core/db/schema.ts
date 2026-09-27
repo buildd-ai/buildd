@@ -63,12 +63,16 @@ export const teams = pgTable('teams', {
   // new build serves, so dropping it in the same release breaks the old build.
   criteriaEvaluationStrategy: text('criteria_evaluation_strategy').$type<'inline' | 'worker' | null>(),
 
-  // Which actions may spend a metered inference call instead of dispatching an
-  // agent run. NULL (or empty) = none, which is today's behaviour — so storing an
-  // inference key changes nothing until the operator opts a capability in.
-  // Same shape as enabledBackends: a reversible mask above the resolution chain,
-  // not another default inside it. See packages/core/inference-policy.ts.
+  // DEPRECATED — nothing reads or writes this. It was the opt-in allowlist of
+  // inference call sites; replaced by chatDisabled (interactive), built-in
+  // decision calls (always on when a key resolves) and inferenceFeatureModes.
+  // Drop in a follow-up release (schema-change skill).
   enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
+  // Per-feature overrides for server-side features (goal grading, visual QA
+  // judgment, mission summaries): { [feature]: 'server' | 'runner' }. NULL or an
+  // absent feature = the default, which follows the billing model (a team key
+  // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
+  inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -78,10 +82,11 @@ export const teams = pgTable('teams', {
   // Per-person daily share of that budget, in USD. NULL = DEFAULT_CHAT_USER_SHARE
   // of the team budget. Always clamped to the team budget.
   chatUserDailyBudgetUsd: decimal('chat_user_daily_budget_usd', { precision: 10, scale: 2 }),
-  // Whose provider key a person's chat turn spends (packages/core/inference-keys.ts
+  // Whose provider key server-side AI spends (packages/core/inference-keys.ts
   // enforces it): 'team' = the team key for everyone, personal keys ignored;
   // 'team_or_own' = the team key, and a person may use their own instead;
-  // 'own' = everyone brings their own key, no team fallback for chat.
+  // 'own' = each person's own key, no team fallback — team work with no person
+  // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
   // Chat is on whenever a key resolves; an admin can switch it off for the team.
   // Replaces the opt-in `chat` entry in enabledInferenceCapabilities.

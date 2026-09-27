@@ -56,12 +56,20 @@ describe('ModelProvidersClient', () => {
 
   it('reports the real reason, not "turn on chat"', async () => {
     await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
-    expect(host.querySelector('[data-testid="chat-status"]')?.textContent).toContain('Chat starts once you connect a provider below.');
+    expect(host.querySelector('[data-testid="chat-status"]')?.textContent).toContain('Connect a provider below to start interactive AI');
     expect(host.textContent).not.toContain('Turn on chat');
     expect(host.textContent).not.toContain('Which key a chat turn uses');
   });
 
-  it('an admin sets "everyone brings their own key"', async () => {
+  it('names the options plainly: Team key / Each person\'s own key', async () => {
+    await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
+    const policy = host.querySelector('[data-testid="key-policy"]')!;
+    expect(policy.textContent).toContain('Team key');
+    expect(policy.textContent).toContain("Each person's own key");
+    expect(policy.textContent).not.toMatch(/who pays|chat/i);
+  });
+
+  it('an admin sets "each person\'s own key"', async () => {
     await mount(<ModelProvidersClient teamId="t" isAdmin availability={{ available: false, reason: 'no_key' }} />);
     const radios = host.querySelectorAll('input[name="key-policy"]');
     await act(async () => { (radios[1] as HTMLInputElement).click(); });
@@ -72,7 +80,7 @@ describe('ModelProvidersClient', () => {
     body = { ...body, canManageTeamKeys: false };
     await mount(<ModelProvidersClient teamId="t" isAdmin={false} availability={{ available: false, reason: 'no_key' }} />);
     expect(host.querySelector('input[name="key-policy"]')).toBeNull();
-    expect(host.querySelector('[data-testid="key-policy"]')?.textContent).toBe('Chat uses the team key.');
+    expect(host.querySelector('[data-testid="key-policy"]')?.textContent).toBe('Team key');
   });
 });
 
@@ -103,7 +111,7 @@ describe('Account chat row', () => {
   it('when everyone brings their own key, leads with Connect OpenRouter and tucks the paste field away', async () => {
     body = { ...body, keyPolicy: 'own' };
     await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Add your OpenRouter key to use chat');
+    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Add your OpenRouter key');
     expect(host.querySelector('[data-testid="connect-openrouter"]')?.getAttribute('href')).toContain('scope=user');
     const details = host.querySelector('details')!;
     expect(details.open).toBe(false);

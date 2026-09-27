@@ -155,7 +155,7 @@ This intentionally differs from the credentials doc's workspace → account → 
 - The provider returns `usage.cost` in USD on every response. The client surfaces it as `usage.costUsd`, or `null` when it is absent. No price is hardcoded, because a hardcoded price goes stale.
 - Output tokens are free, and a well-formed shadow call is a few hundred input tokens. At the published per-token price, one shadow call costs a small fraction of a cent.
 - Attribution follows the inference doc's decision: team level only, not persisted per call for now. Every shadow record carries `costUsd` and `inputTokens`, so the log alone can produce a spend total.
-- Spend is gated like inference spend: the team's `enabledInferenceCapabilities` allowlist is checked before the key is resolved. The default is empty, so storing a key changes nothing.
+- Spend is gated like inference spend: the team's inference policy (`packages/core/inference-policy.ts`) is checked before the key is resolved. Decision calls are built-in: they run whenever a key resolves, with no per-team toggle. (This replaced the opt-in `enabledInferenceCapabilities` allowlist.)
 
 ### Point 7: Decision call vs inference call — the policy
 

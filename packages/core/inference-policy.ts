@@ -1,34 +1,23 @@
 /**
- * Which actions a team lets buildd spend inference money on.
+ * Which calls may spend a team's provider key (a pay-per-token API key; runners
+ * never use one, they work on their own subscription or seat).
  *
- * Storing an inference key and *using* it are two decisions, not one. An
- * inference call is faster than dispatching an agent run and costs metered
- * dollars; an agent run is slower and spends a subscription seat the team is
- * already paying for. Which trade is right is a per-team, per-action judgment: an
- * enterprise may happily pay for every judgment to come back in seconds, while a
- * solo operator on a subscription wants the agent path for everything except the
- * few actions that genuinely cannot be done by an agent.
+ * Three kinds of call site, each with its own rule:
  *
- * So the key answers "can we?" and this policy answers "should we, for this?".
+ * - **interactive** (`chat`): on whenever a key resolves. The only control is
+ *   the admin's kill switch, `teams.chatDisabled`.
+ * - **built_in** decision calls (task classification, the task category shadow
+ *   check): low cost, no toggle. They run whenever a key resolves.
+ * - **server_feature** (goal grading, visual QA judgment, mission summaries):
+ *   each has a runner path. The default follows the team's billing model: a
+ *   pay-per-token team key → server-side; subscription only → runner. An admin
+ *   may override per feature (`teams.inferenceFeatureModes`).
  *
- * ## Default is off, deliberately
- *
- * An absent or empty allowlist means **no capability uses inference** — every
- * action takes its agent path. Two reasons:
- *
- * 1. Pasting a credential should never silently start spending on call sites the
- *    operator has not seen. Spend is opt-in per action.
- * 2. It is exactly today's behaviour. No team's costs change when this ships,
- *    which is the same "existing teams are unaffected" property that
- *    `teams.enabledBackends` gets from its NULL-means-all default. The value
- *    differs because the behaviour being preserved differs.
- *
- * ## Layered above resolution, like the backend mask
- *
- * This is a mask, not another default in the resolution chain. Turning a
- * capability off does not clear the key, edit the tier registry, or touch any
- * per-workspace setting — the call site takes its fallback and re-enabling
- * restores the previous behaviour with no stored state to undo.
+ * This is a mask above key resolution, not part of it: "allowed" here still
+ * needs a key to resolve, and a call site whose key does not resolve takes its
+ * runner path (or does nothing, for built-ins). So the default needs no stored
+ * state: a team with a key gets the server-side path, one without gets the
+ * runner, and adding or removing the key moves every default with it.
  */
 
 /** Every inference call site in the platform, named. */
@@ -40,117 +29,141 @@ export type InferenceCapability =
   | 'task_category_shadow'
   | 'chat';
 
+export type CapabilityKind = 'interactive' | 'built_in' | 'server_feature';
+
 export interface CapabilityDescriptor {
   id: InferenceCapability;
+  kind: CapabilityKind;
   label: string;
-  /** What the capability does, in operator language. */
+  /** One line, for the settings page. */
   description: string;
-  /**
-   * What happens when this capability may NOT use inference.
-   *
-   * `agent` — a dispatched agent run produces the same answer, slower and on the
-   * subscription seat. Turning inference off here is a cost/latency trade.
-   *
-   * `none` — there is no other way to get this answer. Turning inference off here
-   * turns the feature off. These are the load-bearing toggles and the UI must say
-   * so rather than presenting them as equivalent switches.
-   */
-  fallback: 'agent' | 'none';
-  /** Rough per-call cost, for the settings UI. */
+  /** Rough per-call cost. */
   costHint: string;
 }
 
 export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescriptor> = {
   criteria_grading: {
     id: 'criteria_grading',
-    label: 'Goal criteria grading',
-    description:
-      'Grades a mission\'s written goal criteria against task summaries and artifacts.',
-    fallback: 'agent',
-    costHint: '~$0.001 per mission verification',
+    kind: 'server_feature',
+    label: 'Goal grading',
+    description: 'Grades a mission\'s written goals against its tasks and artifacts.',
+    costHint: '~$0.001 per check',
   },
   visual_qa: {
     id: 'visual_qa',
+    kind: 'server_feature',
     label: 'Visual QA judgment',
-    description:
-      'Checks release-PR screenshots against what the spec promises. An agent run cannot look at images, so this has no fallback.',
-    fallback: 'none',
-    costHint: '~$0.01 per page judged',
-  },
-  task_classification: {
-    id: 'task_classification',
-    label: 'Task classification',
-    description:
-      'Tags a task created outside a mission with its kind and complexity.',
-    fallback: 'none',
-    costHint: '~$0.001 per task',
+    description: 'Judges the screenshots the visual-auditor role captured on a runner. Server-side is faster.',
+    costHint: '~$0.01 per page',
   },
   mission_summary: {
     id: 'mission_summary',
+    kind: 'server_feature',
     label: 'Mission summaries',
-    description:
-      'Answers questions about a mission and condenses long note threads when you ask.',
-    fallback: 'none',
+    description: 'Answers questions about a mission and condenses long note threads.',
     costHint: '~$0.005 per request',
+  },
+  task_classification: {
+    id: 'task_classification',
+    kind: 'built_in',
+    label: 'Task classification',
+    description: 'Tags a new task with its kind and complexity.',
+    costHint: '~$0.001 per task',
   },
   task_category_shadow: {
     id: 'task_category_shadow',
-    label: 'Task category shadow check',
-    description:
-      'Asks a model for each new task\'s category next to the keyword rules and logs whether they agree. It never changes a task.',
-    // Nothing depends on it: turning it off stops the comparison, nothing else.
-    fallback: 'none',
+    kind: 'built_in',
+    label: 'Task category check',
+    description: 'Compares a model\'s task category with the keyword rules. Never changes a task.',
     costHint: '~$0.00002 per task',
   },
   chat: {
     id: 'chat',
-    label: 'Agent chat',
-    description:
-      'Talk to your buildd agent. It answers from live fleet state and files missions through approval cards. Chat runs on the server with a provider API key, never on a runner or a subscription seat.',
-    // No agent run can stand in for a streaming chat turn: off means no chat.
-    fallback: 'none',
-    costHint: '~$0.005–0.05 per turn, by tier',
+    kind: 'interactive',
+    label: 'Interactive',
+    description: 'Chat with your buildd agent, on the server.',
+    costHint: '~$0.005–0.05 per turn',
   },
 };
 
 export const ALL_INFERENCE_CAPABILITIES = Object.keys(INFERENCE_CAPABILITIES) as InferenceCapability[];
+
+/** The features with a runner path. Overrides may name any of them. */
+export const SERVER_FEATURES = ['criteria_grading', 'visual_qa', 'mission_summary'] as const;
+export type ServerFeature = typeof SERVER_FEATURES[number];
+
+/**
+ * The server-side features with a call site today, which is all the AI page
+ * shows: a switch for a feature that never runs is a switch that lies. Visual
+ * QA judgment and mission summaries have ids (and stored overrides survive) but
+ * nothing calls them yet; add one here in the PR that wires its call site.
+ */
+export const LIVE_SERVER_FEATURES: readonly ServerFeature[] = ['criteria_grading'];
+
+/** Where a server-side feature runs. */
+export type FeatureMode = 'server' | 'runner';
+/** `teams.inferenceFeatureModes`: overrides only. An absent feature follows the default. */
+export type FeatureModes = Partial<Record<ServerFeature, FeatureMode>>;
 
 /** True when `value` names a capability this build knows about. */
 export function isInferenceCapability(value: unknown): value is InferenceCapability {
   return typeof value === 'string' && value in INFERENCE_CAPABILITIES;
 }
 
-/**
- * May this capability spend an inference call for this team?
- *
- * `enabled` is `teams.enabledInferenceCapabilities`: null/empty means none.
- * Unknown names in the stored array are ignored rather than trusted — a row
- * written by a newer deploy must not enable spend on a capability this build does
- * not have.
- */
-export function isInferenceEnabled(
-  capability: InferenceCapability,
-  enabled: readonly string[] | null | undefined,
-): boolean {
-  if (!enabled || enabled.length === 0) return false;
-  return enabled.includes(capability);
+export function isServerFeature(value: unknown): value is ServerFeature {
+  return typeof value === 'string' && (SERVER_FEATURES as readonly string[]).includes(value);
+}
+
+function storedMode(modes: unknown, feature: ServerFeature): FeatureMode | null {
+  if (!modes || typeof modes !== 'object' || Array.isArray(modes)) return null;
+  const v = (modes as Record<string, unknown>)[feature];
+  return v === 'server' || v === 'runner' ? v : null;
+}
+
+/** The team columns the gate reads. */
+export interface InferenceGate {
+  chatDisabled?: boolean | null;
+  featureModes?: unknown;
 }
 
 /**
- * Normalize an operator-supplied allowlist: drop unknowns, dedupe, keep a stable
- * order. Returns null for "nothing enabled" so the column stays NULL rather than
- * accumulating empty arrays that mean the same thing.
+ * May this call site spend the team's key? A missing team row fails closed.
+ * Unknown or malformed stored values read as "no override".
  */
-export function normalizeInferenceCapabilities(input: unknown): InferenceCapability[] | null {
-  if (!Array.isArray(input)) return null;
-  const kept = ALL_INFERENCE_CAPABILITIES.filter(c => input.includes(c));
-  return kept.length > 0 ? kept : null;
+export function isInferenceAllowed(capability: InferenceCapability, gate: InferenceGate | null | undefined): boolean {
+  if (!gate) return false;
+  const d = INFERENCE_CAPABILITIES[capability];
+  if (!d) return false;
+  if (d.kind === 'built_in') return true;
+  if (d.kind === 'interactive') return gate.chatDisabled !== true;
+  return storedMode(gate.featureModes, capability as ServerFeature) !== 'runner';
 }
 
 /**
- * Capabilities that stop working entirely if inference is disabled for them.
- * The settings UI uses this to warn instead of implying a graceful fallback.
+ * Where a server-side feature runs, for the settings page. `hasTeamKey` is the
+ * billing model: a pay-per-token key the team's own work can spend.
  */
-export function capabilitiesWithoutFallback(): InferenceCapability[] {
-  return ALL_INFERENCE_CAPABILITIES.filter(c => INFERENCE_CAPABILITIES[c].fallback === 'none');
+export function resolveFeatureMode(
+  feature: ServerFeature,
+  modes: unknown,
+  hasTeamKey: boolean,
+): { mode: FeatureMode; source: 'default' | 'override'; needsKey: boolean } {
+  const o = storedMode(modes, feature);
+  if (o) return { mode: o, source: 'override', needsKey: o === 'server' && !hasTeamKey };
+  return { mode: hasTeamKey ? 'server' : 'runner', source: 'default', needsKey: false };
+}
+
+/**
+ * Normalize an operator-supplied override map: known features, `server` or
+ * `runner` only; `default` (or anything else) clears the override. Null when
+ * nothing is overridden, so the column has one "all defaults" form.
+ */
+export function normalizeFeatureModes(input: unknown): FeatureModes | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const out: FeatureModes = {};
+  for (const f of SERVER_FEATURES) {
+    const m = storedMode(input, f);
+    if (m) out[f] = m;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }

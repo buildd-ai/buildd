@@ -12,28 +12,38 @@ describe('key policy choice', () => {
 });
 
 describe('chatStatusCopy', () => {
-  it('says chat is on and what it runs on', () => {
+  it('says interactive AI is on and what it runs on', () => {
     expect(chatStatusCopy({ available: true, reason: null }, { kind: 'team', provider: 'openrouter' }, true, 'team'))
-      .toMatchObject({ tone: 'success', text: 'Chat is on. It runs on OpenRouter with the team key.', action: null });
+      .toMatchObject({ tone: 'success', text: 'Interactive AI is on · OpenRouter · team key', action: null });
   });
 
   it('names the real reason: switched off, not a missing key', () => {
     const off = chatStatusCopy({ available: false, reason: 'capability_disabled' }, { kind: 'team', provider: 'openrouter' }, true, 'team');
-    expect(off.text).toBe('An admin switched chat off for the team.');
-    expect(off.action).toEqual({ href: '/app/settings/ai', label: 'Turn chat back on' });
+    expect(off.text).toBe('Interactive AI is off for the team');
+    expect(off.action).toEqual({ href: '/app/settings/ai', label: 'Turn it on' });
   });
 
   it('a missing key: admins get the fix, members get who to ask', () => {
     expect(chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'none' }, true, 'team').text)
-      .toBe('Chat starts once you connect a provider below.');
+      .toBe('Connect a provider below to start interactive AI');
     expect(chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'none' }, false, 'team').text)
-      .toBe('Chat starts once an admin connects a provider.');
+      .toBe('Interactive AI starts once an admin connects a provider');
   });
 
-  it('under "everyone brings their own key", points a person at their Profile', () => {
+  it('under "each person\'s own key", points a person at their Profile', () => {
     const c = chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'needs_own' }, false, 'own');
-    expect(c.text).toBe('Everyone on this team brings their own key. Add yours to use chat.');
+    expect(c.text).toBe('Each person uses their own key. Add yours.');
     expect(c.action).toEqual({ href: '/app/settings/account', label: 'Add your key' });
+  });
+
+  it('never calls it chat', () => {
+    const all = [
+      chatStatusCopy({ available: true, reason: null }, { kind: 'team', provider: 'openrouter' }, true, 'team'),
+      chatStatusCopy({ available: false, reason: 'capability_disabled' }, { kind: 'none' }, true, 'team'),
+      chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'none' }, true, 'team'),
+      chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'needs_own' }, false, 'own'),
+    ];
+    for (const c of all) expect(`${c.text} ${c.action?.label ?? ''}`.toLowerCase()).not.toContain('chat');
   });
 
   it('never uses an em dash', () => {

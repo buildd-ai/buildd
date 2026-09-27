@@ -8,6 +8,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, teams, workspaces } from '@buildd/core/db/schema';
 import { resolveTimezone } from '@buildd/core/timezone';
+import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
 import type { TurnUser } from './turn';
@@ -31,7 +32,7 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
+    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true },
   });
   return {
     // On whenever a key resolves; an admin can switch it off (teams.chatDisabled).
@@ -40,6 +41,7 @@ export async function loadTeamChatSettings(teamId: string) {
     // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
     userDailyBudgetUsd: team?.chatUserDailyBudgetUsd != null ? Number(team.chatUserDailyBudgetUsd) : null,
+    keyPolicy: isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? team.inferenceKeyPolicy : null,
   };
 }
 
