@@ -1,4 +1,5 @@
 import ChatConversation from '@/components/chat/ChatConversation';
+import ChatPresenceBeat from '@/components/chat/ChatPresenceBeat';
 import { formHref, parseChatEntry } from '@/lib/chat/entry-points';
 import { ChatUnavailable, ConversationList, contextAside, firstName, loadAboutRef, loadChatShell } from './chat-shell';
 
@@ -27,6 +28,8 @@ export default async function ChatPage({
   const picked = typeof q.workspace === 'string' ? q.workspace : null;
   const workspaceId = [about?.workspaceId, entry.workspaceId, picked].find((id): id is string => !!id && wsIds.includes(id)) ?? null;
   return (
+    <>
+    <ChatPresenceBeat conversationId={null} />
     <ChatConversation
       conversationId={null}
       teamId={data.teamId}
@@ -46,5 +49,6 @@ export default async function ChatPage({
       entry={{ ...entry, about: about ? entry.about : null }}
       formFallbackHref={about ? null : formHref(entry.intent ?? 'mission', workspaceId)}
     />
+    </>
   );
 }

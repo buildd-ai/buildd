@@ -6,18 +6,31 @@ import {
   formatCheckedAgo,
   keyHealthPill,
   keyHealthTone,
-  type ChatProviderInfo,
+  type KeyShapeResult,
   type ProviderKeyStatus,
 } from '@/lib/provider-keys-client';
+import { isChatProvider } from '@buildd/shared';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 
 /**
  * One provider's key at one scope: the team key (admin screen) or your own key
  * (You page). The value is write-only: the card shows the server's masked form
  * and never reads the key back.
+ *
+ * Also used for keys that are not model providers (your Pushover key under
+ * Settings, Notifications): pass `checkShape`, `keyNoun`, `hint` and
+ * `removeNote` for that key's own wording.
  */
+export interface KeyCardInfo {
+  id: string;
+  label: string;
+  placeholder: string;
+  /** Where to create or find a key. */
+  consoleUrl: string;
+}
+
 export interface ProviderKeyCardProps {
-  info: ChatProviderInfo;
+  info: KeyCardInfo;
   status: ProviderKeyStatus | null;
   mode: 'team' | 'personal';
   /** Team mode, admins only: members who set their own key for this provider. */
@@ -33,12 +46,25 @@ export interface ProviderKeyCardProps {
   recommended?: boolean;
   /** Replaces the add button when there is no key (Connect OpenRouter); pasting stays a quiet option. */
   addAction?: React.ReactNode;
+  /** Soft shape check before saving. Default: the chat-provider prefix check. */
+  checkShape?: (raw: string) => KeyShapeResult;
+  /** "API key" by default. */
+  keyNoun?: string;
+  /** The add button's text when no key is set. */
+  addLabel?: string;
+  /** Replaces the "Create one in the console" sentence under the input. */
+  hint?: React.ReactNode;
+  /** Replaces the line shown while confirming Remove. */
+  removeNote?: string;
   now?: Date;
 }
 
 export function ProviderKeyCard({
-  info, status, mode, ownKeyCount = null, canEdit: canEditScope, loading = false, onSave, onRemove, onTest, recommended = false, addAction, now,
+  info, status, mode, ownKeyCount = null, canEdit: canEditScope, loading = false, onSave, onRemove, onTest, recommended = false, addAction,
+  checkShape, keyNoun = 'API key', addLabel: addLabelProp, hint, removeNote, now,
 }: ProviderKeyCardProps) {
+  const shapeOf = (v: string): KeyShapeResult =>
+    checkShape ? checkShape(v) : isChatProvider(info.id) ? checkKeyShape(info.id, v) : { ok: !!v.trim(), value: v.trim() };
   // A key that serves chat from elsewhere (runner API key, decision key) is
   // shown but managed where it was set. Adding one here still works: it
   // becomes the inference key and takes precedence.
@@ -52,11 +78,11 @@ export function ProviderKeyCard({
   const configured = !!status;
   const pill = loading ? { tone: 'idle' as const, label: 'loading' } : keyHealthPill(status);
   const scopeLabel = mode === 'team' ? 'Team key' : 'Your key';
-  const addLabel = mode === 'team' ? 'Add team key' : 'Use my own key';
-  const shape = value ? checkKeyShape(info.id, value) : null;
+  const addLabel = addLabelProp ?? (mode === 'team' ? 'Add team key' : 'Use my own key');
+  const shape = value ? shapeOf(value) : null;
 
   async function save() {
-    const r = checkKeyShape(info.id, value);
+    const r = shapeOf(value);
     if (!r.ok) { setMsg({ tone: 'err', text: r.message ?? 'That key does not look right.' }); return; }
     setBusy('save');
     setMsg(null);
@@ -144,7 +170,7 @@ export function ProviderKeyCard({
         {editing && canEdit && (
           <div className="pt-2 space-y-2">
             <label className="field-label" htmlFor={`key-${mode}-${info.id}`}>
-              {configured ? `New ${info.label} key` : `${info.label} API key`}
+              {configured ? `New ${info.label} key` : `${info.label} ${keyNoun}`}
             </label>
             <input
               id={`key-${mode}-${info.id}`}
@@ -160,7 +186,7 @@ export function ProviderKeyCard({
               <p className={shape.ok ? 'text-status-warning' : 'text-status-error'}>{shape.message}</p>
             )}
             <p className="text-text-muted">
-              Create one in the <a href={info.consoleUrl} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">{info.label} console</a>. buildd checks it with {info.label} before saving. Stored encrypted. Nobody can read it back.
+              {hint ?? <>Create one in the <a href={info.consoleUrl} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">{info.label} console</a>.</>} buildd checks it with {info.label} before saving. Stored encrypted. Nobody can read it back.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn btn-primary" onClick={save} disabled={busy !== null || !value.trim() || shape?.ok === false}>
@@ -213,9 +239,9 @@ export function ProviderKeyCard({
 
         {confirmRemove && (
           <p className="text-text-secondary">
-            {mode === 'team'
+            {removeNote ?? (mode === 'team'
               ? 'Chat and model features stop using this provider.'
-              : 'Your chats go back to the team key, if the team has one.'}
+              : 'Your chats go back to the team key, if the team has one.')}
           </p>
         )}
 

@@ -184,3 +184,31 @@ export async function reseedDue(
     if (first) await r.zadd(key, first, ...rest);
   }, undefined);
 }
+
+/** Drop every member due at or before `nowMs` (ZREMRANGEBYSCORE). */
+export async function clearDueThrough(job: string, nowMs: number): Promise<void> {
+  await safe('zremrangebyscore due', r => r.zremrangebyscore(dueKey(job), '-inf', nowMs), undefined);
+}
+
+// ── Short-TTL facts (presence, once-per-window flags) ──────────────────────
+//
+// A read returns `undefined` for "could not ask" (no client, or an error), which
+// callers must keep apart from `null` ("asked, no key"). Presence reads both as
+// away; see lib/presence.ts.
+
+export async function setWithTtl<T>(key: string, value: T, ttlSec: number): Promise<boolean> {
+  return safe('setex ttl', async r => { await r.setex(key, ttlSec, value); return true; }, false);
+}
+
+export async function getKey<T>(key: string): Promise<T | null | undefined> {
+  return safe<T | null | undefined>('get key', r => r.get<T>(key), undefined);
+}
+
+export async function delKey(key: string): Promise<void> {
+  await safe('del key', r => r.del(key), undefined);
+}
+
+/** SET NX EX: true only for the first caller in the window; false when Redis is unavailable. */
+export async function setOnce(key: string, ttlSec: number): Promise<boolean> {
+  return safe('set nx', async r => (await r.set(key, 1, { nx: true, ex: ttlSec })) === 'OK', false);
+}

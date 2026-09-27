@@ -37,8 +37,8 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `pushover`, `notify_webhook`, `inference_key`, `decision_key`, `custom`. |
-| `userId` | Nullable. A person's own key (`inference_key` only). `NULL` = not personal. See "API-token model keys". |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `custom`. |
+| `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
 | `tokenExpiresAt` | Nullable. Set for token credentials that expire (`codex_credential`, `oauth_token`). Enables efficient "expiring soon" cron queries. |
