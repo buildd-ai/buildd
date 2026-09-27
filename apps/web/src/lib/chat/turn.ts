@@ -46,7 +46,7 @@ import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
-import { canSkipCard, contentInContext } from './permissions';
+import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -118,6 +118,9 @@ export function unavailable(reason: ChatUnavailableReason, status: number, extra
 }
 
 /** Stored rows → UI messages for the model. Event rows become short assistant notes. */
+/** Stored rows a turn loads; hitting it means older rows went unseen. */
+const STORED_MESSAGE_LIMIT = 500;
+
 export function toUiHistory(rows: MessageRow[]): UIMessage[] {
   const out: UIMessage[] = [];
   for (const m of rows.slice(-HISTORY_LIMIT)) {
@@ -189,7 +192,7 @@ export async function runChatTurn(args: {
   // turn spends nothing.
   const [verdict, stored] = await Promise.all([
     deps.limits({ teamId: conv.teamId, userId: user.id, now }),
-    loadMessages(conv.id),
+    loadMessages(conv.id, STORED_MESSAGE_LIMIT),
   ]);
   if (!verdict.ok) {
     return unavailable(verdict.reason, 429, {
@@ -207,6 +210,9 @@ export async function runChatTurn(args: {
     : null;
 
   const history = toUiHistory(stored);
+  // The "Allow" taint covers the whole stored conversation, not only the
+  // HISTORY_LIMIT window the model is sent this turn.
+  const historyTainted = toolOutputInHistory(stored, stored.length >= STORED_MESSAGE_LIMIT);
   const resolveModel = deps.resolveModel ?? resolveChatModel;
   let route: TurnRoute;
   let authorizedToolCallIds = new Set<string>();
@@ -328,7 +334,7 @@ export async function runChatTurn(args: {
       // resolves inside reach. Anything else falls through to the card.
       if (allowedThisTurn === 0 && options?.toolCallId && canSkipCard({
         tool: name, input, allowedGroups,
-        tainted: contentInContext(options.messages ?? []),
+        tainted: historyTainted || contentInContext(options.messages ?? []),
         docked: docked !== null,
       })) {
         const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);

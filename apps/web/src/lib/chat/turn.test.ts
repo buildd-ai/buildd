@@ -568,6 +568,20 @@ describe('"Allow" for a tool group (docs/design/agent-chat.md → Tools and perm
     expect(apiCalls).toEqual([]);
   });
 
+  it('tool output that has aged out of the model window still means a card', async () => {
+    messages.push({
+      id: 'old', conversationId: 'conv-1', role: 'assistant', createdAt: new Date(),
+      parts: [{ type: 'tool-list_tasks', toolCallId: 'r0', state: 'output-available', input: {}, output: { data: 'Task: do the thing', objects: [] } }],
+    });
+    for (let i = 0; i < 45; i++) {
+      messages.push({ id: `pad-${i}`, conversationId: 'conv-1', role: i % 2 ? 'assistant' : 'user', createdAt: new Date(), parts: [{ type: 'text', text: `line ${i}` }] });
+    }
+    const { turn, apiCalls } = harness({ model: mission(), allowedGroups: ['missions'] });
+    await turn(userMsg('make this a mission'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual([]);
+  });
+
   it('admin-class writes ask even in an allowed group', async () => {
     const model = new MockLanguageModelV4({
       doStream: [toolStream('call-b', 'manage_missions', { ...MISSION_INPUT, costBudgetUsd: 50 }), textStream('ok')] as any,
