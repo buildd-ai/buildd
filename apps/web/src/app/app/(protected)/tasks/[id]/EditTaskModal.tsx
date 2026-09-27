@@ -1,5 +1,6 @@
 'use client';
 
+import SideSheet from '@/components/SideSheet';
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
@@ -89,34 +90,13 @@ export default function EditTaskModal({ task, onClose }: Props) {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      onClose();
-    }
-  };
-
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center sm:items-start sm:pt-32 z-50"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-      onKeyDown={handleKeyDown}
-    >
-      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-[calc(100vw-2rem)] sm:max-w-lg mx-4">
+    // The shared side sheet (stacked over "Task actions" with Back), not a
+    // centered modal over the page.
+    <SideSheet open onClose={onClose} title="Edit task" testId="edit-task-sheet" flush>
+      <div>
         <form onSubmit={handleSubmit}>
-          <div className="p-4 border-b border-border-default">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Edit Task</h2>
-              <button
-                type="button"
-                onClick={onClose}
-                className="text-text-muted hover:text-text-secondary"
-              >
-                &times;
-              </button>
-            </div>
-          </div>
-
-          <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+          <div className="p-4 space-y-4">
             {error && (
               <div className="p-2 text-sm bg-status-error/10 text-status-error rounded">
                 {error}
@@ -243,7 +223,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
             )}
           </div>
 
-          <div className="p-4 border-t border-border-default flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <div className="sticky bottom-0 p-4 border-t border-border-default bg-surface-1 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
@@ -262,6 +242,6 @@ export default function EditTaskModal({ task, onClose }: Props) {
           </div>
         </form>
       </div>
-    </div>
+    </SideSheet>
   );
 }

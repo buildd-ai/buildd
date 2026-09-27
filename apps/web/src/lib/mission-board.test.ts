@@ -334,12 +334,16 @@ describe('helpers', () => {
   it('formats clocks and ages', () => {
     expect(formatClock(11 * 60_000 + 50_000)).toBe('11:50');
     expect(formatClock(3_725_000)).toBe('1:02:05');
+    // Never H:MM:SS over a day: 855 hours of wall time reads in days.
+    expect(formatClock(855 * 3_600_000 + 62_000)).toBe('35d');
     expect(formatAge(30_000)).toBe('<1m');
     expect(formatAge(9 * 60_000)).toBe('9m');
   });
 
   it('bins concurrency', () => {
     expect(concurrencyBins([{ start: 0, end: 10 }, { start: 5, end: null }], 0, 10, 2)).toEqual([1, 2]);
+    // A short run in a long window still lands in its bin.
+    expect(concurrencyBins([{ start: 3, end: 4 }], 0, 1000, 10)).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it('labels a task with the shared short-label helper', () => {
@@ -349,3 +353,57 @@ describe('helpers', () => {
     expect(boardTaskLabel({ title: 'feat(x): long', label: 'short' }).label).toBe('short');
   });
 });
+
+describe('buildMissionBoard — a mission open for weeks', () => {
+  const DAY = 24 * 60 * 60_000;
+  const day = (n: number) => T0 + n * DAY;
+  const plan = (id: string, at: number) => task(id, {
+    title: 'Mission: Example goal', taskClass: 'bookkeeping', mode: 'planning', status: 'completed',
+    workers: [worker({ status: 'completed', startedAt: at, completedAt: at + 60_000 })],
+  });
+  function longOpen(over: Partial<MissionBoardInput> = {}) {
+    const a = task('a', { status: 'completed', workers: [worker({ status: 'completed', startedAt: min(4), completedAt: min(24), prNumber: 1, mergedAt: day(33) })] });
+    const b = task('b', { status: 'completed', workers: [worker({ runner: 'dune', status: 'completed', startedAt: day(33) + 10 * 60_000, completedAt: day(33) + 27 * 60_000, prNumber: 2, mergedAt: day(34) })] });
+    // A friction report filed mid-run; its worker lost its runner and was failed days later.
+    const f = task('f', {
+      title: '[friction] no admin API to list parked rows', label: 'no admin API', taskClass: 'bookkeeping', status: 'failed',
+      workers: [worker({ runner: 'dune', status: 'failed', startedAt: min(9), completedAt: null, updatedAt: day(5) })],
+    });
+    return board([plan('p0', min(0)), a, f, plan('p1', day(12)), b, plan('p2', day(35))], {
+      missionStatus: 'completed', missionCompletedAt: day(35) + 90_000, now: day(35) + 2 * 3_600_000, ...over,
+    });
+  }
+
+  it('counts active work as the union of runs, not the wall clock, and leaves friction out', () => {
+    const m = longOpen();
+    // plan 1m + a 20m + b 17m + two 1m ticks = 40m; the friction run's five days are not work.
+    expect(m.activeMs).toBe(40 * 60_000);
+    expect(m.clockLabel).toBe('35d');
+    // The orphaned friction run overlaps the first task; it is not a second agent.
+    expect(m.record.peakAgents).toBe(1);
+  });
+
+  it('draws a friction report as its own kind, never as a planning run', () => {
+    const m = longOpen();
+    const bar = m.bars.find(b => b.taskId === 'f')!;
+    expect(bar.tone).toBe('side');
+    expect(bar.label).toBe('no admin API');
+    expect(bar.kindTitle).toMatch(/^Friction report/);
+    // Lost its runner: no completion stamp, ended by a later status change.
+    expect(bar.kindTitle).toMatch(/orphaned/);
+    expect(m.bars.find(b => b.taskId === 'p1')!.tone).toBe('plan');
+  });
+
+  it('marks a run that failed without a PR as stopped', () => {
+    const c = task('c', { status: 'failed', workers: [worker({ status: 'failed', startedAt: min(1), completedAt: min(3) })] });
+    const m = board([c]);
+    expect(m.bars.find(b => b.taskId === 'c')!.tone).toBe('stopped');
+  });
+
+  it('knows when nothing evaluated the criteria', () => {
+    const criteria = [{ type: 'all_prs_merged' }, { type: 'description', label: 'an outage drops nothing' }];
+    expect(longOpen({ criteria }).criteriaEvaluated).toBe(false);
+    expect(longOpen({ criteria, criteriaState: [{ index: 0, verdict: 'pass' }] }).criteriaEvaluated).toBe(true);
+  });
+});
+

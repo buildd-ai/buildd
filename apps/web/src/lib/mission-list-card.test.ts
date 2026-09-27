@@ -163,6 +163,24 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.done).toMatchObject({ prs: 2, fixes: 1, durationMs: 2 * 3600_000 });
     expect(card.elapsedMin).toBeNull();
   });
+
+  it('a done mission open for weeks keeps its work time apart from its open time', () => {
+    const DAY = 86_400_000;
+    const at = (ms: number) => new Date(NOW - 35 * DAY + ms);
+    const row: ListMissionRow = {
+      id: 'm6', title: 'Long open', status: 'completed',
+      createdAt: at(0), completedAt: at(35 * DAY),
+      tasks: [
+        task('a', { status: 'completed', workers: [{ status: 'completed', startedAt: at(60_000), completedAt: at(21 * 60_000), prNumber: 1, prUrl: 'https://example.test/pr/1', mergedAt: at(33 * DAY) }] }),
+        task('b', { status: 'completed', workers: [{ status: 'completed', startedAt: at(33 * DAY), completedAt: at(33 * DAY + 20 * 60_000), prNumber: 2, prUrl: 'https://example.test/pr/2', mergedAt: at(34 * DAY) }] }),
+        // A friction report's orphaned run is not mission work.
+        task('f', { title: '[friction] no admin API', taskClass: 'bookkeeping', status: 'failed', workers: [{ status: 'failed', startedAt: at(5 * 60_000), updatedAt: at(5 * DAY) }] }),
+      ],
+    };
+    const card = build(row);
+    expect(card.done?.activeMs).toBe(40 * 60_000);
+    expect(card.done?.durationMs).toBe(35 * DAY);
+  });
 });
 
 describe('describeCadence', () => {

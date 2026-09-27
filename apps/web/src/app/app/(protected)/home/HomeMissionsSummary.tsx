@@ -4,6 +4,7 @@
  * recurring chip + run pips), and the live/n/N/next facts. The full cards live
  * on /app/missions; these rows share their model (lib/mission-list-card.ts).
  */
+import { describeMissionDuration } from '@/lib/mission-duration';
 import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import PhaseBar from '@/components/missions/PhaseBar';
@@ -26,7 +27,7 @@ const RUN_PIP: Record<'ok' | 'fail' | 'live' | 'pending', string> = {
 function Row({ view, model, timeZone }: HomeMissionRow & { timeZone?: string | null }) {
   const r = model.recurring;
   const status = r ? { label: 'Recurring', tone: 'muted' as const } : model.kind === 'done'
-    ? { label: model.done?.durationMs != null ? `Done · ${shortDuration(model.done.durationMs)}` : 'Done', tone: 'success' as const }
+    ? { label: model.done?.durationMs != null ? `Done · ${describeMissionDuration({ activeMs: model.done.activeMs, openMs: model.done.durationMs }).label}` : 'Done', tone: 'success' as const }
     : model.status;
   return (
     <div

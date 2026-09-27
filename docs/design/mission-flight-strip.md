@@ -23,9 +23,13 @@ assertions:
     symbol: "completedCursor"
     entry: "apps/web/src/app/app/(protected)/missions/page.tsx"
     as: "read"
-  - id: "detail-stats-row-on-flight-strip-metrics"
+  # The completed-mission stats row went with the Delivery stepper (#2888).
+  # The page's duration is now the header's "40m of work · open 35d", read
+  # from the Board model's unioned work spans (lib/mission-duration.ts), the
+  # same figure Home and the missions list print.
+  - id: "detail-header-duration-on-work-spans"
     type: "symbol_reachable"
-    symbol: "axisSpanMin"
+    symbol: "activeMs"
     entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
     as: "read"
 ---
@@ -43,7 +47,7 @@ If you were dispatched here to reconcile this doc again: check `git log -- docs/
 
 | Item | Status |
 |---|---|
-| 1 — Core model | **Partially.** `computeMissionFlightStrip` ships with Rules X-1–X-5, C-1–C-3, S-1–S-3, and A-1/A-2 all implemented and covered by `packages/core/__tests__/mission-flight-strip.test.ts` — including the per-`exitCause` classification test (AC-4/AC-5) and the literal 14-vs-15-minute elision test (AC-8). Rule P-1's `flight_strip_cache` migration (`0172_eminent_riptide.sql`) and Rule P-5's backfill script (`packages/core/scripts/backfill-flight-strip-cache.ts`) have also shipped. §6's `agentTimeMin`/`axisSpanMin`/`parallelFactor` are now exposed directly on `MissionFlightStripData`, computed from raw ms spans with Rule L-3 planning-tick spans excluded, and covered by `packages/core/__tests__/mission-flight-strip.test.ts`. AC-1 is satisfied: `computeMissionSkyline`, `SkylineBlock`, and `MissionSkylineData` are deleted from `mission-helpers.ts`, and the detail page's completed-mission stats row (`missions/[id]/page.tsx`) reads the flight strip's own metrics instead. Rule L-4 is **Done**: items (a) and (b) shipped with `docs/design/mission-feed-mobile-continuity.md` slice S1 (the Rule L-1 table is `WORK_KIND_LANE` and the adapter is `workKindLane`, both in `packages/core/mission-helpers.ts` beside `resolveWorkKind`, the chain `deriveWorkKind` reads, and `computeMissionFlightStrip` sources every lane from it), and item (c) with slice S3, which deleted the old title-reading lane classifier and its `hasNoWorkLaneData` companion. |
+| 1 — Core model | **Partially.** `computeMissionFlightStrip` ships with Rules X-1–X-5, C-1–C-3, S-1–S-3, and A-1/A-2 all implemented and covered by `packages/core/__tests__/mission-flight-strip.test.ts` — including the per-`exitCause` classification test (AC-4/AC-5) and the literal 14-vs-15-minute elision test (AC-8). Rule P-1's `flight_strip_cache` migration (`0172_eminent_riptide.sql`) and Rule P-5's backfill script (`packages/core/scripts/backfill-flight-strip-cache.ts`) have also shipped. §6's `agentTimeMin`/`axisSpanMin`/`parallelFactor` are now exposed directly on `MissionFlightStripData`, computed from raw ms spans with Rule L-3 planning-tick spans excluded, and covered by `packages/core/__tests__/mission-flight-strip.test.ts`. AC-1 is satisfied: `computeMissionSkyline`, `SkylineBlock`, and `MissionSkylineData` are deleted from `mission-helpers.ts`, and the detail page's completed-mission stats row read the flight strip's own metrics until #2888 retired that row with the Delivery stepper; the page's duration is now the header's work/open pair from `lib/mission-duration.ts`. Rule L-4 is **Done**: items (a) and (b) shipped with `docs/design/mission-feed-mobile-continuity.md` slice S1 (the Rule L-1 table is `WORK_KIND_LANE` and the adapter is `workKindLane`, both in `packages/core/mission-helpers.ts` beside `resolveWorkKind`, the chain `deriveWorkKind` reads, and `computeMissionFlightStrip` sources every lane from it), and item (c) with slice S3, which deleted the old title-reading lane classifier and its `hasNoWorkLaneData` companion. |
 | 2 — SVG component | **Done.** `apps/web/src/components/FlightStrip.tsx` renders `MissionFlightStripData` (lanes, concurrency fill, failure fill, breaks, phase dividers, now-line, queued/dashed bars, fold summary), pure rendering with no data fetching. |
 | 3a — List card wiring | **Done.** `missions/page.tsx` and `apps/web/src/lib/missions-query.ts` add the `roleSlug`/`exitCause` columns, the `mission_notes authorType='user'` steering aggregate, Rule P-2's cache-read branch for completed missions, and Rule P-4's `completedCursor` keyset pagination. |
 | 3b — Detail page navigator | **Superseded on mobile** by `mission-feed-mobile-continuity.md` slice S3. The navigator's list is gone; the mission page's one list is `MissionFeedList`, grouped by `groupTasksByPhase` order under a sticky masthead whose `MissionPulse` is the mobile navigator. At md and up the time-axis strip renders inline under the masthead (`MissionFlightStripInline`). The Records row (`selectMissionRecords`, now a sheet), the orchestrator row (`countOrchestratorPlans` + `orchestratorSummary`) and `MissionSettings` behind the overflow menu are kept. |

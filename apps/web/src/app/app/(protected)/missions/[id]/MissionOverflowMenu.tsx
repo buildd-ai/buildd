@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import BottomSheet from '@/components/BottomSheet';
+import SideSheet from '@/components/SideSheet';
 import MissionSettings from './MissionSettings';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 
@@ -39,9 +39,9 @@ export default function MissionOverflowMenu(props: Props) {
           <rect x="13" y="8" width="3" height="3" />
         </svg>
       </button>
-      <BottomSheet open={open} onClose={() => setOpen(false)} title="Mission settings">
+      <SideSheet open={open} onClose={() => setOpen(false)} title="Mission actions" testId="mission-actions-sheet">
         <MissionSettings {...props} />
-      </BottomSheet>
+      </SideSheet>
     </>
   );
 }

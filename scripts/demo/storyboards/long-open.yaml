@@ -1,0 +1,73 @@
+# A completed mission that stayed open for weeks (stories/build-long-open.ts):
+# Board, Lanes and Feed, plus the side sheets (task, Records, Notes, Settings),
+# at desktop and phone, dark and light.
+#
+#   bun run scripts/demo/run-storyboard.ts scripts/demo/storyboards/long-open.yaml --out <dir>
+#
+# M1 = the mission, T1 = the retry task.
+story: ../stories/long-open.json
+name: long-open
+viewport: { width: 1440, height: 900, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark, light]
+steps:
+  - id: 10-board
+    advance: end
+    goto: /app/missions/{M1}?layout=board
+    viewports: [desktop, phone]
+    waitFor: mission-board
+    fullPage: true
+    caption: "Two tasks, about forty minutes of work, open five weeks."
+  - id: 20-lanes
+    goto: /app/missions/{M1}?layout=lanes
+    viewports: [desktop, phone]
+    waitFor: mission-lanes
+    fullPage: true
+  - id: 30-feed
+    goto: /app/missions/{M1}?layout=feed
+    viewports: [desktop, phone]
+    waitFor: mission-feed-layout
+    fullPage: true
+  - id: 40-task-sheet
+    goto: /app/missions/{M1}?layout=board&task={T1}
+    viewports: [desktop, phone]
+    waitFor: mission-task-sheet
+    hold: 1500
+  # Records stacks on the task in the same sheet, with Back (desktop: the
+  # page stays clickable beside a docked sheet; a phone sheet covers it).
+  - id: 50-records-over-task
+    goto: /app/missions/{M1}?layout=board&task={T1}
+    viewports: [desktop]
+    waitFor: mission-task-sheet
+    click: mission-records-row
+    hold: 1500
+  - id: 60-notes
+    goto: /app/missions/{M1}?layout=board
+    viewports: [desktop, phone]
+    waitFor: mission-board
+    click: mission-notes-row
+    hold: 1500
+  - id: 70-settings
+    goto: /app/missions/{M1}?layout=board
+    viewports: [desktop, phone]
+    waitFor: mission-board
+    click: mission-settings-row
+    hold: 1000
+  - id: 80-criteria
+    goto: /app/missions/{M1}?layout=board
+    viewports: [desktop]
+    waitFor: mission-board
+    click: "[data-testid=goal-band] a"
+    hold: 1000
+  - id: 90-description
+    goto: /app/missions/{M1}?layout=board
+    viewports: [desktop, phone]
+    waitFor: mission-board
+    click: mission-description-open
+    hold: 1000
+  - id: 95-orchestrator
+    goto: /app/missions/{M1}?layout=feed
+    viewports: [desktop, phone]
+    waitFor: mission-feed-layout
+    click: mission-orchestrator-row
+    hold: 1000

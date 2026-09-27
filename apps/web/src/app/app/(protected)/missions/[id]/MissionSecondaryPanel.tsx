@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
+import SideSheet from '@/components/SideSheet';
 
 export default function MissionSecondaryPanel({
   children,
@@ -18,23 +19,28 @@ export default function MissionSecondaryPanel({
   const [expanded, setExpanded] = useState(false);
 
   if (variant === 'row') {
+    // The row opens the settings in the shared side sheet (stacked over a
+    // task sheet if one is open), not inline under the footer.
     return (
       <div>
         <button
           type="button"
           data-testid="mission-settings-row"
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => setExpanded(true)}
           aria-expanded={expanded}
+          aria-haspopup="dialog"
           className="flex min-h-11 w-full items-center gap-2 border-t border-border-default text-left font-mono text-[12px] text-text-secondary hover:text-text-primary"
         >
           <span aria-hidden="true" className="text-text-muted">─</span>
           <span className="min-w-0 flex-1 truncate">
             Settings
-            {!expanded && configSummary && <span className="text-text-muted">{` · ${configSummary}`}</span>}
+            {configSummary && <span className="text-text-muted">{` · ${configSummary}`}</span>}
           </span>
-          <span aria-hidden="true" className={expanded ? 'rotate-90' : ''}>›</span>
+          <span aria-hidden="true">›</span>
         </button>
-        {expanded && <div className="space-y-4 pb-4 pt-2">{children}</div>}
+        <SideSheet open={expanded} onClose={() => setExpanded(false)} title="Settings" testId="mission-settings-sheet">
+          <div className="space-y-4">{children}</div>
+        </SideSheet>
       </div>
     );
   }

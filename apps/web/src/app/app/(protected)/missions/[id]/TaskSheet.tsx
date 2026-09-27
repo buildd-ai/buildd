@@ -5,11 +5,14 @@
  * behind it (docs/design/mission-feed-mobile-continuity.md W4/W5, "Desktop
  * adaptation").
  *
- * - Mobile: `BottomSheet` at 88% height, locking `<main>` (the app shell's
+ * It renders in the shared `SideSheet`, so Records, Notes or goal criteria
+ * opened over it stack in the same place with Back, never a modal on top.
+ *
+ * - Mobile: a bottom sheet at 88% height, locking `<main>` (the app shell's
  *   scroller) rather than `body`. The drag handle sits above the header, out
  *   of the scrolling body. Drag it down, tap ✕ or the backdrop, or press Back
  *   to close. It is modal: focus moves in on open and Tab stays inside.
- * - md+: the same body docked at ~420px on the right, no backdrop, no lock.
+ * - md+: the same body docked at 420px on the right, no backdrop, no lock.
  *   Focus moves into it on open. On close TaskPanelWrapper returns focus to
  *   the task's row.
  *
@@ -22,8 +25,8 @@
  * TaskPanelWrapper, which writes the URL (task-sheet-history.ts).
  */
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
-import BottomSheet from '@/components/BottomSheet';
+import { useCallback, useRef, useSyncExternalStore } from 'react';
+import SideSheet from '@/components/SideSheet';
 import MissionMasthead, { type MastheadChip } from '@/components/missions/MissionMasthead';
 import type { PulseSegment } from '@/lib/mission-pulse';
 import { missionTaskHref, taskPageHref, type MissionOrigin } from '@/lib/mission-task-href';
@@ -59,9 +62,6 @@ export interface TaskSheetViewProps {
   /** Step to another task in place (replaceState). */
   onStep: (taskId: string) => void;
 }
-
-/** `<main>` — the element that actually scrolls in the app shell. */
-const mainScroller = () => (typeof document === 'undefined' ? null : document.querySelector('main'));
 
 function DragHandle({ onClose }: { onClose: () => void }) {
   const startY = useRef<number | null>(null);
@@ -149,73 +149,21 @@ function SheetContent({ taskId, mission, nav, summary, onChanged, onStep }: Task
   );
 }
 
-function DockedShell({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  const ref = useRef<HTMLElement>(null);
-  // Opening moves focus into the panel, so keyboard users need not tab past
-  // every row to reach it. Mount only: ‹ › steps keep focus where it is.
-  useEffect(() => {
-    const el = ref.current;
-    if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
-  }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return (
-    <aside
-      ref={ref}
-      tabIndex={-1}
-      role="dialog"
-      aria-label={title}
-      data-testid="mission-task-sheet"
-      data-layout="docked"
-      className="fixed bottom-0 right-0 top-0 z-40 flex w-[420px] max-w-full flex-col border-l-2 border-border-strong bg-surface-1 focus:outline-none"
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-border-default px-4 py-2">
-        <h2 className="min-w-0 truncate font-mono text-[13px] font-semibold text-text-primary">{title}</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center text-text-muted hover:text-text-primary"
-        >
-          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{children}</div>
-    </aside>
-  );
-}
-
-/** Presentational: the shell for `layout` around the header + body. */
+/** Presentational: the task in the shared side sheet (docked at md+, a bottom sheet below). */
 export function TaskSheetView(props: TaskSheetViewProps) {
   const title = props.summary.data?.title ?? 'Task';
-  if (props.layout === 'docked') {
-    return (
-      <DockedShell title={title} onClose={props.onClose}>
-        <SheetContent {...props} />
-      </DockedShell>
-    );
-  }
   return (
-    <BottomSheet
+    <SideSheet
       open
       onClose={props.onClose}
       title={title}
-      height="tall"
-      lockTarget={mainScroller}
+      layout={props.layout}
       testId="mission-task-sheet"
       handle={<DragHandle onClose={props.onClose} />}
-      trapFocus
+      frontKey={props.taskId}
     >
       <SheetContent {...props} />
-    </BottomSheet>
+    </SideSheet>
   );
 }
 

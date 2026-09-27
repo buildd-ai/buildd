@@ -6,7 +6,7 @@
  */
 import Link from 'next/link';
 import { Children, type ReactNode } from 'react';
-import { shortDuration } from '@/lib/mission-list-card';
+import { describeMissionDuration } from '@/lib/mission-duration';
 import { HeldMissionCard, QuestionCard, type HomeHeldMission, type HomeQuestion } from './NeedsYouCards';
 
 export interface HomeShippedMission {
@@ -17,6 +17,8 @@ export interface HomeShippedMission {
   prs: number;
   fixes: number;
   durationMs: number | null;
+  /** Wall time agents worked; the card says it apart from the open span when they differ. */
+  activeMs?: number | null;
   criteria: { passed: number; total: number } | null;
   /** The mission's latest visual review, when it had one. */
   screens?: { shots: number; ok: number; issues: number; unsure: number } | null;
@@ -26,12 +28,20 @@ function hhmm(iso: string, tz?: string | null): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(tz ? { timeZone: tz } : {}) });
 }
 
+/** `40m of work` + `35d open`; just the work when the two are about the same. */
+export function shippedDurationFacts(m: Pick<HomeShippedMission, 'activeMs' | 'durationMs'>): Array<[string, string]> {
+  if (m.durationMs == null) return [];
+  const d = describeMissionDuration({ activeMs: m.activeMs === undefined ? m.durationMs : m.activeMs, openMs: m.durationMs });
+  if (d.work == null) return [[d.open, 'open']];
+  return d.showOpen ? [[d.work, 'of work'], [d.open, 'open']] : [[d.work, 'of work']];
+}
+
 function ShippedCard({ m, timeZone }: { m: HomeShippedMission; timeZone?: string | null }) {
   // What happened, not a CI tally: "0 auto-fixes" is not an outcome.
   const screens = m.screens && m.screens.shots > 0 ? m.screens : null;
   const facts: Array<[string | number, string]> = [
     [m.prs, m.prs === 1 ? 'PR merged' : 'PRs merged'],
-    [shortDuration(m.durationMs), 'wall clock'],
+    ...shippedDurationFacts(m),
     ...(m.fixes > 0 ? [[m.fixes, m.fixes === 1 ? 'auto-fix' : 'auto-fixes'] as [number, string]] : []),
     ...(screens
       ? [[`${screens.ok}/${screens.shots}`, 'screens ok'] as [string, string]]

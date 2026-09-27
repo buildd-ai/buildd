@@ -14,7 +14,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { fetchRecordsContent } from '@/lib/mission-records-content';
-import BottomSheet from '@/components/BottomSheet';
+import SideSheet from '@/components/SideSheet';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
 
@@ -115,12 +115,10 @@ export default function MissionRecordsSheet({
         <span className="flex-1">{`Records · ${records.length}`}</span>
         <span aria-hidden="true">›</span>
       </button>
-      <BottomSheet
+      <SideSheet
         open={open}
         onClose={() => setOpen(false)}
         title="Records"
-        height="tall"
-        lockTarget={mainScroller}
         testId="mission-records-sheet"
       >
         {/* Mounted while the sheet is open so screen readers hear the change. */}
@@ -165,7 +163,7 @@ export default function MissionRecordsSheet({
             {`All artifacts · ${allArtifacts.length} ›`}
           </button>
         )}
-      </BottomSheet>
+      </SideSheet>
     </>
   );
 }

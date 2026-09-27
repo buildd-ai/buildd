@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
 import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
-import BottomSheet from '@/components/BottomSheet';
+import SideSheet from '@/components/SideSheet';
 import MissionGoalCriteria from './MissionGoalCriteria';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 
@@ -34,6 +34,11 @@ interface Props {
   readonly?: boolean;
   failingCiPrNumbers?: number[];
   overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
+  /**
+   * No pill, only the sheet: a terminal mission shows no "Needs verification"
+   * beside COMPLETE (D2), but the band's goal links still open the criteria.
+   */
+  sheetOnly?: boolean;
 }
 
 /**
@@ -54,6 +59,7 @@ function MissionVerifiedPillInner({
   readonly,
   failingCiPrNumbers,
   overall,
+  sheetOnly = false,
 }: Props) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -89,6 +95,21 @@ function MissionVerifiedPillInner({
   // all, matching the always-visible block's prior behavior exactly.
   if (criteriaCount === 0 && readonly) return null;
 
+  if (sheetOnly) {
+    return (
+      <SideSheet open={open} onClose={handleClose} title="Goal criteria" testId="mission-criteria-sheet">
+        <MissionGoalCriteria
+          missionId={missionId}
+          criteria={criteria}
+          criteriaState={criteriaState}
+          autoVerify={autoVerify}
+          readonly={readonly}
+          failingCiPrNumbers={failingCiPrNumbers}
+        />
+      </SideSheet>
+    );
+  }
+
   if (criteriaCount === 0) {
     return (
       <>
@@ -100,7 +121,7 @@ function MissionVerifiedPillInner({
         >
           + Criteria
         </button>
-        <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
+        <SideSheet open={open} onClose={handleClose} title="Goal criteria" testId="mission-criteria-sheet">
           <MissionGoalCriteria
             missionId={missionId}
             criteria={criteria}
@@ -109,7 +130,7 @@ function MissionVerifiedPillInner({
             readonly={readonly}
             failingCiPrNumbers={failingCiPrNumbers}
           />
-        </BottomSheet>
+        </SideSheet>
       </>
     );
   }
@@ -156,7 +177,7 @@ function MissionVerifiedPillInner({
       >
         {icon ? `${icon} ${text}` : text}
       </button>
-      <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
+      <SideSheet open={open} onClose={handleClose} title="Goal criteria" testId="mission-criteria-sheet">
         <MissionGoalCriteria
           missionId={missionId}
           criteria={criteria}
@@ -165,7 +186,7 @@ function MissionVerifiedPillInner({
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
         />
-      </BottomSheet>
+      </SideSheet>
     </>
   );
 }
