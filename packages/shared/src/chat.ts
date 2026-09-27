@@ -239,6 +239,7 @@ export const CHAT_READ_TOOLS = [
   'list_schedules', 'trace_schedule',
   'list_artifacts', 'get_artifact', 'list_artifact_templates',
   'list_skills', 'get_skill',
+  'list_watches',
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
@@ -284,6 +285,8 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   answer_question: [''],
   hold_task: [''],
   learn: [''],
+  watch: [''],
+  unwatch: [''],
 };
 
 /**
@@ -442,13 +445,34 @@ export type ChatEventKind =
   | 'plan_ready'       // the Organizer produced a plan for a mission filed here
   | 'question'         // a worker on that mission is waiting on input
   | 'mission_completed'
-  | 'mission_failed';
+  | 'mission_failed'
+  | 'watch';           // something the person asked to be told about happened
+
+/**
+ * A watch firing (docs/design/subscriptions-and-notifications.md): what the
+ * notice card shows besides the sentence in `text` ("#123 merged.").
+ */
+export interface ChatWatchNotice {
+  /** The event that fired: `pr.merged`, `pr.ci_failed`, `task.completed`, `task.failed`, `task.needs_input`. */
+  eventType: string;
+  /** Mono chrome naming the subject: "PR #123 · acme/widgets", "Task". */
+  label: string;
+  /** A secondary line, e.g. the PR title. Null when there is none. */
+  detail: string | null;
+  /** Where the link goes: the PR on GitHub, or the task page. */
+  href: string | null;
+  /** The link's words: "Open PR", "Open task". */
+  linkText: string | null;
+  tone: 'ok' | 'bad' | 'attention';
+}
 
 export interface ChatEventData {
   event: ChatEventKind;
   objects: BuilddObjectRef[];
   /** One line of plain text, e.g. "Plan ready: 12 tasks". */
   text: string;
+  /** Present on `event: 'watch'`. */
+  watch?: ChatWatchNotice;
 }
 
 export const CHAT_EVENT_PART_TYPE = 'data-buildd-event' as const;

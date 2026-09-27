@@ -48,6 +48,7 @@ import { workspaceProjectKey } from '@buildd/core/project-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIssuer } from '@/lib/oauth/config';
+import { withNotificationInbox } from '@/lib/mcp-inbox';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 
 function extractBearer(req: Request): string | null {
@@ -107,7 +108,7 @@ function forbiddenForLevel(action: string, level: SessionLevel) {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string) {
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string, accountId?: string) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -217,7 +218,8 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
           });
         }
 
-        return await handleBuilddAction(api, action, params, ctx);
+        // Fired watches owned by this session's account (lib/mcp-inbox.ts).
+        return await withNotificationInbox(await handleBuilddAction(api, action, params, ctx), accountId ? { accountId } : null);
       }
       if (name === 'buildd_memory') {
         // Defense-in-depth: gate even if tool was called despite being absent from
@@ -290,7 +292,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   // Same project key /api/mcp resolves, so `learn` writes land in the same
   // scope from either transport instead of unscoped.
   const project = workspaceProjectKey(ws.repo, ws.name) ?? undefined;
-  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project);
+  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project, account.id);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

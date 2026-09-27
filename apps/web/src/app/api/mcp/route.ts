@@ -44,6 +44,7 @@ import {
   type ActionContext,
 } from "@buildd/core/mcp-tools";
 import { listMcpTools } from "./tools";
+import { withNotificationInbox } from "@/lib/mcp-inbox";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { normalizeProject, workspaceProjectKey } from "@buildd/core/project-scope";
@@ -414,7 +415,9 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         // Keeping this as a single shared implementation is what PR #1875 got
         // wrong: an inline DB-backed duplicate here left the OAuth/runner
         // transports with no dispatcher case at all ("Unknown action").
-        return await handleBuilddAction(api, action, params, ctx);
+        // Fired watches owned by this token's account ride along on the result
+        // (the next-call inbox, lib/mcp-inbox.ts).
+        return await withNotificationInbox(await handleBuilddAction(api, action, params, ctx), accountId ? { accountId } : null);
       } else if (name === "buildd_memory") {
         // Defense-in-depth: gate even if the tool was somehow called despite being
         // absent from the ListTools response for sensitive workspaces.

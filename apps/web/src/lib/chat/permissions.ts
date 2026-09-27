@@ -43,6 +43,7 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   memory: 'Knowledge',
   schedules: 'Schedules',
   artifacts: 'Artifacts',
+  notifications: 'Watches',
   admin: 'Admin',
 };
 

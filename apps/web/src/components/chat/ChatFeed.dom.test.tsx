@@ -211,3 +211,30 @@ describe('mission pane', () => {
     }
   });
 });
+
+describe('a fired watch', () => {
+  it('renders as a square notice: the sentence in Newsreader, mono chrome, a link, plain words', async () => {
+    await render(fixtures.chatFixture('watch').messages as Msgs);
+    const notices = qa('[data-testid="watch-notice"]');
+    expect(notices.map(n => n.dataset.tone)).toEqual(['ok', 'attention', 'bad']);
+
+    const merged = notices[0];
+    expect(merged.dataset.event).toBe('pr.merged');
+    expect(merged.querySelector('p.font-voice')?.textContent).toBe('#418 merged.');
+    expect(merged.textContent).toContain('PR #418 · harborline/billing-web');
+    expect(merged.textContent).toContain('Round per line at checkout');
+    const link = merged.querySelector('a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://github.com/harborline/billing-web/pull/418');
+    expect(link.textContent).toContain('Open PR');
+
+    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('feat(export): dual-currency CSV needs your answer.');
+    expect((notices[1].querySelector('a') as HTMLAnchorElement).getAttribute('href')).toBe('/app/tasks/task-export');
+    expect(notices[2].querySelector('p.font-voice')?.textContent).toBe('CI failed on #421.');
+
+    for (const n of notices) {
+      // Square, and never a tool, event id or route name.
+      expect(n.className).not.toMatch(/rounded/);
+      expect(n.textContent).not.toMatch(/list_watches|unwatch|pr\.merged|task\.needs_input|\/api\//);
+    }
+  });
+});

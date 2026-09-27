@@ -30,8 +30,11 @@ function json(v: unknown): string {
   }
 }
 
-/** `label` replaces the tool name and action (a decided approval reads "New mission"). */
-export function ToolCallRow({ view, note, label, flush = false }: { view: ToolRowView; note?: string | null; label?: string; flush?: boolean }) {
+/**
+ * `label` replaces the tool name and action (a decided approval reads "New mission").
+ * `square`: a decided approval keeps the fleet object's v3 frame (1px rule, chat surface).
+ */
+export function ToolCallRow({ view, note, label, flush = false, square = false }: { view: ToolRowView; note?: string | null; label?: string; flush?: boolean; square?: boolean }) {
   const [open, setOpen] = useState(false);
   const mark = MARK[view.state];
   const result = view.state === 'running' ? 'running…' : view.result;
@@ -41,7 +44,7 @@ export function ToolCallRow({ view, note, label, flush = false }: { view: ToolRo
       data-testid="tool-call-row"
       data-state={view.state}
       data-tool={view.name}
-      className={`${flush ? '' : 'overflow-hidden rounded-[12px] bg-[var(--convo-soft)]'} ${live ? '!bg-[var(--accent-soft)]' : ''}`}
+      className={`${flush ? '' : square ? 'overflow-hidden border border-[var(--chat-rule)] bg-[var(--chat-surface)]' : 'overflow-hidden rounded-[12px] bg-[var(--convo-soft)]'} ${live ? '!bg-[var(--accent-soft)]' : ''}`}
     >
       <button
         type="button"

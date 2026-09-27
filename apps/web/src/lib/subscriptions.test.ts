@@ -329,3 +329,35 @@ describe('expiry by time', () => {
     expect(() => resolveExpiresAt({ lifetime: 'one_shot', expiresAt: new Date(now.getTime() - 1) }, now)).toThrow(/future/);
   });
 });
+
+// ── The origin conversation's record ────────────────────────────────────────
+
+describe('listUnpostedForConversation: what the origin conversation still has to show', () => {
+  const CONV = '66666666-6666-4666-8666-666666666666';
+  it('is the person\'s own watches from this conversation, pending or delivered by any route, not yet posted', async () => {
+    const { listUnpostedForConversationSql } = await import('./subscriptions');
+    const r = render(listUnpostedForConversationSql({ userId: USER }, CONV, 50));
+    const q = r.sql.replace(/\s+/g, ' ');
+    expect(q).toContain('s."owner_user_id" = $1::uuid');
+    expect(q).toContain('s."conversation_id" = $2::uuid');
+    expect(r.params.slice(0, 2)).toEqual([USER, CONV]);
+    expect(q).toContain(`d."status" in ('pending', 'delivered')`);
+    // Posted once: the event message's id is the ledger row id.
+    expect(q).toContain('not exists (select 1 from "conversation_messages" m where m."id" = d."id")');
+  });
+
+  it('a one-shot posts its first row only, and a cancelled watch posts nothing more', async () => {
+    const { listUnpostedForConversationSql } = await import('./subscriptions');
+    const q = text(listUnpostedForConversationSql({ userId: USER }, CONV, 50));
+    expect(q).toContain(`(s."ended_at" is null or s."end_reason" = 'delivered')`);
+    expect(q).toContain(`s."lifetime" = 'standing' or d."id" = ( select d2."id"`);
+    expect(q).toContain('order by (d2."status" = \'delivered\') desc, d2."created_at" asc');
+  });
+
+  it('clamps the page size', async () => {
+    const { listUnpostedForConversation } = await import('./subscriptions');
+    const { calls, exec } = recorder([]);
+    await listUnpostedForConversation({ userId: USER }, CONV, { exec, limit: 10_000 });
+    expect(render(calls[0]).params).toContain(200);
+  });
+});

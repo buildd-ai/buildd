@@ -13,6 +13,8 @@
  *   recordEvent(event)                     -> { recorded, error? }  (never throws)
  *   listUndelivered(owner, { limit })      -> UndeliveredRow[]      (oldest first)
  *   markDelivered(owner, id, { route })    -> { marked, subscriptionEnded }
+ *   listUnpostedForConversation(owner, conversationId)
+ *                                          -> rows whose record is not yet in their origin conversation
  *
  * Event constructors (use these, never hand-build a dedupe key):
  *   taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent, prMergedEvent, prCiFailedEvent
@@ -453,4 +455,52 @@ export async function markDelivered(
   const r = await exec(markDeliveredSql(owner, deliveryId, opts, now));
   const row = (r.rows?.[0] ?? {}) as { marked?: number | string; ended?: number | string };
   return { marked: Number(row.marked ?? 0) > 0, subscriptionEnded: Number(row.ended ?? 0) > 0 };
+}
+
+// ── The origin conversation's record ────────────────────────────────────────
+
+export interface ConversationRecordRow extends UndeliveredRow {
+  status: 'pending' | 'delivered';
+}
+
+export function listUnpostedForConversationSql(owner: { userId: string }, conversationId: string, limit: number): SQL {
+  // The record every chat watch leaves in its origin conversation, whichever
+  // route delivered it (docs/design/subscriptions-and-notifications.md, Delivery
+  // routing step 3). A row qualifies while it has no event message there yet
+  // (lib/chat/watch-delivery.ts posts it with the row id as the message id):
+  //   - pending, or already delivered by another route (Pushover while away);
+  //     coalesced / dropped rows never;
+  //   - a one-shot watch's record is its first row only: the delivered one, or
+  //     the oldest still pending. A later sibling is what the claim coalesces;
+  //   - a cancelled watch posts nothing more. A one-shot that ended by being
+  //     delivered still posts its record.
+  return sql`
+    select d."id", d."subscription_id" as "subscriptionId", d."event_type" as "eventType", d."dedupe_key" as "dedupeKey",
+      d."payload", d."urgency", d."created_at" as "createdAt", d."status",
+      s."conversation_id" as "conversationId", s."subject_kind" as "subjectKind", s."subject_ref" as "subjectRef", s."lifetime"
+    from "notification_deliveries" d
+    join "subscriptions" s on s."id" = d."subscription_id"
+    where s."owner_user_id" = ${owner.userId}::uuid
+      and s."conversation_id" = ${conversationId}::uuid
+      and d."status" in ('pending', 'delivered')
+      and (s."ended_at" is null or s."end_reason" = 'delivered')
+      and (s."lifetime" = 'standing' or d."id" = (
+        select d2."id" from "notification_deliveries" d2
+        where d2."subscription_id" = s."id" and d2."status" in ('pending', 'delivered')
+        order by (d2."status" = 'delivered') desc, d2."created_at" asc, d2."id" asc
+        limit 1))
+      and not exists (select 1 from "conversation_messages" m where m."id" = d."id")
+    order by d."created_at" asc
+    limit ${limit}
+  `;
+}
+
+/** Rows whose record is not yet posted in their origin conversation, oldest first (see the SQL). */
+export async function listUnpostedForConversation(
+  owner: { userId: string }, conversationId: string, opts: { limit?: number } & Deps = {},
+): Promise<ConversationRecordRow[]> {
+  const exec = opts.exec ?? dbExec;
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+  const r = await exec(listUnpostedForConversationSql(owner, conversationId, limit));
+  return (r.rows ?? []) as ConversationRecordRow[];
 }
