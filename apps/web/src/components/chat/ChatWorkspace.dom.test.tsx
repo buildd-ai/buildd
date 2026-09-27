@@ -107,6 +107,15 @@ describe('thinking', () => {
     expect(q('[data-testid="feed-intent-tag"]')?.textContent).toBe('routed · billing-web');
   });
 
+  it('send is the Stop block for the whole turn, even where nothing can stop it yet', async () => {
+    await render({ messages: msgs(), status: 'streaming' });
+    const stop = q('[data-testid="composer-stop"]') as HTMLButtonElement | null;
+    expect(stop).not.toBeNull();
+    expect(stop!.disabled).toBe(true);
+    expect(q('[data-testid="composer-send"]')).toBeNull();
+    expect(q('[data-testid="composer-sweep"]')).not.toBeNull();
+  });
+
   it('once the turn lands it reads as the normal feed again', async () => {
     await render({ messages: msgs(), status: 'ready' });
     expect(q('[data-testid="thinking-panel"]')).toBeNull();
@@ -131,6 +140,17 @@ describe('sea', () => {
     expect(sea()?.dataset.mood).toBe('needs');
     await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming', pulse: { needsYou: [{ title: 'Fix it' }], live: 0 } });
     expect(sea()?.dataset.mood).toBe('thinking');
+  });
+
+  it('sits above the ground and below the content: the column is its own stacking context', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    const layer = q('[data-testid="chat-sea"]')!;
+    const column = q('[data-testid="chat-column"]')!;
+    expect(layer.parentElement).toBe(column);
+    expect(column.className.split(/\s+/)).toContain('isolate');
+    expect(layer.className.split(/\s+/)).toContain('-z-10');
+    // Nothing between the layer and the column paints an opaque ground over it.
+    expect(layer.className).not.toMatch(/\bbg-/);
   });
 
   it('holds still for reduced motion', async () => {

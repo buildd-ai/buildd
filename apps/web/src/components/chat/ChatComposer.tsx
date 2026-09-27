@@ -146,10 +146,13 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               {tier}
             </span>
           ) : null}
-          {busy && onStop ? (
+          {/* While a turn streams, send is Stop for the whole turn, disabled
+              only where the surface has nothing to stop it with. */}
+          {busy ? (
             <button
               type="button"
               onClick={onStop}
+              disabled={!onStop}
               aria-label="Stop"
               data-testid="composer-stop"
               className="grid w-[60px] shrink-0 place-items-center bg-[var(--chat-text)] hover:opacity-90"
