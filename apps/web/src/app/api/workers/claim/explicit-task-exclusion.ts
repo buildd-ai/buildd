@@ -70,8 +70,10 @@ export function classifyExplicitTaskExclusion(probe: ExplicitTaskProbe | null, n
   if (probe.status !== 'pending') {
     return { code: 'not_pending', detail: `The task is ${probe.status ?? 'in an unknown state'}; only pending tasks can be claimed.` };
   }
+  // Mirrors the claim query's `claimedBy IS NULL OR expiresAt < now`: a claim
+  // with no expiry never lapses.
   const expiresAt = toDate(probe.expiresAt);
-  if (probe.claimedBy && expiresAt && expiresAt > now) {
+  if (probe.claimedBy && (!expiresAt || expiresAt >= now)) {
     return { code: 'already_claimed', detail: 'The task is already claimed by another runner.' };
   }
   const startAt = toDate(probe.startAt);
@@ -133,5 +135,38 @@ export async function diagnoseExplicitTaskExclusion(opts: {
   } catch (err) {
     console.warn(`[claim] explicit-task exclusion probe failed for task ${opts.taskId}:`, err);
     return null;
+  }
+}
+
+/**
+ * Record why an explicit single-task claim came back empty on the task itself
+ * (context.lastClaimAttempt*), so the dashboard and reviewer gate can name the
+ * gate instead of showing an ordinary QUEUED row.
+ *
+ * Scoped by `explicitTaskScope`: the write lands only when the task is in one
+ * of the caller's claimable workspaces — the same list the claim query uses —
+ * so a claim can never write to a task outside them. Best-effort; never throws.
+ */
+export async function stampLastClaimAttempt(opts: {
+  taskId: string;
+  workspaceIds: string[];
+  reason: string;
+  deferrals?: Record<string, number>;
+  now: Date;
+}): Promise<void> {
+  if (opts.workspaceIds.length === 0) return;
+  try {
+    await db.update(tasks)
+      .set({
+        context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
+          lastClaimAttemptAt: opts.now.toISOString(),
+          lastClaimAttemptReason: opts.reason,
+          ...(opts.deferrals ? { lastClaimAttemptDeferrals: opts.deferrals } : {}),
+        })}::jsonb`,
+        updatedAt: opts.now,
+      })
+      .where(explicitTaskScope(opts.taskId, opts.workspaceIds));
+  } catch (err) {
+    console.warn(`[claim] failed to stamp lastClaimAttempt for task ${opts.taskId}:`, err);
   }
 }

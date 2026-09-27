@@ -869,7 +869,21 @@ describe('executor histogram (interactive MCP session vs runner)', () => {
     expect(stats.totals.inputTokens).toBe(5000);
   });
 
+  test('placeholder workers (system, external, openclaw) go to "other", not "runner"', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', runner: 'system' }),
+      row({ taskId: 't2', runner: 'external' }),
+      row({ taskId: 't3', runner: 'openclaw' }),
+      row({ taskId: 't4', runner: 'coder-ws-1' }),
+    ], 'executor');
+    expect(stats.groups.find(g => g.key === 'other')).toMatchObject({ tasks: 3, workers: 3 });
+    expect(stats.groups.find(g => g.key === 'runner')).toMatchObject({ tasks: 1, workers: 1 });
+  });
+
   test('executorOf classifies runner ids exactly', () => {
+    expect(executorOf('system')).toBe('other');
+    expect(executorOf('external')).toBe('other');
+    expect(executorOf('openclaw')).toBe('other');
     expect(executorOf('mcp')).toBe('interactive');
     expect(executorOf('MCP')).toBe('runner');
     expect(executorOf('mcp-runner')).toBe('runner');

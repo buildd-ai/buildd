@@ -18,6 +18,7 @@ import { sql, type SQL } from 'drizzle-orm';
 let selectCalls: Array<{ fields: Record<string, unknown>; where: SQL | undefined }> = [];
 let selectResult: any[] = [];
 let selectThrows = false;
+let updateCalls: Array<{ set: any; where: SQL | undefined }> = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -34,6 +35,16 @@ mock.module('@buildd/core/db', () => ({
       };
       return chain;
     },
+    update: () => {
+      const call = { set: undefined as any, where: undefined as SQL | undefined };
+      updateCalls.push(call);
+      return {
+        set: (v: any) => {
+          call.set = v;
+          return { where: async (w: SQL) => { call.where = w; } };
+        },
+      };
+    },
   },
 }));
 
@@ -41,6 +52,7 @@ import {
   classifyExplicitTaskExclusion,
   diagnoseExplicitTaskExclusion,
   explicitTaskScope,
+  stampLastClaimAttempt,
   type ExplicitTaskProbe,
 } from './explicit-task-exclusion';
 
@@ -69,6 +81,10 @@ describe('classifyExplicitTaskExclusion', () => {
     const r = classifyExplicitTaskExclusion(probe({ status: 'completed' }), NOW);
     expect(r.code).toBe('not_pending');
     expect(r.detail).toContain('completed');
+  });
+
+  it('a claim with no expiry → already_claimed (the query only lets an EXPIRED claim through)', () => {
+    expect(classifyExplicitTaskExclusion(probe({ claimedBy: 'acct', expiresAt: null }), NOW).code).toBe('already_claimed');
   });
 
   it('an unexpired claim → already_claimed; an expired one is not', () => {
@@ -162,5 +178,32 @@ describe('diagnoseExplicitTaskExclusion', () => {
     selectThrows = true;
     const r = await diagnoseExplicitTaskExclusion({ taskId: 'task-1', workspaceIds: ['ws-a'], gates: {}, now: NOW });
     expect(r).toBeNull();
+  });
+});
+
+// Reviewer follow-up on #2942: the fire-and-forget lastClaimAttempt write on an
+// empty explicit claim filtered on tasks.id alone, so a caller could stamp a
+// task in a workspace it cannot claim from. It must carry the same workspace
+// scope as the claim query.
+describe('stampLastClaimAttempt', () => {
+  beforeEach(() => { updateCalls = []; });
+
+  it('scopes the write to the task id AND the caller\'s claimable workspaces', async () => {
+    await stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: ['ws-a', 'ws-b'], reason: 'no_slots', now: NOW });
+    expect(updateCalls).toHaveLength(1);
+    const q = render(updateCalls[0].where!);
+    expect(q.sql).toContain('"tasks"."id" = $1');
+    expect(q.sql).toMatch(/"tasks"\."workspace_id" in \(\$2, \$3\)/);
+    expect(q.params).toEqual(['task-1', 'ws-a', 'ws-b']);
+  });
+
+  it('writes nothing when the caller has no claimable workspaces', async () => {
+    await stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: [], reason: 'no_workspaces', now: NOW });
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('never throws, even when the write fails', async () => {
+    const failing = stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'x', now: NOW, deferrals: { mission_paced: 1 } });
+    await expect(failing).resolves.toBeUndefined();
   });
 });

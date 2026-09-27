@@ -21,6 +21,7 @@ const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none', 'execut
 const EXECUTOR_LABELS: Record<string, string> = {
   interactive: 'Interactive (MCP session)',
   runner: 'Runner',
+  other: 'Other (system / external / OpenClaw)',
 };
 
 /**

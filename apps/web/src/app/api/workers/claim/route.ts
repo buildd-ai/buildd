@@ -45,7 +45,7 @@ import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, taskNotHeld } from './held-gate';
-import { diagnoseExplicitTaskExclusion, type ExplicitTaskGates } from './explicit-task-exclusion';
+import { diagnoseExplicitTaskExclusion, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -147,6 +147,50 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
 
+  // Workspaces this account can claim from. Memoized: the claim query needs it,
+  // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
+  // from the no_slots exit before the query is built.
+  let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
+  const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
+    claimableWorkspaceIdsMemo ??= (async () => {
+      // Get workspaces this account can claim from
+      // 1. Open workspaces of the account's own team ("open" = open within the team)
+      // 2. Any workspace where the account has an explicit canClaim link
+      const openWorkspaces = await db.query.workspaces.findMany({
+        where: and(
+          eq(workspaces.accessMode, 'open'),
+          eq(workspaces.teamId, account.teamId),
+          workspaceId ? eq(workspaces.id, workspaceId) : undefined
+        ),
+      });
+
+      // Get cached account→workspace permissions (avoids DB hit on every claim)
+      const allPermissions = await getAccountWorkspacePermissions(account.id);
+      const claimablePermissions = allPermissions
+        .filter((p) => p.canClaim)
+        .filter((p) => !workspaceId || p.workspaceId === workspaceId);
+
+      // Resolve which linked workspaces still exist. An explicit canClaim link
+      // grants access whatever the workspace's accessMode — it is how an account
+      // outside the owning team is given access to an open workspace.
+      const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
+      let restrictedIds: string[] = [];
+      if (restrictedWsIds.length > 0) {
+        const restrictedWorkspaces = await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, restrictedWsIds),
+          columns: { id: true },
+        });
+        restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
+      }
+
+      // Combine: open workspace IDs + restricted workspaces with permission
+      const openIds = openWorkspaces.map((ws) => ws.id);
+
+      return [...new Set([...openIds, ...restrictedIds])];
+    })();
+    return claimableWorkspaceIdsMemo;
+  };
+
   /**
    * Every zero-worker 200 goes through here.
    *
@@ -175,19 +219,21 @@ export async function POST(req: NextRequest) {
     // visible on no dashboard, was a claim-query predicate excluding the task
     // outright). Best-effort and non-blocking — a failed stamp must never
     // affect the claim response.
+    //
+    // Scoped to the caller's claimable workspaces (the claim query's own list),
+    // so a claim naming a task elsewhere writes nothing.
     if (taskId && payload.diagnostics.reason !== 'race_lost') {
-      const stampedAt = new Date().toISOString();
-      db.update(tasks)
-        .set({
-          context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
-            lastClaimAttemptAt: stampedAt,
-            lastClaimAttemptReason: payload.diagnostics.reason,
-            ...(payload.diagnostics.deferrals ? { lastClaimAttemptDeferrals: payload.diagnostics.deferrals } : {}),
-          })}::jsonb`,
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, taskId))
-        .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${taskId}:`, err));
+      const stampTaskId = taskId;
+      const deferrals = payload.diagnostics.deferrals as Record<string, number> | undefined;
+      resolveClaimableWorkspaceIds()
+        .then((ids) => stampLastClaimAttempt({
+          taskId: stampTaskId,
+          workspaceIds: ids,
+          reason: payload.diagnostics.reason,
+          ...(deferrals ? { deferrals } : {}),
+          now: new Date(),
+        }))
+        .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
     const pendingCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
     return NextResponse.json({
@@ -332,40 +378,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Get workspaces this account can claim from
-  // 1. Open workspaces of the account's own team ("open" = open within the team)
-  // 2. Any workspace where the account has an explicit canClaim link
-  const openWorkspaces = await db.query.workspaces.findMany({
-    where: and(
-      eq(workspaces.accessMode, 'open'),
-      eq(workspaces.teamId, account.teamId),
-      workspaceId ? eq(workspaces.id, workspaceId) : undefined
-    ),
-  });
-
-  // Get cached account→workspace permissions (avoids DB hit on every claim)
-  const allPermissions = await getAccountWorkspacePermissions(account.id);
-  const claimablePermissions = allPermissions
-    .filter((p) => p.canClaim)
-    .filter((p) => !workspaceId || p.workspaceId === workspaceId);
-
-  // Resolve which linked workspaces still exist. An explicit canClaim link
-  // grants access whatever the workspace's accessMode — it is how an account
-  // outside the owning team is given access to an open workspace.
-  const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
-  let restrictedIds: string[] = [];
-  if (restrictedWsIds.length > 0) {
-    const restrictedWorkspaces = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, restrictedWsIds),
-      columns: { id: true },
-    });
-    restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
-  }
-
-  // Combine: open workspace IDs + restricted workspaces with permission
-  const openIds = openWorkspaces.map((ws) => ws.id);
-
-  const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
+  const workspaceIds = await resolveClaimableWorkspaceIds();
   if (workspaceIds.length === 0) {
     return emptyClaim({
       diagnostics: { reason: 'no_workspaces' } satisfies ClaimDiagnostics,
