@@ -826,8 +826,8 @@ export async function runDecisionPool<T, R>(
  * `JEV_CONFIG_FINGERPRINT` + fingerprint test.
  */
 
-/** This package's version. `kit.test.ts` asserts it matches package.json. */
-export const KIT_VERSION = '0.0.1';
+/** This package's version. `define.test.ts` asserts it matches package.json. */
+export const KIT_VERSION = '0.1.0';
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/;
 
