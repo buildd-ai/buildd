@@ -27,11 +27,9 @@
  * time the conversation is open (listUnpostedForConversation reads delivered
  * rows too).
  *
- * PRESENCE. `getPresence(userId)` is the presence PR's contract
- * (lib/presence.ts: `{ state: 'present' | 'away' }`, a missing key or no
- * Redis reads as away). Until that PR is in this branch the default below
- * answers away, which is the fail-toward-delivering state: the record is
- * posted, nothing is marked, and the away job owns delivery.
+ * PRESENCE. `getPresence(userId)` (lib/presence.ts): a missing beat, no
+ * Redis, or an error reads as away, the fail-toward-delivering state: the
+ * record is posted, nothing is marked, and the away job owns delivery.
  */
 
 import { eq } from 'drizzle-orm';
@@ -40,18 +38,8 @@ import { conversationMessages, conversations } from '@buildd/core/db/schema';
 import { CHAT_EVENT_PART_TYPE, type ChatEventData, type ChatMessagePart } from '@buildd/shared';
 import { listUndelivered, listUnpostedForConversation, markDelivered, type UndeliveredRow } from '@/lib/subscriptions';
 import { watchNotice } from '@/lib/watch-notice';
+import { getPresence, type Presence } from '@/lib/presence';
 import { pingConversation } from './store';
-
-/** lib/presence.ts `Presence` (presence PR), the part this module reads. */
-export type OwnerPresence = { state: 'present'; conversationId: string | null } | { state: 'away'; reason?: string };
-
-/**
- * Placeholder until lib/presence.ts is in this branch: swap for
- * `import { getPresence } from '@/lib/presence'`. Away is the safe answer.
- */
-async function presenceNotYetWired(_userId: string): Promise<OwnerPresence> {
-  return { state: 'away', reason: 'unavailable' };
-}
 
 /** The stored parts for one fired watch: a single event part. */
 export function watchEventParts(row: Pick<UndeliveredRow, 'eventType' | 'payload' | 'subjectRef'>): ChatMessagePart[] {
@@ -75,7 +63,7 @@ export interface WatchDeliveryDeps {
   listUnposted: typeof listUnpostedForConversation;
   listUndelivered: typeof listUndelivered;
   markDelivered: typeof markDelivered;
-  getPresence: (userId: string) => Promise<OwnerPresence>;
+  getPresence: (userId: string) => Promise<Presence>;
   insertEvent: (conversationId: string, id: string, parts: ChatMessagePart[], createdAt: Date) => Promise<boolean>;
   ping: (conversationId: string, messageId?: string) => Promise<void>;
 }
@@ -84,7 +72,7 @@ const DEFAULT_DEPS: WatchDeliveryDeps = {
   listUnposted: listUnpostedForConversation,
   listUndelivered,
   markDelivered,
-  getPresence: presenceNotYetWired,
+  getPresence: userId => getPresence(userId),
   insertEvent: insertEventOnce,
   ping: (id, messageId) => pingConversation(id, 'event', messageId),
 };
@@ -121,7 +109,7 @@ export async function deliverWatchesToConversation(
     for (const r of await d.listUnposted(owner, target.conversationId, { limit: 50 })) {
       if (await postWatchEvent(target.conversationId, r, d)) { posted += 1; lastId = r.id; }
     }
-    const presence = await d.getPresence(target.userId).catch((): OwnerPresence => ({ state: 'away', reason: 'unavailable' }));
+    const presence = await d.getPresence(target.userId).catch((): Presence => ({ state: 'away', reason: 'unavailable' }));
     if (presence.state === 'present') {
       const pending = (await d.listUndelivered(owner, { limit: 50 })).filter(r => r.conversationId === target.conversationId);
       const oneShot = new Set<string>();

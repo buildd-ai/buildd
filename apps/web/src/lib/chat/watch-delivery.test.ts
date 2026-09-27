@@ -1,6 +1,15 @@
 import { describe, it, expect, mock } from 'bun:test';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
+// The real presence module's export, driven per test: proves the default dep is wired to it.
+let presenceNow: 'present' | 'away' = 'away';
+const presenceCalls: string[] = [];
+mock.module('@/lib/presence', () => ({
+  getPresence: async (userId: string) => {
+    presenceCalls.push(userId);
+    return presenceNow === 'present' ? { state: 'present', conversationId: null } : { state: 'away', reason: 'no_beat' };
+  },
+}));
 mock.module('@/lib/pusher', () => ({ channels: { conversation: (id: string) => `conversation-${id}` }, events: {}, triggerEvent: async () => {} }));
 const { deliverWatchesToConversation, postWatchEvent, watchEventParts } = await import('./watch-delivery');
 
@@ -170,5 +179,29 @@ describe('watchEventParts', () => {
         watch: expect.objectContaining({ eventType: 'pr.merged', label: 'PR #123 · acme/widgets', detail: 'Round it', tone: 'ok' }),
       },
     }]);
+  });
+});
+
+describe('wired to lib/presence getPresence (no injected presence)', () => {
+  const noPresenceDep = (w: ReturnType<typeof world>) => {
+    const { getPresence: _g, ...rest } = w.deps;
+    return deliverWatchesToConversation({ userId: USER, conversationId: CONV }, rest as any);
+  };
+
+  it('a present owner\'s row is posted and marked delivered via the conversation', async () => {
+    presenceNow = 'present';
+    presenceCalls.length = 0;
+    const w = world([row('d1')]);
+    expect(await noPresenceDep(w)).toEqual({ delivered: 1, marked: 1 });
+    expect(presenceCalls).toEqual([USER]);
+    expect(w.marks).toEqual([{ id: 'd1', route: 'conversation' }]);
+  });
+
+  it('an away owner\'s row is posted but stays pending for Pushover', async () => {
+    presenceNow = 'away';
+    const w = world([row('d1')]);
+    expect(await noPresenceDep(w)).toEqual({ delivered: 1, marked: 0 });
+    expect(w.rows[0].status).toBe('pending');
+    expect(w.deps.markDelivered).not.toHaveBeenCalled();
   });
 });
