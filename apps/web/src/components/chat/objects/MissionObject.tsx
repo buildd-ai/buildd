@@ -130,7 +130,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
               {more > 0 && <p className="border-t border-border-default pt-2 font-mono text-[12px] text-text-muted">{`+${more} more`}</p>}
             </div>
             <footer className="flex flex-wrap items-center gap-2.5 border-t border-border-default bg-surface-2 px-5 py-3">
-              <span className="mr-auto font-mono text-[11.5px] text-text-muted">Updates live. The same object as the mission board.</span>
+              <span className="mr-auto font-mono text-[11.5px] text-text-muted">Live</span>
               <OpenButton inPane={false} onOpen={open} />
               <Link
                 href={`/app/missions/${view.id}`}
