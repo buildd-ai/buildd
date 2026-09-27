@@ -1,0 +1,74 @@
+# The chat canvas (docs/design/chat-canvas.md) on the multi-currency story:
+# the chat page as the canvas, the canvas summoned over the Board and a task,
+# and the phone takeover.
+#
+#   bun run demo:shoot scripts/demo/storyboards/chat-canvas.yaml --out <dir>
+story: ../stories/multi-currency.json
+name: chat-canvas
+viewport: { width: 1440, height: 900, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark, light]
+highlight:
+  - chat-column
+  - canvas-pinned
+  - canvas-ask
+  - chat-canvas-overlay
+  - approval-card
+steps:
+  - id: k0-chat-propose
+    goto: /app/chat/{C1}
+    viewports: [desktop, phone]
+    waitFor: approval-card
+    scrollTo: approval-confirm
+    scrollAlign: end
+    caption: "The conversation is soft; the approval stays a hard card."
+
+  - id: k1-chat-new
+    goto: /app/chat
+    viewports: [desktop, phone]
+    waitFor: canvas-empty
+    caption: "A plain greeting and questions you can tap."
+
+  - id: k2-chat-filed
+    advance: "1:00"
+    goto: /app/chat/{C1}
+    waitFor: [chat-pane, object-card]
+    caption: "The mission docks beside the chat."
+
+  - id: k3-chat-filed-phone
+    advance: "1:00"
+    goto: /app/chat/{C1}
+    viewports: [phone]
+    waitFor: canvas-pinned
+    caption: "On the phone the live mission pins at the top."
+
+  - id: k4-board-ask
+    advance: "12:40"
+    goto: /app/missions/{M1}
+    viewports: [desktop, phone]
+    waitFor: canvas-ask
+    caption: "Ask floats on every page."
+
+  - id: k5-board-summoned
+    advance: "12:40"
+    goto: /app/missions/{M1}
+    viewports: [desktop, phone]
+    waitFor: canvas-ask
+    click: canvas-ask
+    hold: 1500
+    caption: "Summoned over the Board, about the Board."
+
+  - id: k6-task-summoned
+    advance: "12:40"
+    goto: /app/tasks/{T7}
+    waitFor: canvas-ask
+    click: canvas-ask
+    hold: 1500
+    caption: "Over a task, about the task."
+
+  - id: k7-task-question
+    advance: "14:35"
+    goto: /app/tasks/{T8}
+    viewports: [desktop, phone]
+    waitFor: worker-question-hero
+    caption: "The question hero: plain choices, no keycaps."

@@ -633,10 +633,18 @@ textarea[data-bare-input] {
     animation: canvas-scan 1.8s cubic-bezier(.6, 0, .4, 1) infinite alternate;
   }
 }
+@keyframes canvas-rise {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@layer components {
+  .canvas-rise { animation: canvas-rise 180ms cubic-bezier(.2, .8, .2, 1); }
+}
 @keyframes canvas-scan {
   from { left: -22%; }
   to { left: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-scan::after { animation: none; left: 0; width: 100%; opacity: .7; }
+  .canvas-rise { animation: none; }
 }

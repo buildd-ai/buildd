@@ -25,6 +25,7 @@ import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-mode
 import { ObjectPane } from './objects/registry';
 import PinnedObject from './objects/PinnedObject';
 import { canvasGreeting, canvasSuggestions } from './canvas-empty';
+import { Kbd } from '@/components/KeyHints';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
 
 export interface ChatWorkspaceProps {
@@ -76,6 +77,21 @@ export interface ChatWorkspaceProps {
   formFallbackHref?: string | null;
   /** How the chat was opened, for the empty canvas's suggestions. */
   entryIntent?: 'mission' | 'task' | null;
+  /**
+   * `page`: /app/chat, with the docked pane. `overlay`: summoned over another
+   * page (ChatCanvasOverlay): no pane, a close button, objects open on the page
+   * behind via `onOpenObject`.
+   */
+  variant?: 'page' | 'overlay';
+  onClose?: () => void;
+  /** Overlay: open an object (the page behind navigates to it). */
+  onOpenObject?: (ref: BuilddObjectRef) => void;
+  /** Overlay: "Open full chat". */
+  fullChatHref?: string | null;
+  /** Replaces the default crumbs (agent / workspace / title). */
+  crumbs?: ReactNode;
+  /** A strip under the header (the steering presence strip). */
+  strip?: ReactNode;
 }
 
 const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 768px)').matches;
@@ -86,9 +102,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null,
+    variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip,
   } = props;
+  const overlay = variant === 'overlay';
   const [pane, dispatch] = useReducer(paneReducer, INITIAL_PANE, s => (
-    focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
+    // The overlay has no pane: the page behind is the object's full view.
+    overlay ? { ...s, closed: true } : focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
   ));
   const [sheet, setSheet] = useState<BuilddObjectRef | null>(null);
   const [draft, setDraft] = useState('');
@@ -117,9 +136,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const focus = pane.closed ? null : paneFocus(messages, pane.pinned);
 
   const openObject = useCallback((ref: BuilddObjectRef) => {
-    if (isDesktop()) dispatch({ type: 'open', ref });
+    if (onOpenObject) onOpenObject(ref);
+    else if (isDesktop()) dispatch({ type: 'open', ref });
     else setSheet(ref);
-  }, []);
+  }, [onOpenObject]);
 
   const actions: ChatActions = useMemo(() => ({
     ...DEFAULT_CHAT_ACTIONS,
@@ -165,7 +185,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   };
 
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
-  const docked = focus !== null;
+  const docked = !overlay && focus !== null;
+  const narrow = docked || overlay;
   const busy = status === 'submitted' || status === 'streaming';
   const lastIsUser = messages[messages.length - 1]?.role === 'user';
 
@@ -173,7 +194,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const wsName = workspaceId ? workspaces.find(w => w.id === workspaceId)?.name ?? null : routedScope(messages)?.name ?? null;
   const header = (
     <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] px-4 py-2.5 md:px-6">
-      <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>
+      {!overlay && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
+      {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
         <span className="hidden shrink-0 items-center gap-2 text-text-secondary md:inline-flex">
           <AgentAvatar agent={agent} size="xs" />
@@ -188,13 +210,38 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         <span aria-hidden="true" className="hidden text-text-muted md:inline">/</span>
         <h1 data-testid="chat-title" className="min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px]">{shownTitle}</h1>
       </nav>
-      <Link
-        href={newChatHref}
-        data-testid="chat-new"
-        className="hidden min-h-9 shrink-0 items-center rounded-[10px] px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex"
-      >
-        + New chat
-      </Link>
+      )}
+      {overlay ? (
+        <>
+          {fullChatHref && (
+            <Link
+              href={fullChatHref}
+              data-testid="canvas-full-chat"
+              className="inline-flex min-h-10 shrink-0 items-center rounded-[10px] px-2.5 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary"
+            >
+              Open full chat
+            </Link>
+          )}
+          <button
+            type="button"
+            data-testid="canvas-close"
+            onClick={onClose}
+            aria-label="Close chat"
+            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] px-2 font-convo text-[18px] text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:min-h-10 md:min-w-10"
+          >
+            <Kbd>Esc</Kbd>
+            <span aria-hidden="true">✕</span>
+          </button>
+        </>
+      ) : (
+        <Link
+          href={newChatHref}
+          data-testid="chat-new"
+          className="hidden min-h-9 shrink-0 items-center rounded-[10px] px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex"
+        >
+          + New chat
+        </Link>
+      )}
     </header>
   );
 
@@ -239,23 +286,24 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const column = (
     <section
       data-testid="chat-column"
-      data-canvas="page"
+      data-canvas={variant}
       data-busy={busy ? 'true' : undefined}
       className={`relative flex h-full min-h-0 min-w-0 flex-col bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
     >
       {busy && <div data-testid="canvas-scan" aria-hidden="true" className="canvas-scan z-10" />}
       {header}
+      {strip}
       {pin && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} onOpen={() => openObject(pin)} />}
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div ref={content} className={`mx-auto px-4 py-6 md:px-8 ${docked ? '' : 'max-w-[820px]'}`}>
+        <div ref={content} className={`mx-auto px-4 py-6 ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
           {emptyCanvas}
           {messages.length === 0 && emptyState}
           <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
-      <div className="px-3 pb-3 pt-2 md:px-8 md:pb-5">
-        <div className={docked ? '' : 'mx-auto max-w-[820px]'}>
+      <div className={`px-3 pb-3 pt-2 md:pb-5 ${narrow ? 'md:px-6' : 'md:px-8'} ${overlay ? 'pb-[max(0.75rem,env(safe-area-inset-bottom))]' : ''}`}>
+        <div className={narrow ? '' : 'mx-auto max-w-[820px]'}>
           <ChatComposer
             ref={composer}
             value={draft}
@@ -275,7 +323,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             pinnedTier={pinnedTier}
             onTierChange={onTierChange}
             costRefreshKey={costRefreshKey}
-            compact={docked}
+            compact={narrow}
           />
           {formFallbackHref && messages.length === 0 && (
             <div className="mt-2 flex justify-end">
@@ -327,7 +375,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         {paneEl}
         {docked && <div aria-hidden="true" className="hidden w-[2px] shrink-0 bg-border-strong md:block" />}
         {column}
-        {!docked && aside && (
+        {!docked && !overlay && aside && (
           <aside data-testid="chat-aside" className="hidden w-[400px] min-w-0 shrink-0 overflow-y-auto overflow-x-hidden border-l border-border-default bg-surface-2 px-6 py-5 xl:block">
             {aside}
           </aside>

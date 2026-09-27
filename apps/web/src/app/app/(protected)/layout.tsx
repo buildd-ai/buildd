@@ -18,6 +18,7 @@ import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/componen
 import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 import type { NavContext } from '@/lib/nav-config';
 import { KeyHintsProvider } from '@/components/KeyHints';
+import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
 
 export default async function ProtectedLayout({
   children,
@@ -88,6 +89,13 @@ export default async function ProtectedLayout({
     <AuthGuard>
       <KeyHintsProvider value={user?.showKeyboardHints === true}>
       <ChatEntryProvider value={chatEntry}>
+      {/* The chat canvas, summonable over any page (docs/design/chat-canvas.md). */}
+      <ChatCanvasProvider
+        available={chatEntry.available}
+        teamId={chatEntry.teamId}
+        workspaces={teamWorkspaces}
+        viewerName={user?.name?.trim().split(/\s+/)[0] ?? user?.email?.split('@')[0] ?? null}
+      >
       <ChatShortcut />
       <DisplayTimezoneProvider teamTimezone={teamTimezone}>
       <EscalationProvider workspaceIds={workspaceIds}>
@@ -140,6 +148,7 @@ export default async function ProtectedLayout({
       </NeedsInputProvider>
       </EscalationProvider>
       </DisplayTimezoneProvider>
+      </ChatCanvasProvider>
       </ChatEntryProvider>
       </KeyHintsProvider>
     </AuthGuard>

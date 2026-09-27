@@ -10,12 +10,16 @@
  *   and the object is in the active team (a conversation lives in one team).
  * - `SetUpChatNudge`: for an admin whose team has no provider key, a quiet link
  *   next to the create button. Members never see it.
- * - `ChatShortcut`: `c` focuses a composer on the page, or opens chat.
+ * - `ChatShortcut`: `c` focuses a composer on the page, or opens the canvas.
+ *
+ * With the summoned canvas mounted (ChatCanvas.tsx), "Ask about this…" and
+ * `c` open it over the page instead of leaving for /app/chat.
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import { askAboutHref, isChatShortcut, newWorkHref, type AboutKind, type NewWorkKind } from '@/lib/chat/entry-points';
+import { useChatCanvas } from './canvas-context';
 
 export interface ChatEntryValue {
   /** Chat can start a turn for this person in the active team. */
@@ -72,6 +76,7 @@ export function AskAboutLink({
   className?: string;
 }) {
   const entry = useChatEntry();
+  const canvas = useChatCanvas();
   if (!entry.available) return null;
   if (teamId && entry.teamId && teamId !== entry.teamId) return null;
   const label = kind === 'mission' ? 'Ask about this mission' : 'Ask about this task';
@@ -81,6 +86,12 @@ export function AskAboutLink({
       data-testid={`ask-about-${kind}`}
       aria-label={label}
       className={className}
+      onClick={canvas ? (e) => {
+        // A plain click opens the canvas over this page; modified clicks keep the link.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        canvas.open({ about: { kind, id }, workspaceId: workspaceId ?? null });
+      } : undefined}
     >
       <span aria-hidden="true" className="text-accent-text">↳</span>
       {/* A phone header has room for one word beside the view tabs. */}
@@ -110,6 +121,7 @@ export const COMPOSER_INPUT_ID = 'chat-composer-input';
 export function ChatShortcut() {
   const { available } = useChatEntry();
   const router = useRouter();
+  const canvas = useChatCanvas();
   useEffect(() => {
     if (!available) return;
     const onKey = (e: KeyboardEvent) => {
@@ -124,10 +136,11 @@ export function ChatShortcut() {
         input.focus();
         return;
       }
-      router.push('/app/chat');
+      if (canvas) canvas.open();
+      else router.push('/app/chat');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [available, router]);
+  }, [available, router, canvas]);
   return null;
 }

@@ -5,7 +5,7 @@
  */
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { missions, tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
+import { missions, tasks, workers, workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import type { ChatAgent } from '@/components/chat/ChatFeed';
 import type { ContextMission, ContextNeedsYou } from '@/components/chat/ChatContextPanel';
@@ -18,6 +18,26 @@ export interface ChatPageContext {
 }
 
 const LIVE = ['running', 'starting', 'waiting_input'];
+
+const DEFAULT_AGENT: ChatAgent = { name: 'Organizer', color: null };
+
+/** The Organizer role as the chat's agent: team-level, or on one of these workspaces. */
+async function loadOrganizer(teamId: string, wsIds: string[]): Promise<ChatAgent> {
+  const role = await db.query.workspaceSkills.findFirst({
+    // Roles are team-level (seedDefaultRolesForTeam) or per workspace.
+    where: wsIds.length > 0
+      ? and(or(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.workspaceId, wsIds)), eq(workspaceSkills.slug, 'organizer'))
+      : and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.slug, 'organizer')),
+    columns: { name: true, color: true },
+  }).catch(() => null);
+  return { name: role?.name || DEFAULT_AGENT.name, color: role?.color ?? null };
+}
+
+/** The chat's agent for a team, for the summoned canvas (GET /api/chat/canvas). */
+export async function loadTeamChatAgent(teamId: string): Promise<ChatAgent> {
+  const wsRows = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, teamId)).catch(() => []);
+  return loadOrganizer(teamId, wsRows.map(w => w.id));
+}
 
 /** A mission row → the panel's words. Pure. */
 export function contextMission(m: { id: string; title: string; status: string; conversationId?: string | null }): ContextMission {
@@ -35,14 +55,10 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
   const { teamId, wsIds } = input;
   const now = input.now ?? Date.now();
   if (wsIds.length === 0) {
-    return { agent: { name: 'Organizer', color: null }, needsYou: [], missions: [], fleet: null };
+    return { agent: DEFAULT_AGENT, needsYou: [], missions: [], fleet: null };
   }
   const [role, missionRows, waiting, liveRows, capacity] = await Promise.all([
-    db.query.workspaceSkills.findFirst({
-      // Roles are team-level (seedDefaultRolesForTeam) or per workspace.
-      where: and(or(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.workspaceId, wsIds)), eq(workspaceSkills.slug, 'organizer')),
-      columns: { name: true, color: true },
-    }).catch(() => null),
+    loadOrganizer(teamId, wsIds),
     db.query.missions.findMany({
       where: and(eq(missions.teamId, teamId), inArray(missions.status, ['active', 'paused'])),
       columns: { id: true, title: true, status: true, conversationId: true },
@@ -65,7 +81,7 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
     loadFleetCapacity({ teamId, wsIds, now }).catch(() => 0),
   ]);
   return {
-    agent: { name: role?.name || 'Organizer', color: role?.color ?? null },
+    agent: role,
     needsYou: waiting.map(w => ({
       id: w.workerId,
       title: w.title,

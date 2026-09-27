@@ -24,7 +24,7 @@ import {
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import type { BuilddObjectRef, ChatMessage } from './chat-contract';
-import ChatWorkspace from './ChatWorkspace';
+import ChatWorkspace, { type ChatWorkspaceProps } from './ChatWorkspace';
 import type { ChatAgent } from './ChatFeed';
 import { TurnFeedbackProvider } from './TurnFeedback';
 import type { ComposerWorkspace } from './ChatComposer';
@@ -58,6 +58,13 @@ export interface ChatConversationProps {
   entry?: ChatEntry;
   /** "Fill in a form instead", until the first message. */
   formFallbackHref?: string | null;
+  /**
+   * The summoned canvas (ChatCanvasOverlay): a new conversation stays in place
+   * instead of navigating to /app/chat/<id>, and the canvas chrome is passed
+   * through to ChatWorkspace.
+   */
+  onConversationCreated?: (id: string) => void;
+  canvas?: Pick<ChatWorkspaceProps, 'variant' | 'onClose' | 'onOpenObject' | 'fullChatHref' | 'crumbs' | 'strip'>;
 }
 
 /** A saved message (DTO) → the UIMessage `useChat` holds. Pure. */
@@ -74,6 +81,7 @@ export default function ChatConversation(props: ChatConversationProps) {
   const {
     conversationId, teamId, teamName, initialMessages, tier: initialTier, agent, workspaces, viewerName,
     canManageTeamKeys, aside, emptyState, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null,
+    onConversationCreated, canvas,
   } = props;
   const router = useRouter();
   const [title, setTitle] = useState(props.title);
@@ -191,12 +199,13 @@ export default function ChatConversation(props: ChatConversationProps) {
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
       parkPending(conversation.id, text);
-      router.push(conversationHref(conversation.id, entry));
+      if (onConversationCreated) onConversationCreated(conversation.id);
+      else router.push(conversationHref(conversation.id, entry));
     } catch (e) {
       setCreateError(chatErrorLine(e));
       setCreating(false);
     }
-  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router, entry, pinnedTier]);
+  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router, entry, pinnedTier, onConversationCreated]);
 
   const onApproval = useCallback((id: string, approved: boolean, reason?: string) => {
     void addToolApprovalResponse({ id, approved, reason });
@@ -245,6 +254,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
         formFallbackHref={formFallbackHref}
         entryIntent={entry.intent}
+        {...canvas}
       />
       </TurnFeedbackProvider>
     </ObjectStoreProvider>
