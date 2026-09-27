@@ -1,8 +1,12 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+
+// Real git subprocesses per test; the unmodified 5000ms bun default flakes
+// under full-suite concurrent load even though each test is fast in isolation.
+setDefaultTimeout(15_000);
 
 /**
  * `release-refresh.yml` recomputes the open release PR's version as dev moves.
