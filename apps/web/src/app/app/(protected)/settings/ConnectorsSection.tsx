@@ -139,6 +139,10 @@ export default function ConnectorsSection({
     }
   }
 
+  // Nothing to grant yet: the Add button above is the whole story. With several
+  // teams the section stays, since its header holds the team switch.
+  if (!loading && connectors.length === 0 && !message && teams.length <= 1) return null;
+
   return (
     <SettingsSection
       title="Workspace access"

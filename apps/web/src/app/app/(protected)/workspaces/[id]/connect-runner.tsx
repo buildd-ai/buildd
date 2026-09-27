@@ -116,11 +116,11 @@ The workflow should:
 
       {/* Live connected runners */}
       {loadingRunners ? (
-        <div className="border border-border-default rounded-[10px] p-4 mb-4">
+        <div className="border border-border-default p-4 mb-4">
           <span className="text-[12px] text-text-muted font-mono">Checking runners…</span>
         </div>
       ) : liveRunners.length > 0 ? (
-        <div className="border border-border-default rounded-[10px] divide-y divide-border-default mb-6">
+        <div className="border border-border-default divide-y divide-border-default mb-6">
           {liveRunners.map((runner) => (
             <div key={runner.id} className="flex items-center gap-3 px-4 py-3">
               <span
@@ -149,7 +149,7 @@ The workflow should:
           ))}
         </div>
       ) : (
-        <div className="border border-dashed border-border-default rounded-[10px] p-4 mb-6">
+        <div className="border border-dashed border-border-default p-4 mb-6">
           <p className="text-[13px] text-text-secondary">No runners connected.</p>
           <p className="text-[12px] text-text-muted mt-0.5">Connect one below and it starts claiming this workspace&apos;s tasks.</p>
         </div>
@@ -166,7 +166,7 @@ The workflow should:
             <button
               key={type}
               onClick={() => toggle(type)}
-              className={`bg-surface-2 border rounded-[10px] p-4 text-left transition-colors cursor-pointer ${
+              className={`bg-surface-2 border p-4 text-left transition-colors cursor-pointer ${
                 isExpanded ? 'border-primary bg-primary/5' : 'border-border-default hover:border-text-muted'
               }`}
             >
@@ -189,7 +189,7 @@ The workflow should:
       </div>
 
       {expanded === 'action' && (
-        <div className="border border-primary/30 rounded-[10px] p-4 bg-primary/5">
+        <div className="border border-primary/30 p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up GitHub Actions Runner</h3>
 
           <div className="space-y-4">
@@ -296,7 +296,7 @@ jobs:
                 <button
                   onClick={createSetupTask}
                   disabled={creatingTask}
-                  className="px-4 py-2 bg-primary text-white rounded-[10px] hover:bg-primary-hover disabled:opacity-50 text-sm"
+                  className="px-4 py-2 bg-primary text-white hover:bg-primary-hover disabled:opacity-50 text-sm"
                 >
                   {creatingTask ? 'Creating…' : 'Create a setup task for an agent'}
                 </button>
@@ -307,7 +307,7 @@ jobs:
       )}
 
       {expanded === 'service' && (
-        <div className="border border-primary/30 rounded-[10px] p-4 bg-primary/5">
+        <div className="border border-primary/30 p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up Service Worker</h3>
 
           <div className="space-y-4">
@@ -358,7 +358,7 @@ WantedBy=multi-user.target`}
       )}
 
       {expanded === 'user' && (
-        <div className="border border-primary/30 rounded-[10px] p-4 bg-primary/5">
+        <div className="border border-primary/30 p-4 bg-primary/5">
           <h3 className="font-medium mb-3">Set up User Worker (Claude Code)</h3>
 
           <div className="space-y-4">

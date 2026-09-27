@@ -143,6 +143,17 @@ describe('FleetStrip on a real-shaped fleet (1 runner x 10 slots)', () => {
     expect(html.match(/data-testid="slot-lane-row"/g)?.length).toBe(html.match(/data-testid="fleet-slot"|data-testid="fleet-idle-slots"/g)?.length);
   });
 
+  // Regression (UX review, initiatives story): a slot running for two days read
+  // "55% · 2856m". Elapsed time uses the same compact durations as the lists.
+  it('a long-running slot shows hours or days, not thousands of minutes', () => {
+    const longFleet = buildFleetSnapshot([hb], [
+      { id: 'w2', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(2856), progress: 55, task: { id: 't2', title: 'docs: runnable examples', roleSlug: 'builder', missionId: 'm1' } },
+    ], { now: NOW });
+    const html = renderToStaticMarkup(<FleetStrip fleet={longFleet} roles={[]} now={NOW} timeZone="UTC" />);
+    expect(html).not.toContain('2856m');
+    expect(html).toContain('55% · 2d');
+  });
+
   it('the runner name is never cut without its full form in a title', () => {
     const html = renderToStaticMarkup(<FleetStrip fleet={busyFleet} roles={[]} now={NOW} timeZone="UTC" />);
     expect(html).toContain('title="quill-studio-workstation"');

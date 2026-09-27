@@ -334,7 +334,7 @@ function Legend() {
     <p className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11.5px] text-text-muted" data-testid="pool-legend">
       {item(SEV_CLASS.none, 'none')}{item(SEV_CLASS.minor, 'minor')}{item(SEV_CLASS.major, 'major')}{item(SEV_CLASS.critical, 'critical')}
       <span>Win = graded with no mistake</span>
-      <span>19/30 = learning, graded of minimum</span>
+      <span>19/30 = learning: 19 of the 30 runs it needs are graded</span>
     </p>
   );
 }

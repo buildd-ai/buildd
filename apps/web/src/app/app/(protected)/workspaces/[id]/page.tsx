@@ -144,7 +144,7 @@ export default async function WorkspaceDetailPage({
             <NewWorkLink
               kind="task"
               workspaceId={workspace.id}
-              className="px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base whitespace-nowrap bg-primary text-white hover:bg-primary-hover rounded-[10px]"
+              className="px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base whitespace-nowrap bg-primary text-white hover:bg-primary-hover"
             >
               + New Task
             </NewWorkLink>
@@ -209,19 +209,19 @@ export default async function WorkspaceDetailPage({
 
         {/* Task Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+          <div className="bg-surface-2 border border-border-default p-4">
             <div className="text-2xl font-semibold">{taskCountMap['pending'] || 0}</div>
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Pending</div>
           </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+          <div className="bg-surface-2 border border-border-default p-4">
             <div className="text-2xl font-semibold">{taskCountMap['assigned'] || 0}</div>
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Assigned</div>
           </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+          <div className="bg-surface-2 border border-border-default p-4">
             <div className="text-2xl font-semibold">{taskCountMap['completed'] || 0}</div>
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Completed</div>
           </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
+          <div className="bg-surface-2 border border-border-default p-4">
             <div className="text-2xl font-semibold">{taskCountMap['failed'] || 0}</div>
             <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Failed</div>
           </div>
@@ -247,12 +247,12 @@ export default async function WorkspaceDetailPage({
                 View all
               </Link>
             </div>
-            <div className="border border-border-default rounded-[10px] divide-y divide-border-default">
+            <div className="border border-border-default divide-y divide-border-default">
               {workspace.tasks.map((task) => (
                 <Link
                   key={task.id}
                   href={`/app/tasks/${task.id}`}
-                  className="block p-4 hover:bg-surface-3 first:rounded-t-[10px] last:rounded-b-[10px]"
+                  className="block p-4 hover:bg-surface-3"
                 >
                   <div className="flex justify-between items-start">
                     <div>

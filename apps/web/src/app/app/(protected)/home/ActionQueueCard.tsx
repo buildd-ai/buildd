@@ -51,7 +51,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         <Link
           key={item.subjectKey}
           href={actionCardTaskLink(item)}
-          className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
+          className="block border-l-2 border-status-warning bg-status-warning/5 px-4 py-3 hover:bg-status-warning/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
             <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">
@@ -83,7 +83,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         <Link
           key={item.subjectKey}
           href="/app/settings/connectors"
-          className="block border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3 hover:bg-status-error/10 transition-colors"
+          className="block border-l-2 border-status-error bg-status-error/5 px-4 py-3 hover:bg-status-error/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
             <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
@@ -103,7 +103,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
         <Link
           key={item.subjectKey}
           href={actionCardTaskLink(item, { page: true })}
-          className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
+          className="block border-l-2 border-accent bg-accent/5 px-4 py-3 hover:bg-accent/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
             <span className="text-[11px] font-mono font-medium text-accent-text tracking-wide uppercase">
@@ -123,7 +123,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
       return (
         <div
           key={item.subjectKey}
-          className="border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3"
+          className="border-l-2 border-text-muted bg-surface-2 px-4 py-3"
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
@@ -169,7 +169,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
       return (
         <div
           key={item.subjectKey}
-          className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3"
+          className="border-l-2 border-status-error bg-status-error/5 px-4 py-3"
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
@@ -244,7 +244,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
       return (
         <div
           key={item.subjectKey}
-          className="border-l-2 border-border bg-surface-raised/40 rounded-r-[10px] px-4 py-3"
+          className="border-l-2 border-border bg-surface-raised/40 px-4 py-3"
         >
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
             <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">

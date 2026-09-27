@@ -33,6 +33,17 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('1/4');
   });
 
+  // Regression (UX review, board at 390px): the band's 2x2 phone grid put the
+  // goal beside Landed at half width, so criteria read "open ta…", "roundi…".
+  // On a phone Landed and Goal each take the full row; Fleet and Needs you pair.
+  it('gives Landed and Goal the full width on a phone', () => {
+    for (const id of ['landed-band', 'goal-band']) {
+      const cls = html.match(new RegExp(`data-testid="${id}"[^>]*class="([^"]*)"`))?.[1] ?? '';
+      expect(cls).toMatch(/(^|\s)col-span-2(\s|$)/);
+      expect(cls).toMatch(/(^|\s)md:col-span-1(\s|$)/);
+    }
+  });
+
   it('one column per phase, every deliverable exactly once, landed work as a row with its PR', () => {
     expect(count(html, 'data-testid="board-column"')).toBe(2);
     expect(tileStatuses(html).sort()).toEqual(['blocked', 'merged', 'running', 'running']);

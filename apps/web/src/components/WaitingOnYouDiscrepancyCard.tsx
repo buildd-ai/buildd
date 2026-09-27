@@ -318,8 +318,8 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
     <div
       className={
         inFlight
-          ? 'border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3'
-          : 'border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3'
+          ? 'border-l-2 border-text-muted bg-surface-2 px-4 py-3'
+          : 'border-l-2 border-status-warning bg-status-warning/5 px-4 py-3'
       }
     >
       <div className="min-w-0">
