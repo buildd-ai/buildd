@@ -8,6 +8,8 @@
  * from the pulse; nothing is invented, and a needs-you prompt is never offered
  * when nothing needs you.
  */
+import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
+
 export interface CanvasSuggestion {
   label: string;
   /** What goes in the box. */
@@ -27,6 +29,14 @@ export interface CanvasPulse {
   /** The list was cut at the loader's limit: the real count is at least its length. */
   needsYouCapped?: boolean;
   live: number;
+}
+
+/**
+ * The waiting tasks as the pulse names them: the plain sentence every page
+ * shows (taskHeading), never the raw "feat(scope): …" title.
+ */
+export function pulseNeedsYou(tasks: readonly { title: string; label?: string | null }[]): { title: string }[] {
+  return tasks.map(t => ({ title: taskHeading({ title: t.title, label: t.label ?? null }, null).heading }));
 }
 
 export type CanvasMood = 'calm' | 'needs';

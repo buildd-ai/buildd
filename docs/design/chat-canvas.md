@@ -128,7 +128,10 @@ bars or streaks: it must never read as data. Transform-only motion, paused
 while the tab is hidden, still under reduced motion. The summoned overlay draws
 no sea. Text sits on the ground or on `--chat-panel`; step text uses
 `--chat-muted` / `--chat-dim` rather than a darker grey so it holds AA over the
-brightest pool.
+brightest pool. Each pool's alpha is capped so the dimmest body text
+(`--text-muted`) keeps 4.5:1 over its peak; `sea.test.ts` computes it per mood.
+On a phone, the needs-you empty canvas hides the global "needs your input"
+banner: the hero already says it.
 
 ### Keyboard hints
 

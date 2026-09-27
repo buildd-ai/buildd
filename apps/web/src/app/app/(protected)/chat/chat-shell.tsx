@@ -12,7 +12,7 @@ import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
 import { getChatAvailability } from '@/lib/chat-availability';
 import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
 import { loadChatPageContext, NEEDS_YOU_LIMIT, type ChatPageContext } from '@/lib/chat/chat-page-data';
-import type { CanvasPulse } from '@/components/chat/canvas-empty';
+import { pulseNeedsYou, type CanvasPulse } from '@/components/chat/canvas-empty';
 import ChatSetupCard from '@/components/chat/ChatSetupCard';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import ChatContextPanel, { contextPanelModel } from '@/components/chat/ChatContextPanel';
@@ -101,7 +101,7 @@ export function contextAside(data: ChatShellData) {
  */
 export function canvasPulse(context: Pick<ChatPageContext, 'needsYou' | 'fleet'>): CanvasPulse {
   return {
-    needsYou: context.needsYou.map(n => ({ title: n.title })),
+    needsYou: pulseNeedsYou(context.needsYou),
     needsYouCapped: context.needsYou.length >= NEEDS_YOU_LIMIT,
     live: context.fleet?.live ?? 0,
   };

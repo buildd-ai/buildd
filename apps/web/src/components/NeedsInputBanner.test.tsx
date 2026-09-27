@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import NeedsInputBanner, { needsInputTaskHref } from './NeedsInputBanner';
 import { NeedsInputContext } from './NeedsInputProvider';
-import { hideNeedsInputFor } from '@/lib/needs-input-hidden';
+import { hideNeedsInputBannerOnPhone, hideNeedsInputFor } from '@/lib/needs-input-hidden';
 
 describe('needsInputTaskHref', () => {
   it('opens a mission task as the sheet over its mission', () => {
@@ -75,5 +75,28 @@ describe('NeedsInputBanner — names the task as the task page does', () => {
     const html = render([waiting('q1', 'fix: a'), waiting('q2', 'fix: b')]);
     expect(html).toContain('2 tasks need your input');
     expect(html).not.toContain('\u2014');
+  });
+});
+
+describe('NeedsInputBanner: the phone chat canvas already says it', () => {
+  const waiting = (id: string, title: string) => ({ id, title, workspaceId: 'ws', missionId: 'm1', waitingFor: null });
+  const render = () => renderToStaticMarkup(
+    <NeedsInputContext.Provider value={{ tasks: [waiting('q1', 'fix: a')], count: 1, alertPermission: 'unsupported', enableAlerts: () => {} }}>
+      <NeedsInputBanner />
+    </NeedsInputContext.Provider>,
+  );
+  const rootClass = (html: string) => /data-testid="global-needs-input-banner" class="([^"]*)"/.exec(html)?.[1].split(/\s+/) ?? [];
+
+  it('hides on a phone while the canvas holds it, and stays on desktop', () => {
+    const release = hideNeedsInputBannerOnPhone();
+    try {
+      const cls = rootClass(render());
+      expect(cls).toContain('hidden');
+      expect(cls).toContain('md:block');
+    } finally { release(); }
+  });
+
+  it('shows everywhere otherwise', () => {
+    expect(rootClass(render())).not.toContain('hidden');
   });
 });

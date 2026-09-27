@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { canvasGreeting, canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
+import { canvasGreeting, canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, pulseNeedsYou, type CanvasPulse } from './canvas-empty';
 
 const CALM: CanvasPulse = { needsYou: [], live: 0 };
 const CALM_BUSY: CanvasPulse = { needsYou: [], live: 3 };
@@ -167,5 +167,27 @@ describe('pickedStatus', () => {
     expect(pickedStatus(ONE)).toBe('1 blocked');
     expect(pickedStatus({ ...TWO, needsYouCapped: true })).toBe('2+ blocked');
     expect(pickedStatus(null)).toBeNull();
+  });
+});
+
+describe('pulseNeedsYou', () => {
+  it('names each waiting task by its plain sentence, never the commit-style title', () => {
+    expect(pulseNeedsYou([
+      { title: 'feat(checkout): add retries to the shipping label webhook' },
+      { title: '[builder · after CI #1] fix(billing): round currency per line' },
+      { title: 'Round per line, or only the total?' },
+    ])).toEqual([
+      { title: 'Add retries to the shipping label webhook' },
+      { title: 'Round currency per line' },
+      { title: 'Round per line, or only the total?' },
+    ]);
+  });
+
+  it('the needs-you hero and row 1 then read as plain language', () => {
+    const pulse = { needsYou: pulseNeedsYou([{ title: 'feat(checkout): add retries to the shipping label webhook' }]), live: 0 };
+    const hero = canvasHero({ pulse, name: 'Maya', now: NOW, timeZone: 'UTC' });
+    expect(hero.sub).not.toMatch(/feat\(|\):/);
+    expect(hero.sub).toContain('Add retries to the shipping label webhook');
+    expect(canvasSuggestions({ intent: null, about: null }, pulse)[0].label).not.toMatch(/feat\(|\):/);
   });
 });
