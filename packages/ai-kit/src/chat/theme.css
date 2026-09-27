@@ -1,5 +1,5 @@
 /*
- * @buildd/ai-kit/chat/theme.css
+ * @builddai/ai-kit/chat/theme.css
  *
  * The only styling hooks the kit's components read. Defaults are neutral and
  * light-first; each app maps its own tokens once, e.g.
