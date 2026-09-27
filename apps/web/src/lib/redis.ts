@@ -212,3 +212,34 @@ export async function delKey(key: string): Promise<void> {
 export async function setOnce(key: string, ttlSec: number): Promise<boolean> {
   return safe('set nx', async r => (await r.set(key, 1, { nx: true, ex: ttlSec })) === 'OK', false);
 }
+
+/**
+ * SET NX EX as a lock: true = acquired, false = someone holds it, null = could
+ * not ask (no Redis). Callers decide whether null means proceed.
+ */
+export async function tryLock(key: string, ttlSec: number): Promise<boolean | null> {
+  return safe<boolean | null>('lock', async r => (await r.set(key, 1, { nx: true, ex: ttlSec })) === 'OK', null);
+}
+
+// Presence: one sorted set per person, one member per open tab, scored by the
+// tab's expiry. A member lives until its score passes; the key itself expires
+// with the last beat, so an abandoned set cleans itself up.
+
+/** Upsert one tab's expiry, prune lapsed tabs, refresh the key TTL. */
+export async function presenceAdd(key: string, member: string, expiresAtMs: number, ttlSec: number, nowMs: number): Promise<boolean> {
+  return safe('presence add', async r => {
+    await r.zadd(key, { score: expiresAtMs, member });
+    await r.zremrangebyscore(key, '-inf', nowMs);
+    await r.expire(key, ttlSec);
+    return true;
+  }, false);
+}
+
+export async function presenceRemove(key: string, member: string): Promise<void> {
+  await safe('presence remove', r => r.zrem(key, member), undefined);
+}
+
+/** Tabs whose expiry is still in the future. `undefined` = could not ask. */
+export async function presenceLive(key: string, nowMs: number): Promise<string[] | undefined> {
+  return safe<string[] | undefined>('presence live', r => r.zrange<string[]>(key, `(${nowMs}`, '+inf', { byScore: true }), undefined);
+}

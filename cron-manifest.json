@@ -94,10 +94,10 @@
       "method": "GET"
     },
     {
-      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts). Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :12, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. All 24 hours: people are away at night too, and the job is per-person rate limited.",
+      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts). Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :13, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. Odd minute on purpose: the */2 gated tick fires on even minutes, and a shared minute would run two passes over the same rows at once (a per-person lock also guards that). All 24 hours: people are away at night too, and the job is per-person rate limited.",
       "title": "Buildd: Notify Away",
       "path": "/api/cron/notify-away",
-      "schedule": "12 * * * *",
+      "schedule": "13 * * * *",
       "method": "GET"
     },
     {

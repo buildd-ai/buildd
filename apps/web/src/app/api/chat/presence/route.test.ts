@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 let sessionUserId: string | null = 'u-1';
-const beats: Array<[string, { visible: boolean; conversationId: string | null }]> = [];
+const beats: Array<[string, { visible: boolean; conversationId: string | null; tabId?: string | null }]> = [];
 let stored = true;
 
 mock.module('@/auth', () => ({
   auth: async () => (sessionUserId ? { user: { id: sessionUserId } } : null),
 }));
 mock.module('@/lib/presence', () => ({
-  recordBeat: async (userId: string, beat: { visible: boolean; conversationId: string | null }) => {
+  recordBeat: async (userId: string, beat: { visible: boolean; conversationId: string | null; tabId?: string | null }) => {
     beats.push([userId, beat]);
     return { stored };
   },
@@ -28,10 +28,15 @@ beforeEach(() => { sessionUserId = 'u-1'; beats.length = 0; stored = true; });
 
 describe('POST /api/chat/presence', () => {
   it('records a visible beat for the signed-in person', async () => {
-    const res = await post({ visible: true, conversationId: CONV });
+    const res = await post({ visible: true, conversationId: CONV, tabId: 'tab-abc123' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, stored: true });
-    expect(beats).toEqual([['u-1', { visible: true, conversationId: CONV }]]);
+    expect(beats).toEqual([['u-1', { visible: true, conversationId: CONV, tabId: 'tab-abc123' }]]);
+  });
+
+  it('a malformed tab id is dropped (falls back to the shared member)', async () => {
+    await post({ visible: true, tabId: 'x y' });
+    expect(beats[0][1].tabId).toBeNull();
   });
 
   it('a hidden beat is passed through as not visible', async () => {

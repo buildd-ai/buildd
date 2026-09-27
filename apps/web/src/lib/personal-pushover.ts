@@ -150,7 +150,11 @@ export interface PersonalPushoverStatus {
   lastVerificationError: string | null;
 }
 
-function ownScope(userId: string, teamId: string) {
+/**
+ * The caller's own row and nothing else: used by get, delete, test and
+ * mark-rejected. Rendered-SQL test in personal-pushover.test.ts.
+ */
+export function ownScope(userId: string, teamId: string) {
   return and(
     eq(secrets.teamId, teamId),
     eq(secrets.purpose, PERSONAL_PUSHOVER_PURPOSE),

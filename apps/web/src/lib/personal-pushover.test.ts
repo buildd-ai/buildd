@@ -15,8 +15,9 @@ mock.module('@buildd/core/secrets', () => ({
 }));
 
 const {
-  sanitizePushoverUserKey, personalSenderToken, sendPushoverMessage, validatePushoverUser, setPersonalPushover,
+  sanitizePushoverUserKey, personalSenderToken, sendPushoverMessage, validatePushoverUser, setPersonalPushover, ownScope,
 } = await import('./personal-pushover');
+const { PgDialect } = await import('drizzle-orm/pg-core');
 
 const KEY = 'uAbcdefghijklmnopqrstuvwxyz0123'.slice(0, 30);
 const fakeFetch = (status: number, body: unknown = {}) =>
@@ -62,6 +63,18 @@ describe('personal Pushover key', () => {
     const r = await setPersonalPushover({ userId: 'u-1', teamId: 't-1', value: KEY }, { token: null });
     expect(r).toMatchObject({ ok: false, status: 503 });
     expect(writes).toEqual([]);
+  });
+
+  it("settings reads and writes are scoped to the caller's own personal row (rendered SQL)", () => {
+    const q = new PgDialect().sqlToQuery(ownScope('u-1', 't-1')!);
+    const t = q.sql.replace(/\s+/g, ' ');
+    expect(t).toContain('"secrets"."team_id" = $1');
+    expect(t).toContain('"secrets"."purpose" = $2');
+    expect(t).toContain('"secrets"."user_id" = $3');
+    expect(t).toContain('"secrets"."account_id" is null');
+    expect(t).toContain('"secrets"."workspace_id" is null');
+    expect(q.params).toEqual(['t-1', 'pushover_personal', 'u-1']);
+    expect(t).not.toMatch(/\bor\b/i);
   });
 
   it('a good key is stored as the caller\'s personal row, purpose pushover_personal', async () => {

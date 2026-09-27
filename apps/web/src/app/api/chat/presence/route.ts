@@ -3,7 +3,7 @@ import { auth } from '@/auth';
 import { recordBeat } from '@/lib/presence';
 
 /**
- * POST /api/chat/presence  { visible: boolean, conversationId?: string }
+ * POST /api/chat/presence  { visible: boolean, conversationId?: string, tabId?: string }
  *
  * The chat page's presence beat (lib/presence.ts). A visible beat keeps
  * `presence:<userId>` alive for 75s; a hidden one clears it.
@@ -16,17 +16,21 @@ export async function POST(req: NextRequest) {
   const userId = await sessionUserId();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  let body: { visible?: unknown; conversationId?: unknown };
+  let body: { visible?: unknown; conversationId?: unknown; tabId?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
   if (!body || typeof body.visible !== 'boolean') {
     return NextResponse.json({ error: 'visible must be a boolean' }, { status: 400 });
   }
   const conversationId = typeof body.conversationId === 'string' && UUID.test(body.conversationId) ? body.conversationId : null;
 
-  const { stored } = await recordBeat(userId, { visible: body.visible, conversationId });
+  // One id per mounted chat page, so tabs and a late beacon from a replaced page cannot clear each other.
+  const tabId = typeof body.tabId === 'string' && TAB_ID.test(body.tabId) ? body.tabId : null;
+
+  const { stored } = await recordBeat(userId, { visible: body.visible, conversationId, tabId });
   return NextResponse.json({ ok: true, stored });
 }
 
+const TAB_ID = /^[A-Za-z0-9_-]{6,64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function sessionUserId(): Promise<string | null> {

@@ -16,8 +16,10 @@ const ENDPOINT = '/api/chat/presence';
  */
 export default function ChatPresenceBeat({ conversationId }: { conversationId: string | null }) {
   useEffect(() => {
+    // New id per mount: a late "hidden" beacon from this page can only clear this page.
+    const tabId = newTabId();
     const send = (visible: boolean) => {
-      const body = JSON.stringify({ visible, conversationId });
+      const body = JSON.stringify({ visible, conversationId, tabId });
       if (!visible && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
         navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'application/json' }));
         return;
@@ -44,4 +46,9 @@ export default function ChatPresenceBeat({ conversationId }: { conversationId: s
   }, [conversationId]);
 
   return null;
+}
+
+function newTabId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
