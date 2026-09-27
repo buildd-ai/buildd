@@ -2359,6 +2359,7 @@ async function maybeReDispatchReviewer(
       installationId,
       repoFullName,
       policyConfig: workspace.gitConfig?.policyConfig ?? undefined,
+      baseRef: pr.base?.ref ?? null,
       priorVerdict: {
         headSha: priorHeadSha,
         verdict: priorVerdictKind,
