@@ -128,6 +128,44 @@ describe('thinking', () => {
   });
 });
 
+describe('contrast over the sea (AA)', () => {
+  const cls = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/);
+
+  it('the phone header is the opaque bar colour, so pools never sit under its text', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    expect(cls(q('[data-testid="chat-header"]'))).toContain('bg-[var(--chat-bar)]');
+  });
+
+  it('send stays a solid copper block with a dark arrow when the box is empty: disabled is not dimmed', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    const send = q('[data-testid="composer-send"]')!;
+    expect(send.getAttribute('aria-disabled')).toBe('true');
+    expect(cls(send).filter(c => /opacity|brightness/.test(c) && !c.includes('hover:'))).toEqual([]);
+    expect(cls(send)).toContain('bg-[var(--mood-needs-fill)]');
+    expect(cls(send)).toContain('text-[var(--on-mood-needs)]');
+  });
+
+  it('an empty send does nothing', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    await act(async () => { q('[data-testid="composer-send"]')!.click(); });
+    expect(sent).toEqual([]);
+  });
+
+  it('the intent tag sits on its own ground chip in muted text, never dim text on the sea', async () => {
+    await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    const tag = cls(q('[data-testid="feed-intent-tag"]'));
+    expect(tag).toContain('bg-[var(--chat-ground)]');
+    expect(tag).toContain('text-[var(--chat-muted)]');
+  });
+
+  it('the composer top rule is the strong rule (copper only when something needs you), focused or not, on a phone', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    const form = cls(q('[data-testid="chat-composer"] form'));
+    expect(form).toContain('border-t-[var(--chat-rule-strong)]');
+    expect(form.filter(c => c.startsWith('focus-within:border-t'))).toEqual([]);
+  });
+});
+
 describe('sea', () => {
   const sea = () => q('[data-testid="chat-sea"] .sea') as HTMLElement | null;
 

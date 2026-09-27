@@ -93,7 +93,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
           streams a blue segment sweeps along it, the surface's one glow. */}
       <form
         onSubmit={(e) => { e.preventDefault(); send(); }}
-        className={`relative border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] focus-within:border-t-[var(--chat-text)]'}`}
+        className={`relative border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] md:focus-within:border-t-[var(--chat-text)]'}`}
       >
         {busy && (
           <span aria-hidden="true" data-testid="composer-sweep" data-glow="true" className="composer-edge">
@@ -164,8 +164,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               type="submit"
               aria-label="Send"
               data-testid="composer-send"
-              disabled={disabled || !value.trim()}
-              className="grid w-[60px] shrink-0 place-items-center bg-[var(--mood-needs-fill)] font-mono text-[20px] font-bold text-[var(--on-mood-needs)] hover:brightness-110 disabled:opacity-60"
+              // Nothing to send is not dimmed: a faded arrow fails AA. The block
+              // stays solid and says so to assistive tech; send() ignores it.
+              aria-disabled={disabled || !value.trim() ? true : undefined}
+              className="grid w-[60px] shrink-0 place-items-center bg-[var(--mood-needs-fill)] font-mono text-[20px] font-bold text-[var(--on-mood-needs)] aria-disabled:cursor-not-allowed [&:not([aria-disabled])]:hover:brightness-110"
             >
               ↑
             </button>
