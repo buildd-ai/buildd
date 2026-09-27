@@ -17,6 +17,7 @@ import { homeAudience } from './home/home-view';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
 import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 import type { NavContext } from '@/lib/nav-config';
+import { KeyHintsProvider } from '@/components/KeyHints';
 
 export default async function ProtectedLayout({
   children,
@@ -85,6 +86,7 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
+      <KeyHintsProvider value={user?.showKeyboardHints === true}>
       <ChatEntryProvider value={chatEntry}>
       <ChatShortcut />
       <DisplayTimezoneProvider teamTimezone={teamTimezone}>
@@ -139,6 +141,7 @@ export default async function ProtectedLayout({
       </EscalationProvider>
       </DisplayTimezoneProvider>
       </ChatEntryProvider>
+      </KeyHintsProvider>
     </AuthGuard>
   );
 }

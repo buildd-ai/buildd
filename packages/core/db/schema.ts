@@ -127,6 +127,10 @@ export const users = pgTable('users', {
   // never asked for. The zone THIS person sees their own dashboard in; falls back to the
   // team zone, then UTC.
   timezone: text('timezone'),
+  // Keycap-style shortcut hints (1/2/3, Esc, the chat shortcut). Off by default:
+  // the shortcuts always work, the chips only show for people who ask for them
+  // (Settings -> Profile).
+  showKeyboardHints: boolean('show_keyboard_hints').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
