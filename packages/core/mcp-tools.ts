@@ -992,10 +992,16 @@ async function resolveWorkspaceId(
   if (!raw) return ctx.getWorkspaceId();
 
   // Not a UUID — resolve by repo name or workspace name
-  // Try by-repo first (handles "owner/repo" format)
+  // Try by-repo first (handles "owner/repo" format). It searches only the
+  // caller's reachable workspaces and answers 404 otherwise, which `api`
+  // throws on; that is a miss, not an error, so fall through to the list.
   if (raw.includes('/')) {
-    const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
-    if (data.workspace?.id) return data.workspace.id;
+    try {
+      const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
+      if (data?.workspace?.id) return data.workspace.id;
+    } catch {
+      // not reachable / not found — fall through
+    }
   }
 
   // Fall back to name match across accessible workspaces
