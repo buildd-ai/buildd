@@ -191,3 +191,20 @@ without a human, the same way a real conflict does.
 | # | file:line | gate | outcome | note |
 |---|---|---|---|---|
 | 52 | `auto-merge.ts:evaluateAutoMergeSafety` | `merge_base_freshness` | rejected | head is N commits behind the base branch's current tip — CI never ran against those commits |
+
+### Dependency-bot PRs — adoption and every push door (`lib/dependency-bot-pr.ts`)
+
+Renovate and Dependabot own their branches: they rebase and force-push them
+themselves, and stop doing so the moment anyone else commits. Automatic
+adoption skips their PRs; an explicit `request_pr_review` still adopts and
+reviews one, but nothing buildd runs may push to its branch.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 53 | `webhook/route.ts:handleCheckSuiteFailure` | `dependency_bot_pr` | rejected | CI failed on a bot PR buildd does not own — not adopted, no CI-fix task |
+| 54 | `webhook/route.ts:handleCheckSuiteFailure` | `dependency_bot_pr` | rejected | a bot PR buildd already owns (explicit review) — no CI-fix task |
+| 55 | `prs/[prNumber]/retry-ci/route.ts` | `dependency_bot_pr` | rejected | dashboard "fix CI" on a bot PR |
+| 56 | `conflict-retry.ts:dispatchConflictRetry` | `dependency_bot_pr` | rejected | no update-branch and no conflict-resolution agent on a bot branch |
+| 57 | `github/pr/route.ts` (merge) | `dependency_bot_pr` | rejected | behind-base merge refusal does not update a bot branch |
+| 58 | `workers/[id]/route.ts` (reviewer request-changes) | `dependency_bot_pr` | rejected | no `[builder · after review]` follow-up on a bot branch |
+| 59 | `pr/review/route.ts` | `dependency_bot_pr` | bypassed | explicit `request_pr_review` adopted a bot PR — reviewed, never pushed to |

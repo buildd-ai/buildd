@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import NeedsInputBanner, { needsInputTaskHref } from './NeedsInputBanner';
 import { NeedsInputContext } from './NeedsInputProvider';
-import { hideNeedsInputBannerOnPhone, hideNeedsInputFor } from '@/lib/needs-input-hidden';
+import { hideNeedsInputBanner, hideNeedsInputBannerOnPhone, hideNeedsInputFor } from '@/lib/needs-input-hidden';
 
 describe('needsInputTaskHref', () => {
   it('opens a mission task as the sheet over its mission', () => {
@@ -46,6 +46,14 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
       expect(html).toContain('needs your input');
       expect(html).not.toContain('2 tasks');
     } finally { release(); }
+  });
+
+  it('does not render at all while the summoned canvas is up (it would sit above the scrim)', () => {
+    const release = hideNeedsInputBanner();
+    try {
+      expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toBe('');
+    } finally { release(); }
+    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs your input');
   });
 
   it('renders again once the sheet is closed', () => {

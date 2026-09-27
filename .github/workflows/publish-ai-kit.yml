@@ -88,11 +88,16 @@ jobs:
         run: bunx tsc --noEmit
 
       - name: Test
-        run: bun run scripts/run-unit-tests.ts $(git ls-files 'packages/ai-kit/*.test.ts')
+        working-directory: packages/ai-kit
+        run: bun run test
 
       - name: Build
         working-directory: packages/ai-kit
         run: bun run build
+
+      - name: Import every entry point on Node ESM
+        working-directory: packages/ai-kit
+        run: node scripts/smoke-dist.mjs
 
       - name: Publish (dry run)
         if: github.ref_type != 'tag' && inputs.publish != true

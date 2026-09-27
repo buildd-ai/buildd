@@ -40,7 +40,7 @@ import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type RoutableWorkspace, type TurnRoute } from './routing';
 import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
 import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
-import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
+import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, isAllowlistedSelfOp, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
@@ -307,6 +307,7 @@ export async function runChatTurn(args: {
     approvedPreviews,
     preview,
     resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
+    conversationId: conv.id,
     memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
@@ -323,13 +324,16 @@ export async function runChatTurn(args: {
   const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
     name,
     async (input: unknown, options?: { toolCallId?: string; messages?: Parameters<typeof contentInContext>[0] }) => {
-      if (!needsApproval(name, input)) return 'not-applicable' as const;
-      // The person's "Allow": one write per turn, only while nothing a tool
-      // returned is in the model's context, and only with a preview that
-      // resolves inside reach. Anything else falls through to the card.
-      if (allowedThisTurn === 0 && options?.toolCallId && canSkipCard({
-        tool: name, input, allowedGroups,
-        tainted: historyTainted || contentInContext(options.messages ?? []),
+      const tainted = historyTainted || contentInContext(options?.messages ?? []);
+      if (!needsApproval(name, input)) {
+        // Reads run. An allowlisted self-scoped op (unwatch) runs without its
+        // card too, unless tool output is in context: then it asks, like any write.
+        if (!isAllowlistedSelfOp(name, input) || !tainted) return 'not-applicable' as const;
+      } else if (allowedThisTurn === 0 && options?.toolCallId && canSkipCard({
+        // The person's "Allow": one write per turn, only while nothing a tool
+        // returned is in the model's context, and only with a preview that
+        // resolves inside reach. Anything else falls through to the card.
+        tool: name, input, allowedGroups, tainted,
         docked: docked !== null,
       })) {
         const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);

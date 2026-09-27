@@ -1,6 +1,6 @@
 /**
  * Server pieces both chat pages share: resolve the person, team, chat
- * availability, the context panel and the conversation list in one round,
+ * availability, the page context and the conversation list in one round,
  * and the fallback when chat isn't available (no Chat entry, the setup card,
  * the mission form one tap away).
  */
@@ -15,7 +15,7 @@ import { loadChatPageContext, NEEDS_YOU_LIMIT, type ChatPageContext } from '@/li
 import { pulseNeedsYou, type CanvasPulse } from '@/components/chat/canvas-empty';
 import ChatSetupCard from '@/components/chat/ChatSetupCard';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
-import ChatContextPanel, { contextPanelModel } from '@/components/chat/ChatContextPanel';
+import ConversationListView from '@/components/chat/ConversationList';
 import { homeAudience } from '../home/home-view';
 import { isUuid } from '@/lib/uuid';
 import type { BuilddObjectRef } from '@/components/chat/chat-contract';
@@ -82,17 +82,13 @@ export function ChatUnavailable({ reason, canManage, policy, teamId = null, form
   );
 }
 
-/** The context panel, or null when it has nothing in it (the chat takes the width). */
-export function contextAside(data: ChatShellData) {
-  if (contextPanelModel(data.context).empty) return null;
-  return (
-    <ChatContextPanel
-      audience={data.audience}
-      needsYou={data.context.needsYou}
-      missions={data.context.missions}
-      fleet={data.context.fleet}
-    />
-  );
+/**
+ * What HISTORY opens in the desktop right panel: the conversation list. Null
+ * when there are none (the panel says so itself).
+ */
+export function historyPanel(data: ChatShellData, currentId: string | null = null) {
+  if (data.conversations.length === 0) return null;
+  return <ConversationListView items={data.conversations} currentId={currentId} />;
 }
 
 /**

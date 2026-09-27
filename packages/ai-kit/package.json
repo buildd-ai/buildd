@@ -48,6 +48,7 @@
     "react": { "optional": true }
   },
   "devDependencies": {
+    "@typesafe-ai/sdk": "0.6.0",
     "@types/bun": "latest",
     "typescript": "^6.0.0"
   }

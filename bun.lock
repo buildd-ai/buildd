@@ -31,7 +31,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.237.0",
+      "version": "0.238.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@buildd/core": "workspace:*",
@@ -51,7 +51,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.237.0",
+      "version": "0.238.0",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -103,6 +103,7 @@
       "version": "0.0.1",
       "devDependencies": {
         "@types/bun": "latest",
+        "@typesafe-ai/sdk": "0.6.0",
         "typescript": "^6.0.0",
       },
       "peerDependencies": {
@@ -120,10 +121,11 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.237.0",
+      "version": "0.238.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@ast-grep/napi": "^0.45.0",
+        "@buildd/ai-kit": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@neondatabase/serverless": "^1.0.0",
         "@openai/codex-sdk": "^0.157.0",
@@ -151,7 +153,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.237.0",
+      "version": "0.238.0",
       "devDependencies": {
         "typescript": "^6.0.0",
       },

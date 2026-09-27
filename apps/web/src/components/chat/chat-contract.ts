@@ -31,6 +31,7 @@ export {
   type BuilddObjectRef,
   type ChatEventData,
   type ChatToolResult,
+  type ChatWatchNotice,
   type PrObjectRef,
   type QuestionObjectRef,
 } from '@buildd/shared';

@@ -320,6 +320,9 @@ describe('assertion coverage over the real migration corpus', () => {
     // 7: 0155_backfill_orphaned_mission_schedules added a DO-block data cleanup
     // with no ALTER/CREATE for the parser to derive an assertion from.
     // 8: *_role_colours_off_accent is a pure data fix (UPDATE workspace_skills).
-    expect(withoutAssertions.length).toBeLessThanOrEqual(8);
+    // 9: 0197 is a lone ALTER COLUMN (ai_usage.tier DROP NOT NULL). DbShape has
+    // no nullability, and a column_exists stand-in would "verify" it even if it
+    // never ran, so it stays unverifiable: a backfill refuses it loudly.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(9);
   });
 });

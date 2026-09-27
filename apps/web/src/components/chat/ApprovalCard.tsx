@@ -7,9 +7,10 @@
  * Once decided the card folds to its tool row, and the filed object renders
  * live right under it.
  *
- * An approval is a fleet object, so it stays hard and square inside the soft
- * conversation (docs/design/chat-canvas.md): an ink frame with an orange top
- * edge for "needs you", and plain buttons. No keycaps: nothing here has a key.
+ * An approval is a fleet object in the v3 language (docs/design/chat-canvas.md,
+ * "Mobile canvas"): a square card with a 1px rule and a 3px offset shadow, a
+ * 2px copper top edge for "needs you", mono chrome, and what changes said in
+ * Newsreader. Plain buttons. No keycaps: nothing here has a key.
  */
 import { useState } from 'react';
 import type { ChatToolPart } from './chat-contract';
@@ -23,7 +24,7 @@ function DraftSummary({ draft }: { draft: ApprovalDraft }) {
   if (draft.kind === 'generic') return null;
   if (draft.kind === 'preview') {
     return (
-      <h3 data-testid="approval-draft-title" className="font-mono text-[15px] md:text-[17px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
+      <h3 data-testid="approval-draft-title" className="font-voice text-[19px] md:text-[20px] leading-[1.3] text-[var(--chat-text)] [overflow-wrap:anywhere]">
         {draft.headline}
       </h3>
     );
@@ -54,26 +55,29 @@ function hasDetails(draft: ApprovalDraft): boolean {
   return draft.kind === 'generic' ? draft.fields.length > 0 : draft.criteria.length > 0 || !!draft.constraints || !!draft.plan;
 }
 
-/** before → after, one row per change; a pure addition shows "+", a removal "−". */
+/**
+ * before → after, one ruled row per change: a mono label, the value in
+ * Newsreader. A pure addition shows "+", a removal "−" struck through.
+ */
 function PreviewDetails({ draft }: { draft: Extract<ApprovalDraft, { kind: 'preview' }> }) {
   return (
-    <div className="mt-2 md:mt-3">
-      <ul data-testid="approval-changes" className="grid gap-1.5 font-mono text-[12.5px]">
+    <div className="mt-2.5 md:mt-3">
+      <ul data-testid="approval-changes" className="divide-y divide-[var(--chat-rule)] border-y border-[var(--chat-rule)]">
         {draft.changes.map((c, i) => (
-          <li key={i} data-testid="approval-change" className="grid grid-cols-1 md:grid-cols-[130px_1fr] gap-x-4 min-w-0">
-            <span className="uppercase tracking-[1.5px] text-[11px] text-text-muted md:pt-0.5 [overflow-wrap:anywhere]">{c.label}</span>
-            <span className="min-w-0 [overflow-wrap:anywhere] text-text-primary">
-              {c.before === null && c.after !== null && <><span aria-label="added" className="text-accent font-semibold">+ </span>{c.after}</>}
-              {c.after === null && c.before !== null && <><span aria-label="removed" className="font-semibold text-text-muted">− </span><s className="text-text-muted">{c.before}</s></>}
+          <li key={i} data-testid="approval-change" className="grid min-w-0 grid-cols-1 gap-x-4 py-2 md:grid-cols-[110px_1fr] md:items-baseline">
+            <span className="font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-muted)] [overflow-wrap:anywhere]">{c.label}</span>
+            <span className="min-w-0 font-voice text-[16.5px] leading-[1.4] text-[var(--chat-text)] [overflow-wrap:anywhere]">
+              {c.before === null && c.after !== null && <><span aria-label="added" className="font-mono text-[13px] text-[var(--mood-needs)]">+ </span>{c.after}</>}
+              {c.after === null && c.before !== null && <><span aria-label="removed" className="font-mono text-[13px] text-[var(--chat-muted)]">− </span><s className="text-[var(--chat-muted)]">{c.before}</s></>}
               {c.before !== null && c.after !== null && (
-                <><s className="text-text-muted">{c.before}</s><span aria-hidden="true" className="px-1.5 text-text-muted">→</span><span className="font-semibold">{c.after}</span></>
+                <><s className="text-[var(--chat-muted)]">{c.before}</s><span aria-hidden="true" className="px-1.5 font-mono text-[var(--chat-muted)]">→</span>{c.after}</>
               )}
               {c.before === null && c.after === null && '—'}
             </span>
           </li>
         ))}
       </ul>
-      {draft.note && <p data-testid="approval-note" className="mt-2 font-convo text-[13.5px] text-text-secondary">{draft.note}</p>}
+      {draft.note && <p data-testid="approval-note" className="mt-2 font-voice text-[15px] italic text-[var(--chat-muted)]">{draft.note}</p>}
     </div>
   );
 }
@@ -149,8 +153,8 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   }
   if (part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) {
     return (
-      <div data-testid="approval-card" data-state="denied" className="rounded-[12px] bg-[var(--convo-soft)] px-3.5 py-2 font-mono text-[12.5px] text-text-muted">
-        <span className="font-semibold text-text-secondary">{verb}</span>
+      <div data-testid="approval-card" data-state="denied" className="border border-[var(--chat-rule)] bg-[var(--chat-surface)] px-3.5 py-2 font-mono text-[12.5px] text-[var(--chat-muted)]">
+        <span className="font-semibold text-[var(--chat-text)]">{verb}</span>
         {draft.kind === 'preview' ? ' · discarded · nothing changed' : ' · discarded · nothing filed'}
       </div>
     );
@@ -168,19 +172,19 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
       data-testid="approval-card"
       data-state={deciding ? 'deciding' : 'awaiting'}
       data-approval-id={approvalId ?? undefined}
-      className="border-2 border-t-[4px] border-border-strong border-t-accent bg-card"
+      className="border border-t-2 border-[var(--chat-rule-strong)] border-t-[var(--mood-needs)] bg-[var(--chat-surface)] shadow-[3px_3px_0_0_var(--chat-rule)]"
     >
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border-default px-4 py-2.5 md:px-5 md:py-3">
-        <span data-testid="approval-eyebrow" className="font-mono text-[11px] font-bold uppercase tracking-[1.8px] text-accent-text">
-          <span aria-hidden="true">◆ </span>{deciding ? 'Confirmed' : 'Needs your OK'}
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[var(--chat-rule)] px-4 py-2.5 md:px-5 md:py-3">
+        <span data-testid="approval-eyebrow" className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[.16em] text-[var(--mood-needs)]">
+          <span aria-hidden="true" className="h-2 w-2 bg-[var(--mood-needs)]" />{deciding ? 'Confirmed' : 'Needs your OK'}
         </span>
-        <span className="font-mono text-[13px] font-semibold text-text-primary">{verb}</span>
+        <span className="font-mono text-[12px] font-semibold uppercase tracking-[.12em] text-[var(--chat-text)]">{verb}</span>
         {deciding && (
-          <span className="hidden font-mono text-[11px] text-text-muted md:inline">
+          <span className="hidden font-mono text-[11px] text-[var(--chat-muted)] md:inline">
             {sent === 'deny' ? 'discarding…' : isChange ? 'applying…' : 'filing…'}
           </span>
         )}
-        {wsName && <span className="ml-auto font-mono text-[12px] text-text-muted">{wsName}</span>}
+        {wsName && <span className="ml-auto font-mono text-[12px] text-[var(--chat-muted)]">{wsName}</span>}
       </header>
       <div className="px-4 py-3 md:px-5 md:py-4">
         <DraftSummary draft={draft} />

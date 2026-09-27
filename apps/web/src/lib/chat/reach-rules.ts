@@ -28,7 +28,7 @@
 
 export type OwnedKind =
   | 'task' | 'mission' | 'initiative' | 'worker' | 'artifact' | 'schedule' | 'skill'
-  | 'watched_project' | 'discrepancy' | 'experiment' | 'release';
+  | 'watched_project' | 'discrepancy' | 'experiment' | 'release' | 'subscription';
 
 export type PathTarget = { param: string; is: 'workspace' | OwnedKind };
 

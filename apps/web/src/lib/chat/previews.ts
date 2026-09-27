@@ -21,6 +21,8 @@ import type { ChatApprovalPreview } from '@buildd/shared';
 import { hashToolInput } from './canonical';
 import { opSpec } from './registry';
 import { isUuid, resolveTaskRef, type TaskScope } from './targets';
+import { watchEventTypes, watchWhenPhrase } from '@/lib/watch-notice';
+import { findWatch, ONE_SHOT_ENDS, parsePrNumber } from './watch-tools';
 
 export interface PreviewEnv {
   /** Reach-guarded, GET-only API. */
@@ -361,6 +363,68 @@ const createSchedule: Builder = async (input, env) => {
   };
 };
 
+const TERMINAL = ['completed', 'failed', 'cancelled'];
+
+/**
+ * "Watch: PR #42 (billing-web)" / When: it merges / Where: here / Ends: after
+ * it tells you once, or in 7 days. What, until when, and where it goes.
+ */
+const watch: Builder = async (input, env) => {
+  const pr = parsePrNumber(input.prNumber);
+  const hasTask = str(input.taskId) !== null;
+  if (hasTask === (pr !== null)) return question('Which task or PR should be watched? Name exactly one.');
+  let target: ChatApprovalPreview['target'];
+  let normalized: Obj;
+  let extra: unknown = null;
+  let types: string[];
+  if (hasTask) {
+    const t = await resolveTask(env, input.taskId);
+    if (!t.ok) return question(t.question);
+    const { task } = t.loaded;
+    if (TERMINAL.includes(task.status)) return question(`"${taskLabel(task)}" is already ${task.status}, so there is nothing left to watch for. Tell the user.`);
+    types = watchEventTypes('task', input.on);
+    if (types.length === 0) return question('A task can be watched for: done, failed, or needs_input.');
+    target = { kind: 'task', id: task.id, label: taskLabel(task), detail: String(task.status), workspaceId: task.workspaceId ?? null };
+    normalized = { taskId: task.id, on: types };
+    extra = { status: task.status };
+  } else {
+    const ws = await workspaceOf(env, str(input.workspaceId) ?? env.scope.workspaceId ?? null);
+    if (!ws) return question(`Which workspace is PR #${pr} in? (It must be one this conversation can reach.)`);
+    types = watchEventTypes('pr', input.on);
+    if (types.length === 0) return question('A PR can be watched for: merged, or ci_failed.');
+    target = { kind: 'pr', id: `${ws.id}#${pr}`, label: `PR #${pr}`, detail: ws.name, workspaceId: ws.id };
+    normalized = { workspaceId: ws.id, prNumber: pr, on: types };
+  }
+  const changes: Change[] = [
+    { label: 'When', before: null, after: watchWhenPhrase(types) },
+    { label: 'Where', before: null, after: 'here, in this conversation' },
+    { label: 'Ends', before: null, after: ONE_SHOT_ENDS },
+  ];
+  return {
+    ok: true,
+    input: normalized,
+    preview: { v: 1, verb: 'Watch', target, changes, fingerprint: fingerprint(target.id, changes, { extra, types }) },
+  };
+};
+
+/** Only shown when tool output is in context (turn.ts); otherwise unwatch runs without a card. */
+const unwatch: Builder = async (input, env) => {
+  const data = await env.read('/api/subscriptions');
+  const list = (Array.isArray(data?.subscriptions) ? data.subscriptions : []) as Parameters<typeof findWatch>[0];
+  const found = findWatch(list, input);
+  if (!found.ok) return question(found.question);
+  const w = found.watch;
+  const changes: Change[] = [{ label: 'Watch', before: `tell you when ${watchWhenPhrase(w.eventTypes)}`, after: null }];
+  return {
+    ok: true,
+    input: { watchId: w.id },
+    preview: {
+      v: 1, verb: 'Stop watching', target: { kind: 'subscription', id: w.id, label: w.label ?? 'this watch', workspaceId: w.workspaceId ?? null },
+      changes, fingerprint: fingerprint(w.id, changes),
+    },
+  };
+};
+
 /** Every other write: the named target, and each field set, before → after when readable. */
 const generic = (tool: string, op: string): Builder => async (input, env) => {
   const s = opSpec(tool, input);
@@ -418,6 +482,8 @@ const BUILDERS: Record<string, Builder> = {
   'manage_missions.update': updateMission,
   'manage_missions.arm': armMission,
   create_schedule: createSchedule,
+  watch,
+  unwatch,
 };
 
 /** Build the card for a proposed write (or a question when the target is unclear). */
