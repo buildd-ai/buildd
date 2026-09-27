@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
 import { missionTaskHref } from '@/lib/mission-task-href';
-import { bannerTasks, useHiddenNeedsInput, usePhoneBannerHidden } from '@/lib/needs-input-hidden';
+import { bannerTasks, useBannerHidden, useHiddenNeedsInput, usePhoneBannerHidden } from '@/lib/needs-input-hidden';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 /**
@@ -22,8 +22,10 @@ export default function NeedsInputBanner() {
   const count = tasks.length;
   // The phone chat canvas in needs-you mood already says it (needs-input-hidden.ts).
   const phoneHidden = usePhoneBannerHidden();
+  // The summoned chat canvas is up: the banner would sit bright above its scrim.
+  const hidden = useBannerHidden();
 
-  if (count === 0) return null;
+  if (count === 0 || hidden) return null;
 
   const firstTask = tasks[0];
   // The sentence every page shows, not the raw "feat(scope): …" title.

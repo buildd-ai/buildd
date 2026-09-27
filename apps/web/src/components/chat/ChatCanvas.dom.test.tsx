@@ -179,7 +179,19 @@ describe('desktop peek (docs/design/chat-v3-desktop.md)', () => {
     await settle();
     const cls = q('[data-testid="canvas-dialog"]')!.className.split(/\s+/);
     expect(cls).toEqual(expect.arrayContaining(['md:inset-y-4', 'md:right-4', 'md:w-[min(600px,calc(100vw-7rem))]', 'lg:border', 'lg:border-t-2', 'lg:border-[var(--chat-rule-strong)]', 'lg:bg-[var(--chat-bar)]', 'lg:shadow-none']));
-    expect(q('[data-testid="canvas-dim"]')!.className).toContain('md:bg-[var(--canvas-dim)]');
+    // The frame's heavy scrim: the page shapes show, the text does not read.
+    expect(q('[data-testid="canvas-dim"]')!.className.split(/\s+/)).toContain('lg:bg-[var(--chat-scrim)]');
+  });
+
+  it('the global needs-input banner stays out from above the scrim while the peek is open', async () => {
+    const { bannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
+    await render();
+    expect(bannerHiddenSnapshot()).toBe(false);
+    await act(async () => { api!.open(); });
+    await settle();
+    expect(bannerHiddenSnapshot()).toBe(true);
+    await act(async () => { api!.close(); });
+    expect(bannerHiddenSnapshot()).toBe(false);
   });
 });
 

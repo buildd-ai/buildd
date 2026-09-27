@@ -7,7 +7,7 @@
  * opens the canvas over the page, scoped to the page's object through the same
  * `entry.about` contract as "Ask about this mission". On a phone it takes over
  * the screen; on desktop it peeks as a solid 600px panel anchored right over a
- * flat dim, with no sea (docs/design/chat-v3-desktop.md, "Peek").
+ * heavy scrim, with no sea (docs/design/chat-v3-desktop.md, "Peek").
  *
  * The conversation stays mounted while closed, so reopening on the same page
  * continues it. Opening it about something else starts a fresh one (the old
@@ -25,6 +25,7 @@ import { popOutHref } from './pane-state';
 import { lockScroll } from '@/components/BottomSheet';
 import { Kbd } from '@/components/KeyHints';
 import { findScrollRoot } from '@/lib/scroll-root';
+import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
 import { askAboutHref, conversationHref, type ChatAbout } from '@/lib/chat/entry-points';
 import { canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton, type CanvasScope } from '@/lib/chat/canvas-scope';
 import { COMPOSER_INPUT_ID } from './ChatEntry';
@@ -138,6 +139,9 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     return () => { unlock(); window.clearTimeout(t); };
   }, [isOpen, shell]);
 
+  // The global banner paints in the layout's stack, above this scrim: hold it off while up.
+  useHideNeedsInputBanner(isOpen);
+
   const api = useMemo<ChatCanvasApi>(() => ({ open, openSteer, close, isOpen }), [open, openSteer, close, isOpen]);
 
   const onOpenObject = useCallback((ref: BuilddObjectRef) => {
@@ -164,9 +168,9 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
       data-open={isOpen ? 'true' : 'false'}
       className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
     >
-      {/* A flat dim: the page stays readable behind the peek. Over a mission on
-          a phone the scrim is near-opaque: nothing on the page reads through. */}
-      <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className={`absolute inset-0 ${missionSheet ? 'bg-[var(--chat-scrim)] md:bg-[var(--canvas-dim)]' : 'bg-[var(--canvas-dim)]'}`} />
+      {/* A flat dim. Over a mission on a phone, and behind the desktop peek, the
+          scrim is near-opaque: the page's shapes show, its text does not read. */}
+      <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className={`absolute inset-0 ${missionSheet ? 'bg-[var(--chat-scrim)] md:bg-[var(--canvas-dim)]' : 'bg-[var(--canvas-dim)]'} lg:bg-[var(--chat-scrim)]`} />
       <div
         role="dialog"
         aria-modal="true"
