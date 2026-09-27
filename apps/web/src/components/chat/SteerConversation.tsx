@@ -28,15 +28,16 @@ import { StateChip, type Tone } from './objects/parts';
 interface TaskMessagesResponse {
   taskId: string;
   workerId: string | null;
-  turns: number | null;
+  /** Caller may send (workspace admin), by the instruct route's own rule. */
+  canSend: boolean;
   messages: InstructionHistoryEntry[];
 }
 
-const STATUS_LABEL: Record<MessageDeliveryStatus['state'], string> = { sent: 'Sent', delivered: 'Delivered', read: 'Read' };
-const STATUS_TONE: Record<MessageDeliveryStatus['state'], Tone> = { sent: 'idle', delivered: 'live', read: 'ok' };
+const STATUS_LABEL: Record<MessageDeliveryStatus['state'], string> = { sent: 'Sent', delivered: 'Delivered' };
+const STATUS_TONE: Record<MessageDeliveryStatus['state'], Tone> = { sent: 'idle', delivered: 'ok' };
 
 export function statusLabel(s: MessageDeliveryStatus): string {
-  return s.state === 'read' ? `Read at turn ${s.turn}` : STATUS_LABEL[s.state];
+  return STATUS_LABEL[s.state];
 }
 
 function useNow(intervalMs: number): number {
@@ -63,7 +64,7 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
       const res = await fetch(`/api/tasks/${taskId}/messages`, { credentials: 'include' });
       if (!res.ok) return;
       const body = await res.json();
-      setData({ taskId, workerId: body.workerId ?? null, turns: body.turns ?? null, messages: Array.isArray(body.messages) ? body.messages : [] });
+      setData({ taskId, workerId: body.workerId ?? null, canSend: body.canSend === true, messages: Array.isArray(body.messages) ? body.messages : [] });
     } catch { /* keep the last good copy */ }
   }, [taskId]);
 
@@ -86,14 +87,15 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
   const title = steerTitle(task?.roleName ?? null, task?.worker?.runner ?? null, taskLabel);
   const presence = steerPresence(
     { runner: task?.worker?.runner ?? null },
-    { lastHeartbeatAt: task?.worker?.updatedAt ?? null, now, turns: task?.worker?.turns ?? null, currentAction: task?.worker?.currentAction ?? null },
+    { lastHeartbeatAt: task?.worker?.updatedAt ?? null, now, currentAction: task?.worker?.currentAction ?? null },
   );
   const workerId = data?.workerId ?? null;
-  const canSend = !!workerId && !!draft.trim() && !sending;
+  const allowed = !!data?.canSend;
+  const canSend = !!workerId && allowed && !!draft.trim() && !sending;
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || !workerId || sending) return;
+    if (!text || !workerId || !allowed || sending) return;
     setSending(true);
     setError(null);
     try {
@@ -138,7 +140,6 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
       <div data-testid="steer-presence" className="flex min-h-11 shrink-0 items-center gap-3 overflow-x-auto border-b-2 border-border-strong bg-surface-1 px-4 py-2 font-mono text-[12px] text-text-secondary md:px-6">
         {presence.runnerLabel && <span data-testid="steer-runner" className="shrink-0 font-semibold text-text-primary">{presence.runnerLabel}</span>}
         {presence.heartbeatLabel && <span data-testid="steer-heartbeat" className="shrink-0 text-text-muted">{presence.heartbeatLabel}</span>}
-        {presence.turnLabel && <span data-testid="steer-turn" className="shrink-0 text-text-muted">{presence.turnLabel}</span>}
         {presence.actionLabel && <span data-testid="steer-action" className="min-w-0 truncate text-status-info">{presence.actionLabel}</span>}
         {!presence.runnerLabel && !presence.actionLabel && <span className="text-text-muted">No agent is running on this task right now.</span>}
       </div>
@@ -149,7 +150,7 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
         )}
         <ul className="space-y-3">
           {(data?.messages ?? []).map((m, i) => {
-            const status = messageDeliveryStatus(m, data?.turns ?? null);
+            const status = messageDeliveryStatus(m);
             return (
               <li key={i} data-testid="steer-message" data-status={status.state} className="border-2 border-border-strong bg-card px-3 py-2">
                 <p className="font-convo text-[14px] text-text-primary [overflow-wrap:anywhere]">{m.message ?? '(hidden in a sensitive workspace)'}</p>
@@ -176,8 +177,8 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
             }}
-            placeholder={workerId ? 'Steer this agent…' : 'No agent is running on this task right now.'}
-            disabled={!workerId || sending}
+            placeholder={!workerId ? 'No agent is running on this task right now.' : allowed ? 'Steer this agent…' : 'Only workspace admins can steer this agent.'}
+            disabled={!workerId || !allowed || sending}
             rows={2}
             className="w-full resize-none bg-transparent px-3.5 py-3 font-convo text-[15px] text-text-primary placeholder:text-text-muted focus:outline-none"
           />

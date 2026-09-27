@@ -23,10 +23,9 @@ export type InstructionHistoryEntry = {
   timestamp: number;
   deliveryState?: 'pending' | 'delivered';
   /**
-   * `workers.turns` at send time — the baseline the Steer canvas measures
-   * "read at turn N" against (see `messageDeliveryStatus`). Absent on entries
-   * written before this field existed; those can reach 'delivered' but never
-   * 'read'.
+   * `workers.turns` at send time. Recorded only: `workers.turns` counts runner
+   * check-ins, not agent turns, so nothing derives a status from it (see
+   * `messageDeliveryStatus`).
    */
   turnAtSend?: number;
 };
@@ -115,25 +114,14 @@ export function markInstructionsDelivered(
 
 /**
  * One instruction's status for the Steer canvas: 'sent' (queued, not yet
- * confirmed), 'delivered' (a consumer confirmed the agent received it, but it
- * hasn't taken a turn since), or 'read at turn N' — the agent has since taken
- * at least one more turn, so the instruction was in its context for that turn.
- *
- * N is fixed at `turnAtSend + 1`, the first turn that could have read it —
- * not the worker's live, ever-climbing turn count, so the label doesn't keep
- * changing after the fact. An entry written before `turnAtSend` existed, or a
- * worker with no known turn count, can reach 'delivered' but never 'read'.
+ * confirmed) or 'delivered' (a consumer confirmed the agent received it).
+ * There is no "read" state: `workers.turns` advances on every runner check-in,
+ * not on agent turns, so it can't show the agent acted on the message.
  */
-export type MessageDeliveryStatus =
-  | { state: 'sent' }
-  | { state: 'delivered' }
-  | { state: 'read'; turn: number };
+export type MessageDeliveryStatus = { state: 'sent' } | { state: 'delivered' };
 
 export function messageDeliveryStatus(
-  entry: Pick<InstructionHistoryEntry, 'deliveryState' | 'turnAtSend'>,
-  currentTurns: number | null,
+  entry: Pick<InstructionHistoryEntry, 'deliveryState'>,
 ): MessageDeliveryStatus {
-  if (entry.deliveryState !== 'delivered') return { state: 'sent' };
-  if (entry.turnAtSend == null || currentTurns == null || currentTurns <= entry.turnAtSend) return { state: 'delivered' };
-  return { state: 'read', turn: entry.turnAtSend + 1 };
+  return entry.deliveryState === 'delivered' ? { state: 'delivered' } : { state: 'sent' };
 }
