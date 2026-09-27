@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
-import { buildTierPoolRows, costLabel, winLabel } from './tier-pools-view';
+import { buildTierPoolRows, costLabel, suggestWeightFor, winLabel } from './tier-pools-view';
 import { summarizeArm } from '@buildd/core/tier-pool';
+import { ARM_ROUTE_SPECS } from './model-picker';
 
 const tiers = {
   'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1', source: 'default' },
@@ -83,5 +84,28 @@ describe('labels', () => {
     expect(costLabel(summarizeArm([{ severity: null, costUsd: 0.018, latencyMs: null }]))).toBe('$18');
     expect(costLabel(summarizeArm([{ severity: null, costUsd: 0.004, latencyMs: null }]))).toBe('$4.00');
     expect(costLabel(null)).toBe('–');
+  });
+});
+
+describe('suggestWeightFor', () => {
+  const routes = [ARM_ROUTE_SPECS.anthropic];
+  const incumbent = { route: 'anthropic', model: 'claude-sonnet-5' };
+  const models = [
+    { id: 'claude-sonnet-5', provider: 'anthropic', inputPrice: 3, outputPrice: 15 },
+    { id: 'claude-opus-5', provider: 'anthropic', inputPrice: 5, outputPrice: 25 },
+    { id: 'claude-haiku-4-5', provider: 'anthropic', inputPrice: 1, outputPrice: 5 },
+    { id: 'no-price-model', provider: 'anthropic' },
+  ];
+
+  it('suggests low for a challenger pricier than the incumbent', () => {
+    expect(suggestWeightFor({ route: 'anthropic', model: 'claude-opus-5' }, incumbent, models, routes, 'standard')).toBe('low');
+  });
+
+  it('suggests med for a challenger cheaper than the incumbent', () => {
+    expect(suggestWeightFor({ route: 'anthropic', model: 'claude-haiku-4-5' }, incumbent, models, routes, 'standard')).toBe('med');
+  });
+
+  it('suggests low when either price is unknown', () => {
+    expect(suggestWeightFor({ route: 'anthropic', model: 'no-price-model' }, incumbent, models, routes, 'standard')).toBe('low');
   });
 });

@@ -10,6 +10,7 @@
  */
 import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
 import { TIERS } from '@buildd/core/model-tier-defaults';
+import type { TokenPrice } from '@buildd/core/model-catalog';
 import {
   MIN_GRADED_UNITS,
   incumbentRoute,
@@ -18,7 +19,8 @@ import {
   type ArmStats,
   type PoolSurface,
 } from '@buildd/core/tier-pool';
-import { nearestWeightForShare, type WeightLevel } from '@buildd/core/tier-weights';
+import { nearestWeightForShare, suggestWeight, type WeightLevel } from '@buildd/core/tier-weights';
+import { buildPickerRows, pickerKey, type PickerModelInput, type PickerRouteSpec, type PickerValue } from './model-picker';
 
 export interface PoolArmView {
   /** Null for the synthetic incumbent of a tier with no pool yet. */
@@ -162,4 +164,25 @@ export function costLabel(stats: ArmStats | null): string {
 /** Runner arms spend subscription seats: their dollars are virtual. */
 export function isVirtualCost(route: ArmRoute): boolean {
   return route === 'runner:claude' || route === 'runner:codex';
+}
+
+function tokenPrice(row: { inputPrice?: number; outputPrice?: number } | undefined): TokenPrice | null {
+  if (!row || row.inputPrice === undefined || row.outputPrice === undefined) return null;
+  return { input: row.inputPrice, output: row.outputPrice, cacheRead: 0, cacheWrite: 0 };
+}
+
+/**
+ * Cost-aware preset for a newly picked challenger (tier-weights.md §2), from
+ * the same catalog prices the picker already renders — no extra fetch.
+ */
+export function suggestWeightFor(
+  challenger: PickerValue,
+  incumbent: PickerValue,
+  models: readonly PickerModelInput[],
+  routes: readonly PickerRouteSpec[],
+  tier: Tier,
+): WeightLevel {
+  const rows = buildPickerRows(models, routes, tier, [incumbent, challenger]);
+  const find = (v: PickerValue) => rows.find((r) => r.key === pickerKey(v));
+  return suggestWeight(tokenPrice(find(challenger)), tokenPrice(find(incumbent)));
 }

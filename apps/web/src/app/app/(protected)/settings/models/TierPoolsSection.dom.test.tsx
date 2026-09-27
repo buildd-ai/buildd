@@ -107,8 +107,30 @@ describe('TierPoolsSection', () => {
     await click(panel.querySelector('[data-key="runner:claude::claude-opus-5"]'));
     await click(document.querySelector('[data-testid="model-picker-confirm"]'));
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    // Nothing is added yet: the sheet previews a preselected, cost-aware weight first.
+    expect(requests.some(r => r.method === 'POST')).toBe(false);
+    const row = host.querySelector('[data-testid="pool-row-agent-budget"]')!;
+    const preview = row.querySelector('[data-testid="pool-add-preview"]')!;
+    expect(preview.textContent).toContain('claude-opus-5');
+    // claude-opus-5 ($5/$25) is pricier than the incumbent claude-haiku-4-5 ($1/$5): low.
+    expect(preview.querySelector('[data-testid="pool-weight-low"]')!.getAttribute('aria-pressed')).toBe('true');
+    await click(preview.querySelector('[data-testid="pool-add-confirm"]'));
     const post = requests.find(r => r.method === 'POST')!;
-    expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5' });
+    expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5', weight: 'low' });
+  });
+
+  it('lets the admin change the preselected weight before adding', async () => {
+    await mount();
+    await click(host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-toggle"]'));
+    const panel = document.querySelector('[data-testid="model-picker-panel"]')!;
+    await click(document.querySelector('[data-testid="model-picker-band-all"]'));
+    await click(panel.querySelector('[data-key="runner:claude::claude-opus-5"]'));
+    await click(document.querySelector('[data-testid="model-picker-confirm"]'));
+    const preview = host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-preview"]')!;
+    await click(preview.querySelector('[data-testid="pool-weight-high"]'));
+    await click(preview.querySelector('[data-testid="pool-add-confirm"]'));
+    const post = requests.find(r => r.method === 'POST')!;
+    expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5', weight: 'high' });
   });
 
   it('chat pools pick from API-key routes', async () => {

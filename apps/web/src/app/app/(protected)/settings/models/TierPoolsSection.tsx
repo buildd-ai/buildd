@@ -13,12 +13,13 @@ import { MAX_POOL_ARMS, routesFor, type ArmRoute, type ArmStats, type PoolSurfac
 import { WEIGHT_LEVELS, type WeightLevel } from '@buildd/core/tier-weights';
 import type { CatalogModel } from '@/lib/tier-mapping';
 import { CatalogModelPicker } from '@/components/models/CatalogModelPicker';
-import { ARM_ROUTE_SPECS, withKeyStatus, type PickerValue } from '@/lib/model-picker';
+import { ARM_ROUTE_SPECS, pickerKey, withKeyStatus, type PickerValue } from '@/lib/model-picker';
 import {
   ROUTE_LABEL,
   costLabel,
   isVirtualCost,
   pct,
+  suggestWeightFor,
   winLabel,
   type PoolArmView,
   type TierPoolRowView,
@@ -170,17 +171,34 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
   const [panel, setPanel] = useState<'details' | null>(null);
   const [adding, setAdding] = useState(false);
   const [addErr, setAddErr] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ picks: PickerValue[]; weights: Record<string, WeightLevel> } | null>(null);
   const routes = useMemo(() => withKeyStatus(routesFor(row.surface).map((r) => ARM_ROUTE_SPECS[r]), keys ?? null), [row.surface, keys]);
   const locked = useMemo<PickerValue[]>(() => row.arms.map((a) => ({ route: a.route, model: a.model })), [row.arms]);
+  const incumbent = row.arms.find((a) => a.role === 'incumbent') ?? null;
+
+  // Picking a model previews its cost-aware suggested weight; nothing is added until confirmed.
+  function preview(picked: PickerValue[]) {
+    const incumbentValue: PickerValue | null = incumbent ? { route: incumbent.route, model: incumbent.model } : null;
+    setPending({
+      picks: picked,
+      weights: Object.fromEntries(picked.map((p) => [
+        pickerKey(p),
+        incumbentValue ? suggestWeightFor(p, incumbentValue, models, routes, row.tier) : 'low',
+      ])),
+    });
+  }
 
   // Each new arm is its own audited change, added in the order the admin ranked them.
-  async function addArms(picked: PickerValue[]) {
+  async function confirmAdd() {
+    if (!pending) return;
     setAdding(true); setAddErr(null);
-    for (const p of picked) {
-      const r = await send('/api/model-tiers/pools', { method: 'POST', body: JSON.stringify({ teamId, tier: row.tier, surface: row.surface, route: p.route, model: p.model }) });
+    for (const p of pending.picks) {
+      const weight = pending.weights[pickerKey(p)];
+      const r = await send('/api/model-tiers/pools', { method: 'POST', body: JSON.stringify({ teamId, tier: row.tier, surface: row.surface, route: p.route, model: p.model, weight }) });
       if (!r.ok) { setAddErr(`${p.model}: ${r.error ?? 'Could not add'}`); break; }
     }
     setAdding(false);
+    setPending(null);
     setPanel('details');
     await onChanged();
   }
@@ -208,8 +226,8 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
               value={[]}
               max={MAX_POOL_ARMS}
               currentLabel="in pool"
-              onChange={addArms}
-              disabled={adding}
+              onChange={preview}
+              disabled={adding || !!pending}
               testId="pool-add-toggle"
               triggerClassName="font-mono font-semibold text-accent-text hover:underline disabled:opacity-60"
               triggerLabel={adding ? 'Adding…' : '+ Add model'}
@@ -223,6 +241,23 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
         </div>
       </div>
       {addErr && <p role="alert" className="mt-2 text-xs text-status-error">{addErr}</p>}
+      {pending && (
+        <div className="mt-2 border-2 border-border-strong bg-surface-1 p-3" data-testid="pool-add-preview">
+          {pending.picks.map((p) => (
+            <div key={pickerKey(p)} className="flex items-center gap-2 py-1 font-mono text-[12.5px]" data-testid="pool-add-preview-row">
+              <span className="min-w-0 flex-1 truncate text-text-primary">{p.model}</span>
+              <WeightControl value={pending.weights[pickerKey(p)]} disabled={adding}
+                onChange={(v) => setPending((cur) => cur && ({ ...cur, weights: { ...cur.weights, [pickerKey(p)]: v } }))} />
+            </div>
+          ))}
+          <div className="mt-2 flex gap-2">
+            <button type="button" className="btn btn-primary h-8" disabled={adding} onClick={confirmAdd} data-testid="pool-add-confirm">
+              {adding ? 'Adding…' : `Add ${pending.picks.length} model${pending.picks.length === 1 ? '' : 's'}`}
+            </button>
+            <button type="button" className="btn h-8" disabled={adding} onClick={() => setPending(null)} data-testid="pool-add-cancel">Cancel</button>
+          </div>
+        </div>
+      )}
       {panel === 'details' && row.poolId && <Details row={row} teamId={teamId} isAdmin={isAdmin} onChanged={onChanged} />}
     </div>
   );
