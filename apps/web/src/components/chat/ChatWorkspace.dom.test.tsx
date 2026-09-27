@@ -44,8 +44,8 @@ afterEach(() => {
 
 type Props = Parameters<typeof ChatWorkspace>[0];
 
-async function render(over: Partial<Props> = {}, opts: { hints?: boolean; state?: Parameters<typeof fixtures.fixtureViews>[0] } = {}) {
-  const views = fixtures.fixtureViews(opts.state ?? 'split');
+async function render(over: Partial<Props> = {}, opts: { hints?: boolean; state?: Parameters<typeof fixtures.fixtureViews>[0]; views?: Record<string, unknown> } = {}) {
+  const views: Record<string, unknown> = { ...fixtures.fixtureViews(opts.state ?? 'split'), ...opts.views };
   const source = { load: async (r: { kind: string; id: string }) => { const v = views[`${r.kind}:${r.id}`]; if (!v) throw new Error('Not found'); return v; } };
   const props: Props = {
     messages: [], status: 'ready', onSend: (t: string) => { sent.push(t); }, onApproval() {},
@@ -212,6 +212,77 @@ describe('pinned object', () => {
   it('no object in the conversation: nothing pinned', async () => {
     await render();
     expect(q('[data-testid="canvas-pinned"]')).toBeNull();
+  });
+});
+
+describe('mission sheet (the summoned canvas over a mission)', () => {
+  const overlay = (over: Partial<Props> = {}): Partial<Props> => ({
+    variant: 'overlay', focusRef: fixtures.missionRef, focusOpensSheet: false, fullChatHref: '/app/chat?about=mission', onClose() {}, ...over,
+  });
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1;
+
+  it('a 48px header: ASK / THIS MISSION, full screen, close; the title shows once, in the card', async () => {
+    await render(overlay());
+    const header = q('[data-testid="chat-header"]')!;
+    expect(header.dataset.sheet).toBe('mission');
+    expect(header.className).toContain('h-12');
+    expect(q('[data-testid="sheet-crumbs"]')?.textContent).toBe('Ask/This mission');
+    expect(q('[data-testid="canvas-full-chat"]')?.textContent).toBe('Full screen ↗');
+    expect(q('[data-testid="canvas-full-chat"]')?.getAttribute('href')).toBe('/app/chat?about=mission');
+    expect(q('[data-testid="canvas-close"]')).not.toBeNull();
+    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
+    expect(q('[data-testid="canvas-empty"]')).toBeNull();
+    expect(q('[data-testid="mission-context-title"]')?.textContent).toBe('Multi-currency invoices');
+    expect(count(container.textContent ?? '', 'Multi-currency invoices')).toBe(1);
+    expect(q('[data-testid="chat-column"]')?.className).toContain('bg-[var(--chat-bar)]');
+  });
+
+  it('the context card: status badge, LANDED and GOAL counts, an insight line', async () => {
+    await render(overlay());
+    expect(q('[data-testid="mission-context-status"]')?.textContent).toBe('Needs you');
+    expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
+    expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
+    expect(q('[data-testid="mission-context-insight"]')?.textContent).toContain('waiting on you');
+    expect(q('[data-testid="mission-context-flag"]')).not.toBeNull();
+  });
+
+  it('complete with criteria unchecked: the copper flag, and row 1 asks why', async () => {
+    const base = fixtures.missionView('live');
+    const done = {
+      ...base, status: 'completed', stateLabel: 'Complete',
+      board: { ...base.board, complete: true, needsYou: [], live: 0, criteria: base.board.criteria.map(c => ({ ...c, state: 'pending' as const })) },
+    };
+    await render(overlay(), { views: { [`mission:${fixtures.missionRef.id}`]: done } });
+    const n = base.board.criteria.length;
+    expect(q('[data-testid="mission-context-insight"]')?.textContent).toBe(`Marked complete, but ${n} of ${n} goal criteria are unchecked.`);
+    expect(q('[data-testid="mission-context-flag"]')).not.toBeNull();
+    const rows = qa('[data-testid="canvas-suggestion"]');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    expect(rows.length).toBeLessThanOrEqual(3);
+    expect(rows[0].dataset.tone).toBe('needs');
+    expect(rows[0].textContent).toContain(`Why are ${n} criteria unchecked?`);
+    await act(async () => { rows[0].click(); });
+    expect(sent[0]).toContain('marked complete');
+  });
+
+  it('the composer scope is locked to the mission and its workspace', async () => {
+    await render(overlay());
+    const cell = q('[data-testid="composer-scope-locked"]');
+    expect(cell?.textContent).toBe(`mission · ${fixtures.WS.name}`);
+    expect(q('[data-testid="composer-scope-lock"]')).not.toBeNull();
+    expect(q('[data-testid="composer-scope-chip"]')).toBeNull();
+  });
+
+  it('after the first message the card gives way to the pinned strip', async () => {
+    await render(overlay({ messages: fixtures.chatFixture('streaming').messages, status: 'ready' }));
+    expect(q('[data-testid="mission-context-card"]')).toBeNull();
+    expect(q('[data-testid="canvas-pinned"]')).not.toBeNull();
+  });
+
+  it('the page canvas keeps its own header and switcher', async () => {
+    await render();
+    expect(q('[data-testid="chat-header"]')?.dataset.sheet).toBeUndefined();
+    expect(q('[data-testid="composer-scope-locked"]')).toBeNull();
   });
 });
 

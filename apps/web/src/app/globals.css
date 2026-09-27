@@ -654,6 +654,7 @@ textarea[data-bare-input] {
   --chat-muted: #a89f92;
   --chat-dim: #8b8276;
   --chat-panel: rgba(20, 19, 18, 0.78);
+  --chat-scrim: rgba(14, 13, 12, 0.94);
   --mood-calm: #8fb9b3;
   --mood-needs: #e0955a;
   --mood-needs-fill: #c9783b;
@@ -683,6 +684,7 @@ textarea[data-bare-input] {
   --chat-muted: #514a42;
   --chat-dim: #625a51;
   --chat-panel: rgba(251, 248, 243, 0.86);
+  --chat-scrim: rgba(38, 34, 30, 0.9);
   --mood-calm: #2f6f68;
   --mood-needs: #9c4f14;
   --mood-needs-fill: #c9783b;

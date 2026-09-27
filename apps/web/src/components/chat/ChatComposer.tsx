@@ -6,7 +6,7 @@
  * switch picks a tier for the conversation, never a model: the tier → model
  * mapping stays the team admin's (docs/design/agent-chat.md, "Models: tiers").
  */
-import { forwardRef, useImperativeHandle, useRef, type KeyboardEvent } from 'react';
+import { forwardRef, useImperativeHandle, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import type { ChatTierName } from '@buildd/shared';
 import ToolsMenu from './ToolsMenu';
 import TierSwitch from './TierSwitch';
@@ -50,12 +50,14 @@ interface Props {
   compact?: boolean;
   /** The canvas mood: `needs` draws the top rule copper (canvas-empty.ts). */
   mood?: 'calm' | 'needs' | null;
+  /** Replaces the workspace switcher with a locked scope (the mission sheet). */
+  scopeLock?: ReactNode;
 }
 
 const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer({
   value, onChange, onSend, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
   workspaces, workspaceId, onWorkspaceChange, routedWorkspace = null, teamName = null, tier, compact = false,
-  teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, mood = null,
+  teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, mood = null, scopeLock,
 }, ref) {
   const area = useRef<HTMLTextAreaElement>(null);
   useImperativeHandle(ref, () => ({
@@ -106,7 +108,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
         />
         <div data-testid="composer-toolbar" className="flex h-12 items-stretch divide-x divide-[var(--chat-rule)] border-t border-[var(--chat-rule)]">
           <div className="min-w-0 flex-1">
-            {workspaces.length > 0 && (
+            {scopeLock ?? (workspaces.length > 0 && (
               <WorkspaceSwitcher
                 variant="chip"
                 workspaces={[...workspaces]}
@@ -115,7 +117,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
                 routed={routedWorkspace}
                 teamName={teamName}
               />
-            )}
+            ))}
           </div>
           {teamId && <div className="w-14 shrink-0"><ToolsMenu teamId={teamId} /></div>}
           {teamId && onTierChange ? (

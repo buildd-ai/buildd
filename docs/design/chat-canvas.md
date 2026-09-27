@@ -120,6 +120,21 @@ in the canvas, and opening an object from it navigates the page behind.
   in `/app/chat/<id>`. Reopening on the same page continues the conversation;
   asking about something else starts a new one.
 
+**Over a mission** the canvas is the mission sheet (`MissionSheet.tsx`, pure
+parts in `mission-sheet.ts`). On a phone it is an opaque sheet (`--chat-bar`)
+from 84px down, over the bottom nav, with a 2px top edge and a square grabber;
+the page behind sits under a near-opaque scrim (`--chat-scrim`), so nothing
+readable shows through. On desktop it keeps the peek panel. A 48px header reads
+`ASK / THIS MISSION`, `FULL SCREEN ↗` (the full chat) and ✕. Until the first
+message a square context card replaces the pinned strip: MISSION + status
+badge, the title (the only place it shows), LANDED n/n and GOAL n/n as segments
+(green when done, copper outline for an unchecked criterion), and one italic
+insight line. The line carries a copper square only when the mission disagrees
+with itself or waits on you: complete with criteria unchecked, everything landed
+but not complete, a task waiting on you. ASK ABOUT offers two or three rows from
+the same state; row 1 is copper when it asks about that disagreement. The
+composer's scope cell is locked: a lock and `mission · <workspace>`.
+
 ### Steering (step 3)
 
 The same canvas rescoped to a running agent: crumbs read `Builder @ runner /

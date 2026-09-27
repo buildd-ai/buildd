@@ -29,6 +29,8 @@ import PinnedObject from './objects/PinnedObject';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
+import { MissionAskAbout, MissionContextCard, MissionScopeCell } from './MissionSheet';
+import { objectSheetTitle } from './mission-sheet';
 
 export interface ChatWorkspaceProps {
   messages: readonly ChatMessage[];
@@ -203,6 +205,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const narrow = docked || overlay;
   const busy = status === 'submitted' || status === 'streaming';
   const lastIsUser = messages[messages.length - 1]?.role === 'user';
+  // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
+  // "Mission sheet"). An opaque sheet with a context card; the title shows once.
+  const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
+  const missionEmpty = !!missionSheet && messages.length === 0;
 
   // The crumbs: who you're talking to, where, and about what.
   const wsName = workspaceId ? workspaces.find(w => w.id === workspaceId)?.name ?? null : routedScope(messages)?.name ?? null;
@@ -210,7 +216,34 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // of the back arrow. Desktop keeps the agent / workspace / title crumbs.
   const phoneCrumbs = !overlay && !crumbs;
   const isNew = !title && messages.length === 0;
-  const header = (
+  const sheetHeader = missionSheet && (
+    <header data-testid="chat-header" data-sheet="mission" className="flex h-12 shrink-0 items-stretch border-b border-[var(--chat-rule)]">
+      <p data-testid="sheet-crumbs" className="flex min-w-0 flex-1 items-center gap-1.5 px-4 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
+        <span className="text-[var(--chat-text)]">Ask</span>
+        <span aria-hidden="true" className="text-[var(--chat-dim)]">/</span>
+        <span className="truncate">This mission</span>
+      </p>
+      {fullChatHref && (
+        <Link
+          href={fullChatHref}
+          data-testid="canvas-full-chat"
+          className="inline-flex shrink-0 items-center border-l border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+        >
+          Full screen ↗
+        </Link>
+      )}
+      <button
+        type="button"
+        data-testid="canvas-close"
+        onClick={onClose}
+        aria-label="Close chat"
+        className="grid h-12 w-12 shrink-0 place-items-center border-l border-[var(--chat-rule)] font-mono text-[16px] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+      >
+        <span aria-hidden="true">✕</span>
+      </button>
+    </header>
+  );
+  const header = sheetHeader || (
     <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] px-4 py-2.5 md:px-6">
       {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
       {crumbs ?? (
@@ -354,16 +387,22 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     <section
       data-testid="chat-column"
       data-canvas={variant}
+      data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative flex h-full min-h-0 min-w-0 flex-col bg-[var(--chat-ground)] md:bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
+      className={`relative flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
     >
       {busy && <div data-testid="canvas-scan" aria-hidden="true" className="canvas-scan z-10" />}
       {header}
       {strip}
-      {pin && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
+      {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div ref={content} className={`mx-auto px-4 py-6 ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
-          {emptyCanvas}
+          {missionEmpty && missionSheet ? (
+            <div data-testid="mission-sheet-empty" className="mb-6">
+              <MissionContextCard objRef={missionSheet} />
+              <MissionAskAbout objRef={missionSheet} onPick={pick} />
+            </div>
+          ) : emptyCanvas}
           {messages.length === 0 && emptyState && (
             <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block'}>{emptyState}</div>
           )}
@@ -395,6 +434,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             onTierChange={onTierChange}
             costRefreshKey={costRefreshKey}
             compact={narrow}
+            scopeLock={missionSheet ? <MissionScopeCell objRef={missionSheet} /> : undefined}
           />
           {formFallbackHref && messages.length === 0 && (
             <div className="hidden justify-end md:mt-2 md:flex">
@@ -452,7 +492,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           </aside>
         )}
       </div>
-      <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet?.fallbackText ?? ''} height="tall" testId="chat-object-sheet">
+      <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet ? objectSheetTitle(sheet) : ''} height="tall" testId="chat-object-sheet">
         {sheet && <ObjectPane objRef={sheet} variant="sheet" />}
       </BottomSheet>
     </ChatActionsProvider>
