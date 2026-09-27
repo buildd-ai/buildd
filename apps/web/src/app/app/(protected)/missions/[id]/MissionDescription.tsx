@@ -181,7 +181,7 @@ export default function MissionDescription({
         <MarkdownContent content={description} variant="compact" className="[&>*:first-child]:mt-0" />
       </div>
       <div className="flex items-center gap-4">
-        {long && (
+        {long && !defaultExpanded && (
           <button
             type="button"
             data-testid="mission-description-toggle"

@@ -1273,8 +1273,9 @@ export default async function MissionDetailPage({
     </>
   );
   const boardLink = { missionId: id, from: parseMissionOrigin(from), initiativeId: initiativeId ?? null };
-  const verifiedPill = showVerifiedPill ? (
+  const verifiedPill = (
     <MissionVerifiedPill
+      sheetOnly={!showVerifiedPill}
       missionId={id}
       criteria={goalCriteria}
       criteriaState={goalCriteriaStateFull}
@@ -1283,7 +1284,7 @@ export default async function MissionDetailPage({
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
-  ) : undefined;
+  );
   // Chat is how you ask about work: opens a conversation with this mission docked.
   const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
   const overflowMenu = (

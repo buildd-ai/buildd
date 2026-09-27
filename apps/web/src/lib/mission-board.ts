@@ -861,13 +861,16 @@ function rowsOutput(input: MissionBoardInput, id: string): string | null {
 
 /**
  * Concurrency over the mission's span, for the completed Board's "agents over
- * time": one bin per `binMs`, counting spans open at the bin's midpoint.
+ * time": one bin per slice, counting spans that overlap it. Overlap rather
+ * than a midpoint sample, so a 20-minute run in a 35-day mission still shows
+ * in its (12-hour) bin instead of vanishing between samples.
  */
 export function concurrencyBins(bars: readonly Pick<MissionLaneBar, 'start' | 'end'>[], from: number, to: number, bins = 72): number[] {
   if (!(to > from)) return [];
   const step = (to - from) / bins;
   return Array.from({ length: bins }, (_, i) => {
-    const mid = from + step * (i + 0.5);
-    return bars.filter(b => b.start <= mid && (b.end ?? to) > mid).length;
+    const a = from + step * i;
+    const b = a + step;
+    return bars.filter(x => x.start < b && (x.end ?? to) > a).length;
   });
 }

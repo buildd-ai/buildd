@@ -128,3 +128,11 @@ describe('MissionVerifiedPill — criteria panel URL sync and hash-based opening
     expect(html).toContain('id="mission-criteria"');
   });
 });
+
+describe('MissionVerifiedPill — sheet only (terminal mission, no pill)', () => {
+  it('renders no pill, so COMPLETE never sits beside "Needs verification"', () => {
+    const html = renderPill({ sheetOnly: true, overall: null, criteriaState: null, readonly: true });
+    expect(html).not.toContain('id="mission-criteria"');
+    expect(html).not.toContain('<button');
+  });
+});

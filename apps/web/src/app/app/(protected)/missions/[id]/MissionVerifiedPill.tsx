@@ -34,6 +34,11 @@ interface Props {
   readonly?: boolean;
   failingCiPrNumbers?: number[];
   overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
+  /**
+   * No pill, only the sheet: a terminal mission shows no "Needs verification"
+   * beside COMPLETE (D2), but the band's goal links still open the criteria.
+   */
+  sheetOnly?: boolean;
 }
 
 /**
@@ -54,6 +59,7 @@ function MissionVerifiedPillInner({
   readonly,
   failingCiPrNumbers,
   overall,
+  sheetOnly = false,
 }: Props) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -88,6 +94,21 @@ function MissionVerifiedPillInner({
   // No criteria and nothing to add (terminal/readonly mission): no chrome at
   // all, matching the always-visible block's prior behavior exactly.
   if (criteriaCount === 0 && readonly) return null;
+
+  if (sheetOnly) {
+    return (
+      <SideSheet open={open} onClose={handleClose} title="Goal criteria" testId="mission-criteria-sheet">
+        <MissionGoalCriteria
+          missionId={missionId}
+          criteria={criteria}
+          criteriaState={criteriaState}
+          autoVerify={autoVerify}
+          readonly={readonly}
+          failingCiPrNumbers={failingCiPrNumbers}
+        />
+      </SideSheet>
+    );
+  }
 
   if (criteriaCount === 0) {
     return (

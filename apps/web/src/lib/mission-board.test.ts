@@ -342,6 +342,8 @@ describe('helpers', () => {
 
   it('bins concurrency', () => {
     expect(concurrencyBins([{ start: 0, end: 10 }, { start: 5, end: null }], 0, 10, 2)).toEqual([1, 2]);
+    // A short run in a long window still lands in its bin.
+    expect(concurrencyBins([{ start: 3, end: 4 }], 0, 1000, 10)).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it('labels a task with the shared short-label helper', () => {

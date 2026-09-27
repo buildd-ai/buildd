@@ -86,8 +86,11 @@ export default function MissionFeedLayout({ model: serverModel, notes = [], comp
                     <>
                       <span className="w-11 shrink-0 font-mono text-[12px] tabular-nums text-text-muted">{tz ? e.time : ''}</span>
                       <span aria-label={g.label} title={g.label} className={`grid h-[22px] w-[22px] shrink-0 place-items-center border font-mono text-[11px] font-bold ${g.cls}`}>{g.char}</span>
-                      <span className="w-[112px] shrink-0 truncate font-mono text-[13px] font-semibold text-text-primary md:w-[150px]">{e.actor}</span>
-                      <span className="min-w-0 flex-1 font-mono text-[12.5px] text-text-secondary [overflow-wrap:anywhere]">{e.detail}</span>
+                      {/* Phone: who over what; wider: one line, the actor in a column. */}
+                      <span className="flex min-w-0 flex-1 flex-col md:flex-row md:items-center md:gap-3">
+                        <span className="truncate font-mono text-[13px] font-semibold text-text-primary md:w-[150px] md:shrink-0">{e.actor}</span>
+                        <span className="min-w-0 font-mono text-[12.5px] text-text-secondary [overflow-wrap:anywhere]">{e.detail}</span>
+                      </span>
                     </>
                   );
                   const cls = 'flex min-h-11 items-center gap-3 border-b border-border-default px-3.5 py-1.5 last:border-b-0 md:min-h-10';
