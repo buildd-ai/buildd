@@ -3,8 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TIERS, type Tier, type TierEntry, type TierProvider } from '@buildd/core/model-tier-defaults';
 import {
-  TIER_PROVIDER_OPTIONS,
-  modelOptionsFor,
   providerForModel,
   suggestionFor,
   tierBandLabel,
@@ -17,8 +15,9 @@ import {
 } from '@/lib/tier-mapping';
 import Link from 'next/link';
 import TierPoolsSection from './TierPoolsSection';
-import { Select } from '@/components/ui/Select';
-import { Combobox } from '@/components/ui/Combobox';
+import { CatalogModelPicker } from '@/components/models/CatalogModelPicker';
+import { TIER_ROUTES, withKeyStatus, type PickerRouteSpec, type PickerValue } from '@/lib/model-picker';
+import type { ListProviderKeysResponse } from '@buildd/shared';
 
 interface Props {
   teamId: string;
@@ -38,9 +37,17 @@ const TIER_TAG: Partial<Record<Tier, string>> = {
   standard: 'interactive default',
 };
 
+export type KeyStatus = Partial<Record<'anthropic' | 'openai' | 'openrouter', boolean>>;
+
+/** Which chat providers have a team key or the caller's own, from `GET /api/inference-keys`. */
+export function keyStatusFrom(res: ListProviderKeysResponse | null): KeyStatus | null {
+  if (!res || !Array.isArray(res.providers)) return null;
+  return Object.fromEntries(res.providers.map((p) => [p.provider, !!(p.team || p.mine)])) as KeyStatus;
+}
+
 /**
- * Settings → AI → Model tiers. One compact table: tier → provider + model →
- * Apply. The registry is shared by agent runs and chat, so each row says which
+ * Settings → AI → Model tiers. One compact table: tier → model (route and id,
+ * from one grouped picker) → Apply. The registry is shared by agent runs and chat, so each row says which
  * of the two can use it instead of splitting the table in two. Catalog notes
  * sit on their row as an action ("… is newer · Switch").
  */
@@ -73,6 +80,18 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
     return () => { cancelled = true; };
   }, [teamId]);
 
+  const [keys, setKeys] = useState<KeyStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/inference-keys?teamId=${teamId}`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: ListProviderKeysResponse | null) => { if (!cancelled) setKeys(keyStatusFrom(d)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [teamId]);
+  const routes = useMemo(() => withKeyStatus(TIER_ROUTES, keys), [keys]);
+  const catalogLoading = catalog.models === undefined;
+
   const suggestions = useMemo(
     () => tierSuggestions(catalog.tierAudit, { catalogComplete: catalog.catalogComplete }),
     [catalog],
@@ -87,7 +106,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
       </p>
 
       <div className="mt-6">
-        <TierPoolsSection teamId={teamId} isAdmin={isAdmin} models={catalog.models ?? []} refreshKey={tiersVersion} />
+        <TierPoolsSection teamId={teamId} isAdmin={isAdmin} models={catalog.models ?? []} keys={keys} refreshKey={tiersVersion} />
       </div>
 
       <div className="mt-10 max-w-4xl">
@@ -97,8 +116,8 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         <section aria-label="Tiers">
           {loadError && <div className="notice notice-err mb-3">{loadError}</div>}
           <div className="card" data-testid="tier-table">
-            <div className="hidden md:grid grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
-              <span>Tier</span><span>Provider</span><span>Model</span><span className="text-right">Mode</span>
+            <div className="hidden md:grid grid-cols-[130px_minmax(0,1fr)_auto] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
+              <span>Tier</span><span>Model</span><span className="text-right">Mode</span>
             </div>
             {TIERS.map((tier) => (
               <TierRow
@@ -106,6 +125,8 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
                 tier={tier}
                 entry={tiers?.[tier] ?? null}
                 models={catalog.models ?? []}
+                routes={routes}
+                catalogLoading={catalogLoading}
                 suggestion={suggestionFor(suggestions, tier)}
                 teamId={teamId}
                 isAdmin={isAdmin}
@@ -120,31 +141,31 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
 }
 
 function TierRow({
-  tier, entry, models, suggestion, teamId, isAdmin, onChanged,
+  tier, entry, models, routes, catalogLoading, suggestion, teamId, isAdmin, onChanged,
 }: {
   tier: Tier;
   entry: TierEntry | null;
   models: CatalogModel[];
+  routes: readonly PickerRouteSpec[];
+  catalogLoading: boolean;
   suggestion: TierSuggestion | null;
   teamId: string;
   isAdmin: boolean;
   onChanged: () => Promise<void>;
 }) {
-  const [provider, setProvider] = useState<TierProvider>('anthropic');
-  const [model, setModel] = useState('');
+  const [draft, setDraft] = useState<PickerValue | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   // Drafts follow the saved row until the admin edits them.
   useEffect(() => {
     if (!entry) return;
-    setProvider(providerForModel(entry.provider));
-    setModel(entry.model);
+    setDraft({ route: providerForModel(entry.provider), model: entry.model });
   }, [entry]);
 
   const state = tierSourceState(entry?.source);
-  const options = useMemo(() => modelOptionsFor(provider, models, entry?.model), [provider, models, entry]);
-  const dirty = !!entry && (provider !== providerForModel(entry.provider) || model.trim() !== entry.model);
+  const provider = (draft?.route ?? 'anthropic') as TierProvider;
+  const dirty = !!entry && !!draft && (draft.route !== providerForModel(entry.provider) || draft.model !== entry.model);
 
   async function pin(p: TierProvider, m: string) {
     setBusy(true);
@@ -182,7 +203,7 @@ function TierRow({
 
   return (
     <div className="border-b border-border-default last:border-b-0 px-3 py-2.5" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
-      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 items-center">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[130px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 items-center">
         <div className="min-w-0" title={tierBandLabel(tier)}>
           <span className="text-[13px] font-bold text-text-primary">{tier}</span>
         </div>
@@ -208,30 +229,20 @@ function TierRow({
           </button>
         </div>
 
-        <Select
-          aria-label={`Provider for ${tier}`}
-          value={provider}
-          disabled={!isAdmin || busy || !entry}
-          onChange={(v) => { setProvider(v as TierProvider); setModel(''); }}
-          options={TIER_PROVIDER_OPTIONS.map((p) => ({ value: p.id, label: p.label }))}
-          menuMinWidth={180}
-        />
-
-        <div className="flex items-center gap-2 min-w-0">
-          <Combobox
+        <div className="col-span-2 md:col-span-1 flex items-center gap-2 min-w-0">
+          <CatalogModelPicker
             aria-label={`Model for ${tier}`}
-            value={entry ? model : ''}
-            placeholder={entry ? (provider === 'openrouter' ? 'vendor/model' : 'model id') : 'loading…'}
-            onChange={setModel}
+            tier={tier}
+            routes={routes}
+            models={models}
+            loading={catalogLoading || !entry}
+            value={entry ? draft : null}
+            onChange={setDraft}
             disabled={!isAdmin || busy || !entry}
-            allowCustom
-            showValue
-            options={options.map((o) => ({ value: o.value, label: o.label, meta: o.price }))}
-            menuMinWidth={360}
             className="flex-1"
           />
-          {isAdmin && dirty && (
-            <button className="btn btn-primary shrink-0" disabled={busy || !model.trim()} onClick={() => pin(provider, model)}>
+          {isAdmin && dirty && draft && (
+            <button className="btn btn-primary shrink-0" disabled={busy} onClick={() => pin(draft.route as TierProvider, draft.model)} data-testid="tier-apply">
               {busy ? 'Saving…' : 'Apply'}
             </button>
           )}

@@ -21,7 +21,9 @@ interface Props {
   testId?: string;
   /** Filled with the panel element so callers can scope outside-click checks. */
   panelRef?: RefObject<HTMLDivElement | null>;
-  /** Bottom sheet: fixed tall sheet (88% of the screen) whose list scrolls under a pinned search box. */
+  /** Anchored panel: height cap in px (default 480). */
+  maxHeight?: number;
+  /** Bottom sheet: fixed tall sheet (88% of the screen) with a scrolling body. */
   tallSheet?: boolean;
 }
 
@@ -46,7 +48,7 @@ const PREFERRED_HEIGHT = 320;
  * Phone: the shared BottomSheet (portaled, focus trapped, Escape closes).
  */
 export function AnchoredPopover({
-  open, onClose, anchorRef, sheet, title, children, minWidth = 0, align = 'start', testId, panelRef, tallSheet = false,
+  open, onClose, anchorRef, sheet, title, children, minWidth = 0, align = 'start', testId, panelRef, maxHeight = 480, tallSheet = false,
 }: Props) {
   const ownRef = useRef<HTMLDivElement>(null);
   const ref = panelRef ?? ownRef;
@@ -117,7 +119,7 @@ export function AnchoredPopover({
       data-testid={testId}
       data-popover=""
       className="fixed z-[60] flex flex-col bg-surface-2 border-2 border-border-strong shadow-md font-mono animate-dropdown-in origin-top"
-      style={pos ? { top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width, maxHeight: Math.min(pos.maxHeight, 480) } : { visibility: 'hidden', top: 0, left: 0 }}
+      style={pos ? { top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width, maxHeight: Math.min(pos.maxHeight, maxHeight) } : { visibility: 'hidden', top: 0, left: 0 }}
     >
       {children}
     </div>
