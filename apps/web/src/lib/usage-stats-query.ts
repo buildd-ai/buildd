@@ -53,6 +53,7 @@ export async function fetchUsageRows(opts: {
       turns: true,
       resultMeta: true,
       mcpCalls: true,
+      runner: true,
     },
     with: {
       // `predictedModel` is the assigned side of the divergence rate — the model
@@ -87,5 +88,6 @@ export async function fetchUsageRows(opts: {
     turns: w.turns,
     resultMeta: w.resultMeta ?? null,
     mcpCalls: w.mcpCalls ?? null,
+    runner: w.runner ?? null,
   }));
 }
