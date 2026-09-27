@@ -4,6 +4,7 @@ import { neon, NeonQueryFunction } from '@neondatabase/serverless';
 import * as schema from './schema';
 import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
+import { capturePostgresErrorOnSpan } from './error-span';
 
 // Lazy initialization to avoid errors during build
 let _sql: NeonQueryFunction<false, false> | null = null;
@@ -35,6 +36,23 @@ export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
     if (!_db) {
       _db = drizzle(getSql(), { schema });
     }
-    return (_db as any)[prop];
+    const value = (_db as any)[prop];
+
+    // Wrap query-returning methods to capture DB errors on the active span
+    if (typeof value === 'function' && typeof prop === 'string' && (prop === 'select' || WRITE_OPS.has(prop))) {
+      return function wrappedMethod(...args: unknown[]) {
+        const result = value.apply(_db, args);
+        // If the result is a promise-like, wrap it to capture errors
+        if (result && typeof result.then === 'function') {
+          return result.catch((error: unknown) => {
+            capturePostgresErrorOnSpan(error);
+            throw error;
+          });
+        }
+        return result;
+      };
+    }
+
+    return value;
   },
 });

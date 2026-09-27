@@ -25,11 +25,10 @@ describe('instrumentation', () => {
       expect(registerOTelMock).toHaveBeenCalledWith(
         expect.objectContaining({
           serviceName: 'buildd-web',
-          environment: 'production',
         }),
       );
 
-      // Test 3: VERCEL_ENV set to 'preview' - should register with that env
+      // Test 3: VERCEL_ENV set to 'preview' - should register
       process.env.VERCEL_ENV = 'preview';
       registerOTelMock.mockClear();
       register();
@@ -37,7 +36,6 @@ describe('instrumentation', () => {
       expect(registerOTelMock).toHaveBeenCalledWith(
         expect.objectContaining({
           serviceName: 'buildd-web',
-          environment: 'preview',
         }),
       );
 

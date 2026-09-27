@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, capturePostgresErrorOnSpan } from '@buildd/core/db';
+import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
@@ -35,7 +35,6 @@ export async function GET() {
     return NextResponse.json({ accounts: allAccounts });
   } catch (error) {
     console.error('Get accounts error:', error);
-    capturePostgresErrorOnSpan(error);
     return NextResponse.json({ error: 'Failed to get accounts' }, { status: 500 });
   }
 }
@@ -140,7 +139,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...account, apiKey: plaintextKey });
   } catch (error) {
     console.error('Create account error:', error);
-    capturePostgresErrorOnSpan(error);
     return NextResponse.json({ error: 'Failed to create account' }, { status: 500 });
   }
 }

@@ -8,7 +8,6 @@ export function register() {
 
   registerOTel({
     serviceName: 'buildd-web',
-    environment: process.env.VERCEL_ENV || 'debug',
   });
 
   // Memory is now stored in buildd's own database (memories table).
