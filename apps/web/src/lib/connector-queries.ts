@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaces, connectors, connectorShares, connectorWorkspaces, secrets } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 export type ConnectorLiveStatus = 'ok' | 'auth_expired' | 'unreachable' | 'disabled';
 
@@ -64,10 +65,7 @@ export async function listMountedConnectors(
   const ownerTeamIds = [...new Set(connectorRows.map(c => c.teamId).filter(Boolean))] as string[];
   const secretRows = ownerTeamIds.length > 0
     ? await db.query.secrets.findMany({
-        where: and(
-          inArray(secrets.teamId, ownerTeamIds),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-        ),
+        where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential' }),
         columns: { label: true, tokenExpiresAt: true, healthStatus: true },
       })
     : [];

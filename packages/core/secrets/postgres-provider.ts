@@ -8,6 +8,7 @@ import { secrets } from '../db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { encrypt, decrypt } from './crypto';
 import type { SecretsProvider, SecretMetadata, SecretRecord } from './types';
+import { assertPersonalScopeAllowed } from './team-scope';
 
 /**
  * The exact, NULL-aware scope a singleton credential occupies. A personal key
@@ -33,6 +34,7 @@ export function secretScopeWhere(metadata: SecretMetadata) {
 export class PostgresSecretsProvider implements SecretsProvider {
 
   async set(id: string | null, value: string, metadata: Partial<SecretMetadata>): Promise<string> {
+    if (!id) assertPersonalScopeAllowed(metadata.purpose, metadata.userId);
     const encryptedValue = encrypt(value);
 
     if (id) {
@@ -73,6 +75,7 @@ export class PostgresSecretsProvider implements SecretsProvider {
   async replaceScoped(value: string, metadata: SecretMetadata): Promise<string> {
     if (!metadata.teamId) throw new Error('teamId is required');
     if (!metadata.purpose) throw new Error('purpose is required');
+    assertPersonalScopeAllowed(metadata.purpose, metadata.userId);
 
     const encryptedValue = encrypt(value);
 

@@ -74,6 +74,7 @@ import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -712,16 +713,13 @@ export async function PATCH(
   if (body.event === 'connector_auth_expired' && typeof body.connectorId === 'string') {
     const connectorRow = await db.query.connectors.findFirst({
       where: eq(connectors.id, body.connectorId),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
     });
     if (connectorRow) {
       await db
         .update(secrets)
         .set({ tokenExpiresAt: sql`NOW()`, lastVerificationError: 'mid_task_401', updatedAt: sql`NOW()` })
-        .where(and(
-          eq(secrets.label, body.connectorId),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-        ));
+        .where(teamCredentialWhere({ teamId: connectorRow.teamId, purpose: 'mcp_connector_credential', label: body.connectorId }));
       void triggerEvent(
         channels.workspace(worker.workspaceId),
         events.WORKER_CONNECTOR_AUTH_EXPIRED,
@@ -737,16 +735,13 @@ export async function PATCH(
   if (body.event === 'connector_permission_insufficient' && typeof body.connectorId === 'string') {
     const connectorRow = await db.query.connectors.findFirst({
       where: eq(connectors.id, body.connectorId),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
     });
     if (connectorRow) {
       await db
         .update(secrets)
         .set({ lastVerificationError: 'mid_task_403_permission', updatedAt: sql`NOW()` })
-        .where(and(
-          eq(secrets.label, body.connectorId),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-        ));
+        .where(teamCredentialWhere({ teamId: connectorRow.teamId, purpose: 'mcp_connector_credential', label: body.connectorId }));
       void triggerEvent(
         channels.workspace(worker.workspaceId),
         events.WORKER_CONNECTOR_PERMISSION_INSUFFICIENT,

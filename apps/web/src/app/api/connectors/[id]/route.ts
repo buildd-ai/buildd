@@ -8,6 +8,7 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -139,11 +140,7 @@ export async function PATCH(
     if (body.headerValue !== undefined && connector.authMode === 'header') {
       const provider = getSecretsProvider();
       const existingSecret = await db.query.secrets.findFirst({
-        where: and(
-          eq(secrets.teamId, connector.teamId),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-          eq(secrets.label, id),
-        ),
+        where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id }),
         columns: { id: true },
       });
       await provider.set(existingSecret?.id ?? null, body.headerValue, {
@@ -183,11 +180,7 @@ export async function DELETE(
   try {
     // Delete associated secrets first (cascade handles connectorWorkspaces)
     const secretRows = await db.query.secrets.findMany({
-      where: and(
-        eq(secrets.teamId, connector.teamId),
-        eq(secrets.purpose, 'mcp_connector_credential'),
-        eq(secrets.label, id),
-      ),
+      where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id }),
       columns: { id: true },
     });
     const provider = getSecretsProvider();

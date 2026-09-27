@@ -76,6 +76,7 @@ import ProviderOnboardingCard from '@/components/onboarding/ProviderOnboardingCa
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 // --- Helpers ---
 
@@ -1505,10 +1506,7 @@ export default async function HomePage({
         // "expiring soon": the refresh sweep renews those (connector-status.ts).
         if (initiativeTeamIds.length > 0) {
           const credentialRows = await db.query.secrets.findMany({
-            where: and(
-              inArray(secrets.teamId, initiativeTeamIds),
-              eq(secrets.purpose, 'mcp_connector_credential'),
-            ),
+            where: teamCredentialWhere({ teamId: initiativeTeamIds, purpose: 'mcp_connector_credential' }),
             columns: {
               label: true,
               tokenExpiresAt: true,

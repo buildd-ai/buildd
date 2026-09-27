@@ -22,6 +22,7 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import { notifyConnectorBlockReminder, notifyConnectorExpiry } from '../../workers/claim/connector-block-notify';
 import { shouldNotifyExpiry } from '@/lib/connector-status';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 export const maxDuration = 60;
 
@@ -95,7 +96,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   // ── Pass 2: proactive connector-credential expiry scan ──────────────────────
   const credentials = await db.query.secrets.findMany({
-    where: eq(secrets.purpose, 'mcp_connector_credential'),
+    where: teamCredentialWhere({ purpose: 'mcp_connector_credential' }),
     columns: {
       id: true,
       teamId: true,

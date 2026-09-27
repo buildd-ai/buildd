@@ -11,6 +11,7 @@ import {
   getCallbackUrl,
   OAUTH_STATE_COOKIE,
 } from '@/lib/mcp-oauth';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -147,11 +148,7 @@ export async function GET(req: NextRequest) {
 
   // Upsert secret: find existing by (teamId, purpose, label) then update or insert
   const existingSecret = await db.query.secrets.findFirst({
-    where: and(
-      eq(secrets.teamId, connector.teamId),
-      eq(secrets.purpose, 'mcp_connector_credential'),
-      eq(secrets.label, connectorId),
-    ),
+    where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connectorId }),
     columns: { id: true },
   });
 

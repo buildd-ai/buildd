@@ -132,6 +132,18 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { value, purpose, label, accountId, workspaceId, teamId } = body;
 
+  // This route stores team-owned credentials only. Connector and MCP credential
+  // lookups resolve rows with no user (packages/core/secrets/team-scope.ts), so a
+  // personal row here is never created: personal keys go through their own route.
+  if (body.userId != null) {
+    return NextResponse.json(
+      { error: purpose === 'inference_key'
+        ? 'Personal inference keys are managed at /api/inference-keys'
+        : `A personal secret is not supported for purpose ${purpose}` },
+      { status: 400 },
+    );
+  }
+
   if (!value || !purpose) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }

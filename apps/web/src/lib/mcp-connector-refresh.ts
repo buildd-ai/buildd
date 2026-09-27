@@ -13,6 +13,7 @@ import { db } from '@buildd/core/db';
 import { connectors, secrets } from '@buildd/core/db/schema';
 import { decrypt, encrypt } from '@buildd/core/secrets';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 const PURPOSE = 'mcp_connector_credential' as const;
 
@@ -54,9 +55,9 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
     .update(secrets)
     .set({ lastRefreshedAt: sql`NOW()`, updatedAt: sql`NOW()` })
     .where(
-      and(
+      teamCredentialWhere(
+        { purpose: PURPOSE },
         eq(secrets.id, secretId),
-        eq(secrets.purpose, PURPOSE),
         or(
           isNull(secrets.lastRefreshedAt),
           lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '60 minutes'`),
@@ -67,7 +68,7 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
 
   if (!claimed) {
     const exists = await db.query.secrets.findFirst({
-      where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+      where: teamCredentialWhere({ purpose: PURPOSE }, eq(secrets.id, secretId)),
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
@@ -147,7 +148,7 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
       await db
         .update(secrets)
         .set({ tokenExpiresAt: null, lastVerificationError: detail, updatedAt: sql`NOW()` })
-        .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+        .where(teamCredentialWhere({ purpose: PURPOSE }, eq(secrets.id, secretId)));
 
       console.warn(`[MCP Refresh] Refresh failed for secret ${secretId}: ${detail}`);
 
@@ -177,7 +178,7 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
         lastVerificationError: null,
         updatedAt: sql`NOW()`,
       })
-      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+      .where(teamCredentialWhere({ purpose: PURPOSE }, eq(secrets.id, secretId)));
 
     console.log(`[MCP Refresh] Token refreshed for secret ${secretId}`);
     return 'refreshed';
