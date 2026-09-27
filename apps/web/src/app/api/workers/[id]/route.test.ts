@@ -7909,9 +7909,9 @@ describe('PATCH /api/workers/[id]', () => {
 
     // A reviewer task is only dispatched on pull_request action='opened', so a
     // review that ends without a usable verdict is never redone by the platform.
-    // First offence therefore requeues the same task (it re-reads the PR and
-    // re-reviews); only a repeat offence fails it.
-    it('no structuredOutput: requeues the review instead of silently passing', async () => {
+    // The prose fallback attempts to extract a verdict from the summary before
+    // requeuing — if successful, the task completes normally.
+    it('no structuredOutput but verdict in prose: extracts and completes', async () => {
       setupReviewerTaskCompletion('approve');
       const taskSetCalls: any[] = [];
       mockTasksUpdate.mockReturnValue({
@@ -7929,9 +7929,31 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      // Never merge on an unparsed verdict.
-      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
-      // The task must not be recorded as completed — it goes back to pending.
+      // Should not requeue — prose fallback extracted the verdict.
+      const completed = taskSetCalls.find((u: any) => u.status === 'completed');
+      expect(completed).toBeDefined();
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+
+    it('no structuredOutput and no verdict in prose: requeues the review', async () => {
+      setupReviewerTaskCompletion('approve');
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'I reviewed the code. It looks okay.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Prose fallback should not find a verdict keyword, so task requeues.
       expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
       const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
       expect(requeue).toBeDefined();
@@ -7941,7 +7963,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(requeue?.claimedBy).toBeNull();
     });
 
-    it('no structuredOutput on the retry: fails the task rather than looping', async () => {
+    it('no structuredOutput on the retry with prose fallback: completes successfully', async () => {
       setupReviewerTaskCompletion('approve');
       // Same reviewer task, but it has already burned its contract retry.
       mockTasksFindFirst.mockImplementation(() =>
@@ -7981,6 +8003,53 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
+      // Prose fallback extracts the verdict even though we've already retried once.
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+      const completed = taskSetCalls.find((u: any) => u.status === 'completed');
+      expect(completed).toBeDefined();
+    });
+
+    it('no structuredOutput on the retry with no prose verdict: fails the task', async () => {
+      setupReviewerTaskCompletion('approve');
+      // Same reviewer task, but it has already burned its contract retry.
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+            reviewContractRetryCount: 1,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        }),
+      );
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'The code looks reasonable to me.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
       expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
@@ -7989,7 +8058,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
       // The agent's actual payload must survive the override — this is the
       // review-path fix for the outputRequirement-rejection payload-discard bug.
-      expect((failing?.result as any)?.rejectedSummary).toBe('Verdict: APPROVE (confidence 0.90).');
+      expect((failing?.result as any)?.rejectedSummary).toBe('The code looks reasonable to me.');
       // Retries are exhausted (reviewContractRetryCount already 1) — nothing will
       // ever re-review this PR outside the webhook's `opened` trigger, so the
       // permanent failure must escalate rather than vanish.
@@ -8039,7 +8108,7 @@ describe('PATCH /api/workers/[id]', () => {
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+        body: { status: 'completed', summary: 'I reviewed the code but have concerns.' },
       });
       const res = await PATCH(req, { params: mockParams });
 
