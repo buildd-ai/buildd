@@ -1,8 +1,12 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+
+// Real git subprocesses per test; the unmodified 5000ms bun default flakes
+// under full-suite concurrent load even though each test is fast in isolation.
+setDefaultTimeout(15_000);
 
 /**
  * `release:hotfix` used to compute the next patch version and use it only in
