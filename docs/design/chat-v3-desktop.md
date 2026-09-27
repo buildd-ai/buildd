@@ -1,6 +1,6 @@
 # Chat v3 on desktop
 
-**Status:** Proposed
+**Status:** Accepted (frames and decisions; not yet built)
 **Related:** `docs/design/chat-canvas.md`, `docs/design/mockups/chat-v3-desktop.html`, `apps/web/src/components/chat/ChatWorkspace.tsx`, `apps/web/src/components/chat/ChatCanvas.tsx`, `apps/web/src/components/chat/ChatComposer.tsx`, `apps/web/src/components/chat/canvas-empty.ts`, `apps/web/src/app/app/(protected)/chat/chat-shell.tsx`, `apps/web/src/lib/nav-config.tsx`
 
 ## Problem
@@ -43,7 +43,7 @@ At 1440 with a dock the stage is 964px, so the column keeps 122px of sea on
 each side. Below about 1200px the dock should hand over to the existing
 "Open beside" pinned strip (`PinnedObject`) rather than squeeze the column.
 
-### Decisions
+### Design choices
 
 - **Sea lives in the stage only.** Nine pools, scaled up for the width (about
   300 to 560px), spread across the whole stage so the column floats on water.
@@ -57,8 +57,8 @@ each side. Below about 1200px the dock should hand over to the existing
   desktop the slab gets a 1px border and a 4px offset shadow so it holds its
   edge over the sea. Toolbar cells keep their order: scope (grows), tools 64,
   tier 88, send or stop 64.
-- **Needs you docks the blocker.** When the count is above zero, the task that
-  needs you opens in the dock with a copper top edge, what happened in plain
+- **Needs you docks the blocker.** When the count is above zero, on screens
+  1280px and wider, the task that needs you opens in the dock with a copper top edge, what happened in plain
   steps, and two buttons. The hero and row 01 point at the same thing.
 - **Thinking keeps the mission docked**, with its LANDED and GOAL strips and
   who is at work. The one glow is the blue segment on the composer's top edge,
@@ -84,24 +84,24 @@ each side. Below about 1200px the dock should hand over to the existing
 Implementation should add the tokens the mobile spec names (ground, surface,
 rule, mood colours) as CSS variables in `globals.css`, shared by both widths.
 
+## Decisions
+
+The owner answered the five open questions on the proposal. Each is now a rule
+for the build.
+
+1. **Needs you auto-docks the blocked task** on screens 1280px and wider. The
+   dock is closable. Below 1280 the blocker shows through the pinned strip.
+2. **The composer is the chat column's width**, not a slab across the stage.
+3. **The peek over another page has no sea.** It is solid, like the mobile
+   mission sheet. The sea belongs to the full chat only.
+4. **HISTORY opens in the right panel** (the dock slot). There is no permanent
+   left column, so the reading column stays centred.
+5. **The column is 720px, with text capped at 640px** inside it.
+
 ## Open questions
 
-1. **Should needs you dock the blocker by default?** It makes the empty canvas
-   useful at a glance, but it is a second place showing the same thing as
-   row 01. I recommend yes, at 1280px and wider, closable, and it stays closed
-   for the session once closed.
-2. **Composer at column width, or a full-width slab along the bottom of the
-   stage?** A slab matches the phone more literally. I recommend column
-   width: the cells stay together and the input stays a readable line.
-3. **Should the peek carry the sea?** I recommend no. The mobile mission sheet
-   is opaque, the page behind already gives it context, and one sea per
-   screen keeps it special.
-4. **Where does history go?** Today it is a link. I recommend keeping
-   `HISTORY →` in the top bar and opening a list in the dock slot, rather than
-   adding a permanent left column that pushes the reading column off centre.
-5. **Is 720px the right column?** It gives about 70 characters of Newsreader at
-   18px. I recommend 720, with prose capped at 640 inside it; 800 if the owner
-   wants longer answers to feel less tall.
+None open. The owner's answers are recorded under Decisions. Light theme and
+the steering strip are listed as non-goals and will need their own review.
 
 ## Non-goals
 
