@@ -2096,7 +2096,7 @@ export async function handleBuilddAction(
     case 'record_pr_supersession': {
       // Only auto-fill workerId with ctx.workerId if prNumber is not explicitly provided.
       // If prNumber is provided, let the route handler resolve the worker from it.
-      const workerId = params.workerId ?? (params.prNumber == null ? ctx.workerId : null) || null;
+      const workerId = params.workerId ?? (params.prNumber == null ? ctx.workerId : null);
       if (!workerId && !params.prNumber) throw new Error('workerId or prNumber is required');
       if (params.supersedingPrNumber == null) throw new Error('supersedingPrNumber is required');
       if (!params.reason || !String(params.reason).trim()) throw new Error('reason is required');
