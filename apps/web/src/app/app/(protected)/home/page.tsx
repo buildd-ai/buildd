@@ -13,6 +13,7 @@ import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, home
 import { InFlightGroupCard } from './InFlightGroupCard';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { noRowOfPrMerged, oneRowPerPr } from '@/lib/pr-merge-stamp';
+import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
@@ -737,6 +738,9 @@ export default async function HomePage({
               isNotNull(workers.prUrl),
               isNull(workers.mergedAt),
               noRowOfPrMerged(),
+              // Renovate/Dependabot PRs are the bot's to land — not buildd work
+              // in flight, and not a merge buildd is waiting on anyone for.
+              workerNotDependencyBotPr(),
               sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
             ),
             columns: {
