@@ -291,6 +291,20 @@ mock.module('@buildd/core/cbm-access-experiment-source', () => ({
   enrolCbmAccessExperiment: mockEnrolCbmAccessExperiment,
 }));
 
+// Records every tier lookup the claim makes and delegates to the real
+// resolver, so tests can check the surface a claim asks for.
+// mock.module rewrites the live namespace, so the real function is captured first.
+const realTierRegistry = { ...(await import('@buildd/core/model-tier-registry')) };
+const realResolveTierEntry = realTierRegistry.resolveTierEntry;
+const tierLookups: unknown[][] = [];
+mock.module('@buildd/core/model-tier-registry', () => ({
+  ...realTierRegistry,
+  resolveTierEntry: (...args: Parameters<typeof realResolveTierEntry>) => {
+    tierLookups.push(args);
+    return realResolveTierEntry(...args);
+  },
+}));
+
 import { POST } from './route';
 
 function createMockRequest(options: {
@@ -2856,6 +2870,13 @@ describe('POST /api/workers/claim', () => {
       expect(second.context.routingReason).not.toBe('explicit_override');
       expect(second.predictedModel).toBe(TIER_DEFAULTS.premium.model);
       expect(second.context.model).toBe(TIER_DEFAULTS.premium.model);
+    });
+
+    it('resolves the tier for the agent surface', async () => {
+      tierLookups.length = 0;
+      await claimOnce({ workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' }, tier: 'premium' });
+      expect(tierLookups.length).toBeGreaterThan(0);
+      for (const args of tierLookups) expect(args[3]).toBe('agent');
     });
 
     it('a requeued task re-routes when its complexity changes (no team registry)', async () => {

@@ -1594,6 +1594,7 @@ export async function POST(req: NextRequest) {
           derivedTier,
           taskTeamId,
           task.workspaceId,
+          'agent',
           body.environment?.claudeCliVersion,
         );
         resolvedModel = entry.model;
@@ -1601,7 +1602,7 @@ export async function POST(req: NextRequest) {
         if (experimentDraw) {
           const treatment = await applyModelRoutingTreatment(experimentDraw, {
             controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
-            resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId),
+            resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId, 'agent'),
             clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
           });
           if (treatment) {
