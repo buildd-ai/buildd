@@ -225,6 +225,12 @@ describe('needsYouAction: row 1 as a short action', () => {
     }
   });
 
+  it('pulseNeedsYou carries the task id for the desktop dock, only when the loader has one', () => {
+    const [n] = pulseNeedsYou([{ title: 'feat(fx): rounding', taskId: 't1', workspaceId: 'ws' }]);
+    expect(n).toMatchObject({ taskId: 't1', workspaceId: 'ws' });
+    expect(Object.keys(pulseNeedsYou([{ title: 'x' }])[0])).toEqual(['title', 'action']);
+  });
+
   it('pulseNeedsYou carries the action, from the loader state', () => {
     const [n] = pulseNeedsYou([{ title: 'feat(checkout): pay in the presentment currency via Stripe', waitingType: 'question' }]);
     expect(n).toEqual({ title: 'Pay in the presentment currency via Stripe', action: 'Answer the Stripe currency question' });
