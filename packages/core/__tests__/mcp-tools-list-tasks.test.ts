@@ -17,6 +17,23 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
   };
 }
 
+describe('list_tasks — workspace', () => {
+  const ws = { workspaces: [{ id: 'ws-docs', name: 'docs', repo: null }] };
+
+  it('an explicit workspaceId wins over the context default', async () => {
+    const api = mock(async (url: string) => (url.startsWith('/api/workspaces') ? ws : { tasks: [] })) as unknown as ApiFn;
+    await handleBuilddAction(api, 'list_tasks', { workspaceId: 'docs' }, ctx());
+    const calledUrl = (api as any).mock.calls.at(-1)[0] as string;
+    expect(calledUrl).toContain('workspaceId=ws-docs');
+  });
+
+  it('an explicit workspaceId that resolves to nothing errors rather than listing everything', async () => {
+    const api = mock(async () => ws) as unknown as ApiFn;
+    await expect(handleBuilddAction(api, 'list_tasks', { workspaceId: 'nope' }, ctx({ workspaceId: undefined, getWorkspaceId: async () => null })))
+      .rejects.toThrow(/nope/);
+  });
+});
+
 describe('list_tasks — status passthrough', () => {
   it('defaults to status=active when no status param is given', async () => {
     const api = mock(async () => ({ tasks: [], total: 0, pendingCount: 0, hasMore: false })) as unknown as ApiFn;

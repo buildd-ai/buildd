@@ -75,6 +75,88 @@ describe('read tools', () => {
   });
 });
 
+describe('workspace-scoped reads with no scope', () => {
+  const NOW = Date.parse('2026-09-27T12:00:00Z');
+  const ago = (days: number) => new Date(NOW - days * 86_400_000).toISOString();
+  const WS = [
+    { id: 'w1', name: 'web', lastActiveAt: ago(0) },
+    { id: 'w2', name: 'docs', lastActiveAt: ago(3) },
+    { id: 'w3', name: 'site', lastActiveAt: ago(2) },
+    { id: 'w4', name: 'old', lastActiveAt: ago(60) },
+    { id: 'w5', name: 'never', lastActiveAt: null },
+  ];
+  function unscoped(respond: (action: string, wsId: string | undefined) => { text: string } | Error, workspaces = WS) {
+    const handle = mock(async (_api: any, action: string, params: any) => {
+      const r = respond(action, params.workspaceId);
+      if (r instanceof Error) throw r;
+      return { content: [{ type: 'text', text: r.text }] };
+    });
+    const tools = buildChatTools({
+      ctx: { getWorkspaceId: async () => null, getLevel: async () => 'admin' } as any,
+      workspaces, now: () => NOW,
+      allowWrites: false, authorizedToolCallIds: new Set(),
+      handle: handle as any,
+      makeApi: () => async () => ({}),
+    });
+    const run = (name: string, input: unknown) => (tools[name] as any).execute(input, { toolCallId: 'c', messages: [] });
+    return { run, handle, called: () => handle.mock.calls.map(c => c[2].workspaceId).sort() };
+  }
+
+  it('one call spans the recently active workspaces instead of erroring', async () => {
+    const { run, called } = unscoped((_a, ws) => (ws ? { text: `- v1 of ${ws}` } : new Error('Cannot resolve workspace.')));
+    const out = await run('list_releases', { sinceDays: 7 });
+    expect(called()).toEqual(['w1', 'w2', 'w3']);
+    expect(out.data).toContain('## web\n- v1 of w1');
+    expect(out.data).not.toContain('Error');
+  });
+
+  it('names the idle workspaces it skipped, so the model can offer them', async () => {
+    const { run } = unscoped((_a, ws) => ({ text: `- v1 of ${ws}` }));
+    const out = await run('list_releases', {});
+    expect(out.data).toContain('Not checked (no activity in 14 days): old, never.');
+  });
+
+  it('folds empty answers into one line rather than a heading each', async () => {
+    const { run } = unscoped((_a, ws) => ({ text: ws === 'w1' ? '- v1' : 'No releases in the last 7 days.' }));
+    const out = await run('list_releases', { sinceDays: 7 });
+    expect(out.data).not.toContain('## docs');
+    expect(out.data).toContain('Nothing in: docs, site.');
+  });
+
+  it('with nothing active, spans every workspace rather than none', async () => {
+    const idle = WS.map(w => ({ ...w, lastActiveAt: ago(90) }));
+    const { run, called } = unscoped((_a, ws) => ({ text: `ok ${ws}` }), idle);
+    await run('list_tasks', {});
+    expect(called()).toEqual(['w1', 'w2', 'w3', 'w4', 'w5']);
+  });
+
+  it('a single workspace in reach is just that workspace', async () => {
+    const { run, called } = unscoped((_a, ws) => ({ text: `ok ${ws}` }), [WS[3]]);
+    const out = await run('list_tasks', {});
+    expect(called()).toEqual(['w4']);
+    expect(out.data).toBe('ok w4');
+  });
+
+  it('an explicit workspaceId is one call, even for an idle workspace', async () => {
+    const { run, called } = unscoped((_a, ws) => ({ text: `tasks of ${ws}` }));
+    await run('list_tasks', { workspaceId: 'old' });
+    expect(called()).toEqual(['old']);
+  });
+
+  it('a workspace that fails is named, the rest still answer', async () => {
+    const { run } = unscoped((_a, ws) => (ws === 'w2' ? new Error('boom') : { text: `ok ${ws}` }));
+    const out = await run('list_tasks', { status: 'completed' });
+    expect(out.data).toContain('## web\nok w1');
+    expect(out.data).toContain('## docs\nError: boom');
+  });
+
+  it('reads that already span workspaces are not fanned out', async () => {
+    const { run, handle } = unscoped(() => ({ text: 'all missions' }));
+    await run('manage_missions', { action: 'list' });
+    expect(handle).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('manage_missions', () => {
   it('write sub-actions without an approval never reach the handler; admin ones not even for a member', async () => {
     const { run, handle } = setup();
