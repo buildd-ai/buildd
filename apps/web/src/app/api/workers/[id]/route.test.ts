@@ -8085,6 +8085,43 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
     });
 
+    it('low-confidence prose-extracted request-changes: escalates, does not post to GitHub', async () => {
+      setupReviewerTaskCompletion('approve');
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Reviewed the code. I request changes because the implementation has issues. Verdict: REQUEST_CHANGES (confidence 0.50).'
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Should complete, not requeue.
+      const completed = taskSetCalls.find((u: any) => u.status === 'completed');
+      expect(completed).toBeDefined();
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+
+      // Low-confidence prose-extracted request-changes should be escalated by
+      // applyConfidenceGate, not posted to GitHub as REQUEST_CHANGES.
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+
+      // Verify that the server override to escalate was persisted. When
+      // serverOverrideReason is set from the confidence gate, it updates the
+      // task with effectiveVerdict. We can't easily inspect the SQL template
+      // in the mock, but the absence of a GitHub review post is the key
+      // indicator: escalate verdicts never post to GitHub.
+    });
+
     // Regression: the override flips an incoming `completed` to `failed` long
     // after the exit-cause classification block has run — and that block only
     // fires for a *reported* terminal failure. So the worker row was written

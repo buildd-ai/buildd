@@ -4461,17 +4461,18 @@ async function handleReviewerOutcomeIfNeeded(
   // merge into a mission integration branch below. An approval under the
   // workspace threshold is an escalation. Checked after the file gates so a
   // file-list reason, the more specific one, wins when both apply.
-  if (effectiveVerdict === 'approve') {
-    const gated = applyConfidenceGate({
-      verdict: effectiveVerdict,
-      confidence: output.confidence,
-      threshold: reviewPolicy?.agentReview?.maxConfidenceThreshold,
-    });
-    if (gated.overrideReason) {
-      effectiveVerdict = gated.verdict;
-      serverOverrideReason = gated.overrideReason;
-      serverOverrideSource = 'confidence';
-    }
+  // For request-changes and escalate from prose extraction: apply the gate so
+  // low-confidence verdicts (from fallback parsing) are escalated for human
+  // confirmation rather than triggering automated actions immediately.
+  const gated = applyConfidenceGate({
+    verdict: effectiveVerdict,
+    confidence: output.confidence,
+    threshold: reviewPolicy?.agentReview?.maxConfidenceThreshold,
+  });
+  if (gated.overrideReason) {
+    effectiveVerdict = gated.verdict;
+    serverOverrideReason = gated.overrideReason;
+    serverOverrideSource = 'confidence';
   }
 
   if (serverOverrideReason) {
