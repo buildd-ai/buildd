@@ -23,7 +23,7 @@ and you should re-run your evals before taking it.
 | `@buildd/ai-kit/chat/react` | UI components (peers `react@^19`, `@ai-sdk/react@^4`) | Types only |
 | `@buildd/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
 | `@buildd/ai-kit/models` | Model-plan client + usage sink | Types only |
-| `@buildd/ai-kit/decide` | Jev decisions (peer `@typesafe-ai/sdk`) | Types only |
+| `@buildd/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval (peer `@typesafe-ai/sdk`) | Ready |
 | `@buildd/ai-kit/surfaces` | Jev picks among the app's own chips and cards | Types only |
 
 ## Tool permissions
@@ -54,6 +54,66 @@ if (groups.canSkipCard({ tool, input, allowedGroups, tainted, docked, skippedThi
   unattended work and doesn't spend, and its input carries only skippable fields.
 - `read`: no write tools (declaring one throws at startup).
 - `never`: not a tool at all; shown as a locked row.
+
+## Jev decisions
+
+Jev (TypeSafe's System One model, via OpenRouter) picks one of your labels,
+scores an ordered rubric or answers yes/no, with calibrated probabilities. It
+never writes text. Use it as an accelerator in front of logic you already
+have, never as the only source of an answer.
+
+```ts
+import { choice, noul, defineDecision, expectDecisionPinned } from '@buildd/ai-kit/decide';
+
+export const emailTriage = defineDecision({
+  id: 'cue.email_triage',
+  promptVersion: '2026-09-27.a',          // bump when anything below changes
+  questions: {
+    bucket: choice('Which bucket?', { actionable: '…', informative: '…', noise: '…' }),
+    concerning: noul('Does it report a failed payment or account problem?'),
+  },
+  mode: 'shadow',                          // default for every question
+  modes: { concerning: 'live' },           // an add-only hold can act now
+  minConfidence: { concerning: 0.6 },      // required for every 'gated' question
+});
+
+const run = await emailTriage.run({ apiKey: openRouterKey, state: { from, subject, body } });
+if (run.outcomes.concerning.status === 'applied' && run.outcomes.concerning.value) holdForTriage();
+// run.version is `promptVersion|model|kit-<version>`: stamp it on every row you persist.
+
+// Many states (one per request) with ~8 workers and one run budget:
+const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: toState, budgetMs: 10_000 });
+```
+
+- **Outcomes** per question: `applied` (act on `value`), `suggested` (shadow,
+  or below the threshold) or `skipped` (the call failed; fall back).
+- **Modes**: `shadow` never applies; `gated` applies at or above the
+  question's threshold; `live` applies at or above the threshold if one is set.
+  A noul's confidence is `max(p, 1 - p)` and its value `p >= 0.5`.
+- **Transport** (`decide`): never throws; one deadline (default 5s) over every
+  attempt; retries 408, 429 and 5xx once by default. The SDK's own retry is off
+  and every SDK option is explicit, so no `TYPESAFE_*` env var can redirect the
+  key. The kit never reads env vars: pass your OpenRouter key.
+- **Model**: `JEV_MODEL` is pinned (not `~typesafe/jev-latest`) and is not a
+  tier. A Jev bump is a kit release; re-run your eval before taking it.
+- **Versioning**: pin the fingerprint in a test. It covers the questions,
+  modes, thresholds and model, so a changed definition fails until you bump
+  `promptVersion` and re-pin:
+
+  ```ts
+  it('is pinned', () => expectDecisionPinned(emailTriage, { fingerprint: '3f1c…' }));
+  ```
+- **Eval**: `runDecisionEval({ decision, rows, stateOf, labelOf, idOf, split: 'even-odd', run: { apiKey } })`
+  reports accuracy, coverage and accuracy at each threshold, per-label
+  precision/recall, confusions, cost per 1k and latency. Tune on one half,
+  judge on the other, and read thresholds off the held-out table. Keep your
+  labelled rows out of git.
+- **Receipts**: `onUsage` gets a metadata-only `DecisionReceipt` per call
+  (model, tokens, cost, latency, outcome), shaped to fit `/models`' usage
+  report.
+
+Writing labels: define each one contrastively, avoid a catch-all label
+("other"), keep state small, and leave arithmetic and dates to code.
 
 ## Theming
 
