@@ -12,6 +12,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import { workspaceProjectKey } from './project-scope';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -145,7 +146,10 @@ export interface ActionContext {
   embedder?: Embedder | null;
   // Resolve a MemoryStore for this context (team-keyed, in-process).
   // Injected by the MCP route so the callback type stays decoupled from the route layer.
-  getMemoryClient?: () => Promise<MemoryStore | null>;
+  // `workspaceId`, when given, names the workspace the memory is for (e.g. the
+  // task claim_task just claimed): the store is that workspace's team's, and
+  // null when it is sensitive or cannot be resolved.
+  getMemoryClient?: (workspaceId?: string) => Promise<MemoryStore | null>;
 }
 
 export type ToolResult = {
@@ -1551,13 +1555,25 @@ export async function handleBuilddAction(
         `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
       ).join('\n\n---\n\n');
 
-      // Proactively fetch relevant memory from memory service
+      // Proactively fetch relevant memory. Invariant: only memory from the
+      // claimed task's own workspace, never from a sensitive one. The store is
+      // team-keyed, so the search must also carry the workspace's project key —
+      // a bare title search ranks every workspace in the team. Anything we can't
+      // scope (no workspace on the payload, no project key) gets no memory.
       let memorySection = '';
       try {
-        const memClient = ctx.getMemoryClient ? await ctx.getMemoryClient() : null;
-        if (memClient && workers[0]?.task?.title) {
+        const claimedTask = workers[0]?.task;
+        const claimedWs = claimedTask?.workspace;
+        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive'
+          ? workspaceProjectKey(claimedWs.repo, claimedWs.name)
+          : null;
+        const memClient = memProject && claimedTask?.title && ctx.getMemoryClient
+          ? await ctx.getMemoryClient(claimedTask.workspaceId ?? claimedWs.id)
+          : null;
+        if (memClient && memProject) {
           const searchData = await memClient.search({
-            query: workers[0].task.title,
+            query: claimedTask.title,
+            project: memProject,
             limit: 5,
           });
           const results = searchData.results || [];

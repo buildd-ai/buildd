@@ -6,6 +6,16 @@
  * parts on the wire, but this package stays dependency-free so the runner and
  * core can read the types too. The UI narrows `ChatMessagePart` with the SDK's
  * own guards (`isToolUIPart`, `isDataUIPart`, …).
+ *
+ * TODO(P6, docs/design/shared-ai-kit.md): the generic half of this file (tool
+ * part states, message parts, approval previews, usage, tool-permission rows)
+ * now also lives in `@buildd/ai-kit/chat/contract`, which apps/web imports.
+ * It is duplicated here, not re-exported, because installed runners
+ * sparse-check-out only `apps/runner/` + `packages/shared/`
+ * (apps/runner/install.sh, the self-updater), so a runtime import of the kit
+ * from here would break them. Dedupe once the sparse set includes
+ * `packages/ai-kit/`. Until then apps/web/src/lib/chat/kit-parity.test.ts
+ * fails if the two copies drift.
  */
 
 // ── Providers and keys ────────────────────────────────────────────────────────

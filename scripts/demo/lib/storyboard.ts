@@ -29,6 +29,15 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
 }
 
 /** The viewports a step is shot at; unknown names are an error, not a silent skip. */
+/**
+ * The `prefers-reduced-motion` a step is shot with: the step's `reducedMotion`,
+ * else the board's, else motion on. Set on every step because pages are
+ * long-lived, so one step's choice must not leak into the next.
+ */
+export function reducedMotionFor(step: { reducedMotion?: boolean }, board: { reducedMotion?: boolean }): 'reduce' | 'no-preference' {
+  return (step.reducedMotion ?? board.reducedMotion) ? 'reduce' : 'no-preference';
+}
+
 export function stepViewports(step: { viewports?: string[] }, known: Record<string, Viewport>): string[] {
   const names = step.viewports?.length ? step.viewports : [DESKTOP];
   const bad = names.filter((n) => !known[n]);
