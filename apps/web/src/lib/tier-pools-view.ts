@@ -4,7 +4,9 @@
  * registry, the pools and the stats, and the client only renders it.
  *
  * A tier with no pool reads as `pinned` with one arm, the registry entry, at
- * 100%: exactly what serves it today.
+ * 100%: exactly what serves it today. The incumbent of each surface's row is
+ * the entry that surface resolves to, so a split tier shows a different base
+ * model per surface.
  */
 import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
 import { TIERS } from '@buildd/core/model-tier-defaults';
@@ -68,7 +70,8 @@ export interface PoolInput {
 }
 
 export function buildTierPoolRows(args: {
-  tiers: Record<Tier, TierEntry>;
+  /** Each surface's resolved registry entries. */
+  tiers: Record<PoolSurface, Record<Tier, TierEntry>>;
   pools: readonly PoolInput[];
   stats: ReadonlyMap<string, ArmStats>;
 }): TierPoolRowView[] {
@@ -76,7 +79,7 @@ export function buildTierPoolRows(args: {
   for (const surface of ['agent', 'chat'] as const) {
     const tiers = surface === 'agent' ? TIERS : CHAT_POOL_TIERS;
     for (const tier of tiers) {
-      const entry = args.tiers[tier];
+      const entry = args.tiers[surface]?.[tier];
       const p = args.pools.find(x => x.pool.tier === tier && x.pool.surface === surface);
       const baseRoute = incumbentRoute(surface, entry?.provider ?? 'anthropic');
       const locked = !tierAllowsPool(tier);

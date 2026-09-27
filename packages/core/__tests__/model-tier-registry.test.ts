@@ -34,6 +34,7 @@ mock.module('../model-catalog-cache', () => ({
 
 // ── import after mocks are in place ───────────────────────────────────────
 const {
+  pickRegistryRow,
   resolveTierEntry,
   resolveTierEntrySync,
   invalidateTierCache,
@@ -99,7 +100,7 @@ describe('resolveTierEntry', () => {
   it('falls back to code defaults when no DB rows exist', async () => {
     mockFindMany.mockResolvedValue([]);
 
-    const entry = await resolveTierEntry('standard', TEAM_A, WS_A);
+    const entry = await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
     expect(entry.model).toBe(TIER_DEFAULTS.standard.model);
     expect(entry.provider).toBe('anthropic');
     expect(entry.source).toBe('default');
@@ -111,7 +112,7 @@ describe('resolveTierEntry', () => {
     ]);
     invalidateTierCache(TEAM_A, WS_A);
 
-    const entry = await resolveTierEntry('standard', TEAM_A, WS_A);
+    const entry = await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
     expect(entry.model).toBe('team-model');
     expect(entry.source).toBe('team');
   });
@@ -123,7 +124,7 @@ describe('resolveTierEntry', () => {
     ]);
     invalidateTierCache(TEAM_A, WS_A);
 
-    const entry = await resolveTierEntry('standard', TEAM_A, WS_A);
+    const entry = await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
     expect(entry.model).toBe('ws-model');
     expect(entry.source).toBe('workspace');
   });
@@ -134,7 +135,7 @@ describe('resolveTierEntry', () => {
     ]);
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('premium', TEAM_A, null);
+    const entry = await resolveTierEntry('premium', TEAM_A, null, 'agent');
     expect(entry.defaultEffort).toBe('high');
     expect(entry.defaultMaxTurns).toBe(50);
   });
@@ -145,7 +146,7 @@ describe('resolveTierEntry', () => {
     ]);
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('budget', TEAM_A, null);
+    const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent');
     expect(entry.provider).toBe('openrouter');
     expect(entry.model).toBe('mistralai/mistral-large');
     expect(entry.source).toBe('team');
@@ -157,8 +158,8 @@ describe('resolveTierEntry', () => {
     ]);
     invalidateTierCache(TEAM_A, WS_A);
 
-    await resolveTierEntry('standard', TEAM_A, WS_A);
-    await resolveTierEntry('standard', TEAM_A, WS_A); // should hit cache
+    await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
+    await resolveTierEntry('standard', TEAM_A, WS_A, 'agent'); // should hit cache
 
     expect(mockFindMany).toHaveBeenCalledTimes(1);
   });
@@ -167,7 +168,7 @@ describe('resolveTierEntry', () => {
     mockFindMany.mockRejectedValue(new Error('DB unavailable'));
     invalidateTierCache(TEAM_A, WS_A);
 
-    const entry = await resolveTierEntry('premium', TEAM_A, WS_A);
+    const entry = await resolveTierEntry('premium', TEAM_A, WS_A, 'agent');
     expect(entry.model).toBe(TIER_DEFAULTS.premium.model);
     expect(entry.source).toBe('default');
   });
@@ -190,7 +191,7 @@ describe('resolveTierEntry — catalog fallback', () => {
     ]));
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('premium', TEAM_A, null);
+    const entry = await resolveTierEntry('premium', TEAM_A, null, 'agent');
     expect(entry.model).toBe('claude-opus-5-5');
     expect(entry.provider).toBe('anthropic');
     expect(entry.source).toBe('catalog');
@@ -201,7 +202,7 @@ describe('resolveTierEntry — catalog fallback', () => {
     mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([]));
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('premium', TEAM_A, null);
+    const entry = await resolveTierEntry('premium', TEAM_A, null, 'agent');
     expect(entry.model).toBe(TIER_DEFAULTS.premium.model);
     expect(entry.source).toBe('default');
   });
@@ -215,7 +216,7 @@ describe('resolveTierEntry — catalog fallback', () => {
     ]));
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('premium', TEAM_A, null);
+    const entry = await resolveTierEntry('premium', TEAM_A, null, 'agent');
     expect(entry.model).toBe('pinned-opus');
     expect(entry.source).toBe('team');
     // The row alone settles it — the catalog is never even consulted.
@@ -235,14 +236,14 @@ describe('resolveTierEntry — catalog fallback', () => {
     invalidateTierCache(TEAM_A, null);
 
     // Below the floor: falls back to the older, servable release.
-    const stale = await resolveTierEntry('premium-plus', TEAM_A, null, '2.1.200');
+    const stale = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', '2.1.200');
     expect(stale.model).toBe('claude-mythos-5');
     expect(stale.source).toBe('catalog');
 
     invalidateTierCache(TEAM_A, null);
 
     // At/above the floor: the newest release is servable and wins normally.
-    const current = await resolveTierEntry('premium-plus', TEAM_A, null, '2.1.251');
+    const current = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', '2.1.251');
     expect(current.model).toBe('claude-fable-5-1');
   });
 
@@ -256,7 +257,7 @@ describe('resolveTierEntry — catalog fallback', () => {
     ]));
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
+    const entry = await resolveTierEntry('premium', TEAM_A, null, 'agent', '2.1.280');
     expect(entry.model).toBe('claude-opus-5-5');
     expect(entry.source).toBe('catalog');
   });
@@ -270,8 +271,8 @@ describe('resolveTierEntry — catalog fallback', () => {
     invalidateTierCache(TEAM_A, null);
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
-      await resolveTierEntry('premium', TEAM_A, null, '2.1.280');
+      await resolveTierEntry('premium', TEAM_A, null, 'agent', '2.1.280');
+      await resolveTierEntry('premium', TEAM_A, null, 'agent', '2.1.280');
       const hits = warn.mock.calls.filter((c) => String(c[0]).includes('claude-opus-98'));
       expect(hits).toHaveLength(1);
       expect(String(hits[0][0])).toContain('MODEL_MIN_CLI_VERSION');
@@ -287,7 +288,7 @@ describe('resolveTierEntry — catalog fallback', () => {
     ]));
     invalidateTierCache(TEAM_A, null);
 
-    const entry = await resolveTierEntry('premium-plus', TEAM_A, null, undefined);
+    const entry = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', undefined);
     expect(entry.model).toBe('claude-fable-5-1');
   });
 });
@@ -301,7 +302,7 @@ describe('invalidateTierCache', () => {
     ]);
     invalidateTierCache(TEAM_A, WS_A);
 
-    await resolveTierEntry('standard', TEAM_A, WS_A);
+    await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
     expect(mockFindMany).toHaveBeenCalledTimes(1);
 
     // Simulate registry update — cache invalidated, new model returned
@@ -310,7 +311,7 @@ describe('invalidateTierCache', () => {
     ]);
     invalidateTierCache(TEAM_A, WS_A);
 
-    const entry = await resolveTierEntry('standard', TEAM_A, WS_A);
+    const entry = await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
     expect(entry.model).toBe('v2');
     expect(mockFindMany).toHaveBeenCalledTimes(2);
   });
@@ -339,9 +340,111 @@ describe('resolveAllTiers', () => {
     mockFindMany.mockResolvedValue([]);
     invalidateTierCache(TEAM_A, null);
 
-    const all = await resolveAllTiers(TEAM_A);
+    const all = await resolveAllTiers(TEAM_A, null, 'agent');
     expect(all.premium.model).toBe(TIER_DEFAULTS.premium.model);
     expect(all.standard.model).toBe(TIER_DEFAULTS.standard.model);
     expect(all.budget.model).toBe(TIER_DEFAULTS.budget.model);
+  });
+});
+
+// ── surface rows ────────────────────────────────────────────────────────────
+//
+// Order: workspace+surface → workspace → team+surface → team → catalog →
+// TIER_DEFAULTS. A row with surface NULL serves both surfaces.
+
+const row = (workspaceId: string | null, surface: 'agent' | 'chat' | null, model: string) => ({
+  teamId: TEAM_A, workspaceId, surface, tier: 'standard', provider: 'anthropic', model, defaultEffort: null, defaultMaxTurns: null,
+});
+
+describe('pickRegistryRow — surface precedence', () => {
+  const all = [
+    row(null, null, 'team'),
+    row(null, 'agent', 'team-agent'),
+    row(WS_A, null, 'ws'),
+    row(WS_A, 'agent', 'ws-agent'),
+  ];
+
+  it('workspace+surface wins over everything', () => {
+    expect(pickRegistryRow(all, WS_A, 'agent')?.model).toBe('ws-agent');
+  });
+
+  it('a workspace shared row wins over a team surface row', () => {
+    expect(pickRegistryRow(all, WS_A, 'chat')?.model).toBe('ws');
+  });
+
+  it('team+surface wins over the team shared row', () => {
+    expect(pickRegistryRow(all, null, 'agent')?.model).toBe('team-agent');
+  });
+
+  it('a surface with no row of its own falls back to the NULL row', () => {
+    expect(pickRegistryRow(all, null, 'chat')?.model).toBe('team');
+  });
+
+  it('workspace with no rows of its own reaches team+surface before team', () => {
+    expect(pickRegistryRow(all, 'other-ws', 'agent')?.model).toBe('team-agent');
+  });
+
+  it('null surface reads only shared rows', () => {
+    expect(pickRegistryRow(all, null, null)?.model).toBe('team');
+    expect(pickRegistryRow(all, WS_A, null)?.model).toBe('ws');
+  });
+
+  it('rows without a surface field (pre-migration shape) read as shared', () => {
+    const legacy = [{ workspaceId: null, model: 'legacy' }];
+    expect(pickRegistryRow(legacy, null, 'chat')?.model).toBe('legacy');
+    expect(pickRegistryRow(legacy, null, 'agent')?.model).toBe('legacy');
+  });
+
+  it('a surface row alone does not serve the other surface or the shared view', () => {
+    const only = [row(null, 'agent', 'team-agent')];
+    expect(pickRegistryRow(only, null, 'chat')).toBeUndefined();
+    expect(pickRegistryRow(only, null, null)).toBeUndefined();
+  });
+});
+
+describe('resolveTierEntry — split tier', () => {
+  it('an agent claim and a chat call resolve different models when the tier is split', async () => {
+    mockFindMany.mockResolvedValue([
+      row(null, null, 'shared-model'),
+      row(null, 'agent', 'agent-model'),
+      row(null, 'chat', 'chat-model'),
+    ]);
+
+    const agent = await resolveTierEntry('standard', TEAM_A, WS_A, 'agent');
+    const chat = await resolveTierEntry('standard', TEAM_A, WS_A, 'chat');
+    expect(agent).toMatchObject({ model: 'agent-model', source: 'team', surface: 'agent' });
+    expect(chat).toMatchObject({ model: 'chat-model', source: 'team', surface: 'chat' });
+  });
+
+  it('a surface with no row falls back to the NULL row, unannotated', async () => {
+    mockFindMany.mockResolvedValue([
+      row(null, null, 'shared-model'),
+      row(null, 'agent', 'agent-model'),
+    ]);
+
+    const chat = await resolveTierEntry('standard', TEAM_A, null, 'chat');
+    expect(chat.model).toBe('shared-model');
+    expect(chat.surface).toBeUndefined();
+  });
+
+  it('caches per surface, so one surface never serves the other its entry', async () => {
+    mockFindMany.mockResolvedValue([
+      row(null, 'agent', 'agent-model'),
+      row(null, 'chat', 'chat-model'),
+    ]);
+
+    expect((await resolveTierEntry('standard', TEAM_A, null, 'agent')).model).toBe('agent-model');
+    expect((await resolveTierEntry('standard', TEAM_A, null, 'chat')).model).toBe('chat-model');
+    expect((await resolveTierEntry('standard', TEAM_A, null, 'agent')).model).toBe('agent-model');
+    expect(mockFindMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('a team write flushes cached workspace entries too', async () => {
+    mockFindMany.mockResolvedValue([row(null, null, 'v1')]);
+    expect((await resolveTierEntry('standard', TEAM_A, WS_A, 'agent')).model).toBe('v1');
+
+    mockFindMany.mockResolvedValue([row(null, null, 'v2')]);
+    invalidateTierCache(TEAM_A, null);
+    expect((await resolveTierEntry('standard', TEAM_A, WS_A, 'agent')).model).toBe('v2');
   });
 });

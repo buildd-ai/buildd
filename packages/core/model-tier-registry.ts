@@ -1,12 +1,16 @@
 /**
  * Model tier registry — resolves premium-plus/premium/standard/budget → concrete provider + model.
  *
- * Resolution chain (first match wins):
- *   1. Workspace override row  (team_id=X, workspace_id=Y, tier=T)
- *   2. Team default row        (team_id=X, workspace_id=NULL, tier=T)
- *   3. Live catalog pick       (newest release in the tier's price band — see
+ * Resolution chain (first match wins). S is the caller's surface: 'agent' for
+ * claims, 'chat' for chat turns and inference calls. A row with surface=NULL
+ * serves both surfaces.
+ *   1. Workspace + surface row (team_id=X, workspace_id=Y, tier=T, surface=S)
+ *   2. Workspace row           (team_id=X, workspace_id=Y, tier=T, surface=NULL)
+ *   3. Team + surface row      (team_id=X, workspace_id=NULL, tier=T, surface=S)
+ *   4. Team row                (team_id=X, workspace_id=NULL, tier=T, surface=NULL)
+ *   5. Live catalog pick       (newest release in the tier's price band — see
  *                                model-catalog.ts; self-heals without a deploy)
- *   4. TIER_DEFAULTS           (code-level fallback, last resort — catalog empty/failed)
+ *   6. TIER_DEFAULTS           (code-level fallback, last resort — catalog empty/failed)
  *
  * Resolution happens at claim time so a registry update affects already-queued tasks
  * within the next 60-second cache window — no deploy needed. The catalog step
@@ -19,9 +23,9 @@
 import { db } from './db/client';
 import { modelTierRegistry } from './db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
-export type { Tier, TierProvider, TierEntry } from './model-tier-defaults';
-export { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
-import type { Tier, TierEntry, TierProvider } from './model-tier-defaults';
+export type { Tier, TierProvider, TierEntry, TierSurface } from './model-tier-defaults';
+export { TIER_DEFAULTS, TIERS, TIER_SURFACES } from './model-tier-defaults';
+import type { Tier, TierEntry, TierProvider, TierSurface } from './model-tier-defaults';
 import { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
 import { pickTierModel } from './model-catalog';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
@@ -34,23 +38,49 @@ export function mapRouterAlias(alias: string): Tier {
   return 'standard'; // 'sonnet' and anything else → standard
 }
 
-// In-memory cache keyed by `${teamId}:${workspaceId ?? 'null'}`.
+// In-memory cache keyed by `${teamId}:${workspaceId ?? 'null'}:${surface ?? 'shared'}`.
 // Flushed on any registry write via invalidateTierCache.
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds
 const cache = new Map<string, { entries: Map<Tier, TierEntry>; loadedAt: number }>();
 
-function cacheKey(teamId: string, workspaceId?: string | null): string {
-  return `${teamId}:${workspaceId ?? 'null'}`;
+function cacheKey(teamId: string, workspaceId: string | null | undefined, surface: TierSurface | null): string {
+  return `${teamId}:${workspaceId ?? 'null'}:${surface ?? 'shared'}`;
 }
 
-/** Flush the in-memory cache for a team (and optionally a specific workspace). */
-export function invalidateTierCache(teamId: string, workspaceId?: string | null): void {
-  // Always flush team-wide key
-  cache.delete(cacheKey(teamId, null));
-  // If a workspace is specified, flush that key too
-  if (workspaceId) {
-    cache.delete(cacheKey(teamId, workspaceId));
+/**
+ * Flush the in-memory cache for a team. Every key of the team goes, whatever
+ * `workspaceId` says: a workspace key can hold a team row, so a team-row write
+ * must flush it too.
+ */
+export function invalidateTierCache(teamId: string, _workspaceId?: string | null): void {
+  const prefix = `${teamId}:`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
   }
+}
+
+interface RegistryRowLike {
+  workspaceId: string | null;
+  surface?: string | null;
+}
+
+/**
+ * Pick the row that serves `surface` from one team's rows for one tier, in the
+ * order workspace+surface → workspace → team+surface → team. `surface` null
+ * reads the shared (NULL-surface) rows only: the view Settings edits when a
+ * tier is not split.
+ */
+export function pickRegistryRow<R extends RegistryRowLike>(
+  rows: readonly R[],
+  workspaceId: string | null | undefined,
+  surface: TierSurface | null,
+): R | undefined {
+  const at = (ws: string | null, s: TierSurface | null) =>
+    rows.find(r => r.workspaceId === ws && (r.surface ?? null) === s);
+  return (workspaceId && surface ? at(workspaceId, surface) : undefined)
+    ?? (workspaceId ? at(workspaceId, null) : undefined)
+    ?? (surface ? at(null, surface) : undefined)
+    ?? at(null, null);
 }
 
 /**
@@ -110,8 +140,13 @@ async function resolveFromCatalog(
 }
 
 /**
- * Resolve the effective tier entry for a given team and optional workspace.
- * Returns the entry + source annotation ('workspace' | 'team' | 'catalog' | 'default').
+ * Resolve the effective tier entry for a given team, optional workspace and
+ * surface. Returns the entry + source annotation ('workspace' | 'team' |
+ * 'catalog' | 'default'); `surface` is set on the entry when a surface row
+ * served it.
+ *
+ * Every caller names its surface: claims pass 'agent', chat and inference
+ * calls pass 'chat'. `null` reads the shared rows only.
  *
  * The returned entry is what gets passed to the runner as { model, provider, ... }.
  * For provider='openrouter', the backend implementation is out of scope but the
@@ -124,10 +159,11 @@ async function resolveFromCatalog(
 export async function resolveTierEntry(
   tier: Tier,
   teamId: string,
-  workspaceId?: string | null,
+  workspaceId: string | null | undefined,
+  surface: TierSurface | null,
   runnerCliVersion?: string | null,
 ): Promise<TierEntry> {
-  const key = cacheKey(teamId, workspaceId);
+  const key = cacheKey(teamId, workspaceId, surface);
   const now = Date.now();
 
   // Check cache
@@ -138,7 +174,7 @@ export async function resolveTierEntry(
   }
 
   try {
-    // Fetch both workspace override and team default in one query
+    // Every row for the tier (workspace, team, each surface) in one query.
     const rows = await db.query.modelTierRegistry.findMany({
       where: and(
         eq(modelTierRegistry.teamId, teamId),
@@ -146,18 +182,14 @@ export async function resolveTierEntry(
       ),
     });
 
-    // Prefer workspace override over team default
-    const workspaceRow = workspaceId
-      ? rows.find(r => r.workspaceId === workspaceId)
-      : undefined;
-    const teamRow = rows.find(r => r.workspaceId === null);
-    const row = workspaceRow ?? teamRow;
+    const row = pickRegistryRow(rows, workspaceId, surface);
 
     if (row) {
       const entry: TierEntry = {
         provider: row.provider as TierProvider,
         model: row.model,
-        source: workspaceRow ? 'workspace' : 'team',
+        source: row.workspaceId ? 'workspace' : 'team',
+        ...(row.surface ? { surface: row.surface as TierSurface } : {}),
         ...(row.defaultEffort ? { defaultEffort: row.defaultEffort as TierEntry['defaultEffort'] } : {}),
         ...(row.defaultMaxTurns != null ? { defaultMaxTurns: row.defaultMaxTurns } : {}),
       };
@@ -181,7 +213,7 @@ export async function resolveTierEntry(
   // the newest model in MODEL_MIN_CLI_VERSION; anything newer needs a floor
   // row there (a code change, so a deploy) first — see resolveFromCatalog.
   // Deliberately NOT cached in `cache` above — the pick can depend on the
-  // claiming runner's CLI version, and `cache` is keyed by team:workspace
+  // claiming runner's CLI version, and `cache` is keyed by team:workspace:surface
   // only, so caching it there would serve one runner's pick to another.
   // getCachedOpenRouterCatalog() already caches the expensive part (the
   // network fetch); pickTierModel is a cheap in-memory scan.
@@ -200,15 +232,16 @@ export function resolveTierEntrySync(tier: Tier): TierEntry {
 }
 
 /**
- * Return the effective tier map for a workspace (all three tiers resolved).
- * Used by manage_model_tiers list action.
+ * Return the effective tier map for a workspace and surface (every tier
+ * resolved). `surface` null reads the shared rows only.
  */
 export async function resolveAllTiers(
   teamId: string,
-  workspaceId?: string | null,
+  workspaceId: string | null | undefined,
+  surface: TierSurface | null,
 ): Promise<Record<Tier, TierEntry>> {
   const entries = await Promise.all(
-    TIERS.map((tier) => resolveTierEntry(tier, teamId, workspaceId)),
+    TIERS.map((tier) => resolveTierEntry(tier, teamId, workspaceId, surface)),
   );
   return Object.fromEntries(
     TIERS.map((tier, i) => [tier, entries[i]]),

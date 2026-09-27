@@ -310,7 +310,7 @@ describe('inferenceCall — provider routing', () => {
   it('resolves the tier for the caller team and workspace', async () => {
     const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[]}'))) as any;
     await inferenceCall(baseParams({ fetcher, workspaceId: 'ws-9' }));
-    expect(mockResolveTierEntry).toHaveBeenCalledWith('budget', 'team-1', 'ws-9');
+    expect(mockResolveTierEntry).toHaveBeenCalledWith('budget', 'team-1', 'ws-9', 'chat');
   });
 
   it('refuses a provider that cannot serve single-shot calls', async () => {

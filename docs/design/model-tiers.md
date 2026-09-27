@@ -10,6 +10,10 @@ assertions:
     type: "symbol"
     name: "resolveEffectiveModel"
     path: "packages/core/model-router.ts"
+  - id: "tier-registry-surface-precedence"
+    type: "symbol"
+    name: "pickRegistryRow"
+    path: "packages/core/model-tier-registry.ts"
   - id: "tier-registry-tests"
     type: "test_file"
     path: "packages/core/__tests__/model-tier-registry.test.ts"
@@ -75,12 +79,14 @@ CREATE TABLE model_tier_registry (
   -- Anthropic/Codex: the model ID passed to the SDK (e.g. 'claude-fable-5')
   -- OpenRouter: the openrouter.ai model string (e.g. 'mistralai/mistral-large')
   model       TEXT NOT NULL,
+  -- NULL = serves agent runs and chat; 'agent' | 'chat' = that surface only
+  surface     TEXT,
   -- Optional per-tier defaults; NULL means inherit runner/role config
   default_effort    TEXT CHECK (default_effort IN ('low', 'medium', 'high', 'xhigh', 'max')),
   default_max_turns INT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (team_id, workspace_id, tier)
+  UNIQUE (team_id, workspace_id, tier, surface)
 );
 ```
 
@@ -107,16 +113,38 @@ export const TIER_DEFAULTS: Record<Tier, TierEntry> = {
 
 These are the **last resort** — a team that has configured its registry never sees them.
 
-#### Lookup at claim time
+#### Per-surface rows
+
+A tier is asked for by two surfaces with different workloads and different
+billing: **agent** runs (claims, served on runner credentials, usually OAuth)
+and **chat** (chat turns and `inferenceCall`, served on API keys). A row with
+`surface` NULL serves both, which is how every row written before the column
+existed behaves, so the migration needed no backfill. An admin splits a tier by
+writing an `agent` or `chat` row next to it; that row wins over the NULL row at
+the same scope, and the surface without its own row keeps reading the NULL row.
+
+Callers always name their surface: the claim route passes `agent`; chat
+(`lib/chat/models.ts`, `lib/chat/tier-info.ts`) and `inferenceCall` pass `chat`.
+Tier pools (docs/design/tier-model-pools.md) take each pool's incumbent, and
+`incumbentRoute`, from the entry that pool's surface resolves to.
+
+#### Lookup
 
 ```
-resolveTierEntry(tier, teamId, workspaceId):
-  1. SELECT … WHERE team_id=? AND workspace_id=? AND tier=?   -- workspace override
-  2. SELECT … WHERE team_id=? AND workspace_id IS NULL AND tier=?  -- team default
-  3. TIER_DEFAULTS[tier]                                           -- code fallback
+resolveTierEntry(tier, teamId, workspaceId, surface, runnerCliVersion?):
+  one SELECT … WHERE team_id=? AND tier=?, then pickRegistryRow:
+  1. workspace_id=?    AND surface=?        -- workspace + surface
+  2. workspace_id=?    AND surface IS NULL  -- workspace
+  3. workspace_id NULL AND surface=?        -- team + surface
+  4. workspace_id NULL AND surface IS NULL  -- team
+  5. live catalog pick (model-catalog.ts)
+  6. TIER_DEFAULTS[tier]                    -- code fallback
 ```
 
-The resolver uses a 60-second in-memory cache per (team, workspace) tuple, flushed on any registry write. This prevents per-claim DB hits without stale-config risk in practice.
+`surface` null reads the shared rows only (steps 2 and 4). Settings and the
+catalog audit use that view for the one-picker case.
+
+The resolver uses a 60-second in-memory cache per (team, workspace, surface), flushed for the whole team on any registry write. This prevents per-claim DB hits without stale-config risk in practice.
 
 ### 3. Resolution chain and timing
 
@@ -285,19 +313,22 @@ Recommend extending `manage_workspaces` is **rejected**: tiers are team-level co
 manage_model_tiers: {
   action: 'list' | 'set' | 'delete';
 
-  // list: returns effective registry (workspace override → team default → code fallback)
+  // list: returns effective registry (lookup order above)
   //   required: workspaceId OR teamId
-  //   returns: { premium: TierEntry, standard: TierEntry, budget: TierEntry }
-  //            each entry annotated with its source ('workspace' | 'team' | 'default')
+  //   returns: { [tier]: TierEntry & { bySurface: { agent: TierEntry, chat: TierEntry } } }
+  //            each entry annotated with its source ('workspace' | 'team' | 'catalog' | 'default');
+  //            a surface entry carries `surface` when its own row served it. A split tier
+  //            lists one line per surface.
 
   // set: upsert a registry row
-  //   required: tier ('premium'|'standard'|'budget'), provider, model
-  //   optional: workspaceId (if absent → team-wide), defaultEffort, defaultMaxTurns
+  //   required: tier, provider, model
+  //   optional: workspaceId (if absent → team-wide), surface ('agent'|'chat'; if absent →
+  //             the row serving both), defaultEffort, defaultMaxTurns
   //   effect: takes effect on next claim cycle (within 60s cache TTL)
 
-  // delete: remove an override row, falling back to next level in chain
+  // delete: remove a row, falling back to next level in chain
   //   required: tier
-  //   optional: workspaceId (if absent → delete team default, exposing code fallback)
+  //   optional: workspaceId (if absent → team row), surface (if absent → the shared row)
 }
 ```
 
@@ -335,4 +366,12 @@ manage_model_tiers: {
 - **Per-task dynamic tier changes** — tier is set at creation and immutable. Downshifting at claim time is already handled by the budget/spike gates in `model-router.ts`.
 - **Backfilling `tasks.tier` on historical records** — NULL reads as "resolution chain from role," which is correct for all historical tasks.
 - **Removing `haiku/sonnet/opus` from `SkillModel`** — backward-compat aliases stay until callers migrate.
-- **UI for the model-tiers registry** — admin MCP action is sufficient for phase 1.
+
+---
+
+## Settings → Model tiers
+
+One row per tier. With **split** off, one picker writes the shared row and
+serves both surfaces. With **split** on, two pickers labelled `agent` and
+`chat` each write their surface's row; a surface with no row yet shows the
+shared model until it is applied. Turning split off deletes the surface rows.

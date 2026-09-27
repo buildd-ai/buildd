@@ -1345,6 +1345,13 @@
       "when": 1790484324284,
       "tag": "0192_lyrical_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1790512122482,
+      "tag": "0193_majestic_kabuki",
+      "breakpoints": true
     }
   ]
 }
