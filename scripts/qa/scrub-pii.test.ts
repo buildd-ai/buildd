@@ -85,8 +85,10 @@ function sqlCoverage(sql: string) {
 // ids, timestamps-as-text, cron/timezone, colours, counts, numeric/uuid json.
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
-  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes'],
-  team_members: ['chat_allowed_tool_groups'], // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
+  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes',
+    'chat_default_tier'], // a chat tier name (CHAT_TIER_NAMES) or null
+  team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
+    'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
   accounts: ['monthly_cost_month', 'budget_alerts_sent'],
   missions: ['context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],

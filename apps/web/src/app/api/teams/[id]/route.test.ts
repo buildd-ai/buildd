@@ -113,6 +113,32 @@ describe('GET /api/teams/[id] — response columns', () => {
   });
 });
 
+describe('PATCH /api/teams/[id] — chat tier policy', () => {
+  it('an admin sets the default tier and turns the new-session cap on', async () => {
+    const res = await PATCH(patchReq({ chatDefaultTier: 'standard', chatCapNewSessionTier: true }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ chatDefaultTier: 'standard', chatCapNewSessionTier: true });
+  });
+
+  it('null default tier is auto', async () => {
+    const res = await PATCH(patchReq({ chatDefaultTier: null }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ chatDefaultTier: null });
+  });
+
+  it('rejects a tier chat does not have, or a non-boolean cap', async () => {
+    expect((await PATCH(patchReq({ chatDefaultTier: 'premium-plus' }), ctx)).status).toBe(400);
+    expect((await PATCH(patchReq({ chatCapNewSessionTier: 'yes' }), ctx)).status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('a member cannot change it', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    expect((await PATCH(patchReq({ chatCapNewSessionTier: true }), ctx)).status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+});
+
 describe('PATCH /api/teams/[id] — chat budgets', () => {
   it('an admin can raise the team and per-person daily chat budgets', async () => {
     const res = await PATCH(patchReq({ chatDailyBudgetUsd: 150, chatUserDailyBudgetUsd: 40.5 }), ctx);
