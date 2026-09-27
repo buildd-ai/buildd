@@ -298,6 +298,30 @@ describe('explainTask', () => {
     expect(answer.because.some(l => l.refs.prNumber === 55)).toBe(true);
   });
 
+  // Friction 1dd98bb2: a PR closed months ago on GitHub read as "waiting on
+  // you to merge 1 open PR #N" — a false headline, since GitHub will not let
+  // a closed PR merge. The remedy is record_pr_supersession or investigation,
+  // never a merge click.
+  it('reports a completed task whose PR closed unmerged as pr_closed_unmerged, never as an open merge', async () => {
+    taskRows = [
+      task({
+        id: 'task-1',
+        status: 'completed',
+        workers: [worker({ prNumber: 34, prUrl: 'https://example.invalid/34', prLifecycleStatus: 'closed' })],
+      }),
+    ];
+
+    const result = await explainTask('task-1');
+    const answer = result!.subjects[0];
+    expect(answer.state).toBe('awaiting_merge');
+    expect(answer.waitingOn?.kind).toBe('pr_closed_unmerged');
+    expect(answer.situation.headline).toContain('closed without merging');
+    expect(answer.situation.headline).not.toContain('open PR');
+    expect(answer.situation.headline).not.toContain('waiting on you to merge');
+    expect(answer.nextAction).toContain('record_pr_supersession');
+    expect(answer.because.some(l => l.claim.includes('record_pr_supersession'))).toBe(true);
+  });
+
   // A request-changes review queued a builder-after-review attempt. The PR is
   // still open and unmerged, but the owner has nothing to merge yet — the next
   // push is the platform's. "Waiting on you to merge" here is the false headline.
@@ -557,5 +581,32 @@ describe('explainWorkspace', () => {
     // A sequential `for...await` loop would never have more than one
     // `canCompleteMission` call in flight at once.
     expect(maxInFlightCanCompleteMission).toBeGreaterThan(1);
+  });
+
+  // Friction 1dd98bb2: closed-unmerged PRs from months ago ranked ahead of a
+  // genuinely open PR from today, burying the live ask under dead ones. Titles
+  // are chosen so alphabetical tie-break would put the closed one FIRST if the
+  // rank were not fixed — the ordering below can only hold if the two now
+  // carry different ranks.
+  it('ranks a live open PR above a PR that closed without merging, not below it', async () => {
+    taskRows = [
+      task({
+        id: 'task-old-closed', missionId: null, title: 'Ancient task',
+        workers: [worker({ id: 'w-old', prNumber: 34, prUrl: 'https://example.invalid/34', prLifecycleStatus: 'closed' })],
+      }),
+      task({
+        id: 'task-new-open', missionId: null, title: 'Zebra task',
+        workers: [worker({ id: 'w-new', prNumber: 900, prUrl: 'https://example.invalid/900' })],
+      }),
+    ];
+
+    const result = await explainWorkspace('ws-1');
+    const openIdx = result.subjects.findIndex(s => s.subject.taskId === 'task-new-open');
+    const closedIdx = result.subjects.findIndex(s => s.subject.taskId === 'task-old-closed');
+    expect(openIdx).toBeGreaterThanOrEqual(0);
+    expect(closedIdx).toBeGreaterThanOrEqual(0);
+    expect(openIdx).toBeLessThan(closedIdx);
+    expect(result.subjects[openIdx].waitingOn?.kind).toBe('merge');
+    expect(result.subjects[closedIdx].waitingOn?.kind).toBe('pr_closed_unmerged');
   });
 });
