@@ -106,16 +106,16 @@ export function ConversationList({ items, currentId }: { items: readonly Convers
   if (items.length === 0) return null;
   return (
     <nav data-testid="conversation-list" aria-label="Conversations" className="mb-8">
-      <div className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">Recent</div>
-      <ul className="divide-y divide-border-default border-2 border-border-strong bg-card">
+      <div className="mb-2 px-1 font-convo text-[13px] font-medium text-text-muted">Pick up where you left off</div>
+      <ul className="divide-y divide-[var(--convo-line)] overflow-hidden rounded-[14px] bg-[var(--convo-soft)]">
         {items.map(c => (
           <li key={c.id}>
             <Link
               href={`/app/chat/${c.id}`}
               aria-current={c.id === currentId ? 'page' : undefined}
-              className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-card-hover"
+              className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-[var(--convo-soft)]"
             >
-              <span className={`min-w-0 flex-1 truncate font-mono text-[13.5px] ${c.untitled ? 'text-text-muted' : 'font-semibold text-text-primary'}`}>{c.title}</span>
+              <span className={`min-w-0 flex-1 truncate font-convo text-[14.5px] ${c.untitled ? 'text-text-muted' : 'font-medium text-text-primary'}`}>{c.title}</span>
               <ZonedTime value={c.lastMessageAt} format="datetime-short" className="shrink-0 font-mono text-[11.5px] text-text-muted" />
             </Link>
           </li>

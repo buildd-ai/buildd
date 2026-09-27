@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import type { UnifiedQuestion } from './question-hero';
+import { useKeyHints } from '@/components/KeyHints';
 
 interface Props {
   question: UnifiedQuestion;
@@ -89,6 +90,9 @@ export default function QuestionHero({
   const [freeText, setFreeText] = useState('');
   const { options } = question;
   const busy = sending !== null;
+  // Number keys always answer; the keycaps and "Press 1 or 2" show only for
+  // people who turned on keyboard hints (components/KeyHints.tsx).
+  const hints = useKeyHints();
 
   useEffect(() => {
     if (!enableKeys || sent || options.length === 0) return;
@@ -153,7 +157,7 @@ export default function QuestionHero({
                       : 'bg-surface-2 text-text-primary border-border-strong'
                   }`}
                 >
-                  {options.length <= 9 && density === 'hero' && (
+                  {hints && enableKeys && options.length <= 9 && density === 'hero' && (
                     <kbd
                       aria-hidden="true"
                       className={`hidden md:grid absolute top-4 right-4 w-8 h-8 place-items-center border-2 font-mono text-[13px] font-semibold ${
@@ -166,7 +170,7 @@ export default function QuestionHero({
                   <span className={`block font-mono text-[11px] uppercase tracking-[2px] font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
                     {o.recommended ? <>Recommended<span className="hidden md:inline"> by the agent</span></> : 'Alternative'}
                   </span>
-                  <span className={`block ${d.optionLabel} ${density === 'hero' ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
+                  <span className={`block ${d.optionLabel} ${density === 'hero' && hints && enableKeys ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
                     {sending === o.label ? 'Sending…' : o.label}
                   </span>
                   {o.description && (
@@ -206,7 +210,7 @@ export default function QuestionHero({
             </button>
           </form>
 
-          {options.length > 0 && enableKeys && (
+          {options.length > 0 && enableKeys && hints && (
             <p className="hidden md:flex mt-4 items-center gap-1.5 font-mono text-[12px] text-text-muted">
               Press
               {options.slice(0, Math.min(options.length, 3)).map((_, i) => (

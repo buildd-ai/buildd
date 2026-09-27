@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import SignOutButton from './SignOutButton';
 import PersonalProviderKeys from './PersonalProviderKeys';
+import KeyboardHintsSetting from './KeyboardHintsSetting';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { getInitials } from './initials';
@@ -33,6 +34,8 @@ export default async function AccountSettingsPage() {
           </div>
         </div>
       </section>
+
+      <KeyboardHintsSetting initial={user.showKeyboardHints === true} />
 
       {/* What interactive AI runs on for you; your own key only when the team's policy allows it. */}
       <PersonalProviderKeys teamId={currentTeamId} isAdmin={isTeamAdmin} />

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
 import VisualReviewStrip from '../../(protected)/missions/[id]/VisualReviewStrip';
+import { KeyHintsProvider, keyHintsFromQuery } from '@/components/KeyHints';
 import { mockWorkers, type FixtureState } from './fixtures-data';
 import { FIXTURE_VIEWS, VISUAL_REVIEW_FIXTURE_STATE, isFixtureView, visualReviewFixtureShots } from './visual-review-fixtures';
 
@@ -11,15 +12,20 @@ export default function DevFixturesPage() {
     // (typeof window checks) diverges between the server and client and causes a
     // hydration mismatch, so start from the default and sync on the client.
     const [state, setState] = useState<string>('waiting-input');
+    // `?hints=1`: the keyboard-hints preference on (components/KeyHints.tsx).
+    const [hints, setHints] = useState(false);
 
     useEffect(() => {
-        const param = new URLSearchParams(window.location.search).get('state');
+        const q = new URLSearchParams(window.location.search);
+        const param = q.get('state');
         if (isFixtureView(param)) setState(param);
+        setHints(keyHintsFromQuery(q));
     }, []);
 
     const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
 
     return (
+        <KeyHintsProvider value={hints}>
         <div className="min-h-screen bg-surface-1 p-8">
             <div className="max-w-4xl mx-auto">
                 <div className="mb-6">
@@ -80,5 +86,6 @@ export default function DevFixturesPage() {
                 )}
             </div>
         </div>
+        </KeyHintsProvider>
     );
 }

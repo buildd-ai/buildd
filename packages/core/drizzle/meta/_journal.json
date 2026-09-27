@@ -1338,6 +1338,13 @@
       "when": 1790482790092,
       "tag": "0191_keen_iron_fist",
       "breakpoints": true
+    },
+    {
+      "idx": 192,
+      "version": "7",
+      "when": 1790484324284,
+      "tag": "0192_lyrical_talon",
+      "breakpoints": true
     }
   ]
 }

@@ -27,7 +27,8 @@ function useIsPhone() {
   return phone;
 }
 
-export const CHIP = 'inline-flex min-h-9 items-center gap-1.5 border-[1.5px] border-border-strong px-2.5 font-mono text-[12.5px] font-medium text-text-primary hover:bg-surface-3 aria-expanded:bg-surface-3';
+/** The composer's control chips: soft, like the conversation they sit under (docs/design/chat-canvas.md). */
+export const CHIP = 'inline-flex min-h-9 items-center gap-1.5 rounded-[999px] bg-[var(--convo-soft)] px-3 font-mono text-[12.5px] font-medium text-text-secondary ring-1 ring-inset ring-[var(--convo-line)] hover:bg-[var(--convo-me)] hover:text-text-primary aria-expanded:bg-[var(--convo-me)] aria-expanded:text-text-primary';
 
 export interface ComposerMenuProps {
   /** Accessible name of the trigger. */
