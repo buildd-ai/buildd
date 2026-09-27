@@ -1429,11 +1429,18 @@ export async function PATCH(
         return NextResponse.json({ ...autoDetectRefusal, gate: GATE_SLUGS.MISSION_BASE_ADOPTION, frictionSignature }, { status: 400 });
       }
 
-      // pr_required fallback: a task scoped as "rebase/merge PR #N" can lose
-      // its race — the referenced PR merges via a concurrent path before this
-      // worker acts, leaving no new diff to open a PR for. Rather than force
-      // a fresh, empty PR just to satisfy the gate, accept the referenced PR
-      // if it's already merged: DONE = MERGED regardless of who merged it.
+      // pr_required fallback: a task scoped as "rebase/fix PR #N" doesn't own a
+      // branch of its own — the worker pushes straight to PR #N's existing
+      // branch, which the auto-detect above never sees because it only looks
+      // up PRs whose head is `worker.branch`. Accept the referenced PR two
+      // ways instead of demanding a fresh, empty PR:
+      //   1. it's already merged — DONE = MERGED regardless of who merged it
+      //      (handles the worker losing a race to a concurrent merge).
+      //   2. it's still open, but its head SHA matches the last commit this
+      //      worker reported — proof the worker's own push IS the PR's
+      //      current state, not just that the task text happens to mention a
+      //      number. A merge/review verdict can land after this worker's
+      //      session ends, so completion can't wait for `merged` here.
       if (outputReq === 'pr_required' && !hasPR && repoWithInstallation) {
         const referencedText = `${terminalTaskRow[0]?.title ?? ''} ${terminalTaskRow[0]?.description ?? ''}`;
         const referencedPrNumbers = [...new Set(
@@ -1446,7 +1453,10 @@ export async function PATCH(
               repoWithInstallation.installation.installationId,
               `/repos/${repoWithInstallation.fullName}/pulls/${prNumber}`,
             );
-            if (pr?.merged) {
+            const headShaMatch = Boolean(
+              worker.lastCommitSha && pr?.head?.sha && pr.head.sha === worker.lastCommitSha,
+            );
+            if (pr?.merged || headShaMatch) {
               await db.update(workers).set({
                 prUrl: pr.html_url,
                 prNumber: pr.number,

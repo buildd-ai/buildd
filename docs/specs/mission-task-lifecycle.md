@@ -85,7 +85,8 @@ an enum) to allow extension without migrations.
 - A task with an active worker (status in `running`, `starting`, `waiting_input`,
   `idle`) MUST NOT be reset to `pending` while that worker is alive.
 - `outputRequirement = 'pr_required'` MUST block `complete_task` unless
-  `workers.prUrl` is set.
+  `workers.prUrl` is set, an open PR is auto-detected on the worker's own
+  branch, or the referenced-PR fallback (AC-3j) resolves one.
 - `outputRequirement = 'auto'` (the default) MUST block `complete_task` when the
   worker has committed at least one commit — or has uncommitted modifications
   to tracked files sitting in its worktree — and has neither a tracked/detected
@@ -243,6 +244,20 @@ an enum) to allow extension without migrations.
   (`packages/core/mcp-tools.ts`) and can call `create_artifact` itself within
   the same session — salvaging there too would risk a stray duplicate
   artifact once that retry succeeds.
+- AC-3j: GIVEN `outputRequirement = 'pr_required'`, no PR on the worker's own
+  branch, and the task's `title`/`description` reference a PR by number
+  (`#N`) WHEN `complete_task` is called THEN that PR satisfies the gate two
+  ways: (1) it is already `merged` (a concurrent/racing merge left the worker
+  with no diff of its own to open a PR for — DONE = MERGED regardless of who
+  merged it), or (2) it is still open but its GitHub head SHA equals
+  `workers.lastCommitSha` — proof the worker's own push is that PR's current
+  state, which covers a task scoped as "rebase/fix PR #N, push to its branch,
+  request review" where the worker never owns a branch of its own and review/
+  merge can only complete after this worker's session ends. A referenced PR
+  that is open with a DIFFERENT head SHA satisfies neither arm and the gate
+  still refuses. GIVEN the same shape via `create_pr`'s `prUrl` parameter
+  instead (registering an externally-created PR), completion succeeds too,
+  unrelated to this fallback.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`

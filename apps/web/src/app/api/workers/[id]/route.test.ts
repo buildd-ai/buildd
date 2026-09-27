@@ -4047,6 +4047,109 @@ describe('PATCH /api/workers/[id]', () => {
       expect(data.hint).toBe('create_pr');
     });
 
+    it('pr_required + referenced PR is open but its head SHA matches the worker\'s last commit → completes and records it', async () => {
+      // Covers the "rebase an EXISTING PR's own branch, push, request review"
+      // shape: the worker's own branch never carries the PR (auto-detect above
+      // finds nothing), and the referenced PR is still open when complete_task
+      // runs because review/merge happen asynchronously after this session
+      // ends. The worker's own commit landing as the PR's current head is
+      // proof the deliverable is this PR, without waiting for it to merge.
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({ ...baseWorker, lastCommitSha: 'abc123def' })
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/15', prNumber: 15 });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase and fix PR #15',
+        description: 'Push fixes to PR #15\'s branch and request review.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
+        if (path === '/repos/org/repo/pulls/15') {
+          return Promise.resolve({
+            number: 15,
+            merged: false,
+            html_url: 'https://github.com/org/repo/pull/15',
+            head: { sha: 'abc123def' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.prNumber).toBe(15);
+    });
+
+    it('pr_required + referenced PR is open with a different head SHA → still refuses completion', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, lastCommitSha: 'abc123def' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase and fix PR #15',
+        description: 'Push fixes to PR #15\'s branch and request review.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/15') {
+          return Promise.resolve({
+            number: 15,
+            merged: false,
+            html_url: 'https://github.com/org/repo/pull/15',
+            head: { sha: 'someone-elses-commit' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.hint).toBe('create_pr');
+    });
+
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
     // Mission artifacts are inserted with workerId NULL by construction (see
     // api/missions/[id]/artifacts/route.ts), and MCP create_artifact with a
