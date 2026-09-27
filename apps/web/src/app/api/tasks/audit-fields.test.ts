@@ -15,4 +15,17 @@ describe('terminalAuditFields', () => {
     expect(exists).toContain('"tasks"."id"');
     expect(exists).not.toMatch(/=\s*"id"/);
   });
+
+  // Audit mode (GET /api/tasks?status=completed|failed|cancelled) is a worker
+  // sandbox's only DB-free path for terminal-history analysis, and it dropped
+  // both fields a role/creation-site attribution needs — a caller could see a
+  // task landed but not which role or creation site it came from, forcing a
+  // qualitative estimate instead of an exact bucket count (see the friction
+  // report this fixes).
+  it('includes roleSlug and creationSource for role/creation-site attribution', () => {
+    expect(terminalAuditFields).toHaveProperty('roleSlug', tasks.roleSlug);
+    expect(terminalAuditFields).toHaveProperty('creationSource', tasks.creationSource);
+    expect(rendered).toContain('"role_slug"');
+    expect(rendered).toContain('"creation_source"');
+  });
 });

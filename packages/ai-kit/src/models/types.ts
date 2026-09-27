@@ -1,5 +1,5 @@
 /**
- * Wire and public types for `@buildd/ai-kit/models`.
+ * Wire and public types for `@builddai/ai-kit/models`.
  *
  * The wire shapes mirror buildd's `POST /api/ai/plan` and `POST /api/ai/usage`
  * (`apps/web/src/lib/ai/plan.ts`, `usage.ts`). `contract.test.ts` checks the

@@ -1,4 +1,4 @@
-# @buildd/ai-kit changelog
+# @builddai/ai-kit changelog
 
 Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
@@ -8,6 +8,10 @@ bumps; new optional data parts are minor.
 
 First published release. (`0.0.1` was the in-repo P0 version and was never
 published to npm; its placeholder `/models` and `/decide` types are gone.)
+
+Published as `@builddai/ai-kit` (the npm user scope of the `builddai`
+account). The in-repo name was `@buildd/ai-kit`, which was never published;
+update any `@buildd/ai-kit` imports to `@builddai/ai-kit`.
 
 - `/chat/contract` (P0 of `docs/design/shared-ai-kit.md`): message and
   tool-part types, object refs, the `data-step`, `data-handoff` and

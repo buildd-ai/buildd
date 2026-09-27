@@ -27,7 +27,7 @@ export type UsagePlanSource = (typeof USAGE_PLAN_SOURCES)[number];
 
 /**
  * What kind of call a receipt is for. `chat` / `inference` are the plan
- * surfaces; `decision` is a Jev call (`@buildd/ai-kit/decide`), which has no
+ * surfaces; `decision` is a Jev call (`@builddai/ai-kit/decide`), which has no
  * tier and no plan. Stored in `ai_usage.surface`, so decision spend is
  * reported apart from budget-tier chat. Not the plan's free `kind` label.
  */
