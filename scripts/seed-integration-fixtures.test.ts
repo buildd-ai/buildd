@@ -57,11 +57,14 @@ function fakeDb() {
       // Template order: (apiAccountId, workspaceId), (adminAccountId, workspaceId).
       const [apiAccountId, wsA, adminAccountId, wsB] = values as string[];
       const out: Array<{ account_id: string }> = [];
-      for (const [account_id, workspace_id, can_create] of [
-        [apiAccountId, wsA, false], [adminAccountId, wsB, true],
-      ] as Array<[string, string, boolean]>) {
-        if (links.some((l) => l.account_id === account_id && l.workspace_id === workspace_id)) continue;
-        links.push({ account_id, workspace_id, can_create });
+      for (const [account_id, workspace_id] of [[apiAccountId, wsA], [adminAccountId, wsB]]) {
+        const existing = links.find((l) => l.account_id === account_id && l.workspace_id === workspace_id);
+        if (existing) {
+          // ON CONFLICT DO UPDATE ... WHERE not already claim+create
+          if (!existing.can_create) { existing.can_create = true; out.push({ account_id }); }
+          continue;
+        }
+        links.push({ account_id, workspace_id, can_create: true });
         out.push({ account_id });
       }
       return out;
@@ -127,7 +130,8 @@ describe('seedFixtures', () => {
     const ws = db.workspaces[0];
     expect(ws.team_id).toBe('parent-team');
     expect(db.links).toContainEqual({ account_id: admin!.id, workspace_id: ws.id, can_create: true });
-    expect(db.links).toContainEqual({ account_id: 'existing-worker', workspace_id: ws.id, can_create: false });
+    // Both keys create tasks in the suite, so both links carry canCreate.
+    expect(db.links).toContainEqual({ account_id: 'existing-worker', workspace_id: ws.id, can_create: true });
   });
 
   test('creates the worker account when only the admin account already exists', async () => {
@@ -150,6 +154,17 @@ describe('seedFixtures', () => {
     expect(result).toEqual({ seeded: true });
     expect(db.teams).toHaveLength(1);
     expect(db.accounts.every((a) => a.team_id === 'pre-existing-team')).toBe(true);
+  });
+
+  test('raises an existing claim-only link to claim+create', async () => {
+    const db = fakeDb();
+    db.accounts.push({ id: 'existing-worker', api_key: hashApiKey(API_KEY), team_id: 'parent-team', level: 'worker' });
+    db.workspaces.push({ id: 'ws-existing', team_id: 'parent-team', name: 'integration-test-workspace' });
+    db.links.push({ account_id: 'existing-worker', workspace_id: 'ws-existing', can_create: false });
+
+    await seedFixtures(db.sql, API_KEY, ADMIN_API_KEY);
+
+    expect(db.links.find((l) => l.account_id === 'existing-worker')?.can_create).toBe(true);
   });
 
   test('reuses the fixture workspace instead of creating a second one', async () => {

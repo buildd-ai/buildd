@@ -123,14 +123,18 @@ export async function seedFixtures(sql: SqlClient, apiKey: string, adminApiKey: 
   }
 
   // 4. Links: a restricted workspace is reachable only through these
-  // (lib/workspace-access.ts). The PK (account_id, workspace_id) makes this a no-op
-  // when they already exist.
+  // (lib/workspace-access.ts). Both keys create tasks in the integration suite
+  // (concurrency, worker-state-machine, artifacts use BUILDD_API_KEY), so both
+  // need canCreate — without it POST /api/tasks is a 403. An existing link is
+  // raised to claim+create rather than left as it was.
   const linked = await sql`
     INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create)
     VALUES
-      (${apiAccountId}, ${workspaceId}, true, false),
+      (${apiAccountId}, ${workspaceId}, true, true),
       (${adminAccountId}, ${workspaceId}, true, true)
-    ON CONFLICT (account_id, workspace_id) DO NOTHING
+    ON CONFLICT (account_id, workspace_id)
+      DO UPDATE SET can_claim = true, can_create = true
+      WHERE account_workspaces.can_claim IS NOT TRUE OR account_workspaces.can_create IS NOT TRUE
     RETURNING account_id
   ` as Array<{ account_id: string }>;
   if (linked.length > 0) seeded = true;
