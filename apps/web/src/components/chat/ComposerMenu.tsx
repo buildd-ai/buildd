@@ -27,8 +27,12 @@ function useIsPhone() {
   return phone;
 }
 
-/** The composer's control chips: soft, like the conversation they sit under (docs/design/chat-canvas.md). */
-export const CHIP = 'inline-flex min-h-9 items-center gap-1.5 rounded-[999px] bg-[var(--convo-soft)] px-3 font-mono text-[12.5px] font-medium text-text-secondary ring-1 ring-inset ring-[var(--convo-line)] hover:bg-[var(--convo-me)] hover:text-text-primary aria-expanded:bg-[var(--convo-me)] aria-expanded:text-text-primary';
+/**
+ * The composer's control cells: square, filling their slot in the toolbar,
+ * split from their neighbours by the toolbar's 1px rules
+ * (docs/design/chat-canvas.md). At least 44px to touch.
+ */
+export const CHIP = 'flex h-full min-h-11 w-full items-center justify-center gap-1.5 px-2 font-mono text-[12.5px] font-medium text-[var(--chat-muted)] hover:bg-[var(--chat-raised)] hover:text-[var(--chat-text)] aria-expanded:bg-[var(--chat-raised)] aria-expanded:text-[var(--chat-text)]';
 
 export interface ComposerMenuProps {
   /** Accessible name of the trigger. */
@@ -78,7 +82,7 @@ export default function ComposerMenu({ label, title, trigger, triggerClassName =
   return (
     <div
       ref={root}
-      className="relative min-w-0"
+      className="relative h-full min-w-0"
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >

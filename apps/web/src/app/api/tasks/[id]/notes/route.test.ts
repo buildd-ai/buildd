@@ -49,8 +49,8 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { GET } from './route';
 
-const params = Promise.resolve({ id: 'task-1' });
-const req = () => new NextRequest('http://localhost:3000/api/tasks/task-1/notes');
+const params = Promise.resolve({ id: '55555555-5555-4555-8555-555555555555' });
+const req = () => new NextRequest('http://localhost:3000/api/tasks/55555555-5555-4555-8555-555555555555/notes');
 
 /** Every leaf predicate in a stubbed where tree. */
 function leaves(node: any): any[] {
@@ -78,16 +78,23 @@ describe('GET /api/tasks/[id]/notes', () => {
     expect(res.status).toBe(401);
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await GET(req(), { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 404 without workspace access', async () => {
-    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', missionId: null });
+    mockTasksFindFirst.mockResolvedValue({ id: '55555555-5555-4555-8555-555555555555', workspaceId: 'ws-1', missionId: null });
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
     const res = await GET(req(), { params });
     expect(res.status).toBe(404);
   });
 
   it('scopes to the task and does not exclude mission-scoped notes', async () => {
-    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-1' });
-    const note = { id: 'n1', taskId: 'task-1', missionId: 'mission-1', type: 'question', status: 'open' };
+    mockTasksFindFirst.mockResolvedValue({ id: '55555555-5555-4555-8555-555555555555', workspaceId: 'ws-1', missionId: 'mission-1' });
+    const note = { id: 'n1', taskId: '55555555-5555-4555-8555-555555555555', missionId: 'mission-1', type: 'question', status: 'open' };
     mockNotesFindMany.mockResolvedValue([note]);
 
     const res = await GET(req(), { params });
@@ -95,7 +102,7 @@ describe('GET /api/tasks/[id]/notes', () => {
     expect((await res.json()).notes).toEqual([note]);
 
     const where = leaves(mockNotesFindMany.mock.calls[0][0].where);
-    expect(where).toContainEqual({ type: 'eq', field: 'missionNotes.taskId', value: 'task-1' });
+    expect(where).toContainEqual({ type: 'eq', field: 'missionNotes.taskId', value: '55555555-5555-4555-8555-555555555555' });
     expect(where.some(p => p.type === 'isNull' && p.field === 'missionNotes.missionId')).toBe(false);
   });
 });

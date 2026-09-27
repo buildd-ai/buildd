@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getReleaseWithTaskEdges } from '@/lib/release-queries';
+import { isUuid } from '@/lib/uuid';
 
 export async function GET(
   req: NextRequest,
@@ -20,6 +21,11 @@ export async function GET(
 
   if (!user && !apiAccount && process.env.NODE_ENV !== 'development') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // A non-UUID can never name a release; querying with one throws 22P02 (a 500).
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid release id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
   }
 
   const found = await getReleaseWithTaskEdges(id);

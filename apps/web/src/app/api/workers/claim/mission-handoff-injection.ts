@@ -12,7 +12,7 @@ import { tasks, workers, missions, missionNotes, artifacts } from '@buildd/core/
 import { eq, inArray, and, not, sql } from 'drizzle-orm';
 import type { ClaimTasksResponse, TaskHandoff } from '@buildd/shared';
 import type { TaskResult } from '@buildd/shared';
-import { appendContextBlock } from './context-injection';
+import { appendContextBlock, type ContextBlockSink } from './context-injection';
 
 /** The claimed-task rows this block looks tasks up in. */
 type ClaimedTask = { id: string; missionId?: string | null };
@@ -122,6 +122,7 @@ export async function attachMissionHandoff(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   handoffExcludedSources?: Set<string>, // Sources already rendered by handoff to dedupe knowledge context
+  sink: ContextBlockSink = appendContextBlock,
 ): Promise<void> {
   // Collect all dependsOn ids across the claimed batch
   const allDepIds = new Set<string>();
@@ -256,7 +257,7 @@ export async function attachMissionHandoff(
         // uses — the runner only ever reads task.context.resolvedContextProviders
         // (apps/runner/src/workers.ts), so a separate cw.context.missionHandoff
         // field would never reach the prompt.
-        appendContextBlock(cw, handoffBlock);
+        sink(cw, handoffBlock);
 
         // Track rendered sources for knowledge dedupe
         if (handoffExcludedSources) {

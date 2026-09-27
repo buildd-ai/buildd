@@ -67,7 +67,7 @@ mock.module('@buildd/core/db/schema', () => ({
 import { POST } from './route';
 
 function createMockRequest(): NextRequest {
-  return new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
+  return new NextRequest('http://localhost:3000/api/missions/22222222-2222-4222-8222-222222222222/run', {
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json' }),
   });
@@ -94,17 +94,28 @@ describe('POST /api/missions/[id]/run', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockResolvedValue(null);
     mockTeamsFindFirst.mockResolvedValue(null);
-    mockRunMission.mockResolvedValue({ task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: 'obj-123' } });
+    mockRunMission.mockResolvedValue({ task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: '22222222-2222-4222-8222-222222222222' } });
   });
 
   it('returns 401 when not authenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue(null);
 
-    const response = await callHandler(createMockRequest(), 'obj-123');
+    const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe('Unauthorized');
+  });
+
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+
+    const response = await callHandler(createMockRequest(), 'a1b2c3d4');
+    expect(response.status).toBe(404);
+    const data = await response.json();
+    expect(data.error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 404 when mission not found', async () => {
@@ -112,7 +123,7 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockResolvedValue(null);
 
-    const response = await callHandler(createMockRequest(), 'nonexistent');
+    const response = await callHandler(createMockRequest(), '99999999-9999-4999-8999-999999999999');
     expect(response.status).toBe(404);
     const data = await response.json();
     expect(data.error).toBe('Mission not found');
@@ -122,11 +133,11 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockResolvedValue({
-      id: 'obj-123',
+      id: '22222222-2222-4222-8222-222222222222',
       teamId: 'team-other',
     });
 
-    const response = await callHandler(createMockRequest(), 'obj-123');
+    const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
     expect(response.status).toBe(404);
   });
 
@@ -134,14 +145,14 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockResolvedValue({
-      id: 'obj-123',
+      id: '22222222-2222-4222-8222-222222222222',
       teamId: 'team-1',
       workspaceId: null,
       orchestrationMode: 'auto',
     });
     mockRunMission.mockRejectedValue(new Error('Cannot run mission with status: paused. Only active missions can be run.'));
 
-    const response = await callHandler(createMockRequest(), 'obj-123');
+    const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
     expect(response.status).toBe(400);
     const data = await response.json();
     expect(data.error).toContain('paused');
@@ -151,13 +162,13 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockResolvedValue({
-      id: 'obj-123',
+      id: '22222222-2222-4222-8222-222222222222',
       teamId: 'team-1',
       workspaceId: null,
       orchestrationMode: 'auto',
     });
     mockRunMission.mockResolvedValue({
-      task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: 'obj-123' },
+      task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: '22222222-2222-4222-8222-222222222222' },
     });
 
     const createdTask = {
@@ -166,36 +177,36 @@ describe('POST /api/missions/[id]/run', () => {
       workspaceId: 'ws-1',
       status: 'pending',
       mode: 'planning',
-      missionId: 'obj-123',
+      missionId: '22222222-2222-4222-8222-222222222222',
     };
     mockRunMission.mockResolvedValue({ task: createdTask });
 
-    const response = await callHandler(createMockRequest(), 'obj-123');
+    const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
     expect(response.status).toBe(201);
 
     const data = await response.json();
     expect(data.task.id).toBe('task-new');
     expect(data.task.mode).toBe('planning');
-    expect(data.task.missionId).toBe('obj-123');
+    expect(data.task.missionId).toBe('22222222-2222-4222-8222-222222222222');
 
     // Verify runMission was called with manualRun
-    expect(mockRunMission).toHaveBeenCalledWith('obj-123', { manualRun: true });
+    expect(mockRunMission).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', { manualRun: true });
   });
 
   it('works with API key auth (admin level)', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
     mockMissionsFindFirst.mockResolvedValue({
-      id: 'obj-123',
+      id: '22222222-2222-4222-8222-222222222222',
       teamId: 'team-1',
       workspaceId: null,
       orchestrationMode: 'auto',
     });
     mockRunMission.mockResolvedValue({
-      task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: 'obj-123' },
+      task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: '22222222-2222-4222-8222-222222222222' },
     });
 
-    const request = new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
+    const request = new NextRequest('http://localhost:3000/api/missions/22222222-2222-4222-8222-222222222222/run', {
       method: 'POST',
       headers: new Headers({
         'content-type': 'application/json',
@@ -203,7 +214,7 @@ describe('POST /api/missions/[id]/run', () => {
       }),
     });
 
-    const response = await callHandler(request, 'obj-123');
+    const response = await callHandler(request, '22222222-2222-4222-8222-222222222222');
     expect(mockRunMission).toHaveBeenCalled();
     expect(response.status).toBe(201);
   });
@@ -212,7 +223,7 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockResolvedValue({
-      id: 'obj-123',
+      id: '22222222-2222-4222-8222-222222222222',
       teamId: 'team-1',
     });
 
@@ -221,11 +232,11 @@ describe('POST /api/missions/[id]/run', () => {
       title: 'Mission: Test',
       mode: 'planning',
       status: 'in_progress',
-      missionId: 'obj-123',
+      missionId: '22222222-2222-4222-8222-222222222222',
     };
     mockRunMission.mockResolvedValue({ task: existing, deduped: true });
 
-    const response = await callHandler(createMockRequest(), 'obj-123');
+    const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.deduped).toBe(true);
@@ -239,14 +250,14 @@ describe('POST /api/missions/[id]/run', () => {
     function activeMission() {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
       mockGetUserTeamIds.mockResolvedValue(['team-1']);
-      mockMissionsFindFirst.mockResolvedValue({ id: 'obj-123', teamId: 'team-1' });
+      mockMissionsFindFirst.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', teamId: 'team-1' });
     }
 
     it('reports skippedPrOpen with 200', async () => {
       activeMission();
       mockRunMission.mockResolvedValue({ task: null, skippedPrOpen: true });
 
-      const response = await callHandler(createMockRequest(), 'obj-123');
+      const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
       expect(response.status).toBe(200);
       const data = await response.json();
       expect(data.skippedPrOpen).toBe(true);
@@ -261,7 +272,7 @@ describe('POST /api/missions/[id]/run', () => {
         blockedReason: 'Waiting for mission Foo to merge',
       });
 
-      const response = await callHandler(createMockRequest(), 'obj-123');
+      const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
       expect(response.status).toBe(200);
       const data = await response.json();
       expect(data.skippedBlocked).toBe(true);
@@ -272,7 +283,7 @@ describe('POST /api/missions/[id]/run', () => {
       activeMission();
       mockRunMission.mockResolvedValue({ task: null, skippedBudgetExhausted: true });
 
-      const response = await callHandler(createMockRequest(), 'obj-123');
+      const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
       expect(response.status).toBe(200);
       const data = await response.json();
       expect(data.skippedBudgetExhausted).toBe(true);
@@ -282,7 +293,7 @@ describe('POST /api/missions/[id]/run', () => {
       activeMission();
       mockRunMission.mockResolvedValue({ task: { id: 'task-new' } });
 
-      const response = await callHandler(createMockRequest(), 'obj-123');
+      const response = await callHandler(createMockRequest(), '22222222-2222-4222-8222-222222222222');
       expect(response.status).toBe(201);
       const data = await response.json();
       expect(data.task.id).toBe('task-new');
@@ -294,14 +305,14 @@ describe('POST /api/missions/[id]/run', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'worker' });
 
-    const request = new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
+    const request = new NextRequest('http://localhost:3000/api/missions/22222222-2222-4222-8222-222222222222/run', {
       method: 'POST',
       headers: new Headers({
         'authorization': 'Bearer bld_testapikey',
       }),
     });
 
-    const response = await callHandler(request, 'obj-123');
+    const response = await callHandler(request, '22222222-2222-4222-8222-222222222222');
     expect(response.status).toBe(403);
   });
 });

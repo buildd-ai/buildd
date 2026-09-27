@@ -1,0 +1,22 @@
+/*
+ * @buildd/ai-kit/chat/theme.css
+ *
+ * The only styling hooks the kit's components read. Defaults are neutral and
+ * light-first; each app maps its own tokens once, e.g.
+ *
+ *   :root { --kit-accent: var(--primary); --kit-radius-hard: 0; }
+ *
+ * No Tailwind: the kit must not force a Tailwind version on any consumer.
+ */
+:root {
+  --kit-bg: #ffffff;
+  --kit-surface: #f6f5f3;
+  --kit-ink: #1c1b1a;
+  --kit-muted: #6b6864;
+  --kit-accent: #e8590c;
+  --kit-accent-ink: #ffffff;
+  --kit-radius-soft: 12px;
+  --kit-radius-hard: 4px;
+  --kit-font-body: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --kit-font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+}

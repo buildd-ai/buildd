@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Outfit, IBM_Plex_Mono, IBM_Plex_Sans, Fraunces } from 'next/font/google';
+import { Outfit, IBM_Plex_Mono, IBM_Plex_Sans, Newsreader, Fraunces } from 'next/font/google';
 import ThemeProvider from '@/components/ThemeProvider';
 import './globals.css';
 
@@ -24,6 +24,14 @@ const ibmPlexSans = IBM_Plex_Sans({
   display: 'swap',
 });
 
+// The chat's voice (docs/design/chat-canvas.md): what Buildd and the person say, in a serif.
+const newsreader = Newsreader({
+  subsets: ['latin'],
+  style: ['normal', 'italic'],
+  variable: '--font-newsreader',
+  display: 'swap',
+});
+
 const fraunces = Fraunces({
   subsets: ['latin'],
   variable: '--font-fraunces',
@@ -43,7 +51,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${outfit.variable} ${ibmPlexMono.variable} ${ibmPlexSans.variable} ${fraunces.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${outfit.variable} ${ibmPlexMono.variable} ${ibmPlexSans.variable} ${newsreader.variable} ${fraunces.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

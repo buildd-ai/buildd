@@ -279,7 +279,14 @@ export async function resolveCodexCredential(opts: {
   // Expired credentials are still returned — the claim gate attempts refresh before use.
   const best = liveRows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
-  const blob = decodeBlob(best.encryptedValue);
+  let blob: CodexBlob;
+  try {
+    blob = decodeBlob(best.encryptedValue);
+  } catch (err) {
+    console.warn('[Codex] Failed to decrypt credential in resolveCodexCredential:', err instanceof Error ? err.message : 'unknown');
+    return null;
+  }
+
   const isApiKey = typeof blob.api_key === 'string' && blob.api_key.length > 0;
   return {
     credentialType: isApiKey ? 'api_key' : 'oauth',
@@ -354,14 +361,24 @@ export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
     };
   }
 
+  let accountId: string | null = null;
+  let verificationError: string | null = row.lastVerificationError ?? null;
+
+  try {
+    accountId = decodeBlob(row.encryptedValue).account_id ?? null;
+  } catch (err) {
+    console.warn('[Codex] Failed to decrypt stored credential:', err instanceof Error ? err.message : 'unknown');
+    verificationError = 'credential undecryptable (encryption key mismatch)';
+  }
+
   const expired = row.tokenExpiresAt != null && row.tokenExpiresAt < new Date();
   return {
     connected: true,
     expired,
-    accountId: decodeBlob(row.encryptedValue).account_id ?? null,
+    accountId,
     lastRefreshedAt: row.lastRefreshedAt ? row.lastRefreshedAt.toISOString() : null,
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
-    lastVerificationError: row.lastVerificationError ?? null,
+    lastVerificationError: verificationError,
     scope: row.workspaceId ? 'workspace' : 'team',
   };
 }

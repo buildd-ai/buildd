@@ -1,0 +1,111 @@
+name: Publish @buildd/ai-kit
+
+# Publishes packages/ai-kit to public npm as @buildd/ai-kit, with provenance,
+# through npm trusted publishing (GitHub OIDC). No npm token is stored
+# anywhere: npm trusts this repo + this workflow file, configured once on the
+# package's npmjs.com settings page (Settings → Trusted publisher).
+#
+# Release: bump `version` in packages/ai-kit/package.json (exact semver,
+# independent of buildd's release version, which scripts/release.sh never
+# touches here) and add a CHANGELOG entry, merge, then push a matching tag:
+#
+#   git tag ai-kit-v0.1.0 origin/dev && git push origin ai-kit-v0.1.0
+#
+# The tag must equal `ai-kit-v<version>` or the job fails before publishing.
+# `workflow_dispatch` runs the same checks and a `npm publish --dry-run`
+# unless `publish` is ticked (then only from a matching tag ref).
+#
+# Tags are named `ai-kit-v*` so buildd's own release tooling, which lists
+# `v*` tags only, never sees them.
+
+on:
+  push:
+    tags: ['ai-kit-v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Really publish (otherwise npm publish --dry-run). Requires running on an ai-kit-v* tag.'
+        type: boolean
+        default: false
+
+concurrency:
+  group: publish-ai-kit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm trusted publishing + provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      # Trusted publishing needs npm >= 11.5.1 and Node >= 22.14.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check the tag matches the package version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./packages/ai-kit/package.json').version")
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::packages/ai-kit version '$VERSION' is not exact semver (no ranges, no pre-release tags)."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "${GITHUB_REF_NAME}" != "ai-kit-v${VERSION}" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match packages/ai-kit version ${VERSION} (expected ai-kit-v${VERSION})."
+              exit 1
+            fi
+          elif [ "${{ inputs.publish }}" = "true" ]; then
+            echo "::error::A real publish must run on an ai-kit-v* tag, not ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+
+      - name: Type check
+        working-directory: packages/ai-kit
+        run: bunx tsc --noEmit
+
+      - name: Test
+        run: bun run scripts/run-unit-tests.ts $(git ls-files 'packages/ai-kit/*.test.ts')
+
+      - name: Build
+        working-directory: packages/ai-kit
+        run: bun run build
+
+      - name: Publish (dry run)
+        if: github.ref_type != 'tag' && inputs.publish != true
+        working-directory: packages/ai-kit/dist
+        run: npm publish --dry-run --access public
+
+      - name: Publish to npm with provenance
+        if: github.ref_type == 'tag' || inputs.publish == true
+        working-directory: packages/ai-kit/dist
+        run: |
+          set -euo pipefail
+          if npm view "@buildd/ai-kit@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "::notice::@buildd/ai-kit@${{ steps.version.outputs.version }} is already on npm; nothing to publish."
+            exit 0
+          fi
+          npm publish --provenance --access public

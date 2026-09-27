@@ -85,7 +85,9 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { GET, POST } from './route';
 
-const mockParams = Promise.resolve({ id: 'mission-1' });
+const MISSION_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ id: MISSION_ID });
+const nonUuidParams = Promise.resolve({ id: 'mission-1' });
 
 function createRequest(options: {
   method?: string;
@@ -98,7 +100,7 @@ function createRequest(options: {
   if (body) headers['content-type'] = 'application/json';
   const init: RequestInit = { method, headers: new Headers(headers) };
   if (body) init.body = JSON.stringify(body);
-  return new NextRequest(url || 'http://localhost:3000/api/missions/mission-1/notes', init);
+  return new NextRequest(url || `http://localhost:3000/api/missions/${MISSION_ID}/notes`, init);
 }
 
 describe('GET /api/missions/[id]/notes', () => {
@@ -110,6 +112,7 @@ describe('GET /api/missions/[id]/notes', () => {
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReset();
     mockMissionNotesFindMany.mockReset();
+    mockMissionNotesFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
 
     mockAuthenticateApiKey.mockResolvedValue(null);
@@ -120,6 +123,34 @@ describe('GET /api/missions/[id]/notes', () => {
     const req = createRequest();
     const res = await GET(req, { params: mockParams });
     expect(res.status).toBe(401);
+  });
+
+  it('rejects a non-UUID mission id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+
+    const req = createRequest({ headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-UUID cursor', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+
+    const req = createRequest({
+      headers: { authorization: 'Bearer bld_test' },
+      url: `http://localhost:3000/api/missions/${MISSION_ID}/notes?cursor=note-1`,
+    });
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockMissionNotesFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 401 when mission not found', async () => {
@@ -210,6 +241,22 @@ describe('POST /api/missions/[id]/notes', () => {
     });
     const res = await POST(req, { params: mockParams });
     expect(res.status).toBe(401);
+  });
+
+  it('rejects a non-UUID mission id without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+
+    const req = createRequest({
+      method: 'POST',
+      body: { type: 'question', title: 'Test?' },
+    });
+    const res = await POST(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
   });
 
   it('rejects invalid note type', async () => {
@@ -323,7 +370,7 @@ describe('POST /api/missions/[id]/notes', () => {
     }), { params: mockParams });
 
     const channelsHit = mockTriggerEvent.mock.calls.map((c: any[]) => c[0]);
-    expect(channelsHit).toEqual(['mission-mission-1', 'task-task-7']);
+    expect(channelsHit).toEqual([`mission-${MISSION_ID}`, 'task-task-7']);
   });
 
   it('marks parent note as answered when replyTo is set', async () => {

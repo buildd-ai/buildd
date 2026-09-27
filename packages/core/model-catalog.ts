@@ -35,6 +35,12 @@ export interface CatalogEntry extends TokenPrice {
   canonicalId: string | null;
   /** OpenRouter's own id, kept for provenance when debugging a bad pick. */
   openRouterId: string;
+  /**
+   * OpenRouter's raw `canonical_slug`, else its `id`. The rankings dataset
+   * names models by this (`model_permaslug`). Optional because persisted
+   * catalog rows predate it.
+   */
+  permaslug?: string;
   provider: CatalogProvider;
   displayName: string;
   contextLength: number;
@@ -85,7 +91,7 @@ export const TIER_PRICE_BANDS = {
 export type CatalogTier = keyof typeof TIER_PRICE_BANDS;
 
 /** Below this, a model cannot hold a buildd worker's context. Drops legacy entries. */
-const MIN_CONTEXT_TOKENS = 200_000;
+export const MIN_CONTEXT_TOKENS = 200_000;
 
 /**
  * Non-chat models that would otherwise pass the filters. The `tools` check
@@ -179,6 +185,7 @@ export function normalizeCatalog(raw: unknown): CatalogEntry[] {
       id,
       canonicalId: canonical && canonical !== id ? canonical : null,
       openRouterId: orId,
+      permaslug: canonicalSlug ?? orId,
       provider,
       displayName: typeof item.name === 'string' ? item.name : id,
       contextLength,

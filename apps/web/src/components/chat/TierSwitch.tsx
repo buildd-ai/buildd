@@ -66,10 +66,11 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
       hover={<TierDetail info={info} cost={cost} />}
       trigger={(
         <>
-          {/* Same label everywhere — phone and desktop both read "Auto · Standard". */}
-          <span className="whitespace-nowrap">{tierChipLabel({ pinned, last })}</span>
-          {spent && <span data-testid="composer-tier-cost" className="text-text-muted">{spent}</span>}
-          <span aria-hidden="true" className="text-text-muted">▾</span>
+          {/* Same label on every viewport, lowercase in the cell like the v3
+              frame (`auto ▾`, `auto · standard`); the menu keeps sentence case. */}
+          <span data-testid="composer-tier-label" className="whitespace-nowrap">{tierChipLabel({ pinned, last }).toLowerCase()}</span>
+          {spent && <span data-testid="composer-tier-cost" className="hidden text-[var(--chat-dim)] md:inline">{spent}</span>}
+          <span aria-hidden="true" className="text-[var(--chat-dim)]">▾</span>
         </>
       )}
     >

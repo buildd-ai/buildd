@@ -64,6 +64,8 @@ const bump = (name: string) => {
   calls[name] = (calls[name] ?? 0) + 1;
 };
 
+const WS_ID = '11111111-1111-4111-8111-111111111111';
+
 let usersRow: any = { id: 'u-1', email: 'a@example.test', name: 'A', image: null, timezone: null };
 let teamsRow: any = { id: 'team-personal', slug: 'personal-u-1' };
 let teamMembersRows: any[] = [{ teamId: 'team-shared' }];
@@ -110,8 +112,11 @@ const CACHED_HELPERS: Array<[string, any, () => Promise<unknown>, () => Promise<
   ['getUserDefaultTeamId', teamAccess.getUserDefaultTeamId, () => teamAccess.getUserDefaultTeamId('u-1'), () => teamAccess.getUserDefaultTeamId('u-2')],
   ['getTeamWorkspaceIds', teamAccess.getTeamWorkspaceIds, () => teamAccess.getTeamWorkspaceIds('t-1'), () => teamAccess.getTeamWorkspaceIds('t-2')],
   ['resolveActiveTeamId', teamAccess.resolveActiveTeamId, () => teamAccess.resolveActiveTeamId('u-1', 'team-shared'), () => teamAccess.resolveActiveTeamId('u-2', 'team-shared')],
-  ['verifyWorkspaceAccess', teamAccess.verifyWorkspaceAccess, () => teamAccess.verifyWorkspaceAccess('u-1', 'ws-1'), () => teamAccess.verifyWorkspaceAccess('u-2', 'ws-1')],
-  ['verifyAccountWorkspaceAccess', teamAccess.verifyAccountWorkspaceAccess, () => teamAccess.verifyAccountWorkspaceAccess('acct-1', 'ws-1'), () => teamAccess.verifyAccountWorkspaceAccess('acct-2', 'ws-1')],
+  // team-access's uuid guard rejects a non-UUID workspaceId before ever
+  // querying the db, so these two need a UUID-shaped workspaceId to exercise
+  // the cache (rather than the guard's own fast, unmemoized false/null).
+  ['verifyWorkspaceAccess', teamAccess.verifyWorkspaceAccess, () => teamAccess.verifyWorkspaceAccess('u-1', WS_ID), () => teamAccess.verifyWorkspaceAccess('u-2', WS_ID)],
+  ['verifyAccountWorkspaceAccess', teamAccess.verifyAccountWorkspaceAccess, () => teamAccess.verifyAccountWorkspaceAccess('acct-1', WS_ID), () => teamAccess.verifyAccountWorkspaceAccess('acct-2', WS_ID)],
 ];
 
 describe('per-request memoization of the auth/scope helpers', () => {

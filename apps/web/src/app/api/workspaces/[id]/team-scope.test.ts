@@ -17,14 +17,20 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 type Row = Record<string, any>;
 
+// team-access's uuid guard rejects a non-UUID workspaceId before it ever
+// reaches this fixture db, so every workspace id here must be UUID-shaped.
+const WS_A = '11111111-1111-4111-8111-111111111111';
+const WS_B = '22222222-2222-4222-8222-222222222222';
+const WS_MISSING = '99999999-9999-4999-8999-999999999999';
+
 const installation = { id: 'inst-row', installationId: 1, accountLogin: 'acme', accountType: 'Organization' };
 const repo = { id: 'repo-row', fullName: 'acme/app', installation };
 
 const tables: Record<string, Row[]> = {
   workspaces: [
     // Both workspaces are `open`: open must not widen access beyond the owning team.
-    { id: 'ws-a', teamId: 'team-a', name: 'A', accessMode: 'open', gitConfig: {}, configStatus: 'unconfigured', githubRepo: repo, githubInstallationId: 'inst-row', githubInstallation: installation, workTrackerConfig: null },
-    { id: 'ws-b', teamId: 'team-b', name: 'B', accessMode: 'open', gitConfig: {}, configStatus: 'unconfigured', githubRepo: repo, githubInstallationId: 'inst-row', githubInstallation: installation, workTrackerConfig: null },
+    { id: WS_A, teamId: 'team-a', name: 'A', accessMode: 'open', gitConfig: {}, configStatus: 'unconfigured', githubRepo: repo, githubInstallationId: 'inst-row', githubInstallation: installation, workTrackerConfig: null },
+    { id: WS_B, teamId: 'team-b', name: 'B', accessMode: 'open', gitConfig: {}, configStatus: 'unconfigured', githubRepo: repo, githubInstallationId: 'inst-row', githubInstallation: installation, workTrackerConfig: null },
   ],
   teamMembers: [
     { teamId: 'team-a', userId: 'user-a-admin', role: 'admin' },
@@ -37,7 +43,7 @@ const tables: Record<string, Row[]> = {
     { id: 'acct-a-linked', teamId: 'team-a' },
   ],
   // An explicit grant: a team A runner account linked to run workers in ws-b.
-  accountWorkspaces: [{ accountId: 'acct-a-linked', workspaceId: 'ws-b', canClaim: true, canCreate: false }],
+  accountWorkspaces: [{ accountId: 'acct-a-linked', workspaceId: WS_B, canClaim: true, canCreate: false }],
   teams: [],
   tasks: [],
   githubInstallations: [installation],
@@ -162,48 +168,48 @@ for (const route of ROUTES) {
   describe(`${route.name} is scoped to the caller's team`, () => {
     it('an admin key of team A gets 404 on a team B workspace (even when open)', async () => {
       writes.length = 0;
-      const res = await call(route, 'ws-b', { key: KEYS.aAdmin });
+      const res = await call(route, WS_B, { key: KEYS.aAdmin });
       expect(res.status).toBe(404);
       expect(writes).toEqual([]);
     });
 
     it('an admin key of team A gets 200 on its own workspace', async () => {
-      const res = await call(route, 'ws-a', { key: KEYS.aAdmin });
+      const res = await call(route, WS_A, { key: KEYS.aAdmin });
       expect(res.status).toBe(200);
     });
 
     it('a session admin of team B gets 200 on the team B workspace', async () => {
-      const res = await call(route, 'ws-b', { user: { id: 'user-b-admin' } });
+      const res = await call(route, WS_B, { user: { id: 'user-b-admin' } });
       expect(res.status).toBe(200);
     });
 
     it('a session admin of team A gets 404 on the team B workspace', async () => {
       writes.length = 0;
-      const res = await call(route, 'ws-b', { user: { id: 'user-a-admin' } });
+      const res = await call(route, WS_B, { user: { id: 'user-a-admin' } });
       expect(res.status).toBe(404);
       expect(writes).toEqual([]);
     });
 
     it('an unknown workspace is 404 for a key', async () => {
-      const res = await call(route, 'ws-missing', { key: KEYS.aAdmin });
+      const res = await call(route, WS_MISSING, { key: KEYS.aAdmin });
       expect(res.status).toBe(404);
     });
 
     if (KEY_ADMIN_WRITES.has(route.name)) {
       it('a worker-level key of the same team is rejected for the write', async () => {
         writes.length = 0;
-        const res = await call(route, 'ws-a', { key: KEYS.aWorker });
+        const res = await call(route, WS_A, { key: KEYS.aWorker });
         expect(res.status).toBe(403);
         expect(writes).toEqual([]);
       });
 
       it('a worker-level key of another team still gets 404, not 403', async () => {
-        const res = await call(route, 'ws-b', { key: KEYS.aWorker });
+        const res = await call(route, WS_B, { key: KEYS.aWorker });
         expect(res.status).toBe(404);
       });
     } else if (!route.write) {
       it('a worker-level key of the same team may read', async () => {
-        const res = await call(route, 'ws-a', { key: KEYS.aWorker });
+        const res = await call(route, WS_A, { key: KEYS.aWorker });
         expect(res.status).toBe(200);
       });
     }
@@ -211,7 +217,7 @@ for (const route of ROUTES) {
     if (SESSION_ADMIN_WRITES.has(route.name)) {
       it('a session member (not admin) of the team is rejected for the write', async () => {
         writes.length = 0;
-        const res = await call(route, 'ws-b', { user: { id: 'user-b-member' } });
+        const res = await call(route, WS_B, { user: { id: 'user-b-member' } });
         expect(res.status).toBe(403);
         expect(writes).toEqual([]);
       });
@@ -226,7 +232,7 @@ describe('GET config with a Bearer header', () => {
     });
     currentKey = null;
     currentUser = null;
-    const res = await config.GET(req, { params: Promise.resolve({ id: 'ws-a' }) });
+    const res = await config.GET(req, { params: Promise.resolve({ id: WS_A }) });
     expect(res.status).toBe(401);
   });
 });
@@ -236,13 +242,13 @@ describe('an explicit accountWorkspaces link', () => {
 
   it('lets a linked runner key read the config of the linked workspace', async () => {
     const route = ROUTES.find(r => r.name === 'GET config')!;
-    const res = await call(route, 'ws-b', { key: linked });
+    const res = await call(route, WS_B, { key: linked });
     expect(res.status).toBe(200);
   });
 
   it('grants nothing beyond that read', async () => {
     for (const route of ROUTES.filter(r => r.name !== 'GET config')) {
-      const res = await call(route, 'ws-b', { key: linked });
+      const res = await call(route, WS_B, { key: linked });
       expect({ route: route.name, status: res.status }).toEqual({ route: route.name, status: 404 });
     }
   });

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.237.0",
+  "version": "0.238.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -19,6 +19,7 @@
     "./model-catalog-cache": "./model-catalog-cache.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
+    "./role-model-routing": "./role-model-routing.ts",
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
@@ -56,6 +57,12 @@
     "./tier-pool": "./tier-pool.ts",
     "./tier-pool-source": "./tier-pool-source.ts",
     "./tier-pool-admin": "./tier-pool-admin.ts",
+    "./tier-explore": "./tier-explore.ts",
+    "./tier-pool-daily": "./tier-pool-daily.ts",
+    "./tier-pool-daily-source": "./tier-pool-daily-source.ts",
+    "./model-succession": "./model-succession.ts",
+    "./openrouter-rankings": "./openrouter-rankings.ts",
+    "./openrouter-rankings-source": "./openrouter-rankings-source.ts",
     "./cbm-access-experiment": "./cbm-access-experiment.ts",
     "./cbm-access-experiment-source": "./cbm-access-experiment-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
