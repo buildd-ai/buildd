@@ -37,6 +37,7 @@ import { db } from '@buildd/core/db';
 import { specDiscrepancies, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 import {
   docFixTaskTitle,
   buildDocFixTaskDescription,
@@ -47,6 +48,9 @@ import { isDocFixInFlight, isDocFixClaimStale } from '@/lib/action-queue';
 
 /** Statuses that release a claim: nothing is coming, so the CTA comes back. */
 const DEAD_DOC_FIX_STATUSES = new Set(['failed', 'cancelled']);
+
+/** Roles a doc-fix task may run as, in preference order (role-routing §1 row 9). */
+const DOC_FIX_ROLES = ['writer', 'builder'];
 
 export type DocFixDispatchMode = 'initial' | 'follow_up';
 
@@ -252,6 +256,9 @@ export async function dispatchDocFix(
 
   const assertionIds = dispatchRows.map((r) => r.assertionId);
   const discrepancyIds = dispatchRows.map((r) => r.id);
+  // A docs-only PR against a spec: Writer work, Builder where the workspace
+  // has no Writer, else role-less (role-routing §1 row 9, §3.1).
+  const roleSlug = await pickEffectiveRole(row.workspaceId, DOC_FIX_ROLES);
 
   const [docFixTask] = await db
     .insert(tasks)
@@ -270,6 +277,7 @@ export async function dispatchDocFix(
       // the worker opens with the exact claims this ledger row carries.
       pathManifest: [row.specPath],
       category: 'docs',
+      roleSlug,
       priority: 6,
       status: 'pending',
       creationSource: opts.creationSource,

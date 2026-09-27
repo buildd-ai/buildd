@@ -21,9 +21,9 @@ export interface RoleScopeRow {
   enabled: boolean | null;
 }
 
-/** Pure: effective slugs from the team-default and override rows of one workspace. */
-export function effectiveRoleSlugs(rows: RoleScopeRow[], workspaceId: string): Set<string> {
-  const bySlug = new Map<string, RoleScopeRow>();
+/** Pure: the effective rows — team defaults and overrides of one workspace, one per slug. */
+export function effectiveRoleRows<T extends RoleScopeRow>(rows: T[], workspaceId: string): T[] {
+  const bySlug = new Map<string, T>();
   for (const row of rows) {
     const seen = bySlug.get(row.slug);
     // The workspace override wins, including an override that disables the role.
@@ -31,16 +31,30 @@ export function effectiveRoleSlugs(rows: RoleScopeRow[], workspaceId: string): S
       bySlug.set(row.slug, row);
     }
   }
-  return new Set([...bySlug.values()].filter(r => r.enabled !== false).map(r => r.slug));
+  return [...bySlug.values()].filter(r => r.enabled !== false);
 }
 
-/** The role slugs a task in `workspaceId` may carry. Empty when the workspace is unknown. */
-export async function resolveEffectiveRoleSlugs(workspaceId: string): Promise<Set<string>> {
+/** Pure: effective slugs from the team-default and override rows of one workspace. */
+export function effectiveRoleSlugs(rows: RoleScopeRow[], workspaceId: string): Set<string> {
+  return new Set(effectiveRoleRows(rows, workspaceId).map(r => r.slug));
+}
+
+export interface EffectiveRole {
+  slug: string;
+  name: string;
+  color: string;
+}
+
+/**
+ * The roles a task in `workspaceId` may carry, for a picker (name and colour
+ * from the winning row). Empty when the workspace is unknown.
+ */
+export async function resolveEffectiveRoles(workspaceId: string): Promise<EffectiveRole[]> {
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     columns: { teamId: true },
   });
-  if (!ws?.teamId) return new Set();
+  if (!ws?.teamId) return [];
 
   const rows = await db.query.workspaceSkills.findMany({
     where: and(
@@ -48,7 +62,38 @@ export async function resolveEffectiveRoleSlugs(workspaceId: string): Promise<Se
       eq(workspaceSkills.isRole, true),
       or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
     ),
-    columns: { slug: true, workspaceId: true, enabled: true },
+    columns: { slug: true, workspaceId: true, enabled: true, name: true, color: true },
   });
-  return effectiveRoleSlugs(rows, workspaceId);
+  return effectiveRoleRows(rows, workspaceId)
+    .map(r => ({ slug: r.slug, name: r.name ?? r.slug, color: r.color ?? '' }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** The role slugs a task in `workspaceId` may carry. Empty when the workspace is unknown. */
+export async function resolveEffectiveRoleSlugs(workspaceId: string): Promise<Set<string>> {
+  return new Set((await resolveEffectiveRoles(workspaceId)).map(r => r.slug));
+}
+
+/**
+ * The first of `candidates` that is an effective role in `workspaceId`, else
+ * null — how a pipeline that knows what it is dispatching sets a constant or
+ * pass-through role (role-routing §1 row 9). Blank candidates are skipped, so
+ * a caller can pass an optional pass-through slug ahead of its constant.
+ *
+ * Never throws: a role lookup is not worth failing a filing over, and a task
+ * filed role-less is exactly what the caller got before this existed.
+ */
+export async function pickEffectiveRole(
+  workspaceId: string,
+  candidates: ReadonlyArray<string | null | undefined>,
+): Promise<string | null> {
+  const wanted = candidates.filter((c): c is string => typeof c === 'string' && c.length > 0);
+  if (wanted.length === 0) return null;
+  try {
+    const known = await resolveEffectiveRoleSlugs(workspaceId);
+    return wanted.find(slug => known.has(slug)) ?? null;
+  } catch (err) {
+    console.warn(`[effective-roles] role lookup failed for workspace ${workspaceId}; filing role-less:`, err);
+    return null;
+  }
 }

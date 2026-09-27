@@ -75,6 +75,17 @@ mock.module('@/lib/gate-ledger', () => ({
   GATE_SLUGS: new Proxy({}, { get: (_t, prop) => String(prop).toLowerCase() }),
 }));
 
+// Roles effective for the task's workspace (role-routing §1 row 9, §3.1).
+let effectiveRoles = new Set<string>();
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
+    pickRoleCalls.push({ workspaceId, candidates });
+    return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
+  },
+  resolveEffectiveRoleSlugs: async () => effectiveRoles,
+}));
+
 // Real recalculateOverall from core — the folding rule is not stubbed.
 import {
   resolveCommandCriterion,
@@ -622,5 +633,26 @@ describe('isCriteriaVerificationTask', () => {
     expect(isCriteriaVerificationTask(null)).toBe(false);
     expect(isCriteriaVerificationTask({})).toBe(false);
     expect(isCriteriaVerificationTask({ criteriaVerification: { missionId: 'm1' } })).toBe(false);
+  });
+});
+
+// ── Role (role-routing §1 row 9) ──────────────────────────────────────────────
+
+describe('resolveCommandCriterion — role', () => {
+  beforeEach(() => { reset(); effectiveRoles = new Set(); pickRoleCalls.length = 0; });
+
+  it('runs the verification as Researcher when the workspace has the role', async () => {
+    effectiveRoles = new Set(['researcher', 'builder']);
+    await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['researcher'] }]);
+    expect(insertedValues[0].roleSlug).toBe('researcher');
+    // The budget tier still outranks the role's model floor at claim.
+    expect(insertedValues[0].tier).toBe('budget');
+  });
+
+  it('files it role-less when the workspace has no Researcher', async () => {
+    effectiveRoles = new Set(['builder']);
+    await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+    expect(insertedValues[0].roleSlug).toBeNull();
   });
 });

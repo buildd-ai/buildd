@@ -23,7 +23,7 @@ mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: 'test-',
 }));
 
-const { default: MissionSettings } = await import('./MissionSettings');
+const { default: MissionSettings, quickAddTaskBody } = await import('./MissionSettings');
 
 function render(overrides: Partial<Parameters<typeof MissionSettings>[0]> = {}) {
   return renderToStaticMarkup(
@@ -124,5 +124,37 @@ describe('touch targets and input size on a phone', () => {
     const html = render({ displayState: 'active' });
     const input = html.match(/<input\b[^>]*placeholder="Add a task to this mission…"[^>]*>/)![0];
     expect(cls(input)).toContain('text-base');
+  });
+});
+
+// ── Quick-add role picker (role-routing §1 row 3) ─────────────────────────────
+
+describe('quick-add role picker', () => {
+  const ROLES = [
+    { slug: 'builder', name: 'Builder', color: '#000' },
+    { slug: 'writer', name: 'Writer', color: '#111' },
+  ];
+
+  it('offers the workspace roles with "Any role" as the selected default', () => {
+    const html = render({ displayState: 'active', roles: ROLES });
+    const select = html.match(/<select\b[^>]*data-testid="quick-task-role"[^>]*>[\s\S]*?<\/select>/)![0];
+    expect(select).toMatch(/<option value="" selected="">Any role<\/option>/);
+    expect(select).toContain('<option value="builder">Builder</option>');
+    expect(select).toContain('<option value="writer">Writer</option>');
+  });
+
+  it('renders no picker when the workspace has no roles', () => {
+    expect(render({ displayState: 'active', roles: [] })).not.toContain('quick-task-role');
+  });
+
+  it('sends the selected role with the task', () => {
+    expect(quickAddTaskBody({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: 'writer' }))
+      .toEqual({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: 'writer' });
+  });
+
+  it('sends no role at all when "Any role" is left selected', () => {
+    const body = quickAddTaskBody({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: '' });
+    expect(body).toEqual({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1' });
+    expect('roleSlug' in body).toBe(false);
   });
 });
