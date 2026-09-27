@@ -41,7 +41,7 @@ export function pinnedObjectTitle(objRef: BuilddObjectRef, view: ObjectView | nu
   return objRef.title ?? objRef.fallbackText;
 }
 
-export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, openLabel = 'Open beside ▸' }: {
+export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, openLabel = 'Open beside ▸', className = '' }: {
   objRef: BuilddObjectRef;
   /** Desktop: dock it in the pane. Phone: open the sheet. */
   onOpen(): void;
@@ -49,6 +49,8 @@ export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, op
   hideOnDesktop?: boolean;
   /** The desktop button's words; null hides it (the page behind already is the object). */
   openLabel?: string | null;
+  /** Extra breakpoint classes (the needs-you strip shows only from 1024 to 1279). */
+  className?: string;
 }) {
   const { view } = useObjectEntry(objRef);
   const [open, setOpen] = useState(true);
@@ -61,7 +63,7 @@ export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, op
     <section
       data-testid="canvas-pinned"
       data-kind={objRef.kind}
-      className={`shrink-0 border-b-2 border-border-strong bg-surface-1 ${hideOnDesktop ? 'md:hidden' : ''}`}
+      className={`shrink-0 border-b-2 border-border-strong bg-surface-1 ${hideOnDesktop ? 'md:hidden' : ''} ${className}`}
     >
       <div className="flex min-h-12 min-w-0 items-center gap-2.5 px-4 py-2 md:px-6">
         {/* Phone: the strip is the button. */}

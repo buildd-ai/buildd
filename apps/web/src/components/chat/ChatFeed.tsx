@@ -44,12 +44,13 @@ function Segment({ seg }: { seg: FeedSegment }) {
   switch (seg.kind) {
     case 'text':
       return (
-        <div data-testid="feed-text" className="font-convo text-[15.5px] leading-[1.65] text-text-primary">
+        // Buildd speaks in the voice face, finished or thinking (docs/design/chat-v3-desktop.md, thinking frame).
+        <div data-testid="feed-text" className="font-voice text-[17px] leading-[1.45] text-[var(--chat-text)] lg:max-w-[640px]">
           {/* While streaming, a solid block caret trails the last paragraph (inline, not a new line). */}
           <MarkdownContent
             content={seg.text}
             images="link"
-            className={`!text-[15.5px] !leading-[1.65] !text-text-primary [&_code]:!bg-[var(--convo-me)] ${seg.streaming ? 'stream-caret' : ''}`}
+            className={`!text-[17px] !leading-[1.45] !text-[var(--chat-text)] [&_code]:!bg-[var(--convo-me)] ${seg.streaming ? 'stream-caret' : ''}`}
           />
         </div>
       );
@@ -100,7 +101,7 @@ const UserMessage = memo(function UserMessage({ m, tag }: { m: ChatMessage; tag:
       </div>
       {/* Phone: a raised square block with an offset shadow, in the voice face.
           Desktop keeps the soft tinted bubble. */}
-      <div className="max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] md:max-w-[min(100%,560px)] md:rounded-[18px] md:rounded-br-[6px] md:border-0 md:bg-[var(--convo-me)] md:py-2.5 md:[font-family:var(--font-plex-sans),ui-sans-serif,system-ui,sans-serif] md:text-[15.5px] md:leading-[1.6] md:text-text-primary md:shadow-none">
+      <div data-testid="feed-user-bubble" className="max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] md:max-w-[min(100%,560px)] md:rounded-[18px] md:rounded-br-[6px] md:border-0 md:bg-[var(--convo-me)] md:py-2.5 md:[font-family:var(--font-plex-sans),ui-sans-serif,system-ui,sans-serif] md:text-[15.5px] md:leading-[1.6] md:text-text-primary md:shadow-none lg:max-w-[590px] lg:rounded-none lg:border lg:bg-[var(--chat-raised)] lg:py-3 lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif] lg:text-[17px] lg:leading-[1.4] lg:text-[var(--chat-text)] lg:shadow-[3px_3px_0_0_var(--chat-rule)]">
         {text}
       </div>
       {tag && <IntentTag label={tag} />}

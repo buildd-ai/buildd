@@ -93,7 +93,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
           streams a blue segment sweeps along it, the surface's one glow. */}
       <form
         onSubmit={(e) => { e.preventDefault(); send(); }}
-        className={`relative border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] md:focus-within:border-t-[var(--chat-text)]'}`}
+        className={`relative border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] lg:shadow-[4px_4px_0_0_var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] md:focus-within:border-t-[var(--chat-text)]'}`}
       >
         {busy && (
           <span aria-hidden="true" data-testid="composer-sweep" data-glow="true" className="composer-edge">
@@ -129,9 +129,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               />
             ))}
           </div>
-          {teamId && <div className="w-14 shrink-0"><ToolsMenu teamId={teamId} /></div>}
+          {teamId && <div data-testid="composer-tools-cell" className="w-14 shrink-0 lg:w-16"><ToolsMenu teamId={teamId} /></div>}
           {teamId && onTierChange ? (
-            <div className="min-w-[72px] shrink-0">
+            <div className="min-w-[72px] shrink-0 lg:min-w-[88px]">
               <TierSwitch
                 teamId={teamId}
                 conversationId={conversationId}
@@ -142,7 +142,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               />
             </div>
           ) : tier ? (
-            <span data-testid="composer-tier-chip" className="flex w-[72px] shrink-0 items-center justify-center font-mono text-[12px] text-[var(--chat-muted)]">
+            <span data-testid="composer-tier-chip" className="flex w-[72px] shrink-0 items-center justify-center font-mono lg:w-[88px] text-[12px] text-[var(--chat-muted)]">
               {tier}
             </span>
           ) : null}
@@ -155,7 +155,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               disabled={!onStop}
               aria-label="Stop"
               data-testid="composer-stop"
-              className="grid w-[60px] shrink-0 place-items-center bg-[var(--chat-text)] hover:opacity-90"
+              className="grid w-[60px] shrink-0 place-items-center bg-[var(--chat-text)] hover:opacity-90 lg:w-16"
             >
               <span aria-hidden="true" className="h-3 w-3 bg-[var(--chat-ground)]" />
             </button>
@@ -167,7 +167,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               // Nothing to send is not dimmed: a faded arrow fails AA. The block
               // stays solid and says so to assistive tech; send() ignores it.
               aria-disabled={disabled || !value.trim() ? true : undefined}
-              className="grid w-[60px] shrink-0 place-items-center bg-[var(--mood-needs-fill)] font-mono text-[20px] font-bold text-[var(--on-mood-needs)] aria-disabled:cursor-not-allowed [&:not([aria-disabled])]:hover:brightness-110"
+              className="grid w-[60px] shrink-0 place-items-center bg-[var(--mood-needs-fill)] lg:w-16 font-mono text-[20px] font-bold text-[var(--on-mood-needs)] aria-disabled:cursor-not-allowed [&:not([aria-disabled])]:hover:brightness-110"
             >
               ↑
             </button>

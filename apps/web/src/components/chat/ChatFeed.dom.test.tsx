@@ -181,6 +181,14 @@ describe('objects', () => {
 });
 
 describe('model-authored text', () => {
+  it("buildd's finished replies speak in the voice face (Newsreader), phone and desktop alike", async () => {
+    await render([{ id: 'a', role: 'assistant' as const, parts: [{ type: 'text', text: 'Card refunds already retry on their own.' }] }] as Msgs);
+    const cls = (q('[data-testid="feed-text"]')?.className ?? '').split(/\s+/);
+    expect(cls).toContain('font-voice');
+    expect(cls).not.toContain('font-convo');
+    expect(cls.some(c => /^(md|lg):font-/.test(c))).toBe(false);
+  });
+
   it('never auto-loads a remote image: it renders as a plain link the user can choose to follow', async () => {
     const msgs = [{
       id: 'a', role: 'assistant' as const,

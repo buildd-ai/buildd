@@ -26,7 +26,7 @@ export interface CanvasSuggestion {
  */
 export interface CanvasPulse {
   /** `action`: row 1's short action (needsYouAction); derived from the title when absent. */
-  needsYou: readonly { title: string; action?: string }[];
+  needsYou: readonly { title: string; action?: string; taskId?: string; workspaceId?: string | null }[];
   /** The list was cut at the loader's limit: the real count is at least its length. */
   needsYouCapped?: boolean;
   live: number;
@@ -40,6 +40,9 @@ export interface NeedsYouSource {
   waitingType?: string | null;
   /** A state beyond the question itself, when the loader knows one. */
   state?: 'tests_failed' | null;
+  /** The waiting task, so the desktop dock can load it. */
+  taskId?: string | null;
+  workspaceId?: string | null;
 }
 
 /** The subject stays a few words: whole words only, never an ellipsis. */
@@ -128,8 +131,12 @@ export function needsYouAction(t: NeedsYouSource): string {
  * shows (taskHeading), never the raw "feat(scope): …" title, plus row 1's
  * short action.
  */
-export function pulseNeedsYou(tasks: readonly NeedsYouSource[]): { title: string; action: string }[] {
-  return tasks.map(t => ({ title: taskHeading({ title: t.title, label: t.label ?? null }, null).heading, action: needsYouAction(t) }));
+export function pulseNeedsYou(tasks: readonly NeedsYouSource[]): { title: string; action: string; taskId?: string; workspaceId?: string | null }[] {
+  return tasks.map(t => ({
+    title: taskHeading({ title: t.title, label: t.label ?? null }, null).heading,
+    action: needsYouAction(t),
+    ...(t.taskId ? { taskId: t.taskId, workspaceId: t.workspaceId ?? null } : {}),
+  }));
 }
 
 export type CanvasMood = 'calm' | 'needs';

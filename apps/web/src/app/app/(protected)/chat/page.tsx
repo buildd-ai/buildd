@@ -1,7 +1,7 @@
 import ChatConversation from '@/components/chat/ChatConversation';
 import ChatPresenceBeat from '@/components/chat/ChatPresenceBeat';
 import { formHref, parseChatEntry } from '@/lib/chat/entry-points';
-import { canvasPulse, ChatUnavailable, ConversationList, contextAside, firstName, loadAboutRef, loadChatShell } from './chat-shell';
+import { canvasPulse, ChatUnavailable, ConversationList, historyPanel, firstName, loadAboutRef, loadChatShell } from './chat-shell';
 
 /**
  * /app/chat — a new conversation, with your recent ones above the composer.
@@ -28,7 +28,8 @@ export default async function ChatPage({
   const picked = typeof q.workspace === 'string' ? q.workspace : null;
   const workspaceId = [about?.workspaceId, entry.workspaceId, picked].find((id): id is string => !!id && wsIds.includes(id)) ?? null;
   // A phone's HISTORY → (`?view=history`): the conversation list in place of
-  // the empty canvas. Desktop always shows the list above the canvas.
+  // the empty canvas. On desktop HISTORY → opens the right panel, and this
+  // deep link opens it there; only the tablet band shows the list above the canvas.
   const historyOpen = q.view === 'history' && !about && !entry.intent;
   const emptyState = data.conversations.length > 0
     ? <ConversationList items={data.conversations} />
@@ -51,7 +52,7 @@ export default async function ChatPage({
       workspaceId={workspaceId}
       viewerName={firstName(data.user)}
       canManageTeamKeys={data.canManageTeamKeys}
-      aside={contextAside(data)}
+      aside={historyPanel(data)}
       emptyState={emptyState}
       historyOpen={historyOpen}
       pulse={canvasPulse(data.context)}

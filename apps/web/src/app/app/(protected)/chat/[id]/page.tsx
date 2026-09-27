@@ -5,7 +5,7 @@ import { loadConversation } from '@/lib/chat/conversations';
 import { isUuid } from '@/lib/uuid';
 import { getUserTeamIds } from '@/lib/team-access';
 import { parseChatEntry } from '@/lib/chat/entry-points';
-import { canvasPulse, ChatUnavailable, contextAside, firstName, focusRefFrom, loadAboutRef, loadChatShell } from '../chat-shell';
+import { canvasPulse, ChatUnavailable, historyPanel, firstName, focusRefFrom, loadAboutRef, loadChatShell } from '../chat-shell';
 
 export default async function ConversationPage({
   params,
@@ -46,7 +46,7 @@ export default async function ConversationPage({
       workspaceId={conv.workspaceId}
       viewerName={viewer}
       canManageTeamKeys={data.canManageTeamKeys}
-      aside={contextAside(data)}
+      aside={historyPanel(data, conv.id)}
       pulse={canvasPulse(data.context)}
       focusRef={focusRefFrom(q, conv.workspaceId) ?? about}
       entry={{ ...entry, about: about ? entry.about : null }}
