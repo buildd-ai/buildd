@@ -271,6 +271,12 @@ export async function recordEvent(event: NotifyEvent, deps: Deps = {}): Promise<
         const { markAwayDue } = await import('./notify-away-queue');
         await markAwayDue(rows, event.urgency ?? 'normal', now);
       } catch { /* best effort */ }
+      // Tell the owners' open conversations there is something to pull, so
+      // their poll only reaches Postgres when it has to (lib/watch-pending.ts).
+      try {
+        const { flagWatchOwners } = await import('./watch-pending');
+        await flagWatchOwners(rows as Array<{ id: string; subscription_id?: string }>, exec);
+      } catch { /* best effort */ }
     }
     return { recorded: rows.length };
   } catch (err) {
@@ -503,4 +509,13 @@ export async function listUnpostedForConversation(
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
   const r = await exec(listUnpostedForConversationSql(owner, conversationId, limit));
   return (r.rows ?? []) as ConversationRecordRow[];
+}
+
+/** The person owners of these subscriptions whose watches post into a conversation. */
+export function conversationOwnersSql(subscriptionIds: readonly string[]): SQL {
+  return sql`
+    select distinct s."owner_user_id" as "userId" from "subscriptions" s
+    where s."id" in (${sql.join(subscriptionIds.map(id => sql`${id}::uuid`), sql`, `)})
+      and s."owner_user_id" is not null and s."conversation_id" is not null
+  `;
 }

@@ -48,13 +48,13 @@ describe('useWatchDelivery', () => {
   it('drains once on open; refetches only when something was delivered', async () => {
     await act(async () => { root.render(<Probe id="c-1" />); });
     await flush();
-    expect(posts).toEqual(['POST /api/chat/c-1/deliveries']);
+    expect(posts).toEqual(['POST /api/chat/c-1/deliveries?open=1']);
     expect(refetches).toBe(0);
 
     delivered = 1;
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
     await flush();
-    expect(posts).toHaveLength(2);
+    expect(posts).toEqual(['POST /api/chat/c-1/deliveries?open=1', 'POST /api/chat/c-1/deliveries?open=1']);
     expect(refetches).toBe(1);
   });
 

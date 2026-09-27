@@ -149,7 +149,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
 
   // Decided: the card is its row now; the object renders right after it.
   if (part.state === 'output-available' || part.state === 'output-error') {
-    return <ToolCallRow view={toolRowView(part)} label={verb} note={approver} square />;
+    return <ToolCallRow view={toolRowView(part)} label={verb} note={approver} />;
   }
   if (part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) {
     return (

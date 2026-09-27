@@ -6,6 +6,10 @@ const DONE_TASK = '22222222-2222-4222-8222-222222222222';
 const WS = '55555555-5555-4555-8555-555555555555';
 const NO_REPO_WS = '88888888-8888-4888-8888-888888888888';
 const CONV = '66666666-6666-4666-8666-666666666666';
+// Another team's: a finished task and a merged PR the caller cannot see.
+const HIDDEN_DONE = '33333333-3333-4333-8333-333333333333';
+const HIDDEN_WS = '77777777-7777-4777-8777-777777777777';
+const lookups: any[] = [];
 
 let signedIn = true;
 let active: any[] = [];
@@ -26,10 +30,11 @@ mock.module('@/lib/subscriptions', () => ({
 }));
 mock.module('@/lib/watch-subjects', () => ({
   TERMINAL_TASK_STATUSES: ['completed', 'failed', 'cancelled'],
-  taskSubject: async (id: string) => (id === TASK ? { id, title: 'Checkout rounding', status: 'in_progress', workspaceId: WS }
+  // Scoped to the caller: what they can't see reads as nothing, whatever its state.
+  taskSubject: async (id: string, userId: string) => (lookups.push(['task', id, userId]), userId !== 'u-1' || id === HIDDEN_DONE ? null : id === TASK ? { id, title: 'Checkout rounding', status: 'in_progress', workspaceId: WS }
     : id === DONE_TASK ? { id, title: 'Old', status: 'completed', workspaceId: WS } : null),
-  prSubject: async (ws: string, n: number) => (ws === NO_REPO_WS ? { ok: false, reason: 'no_repo' }
-    : ws !== WS ? { ok: false, reason: 'no_workspace' }
+  prSubject: async (ws: string, n: number, userId: string) => (lookups.push(['pr', ws, n, userId]), userId !== 'u-1' || ws === HIDDEN_WS ? { ok: false, reason: 'not_found' } : ws === NO_REPO_WS ? { ok: false, reason: 'no_repo' }
+    : ws !== WS ? { ok: false, reason: 'not_found' }
       : { ok: true, repoFullName: 'acme/widgets', merged: n === 9, title: null }),
   watchLabels: async (subs: any[]) => new Map(subs.map(s => [s.id, `label ${s.id}`])),
 }));
@@ -39,7 +44,7 @@ const post = (body: unknown) => POST(new NextRequest('http://localhost/api/subsc
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 }));
 
-beforeEach(() => { signedIn = true; active = []; created.length = 0; createReturnsNull = false; });
+beforeEach(() => { lookups.length = 0; signedIn = true; active = []; created.length = 0; createReturnsNull = false; });
 
 describe('POST /api/subscriptions: a one-shot watch for the signed-in person', () => {
   it('a task: owner is the person, defaults to finished-or-failed, origin conversation kept', async () => {
@@ -76,6 +81,18 @@ describe('POST /api/subscriptions: a one-shot watch for the signed-in person', (
     expect((await post({ taskId: '99999999-9999-4999-8999-999999999999' })).status).toBe(404);
     createReturnsNull = true;
     expect((await post({ taskId: TASK })).status).toBe(404);
+  });
+
+  it('a task or PR the caller cannot see is a plain 404: no status, no existence, no merge state', async () => {
+    const t = await post({ taskId: HIDDEN_DONE });
+    expect(t.status).toBe(404);
+    expect(JSON.stringify(await t.json())).not.toMatch(/completed|already|ended/);
+    const p = await post({ workspaceId: HIDDEN_WS, prNumber: 9 });
+    expect(p.status).toBe(404);
+    expect(JSON.stringify(await p.json())).not.toMatch(/merged|repo|already/);
+    // Every lookup is asked as the caller.
+    expect(lookups).toEqual([['task', HIDDEN_DONE, 'u-1'], ['pr', HIDDEN_WS, 9, 'u-1']]);
+    expect(created).toEqual([]);
   });
 
   it('a workspace with no GitHub repo linked cannot watch a PR', async () => {

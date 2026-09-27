@@ -11,6 +11,7 @@
 
 import type { ChatWatchNotice } from '@buildd/shared';
 import type { SubjectKind, SubscriptionEventType } from './subscriptions';
+import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 type Obj = Record<string, unknown>;
 
@@ -51,8 +52,11 @@ export function watchNotice(row: WatchNoticeInput): { text: string; watch: ChatW
     };
   }
 
+  // The plain sentence every page names a task by (taskHeading), never the
+  // raw "feat(scope): ..." title.
   const title = str(p.title);
-  const who = title ? clip(title, 120) : 'The task you watched';
+  const heading = title ? str(taskHeading({ title, label: null }, null).heading) : null;
+  const who = heading ? clip(heading, 120) : 'The task you watched';
   const taskId = str(p.taskId) ?? str(ref.id);
   const text = row.eventType === 'task.completed' ? `${who} is done.`
     : row.eventType === 'task.failed' ? `${who} failed.`

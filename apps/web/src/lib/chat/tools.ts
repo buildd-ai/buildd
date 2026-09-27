@@ -330,7 +330,11 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         }
         let target: ChatApprovalPreview['target'] | null = null;
         const allowed = deps.allowedToolCallIds?.has(toolCallId) === true;
-        if (isWrite && needsApproval(action, input)) {
+        // A card that was shown and approved binds the call to it, even for an
+        // op that may otherwise run cardless (unwatch after tool output): run
+        // exactly the input the card was built from, never the raw one.
+        const carded = deps.approvedPreviews?.has(toolCallId) === true;
+        if (isWrite && (needsApproval(action, input) || carded)) {
           if (!deps.allowWrites || (!deps.authorizedToolCallIds.has(toolCallId) && !allowed)) {
             // Never a write here. The SDK only executes an approved call, so an
             // unapproved one reaching execute means no card was shown: the

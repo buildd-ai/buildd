@@ -34,6 +34,11 @@ describe('watchNotice: the sentence a watch posts, in plain words', () => {
     expect(q.watch).toMatchObject({ label: 'Task', href: `/app/tasks/${TASK}`, linkText: 'Open task', tone: 'attention' });
   });
 
+  it('names a task by its plain heading, never the raw commit-style title', () => {
+    const n = watchNotice({ eventType: 'task.needs_input', payload: { taskId: TASK, title: 'feat(export): dual-currency CSV' }, subjectRef: {} });
+    expect(n.text).toBe('Dual-currency CSV needs your answer.');
+  });
+
   it('a task event with no title (a sensitive workspace omits prose) still reads', () => {
     const n = watchNotice({ eventType: 'task.completed', payload: { taskId: TASK }, subjectRef: { type: 'task', id: TASK } });
     expect(n.text).toBe('The task you watched is done.');

@@ -68,11 +68,14 @@ function world(rows: Row[], presence: 'present' | 'away' = 'present') {
       return true;
     }),
     ping: mock(async () => {}),
+    pendingState: mock(async () => 'set' as 'set' | 'clear' | 'unknown'),
+    clearPending: mock(async () => {}),
   };
   return { rows, marks, posted, deps };
 }
 
-const drain = (w: ReturnType<typeof world>) => deliverWatchesToConversation({ userId: USER, conversationId: CONV }, w.deps as any);
+const drain = (w: ReturnType<typeof world>, opts: { open?: boolean } = {}) => deliverWatchesToConversation({ userId: USER, conversationId: CONV, ...opts }, w.deps as any);
+const core = (o: { delivered: number; marked: number }) => ({ delivered: o.delivered, marked: o.marked });
 
 describe('the record: a fired watch is appended to its conversation once per row', () => {
   it('posts the event message keyed by the ledger row id, at the event\'s own time', async () => {
@@ -129,14 +132,14 @@ describe('the delivery: marked only when the owner is present', () => {
   it('away: posted, not marked, so the row stays pending for the away job', async () => {
     const w = world([row('d1')], 'away');
     const out = await drain(w);
-    expect(out).toEqual({ delivered: 1, marked: 0 });
+    expect(core(out)).toEqual({ delivered: 1, marked: 0 });
     expect(w.deps.markDelivered).not.toHaveBeenCalled();
     expect(w.rows[0].status).toBe('pending');
   });
 
   it('present: marked delivered via the conversation, once', async () => {
     const w = world([row('d1')], 'present');
-    expect(await drain(w)).toEqual({ delivered: 1, marked: 1 });
+    expect(core(await drain(w))).toEqual({ delivered: 1, marked: 1 });
     expect(w.marks).toEqual([{ id: 'd1', route: 'conversation' }]);
     await drain(w);
     expect(w.marks).toHaveLength(1);
@@ -146,7 +149,7 @@ describe('the delivery: marked only when the owner is present', () => {
     const w = world([row('d1')], 'away');
     await drain(w);
     w.deps.getPresence.mockImplementation(async () => ({ state: 'present' as const, conversationId: CONV }));
-    expect(await drain(w)).toEqual({ delivered: 0, marked: 1 });
+    expect(core(await drain(w))).toEqual({ delivered: 0, marked: 1 });
     expect(w.posted.size).toBe(1);
   });
 
@@ -165,7 +168,7 @@ describe('the delivery: marked only when the owner is present', () => {
     w.deps.getPresence.mockImplementation(async () => { throw new Error('redis'); });
     expect((await drain(w)).marked).toBe(0);
     const broken = { ...w.deps, listUnposted: async () => { throw new Error('db down'); } };
-    expect(await deliverWatchesToConversation({ userId: USER, conversationId: CONV }, broken as any)).toEqual({ delivered: 0, marked: 0 });
+    expect(core(await deliverWatchesToConversation({ userId: USER, conversationId: CONV }, broken as any))).toEqual({ delivered: 0, marked: 0 });
   });
 });
 
@@ -192,7 +195,7 @@ describe('wired to lib/presence getPresence (no injected presence)', () => {
     presenceNow = 'present';
     presenceCalls.length = 0;
     const w = world([row('d1')]);
-    expect(await noPresenceDep(w)).toEqual({ delivered: 1, marked: 1 });
+    expect(core(await noPresenceDep(w))).toEqual({ delivered: 1, marked: 1 });
     expect(presenceCalls).toEqual([USER]);
     expect(w.marks).toEqual([{ id: 'd1', route: 'conversation' }]);
   });
@@ -200,8 +203,51 @@ describe('wired to lib/presence getPresence (no injected presence)', () => {
   it('an away owner\'s row is posted but stays pending for Pushover', async () => {
     presenceNow = 'away';
     const w = world([row('d1')]);
-    expect(await noPresenceDep(w)).toEqual({ delivered: 1, marked: 0 });
+    expect(core(await noPresenceDep(w))).toEqual({ delivered: 1, marked: 0 });
     expect(w.rows[0].status).toBe('pending');
     expect(w.deps.markDelivered).not.toHaveBeenCalled();
+  });
+});
+
+describe('the Redis gate: Postgres only when there is something to pull', () => {
+  it('flag clear and not opening: no query at all', async () => {
+    const w = world([row('d1')]);
+    w.deps.pendingState.mockImplementation(async () => 'clear');
+    const out = await drain(w);
+    expect(out).toMatchObject({ delivered: 0, marked: 0, skipped: true, pollMs: 30_000 });
+    expect(w.deps.listUnposted).not.toHaveBeenCalled();
+    expect(w.deps.listUndelivered).not.toHaveBeenCalled();
+    expect(w.deps.getPresence).not.toHaveBeenCalled();
+  });
+
+  it('opening the conversation always drains, flag or not', async () => {
+    const w = world([row('d1')]);
+    w.deps.pendingState.mockImplementation(async () => 'clear');
+    expect((await drain(w, { open: true })).delivered).toBe(1);
+  });
+
+  it('present and nothing of theirs left pending: the flag is cleared', async () => {
+    const w = world([row('d1')], 'present');
+    await drain(w);
+    expect(w.deps.clearPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('away: the flag stays, so the record of a Pushover delivery posts on return', async () => {
+    const w = world([row('d1')], 'away');
+    await drain(w);
+    expect(w.deps.clearPending).not.toHaveBeenCalled();
+  });
+
+  it('present but a row of theirs waits in another conversation: the flag stays', async () => {
+    const w = world([row('mine'), row('elsewhere', { conversationId: OTHER_CONV })], 'present');
+    await drain(w);
+    expect(w.deps.clearPending).not.toHaveBeenCalled();
+  });
+
+  it('no Redis: queries as before, at the longer interval', async () => {
+    const w = world([row('d1')]);
+    w.deps.pendingState.mockImplementation(async () => 'unknown');
+    const out = await drain(w);
+    expect(out).toMatchObject({ delivered: 1, pollMs: 120_000 });
   });
 });

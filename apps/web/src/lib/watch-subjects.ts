@@ -5,36 +5,45 @@
  * lives in (the github_repos FK only, never the free-text workspaces.repo),
  * and whether that PR already merged; and a readable label per watch.
  *
- * Visibility is not decided here. `createSubscription` re-checks that the
- * owner can see the subject's workspace and writes nothing otherwise.
+ * Visibility first: every lookup is scoped to the caller (a member of the
+ * subject workspace's team, the same rule createSubscription applies to a
+ * person owner). A subject the caller can't see reads exactly like one that
+ * doesn't exist, so its status, repo link or merge state never leak.
+ * `createSubscription` still re-checks at write time.
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { githubRepos, tasks, teamMembers, workers, workspaces } from '@buildd/core/db/schema';
 import type { Subscription } from './subscriptions';
 
 export const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'] as const;
 
-export async function taskSubject(taskId: string): Promise<{ id: string; title: string; status: string; workspaceId: string } | null> {
-  const t = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
-    columns: { id: true, title: true, status: true, workspaceId: true },
-  });
-  return t ? { id: t.id, title: t.title, status: t.status, workspaceId: t.workspaceId } : null;
+/** The caller is a member of workspace `workspaces`' team. */
+const callerSees = (userId: string) => sql`exists (select 1 from ${teamMembers} where ${teamMembers.teamId} = ${workspaces.teamId} and ${teamMembers.userId} = ${userId})`;
+
+/** The task, only if the caller can see it; null otherwise (never "exists but hidden"). */
+export async function taskSubject(taskId: string, userId: string): Promise<{ id: string; title: string; status: string; workspaceId: string } | null> {
+  const [t] = await db.select({ id: tasks.id, title: tasks.title, status: tasks.status, workspaceId: tasks.workspaceId })
+    .from(tasks)
+    .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
+    .where(and(eq(tasks.id, taskId), callerSees(userId)))
+    .limit(1);
+  return t ?? null;
 }
 
 export type PrSubject =
   | { ok: true; repoFullName: string; merged: boolean; title: string | null }
-  | { ok: false; reason: 'no_workspace' | 'no_repo' };
+  | { ok: false; reason: 'not_found' | 'no_repo' };
 
-export async function prSubject(workspaceId: string, prNumber: number): Promise<PrSubject> {
+/** A PR in a workspace the caller can see; `not_found` for one they can't, before anything else is read. */
+export async function prSubject(workspaceId: string, prNumber: number, userId: string): Promise<PrSubject> {
   const [ws] = await db.select({ id: workspaces.id, repo: githubRepos.fullName })
     .from(workspaces)
     .leftJoin(githubRepos, eq(githubRepos.id, workspaces.githubRepoId))
-    .where(eq(workspaces.id, workspaceId))
+    .where(and(eq(workspaces.id, workspaceId), callerSees(userId)))
     .limit(1);
-  if (!ws) return { ok: false, reason: 'no_workspace' };
+  if (!ws) return { ok: false, reason: 'not_found' };
   if (!ws.repo) return { ok: false, reason: 'no_repo' };
   const rows = await db.select({ mergedAt: workers.mergedAt, title: tasks.title })
     .from(workers)

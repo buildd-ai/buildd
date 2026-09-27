@@ -27,6 +27,12 @@
  * time the conversation is open (listUnpostedForConversation reads delivered
  * rows too).
  *
+ * COST. A visible tab polls every 30s, so the drain first reads a Redis
+ * flag (lib/watch-pending.ts) that recordEvent sets for the owner. Flag clear
+ * and not opening: no Postgres at all. Opening the conversation always
+ * drains. No Redis: drain every time, but the tab polls at the slower
+ * UNKNOWN_POLL_MS (returned as `pollMs`).
+ *
  * PRESENCE. `getPresence(userId)` (lib/presence.ts): a missing beat, no
  * Redis, or an error reads as away, the fail-toward-delivering state: the
  * record is posted, nothing is marked, and the away job owns delivery.
@@ -39,6 +45,7 @@ import { CHAT_EVENT_PART_TYPE, type ChatEventData, type ChatMessagePart } from '
 import { listUndelivered, listUnpostedForConversation, markDelivered, type UndeliveredRow } from '@/lib/subscriptions';
 import { watchNotice } from '@/lib/watch-notice';
 import { getPresence, type Presence } from '@/lib/presence';
+import { clearWatchPending, POLL_MS, UNKNOWN_POLL_MS, watchPendingState, type PendingState } from '@/lib/watch-pending';
 import { pingConversation } from './store';
 
 /** The stored parts for one fired watch: a single event part. */
@@ -66,6 +73,17 @@ export interface WatchDeliveryDeps {
   getPresence: (userId: string) => Promise<Presence>;
   insertEvent: (conversationId: string, id: string, parts: ChatMessagePart[], createdAt: Date) => Promise<boolean>;
   ping: (conversationId: string, messageId?: string) => Promise<void>;
+  pendingState: (userId: string) => Promise<PendingState>;
+  clearPending: (userId: string) => Promise<void>;
+}
+
+export interface WatchDrainResult {
+  delivered: number;
+  marked: number;
+  /** The Redis flag said there was nothing to pull: Postgres was not asked. */
+  skipped?: true;
+  /** When the tab should ask again. */
+  pollMs: number;
 }
 
 const DEFAULT_DEPS: WatchDeliveryDeps = {
@@ -75,6 +93,8 @@ const DEFAULT_DEPS: WatchDeliveryDeps = {
   getPresence: userId => getPresence(userId),
   insertEvent: insertEventOnce,
   ping: (id, messageId) => pingConversation(id, 'event', messageId),
+  pendingState: watchPendingState,
+  clearPending: clearWatchPending,
 };
 
 /**
@@ -97,11 +117,14 @@ export async function postWatchEvent(
  * throws: an error reads as nothing posted, and rows stay as they were.
  */
 export async function deliverWatchesToConversation(
-  target: { userId: string; conversationId: string },
+  target: { userId: string; conversationId: string; open?: boolean },
   deps: Partial<WatchDeliveryDeps> = {},
-): Promise<{ delivered: number; marked: number }> {
+): Promise<WatchDrainResult> {
   const d = { ...DEFAULT_DEPS, ...deps };
   const owner = { userId: target.userId };
+  const state = await d.pendingState(target.userId).catch((): PendingState => 'unknown');
+  const pollMs = state === 'unknown' ? UNKNOWN_POLL_MS : POLL_MS;
+  if (state === 'clear' && !target.open) return { delivered: 0, marked: 0, skipped: true, pollMs };
   let posted = 0;
   let marked = 0;
   let lastId: string | undefined;
@@ -111,19 +134,25 @@ export async function deliverWatchesToConversation(
     }
     const presence = await d.getPresence(target.userId).catch((): Presence => ({ state: 'away', reason: 'unavailable' }));
     if (presence.state === 'present') {
-      const pending = (await d.listUndelivered(owner, { limit: 50 })).filter(r => r.conversationId === target.conversationId);
+      const all = await d.listUndelivered(owner, { limit: 50 });
+      const pending = all.filter(r => r.conversationId === target.conversationId);
       const oneShot = new Set<string>();
+      let handled = 0;
       for (const r of pending) {
         if (r.lifetime === 'one_shot') {
-          if (oneShot.has(r.subscriptionId)) continue;
+          // A sibling of a claimed one-shot is coalesced by that claim.
+          if (oneShot.has(r.subscriptionId)) { handled += 1; continue; }
           oneShot.add(r.subscriptionId);
         }
         if ((await d.markDelivered(owner, r.id, { route: 'conversation' })).marked) marked += 1;
+        handled += 1;
       }
+      // Nothing of theirs is left pending anywhere: the next poll can skip Postgres.
+      if (all.length === pending.length && handled === pending.length) await d.clearPending(target.userId).catch(() => {});
     }
   } catch (e) {
     console.warn('[chat] watch delivery failed:', e);
   }
   if (posted > 0) await d.ping(target.conversationId, lastId).catch(() => {});
-  return { delivered: posted, marked };
+  return { delivered: posted, marked, pollMs };
 }

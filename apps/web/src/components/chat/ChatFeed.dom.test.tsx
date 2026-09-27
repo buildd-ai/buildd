@@ -227,9 +227,14 @@ describe('a fired watch', () => {
     expect(link.getAttribute('href')).toBe('https://github.com/harborline/billing-web/pull/418');
     expect(link.textContent).toContain('Open PR');
 
-    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('feat(export): dual-currency CSV needs your answer.');
+    expect(notices[1].querySelector('p.font-voice')?.textContent).toBe('Dual-currency CSV needs your answer.');
     expect((notices[1].querySelector('a') as HTMLAnchorElement).getAttribute('href')).toBe('/app/tasks/task-export');
     expect(notices[2].querySelector('p.font-voice')?.textContent).toBe('CI failed on #421.');
+
+    // The watch's own tool row is square too (v3 foreground), not a pill.
+    const rows = qa('[data-testid="tool-call-row"], [data-testid="tool-call-group"]');
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.className).not.toMatch(/rounded/);
 
     for (const n of notices) {
       // Square, and never a tool, event id or route name.
