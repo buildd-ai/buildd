@@ -218,7 +218,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   };
 
   return (
-    <div className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
+    <div className="border-l-2 border-status-error bg-status-error/5 px-4 py-3">
       {/* Header row: chip label + timestamp */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">

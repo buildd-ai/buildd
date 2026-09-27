@@ -173,7 +173,7 @@ export default async function ArtifactDetailPage({
         />
 
         {/* Content */}
-        <div className="min-w-0 bg-surface-2 border border-border-default rounded-[10px] p-4 md:p-6">
+        <div className="min-w-0 bg-surface-2 border border-border-default p-4 md:p-6">
           {artifact.type === 'link' && artifactUrl && (
             <div>
               <a

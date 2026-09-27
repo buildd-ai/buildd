@@ -89,7 +89,7 @@ export function LoopHistory({
         Loop history
       </div>
       {loopState === 'exhausted' && (
-        <div className="mb-3 rounded-[8px] border border-status-error/30 bg-status-error/10 p-3 text-sm text-status-error">
+        <div className="mb-3 border border-status-error/30 bg-status-error/10 p-3 text-sm text-status-error">
           <span className="font-semibold">Condition unmet after {entries.length || maxLoops} attempts.</span>
           {' '}The task failed. Evidence from each attempt is below.
         </div>

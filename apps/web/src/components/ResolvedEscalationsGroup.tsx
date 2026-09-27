@@ -71,7 +71,7 @@ export function ResolvedEscalationsGroup({ items }: Props) {
           {items.map((item) => (
             <div
               key={item.workerId}
-              className="opacity-50 border-l-2 border-border-default rounded-r-[10px] px-4 py-2.5"
+              className="opacity-50 border-l-2 border-border-default px-4 py-2.5"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">

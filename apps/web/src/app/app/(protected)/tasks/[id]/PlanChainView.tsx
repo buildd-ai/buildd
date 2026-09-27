@@ -55,7 +55,7 @@ function ChainNode({
   const card = (
     <div
       className={[
-        'flex flex-col gap-2 p-3 rounded-[10px] border min-w-[155px] max-w-[195px]',
+        'flex flex-col gap-2 p-3 border min-w-[155px] max-w-[195px]',
         'bg-surface-2 border-border-default',
         isCurrent ? 'ring-1 ring-primary/50' : '',
         isBlocked ? 'opacity-50' : '',

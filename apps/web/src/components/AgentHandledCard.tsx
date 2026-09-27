@@ -18,7 +18,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   const spinning = gate?.kind === 'fixing';
 
   return (
-    <div className="border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3">
+    <div className="border-l-2 border-text-muted bg-surface-2 px-4 py-3">
       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
         <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
           {spinning && <Spinner size="xs" aria-label="In progress" />}

@@ -29,7 +29,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
             return (
               <div
                 key={item.workspaceId}
-                className="border border-status-warning/30 rounded-[10px] px-4 py-3 bg-surface-2"
+                className="border border-status-warning/30 px-4 py-3 bg-surface-2"
               >
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -62,7 +62,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
             return (
               <div
                 key={item.workspaceId}
-                className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+                className="border border-border-default px-4 py-3 bg-surface-2"
               >
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -100,7 +100,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
           return (
             <div
               key={item.workspaceId}
-              className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+              className="border border-border-default px-4 py-3 bg-surface-2"
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">

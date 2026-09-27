@@ -15,7 +15,7 @@ interface WaitingOnYouDecideCardProps {
  */
 export function WaitingOnYouDecideCard({ item }: WaitingOnYouDecideCardProps) {
   return (
-    <div className="border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3">
+    <div className="border-l-2 border-status-warning bg-status-warning/5 px-4 py-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5">
