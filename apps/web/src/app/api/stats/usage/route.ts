@@ -15,7 +15,7 @@ import {
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 
-const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none'];
+const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource', 'none'];
 
 /**
  * GET /api/stats/usage
@@ -26,7 +26,7 @@ const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none'];
  * Query params:
  *   window    - "24h" | "7d" | "30d" (default "7d")
  *   workspace - workspaceId filter (optional; must be one the caller can see)
- *   groupBy   - "role" | "workspace" | "none" (default "role")
+ *   groupBy   - "role" | "workspace" | "creationSource" | "none" (default "role")
  *
  * The health page's role block answers "did work land". This answers "what did
  * it cost" — median/p90 tokens per task, cost, turns, and which tools agents
@@ -105,7 +105,10 @@ export async function GET(req: NextRequest) {
 
 /**
  * Human labels for group keys: role slugs → role names (+ color, for the health
- * page chips), workspace ids → workspace names.
+ * page chips), workspace ids → workspace names. creationSource keys (dashboard,
+ * api, mcp, ...) are already human-readable, so they're returned as-is by the
+ * route's `labels[g.key] ?? g.key` fallback — looking them up against the roles
+ * table would risk a false-positive match if a role slug ever collided with one.
  */
 async function groupLabels(
   keys: string[],
@@ -118,6 +121,7 @@ async function groupLabels(
   if (groupBy === 'workspace') {
     return Object.fromEntries(scopedWorkspaces.map(w => [w.id, w.name]));
   }
+  if (groupBy === 'creationSource') return {};
 
   const slugs = keys.filter(k => k !== UNASSIGNED_ROLE);
   if (slugs.length === 0) return {};

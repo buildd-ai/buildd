@@ -192,6 +192,19 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(mockSkillsFindMany).not.toHaveBeenCalled();
   });
 
+  it('groups by creationSource with the raw key as label and skips the role lookup', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      worker({ taskId: 'a', task: { id: 'a', status: 'completed', roleSlug: null, creationSource: 'dashboard', parentTaskId: null } }),
+      worker({ taskId: 'b', inputTokens: 1, task: { id: 'b', status: 'completed', roleSlug: null, creationSource: 'mcp', parentTaskId: null } }),
+    ]);
+
+    const body = await (await GET(makeRequest({ groupBy: 'creationSource' }))).json();
+    expect(body.groups.map((g: any) => g.key).sort()).toEqual(['dashboard', 'mcp']);
+    // Raw key doubles as the label — no role-slug lookup should fire for it.
+    expect(body.groups.find((g: any) => g.key === 'dashboard').label).toBe('dashboard');
+    expect(mockSkillsFindMany).not.toHaveBeenCalled();
+  });
+
   it('charges a retry attempt to its parent task', async () => {
     mockWorkersFindMany.mockResolvedValue([
       worker({ taskId: 'parent', task: { id: 'parent', status: 'completed', roleSlug: 'builder', parentTaskId: null } }),
