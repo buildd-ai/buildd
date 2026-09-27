@@ -258,6 +258,13 @@ const mockResolveCompletedTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
+// Explicit-taskId exclusion probe (own rendered-SQL tests in
+// explicit-task-exclusion.test.ts). Here we only pin that the route asks for it
+// and forwards the answer.
+const mockDiagnoseExplicitTaskExclusion = mock((_opts: any) => Promise.resolve(null as any));
+mock.module('./explicit-task-exclusion', () => ({
+  diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
+}));
 
 // Model-routing experiment glue. The real module is exercised against rendered
 // SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
@@ -1965,6 +1972,58 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.workers).toEqual([]);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  // Friction task 81962c2f: an explicit taskId excluded by a WHERE-clause gate
+  // (held mission, held task, deps, ...) used to come back as a bare
+  // `no_pending_tasks`, indistinguishable from an empty queue.
+  it('explains why an explicitly requested task was excluded, scoped to the claimable workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+    mockDiagnoseExplicitTaskExclusion.mockResolvedValueOnce({ code: 'mission_held', detail: 'Its mission is held.' });
+    // The explicit-claim path stamps lastClaimAttempt on the task (fire-and-forget).
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) } as any);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'mcp', taskId: 'task-held' },
+    }));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.workers).toEqual([]);
+    expect(data.diagnostics.reason).toBe('no_pending_tasks');
+    expect(data.diagnostics.taskExclusion).toEqual({ code: 'mission_held', detail: 'Its mission is held.' });
+    const opts = mockDiagnoseExplicitTaskExclusion.mock.calls[0][0];
+    expect(opts.taskId).toBe('task-held');
+    expect(opts.workspaceIds).toEqual(['ws-1']);
+    // The probe re-evaluates the route's own predicates, not copies of them.
+    expect(Object.keys(opts.gates)).toEqual(expect.arrayContaining(['missionHeld', 'taskHeld', 'deps', 'activeWorker']));
+  });
+
+  it('does not run the exclusion probe for an ordinary (no taskId) empty poll', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics.taskExclusion).toBeUndefined();
+    expect(mockDiagnoseExplicitTaskExclusion).not.toHaveBeenCalled();
   });
 
   it('claims a task when its previous worker has already completed (no active worker)', async () => {

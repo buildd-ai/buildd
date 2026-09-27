@@ -59,6 +59,8 @@ export interface UsageWorkerRow {
   turns: number | null;
   resultMeta: ResultMeta | null;
   mcpCalls: Array<{ server: string; tool: string; ok?: boolean }> | null;
+  /** `workers.runner` — see `executorOf`. Optional so older callers still type-check. */
+  runner?: string | null;
 }
 
 export interface Distribution {
@@ -257,7 +259,21 @@ export interface ScanBounds {
   completeSince: string;
 }
 
-export type GroupDimension = 'role' | 'workspace' | 'none';
+export type GroupDimension = 'role' | 'workspace' | 'none' | 'executor';
+
+/**
+ * Who ran a worker, for `groupBy: 'executor'`. `workers.runner` is `'mcp'` when
+ * the worker was minted by `claim_task` from an MCP session — a person working
+ * interactively in Claude Code (or any MCP client) — and a runner instance id
+ * for everything a background runner claimed. Exact match only: a runner whose
+ * id merely contains "mcp" is still a runner.
+ */
+export type Executor = 'interactive' | 'runner';
+export const INTERACTIVE_RUNNER_ID = 'mcp';
+
+export function executorOf(runner: string | null | undefined): Executor {
+  return runner === INTERACTIVE_RUNNER_ID ? 'interactive' : 'runner';
+}
 
 const ZERO_DISTRIBUTION: Distribution = { mean: 0, median: 0, p90: 0, max: 0 };
 
@@ -752,6 +768,25 @@ export function aggregateByRole(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> 
   return out;
 }
 
+/**
+ * Worker rows split by executor, then aggregated by task within each group —
+ * the same per-row split as `aggregateByRole`, for the same reason: a task an
+ * interactive session picked up after a runner attempt contributes to both
+ * groups, while the top-level totals still count it once.
+ */
+export function aggregateByExecutor(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> {
+  const byExecutor = new Map<string, UsageWorkerRow[]>();
+  for (const row of rows) {
+    const key = executorOf(row.runner);
+    const bucket = byExecutor.get(key);
+    if (bucket) bucket.push(row);
+    else byExecutor.set(key, [row]);
+  }
+  const out = new Map<string, TaskAgg[]>();
+  for (const [key, groupRows] of byExecutor) out.set(key, aggregateByTask(groupRows));
+  return out;
+}
+
 function buildGroups(
   tasks: TaskAgg[],
   groupBy: GroupDimension,
@@ -761,9 +796,11 @@ function buildGroups(
 
   const buckets = groupBy === 'role'
     ? aggregateByRole(rows)
-    : new Map<string, TaskAgg[]>();
+    : groupBy === 'executor'
+      ? aggregateByExecutor(rows)
+      : new Map<string, TaskAgg[]>();
 
-  if (groupBy !== 'role') {
+  if (groupBy === 'workspace') {
     for (const task of tasks) {
       const key = task.workspaceId;
       const bucket = buckets.get(key);

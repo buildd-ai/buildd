@@ -167,6 +167,39 @@ function requireFullUuid(id: unknown, paramName: string): string {
   return id;
 }
 
+/**
+ * Human-readable reply for a claim that returned no workers. The claim route
+ * always computes `diagnostics.reason` (and, for an explicit taskId, the gate
+ * that excluded it as `diagnostics.taskExclusion`); the old reply discarded it
+ * and said "All tasks may be assigned or completed" even with tasks pending.
+ */
+export function describeEmptyClaim(data: any, taskId?: string): string {
+  const d = data?.diagnostics;
+  if (!d?.reason) {
+    return 'Nothing claimed: the server returned no workers and gave no reason.';
+  }
+  const detail: string[] = [];
+  if (d.reason === 'no_slots' && typeof d.activeWorkers === 'number') {
+    detail.push(`${d.activeWorkers}/${d.maxConcurrent ?? '?'} concurrent workers already active for this account`);
+  }
+  if (typeof d.pendingTasks === 'number') detail.push(`${d.pendingTasks} candidate(s)`);
+  if (d.deferrals && Object.keys(d.deferrals).length > 0) {
+    detail.push(`deferred by ${Object.entries(d.deferrals).map(([k, n]) => `${k}=${n}`).join(', ')}`);
+  }
+  if (d.blockedByPr?.prNumber) detail.push(`path overlap with open PR #${d.blockedByPr.prNumber}`);
+  if (data.budgetResetsAt) detail.push(`budget resets at ${data.budgetResetsAt}`);
+
+  const lines = [`Nothing claimed: ${d.reason}${detail.length ? ` (${detail.join('; ')})` : ''}.`];
+  if (taskId) {
+    if (d.taskExclusion) {
+      lines.push(`Task ${taskId} was excluded: ${d.taskExclusion.code}. ${d.taskExclusion.detail}`);
+    } else if (d.reason === 'all_candidates_deferred' || d.reason === 'race_lost') {
+      lines.push(`Task ${taskId} is claimable but was held back this poll (see the reason above); try again shortly.`);
+    }
+  }
+  return lines.join('\n');
+}
+
 // ── Action Lists ─────────────────────────────────────────────────────────────
 
 // Trigger level: can create tasks and artifacts, but cannot claim or execute.
@@ -406,7 +439,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID) } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override — OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies, a future startAt, mission pacing/concurrency and the workspace cap still apply (force-start from the dashboard to override those). When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
@@ -457,7 +490,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
-    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
+    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
@@ -1249,7 +1282,10 @@ export async function handleBuilddAction(
       const worker = await api(`/api/workers/${ctx.workerId}`);
       const workerIsActive = ['idle', 'running', 'starting', 'waiting_input'].includes(worker?.status);
       const taskIsActive = ['assigned', 'in_progress'].includes(worker?.task?.status);
-      if (workerIsActive && taskIsActive) {
+      // An explicit taskId naming a different task is a deliberate pickup, not
+      // the "first lifecycle call" this shortcut exists for.
+      const explicitOther = typeof params.taskId === 'string' && params.taskId !== worker?.task?.id;
+      if (workerIsActive && taskIsActive && !explicitOther) {
         return text(
           `Current assignment already active (no new task claimed):\n\n` +
           `**Worker ID:** ${worker.id}\n` +
@@ -1329,7 +1365,7 @@ export async function handleBuilddAction(
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = isTerminalAudit
         ? ''
-        : `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
+        : `\n\nTo claim a task, call action=claim_task: it auto-assigns the highest-priority pending task, or pass params.taskId to pick up a specific one.`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
@@ -1487,14 +1523,22 @@ export async function handleBuilddAction(
     }
 
     case 'claim_task': {
+      const taskId = params.taskId === undefined || params.taskId === null
+        ? undefined
+        : requireFullUuid(params.taskId, 'taskId');
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       const data = await api('/api/workers/claim', {
         method: 'POST',
-        body: JSON.stringify({ maxTasks: params.maxTasks || 1, workspaceId: wsId, runner: 'mcp' }),
+        body: JSON.stringify({
+          maxTasks: params.maxTasks || 1,
+          workspaceId: wsId,
+          runner: 'mcp',
+          ...(taskId ? { taskId } : {}),
+        }),
       });
 
       const workers = data.workers || [];
-      if (workers.length === 0) return text('No tasks available to claim. All tasks may be assigned or completed.');
+      if (workers.length === 0) return text(describeEmptyClaim(data, taskId));
 
       const claimed = workers.map((w: any) =>
         `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
@@ -3790,7 +3834,9 @@ export async function handleBuilddAction(
         const success = g.successRate === null ? 'n/a' : `${Math.round(g.successRate * 100)}%`;
         const gIn = dist(g.perTask?.inputTokens);
         const gCost = dist(g.perTask?.costUsd);
-        const parts = [`${g.tasks} task(s)`, gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded'];
+        const parts = [`${g.tasks} task(s)`];
+        if (typeof g.completed === 'number') parts.push(`${g.completed} completed`);
+        parts.push(gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded');
         if (gCost) parts.push(`$${gCost.median.toFixed(2)} median`);
         parts.push(`${success} success`);
         return `  ${g.label ?? g.key}: ${parts.join(' · ')}`;
