@@ -1,5 +1,5 @@
 /**
- * `@buildd/ai-kit/chat/server`: tool permissions and (from P3) the turn runner.
+ * `@builddai/ai-kit/chat/server`: tool permissions and (from P3) the turn runner.
  *
  * P0 ships the tool-permission primitive for real: `defineToolGroups` and the
  * pure enforcement function `skipCardVerdict` / `canSkipCard`. It is the rule
@@ -20,7 +20,7 @@
  * `createChatTurn` is typed here as a skeleton; its implementation lands in P3.
  */
 
-import type { ToolPermissionMode, ToolPermissionRow } from '@buildd/ai-kit/chat/contract';
+import type { ToolPermissionMode, ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
 
 // ── Taint ─────────────────────────────────────────────────────────────────────
 

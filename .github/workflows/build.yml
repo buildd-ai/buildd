@@ -204,7 +204,7 @@ jobs:
       # published ESM. The apps/web build below proves the first half; this
       # proves the second on plain Node, which only the tag-triggered publish
       # workflow checked before.
-      - name: Build @buildd/ai-kit dist and import it on Node
+      - name: Build @builddai/ai-kit dist and import it on Node
         run: |
           cd packages/ai-kit
           bun run build
