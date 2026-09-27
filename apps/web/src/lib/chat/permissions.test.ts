@@ -99,6 +99,21 @@ describe('canSkipCard', () => {
     expect(canSkipCard({ tool: 'manage_missions', input: upd({ addGoalCriteria: [{ type: 'all_prs_merged' }] }), allowedGroups: allowed('missions'), ...clean })).toBe(true);
   });
 
+  it('anything that starts recurring or unattended work always asks, even in an allowed group', () => {
+    const ask = (tool: string, input: Record<string, unknown>, group: string) =>
+      canSkipCard({ tool, input, allowedGroups: allowed(group), ...clean });
+    expect(ask('create_schedule', { name: 'n', cronExpression: '0 * * * *', title: 't' }, 'schedules')).toBe(false);
+    expect(ask('update_schedule', { scheduleId: 's', name: 'renamed' }, 'schedules')).toBe(false);
+    expect(ask('update_schedule', { scheduleId: 's', enabled: false }, 'schedules')).toBe(false);
+    expect(ask('pause_schedules', { workspaceId: 'w', enabled: true }, 'schedules')).toBe(false);
+    expect(ask('manage_missions', { action: 'arm', missionId: 'm' }, 'missions')).toBe(false);
+    expect(ask('hold_task', { taskId: 'x', hold: false }, 'tasks')).toBe(false);
+    // Stopping work is not starting it: a pause and a hold may still skip.
+    expect(ask('pause_schedules', { workspaceId: 'w' }, 'schedules')).toBe(true);
+    expect(ask('pause_schedules', { workspaceId: 'w', enabled: false }, 'schedules')).toBe(true);
+    expect(ask('hold_task', { taskId: 'x', hold: true }, 'tasks')).toBe(true);
+  });
+
   it('a create_task with a field outside its declared schema always asks', () => {
     const base = { title: 't', description: 'd' };
     expect(canSkipCard({ tool: 'create_task', input: base, allowedGroups: allowed('tasks'), ...clean })).toBe(true);

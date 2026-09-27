@@ -377,8 +377,21 @@ An *Allow* lets a write run without its card only when all of these hold:
 - its effective class is `write`. Admin-class calls (any delete, a mission
   budget change, workspace config) always get a card, and so does every write
   in the `admin` group;
+- it doesn't start recurring or unattended work. Creating or editing a
+  schedule (`create_schedule`, `update_schedule`), arming a held mission
+  (`manage_missions` arm), resuming paused schedules (`pause_schedules` with
+  `enabled: true`) and resuming a held task (`hold_task` with `hold: false`)
+  always get a card, next to deletes and admin writes. Unlike admin writes, a
+  member may still propose them. Pausing or holding stops work, so it may skip
+  its card (`startsUnattendedWork` in `apps/web/src/lib/chat/tools.ts`, the
+  `alwaysAsk` flag in `registry.ts`);
+- a mission or task write carries only plain edit fields (title, description,
+  priority, criteria). A field that shapes spend or run state (concurrency,
+  model, schedule, pacing, start, status and the like) gets a card
+  (`SKIPPABLE_FIELDS` in `permissions.ts`);
 - nothing a tool returned is in the model's context: no tool result earlier in
-  the turn, none in the history, and no docked object, whose task titles are in
+  the turn, none anywhere in the stored conversation (not only the window sent
+  to the model), and no docked object, whose task titles are in
   the instructions. Tool output is where an injected instruction comes from, so
   a write proposed after reading anything gets its card. In practice *Allow*
   covers a write the model makes straight from your own words ("make this a

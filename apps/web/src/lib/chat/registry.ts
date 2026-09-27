@@ -43,6 +43,12 @@ export interface ChatOpSpec {
   target?: TargetDecl;
   /** For class 'deferred': why it isn't exposed yet. */
   deferredReason?: string;
+  /**
+   * Always gets an approval card, whatever the person's "Allow": the op starts
+   * recurring or unattended work (a schedule, an armed mission). Unlike
+   * `admin`, a member may still propose it.
+   */
+  alwaysAsk?: true;
 }
 
 export interface ChatToolSpec {
@@ -58,6 +64,8 @@ const read = (...routes: RouteRef[]): ChatOpSpec => ({ class: 'read', routes: [W
 const write = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'write', target, routes: [WS, ...routes] });
 const admin = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'admin', target, routes: [WS, ...routes] });
 const deferred = (reason: string): ChatOpSpec => ({ class: 'deferred', routes: [], deferredReason: reason });
+/** A write that starts recurring or unattended work: never skips its card. */
+const startsWork = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
 const single = (group: ToolGroup, op: ChatOpSpec): ChatToolSpec => ({ group, ops: { '': op } });
 
 const CAPS = 'GET /api/missions/capabilities' as const;
@@ -84,7 +92,7 @@ export const CHAT_TOOL_SPECS = {
       get_criteria_state: read('GET /api/missions/:id/evaluate'),
       create: write({ conversation: true }, 'POST /api/missions', CAPS),
       update: write({ param: 'missionId', is: 'mission' }, 'PATCH /api/missions/:id', 'GET /api/missions/:id', CAPS),
-      arm: write({ param: 'missionId', is: 'mission' }, 'PATCH /api/missions/:id', CAPS),
+      arm: startsWork(write({ param: 'missionId', is: 'mission' }, 'PATCH /api/missions/:id', CAPS)),
       link_task: write({ param: 'taskId', is: 'task' }, 'PATCH /api/tasks/:id'),
       unlink_task: write({ param: 'taskId', is: 'task' }, 'PATCH /api/tasks/:id'),
       evaluate: write({ param: 'missionId', is: 'mission' }, 'POST /api/missions/:id/evaluate'),
@@ -139,9 +147,9 @@ export const CHAT_TOOL_SPECS = {
   // ── schedules ──
   list_schedules: single('schedules', read('GET /api/workspaces/:id/schedules')),
   trace_schedule: single('schedules', read('GET /api/tasks/:id', 'GET /api/workspaces/:id/schedules', 'GET /api/workspaces/:id/schedules/:scheduleId')),
-  create_schedule: single('schedules', write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/schedules')),
-  update_schedule: single('schedules', write({ param: 'scheduleId', is: 'schedule' },
-    'GET /api/workspaces/:id/schedules/:scheduleId', 'PATCH /api/workspaces/:id/schedules/:scheduleId')),
+  create_schedule: single('schedules', startsWork(write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/schedules'))),
+  update_schedule: single('schedules', startsWork(write({ param: 'scheduleId', is: 'schedule' },
+    'GET /api/workspaces/:id/schedules/:scheduleId', 'PATCH /api/workspaces/:id/schedules/:scheduleId'))),
   pause_schedules: single('schedules', write({ param: 'workspaceId', is: 'workspace' },
     'GET /api/workspaces/:id/schedules', 'PATCH /api/workspaces/:id/schedules/:scheduleId')),
   delete_schedule: single('schedules', admin({ param: 'scheduleId', is: 'schedule' }, 'DELETE /api/workspaces/:id/schedules/:scheduleId')),

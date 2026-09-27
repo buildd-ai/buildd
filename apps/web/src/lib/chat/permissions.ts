@@ -9,7 +9,9 @@
  *  - the call's effective class is `write`. Admin-class calls (deletes, budget
  *    changes, workspace config) always ask, and never-in-chat actions are not
  *    tools at all. A mission or task write carrying a field that shapes spend
- *    or run state (SKIPPABLE_FIELDS) asks too;
+ *    or run state (SKIPPABLE_FIELDS) asks too, and so does anything that
+ *    starts recurring or unattended work (`startsUnattendedWork`: schedules,
+ *    arming a mission, resuming paused schedules or a held task);
  *  - nothing a tool returned is in the model's context: no tool result
  *    anywhere in the stored conversation (not only the window the model gets)
  *    or earlier in this turn, and no docked object (its task titles are
@@ -24,7 +26,7 @@
 
 import type { ModelMessage } from 'ai';
 import type { ChatToolPermissionRow } from '@buildd/shared';
-import { effectiveClass } from './tools';
+import { effectiveClass, startsUnattendedWork } from './tools';
 import { ALL_CHAT_TOOL_SPECS, NOT_IN_CHAT, opSpec, opsOf, TOOL_GROUPS, type ToolGroup } from './registry';
 
 export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
@@ -126,6 +128,7 @@ export function canSkipCard(args: {
   const s = opSpec(args.tool, args.input);
   if (!spec || !s) return false;
   if (effectiveClass(args.tool, s.op, s.spec, args.input) !== 'write') return false;
+  if (startsUnattendedWork(args.tool, s.spec, args.input)) return false;
   if (!onlySkippableFields(args.tool, args.input)) return false;
   return allowable.has(spec.group) && args.allowedGroups.has(spec.group);
 }
