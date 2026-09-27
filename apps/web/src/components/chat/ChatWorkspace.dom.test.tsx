@@ -508,7 +508,9 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
     expect(cls(q('[data-testid="chat-title-mobile"]'))).toContain('lg:inline');
     expect(cls(q('[data-testid="canvas-crumbs-desktop"]'))).toContain('lg:hidden');
     expect(cls(q('[data-testid="chat-title-desktop"]'))).toContain('lg:hidden');
-    expect(cls(q('[data-testid="chat-history-link"]'))).toContain('lg:inline-flex');
+    // Desktop: HISTORY opens the right panel instead of navigating.
+    expect(cls(q('[data-testid="chat-history-link"]'))).toContain('lg:hidden');
+    expect(cls(q('[data-testid="chat-history-toggle"]'))).toEqual(expect.arrayContaining(['hidden', 'lg:inline-flex']));
     expect(cls(q('[data-testid="chat-new"]'))).toContain('lg:hidden');
   });
 
@@ -522,9 +524,11 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
     await render({ pulse: calm, formFallbackHref: '/app/missions/new', emptyState: <nav data-testid="conversation-list" /> });
     expect(cls(q('[data-testid="chat-empty-state"]'))).toContain('lg:hidden');
     expect(cls(q('[data-testid="chat-form-fallback"]')!.parentElement)).toContain('lg:hidden');
-    await render({ historyOpen: true, emptyState: <nav data-testid="conversation-list" /> });
-    expect(cls(q('[data-testid="chat-empty-state"]'))).not.toContain('lg:hidden');
-    expect(cls(q('[data-testid="canvas-empty"]'))).toContain('lg:hidden');
+    // The history view on desktop: the list opens in the right panel, the canvas stays.
+    await render({ historyOpen: true, emptyState: <nav data-testid="conversation-list" />, aside: <nav data-testid="history-list" /> });
+    expect(cls(q('[data-testid="chat-empty-state"]'))).toContain('lg:hidden');
+    expect(cls(q('[data-testid="canvas-empty"]'))).not.toContain('lg:hidden');
+    expect(q('[data-testid="chat-dock"]')?.dataset.mode).toBe('history');
   });
 
   it('the composer holds its edge over the sea: 1px border, 4px offset shadow, cells 64 / 88 / 64', async () => {
@@ -544,15 +548,123 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
     expect(bubble).toEqual(expect.arrayContaining(['lg:rounded-none', 'lg:border', 'lg:bg-[var(--chat-raised)]', 'lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif]']));
   });
 
-  it('the context aside is gone on the empty canvas (PICKED FOR YOU replaces it); a thread keeps its side slot', async () => {
+  it('the old 400px context aside is gone everywhere: the right panel replaces it', async () => {
     await render({ pulse: calm, aside: <div data-testid="old-aside" /> });
     expect(q('[data-testid="chat-aside"]')).toBeNull();
-    // A fresh mount: the pane's closed state is read once, at mount.
     act(() => root.unmount());
     root = createRoot(container);
     await render({ messages: fixtures.chatFixture('confirmed').messages, initialPaneClosed: true, aside: <div data-testid="old-aside" /> });
-    expect(q('[data-testid="chat-aside"]')).not.toBeNull();
-    // The column centres in whatever the side slot leaves: it is the stage's flex-1.
+    expect(q('[data-testid="chat-aside"]')).toBeNull();
     expect(cls(q('[data-testid="chat-column"]'))).toContain('flex-1');
+  });
+});
+describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")', () => {
+  const cls = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/);
+  const NEED_TASK = 'task-need';
+  const needTask = {
+    kind: 'task', id: NEED_TASK, workspaceId: fixtures.WS.id, title: 'feat(receipts): totals in the buyer currency', scope: 'receipts', label: 'totals in the buyer currency',
+    status: 'in_progress', roleName: 'Builder', roleColor: null, missionId: null, missionTitle: null,
+    worker: { id: 'w-need', status: 'waiting_input', runner: 'atlas', startedAt: 1, completedAt: null, currentAction: null, waiting: true, prNumber: null, prUrl: null, mergedAt: null, prLifecycleStatus: null, turns: 9, updatedAt: 2 },
+    now: null, renderedAt: 3, attempts: 2, waitingPrompt: 'Round per line, or only the total?',
+    happened: [{ ts: Date.parse('2026-09-27T09:12:00'), text: 'Started the change' }],
+  };
+  const needs = { needsYou: [{ title: 'Totals in the buyer currency', action: 'Answer the rounding question', taskId: NEED_TASK, workspaceId: fixtures.WS.id }], live: 1 };
+  const views = { [`task:${NEED_TASK}`]: needTask };
+  const fresh = () => { act(() => root.unmount()); root = createRoot(container); };
+  beforeEach(() => { window.sessionStorage.clear(); });
+
+  it('a docked mission: a solid 420px panel on the right, ABOUT / MISSION, the v3 card and who is at work', async () => {
+    await render({ focusRef: fixtures.missionRef }, { state: 'split' });
+    const dock = q('[data-testid="chat-dock"]')!;
+    expect(dock.dataset.mode).toBe('object');
+    expect(cls(dock)).toEqual(expect.arrayContaining(['hidden', 'lg:flex', 'lg:w-[420px]', 'bg-[var(--chat-bar)]']));
+    expect(q('[data-testid="chat-dock-crumbs"]')?.textContent).toMatch(/About\s*\/\s*Mission/i);
+    expect(dock.querySelector('[data-testid="mission-context-card"]')).not.toBeNull();
+    expect(dock.querySelector('[data-testid="dock-at-work"]')).not.toBeNull();
+    expect(dock.querySelector('[data-testid="dock-open"]')?.getAttribute('href')).toBe(`/app/missions/${fixtures.missionRef.id}`);
+    // The dock follows the column; the tablet pane stays below lg only.
+    expect(dock.previousElementSibling?.getAttribute('data-testid')).toBe('chat-column');
+    expect(cls(q('[data-testid="chat-pane"]'))).toContain('lg:hidden');
+    // The chat keeps its centred 720px column beside the dock (no 540px chat).
+    expect(cls(q('[data-testid="chat-column"]'))).toEqual(expect.arrayContaining(['lg:w-auto', 'lg:flex-1']));
+    expect(cls(q('[data-testid="chat-voice-column"]'))).toContain('lg:max-w-[720px]');
+    expect(cls(q('[data-testid="chat-composer-column"]'))).toContain('lg:max-w-[720px]');
+  });
+
+  it('closing the dock closes the object', async () => {
+    await render({ focusRef: fixtures.missionRef });
+    await act(async () => { (q('[data-testid="dock-close"]') as HTMLButtonElement).click(); });
+    expect(q('[data-testid="chat-dock"]')).toBeNull();
+  });
+
+  it('needs you at >= 1280px: the blocked task docks with its badge, tries, question, what happened and actions', async () => {
+    await render({ pulse: needs }, { views });
+    const dock = q('[data-testid="chat-dock"]')!;
+    expect(dock.dataset.mode).toBe('needs');
+    expect(cls(dock)).toEqual(expect.arrayContaining(['hidden', 'xl:flex']));
+    expect(cls(dock)).not.toContain('lg:flex');
+    expect(q('[data-testid="chat-dock-crumbs"]')?.textContent).toMatch(/Needs you\s*\/\s*Task/i);
+    expect(q('[data-testid="dock-task-badge"]')?.textContent).toBe('Needs you');
+    expect(q('[data-testid="dock-task-title"]')?.className).toContain('font-voice');
+    expect(q('[data-testid="dock-task-tries"]')?.textContent).toContain('2');
+    expect(q('[data-testid="dock-task-insight"]')?.textContent).toContain('Round per line');
+    const steps = qa('[data-testid="dock-happened-row"]').map(r => r.textContent);
+    expect(steps[0]).toContain('Started the change');
+    expect(steps.at(-1)).toContain('Waiting on you.');
+    expect(qa('[data-testid="dock-action"]').map(b => b.textContent)).toEqual(['Answer it', 'Ask about it']);
+  });
+
+  it('below 1280px the blocker shows in the pinned strip instead', async () => {
+    await render({ pulse: needs }, { views });
+    const pin = q('[data-testid="canvas-pinned"][data-kind="task"]')!;
+    expect(cls(pin)).toEqual(expect.arrayContaining(['hidden', 'lg:block', 'xl:hidden']));
+  });
+
+  it('the panel showing the needs-you task holds off the global banner for it', async () => {
+    const { hiddenNeedsInputSnapshot } = await import('@/lib/needs-input-hidden');
+    await render({ pulse: needs }, { views });
+    expect(hiddenNeedsInputSnapshot().has(NEED_TASK)).toBe(true);
+    await act(async () => { (q('[data-testid="dock-close"]') as HTMLButtonElement).click(); });
+    expect(hiddenNeedsInputSnapshot().has(NEED_TASK)).toBe(false);
+  });
+
+  it('closed stays closed for the session, for that task', async () => {
+    await render({ pulse: needs }, { views });
+    await act(async () => { (q('[data-testid="dock-close"]') as HTMLButtonElement).click(); });
+    expect(q('[data-testid="chat-dock"]')).toBeNull();
+    fresh();
+    await render({ pulse: needs }, { views });
+    expect(q('[data-testid="chat-dock"]')).toBeNull();
+    window.sessionStorage.clear();
+    fresh();
+    await render({ pulse: needs }, { views });
+    expect(q('[data-testid="chat-dock"]')?.dataset.mode).toBe('needs');
+  });
+
+  it('Ask about it says it in the chat; Answer it opens the question in the panel', async () => {
+    await render({ pulse: needs }, { views });
+    const [answer, ask] = qa('[data-testid="dock-action"]');
+    await act(async () => { ask.click(); });
+    expect(sent.at(-1)).toContain('totals in the buyer currency');
+    await act(async () => { answer.click(); });
+    const dock = q('[data-testid="chat-dock"]')!;
+    expect(dock.dataset.mode).toBe('object');
+    expect(dock.dataset.ref).toBe('question:w-need');
+  });
+
+  it('HISTORY toggles the conversation list in the panel', async () => {
+    await render({ pulse: needs, aside: <nav data-testid="history-list" /> }, { views });
+    await act(async () => { (q('[data-testid="chat-history-toggle"]') as HTMLButtonElement).click(); });
+    const dock = q('[data-testid="chat-dock"]')!;
+    expect(dock.dataset.mode).toBe('history');
+    expect(cls(dock)).toContain('lg:flex');
+    expect(dock.querySelector('[data-testid="history-list"]')).not.toBeNull();
+    await act(async () => { (q('[data-testid="chat-history-toggle"]') as HTMLButtonElement).click(); });
+    expect(q('[data-testid="chat-dock"]')?.dataset.mode).toBe('needs');
+  });
+
+  it('the summoned overlay has no dock', async () => {
+    await render({ variant: 'overlay', onClose() {}, pulse: needs }, { views });
+    expect(q('[data-testid="chat-dock"]')).toBeNull();
   });
 });
