@@ -10,9 +10,11 @@
  * strip opens the object as a sheet.
  */
 import { useState } from 'react';
+import { taskDisplayLabel } from '@buildd/core/task-label';
 import type { BuilddObjectRef } from '../chat-contract';
 import { ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import { useObjectEntry } from './ObjectStoreProvider';
+import type { ObjectView } from './object-views';
 import { missionCountsLine } from './MissionObject';
 import { miniBoardColumns, miniStatusTone, type MiniTone } from './mini-board';
 import { StateChip, missionTone } from './parts';
@@ -26,6 +28,19 @@ const SQUARE: Record<MiniTone, string> = {
   idle: 'border-[1.5px] border-[var(--fleet-border-mid)]',
 };
 
+/**
+ * The pinned strip's title. A task shows its display label (scope-stripped,
+ * creator-label-aware — the same words the Board and the task page use), not
+ * the raw commit-style title `view.title` carries; anything else (a mission,
+ * a PR) shows its own title as-is. Before the object has loaded, there's
+ * nothing to derive a label from yet, so the ref's own fallback text stands in.
+ */
+export function pinnedObjectTitle(objRef: BuilddObjectRef, view: ObjectView | null): string {
+  if (view?.kind === 'task') return taskDisplayLabel({ title: view.title, label: null }).label;
+  if (view && 'title' in view) return view.title;
+  return objRef.title ?? objRef.fallbackText;
+}
+
 export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, openLabel = 'Open beside ▸' }: {
   objRef: BuilddObjectRef;
   /** Desktop: dock it in the pane. Phone: open the sheet. */
@@ -38,7 +53,7 @@ export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, op
   const { view } = useObjectEntry(objRef);
   const [open, setOpen] = useState(true);
   const mission = view?.kind === 'mission' ? view : null;
-  const title = view && 'title' in view ? view.title : objRef.title ?? objRef.fallbackText;
+  const title = pinnedObjectTitle(objRef, view);
   const cols = mission ? miniBoardColumns(mission.board, 4) : [];
   const tone = mission ? missionTone(mission.stateLabel, mission.status) : null;
 
