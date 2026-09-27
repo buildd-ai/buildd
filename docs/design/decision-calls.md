@@ -3,18 +3,22 @@ status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 # decision-client and task-category-shadow pass because steps 1-4 shipped
 # (PRs #2823, #2829, #2830). gated-apply fails because step 6 has not. Status
-# stays 'partially' until it does; the two passing assertions reading as
-# code_ahead against 'partially' is expected, not drift. See "Implementation
+# stays 'partially' until it does, so the two passing assertions are suppressed
+# (skip_until) rather than left to read as code_ahead. See "Implementation
 # status" at the end.
 assertions:
   - id: "decision-client"
     type: "symbol"
     name: "decisionCall"
     path: "packages/core/decision-client.ts"
+    skip_until: "2026-12-27"
+    skip_reason: "decisionCall genuinely shipped (step 1, PRs #2823/#2829) and is this doc's own deliverable, not a false positive. The doc stays `partially` because step 6, the first confidence-gated apply (tracked by the failing gated-apply assertion), is unbuilt. Unsuppressed, this reads as code_ahead on every run."
   - id: "task-category-shadow"
     type: "symbol"
     name: "runTaskCategoryShadow"
     path: "apps/web/src/lib/task-category-decision.ts"
+    skip_until: "2026-12-27"
+    skip_reason: "runTaskCategoryShadow genuinely shipped (step 4, the observe-only classifyTask shadow) and is this doc's own deliverable, not a false positive. The doc stays `partially` because step 6, the first confidence-gated apply (tracked by the failing gated-apply assertion), is unbuilt. Unsuppressed, this reads as code_ahead on every run."
   # Tracks the remaining work (step 6): the first confidence-gated apply. Fails
   # until a site actually acts on a decision, which is what keeps this doc at
   # 'partially' honestly.
