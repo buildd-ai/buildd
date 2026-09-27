@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
+import { isUuid } from '@/lib/uuid';
 
 
 /** Load the initiative and enforce access; returns the row or a NextResponse error. */
@@ -39,6 +40,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid initiative id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -78,6 +82,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid initiative id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;

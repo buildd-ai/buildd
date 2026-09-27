@@ -61,7 +61,7 @@ mock.module('@buildd/core/db/schema', () => ({
 import { DELETE } from './route';
 
 function createRequest(): NextRequest {
-  return new NextRequest('http://localhost:3000/api/github/installations/inst-1', {
+  return new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111', {
     method: 'DELETE',
   });
 }
@@ -102,7 +102,7 @@ describe('DELETE /api/github/installations/[id]', () => {
     process.env.DATABASE_URL = 'postgres://example.test/db';
     process.env.DEV_USER_EMAIL = 'user@test.com';
 
-    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(200);
     expect((await response.json()).ok).toBe(true);
     expect(mockFindFirst).not.toHaveBeenCalled();
@@ -110,13 +110,22 @@ describe('DELETE /api/github/installations/[id]', () => {
     expect(mockUsersFindFirst).not.toHaveBeenCalled();
   });
 
+  it('returns 404 for a non-UUID id without authenticating or querying the db', async () => {
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(response.status).toBe(404);
+    const data = await response.json();
+    expect(data.error).toContain('UUID');
+    expect(mockAuth).not.toHaveBeenCalled();
+    expect(mockFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 401 for an API key with no session — bearer credentials are not accepted here', async () => {
     mockAuth.mockResolvedValue(null);
-    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1', {
+    const req = new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
       headers: { authorization: 'Bearer bld_example' },
     });
-    const response = await DELETE(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(401);
     expect(mockAuthenticateApiKey).not.toHaveBeenCalled();
     expect(mockDelete).not.toHaveBeenCalled();
@@ -124,24 +133,24 @@ describe('DELETE /api/github/installations/[id]', () => {
 
   it('returns 401 for a session whose user no longer exists', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-gone' } });
-    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(401);
     expect(mockDelete).not.toHaveBeenCalled();
   });
 
   it('checks access as the session user', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
-    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
-    await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    mockFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
+    await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
   });
 
   it('denied for the session user: canManage false → 404, nothing deleted', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
-    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     // canView alone is not enough to disconnect.
     mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: false, otherTeamsUsingIt: [] }));
-    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
     expect(response.status).toBe(404);
     expect(mockDelete).not.toHaveBeenCalled();
@@ -150,9 +159,9 @@ describe('DELETE /api/github/installations/[id]', () => {
 
   it('denied for the session user: neither view nor manage → 404, nothing deleted', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
-    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
-    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(404);
     expect(mockDelete).not.toHaveBeenCalled();
   });
@@ -160,7 +169,7 @@ describe('DELETE /api/github/installations/[id]', () => {
   it('returns 401 when not authenticated', async () => {
     mockAuth.mockResolvedValue(null);
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await DELETE(createRequest(), { params: mockParams });
     expect(response.status).toBe(401);
 
@@ -172,7 +181,7 @@ describe('DELETE /api/github/installations/[id]', () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockFindFirst.mockResolvedValue(null);
 
-    const mockParams = Promise.resolve({ id: 'inst-nonexistent' });
+    const mockParams = Promise.resolve({ id: '99999999-9999-4999-8999-999999999999' });
     const response = await DELETE(createRequest(), { params: mockParams });
     expect(response.status).toBe(404);
 
@@ -183,12 +192,12 @@ describe('DELETE /api/github/installations/[id]', () => {
   it('deletes installation successfully', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockFindFirst.mockResolvedValue({
-      id: 'inst-1',
+      id: '11111111-1111-4111-8111-111111111111',
       installationId: 12345,
       accountLogin: 'my-org',
     });
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await DELETE(createRequest(), { params: mockParams });
     expect(response.status).toBe(200);
 
@@ -202,20 +211,20 @@ describe('DELETE /api/github/installations/[id]', () => {
 
   it('returns 404 when the caller does not manage the installation', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
-    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: false, otherTeamsUsingIt: [] }));
 
-    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(404);
     expect(mockDelete).not.toHaveBeenCalled();
   });
 
   it('returns 409 while workspaces in teams the caller does not administer use it', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
-    mockFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: 'user-1' });
+    mockFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: 'user-1' });
     mockGetAccess.mockImplementation(async () => ({ canView: true, canManage: true, otherTeamsUsingIt: ['team-x'] }));
 
-    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await DELETE(createRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(409);
     expect(mockDelete).not.toHaveBeenCalled();
   });
@@ -224,7 +233,7 @@ describe('DELETE /api/github/installations/[id]', () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockFindFirst.mockRejectedValue(new Error('DB connection failed'));
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await DELETE(createRequest(), { params: mockParams });
     expect(response.status).toBe(500);
 

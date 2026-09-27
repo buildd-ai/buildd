@@ -16,6 +16,7 @@ import { knowledgeIngestJobs } from '@buildd/core/db/schema';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { FULL_LEASE_MS } from '@/lib/knowledge-ingest-lease';
+import { isUuid } from '@/lib/uuid';
 import {
   shouldIngestFile,
   classifyIngestCorpus,
@@ -35,6 +36,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid ingest job id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const authHeader = req.headers.get('authorization');
   const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null);

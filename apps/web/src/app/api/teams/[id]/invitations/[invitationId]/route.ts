@@ -3,13 +3,20 @@ import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
+import { isUuid } from '@/lib/uuid';
 
 // DELETE /api/teams/[id]/invitations/[invitationId] — revoke invitation
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; invitationId: string }> }
 ) {
-  const { id: teamId, invitationId } = await params;
+  const { id, invitationId } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: 'Invitation not found' }, { status: 404 });
+  }
+  if (!isUuid(invitationId)) {
+    return NextResponse.json({ error: 'Invitation not found' }, { status: 404 });
+  }
 
   const session = await requireSessionUser(req);
   if (session.response) return session.response;
@@ -18,7 +25,7 @@ export async function DELETE(
   // Verify user is owner or admin of this team
   const membership = await db.query.teamMembers.findFirst({
     where: and(
-      eq(teamMembers.teamId, teamId),
+      eq(teamMembers.teamId, id),
       eq(teamMembers.userId, user.id)
     ),
   });
@@ -32,7 +39,7 @@ export async function DELETE(
     const invitation = await db.query.teamInvitations.findFirst({
       where: and(
         eq(teamInvitations.id, invitationId),
-        eq(teamInvitations.teamId, teamId)
+        eq(teamInvitations.teamId, id)
       ),
     });
 

@@ -6,12 +6,16 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 import { listInstallationRepos } from '@/lib/github';
 import { syncInstallationRepos } from '@/lib/github-repo-link';
+import { isUuid } from '@/lib/uuid';
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid installation id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   // Stays gated in dev even with DATABASE_URL + DEV_USER_EMAIL: listing repos
   // mints a GitHub installation token and, when the cached one is near expiry,
@@ -94,6 +98,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid installation id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   // Sync writes github_repos rows and back-links workspaces. Never from dev.
   if (process.env.NODE_ENV === 'development') {

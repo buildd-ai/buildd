@@ -8,8 +8,8 @@ mock.module('@/lib/auth-helpers', () => ({
 }));
 let principal: any = null;
 
-let membership: any = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
-let teamRow: any = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
+let membership: any = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'admin' };
+let teamRow: any = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', slug: 'team', timezone: null };
 const capturedUpdates: any[] = [];
 const teamQueries: any[] = [];
 
@@ -38,10 +38,10 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { GET, PATCH } from './route';
 
-const ctx = { params: Promise.resolve({ id: 'team-1' }) };
+const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
 
 function patchReq(body: unknown): NextRequest {
-  return new NextRequest('http://localhost:3000/api/teams/team-1', {
+  return new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', {
     method: 'PATCH',
     headers: new Headers({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
@@ -51,9 +51,36 @@ function patchReq(body: unknown): NextRequest {
 beforeEach(() => {
   mockRequireSessionUser.mockReset();
   mockRequireSessionUser.mockResolvedValue({ user: { id: 'user-1' } });
-  membership = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
-  teamRow = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
+  membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'admin' };
+  teamRow = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', slug: 'team', timezone: null };
   capturedUpdates.length = 0;
+});
+
+describe('non-UUID id guard', () => {
+  it('GET returns 404 for a non-UUID id without querying the db', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    const res = await GET(new NextRequest('http://localhost:3000/api/teams/not-a-uuid'), {
+      params: Promise.resolve({ id: 'not-a-uuid' }),
+    });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(teamQueries.length).toBe(0);
+    principal = null;
+  });
+
+  it('PATCH returns 404 for a non-UUID id without querying the db', async () => {
+    const req = new NextRequest('http://localhost:3000/api/teams/not-a-uuid', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ name: 'X' }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    expect(capturedUpdates).toHaveLength(0);
+    expect(mockRequireSessionUser).not.toHaveBeenCalled();
+  });
 });
 
 describe('PATCH /api/teams/[id] — timezone', () => {
@@ -82,7 +109,7 @@ describe('PATCH /api/teams/[id] — timezone', () => {
   });
 
   it('requires at least admin — a member cannot set the team zone', async () => {
-    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(403);
     expect(capturedUpdates).toHaveLength(0);
@@ -93,7 +120,7 @@ describe('GET /api/teams/[id] — response columns', () => {
   it('no longer reads the deprecated criteriaEvaluationStrategy column', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
-    const res = await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    const res = await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(res.status).toBe(200);
     const columns = teamQueries[0]?.columns ?? {};
     expect(Object.keys(columns).length).toBeGreaterThan(0);
@@ -107,7 +134,7 @@ describe('GET /api/teams/[id] — response columns', () => {
   it('returns the team timezone the Timezone section reads', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
-    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ timezone: true });
     principal = null;
   });
@@ -136,7 +163,7 @@ describe('PATCH /api/teams/[id] — chat budgets', () => {
   });
 
   it('a member cannot change them', async () => {
-    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     const res = await PATCH(patchReq({ chatDailyBudgetUsd: 1000 }), ctx);
     expect(res.status).toBe(403);
     expect(capturedUpdates).toHaveLength(0);
@@ -145,7 +172,7 @@ describe('PATCH /api/teams/[id] — chat budgets', () => {
   it('GET returns the key policy, and never reads the deprecated chat switch', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
-    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ inferenceKeyPolicy: true });
     expect(teamQueries[0].columns).not.toHaveProperty('chatDisabled');
     principal = null;
@@ -154,7 +181,7 @@ describe('PATCH /api/teams/[id] — chat budgets', () => {
   it('GET returns both, so a settings page can show them', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
-    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true });
     principal = null;
   });
@@ -183,7 +210,7 @@ describe('PATCH /api/teams/[id] — key policy', () => {
   });
 
   it('a member cannot change it', async () => {
-    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await PATCH(patchReq({ inferenceKeyPolicy: 'own' }), ctx)).status).toBe(403);
     expect(capturedUpdates).toHaveLength(0);
   });
@@ -215,14 +242,14 @@ describe('PATCH /api/teams/[id] — server-side feature overrides', () => {
   });
 
   it('a member cannot change them', async () => {
-    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'runner' } }), ctx)).status).toBe(403);
   });
 
   it('GET returns them', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
-    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ inferenceFeatureModes: true });
     principal = null;
   });

@@ -74,7 +74,7 @@ mock.module('crypto', () => ({
 import { GET, PATCH, DELETE } from './route';
 
 const TEAM_ROLE = {
-  id: 'role1',
+  id: '11111111-1111-4111-8111-111111111111',
   teamId: 'team1',
   workspaceId: null,
   slug: 'builder',
@@ -86,7 +86,7 @@ const TEAM_ROLE = {
 };
 
 const WS_ROLE = {
-  id: 'role2',
+  id: '22222222-2222-4222-8222-222222222222',
   teamId: 'team1',
   workspaceId: 'ws1',
   slug: 'builder',
@@ -107,8 +107,8 @@ describe('GET /api/roles/[id]', () => {
 
   it('returns 401 if not authenticated', async () => {
     mockGetCurrentUser.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/role1');
-    const res = await GET(req, { params: Promise.resolve({ id: 'role1' }) });
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111');
+    const res = await GET(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(401);
   });
 
@@ -117,9 +117,19 @@ describe('GET /api/roles/[id]', () => {
     mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/unknown');
-    const res = await GET(req, { params: Promise.resolve({ id: 'unknown' }) });
+    const req = new NextRequest('http://localhost/api/roles/99999999-9999-4999-8999-999999999999');
+    const res = await GET(req, { params: Promise.resolve({ id: '99999999-9999-4999-8999-999999999999' }) });
     expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for a non-UUID id without querying the db', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    const req = new NextRequest('http://localhost/api/roles/not-a-uuid');
+    const res = await GET(req, { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockWorkspaceSkillsFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns team-level role when user belongs to that team', async () => {
@@ -127,11 +137,11 @@ describe('GET /api/roles/[id]', () => {
     mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(TEAM_ROLE));
-    const req = new NextRequest('http://localhost/api/roles/role1');
-    const res = await GET(req, { params: Promise.resolve({ id: 'role1' }) });
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111');
+    const res = await GET(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.skill.id).toBe('role1');
+    expect(data.skill.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(data.skill.workspaceId).toBeNull();
   });
 
@@ -140,11 +150,11 @@ describe('GET /api/roles/[id]', () => {
     mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(WS_ROLE));
-    const req = new NextRequest('http://localhost/api/roles/role2');
-    const res = await GET(req, { params: Promise.resolve({ id: 'role2' }) });
+    const req = new NextRequest('http://localhost/api/roles/22222222-2222-4222-8222-222222222222');
+    const res = await GET(req, { params: Promise.resolve({ id: '22222222-2222-4222-8222-222222222222' }) });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.skill.id).toBe('role2');
+    expect(data.skill.id).toBe('22222222-2222-4222-8222-222222222222');
   });
 });
 
@@ -159,11 +169,11 @@ describe('PATCH /api/roles/[id]', () => {
 
   it('returns 401 if not authenticated', async () => {
     mockGetCurrentUser.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/role1', {
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ name: 'New Name' }),
     });
-    const res = await PATCH(req, { params: Promise.resolve({ id: 'role1' }) });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(401);
   });
 
@@ -172,12 +182,23 @@ describe('PATCH /api/roles/[id]', () => {
     mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/unknown', {
+    const req = new NextRequest('http://localhost/api/roles/99999999-9999-4999-8999-999999999999', {
       method: 'PATCH',
       body: JSON.stringify({ name: 'New Name' }),
     });
-    const res = await PATCH(req, { params: Promise.resolve({ id: 'unknown' }) });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '99999999-9999-4999-8999-999999999999' }) });
     expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for a non-UUID id without querying the db', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    const req = new NextRequest('http://localhost/api/roles/not-a-uuid', {
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'New Name' }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    expect(mockWorkspaceSkillsFindFirst).not.toHaveBeenCalled();
   });
 
   it('updates a team-level role successfully', async () => {
@@ -191,11 +212,11 @@ describe('PATCH /api/roles/[id]', () => {
     const mockSet = mock(() => ({ where: mockWhere }));
     mockWorkspaceSkillsUpdate.mockReturnValue({ set: mockSet });
 
-    const req = new NextRequest('http://localhost/api/roles/role1', {
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ name: 'Builder v2' }),
     });
-    const res = await PATCH(req, { params: Promise.resolve({ id: 'role1' }) });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.skill.name).toBe('Builder v2');
@@ -213,9 +234,17 @@ describe('DELETE /api/roles/[id]', () => {
 
   it('returns 401 if not authenticated', async () => {
     mockGetCurrentUser.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/role1', { method: 'DELETE' });
-    const res = await DELETE(req, { params: Promise.resolve({ id: 'role1' }) });
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', { method: 'DELETE' });
+    const res = await DELETE(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(401);
+  });
+
+  it('returns 404 for a non-UUID id without querying the db', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    const req = new NextRequest('http://localhost/api/roles/not-a-uuid', { method: 'DELETE' });
+    const res = await DELETE(req, { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    expect(mockWorkspaceSkillsFindFirst).not.toHaveBeenCalled();
   });
 
   it('deletes a role and returns success', async () => {
@@ -225,8 +254,8 @@ describe('DELETE /api/roles/[id]', () => {
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(TEAM_ROLE));
     const mockWhere = mock(() => Promise.resolve());
     mockWorkspaceSkillsDelete.mockReturnValue({ where: mockWhere });
-    const req = new NextRequest('http://localhost/api/roles/role1', { method: 'DELETE' });
-    const res = await DELETE(req, { params: Promise.resolve({ id: 'role1' }) });
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', { method: 'DELETE' });
+    const res = await DELETE(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
