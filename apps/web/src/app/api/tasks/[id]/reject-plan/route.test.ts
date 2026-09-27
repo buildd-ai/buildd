@@ -259,7 +259,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('the revised planning task keeps the rejected plan\'s roleSlug', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -275,7 +275,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'Try again' } });
-    await callHandler(POST, request, 'plan-task-1');
+    await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(mockInsertValues).toHaveLength(1);
     expect(mockInsertValues[0].roleSlug).toBe('organizer');
@@ -284,13 +284,13 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('a role-less rejected plan stays role-less when revised', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1', mode: 'planning', status: 'completed', workspaceId: 'ws-1',
+      id: '44444444-4444-4444-8444-444444444444', mode: 'planning', status: 'completed', workspaceId: 'ws-1',
       parentTaskId: null, missionId: null, priority: 1, title: 'Plan feature',
       description: 'Plan it', context: {}, workspace: { id: 'ws-1' },
     });
 
     const request = createMockRequest({ body: { feedback: 'Try again' } });
-    await callHandler(POST, request, 'plan-task-1');
+    await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(mockInsertValues[0].roleSlug).toBeNull();
   });
