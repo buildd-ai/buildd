@@ -349,15 +349,20 @@ export class CodexBackend implements AgentBackend {
   }
 
   private mapSandboxMode(mode?: 'read-only' | 'workspace-write', bwrapSupported = true): string {
-    if (mode === 'read-only') return 'read-only';
+    // Both 'read-only' and 'workspace-write' rely on bwrap/user-namespaces to
+    // enforce the restriction — 'read-only' is not a no-op passed straight to
+    // the CLI. On a host where bwrap can't create namespaces, staying on
+    // either mode fails every exec_command before it runs, so both fall back
+    // together; only 'danger-full-access' skips the sandbox entirely.
     if (!bwrapSupported) {
       console.warn(
-        '[CodexBackend] bwrap user namespaces unavailable — workspace-write sandbox cannot start. ' +
+        `[CodexBackend] bwrap user namespaces unavailable — ${mode || 'workspace-write'} sandbox cannot start. ` +
         'Falling back to danger-full-access (write isolation reduced). ' +
         'To restore full sandboxing, run the runner container with: --security-opt seccomp=unconfined',
       );
       return 'danger-full-access';
     }
+    if (mode === 'read-only') return 'read-only';
     return 'workspace-write';
   }
 

@@ -14,7 +14,7 @@
 import { useState } from 'react';
 import type { ChatToolPart } from './chat-contract';
 import { useChatActions } from './ChatActions';
-import { approvalDraft, approvalVerb, type ApprovalDraft } from './approval-draft';
+import { approvalDraft, approvalLabel, type ApprovalDraft } from './approval-draft';
 import { toolRowView } from './feed-model';
 import { ToolCallRow } from './ToolCallRows';
 
@@ -138,14 +138,14 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   // Admin writes: the target's name, typed, is the confirmation (checked on the server).
   const [typed, setTyped] = useState('');
   const draft = approvalDraft(part);
-  const verb = approvalVerb(part);
+  const verb = approvalLabel(part);
   const wsName = draft.workspaceId ? actions.workspaceName(draft.workspaceId) : null;
   const approvalId = part.approval?.id ?? null;
   const approver = actions.viewerName ? `approved by ${actions.viewerName}` : 'approved';
 
   // Decided: the card is its row now; the object renders right after it.
   if (part.state === 'output-available' || part.state === 'output-error') {
-    return <ToolCallRow view={toolRowView(part)} note={approver} />;
+    return <ToolCallRow view={toolRowView(part)} label={verb} note={approver} />;
   }
   if (part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) {
     return (
@@ -175,9 +175,11 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           <span aria-hidden="true">◆ </span>{deciding ? 'Confirmed' : 'Needs your OK'}
         </span>
         <span className="font-mono text-[13px] font-semibold text-text-primary">{verb}</span>
-        <span className="hidden font-mono text-[11px] text-text-muted md:inline">
-          {deciding ? (sent === 'deny' ? 'discarding…' : isChange ? 'applying…' : 'filing…') : isChange ? 'not applied' : 'not filed'}
-        </span>
+        {deciding && (
+          <span className="hidden font-mono text-[11px] text-text-muted md:inline">
+            {sent === 'deny' ? 'discarding…' : isChange ? 'applying…' : 'filing…'}
+          </span>
+        )}
         {wsName && <span className="ml-auto font-mono text-[12px] text-text-muted">{wsName}</span>}
       </header>
       <div className="px-4 py-3 md:px-5 md:py-4">
@@ -247,7 +249,6 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
         >
           Discard
         </button>
-        <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-text-muted md:inline">{`${isChange ? 'applies' : 'files'} through ${verb.split(' · ')[0]}`}</span>
       </footer>
     </section>
   );

@@ -15,8 +15,9 @@ import { defaultLine, featureState, OVERRIDE_OPTIONS, type OverrideValue } from 
  * Settings → AI features.
  *
  * Chat is always on (it runs whenever a key resolves), so it has no control
- * here. Built-in decision calls have no control and are not listed. Server-side features run where the billing model says
- * (team key → server-side, else the runner); overrides sit behind Advanced.
+ * here. Built-in decision calls have no control and are not listed. Each
+ * feature is one row: Auto follows the billing model (team key → server, else
+ * the runner), and admins can pin Server or Runner inline.
  */
 export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
   teamId: string;
@@ -72,68 +73,56 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
 
   return (
     <div className="space-y-8">
-      <section aria-labelledby="ai-server-h">
+      <section aria-labelledby="ai-features-h">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
-          <h2 id="ai-server-h" className="section-label">Server-side features</h2>
+          <h2 id="ai-features-h" className="section-label">Where it runs</h2>
           <span className="text-xs text-text-muted" data-testid="feature-default">{defaultLine(hasTeamKey)}</span>
         </div>
         <div className="card divide-y divide-border-default">
           {LIVE_SERVER_FEATURES.map((f) => {
             const d = INFERENCE_CAPABILITIES[f];
             const r = resolveFeatureMode(f, modes, hasTeamKey);
+            const current: OverrideValue = modes?.[f] ?? 'default';
             return (
-              <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-3 px-4 py-3" data-testid={`feature-${f}`}>
+              <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 px-4 py-3" data-testid={`feature-${f}`}>
                 <span className="min-w-0">
-                  <span className="block text-sm text-text-primary">{d.label}</span>
+                  <span id={`feature-${f}-label`} className="block text-sm text-text-primary">{d.label}</span>
                   <span className="block text-xs text-text-secondary">{d.description}</span>
+                  {canManage && r.needsKey && (
+                    <span className="block mt-1 text-xs text-status-warning">Needs a team key</span>
+                  )}
                 </span>
-                <span className={`shrink-0 text-xs ${r.needsKey ? 'text-status-warning' : r.mode === 'server' ? 'text-text-primary' : 'text-text-secondary'}`}>
-                  {featureState(r)}
-                </span>
+                {canManage ? (
+                  <div role="radiogroup" aria-labelledby={`feature-${f}-label`} className="flex sm:inline-flex border border-border-strong shrink-0">
+                    {OVERRIDE_OPTIONS.map((o, i) => {
+                      const on = current === o.value;
+                      return (
+                        <button
+                          key={o.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          data-value={o.value}
+                          disabled={busy || !loaded}
+                          onClick={() => { if (!on) setOverride(f, o.value); }}
+                          className={`flex-1 sm:flex-none h-11 md:h-8 px-3 text-xs transition-colors disabled:opacity-50 ${i > 0 ? 'border-l border-border-strong' : ''} ${
+                            on ? 'bg-text-primary text-surface-1 font-medium' : 'bg-surface-1 text-text-secondary hover:text-text-primary'
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <span className={`shrink-0 text-xs ${r.needsKey ? 'text-status-warning' : 'text-text-primary'}`}>
+                    {featureState(r)}
+                  </span>
+                )}
               </div>
             );
           })}
         </div>
-
-        {canManage && (
-          <details className="mt-3 group" data-testid="feature-advanced">
-            <summary className="cursor-pointer select-none list-none text-xs text-text-secondary hover:text-text-primary min-h-11 md:min-h-0 flex items-center gap-1">
-              <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span>
-              Advanced
-            </summary>
-            <div className="card divide-y divide-border-default mt-2">
-              {LIVE_SERVER_FEATURES.map((f) => {
-                const current: OverrideValue = modes?.[f] ?? 'default';
-                return (
-                  <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 px-4 py-3" data-testid={`override-${f}`}>
-                    <span id={`override-${f}-label`} className="text-sm text-text-primary">{INFERENCE_CAPABILITIES[f].label}</span>
-                    <div role="radiogroup" aria-labelledby={`override-${f}-label`} className="flex sm:inline-flex border border-border-default shrink-0">
-                      {OVERRIDE_OPTIONS.map((o, i) => {
-                        const on = current === o.value;
-                        return (
-                          <button
-                            key={o.value}
-                            type="button"
-                            role="radio"
-                            aria-checked={on}
-                            data-value={o.value}
-                            disabled={busy || !loaded}
-                            onClick={() => { if (!on) setOverride(f, o.value); }}
-                            className={`flex-1 sm:flex-none h-11 md:h-8 px-3 text-xs transition-colors disabled:opacity-50 ${i > 0 ? 'border-l border-border-default' : ''} ${
-                              on ? 'bg-surface-3 text-text-primary font-medium' : 'bg-surface-1 text-text-secondary hover:text-text-primary'
-                            }`}
-                          >
-                            {o.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-        )}
       </section>
 
       {!canManage && <p className="text-xs text-text-muted">Only a team owner or admin can change these.</p>}
