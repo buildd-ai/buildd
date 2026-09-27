@@ -270,6 +270,17 @@ export interface WebhookConfig {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
+/**
+ * `webhookConfig` as the workspace API returns it: the bearer token is never
+ * serialised, only whether one is set (apps/web/src/lib/workspace-public.ts).
+ */
+export interface PublicWebhookConfig {
+  url: string | null;
+  enabled: boolean;
+  runnerPreference?: 'any' | 'user' | 'service' | 'action';
+  hasToken: boolean;
+}
+
 export interface WorkspaceProject {
   name: string;
   path?: string;
@@ -284,7 +295,7 @@ export interface Workspace {
   localPath: string | null;
   memory: Record<string, unknown>;
   projects?: WorkspaceProject[];
-  webhookConfig?: WebhookConfig | null;
+  webhookConfig?: PublicWebhookConfig | null;
   accessMode?: 'open' | 'restricted';
   dataClass?: 'standard' | 'sensitive';
   createdAt: Date;
