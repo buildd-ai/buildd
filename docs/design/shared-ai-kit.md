@@ -1,9 +1,9 @@
 # Shared AI kit: chat, Jev decisions and the model economy for sibling apps
 
-**Status:** Proposed
+**Status:** Accepted. P0 (#2968), the P1 client (#2974) and P2 (#2977) have shipped; the package publishes as `@builddai/ai-kit` (#2991).
 **Related:** `packages/core/model-tier-registry.ts` (`resolveTierEntry`, `resolveAllTiers`), `packages/core/model-tier-defaults.ts`, `packages/core/tier-pool-source.ts` (`drawChatPoolArm`), `packages/core/decision-client.ts` (`decisionCall`, `gateChoice`), `packages/core/inference-client.ts`, `packages/core/inference-keys.ts`, `packages/shared/src/chat.ts`, `apps/web/src/lib/chat/turn.ts`, `apps/web/src/lib/chat/models.ts`, `apps/web/src/lib/chat/routing.ts`, `apps/web/src/lib/chat/permissions.ts`, `apps/web/src/components/chat/`, `apps/web/src/app/api/model-tiers/route.ts`, `apps/web/src/lib/api-auth.ts`, `docs/SPEC.md` §3a, `docs/design/agent-chat.md`, `docs/design/chat-canvas.md`, `docs/design/decision-calls.md`, `docs/design/inference-calls-primitive.md`, `docs/design/model-tiers.md`, `docs/design/tier-model-pools.md`, `docs/design/tier-weights.md`, `docs/design/model-quality-signals.md`, `docs/design/cross-app-assertion-grant.md`
 
-External consumers (private repos, cited as `repo:path`): `dispatch-family` (Cue), and the two apps in `moa-ops` (`nextjs-app`, the store ops app; `money-app`, personal finance).
+External consumers (private repos, cited as `app:path`): Cue (`cue:`), and the two moa apps (`nextjs-app`, the store ops app; `money-app`, personal finance).
 
 **Revision 2 (after review on #2948):**
 - Cue's chat runs in Cue, and the "no LLM in Cue" rule is retired.
@@ -22,7 +22,7 @@ Three sibling apps use models today and each one picks and calls them in its own
 | App | How it picks a model | How it calls Jev | Chat |
 |---|---|---|---|
 | buildd | Tier registry: workspace row, then team row, then catalog, then `TIER_DEFAULTS`, per surface (`agent` / `chat`). Pools with traffic splits exist in P1 | `decisionCall` through `@typesafe-ai/sdk` 0.6.0 to OpenRouter `/api/v1/systemone`, 5s deadline, never throws | AI SDK v7 UI message stream, in the web function, approval cards, per-person tool permissions, tier switch, budgets |
-| Cue | `dispatch-family:src/lib/model-tiers.ts` passes a tier string (`budget`/`standard`/`premium`) to buildd tasks. No model call of its own | `dispatch-family:src/lib/jev.ts`: raw `fetch` to OpenRouter `/api/alpha/decisions`, 8s timeout, 3 attempts | None. Its `CLAUDE.md` forbids any direct generative call, so all AI work is a buildd runner task |
+| Cue | `cue:src/lib/model-tiers.ts` passes a tier string (`budget`/`standard`/`premium`) to buildd tasks. No model call of its own | `cue:src/lib/jev.ts`: raw `fetch` to OpenRouter `/api/alpha/decisions`, 8s timeout, 3 attempts | None. Its `CLAUDE.md` forbids any direct generative call, so all AI work is a buildd runner task |
 | store (`nextjs-app`) | `nextjs-app/src/lib/ai/config.ts` `getModelForUseCase`: env `AI_MODEL`, then DB `system_settings` `ai_model:<useCase>`, then a hardcoded vendor model id | `@typesafe-ai/sdk` is in `package.json` but unused | `/api/chat` was deleted as unused. Two `/api/agent/*` streaming routes remain |
 | money (`money-app`) | Same `lib/ai/config.ts` copy and the same DB keys. The two apps share a database today, so one app's setting silently changes the other's | `money-app/src/lib/services/finance/jev-classifier.ts`: SDK `systemOne`, auto-apply at 0.9, a versioned fingerprint test, an offline eval harness | `/api/agent/personal-chat`: `openai` SDK with a hand-rolled tool loop, wrapped in `createUIMessageStream` from AI SDK v6 |
 
@@ -109,14 +109,14 @@ Callers today are per-turn chat routing and the task-category shadow check. Deci
 ### Cue's credential model
 
 - Each person is a `tenant`. The household owner is the `allowed_users` row with `role = 'owner'`.
-- Runner work is paid by each tenant's own Claude token (`claude_tokens`). A tenant with `tenants.useSharedTokens = 1` falls back to the owner's token (`getOwnerClaudeToken` in `dispatch-family:src/lib/tenant-job-dispatch.ts`).
-- Secrets are stored AES-256-GCM encrypted with a key derived per tenant through HKDF (`encrypt(plaintext, tenantId)` in `dispatch-family:src/lib/crypto.ts`), as in `moa_credentials`. Changes are recorded in `audit_logs`.
+- Runner work is paid by each tenant's own Claude token (`claude_tokens`). A tenant with `tenants.useSharedTokens = 1` falls back to the owner's token (`getOwnerClaudeToken` in `cue:src/lib/tenant-job-dispatch.ts`).
+- Secrets are stored AES-256-GCM encrypted with a key derived per tenant through HKDF (`encrypt(plaintext, tenantId)` in `cue:src/lib/crypto.ts`), as in `moa_credentials`. Changes are recorded in `audit_logs`.
 
 ---
 
 ## Proposal
 
-One package, `@buildd/ai-kit`, built from `packages/ai-kit` in this repo and published to public npm, with the entry points listed in §1. buildd owns **policy**: which model, how much may be spent, which Jev release, and what the chat contract and permission model are. Each app owns **execution**: its own provider keys, its own tools, its own conversations and its own data.
+One package, `@builddai/ai-kit`, built from `packages/ai-kit` in this repo and published to public npm, with the entry points listed in §1. buildd owns **policy**: which model, how much may be spent, which Jev release, and what the chat contract and permission model are. Each app owns **execution**: its own provider keys, its own tools, its own conversations and its own data.
 
 **The crux: the model call runs in the app, not in buildd.** buildd answers "which model, and may I spend", and receives a content-free receipt afterwards. It never sees prompts, tool results or replies from a sibling app.
 
@@ -129,7 +129,7 @@ The alternative, proxying every token through buildd, would make buildd a data p
 **One package, subpath exports, optional peers.** Several packages would mean several versions to keep compatible (the chat server depends on the model client, which depends on the shared types), several publish workflows, and several pins in each consumer. One package with subpath exports keeps tree-shaking and keeps React out of server bundles. Split later only if a part needs its own release cadence.
 
 ```
-@buildd/ai-kit
+@builddai/ai-kit
   /models          model-plan client + usage sink (server only, no peers)
   /decide          Jev decisions: typed questions, gating, versioning, eval hooks (server; peer @typesafe-ai/sdk)
   /chat/contract   wire types: parts, object refs, data parts, tool-permission rows (no deps, isomorphic)
@@ -142,7 +142,7 @@ The alternative, proxying every token through buildd, would make buildd a data p
 #### 1a. `/models`: the model-plan client
 
 ```ts
-import { createModelClient } from '@buildd/ai-kit/models';
+import { createModelClient } from '@builddai/ai-kit/models';
 
 const models = createModelClient({
   baseUrl: process.env.BUILDD_API_URL,   // default https://buildd.dev
@@ -177,7 +177,7 @@ Extract the pure parts of `packages/core/decision-client.ts` into the kit: the q
 On top of that, generalise what money already does well:
 
 ```ts
-import { defineDecision } from '@buildd/ai-kit/decide';
+import { defineDecision } from '@builddai/ai-kit/decide';
 
 export const notableTxn = defineDecision({
   id: 'money.notable_txn',
@@ -213,7 +213,7 @@ export const notableTxn = defineDecision({
 **Tool permissions: a first-class primitive.** Each app declares its tool groups once. The same declaration drives the menu rows, the per-person preference, and server-side enforcement.
 
 ```ts
-import { defineToolGroups } from '@buildd/ai-kit/chat/server';
+import { defineToolGroups } from '@builddai/ai-kit/chat/server';
 
 export const groups = defineToolGroups({
   planner:  { label: 'Planner',  tools: [createItem, completeItem, reschedule], modes: ['ask', 'allow'] },
@@ -305,7 +305,7 @@ The kit uses no Tailwind: buildd is on Tailwind v4 and Cue on v3, and neither sh
 
 - **buildd:** map `--kit-*` from `--canvas-*` / `--convo-*`. `--kit-radius-hard: 0` keeps the square-corners rule for objects.
 - **Cue:** `--kit-accent: var(--primary)`, light-first, per its design skill.
-- **moa-ops:** its existing theme tokens (it already has token-lint and contrast gates).
+- **moa:** its existing theme tokens (it already has token-lint and contrast gates).
 
 #### 1d. `/surfaces`: Jev picks the app's own chips and cards
 
@@ -361,7 +361,7 @@ The hard ceiling is always the provider key: an OpenRouter key's credit limit, s
 
 **The rule is retired, not relaxed.** Cue's `CLAUDE.md` "Dispatch must never call LLM APIs directly" paragraph, and its "Exception: Jev decisions" paragraph, are deleted and replaced by:
 
-> **LLM calls only through `@buildd/ai-kit`.** Generative chat goes through `/chat/server` at one call site (`src/lib/ai/chat.ts`); fixed-label decisions go through `/decide` (`src/lib/jev.ts` becomes a thin wrapper). Never import a provider SDK or name a vendor model directly; ask for a tier. Long-running or repo-touching work is still a buildd runner task.
+> **LLM calls only through `@builddai/ai-kit`.** Generative chat goes through `/chat/server` at one call site (`src/lib/ai/chat.ts`); fixed-label decisions go through `/decide` (`src/lib/jev.ts` becomes a thin wrapper). Never import a provider SDK or name a vendor model directly; ask for a tier. Long-running or repo-touching work is still a buildd runner task.
 
 The separate retrieval rule (Voyage embeddings and reranking at two call sites) is not a generative call and stays as it is.
 
@@ -370,7 +370,7 @@ The separate retrieval rule (Voyage embeddings and reranking at two call sites) 
 **Tools.** Chat tools wrap the existing handlers behind Cue's `cue_read`, `cue_search` and `cue_mutate` MCP tools, called in-process like buildd's `in-process-api.ts`. They are declared in the tool groups in §1c. Mutations default to Ask first.
 
 **Hand-off to runners (kept).**
-1. A `hand_off` tool, fixed at Ask first because it spends, calls the existing `dispatch-family:src/lib/cue-job-dispatch.ts` path (`POST /api/tasks` on buildd) with `context.conversationId`.
+1. A `hand_off` tool, fixed at Ask first because it spends, calls the existing `cue:src/lib/cue-job-dispatch.ts` path (`POST /api/tasks` on buildd) with `context.conversationId`.
 2. The runner's completion arrives at Cue's existing `/api/webhooks/buildd`, which appends a `data-handoff` / `data-event` message to the conversation.
 3. In the mockup, "Check it with you" is the `ApprovalCard` for that hand-off. After approval, the step list shows "Filed as a task" and the card becomes a live `data-handoff` object.
 
@@ -403,7 +403,7 @@ Chat is metered by API token. Claude subscription tokens cannot serve server-sid
   - The hard cap is the OpenRouter key's own credit limit. The settings page recommends setting one when a household key is added.
 - **Cost view.** Settings → AI shows the person's own spend (today, 7 days, 30 days), split by `keyScope`. The owner additionally sees each member's household-key spend.
 
-### 4. moa-ops: store and money chat
+### 4. moa: store and money chat
 
 Use cases that justify chat (read-mostly, answerable in one turn):
 
@@ -422,18 +422,18 @@ Both apps use a single operator OpenRouter key per app, with its own credit limi
 ### 5. Distribution: public npm
 
 - **Source:** `packages/ai-kit` in this repo, Apache-2.0 like the rest of it. buildd consumes it as a workspace dependency (`workspace:*`).
-- **Registry:** public npm as `@buildd/ai-kit`. This matches the workspace names (`@buildd/core`, `@buildd/shared`) and needs the `buildd` npm org, which does not exist publicly yet.
+- **Registry:** public npm as `@builddai/ai-kit` (#2991). The first choice was `@buildd/ai-kit`, matching the workspace names (`@buildd/core`, `@buildd/shared`), but the `buildd` npm scope belongs to an account we cannot access yet; `builddai` is a user scope and needs no org.
 - **Build:** the package ships compiled ESM plus `.d.ts` in `dist/`, unlike `@buildd/core`, which exports raw `.ts` and only works inside the workspace. `files` is limited to `dist`, `schema.sql`, `theme.css` and `README.md`, so nothing else in the repo is published.
 - **Publish:** a `publish-ai-kit.yml` workflow runs on tag `ai-kit-v*` or `workflow_dispatch`. It uses npm trusted publishing (GitHub OIDC, `id-token: write`) with `--provenance`, so no long-lived npm token is stored anywhere.
 - **Versioning:** independent semver starting at 0.1.0, not buildd's lockstep `0.236.x`. `scripts/release.sh` must not bump it. The CHANGELOG lives in the package. Breaking changes to `/chat/contract` or to the tool-group declaration are major bumps; new optional data parts are minor.
 - **Consumers:** all three install with bun, need no auth, and pin exact versions. There are no `NODE_AUTH_TOKEN` changes on Vercel or in CI for this package.
-- **One Cue config fix:** Cue's `.npmrc` maps the `@buildd` scope to GitHub Packages, which would send `@buildd/ai-kit` to the wrong registry and fail. Cue installs nothing under `@buildd`, so the line is stale and P0 deletes it. The `@buildd-ai` mapping in `bunfig.toml` stays for `knowledge-store`.
+- **One Cue config fix:** Cue's `.npmrc` maps the `@buildd` scope to GitHub Packages, which would send `@builddai/ai-kit` to the wrong registry and fail. Cue installs nothing under `@buildd`, so the line is stale and P0 deletes it. The `@buildd-ai` mapping in `bunfig.toml` stays for `knowledge-store`.
 
 **Alternatives considered.**
 
 - *Private GitHub Package (`@buildd-ai/ai-kit`).* This would copy `buildd-ai/memory`'s `publish-knowledge-store.yml` (tag-triggered `npm publish` with `GITHUB_TOKEN`). Rejected:
   - Consumers need a classic PAT with `read:packages` as `NODE_AUTH_TOKEN` on every Vercel project and in every CI.
-  - `moa-ops` belongs to a personal account, so its built-in `GITHUB_TOKEN` cannot read an org package.
+  - moa belongs to a personal account, so its built-in `GITHUB_TOKEN` cannot read an org package.
   - The source is public anyway, so a private registry gates installs, not knowledge.
 - *git+ssh dependency.* Rejected:
   - Vercel builds have no SSH key.
@@ -447,14 +447,14 @@ Because the package is public, the kit, its docs and its tests must stay app-agn
 Each phase ships on its own and leaves the others working.
 
 **P0: kit skeleton, extract, publish (buildd). No behaviour change.**
-- Claim the `buildd` npm org and configure trusted publishing for this repo.
+- Claim an npm scope (resolved as the `builddai` user scope, #2991) and configure trusted publishing for this repo.
 - Create `packages/ai-kit` with `/decide` (the transport and pure parts from `decision-client.ts`) and `/chat/contract` (from `packages/shared/src/chat.ts`, re-exported by `@buildd/shared` so no import changes). Add `publish-ai-kit.yml` and publish 0.1.0 with provenance.
 - Cue: delete the stale `@buildd:registry` line from `.npmrc`.
 - AC:
   - buildd's existing decision and chat tests pass unchanged.
-  - A scratch Next 16 + bun project on a Vercel preview, with no registry token, installs `@buildd/ai-kit@0.1.0`.
+  - A scratch Next 16 + bun project on a Vercel preview, with no registry token, installs `@builddai/ai-kit@0.1.0`.
   - `bun install` in Cue still resolves `@buildd-ai/knowledge-store` from GitHub Packages.
-  - `npm view @buildd/ai-kit` shows a provenance attestation.
+  - `npm view @builddai/ai-kit` shows a provenance attestation.
 
 **P1: model plans (buildd routes plus moa).**
 - buildd: add `POST /api/ai/plan` and `POST /api/ai/usage`, and show receipts in Settings → Budgets under the service account. Add kit `/models`.
@@ -506,7 +506,7 @@ Each phase ships on its own and leaves the others working.
   - "What's stuck in shipping" answers from live shipment data.
 
 **P5: Cue interactive.**
-- Retire the rule: replace Cue's `CLAUDE.md` rule and its Jev exception with the "LLM calls only through `@buildd/ai-kit`" rule (§3).
+- Retire the rule: replace Cue's `CLAUDE.md` rule and its Jev exception with the "LLM calls only through `@builddai/ai-kit`" rule (§3).
 - **Keys:** the `ai_provider_keys` table, the `tenants.excludeFromHouseholdAiKey` flag, the Settings → AI page (add, test and remove your own key; the owner adds the household key and per-member caps and exclusions), and `audit_logs` actions.
 - **Ledger:** the `ai_usage` table, the kit `ledger` sink, per-user daily caps, and the cost view (self and, for the owner, members).
 - **Chat:** the conversation and permission tables from the kit's reference schema; the chat page themed for Cue; `<ChatEmpty>` with Cue chips; Cue tool groups; `hand_off` to runners; the webhook appending runner results.
@@ -539,7 +539,7 @@ Each phase ships on its own and leaves the others working.
 
 ### 7. Risks
 
-- **AI SDK v6 to v7 in moa-ops.** Both moa apps pin `ai@^6`, and the kit's chat entry points peer-depend on v7. P3 and P4 carry that upgrade; P1 and P2 do not need it.
+- **AI SDK v6 to v7 in moa.** Both moa apps pin `ai@^6`, and the kit's chat entry points peer-depend on v7. P3 and P4 carry that upgrade; P1 and P2 do not need it.
 - **Cooperative budgets.** A bug in an app, or an app on an old kit version, can overspend up to its provider key's limit. That is the accepted bound, so every production key must have a limit set. P1 and P5 require it.
 - **Household key abuse or surprise bills.** The owner's key pays for every non-excluded member. This is mitigated by the per-member daily cap (enforced from the ledger before the call), the cost view, and the key's own credit limit.
 - **Shared moa database** (§4, invariant 4).
@@ -570,7 +570,7 @@ Resolved as a consequence:
 Still open:
 
 1. **The model-picking spec you remember from 2026-09-26/27.** It was not found in this repo, on any branch, or in PRs. If it exists (an unpushed session, or another repo), `/api/ai/plan` here should yield to it.
-2. **npm org name.** `@buildd/ai-kit` needs the `buildd` npm org. *Lean:* claim `buildd`. If it isn't available, publish unscoped as `buildd-ai-kit` rather than `@buildd-ai/*`, which collides with Cue's GitHub Packages scope mapping.
+2. ~~**npm org name.**~~ Resolved in #2991: the `buildd` scope was not available, so the kit publishes as `@builddai/ai-kit`. `@buildd-ai/*` stayed off the table because it collides with Cue's GitHub Packages scope mapping.
 3. **Household key default.** When an owner sets a household key, does every member use it automatically (exclusion opt-out, as written), or only members the owner opts in? *Lean:* opt-out. Setting the key is already the owner's opt-in, and the per-member cap limits the downside.
 4. **Should household-key usage count against the runner-token sharing flag?** *Lean:* no, keep `useSharedTokens` and the AI-key exclusion separate, as written.
 5. **Tool groups per app.** The store, money and Cue tables in §1c are proposals. In particular: should money's Accounts and cards group be toggleable, or stay fixed at Ask first? *Lean:* fixed. Those writes change forecasts that other features read.
