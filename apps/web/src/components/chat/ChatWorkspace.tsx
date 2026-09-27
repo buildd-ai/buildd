@@ -217,7 +217,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // The crumbs: who you're talking to, where, and about what.
   const wsName = workspaceId ? workspaces.find(w => w.id === workspaceId)?.name ?? null : routedScope(messages)?.name ?? null;
   // A phone (mobile chat v3): `CHAT / new` left, `HISTORY →` right, in place
-  // of the back arrow. Desktop keeps the agent / workspace / title crumbs.
+  // of the back arrow. Desktop (lg, docs/design/chat-v3-desktop.md) reads the
+  // same; only the tablet band (md to lg) keeps the agent / workspace / title crumbs.
   const phoneCrumbs = !overlay && !crumbs;
   const isNew = !title && messages.length === 0;
   const sheetHeader = missionSheet && (
@@ -248,34 +249,34 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     </header>
   );
   const header = sheetHeader || (
-    <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 md:bg-transparent md:px-6">
+    <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 md:bg-transparent md:px-6 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7">
       {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
       {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
         {phoneCrumbs && (
           <>
-            <span data-testid="chat-mobile-section" className="shrink-0 text-[13px] font-bold uppercase tracking-[.12em] text-[var(--chat-text)] md:hidden">Chat</span>
-            <span aria-hidden="true" className="text-[var(--chat-muted)] md:hidden">/</span>
+            <span data-testid="chat-mobile-section" className="shrink-0 text-[13px] font-bold uppercase tracking-[.12em] text-[var(--chat-text)] md:hidden lg:inline">Chat</span>
+            <span aria-hidden="true" className="text-[var(--chat-muted)] md:hidden lg:inline">/</span>
           </>
         )}
-        <span className="hidden shrink-0 items-center gap-2 text-text-secondary md:inline-flex">
+        <span data-testid="canvas-crumbs-desktop" className={`hidden shrink-0 items-center gap-2 text-text-secondary md:inline-flex ${phoneCrumbs ? 'lg:hidden' : ''}`}>
           <AgentAvatar agent={agent} size="xs" />
           <span className="font-semibold text-text-primary">{agent.name}</span>
         </span>
         {wsName && (
           <>
-            <span aria-hidden="true" className="hidden text-text-muted md:inline">/</span>
-            <span data-testid="canvas-crumb-workspace" className="hidden shrink-0 text-text-secondary md:inline">{wsName}</span>
+            <span aria-hidden="true" className={`hidden text-text-muted md:inline ${phoneCrumbs ? 'lg:hidden' : ''}`}>/</span>
+            <span data-testid="canvas-crumb-workspace" className={`hidden shrink-0 text-text-secondary md:inline ${phoneCrumbs ? 'lg:hidden' : ''}`}>{wsName}</span>
           </>
         )}
-        <span aria-hidden="true" className="hidden text-text-muted md:inline">/</span>
+        <span aria-hidden="true" className={`hidden text-text-muted md:inline ${phoneCrumbs ? 'lg:hidden' : ''}`}>/</span>
         {phoneCrumbs && (historyOpen || isNew) ? (
-          <h1 data-testid="chat-title" className="min-w-0 truncate text-[13px] text-[var(--chat-muted)] md:font-semibold md:text-text-primary">
-            <span data-testid="chat-title-mobile" className="md:hidden">{historyOpen ? 'history' : 'new'}</span>
-            <span className="hidden md:inline">{shownTitle}</span>
+          <h1 data-testid="chat-title" className="min-w-0 truncate text-[13px] text-[var(--chat-muted)] md:font-semibold md:text-text-primary lg:font-normal lg:text-[var(--chat-muted)]">
+            <span data-testid="chat-title-mobile" className="md:hidden lg:inline">{historyOpen ? 'history' : 'new'}</span>
+            <span data-testid="chat-title-desktop" className="hidden md:inline lg:hidden">{shownTitle}</span>
           </h1>
         ) : (
-          <h1 data-testid="chat-title" className={`min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px] ${phoneCrumbs ? 'max-md:text-[13px] max-md:font-normal max-md:text-[var(--chat-muted)]' : ''}`}>{shownTitle}</h1>
+          <h1 data-testid="chat-title" className={`min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px] ${phoneCrumbs ? 'max-md:text-[13px] max-md:font-normal max-md:text-[var(--chat-muted)] lg:font-normal lg:text-[var(--chat-muted)]' : ''}`}>{shownTitle}</h1>
         )}
       </nav>
       )}
@@ -307,7 +308,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           <Link
             href={historyOpen ? newChatHref : '/app/chat?view=history'}
             data-testid="chat-history-link"
-            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden"
+            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden lg:inline-flex"
           >
             {historyOpen ? 'New →' : 'History →'}
           </Link>
@@ -315,7 +316,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         <Link
           href={newChatHref}
           data-testid="chat-new"
-          className="hidden min-h-9 shrink-0 items-center px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex"
+          className={`hidden min-h-9 shrink-0 items-center px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex ${phoneCrumbs ? 'lg:hidden' : ''}`}
         >
           + New chat
         </Link>
@@ -355,23 +356,23 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-testid="canvas-empty"
       data-mood={hero.mood ?? undefined}
       data-layout={anchored ? 'anchored' : undefined}
-      className={`mb-8 mt-2 md:mt-10 ${anchored ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
+      className={`mb-8 mt-2 md:mt-10 ${anchored ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col lg:mb-0 lg:mt-20 lg:flex lg:flex-1 lg:flex-col' : ''} ${historyOpen ? 'max-md:hidden lg:hidden' : ''}`}
     >
       <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
         {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
         {hero.overline}
       </p>
-      <p className={`mt-4 font-voice text-[var(--chat-text)] ${plainCanvas ? 'text-[44px] leading-[1.02] tracking-[-0.02em]' : 'text-[28px] leading-[1.1] tracking-[-0.01em]'}`}>
+      <p className={`mt-4 font-voice text-[var(--chat-text)] ${plainCanvas ? 'text-[44px] leading-[1.02] tracking-[-0.02em] lg:text-[64px]' : 'text-[28px] leading-[1.1] tracking-[-0.01em] lg:max-w-[640px]'}`}>
         {hero.hero}
       </p>
       {hero.sub && (
-        <p suppressHydrationWarning className="mt-3 font-voice text-[20px] italic leading-snug text-[var(--chat-muted)]">{hero.sub}</p>
+        <p data-testid="canvas-hero-sub" suppressHydrationWarning className="mt-3 font-voice text-[20px] italic leading-snug text-[var(--chat-muted)] lg:mt-4 lg:max-w-[640px] lg:text-[22px]">{hero.sub}</p>
       )}
       {/* Phone: open sea between the hero and the picked rows, which sit
           right above the composer (the v3 frames). */}
-      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className="max-md:min-h-7 max-md:flex-1" />}
+      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className="max-md:min-h-7 max-md:flex-1 lg:min-h-7 lg:flex-1" />}
       {suggestions.length > 0 && (
-        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? 'md:mt-7' : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
+        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? 'md:mt-7 lg:mt-0' : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
           <div className="flex h-[30px] items-center justify-between gap-3 border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
             <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
             {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
@@ -407,11 +408,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-canvas={variant}
       data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
+      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] lg:bg-[var(--chat-ground)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
     >
       {/* The sea: soft pools behind the phone canvas, coloured by mood. The
           summoned overlay is an opaque sheet and draws none. */}
-      {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden" />}
+      {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden lg:block" />}
       {header}
       {strip}
       {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
@@ -423,7 +424,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         data-testid="chat-scroller"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
       >
-        <div ref={content} className={`mx-auto px-4 py-6 ${anchored && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col' : ''} ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
+        <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchored && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col lg:flex lg:min-h-full lg:flex-col' : ''} ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8 lg:max-w-[720px] lg:px-0'}`}>
           {missionEmpty && missionSheet ? (
             <div data-testid="mission-sheet-empty" className="mb-6">
               <MissionContextCard objRef={missionSheet} />
@@ -431,15 +432,15 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             </div>
           ) : emptyCanvas}
           {messages.length === 0 && emptyState && (
-            <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block'}>{emptyState}</div>
+            <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block lg:hidden'}>{emptyState}</div>
           )}
           <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
       {/* Phone: the composer is a full-bleed slab down to the safe area. */}
-      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] md:bg-transparent md:pb-5 md:pt-2 ${narrow ? 'md:px-6' : 'md:px-8'}`}>
-        <div className={narrow ? '' : 'mx-auto max-w-[820px]'}>
+      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] md:bg-transparent md:pb-5 md:pt-2 ${narrow ? 'md:px-6' : 'md:px-8 lg:pb-7'}`}>
+        <div data-testid="chat-composer-column" className={narrow ? '' : 'mx-auto max-w-[820px] lg:max-w-[720px]'}>
           <ChatComposer
             ref={composer}
             value={draft}
@@ -464,7 +465,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             scopeLock={missionSheet ? <MissionScopeCell objRef={missionSheet} /> : undefined}
           />
           {formFallbackHref && messages.length === 0 && (
-            <div className="hidden justify-end md:mt-2 md:flex">
+            <div className="hidden justify-end md:mt-2 md:flex lg:hidden">
               <Link
                 href={formFallbackHref}
                 data-testid="chat-form-fallback"
@@ -513,7 +514,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         {paneEl}
         {docked && <div aria-hidden="true" className="hidden w-[2px] shrink-0 bg-border-strong md:block" />}
         {column}
-        {!docked && !overlay && aside && (
+        {/* The side slot. The empty canvas has none: PICKED FOR YOU says what
+            the aside did, and the column centres in the whole stage. A 420px
+            dock will take this slot; the column stays centred in what is left. */}
+        {!docked && !overlay && aside && messages.length > 0 && (
           <aside data-testid="chat-aside" className="hidden w-[400px] min-w-0 shrink-0 overflow-y-auto overflow-x-hidden border-l border-border-default bg-surface-2 px-6 py-5 xl:block">
             {aside}
           </aside>

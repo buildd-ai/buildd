@@ -94,6 +94,21 @@ describe('css', () => {
     expect(sweepAfter?.body).toMatch(/box-shadow:\s*none/);
   });
 
+  it('desktop scales the same pools up (about 300-560px) as a whole, so each peak and its AA stay put', () => {
+    const at = css.indexOf('@media (min-width: 1024px)', css.indexOf('The sea (docs/design/chat-canvas.md'));
+    expect(at).toBeGreaterThan(-1);
+    const block = css.slice(at, css.indexOf('\n}', at));
+    const rule = block.match(/\.sea-current\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // `scale` scales the pool and its blur together; resizing the element or
+    // its gradient would change how bright the peak paints.
+    const s = Number(rule![1].match(/scale:\s*([\d.]+)/)?.[1]);
+    const sizes = SEA_POOLS.map(p => p.size * s);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(280);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(580);
+    expect(rule![1]).not.toMatch(/\b(width|height|filter|background)\s*:/);
+  });
+
   it('the sea is the only rounded layer in the chat styles, and it has no lines or streaks', () => {
     const radii = [...css.matchAll(/^\s*(\.[\w-]+)[^{]*\{[^}]*border-radius/gm)].map(m => m[1]);
     expect(radii.filter(s => s.startsWith('.sea') || s.startsWith('.composer') || s.startsWith('.thinking'))).toEqual(['.sea-pool']);
