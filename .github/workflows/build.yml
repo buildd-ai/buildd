@@ -210,6 +210,13 @@ jobs:
           bun run build
           node scripts/smoke-dist.mjs
 
+      # smoke-dist imports dist/ inside the monorepo, where every devDependency
+      # resolves. This installs the packed tarball into a clean project outside
+      # it (public registry only) and imports every entry with and without the
+      # optional peers, the way a consumer gets it. 0.1.0's /decide fails here.
+      - name: Install @builddai/ai-kit into a clean consumer project
+        run: node packages/ai-kit/scripts/smoke-consumer.mjs
+
       - name: Build
         run: cd apps/web && bun run build:only
         env:

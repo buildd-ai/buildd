@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { distExports, distPackageJson, rewriteRelativeSpecifiers } from './build';
+import { auditBareImports, distExports, distPackageJson, packageOf, rewriteRelativeSpecifiers } from './build';
 import pkg from '../package.json';
 
 describe('dist package.json', () => {
@@ -78,5 +78,44 @@ describe('relative import specifiers', () => {
   it('fails loudly on a specifier it cannot resolve', () => {
     expect(() => rewriteRelativeSpecifiers("import { z } from './missing';", '/d/models', exists))
       .toThrow(/\.\/missing/);
+  });
+});
+
+describe('bare imports reach the consumer', () => {
+  const kit = {
+    name: '@builddai/ai-kit',
+    dependencies: { dep: '1.0.0' },
+    peerDependencies: { '@typesafe-ai/sdk': '0.6.0', react: '^19.0.0' },
+    peerDependenciesMeta: { '@typesafe-ai/sdk': { optional: true } },
+  };
+  it('names the package of a specifier', () => {
+    expect(packageOf('@typesafe-ai/sdk/sub')).toBe('@typesafe-ai/sdk');
+    expect(packageOf('react/jsx-runtime')).toBe('react');
+    expect(packageOf('node:fs')).toBeNull();
+  });
+  it('flags a static import of an optional peer (0.1.0 /decide) and an undeclared package', () => {
+    const problems = auditBareImports({
+      'decide/index.js': "import { TypeSafeClient } from '@typesafe-ai/sdk';",
+      'chat/react/index.js': "import { jsx } from 'react/jsx-runtime';\nimport x from 'left-pad';",
+    }, kit);
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toContain("statically imports optional peer '@typesafe-ai/sdk'");
+    expect(problems[1]).toContain("'left-pad'");
+  });
+  it('allows deps, required peers, self-references, node: and a lazy optional peer', () => {
+    expect(auditBareImports({
+      'a.js': [
+        "import d from 'dep';",
+        "import { useState } from 'react';",
+        "export * from '@builddai/ai-kit/chat/contract';",
+        "import { readFileSync } from 'node:fs';",
+        "const sdk = await import('@typesafe-ai/sdk');",
+      ].join('\n'),
+    }, kit)).toEqual([]);
+  });
+  it('carries the optional peer into dist/package.json', () => {
+    const out = distPackageJson(pkg as never) as { peerDependencies: Record<string, string>; peerDependenciesMeta: Record<string, { optional: boolean }> };
+    expect(out.peerDependencies['@typesafe-ai/sdk']).toBe(pkg.devDependencies['@typesafe-ai/sdk']);
+    expect(out.peerDependenciesMeta['@typesafe-ai/sdk']).toEqual({ optional: true });
   });
 });
