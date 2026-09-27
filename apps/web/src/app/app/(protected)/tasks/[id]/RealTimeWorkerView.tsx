@@ -13,6 +13,7 @@ import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { formatElapsed } from './format-elapsed';
 import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-activity';
 import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
+import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
 import type { WorkerMilestone, WorkerWaitingFor } from '@buildd/core/db/schema';
 
 // Exported for testing: whether a worker-channel event should bypass the
@@ -129,6 +130,9 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   const answeredPromptRef = useRef<string | null>(null);
   const [showMetricsDetail, setShowMetricsDetail] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
+  // The question is this page's hero: the global "…needs your input" banner
+  // naming it above the hero only repeats it.
+  useHideNeedsInputWhileOpen(worker.waitingFor ? taskId : null);
 
   // When the server component re-renders (via router.refresh()), pick up fresh
   // worker data from the updated initialWorker prop.

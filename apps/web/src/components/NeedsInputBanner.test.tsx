@@ -41,8 +41,8 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
     const release = hideNeedsInputFor('q1');
     try {
       const html = render([waiting('q1', 'feat(checkout): pay in currency'), waiting('q2', 'docs: billing guide')]);
-      expect(html).toContain('docs: billing guide');
-      expect(html).not.toContain('pay in currency');
+      expect(html).toContain('Billing guide');
+      expect(html).not.toContain('ay in currency');
       expect(html).toContain('needs your input');
       expect(html).not.toContain('2 tasks');
     } finally { release(); }
@@ -51,5 +51,29 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
   it('renders again once the sheet is closed', () => {
     hideNeedsInputFor('q1')();
     expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs your input');
+  });
+});
+
+// Regression (UX review): the banner named the task by its raw commit-style
+// title ("feat(checkout): pay in the presentment currency via Stripe") where
+// every page shows the sentence ("Pay in the presentment currency via Stripe").
+describe('NeedsInputBanner — names the task as the task page does', () => {
+  const waiting = (id: string, title: string) => ({ id, title, workspaceId: 'ws', missionId: 'm1', waitingFor: null });
+  const render = (tasks: ReturnType<typeof waiting>[]) => renderToStaticMarkup(
+    <NeedsInputContext.Provider value={{ tasks, count: tasks.length, alertPermission: 'unsupported', enableAlerts: () => {} }}>
+      <NeedsInputBanner />
+    </NeedsInputContext.Provider>,
+  );
+
+  it('drops the conventional-commit prefix', () => {
+    const html = render([waiting('q1', 'feat(checkout): pay in the presentment currency via Stripe')]);
+    expect(html).toContain('Pay in the presentment currency via Stripe');
+    expect(html).not.toContain('feat(checkout)');
+  });
+
+  it('joins two waiting tasks without an em dash', () => {
+    const html = render([waiting('q1', 'fix: a'), waiting('q2', 'fix: b')]);
+    expect(html).toContain('2 tasks need your input');
+    expect(html).not.toContain('\u2014');
   });
 });
