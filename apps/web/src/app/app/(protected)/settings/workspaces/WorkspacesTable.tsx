@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
-import MoveToTeamDialog, { type MoveTeam } from '@/components/MoveToTeamDialog';
+import { useMoveToTeam, type MoveTeam } from '@/components/MoveToTeamDialog';
 import type { WorkspaceRow } from './rows';
 
 const CELL = 'md:table-cell md:px-3 md:py-2.5 md:align-middle';
@@ -122,7 +122,7 @@ function RowMenu({ row, onMove }: { row: WorkspaceRow; onMove: () => void }) {
  * scrolls sideways.
  */
 export default function WorkspacesTable({ rows, moveTeams }: { rows: WorkspaceRow[]; moveTeams: MoveTeam[] }) {
-  const [moving, setMoving] = useState<WorkspaceRow | null>(null);
+  const move = useMoveToTeam();
   const anyMenu = rows.some((r) => r.canMove);
 
   return (
@@ -163,7 +163,7 @@ export default function WorkspacesTable({ rows, moveTeams }: { rows: WorkspaceRo
               </td>
               {anyMenu && (
                 <td className={`${CELL} block col-start-2 row-start-1 -mr-2 -mt-2 md:m-0 md:w-12 md:text-right`}>
-                  {row.canMove && <RowMenu row={row} onMove={() => setMoving(row)} />}
+                  {row.canMove && <RowMenu row={row} onMove={() => move.start({ id: row.id, name: row.name, teamId: row.teamId }, moveTeams)} />}
                 </td>
               )}
             </tr>
@@ -171,13 +171,7 @@ export default function WorkspacesTable({ rows, moveTeams }: { rows: WorkspaceRo
         </tbody>
       </table>
 
-      {moving && (
-        <MoveToTeamDialog
-          workspace={{ id: moving.id, name: moving.name, teamId: moving.teamId }}
-          teams={moveTeams}
-          onClose={() => setMoving(null)}
-        />
-      )}
+      {move.ui}
     </>
   );
 }

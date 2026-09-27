@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+const mockGetUserAdminTeamIds = mock(() => Promise.resolve([] as string[]));
 // POST now uses provider.replaceScoped (replace-on-store), not set(null, …).
 const mockSecretsReplaceScoped = mock(() => Promise.resolve('secret-1'));
 const mockSecretsSet = mock(() => Promise.resolve('secret-1'));
@@ -16,6 +17,7 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
+  getUserAdminTeamIds: mockGetUserAdminTeamIds,
 }));
 
 // Only the API-key auth path reads the DB (to find the calling account).
@@ -40,7 +42,7 @@ mock.module('@/lib/credential-recovery', () => ({
   requeueAuthFailedTasks: mockRequeue,
 }));
 
-import { POST } from './route';
+import { POST, DELETE } from './route';
 
 function createPostRequest(body: any): NextRequest {
   return new NextRequest('http://localhost:3000/api/secrets', {
@@ -61,6 +63,8 @@ describe('POST /api/secrets', () => {
     // Default: authenticated user with a team
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserAdminTeamIds.mockReset();
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
     mockSecretsReplaceScoped.mockResolvedValue('secret-1');
   });
 
@@ -143,7 +147,7 @@ describe('POST /api/secrets', () => {
   });
 
   it('keeps a decision_key team-wide even when stored with an API key, unless accountId is explicit', async () => {
-    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1' });
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1', level: 'admin' });
     const req = (body: any) => new NextRequest('http://localhost:3000/api/secrets', {
       method: 'POST',
       headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
@@ -161,7 +165,7 @@ describe('POST /api/secrets', () => {
   it('keeps an inference_key team-wide when stored with an API key, so it serves every caller', async () => {
     // An account-scoped inference key only reaches callers acting as that
     // account; chat turns and cron judgments act as nobody's account.
-    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1' });
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-caller', teamId: 'team-1', level: 'admin' });
     const res = await POST(new NextRequest('http://localhost:3000/api/secrets', {
       method: 'POST',
       headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
@@ -263,5 +267,123 @@ describe('POST /api/secrets', () => {
     expect(res.status).toBe(200);
     // JSON blob stored verbatim (only trimmed) — not quote-stripped.
     expect(mockSecretsReplaceScoped).toHaveBeenCalledWith(json, expect.anything());
+  });
+});
+
+// A team model key (inference_key / decision_key) at team, workspace or account
+// scope pays for — and is read by — every member's chat turn and every decision
+// call. Only a team owner/admin (or an admin-level API key) may write or remove
+// one, the same bar /api/inference-keys holds for scope 'team'.
+describe('team model keys need a team admin', () => {
+  const apiReq = (method: 'POST' | 'DELETE', body?: any, qs = '') =>
+    new NextRequest(`http://localhost:3000/api/secrets${qs}`, {
+      method,
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserAdminTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
+    mockSecretsList.mockReset();
+    mockSecretsDelete.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserAdminTeamIds.mockResolvedValue([]); // a plain member
+    mockSecretsReplaceScoped.mockResolvedValue('secret-1');
+  });
+
+  for (const [purpose, label] of [['inference_key', 'openrouter'], ['decision_key', undefined]] as const) {
+    it(`refuses a member storing a ${purpose}`, async () => {
+      const res = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose, label }));
+      expect(res.status).toBe(403);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+
+    it(`refuses a member storing a workspace-scoped ${purpose}`, async () => {
+      const res = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose, label, workspaceId: 'ws-1' }));
+      expect(res.status).toBe(403);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+
+    it(`refuses a non-admin API key storing a ${purpose}`, async () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-w', teamId: 'team-1', level: 'worker' });
+      const res = await POST(apiReq('POST', { value: 'sk-or-v1-abcdefghijklmnop', purpose, label }));
+      expect(res.status).toBe(403);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+
+    it(`refuses a member deleting a ${purpose}`, async () => {
+      mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose, teamId: 'team-1' }]);
+      const res = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-team', { method: 'DELETE' }));
+      expect(res.status).toBe(403);
+      expect(mockSecretsDelete).not.toHaveBeenCalled();
+    });
+  }
+
+  it('lets a team admin store and delete a team model key', async () => {
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    const put = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose: 'inference_key', label: 'openrouter' }));
+    expect(put.status).toBe(200);
+    mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose: 'inference_key', teamId: 'team-1' }]);
+    const del = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-team', { method: 'DELETE' }));
+    expect(del.status).toBe(200);
+    expect(mockSecretsDelete).toHaveBeenCalledWith('sec-team');
+  });
+
+  it('holds the admin check to the target team, not any team the caller admins', async () => {
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-2']);
+    const res = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose: 'inference_key', label: 'openrouter', teamId: 'team-1' }));
+    expect(res.status).toBe(403);
+  });
+
+  it('still lets a member store other purposes', async () => {
+    const res = await POST(createPostRequest({ value: 'val', purpose: 'custom' }));
+    expect(res.status).toBe(200);
+  });
+});
+
+// Connector and MCP credential lookups read team rows only (user_id IS NULL).
+// A userId-scoped row of those purposes would be invisible to them at best and,
+// before that filter, mountable as the team's credential — so this route never
+// creates one. Personal keys have their own route (/api/inference-keys).
+describe('POST /api/secrets never creates a personal row', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserAdminTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    mockSecretsReplaceScoped.mockResolvedValue('secret-1');
+  });
+
+  for (const purpose of ['mcp_credential', 'role_env_secret', 'anthropic_api_key', 'oauth_token', 'custom', 'decision_key']) {
+    it(`refuses a userId-scoped ${purpose}`, async () => {
+      const value = purpose === 'anthropic_api_key' ? 'sk-ant-api-x' : purpose === 'oauth_token' ? 'sk-ant-oat-x' : 'v';
+      const res = await POST(createPostRequest({ value, purpose, label: 'GITHUB_TOKEN', userId: 'user-1' }));
+      expect(res.status).toBe(400);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+  }
+
+  it('points a personal inference key at /api/inference-keys instead of storing it here', async () => {
+    const res = await POST(createPostRequest({ value: 'sk-or-v1-x', purpose: 'inference_key', label: 'openrouter', userId: 'user-1' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('/api/inference-keys');
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('never forwards a userId to the provider for a team row', async () => {
+    const res = await POST(createPostRequest({ value: 'v', purpose: 'mcp_credential', label: 'GITHUB_TOKEN' }));
+    expect(res.status).toBe(200);
+    const meta = (mockSecretsReplaceScoped.mock.calls[0] as any[])[1];
+    expect(meta.userId ?? null).toBeNull();
   });
 });

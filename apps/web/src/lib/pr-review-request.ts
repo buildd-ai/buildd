@@ -79,6 +79,26 @@ export async function findPrOwningWorker(workspaceId: string, prNumber: number) 
   });
 }
 
+/**
+ * The most recent worker that ran a review task, for its `error`/`exitCause`.
+ *
+ * `review_failed` means the review task produced no structured verdict — which
+ * is exactly the case where its worker's crash reason is the only explanation
+ * available. `findReviewTaskForPr` only reads the task row, so this is a
+ * second, narrow read used solely to explain a `review_failed` state.
+ */
+export async function findReviewTaskWorker(
+  reviewTaskId: string,
+): Promise<{ error: string | null; exitCause: string | null } | null> {
+  const rows = await db
+    .select({ error: workers.error, exitCause: workers.exitCause })
+    .from(workers)
+    .where(eq(workers.taskId, reviewTaskId))
+    .orderBy(desc(workers.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export interface AdoptedPrOwnerWorker {
   id: string;
   taskId: string | null;
@@ -275,9 +295,11 @@ export async function readPrReviewStatus(params: {
     findReviewTaskForPr(params.workspaceId, params.prNumber),
     findPrOwningWorker(params.workspaceId, params.prNumber),
   ]);
+  const reviewerWorker = reviewTask ? await findReviewTaskWorker(reviewTask.id) : null;
   return derivePrReviewStatus({
     reviewTask,
     worker: worker ?? null,
+    reviewerWorker,
     autoMergeExpected: params.autoMergeExpected,
     waitFor: params.waitFor,
   });
@@ -374,9 +396,11 @@ export async function deliverPrReviewCallback(params: {
     if (!reviewTask || !callback) return 'skipped';
 
     const worker = await findPrOwningWorker(params.workspaceId, params.prNumber);
+    const reviewerWorker = await findReviewTaskWorker(reviewTask.id);
     const status = derivePrReviewStatus({
       reviewTask,
       worker: worker ?? null,
+      reviewerWorker,
       autoMergeExpected: params.autoMergeExpected,
       waitFor: callback.on,
     });

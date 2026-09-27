@@ -146,6 +146,15 @@ long-poll, or by an https callback.
   leaves to a human. A merged or closed PR is terminal for both.
 - A completed reviewer task with no `structuredOutput.verdict` MUST read as
   `review_failed`, never as an approval.
+- A `review_failed` status MUST carry `failureReason` when one can be found:
+  the review task's own worker's `error` (free text), falling back to a
+  human-readable label derived from that worker's `exitCause` (e.g. "the
+  review worker never started"). This is a DIFFERENT worker than the one
+  `get_pr` reports on — that one owns the PR being reviewed; this one is the
+  reviewer session that crashed before producing a verdict, which is the only
+  place the crash reason lives once the review task's own `result`/`context`
+  come back empty. Null when no reviewer worker row exists or it recorded
+  neither field (e.g. a pre-migration row).
 - `waitSeconds` is clamped to 45s — below the platform function limit — and a
   clamped wait MUST return `timedOut: true` rather than being killed mid-flight.
 - A callback URL MUST be https (a verdict discusses unmerged code) and MUST be
@@ -173,12 +182,20 @@ long-poll, or by an https callback.
   later merges THEN exactly one callback is POSTed.
 - AC-19: WHEN a requested `reviewerRole` is absent from the workspace THEN the
   call returns HTTP 400 naming the available roles and dispatches nothing.
+- AC-20: GIVEN a reviewer task ended `failed`/`cancelled` (or `completed` with
+  no verdict) AND its own worker row has `error` set WHEN `get_pr_review` is
+  called THEN the response's `status.failureReason` equals that `error` text,
+  and the MCP tool's rendered text includes a `Reason:` line. GIVEN `error` is
+  null but `exitCause` is set THEN `failureReason` is the corresponding human
+  label instead. GIVEN neither is set, or no reviewer worker row can be found,
+  THEN `failureReason` is null and the MCP text says no reason was recorded.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/github/pr/review/route.ts`
 - Status mapping + role choice + callback POST:
   `apps/web/src/lib/pr-review-status.ts`
-- DB reads, long-poll, single-fire callback claim:
+- DB reads, long-poll, single-fire callback claim (incl. `findReviewTaskWorker`,
+  the reviewer's own worker row for `failureReason`):
   `apps/web/src/lib/pr-review-request.ts`
 - Reviewer task creation: `apps/web/src/lib/reviewer.ts` — `createReviewerTask()`
 - Verdict-time delivery: `apps/web/src/app/api/workers/[id]/route.ts`

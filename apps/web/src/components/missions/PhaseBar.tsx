@@ -66,7 +66,7 @@ function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
         <span
           className={`absolute inset-0 flex items-center justify-center overflow-hidden whitespace-nowrap px-0.5 font-mono text-[11px] md:text-[10px] font-semibold ${CELL_TEXT[cell.state]}`}
         >
-          {cell.label}
+          <span className="min-w-0 truncate">{cell.label}</span>
         </span>
       )}
     </Link>

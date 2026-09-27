@@ -3,7 +3,9 @@
 /**
  * Agent chat states in isolation, from fictional fixtures — no database, no
  * model call. `?state=propose|confirmed|split|question|answered|shipped|streaming|denied|empty`
- * and `&aside=member|operator`, `&setup=no_key|capability_disabled&admin=1`.
+ * and `&aside=member|operator`, `&setup=no_key&admin=1`,
+ * `&hints=1` (keyboard hints on), `&pane=closed`, `&about=mission` (opened from
+ * "Ask about this mission": the mission pinned in the canvas).
  * Confirm, Discard and the question options work against the fixture.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -11,6 +13,7 @@ import ChatWorkspace from '@/components/chat/ChatWorkspace';
 import ChatContextPanel from '@/components/chat/ChatContextPanel';
 import ChatSetupCard, { type ChatSetupReason } from '@/components/chat/ChatSetupCard';
 import { ObjectStoreProvider } from '@/components/chat/objects/ObjectStoreProvider';
+import { KeyHintsProvider, keyHintsFromQuery } from '@/components/KeyHints';
 import type { ObjectSource } from '@/components/chat/objects/object-store';
 import type { ChatMessage, ChatToolPart } from '@/components/chat/chat-contract';
 import { isToolPart } from '@/components/chat/chat-contract';
@@ -67,7 +70,7 @@ export default function DevChatPage() {
 
   if (!params) return null;
 
-  if (setup === 'no_key' || setup === 'capability_disabled') {
+  if (setup === 'no_key') {
     return (
       <div className="min-h-screen bg-surface-1 p-6 md:p-10">
         <div className="mx-auto grid max-w-xl gap-4">
@@ -91,6 +94,7 @@ export default function DevChatPage() {
   ) : undefined;
 
   return (
+    <KeyHintsProvider value={keyHintsFromQuery(params)}>
     <div className="h-screen bg-surface-1" data-fixture-state={state}>
       <nav aria-label="Fixture states" className="sr-only">
         {CHAT_FIXTURE_STATES.map(s => <a key={s} href={`?state=${s}`}>{s}</a>)}
@@ -111,10 +115,12 @@ export default function DevChatPage() {
           onWorkspaceChange={() => {}}
           viewerName={VIEWER}
           aside={panel}
-          focusRef={state === 'question' ? questionRef : null}
+          focusRef={state === 'question' ? questionRef : params.get('about') === 'mission' ? missionRef : null}
+          focusOpensSheet={params.get('about') !== 'mission'}
           initialPaneClosed={params.get('pane') === 'closed'}
         />
       </ObjectStoreProvider>
     </div>
+    </KeyHintsProvider>
   );
 }

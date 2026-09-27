@@ -16,7 +16,7 @@ import { chatErrorLine } from './chat-errors';
 import type { ConversationListItem } from '@/lib/chat/conversations';
 
 export default function HomeChatCard({
-  teamId, workspaces, recent, agentName = 'Organizer', compact = false, initialWorkspaceId = null,
+  teamId, workspaces, recent, agentName = 'buildd', compact = false, initialWorkspaceId = null,
 }: {
   teamId: string;
   workspaces: readonly ComposerWorkspace[];

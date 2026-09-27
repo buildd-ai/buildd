@@ -54,6 +54,21 @@ export function effectiveClass(tool: string, op: string, spec: ChatOpSpec, input
   return spec.class;
 }
 
+/**
+ * Does this call start recurring or unattended work? Such a call always gets
+ * its approval card, whatever the person's "Allow" (permissions.ts): the
+ * `alwaysAsk` ops (new or edited schedules, arming a mission), plus the input
+ * forms that resume work — `pause_schedules` with `enabled: true`, and
+ * `hold_task` with `hold: false`. Pausing or holding stops work and may skip.
+ */
+export function startsUnattendedWork(tool: string, spec: ChatOpSpec, input: unknown): boolean {
+  if (spec.alwaysAsk) return true;
+  const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  if (tool === 'pause_schedules') return i.enabled === true;
+  if (tool === 'hold_task') return i.hold === false;
+  return false;
+}
+
 /** Is this (tool, op) a write chat will offer this turn? */
 export function writeEnabled(tool: string, op: string, spec: ChatOpSpec, canAdmin: boolean, input?: unknown): boolean {
   const cls = input === undefined ? spec.class : effectiveClass(tool, op, spec, input);

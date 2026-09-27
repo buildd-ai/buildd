@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
-let chatEnabled = true;
 let callerResponse: Response | null = null;
 const created: any[] = [];
 const listed: any[] = [];
@@ -10,7 +9,8 @@ mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => (callerResponse ? { response: callerResponse } : { caller: { user: { id: 'u-1' }, teamIds: ['t-1'] } }),
   resolveChatTeam: async (_req: any, caller: any, requested?: string | null) =>
     (requested ?? 't-1') && caller.teamIds.includes(requested ?? 't-1') ? (requested ?? 't-1') : null,
-  loadTeamChatSettings: async () => ({ chatEnabled, timezone: null, dailyBudgetUsd: null }),
+  // A stale settings shape that still says chat is off: POST must not consult it.
+  loadTeamChatSettings: async () => ({ chatEnabled: false, timezone: null, dailyBudgetUsd: null }),
   isSensitiveWorkspace: async (ws: string) => ws === 'ws-sensitive',
 }));
 mock.module('@/lib/team-access', () => ({
@@ -32,7 +32,7 @@ const post = (body: unknown) => POST(new NextRequest('http://localhost/api/chat'
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 }));
 
-beforeEach(() => { chatEnabled = true; callerResponse = null; created.length = 0; });
+beforeEach(() => { callerResponse = null; created.length = 0; });
 
 describe('POST /api/chat', () => {
   it('creates a conversation in the caller\'s team', async () => {
@@ -41,12 +41,10 @@ describe('POST /api/chat', () => {
     expect(created[0]).toMatchObject({ teamId: 't-1', workspaceId: 'ws-1', userId: 'u-1' });
   });
 
-  it('refuses when the team has chat off — nothing is created', async () => {
-    chatEnabled = false;
+  it('chat is always on: there is no team switch that refuses a new conversation', async () => {
     const res = await post({});
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toBe('capability_disabled');
-    expect(created).toHaveLength(0);
+    expect(res.status).toBe(201);
+    expect(created).toHaveLength(1);
   });
 
   it('404s a workspace the caller cannot reach, or a team they are not in', async () => {

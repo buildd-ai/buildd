@@ -44,7 +44,7 @@ export default function ModelUsagePanel({
   const api = durationApiMs ?? 0;
 
   return (
-    <div className="mt-3 p-3 bg-surface-3 rounded-[8px] border border-border-default/50">
+    <div className="mt-3 p-3 bg-surface-3 border border-border-default/50">
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
         {tierLabel ? `${tierLabel} · ` : ''}Model Usage
         {multiple ? ` · ${all.length} models` : ''}

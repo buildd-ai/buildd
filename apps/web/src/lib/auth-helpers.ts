@@ -13,6 +13,8 @@ export type CurrentUser = {
   image: string | null;
   /** Zone detected from this user's browser; null until `<TimezoneSync />` reports one. */
   timezone: string | null;
+  /** Show keycap shortcut hints (Settings -> Profile). Absent = off. */
+  showKeyboardHints?: boolean;
 };
 
 /**
@@ -42,6 +44,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
           name: realUser.name,
           image: realUser.image,
           timezone: realUser.timezone,
+          showKeyboardHints: realUser.showKeyboardHints === true,
         };
       }
       console.warn(`[auth-helpers] DEV_USER_EMAIL=${process.env.DEV_USER_EMAIL} not found in database, falling back to mock user`);
@@ -77,6 +80,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     name: user.name,
     image: user.image,
     timezone: user.timezone,
+    showKeyboardHints: user.showKeyboardHints === true,
   };
 });
 

@@ -4,7 +4,7 @@ import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
 
@@ -69,10 +69,29 @@ function sanitizeSecretValue(raw: string, purpose: string): string {
 }
 
 /**
+ * Team model keys: read by the inference-key resolver for every member's chat
+ * turn and every decision call, so storing or removing one at any shared scope
+ * (team, workspace, account) sets who pays for the whole team. Only a team
+ * owner/admin, or an admin-level API key, may do it — the bar /api/inference-keys
+ * holds for `scope: 'team'`. Personal keys go through /api/inference-keys.
+ */
+const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key']);
+
+type SecretsCaller = { teamIds: string[]; accountId?: string; accountLevel?: string; userId?: string };
+
+async function mayManageTeamModelKeys(auth: SecretsCaller, teamId: string): Promise<boolean> {
+  if (auth.accountId) return auth.accountLevel === 'admin' && auth.teamIds.includes(teamId);
+  if (!auth.userId) return false;
+  return (await getUserAdminTeamIds(auth.userId)).includes(teamId);
+}
+
+const TEAM_MODEL_KEY_ADMIN_ONLY = 'Only a team owner or admin can manage the team model key.';
+
+/**
  * Dual auth: API key (Bearer token) or session cookie.
  * Returns the list of team IDs the caller belongs to.
  */
-async function authenticateAndGetTeamIds(req: NextRequest): Promise<{ teamIds: string[]; accountId?: string } | null> {
+async function authenticateAndGetTeamIds(req: NextRequest): Promise<SecretsCaller | null> {
   // Try API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -82,7 +101,7 @@ async function authenticateAndGetTeamIds(req: NextRequest): Promise<{ teamIds: s
       where: eq(accounts.apiKey, hashApiKey(apiKey)),
     });
     if (account) {
-      return { teamIds: [account.teamId], accountId: account.id };
+      return { teamIds: [account.teamId], accountId: account.id, accountLevel: account.level };
     }
   }
 
@@ -94,7 +113,7 @@ async function authenticateAndGetTeamIds(req: NextRequest): Promise<{ teamIds: s
   const user = await getCurrentUser();
   if (user) {
     const teamIds = await getUserTeamIds(user.id);
-    return { teamIds };
+    return { teamIds, userId: user.id };
   }
 
   return null;
@@ -112,6 +131,18 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const { value, purpose, label, accountId, workspaceId, teamId } = body;
+
+  // This route stores team-owned credentials only. Connector and MCP credential
+  // lookups resolve rows with no user (packages/core/secrets/team-scope.ts), so a
+  // personal row here is never created: personal keys go through their own route.
+  if (body.userId != null) {
+    return NextResponse.json(
+      { error: purpose === 'inference_key'
+        ? 'Personal inference keys are managed at /api/inference-keys'
+        : `A personal secret is not supported for purpose ${purpose}` },
+      { status: 400 },
+    );
+  }
 
   if (!value || !purpose) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
@@ -148,6 +179,9 @@ export async function POST(req: NextRequest) {
   const targetTeamId = teamId || auth.teamIds[0];
   if (!auth.teamIds.includes(targetTeamId)) {
     return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+  }
+  if (TEAM_MODEL_KEY_PURPOSES.has(purpose) && !(await mayManageTeamModelKeys(auth, targetTeamId))) {
+    return NextResponse.json({ error: TEAM_MODEL_KEY_ADMIN_ONLY }, { status: 403 });
   }
 
   try {
@@ -231,7 +265,11 @@ export async function DELETE(req: NextRequest) {
     const provider = getSecretsProvider();
     for (const teamId of auth.teamIds) {
       const teamSecrets = await provider.list(teamId);
-      if (teamSecrets.some(s => s.id === id)) {
+      const target = teamSecrets.find(s => s.id === id);
+      if (target) {
+        if (TEAM_MODEL_KEY_PURPOSES.has(target.purpose) && !(await mayManageTeamModelKeys(auth, teamId))) {
+          return NextResponse.json({ error: TEAM_MODEL_KEY_ADMIN_ONLY }, { status: 403 });
+        }
         await provider.delete(id);
         return NextResponse.json({ success: true });
       }

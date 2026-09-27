@@ -10,6 +10,7 @@
  * description never appears twice and never as raw `## …` syntax.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { KeyHintsOnly } from '@/components/KeyHints';
 import MarkdownContent from '@/components/MarkdownContent';
 
 /** Longer than this (or more lines than {@link DESCRIPTION_PREVIEW_LINES}) collapses. */
@@ -152,7 +153,7 @@ export default function MissionDescription({
           >
             Cancel
           </button>
-          <span className="hidden font-mono text-[11px] md:text-[10px] text-text-muted md:inline">Markdown · ⌘↵ to save</span>
+          <span className="hidden font-mono text-[11px] md:text-[10px] text-text-muted md:inline">Markdown<KeyHintsOnly> · ⌘↵ to save</KeyHintsOnly></span>
         </div>
       </div>
     );

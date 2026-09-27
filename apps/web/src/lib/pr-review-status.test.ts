@@ -130,6 +130,38 @@ describe('derivePrReviewStatus — review progress', () => {
     }
   });
 
+  it('surfaces the reviewer worker\'s own error as failureReason on review_failed', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({ status: 'failed' }),
+      reviewerWorker: { error: 'Claude API rate limited after 40 turns', exitCause: 'infra_failure' },
+    });
+    expect(status.state).toBe('review_failed');
+    expect(status.failureReason).toBe('Claude API rate limited after 40 turns');
+  });
+
+  it('falls back to a human label from exitCause when there is no free-text error', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({ status: 'failed' }),
+      reviewerWorker: { error: null, exitCause: 'never_started' },
+    });
+    expect(status.failureReason).toBe('the review worker never started');
+  });
+
+  it('leaves failureReason null when there is no reviewer worker to explain the failure', () => {
+    const status = derivePrReviewStatus({ reviewTask: reviewTask({ status: 'failed' }) });
+    expect(status.state).toBe('review_failed');
+    expect(status.failureReason).toBeNull();
+  });
+
+  it('leaves failureReason null for every non-review_failed state', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({ status: 'completed', result: verdictResult('approve') }),
+      reviewerWorker: { error: 'should never surface here' },
+    });
+    expect(status.state).toBe('approved');
+    expect(status.failureReason).toBeNull();
+  });
+
   // A verdict that landed is a verdict, whatever happened to the task after
   // it. Reading it as review_failed turns a request-changes into a PASS at
   // every merge door (blockKindFor does not block review_failed).

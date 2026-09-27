@@ -158,7 +158,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
     return (
       <div
         ref={containerRef}
-        className="border-l-2 border-status-success bg-status-success/5 rounded-r-[10px] px-4 py-2 transition-all duration-200 ease-out overflow-hidden"
+        className="border-l-2 border-status-success bg-status-success/5 px-4 py-2 transition-all duration-200 ease-out overflow-hidden"
         style={{ maxHeight: collapsed ? '40px' : '200px' }}
       >
         <div className="flex items-center gap-2 text-[12px]">
@@ -203,7 +203,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
 
     return (
       <div
-        className="border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-2 transition-all duration-200 ease-out overflow-hidden"
+        className="border-l-2 border-status-warning bg-status-warning/5 px-4 py-2 transition-all duration-200 ease-out overflow-hidden"
         style={{ maxHeight: collapsed ? '40px' : '200px' }}
       >
         {blockedTasksHref ? (
@@ -219,7 +219,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
 
   // Full card (open or null lifecycle — stays visible)
   return (
-    <div className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
+    <div className="border-l-2 border-primary bg-primary/5 px-4 py-3">
       {/* Header row: chip label + task title + timestamp always visible */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">

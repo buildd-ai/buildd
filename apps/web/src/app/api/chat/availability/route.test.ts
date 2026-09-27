@@ -8,7 +8,7 @@ mock.module('@/lib/chat/session', () => ({
 }));
 // One availability source: the route reads the same answer as the pages.
 mock.module('@/lib/chat-availability', () => ({
-  getChatAvailability: async (...args: any[]) => { seen.push(args); return { available: false, reason: 'capability_disabled', canManageTeamKeys: true }; },
+  getChatAvailability: async (...args: any[]) => { seen.push(args); return { available: false, reason: 'no_key', canManageTeamKeys: true }; },
 }));
 
 const { GET } = await import('./route');
@@ -16,7 +16,7 @@ const { GET } = await import('./route');
 describe('GET /api/chat/availability', () => {
   it('reports availability for the caller in their team', async () => {
     const res = await GET(new NextRequest('http://localhost/api/chat/availability'));
-    expect(await res.json()).toEqual({ available: false, reason: 'capability_disabled', canManageTeamKeys: true });
+    expect(await res.json()).toEqual({ available: false, reason: 'no_key', canManageTeamKeys: true });
     expect(seen[0]).toEqual(['u-1', 't-1']);
   });
 

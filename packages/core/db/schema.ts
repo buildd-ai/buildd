@@ -64,7 +64,7 @@ export const teams = pgTable('teams', {
   criteriaEvaluationStrategy: text('criteria_evaluation_strategy').$type<'inline' | 'worker' | null>(),
 
   // DEPRECATED — nothing reads or writes this. It was the opt-in allowlist of
-  // inference call sites; replaced by chatDisabled (interactive), built-in
+  // inference call sites; replaced by always-on chat (interactive), built-in
   // decision calls (always on when a key resolves) and inferenceFeatureModes.
   // Drop in a follow-up release (schema-change skill).
   enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
@@ -88,8 +88,10 @@ export const teams = pgTable('teams', {
   // 'own' = each person's own key, no team fallback — team work with no person
   // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
-  // Chat is on whenever a key resolves; an admin can switch it off for the team.
-  // Replaces the opt-in `chat` entry in enabledInferenceCapabilities.
+  // DEPRECATED — nothing reads or writes this. It was the admin kill switch for
+  // chat; chat is now always on and runs whenever a key resolves. Drop in a
+  // follow-up release, after the build that stopped reading it is live
+  // (schema-change skill).
   chatDisabled: boolean('chat_disabled').notNull().default(false),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
@@ -125,6 +127,10 @@ export const users = pgTable('users', {
   // never asked for. The zone THIS person sees their own dashboard in; falls back to the
   // team zone, then UTC.
   timezone: text('timezone'),
+  // Keycap-style shortcut hints (1/2/3, Esc, the chat shortcut). Off by default:
+  // the shortcuts always work, the chips only show for people who ask for them
+  // (Settings -> Profile).
+  showKeyboardHints: boolean('show_keyboard_hints').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

@@ -50,6 +50,15 @@ export interface PrReviewStatus {
   summary: string | null;
   feedback: string | null;
   escalationReason: string | null;
+  /**
+   * Why the review never produced a verdict, when `state === 'review_failed'`.
+   * Sourced from the review task's own worker (its `error`/`exitCause`), which
+   * is the only place that reason lives — `result`/`context` are empty for a
+   * session that crashed before completing. Null for every other state, and
+   * null even for `review_failed` if the worker row itself is gone or has no
+   * recorded error (an old pre-migration row, for instance).
+   */
+  failureReason: string | null;
   /** Request-changes retry position, from the reviewer task context. */
   iteration: number | null;
   maxIterations: number | null;
@@ -83,10 +92,27 @@ interface DeriveInput {
     prLifecycleStatus?: string | null;
     mergedAt?: Date | null;
   } | null;
+  /** The review task's own worker — distinct from `worker` above (the PR owner). */
+  reviewerWorker?: {
+    error?: string | null;
+    exitCause?: string | null;
+  } | null;
   /** Whether the effective merge policy would have buildd merge on approval. */
   autoMergeExpected?: boolean;
   waitFor?: PrReviewWaitFor;
 }
+
+/** Human-readable fallback when the reviewer worker has an exitCause but no free-text error. */
+const EXIT_CAUSE_LABEL: Record<string, string> = {
+  never_started: 'the review worker never started',
+  infra_failure: 'the review worker hit an infrastructure failure',
+  budget_limited: 'the review worker ran out of budget before producing a verdict',
+  silent_start: 'the review worker started but produced no output',
+  reassigned: 'the review worker was reassigned before finishing',
+  sandbox_mount_gap: 'the review worker could not mount its sandbox',
+  server_refused: 'the server refused the review worker',
+  task_cancelled: 'the review task was cancelled before a verdict was produced',
+};
 
 const VERDICT_STATE: Record<PrReviewVerdict, PrReviewState> = {
   approve: 'approved',
@@ -113,7 +139,7 @@ function stringOrNull(value: unknown): string | null {
  * mapping serves the read action, the long-poll loop, and the callback payload.
  */
 export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
-  const { reviewTask, worker, autoMergeExpected = true, waitFor = 'verdict' } = input;
+  const { reviewTask, worker, reviewerWorker, autoMergeExpected = true, waitFor = 'verdict' } = input;
 
   const lifecycle = worker?.prLifecycleStatus ?? null;
   const merged = lifecycle === 'merged' || Boolean(worker?.mergedAt);
@@ -160,6 +186,11 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     state = 'reviewing';
   }
 
+  const failureReason = state === 'review_failed'
+    ? stringOrNull(reviewerWorker?.error)
+      ?? (reviewerWorker?.exitCause ? EXIT_CAUSE_LABEL[reviewerWorker.exitCause] ?? null : null)
+    : null;
+
   const verdictReached =
     state === 'approved' || state === 'changes_requested' || state === 'escalated' || state === 'review_failed';
   const prSettled = prState === 'merged' || prState === 'closed';
@@ -185,6 +216,7 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     feedback: stringOrNull(output.feedback),
     escalationReason:
       stringOrNull(result.effectiveVerdictReason) ?? stringOrNull(output.escalationReason),
+    failureReason,
     iteration: numberOrNull(ctx.iteration),
     maxIterations: numberOrNull(ctx.maxIterations),
     reviewHeadSha: stringOrNull(ctx.headSha),

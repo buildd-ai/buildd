@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.234.0",
+  "version": "0.235.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -42,6 +42,7 @@
     "./runner-health": "./runner-health.ts",
     "./cbm-health": "./cbm-health.ts",
     "./secrets": "./secrets/index.ts",
+    "./secrets/team-scope": "./secrets/team-scope.ts",
     "./memory-store": "./memory-store.ts",
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",

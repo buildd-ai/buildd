@@ -104,7 +104,7 @@ export default function RunnersPage() {
             </div>
 
             {/* Runner cards */}
-            <div className="border border-border-default rounded-[10px] divide-y divide-border-default">
+            <div className="border border-border-default divide-y divide-border-default">
               {runners.map((runner) => {
                 const typeInfo = TYPE_LABELS[runner.accountType] || TYPE_LABELS.user;
                 return (

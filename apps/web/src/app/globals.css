@@ -143,6 +143,12 @@ body {
 }
 ::selection { background: var(--accent); color: #fff; }
 
+/* Native checkboxes and radios take the one accent, not the browser's blue. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
 /* Brutalist form controls — one 2px ink border everywhere, matching .card.
    Ties editor/form pages to the dashboard (single border language). */
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
@@ -153,7 +159,8 @@ select {
 }
 
 /* The text field inside a brand Combobox: the wrapper draws the border. */
-input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea[data-bare-input] {
   border: 0 !important;
 }
 
@@ -599,4 +606,51 @@ input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="ran
   .fleet-hatch-future { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 1px, transparent 1px 7px); }
   .fleet-hatch-accent { background-image: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 4px); }
   .fleet-hatch-ok { background-image: repeating-linear-gradient(90deg, var(--fleet-ok-soft) 0 3px, transparent 3px 5px); }
+}
+
+/* ── Chat canvas (docs/design/chat-canvas.md). Two materials, one rule: the
+ * conversation is soft (Plex Sans, gentle tints, rounded bubbles, no frames)
+ * and fleet objects inside it (a mission, an approval, a question, a task)
+ * stay hard and square. Orange still means action or live, never decoration:
+ * here it is the send button and the scan line while a turn streams. */
+:root, [data-theme="dark"] {
+  --canvas-bg: #1f1d1a;
+  --convo-me: rgba(255, 245, 230, 0.075);
+  --convo-soft: rgba(255, 245, 230, 0.045);
+  --convo-line: rgba(255, 245, 230, 0.09);
+  --canvas-lift: 10px 10px 0 0 rgba(0, 0, 0, 0.55);
+  --canvas-dim: rgba(12, 10, 9, 0.62);
+}
+[data-theme="light"] {
+  --canvas-bg: #f7f3ed;
+  --convo-me: rgba(26, 21, 18, 0.065);
+  --convo-soft: rgba(26, 21, 18, 0.04);
+  --convo-line: rgba(26, 21, 18, 0.12);
+  --canvas-lift: 10px 10px 0 0 #1a1512;
+  --canvas-dim: rgba(231, 227, 219, 0.74);
+}
+@layer components {
+  .font-convo { font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  /* A turn is streaming: an orange segment scans the canvas's top edge. */
+  .canvas-scan { position: absolute; inset: 0 0 auto 0; height: 3px; overflow: hidden; pointer-events: none; }
+  .canvas-scan::after {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 22%; left: -22%;
+    background: var(--accent);
+    animation: canvas-scan 1.8s cubic-bezier(.6, 0, .4, 1) infinite alternate;
+  }
+}
+@keyframes canvas-rise {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@layer components {
+  .canvas-rise { animation: canvas-rise 180ms cubic-bezier(.2, .8, .2, 1); }
+}
+@keyframes canvas-scan {
+  from { left: -22%; }
+  to { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-scan::after { animation: none; left: 0; width: 100%; opacity: .7; }
+  .canvas-rise { animation: none; }
 }

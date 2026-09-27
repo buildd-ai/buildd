@@ -76,6 +76,7 @@ import ProviderOnboardingCard from '@/components/onboarding/ProviderOnboardingCa
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 // --- Helpers ---
 
@@ -1505,10 +1506,7 @@ export default async function HomePage({
         // "expiring soon": the refresh sweep renews those (connector-status.ts).
         if (initiativeTeamIds.length > 0) {
           const credentialRows = await db.query.secrets.findMany({
-            where: and(
-              inArray(secrets.teamId, initiativeTeamIds),
-              eq(secrets.purpose, 'mcp_connector_credential'),
-            ),
+            where: teamCredentialWhere({ teamId: initiativeTeamIds, purpose: 'mcp_connector_credential' }),
             columns: {
               label: true,
               tokenExpiresAt: true,
@@ -1917,20 +1915,20 @@ export default async function HomePage({
                 <div className="mb-8">
                   <div className="section-label mb-4">Right Now</div>
                   {rightNow === 'create-workspace' ? (
-                <div className="border border-dashed border-border-default rounded-[10px] p-5">
+                <div className="border border-dashed border-border-default p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
                     This team has no workspace. Connect a GitHub repo to run agents.
                   </p>
                   <Link
                     href="/app/workspaces/new"
-                    className="inline-flex items-center gap-1.5 rounded-[6px] bg-primary px-3 py-2 text-[13px] font-medium text-white hover:opacity-90 transition-opacity"
+                    className="inline-flex items-center gap-1.5 bg-primary px-3 py-2 text-[13px] font-medium text-white hover:opacity-90 transition-opacity"
                   >
                     Connect a repo
                   </Link>
                 </div>
               ) : rightNow === 'get-started' ? (
-                <div className="border border-dashed border-border-default rounded-[10px] p-5">
+                <div className="border border-dashed border-border-default p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
                   <div className="space-y-3">
                     <div className="flex items-start gap-3">
@@ -1939,7 +1937,7 @@ export default async function HomePage({
                       </div>
                       <div className="min-w-0">
                         <div className="text-[13px] text-text-primary">Install the CLI</div>
-                        <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
+                        <div className="mt-1.5 px-3 py-2 bg-surface-3 font-mono text-[11px] text-text-secondary overflow-x-auto">
                           curl -fsSL https://buildd.dev/install.sh | bash
                         </div>
                       </div>
@@ -1950,7 +1948,7 @@ export default async function HomePage({
                       </div>
                       <div className="min-w-0">
                         <div className="text-[13px] text-text-primary">Log in &amp; connect</div>
-                        <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
+                        <div className="mt-1.5 px-3 py-2 bg-surface-3 font-mono text-[11px] text-text-secondary overflow-x-auto">
                           buildd login
                         </div>
                       </div>
@@ -1964,7 +1962,7 @@ export default async function HomePage({
                           <NewWorkLink kind="task" className="text-accent-text hover:underline">Create a task</NewWorkLink>
                           {' '}or start the runner
                         </div>
-                        <div className="mt-1.5 px-3 py-2 bg-surface-3 rounded-[6px] font-mono text-[11px] text-text-secondary overflow-x-auto">
+                        <div className="mt-1.5 px-3 py-2 bg-surface-3 font-mono text-[11px] text-text-secondary overflow-x-auto">
                           buildd
                         </div>
                       </div>
@@ -1985,7 +1983,7 @@ export default async function HomePage({
             {agentReviewingPrs.map((item) => (
               <div
                 key={item.reviewerWorkerId}
-                className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+                className="border border-border-default px-4 py-3 bg-surface-2"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
@@ -2033,7 +2031,7 @@ export default async function HomePage({
             {reviewQueuedPrs.map((item) => (
               <div
                 key={item.taskId}
-                className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+                className="border border-border-default px-4 py-3 bg-surface-2"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 mb-0.5 flex-wrap">
@@ -2088,7 +2086,7 @@ export default async function HomePage({
                     <Link
                       key={s.scheduleId}
                       href={`/app/workspaces/${s.workspaceId}/schedules`}
-                      className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
+                      className="block border-l-2 border-status-warning bg-status-warning/5 px-4 py-3 hover:bg-status-warning/10 transition-colors"
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">SUGGEST</span>

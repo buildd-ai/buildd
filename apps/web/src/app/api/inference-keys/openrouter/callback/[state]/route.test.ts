@@ -13,7 +13,7 @@ mock.module('@/lib/team-access', () => ({
   getUserAdminTeamIds: async () => adminTeams,
 }));
 mock.module('@/lib/provider-keys', () => ({
-  loadTeamKeySettings: async () => ({ keyPolicy: policy, chatDisabled: false }),
+  loadTeamKeySettings: async () => ({ keyPolicy: policy }),
   setProviderKey: async (input: any) => { stored.push(input); return { ok: true, key: {} }; },
 }));
 

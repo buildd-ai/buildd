@@ -6,6 +6,10 @@
  * approval id back; the server checks the id, the input hash and the approver.
  * Once decided the card folds to its tool row, and the filed object renders
  * live right under it.
+ *
+ * An approval is a fleet object, so it stays hard and square inside the soft
+ * conversation (docs/design/chat-canvas.md): an ink frame with an orange top
+ * edge for "needs you", and plain buttons. No keycaps: nothing here has a key.
  */
 import { useState } from 'react';
 import type { ChatToolPart } from './chat-contract';
@@ -29,7 +33,7 @@ function DraftSummary({ draft }: { draft: ApprovalDraft }) {
       <h3 data-testid="approval-draft-title" className="font-mono text-[17px] md:text-[20px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
         {draft.title}
       </h3>
-      {draft.goal && <p className="mt-1.5 line-clamp-2 md:line-clamp-none font-[family-name:var(--font-outfit)] text-[14.5px] md:text-[15px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">{draft.goal}</p>}
+      {draft.goal && <p className="mt-1.5 line-clamp-2 md:line-clamp-none font-convo text-[14.5px] md:text-[15px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">{draft.goal}</p>}
     </>
   );
 }
@@ -69,7 +73,7 @@ function PreviewDetails({ draft }: { draft: Extract<ApprovalDraft, { kind: 'prev
           </li>
         ))}
       </ul>
-      {draft.note && <p data-testid="approval-note" className="mt-2 font-[family-name:var(--font-outfit)] text-[13.5px] text-text-secondary">{draft.note}</p>}
+      {draft.note && <p data-testid="approval-note" className="mt-2 font-convo text-[13.5px] text-text-secondary">{draft.note}</p>}
     </div>
   );
 }
@@ -145,7 +149,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   }
   if (part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) {
     return (
-      <div data-testid="approval-card" data-state="denied" className="border-[1.5px] border-dashed border-border-default px-3 py-2 font-mono text-[12.5px] text-text-muted">
+      <div data-testid="approval-card" data-state="denied" className="rounded-[12px] bg-[var(--convo-soft)] px-3.5 py-2 font-mono text-[12.5px] text-text-muted">
         <span className="font-semibold text-text-secondary">{verb}</span>
         {draft.kind === 'preview' ? ' · discarded · nothing changed' : ' · discarded · nothing filed'}
       </div>
@@ -164,14 +168,14 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
       data-testid="approval-card"
       data-state={deciding ? 'deciding' : 'awaiting'}
       data-approval-id={approvalId ?? undefined}
-      className="border-2 border-dashed border-accent bg-card shadow-[var(--accent-shadow)]"
+      className="border-2 border-t-[4px] border-border-strong border-t-accent bg-card"
     >
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border-default px-4 py-2.5 md:px-5 md:py-3">
-        <span className="bg-accent px-2 py-0.5 font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-[var(--on-accent)]">
-          {deciding ? 'Confirmed' : 'Needs approval'}
+        <span data-testid="approval-eyebrow" className="font-mono text-[11px] font-bold uppercase tracking-[1.8px] text-accent-text">
+          <span aria-hidden="true">◆ </span>{deciding ? 'Confirmed' : 'Needs your OK'}
         </span>
         <span className="font-mono text-[13px] font-semibold text-text-primary">{verb}</span>
-        <span className="hidden border-[1.5px] border-border-strong px-1.5 py-px font-mono text-[11px] text-text-secondary md:inline">
+        <span className="hidden font-mono text-[11px] text-text-muted md:inline">
           {deciding ? (sent === 'deny' ? 'discarding…' : isChange ? 'applying…' : 'filing…') : isChange ? 'not applied' : 'not filed'}
         </span>
         {wsName && <span className="ml-auto font-mono text-[12px] text-text-muted">{wsName}</span>}
@@ -215,13 +219,13 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           </label>
         )}
       </div>
-      <footer className="flex flex-nowrap items-center gap-2 border-t border-border-default px-4 py-2.5 md:gap-2.5 md:px-5 md:py-3">
+      <footer className="flex flex-nowrap items-center gap-2 px-4 pb-4 pt-1 md:gap-2.5 md:px-5">
         <button
           type="button"
           data-testid="approval-confirm"
           disabled={deciding || !approvalId || !typedOk}
           onClick={() => { if (!approvalId) return; setSent('confirm'); actions.respondToApproval(approvalId, true, confirmText ? typed.trim() : undefined); }}
-          className="min-h-11 border-2 border-[var(--on-accent)] shrink-0 whitespace-nowrap bg-accent px-3 md:px-5 font-mono text-[13px] md:text-[13.5px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover disabled:opacity-60"
+          className="min-h-11 shrink-0 whitespace-nowrap border-2 border-[var(--on-accent)] bg-accent px-4 md:px-5 font-convo text-[14px] font-semibold text-[var(--on-accent)] hover:bg-primary-hover disabled:opacity-60"
         >
           {sent === 'confirm' ? (isChange ? 'Applying…' : 'Filing…') : confirmLabel}
         </button>
@@ -230,7 +234,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           data-testid="approval-edit"
           disabled={deciding}
           onClick={() => actions.prefillComposer(isMission ? `Change the draft "${(draft as { title: string }).title}": ` : 'Change it: ')}
-          className="min-h-11 border-2 border-border-strong shrink-0 bg-surface-3 px-2.5 md:px-4 font-mono text-[13px] md:text-[13.5px] font-medium text-text-primary hover:bg-surface-4 disabled:opacity-60"
+          className="min-h-11 shrink-0 border-[1.5px] border-border-strong bg-transparent px-3.5 md:px-4 font-convo text-[14px] font-medium text-text-primary hover:bg-surface-3 disabled:opacity-60"
         >
           Edit
         </button>
@@ -239,7 +243,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
           data-testid="approval-deny"
           disabled={deciding || !approvalId}
           onClick={() => { if (!approvalId) return; setSent('deny'); actions.respondToApproval(approvalId, false, 'Discarded by the user'); }}
-          className="min-h-11 shrink-0 px-1.5 md:px-3 font-mono text-[13px] md:text-[13.5px] font-medium text-text-secondary hover:text-text-primary disabled:opacity-60"
+          className="min-h-11 shrink-0 px-2 md:px-3 font-convo text-[14px] font-medium text-text-secondary hover:text-text-primary disabled:opacity-60"
         >
           Discard
         </button>

@@ -2,7 +2,7 @@
  * ModelFeatures (Settings → AI features), mounted in happy-dom with a stubbed
  * fetch. Fixtures are illustrative.
  *
- * - Interactive has one control: the admin's kill switch (no "enable" step).
+ * - Chat is always on: no interactive switch, no "enable" step.
  * - Built-in decision calls are not listed.
  * - Server-side features show where they run, defaulted by the billing model;
  *   overrides sit behind "Advanced".
@@ -28,7 +28,8 @@ let team: Record<string, unknown> = {};
 const patches: Record<string, unknown>[] = [];
 
 beforeEach(() => {
-  team = { chatDisabled: false, inferenceFeatureModes: null };
+  // The deprecated column still set on the row: nothing on the page reads it.
+  team = { chatDisabled: true, inferenceFeatureModes: null };
   patches.length = 0;
   globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
     if (init?.method === 'PATCH') {
@@ -61,15 +62,11 @@ async function mount(props: { canManage?: boolean; hasTeamKey?: boolean } = {}) 
 const q = (sel: string) => host.querySelector(sel) as HTMLElement | null;
 
 describe('ModelFeatures', () => {
-  it('shows interactive on, with a kill switch and no enable step', async () => {
+  it('has no chat kill switch and no enable step: chat is always on', async () => {
     await mount();
-    const sw = q('[data-testid="interactive-switch"] [role="switch"]')!;
-    expect(sw.getAttribute('aria-checked')).toBe('true');
-    expect(host.textContent).not.toMatch(/turn (on|off) chat|enable/i);
-    await act(async () => { sw.click(); });
-    expect(patches).toEqual([{ chatDisabled: true }]);
-    expect(sw.getAttribute('aria-checked')).toBe('false');
-    expect(q('[data-testid="interactive-switch"]')!.textContent).toContain('Off for the team');
+    expect(q('[data-testid="interactive-switch"]')).toBeNull();
+    expect(host.querySelectorAll('[role="switch"]').length).toBe(0);
+    expect(host.textContent).not.toMatch(/interactive ai|turn (on|off) chat|turn chat (on|off)|off for the team|enable/i);
   });
 
   it('does not list the built-in decision calls, or features with no call site', async () => {

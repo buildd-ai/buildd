@@ -74,6 +74,7 @@ import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -712,16 +713,13 @@ export async function PATCH(
   if (body.event === 'connector_auth_expired' && typeof body.connectorId === 'string') {
     const connectorRow = await db.query.connectors.findFirst({
       where: eq(connectors.id, body.connectorId),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
     });
     if (connectorRow) {
       await db
         .update(secrets)
         .set({ tokenExpiresAt: sql`NOW()`, lastVerificationError: 'mid_task_401', updatedAt: sql`NOW()` })
-        .where(and(
-          eq(secrets.label, body.connectorId),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-        ));
+        .where(teamCredentialWhere({ teamId: connectorRow.teamId, purpose: 'mcp_connector_credential', label: body.connectorId }));
       void triggerEvent(
         channels.workspace(worker.workspaceId),
         events.WORKER_CONNECTOR_AUTH_EXPIRED,
@@ -737,16 +735,13 @@ export async function PATCH(
   if (body.event === 'connector_permission_insufficient' && typeof body.connectorId === 'string') {
     const connectorRow = await db.query.connectors.findFirst({
       where: eq(connectors.id, body.connectorId),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
     });
     if (connectorRow) {
       await db
         .update(secrets)
         .set({ lastVerificationError: 'mid_task_403_permission', updatedAt: sql`NOW()` })
-        .where(and(
-          eq(secrets.label, body.connectorId),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-        ));
+        .where(teamCredentialWhere({ teamId: connectorRow.teamId, purpose: 'mcp_connector_credential', label: body.connectorId }));
       void triggerEvent(
         channels.workspace(worker.workspaceId),
         events.WORKER_CONNECTOR_PERMISSION_INSUFFICIENT,
@@ -1429,11 +1424,18 @@ export async function PATCH(
         return NextResponse.json({ ...autoDetectRefusal, gate: GATE_SLUGS.MISSION_BASE_ADOPTION, frictionSignature }, { status: 400 });
       }
 
-      // pr_required fallback: a task scoped as "rebase/merge PR #N" can lose
-      // its race — the referenced PR merges via a concurrent path before this
-      // worker acts, leaving no new diff to open a PR for. Rather than force
-      // a fresh, empty PR just to satisfy the gate, accept the referenced PR
-      // if it's already merged: DONE = MERGED regardless of who merged it.
+      // pr_required fallback: a task scoped as "rebase/fix PR #N" doesn't own a
+      // branch of its own — the worker pushes straight to PR #N's existing
+      // branch, which the auto-detect above never sees because it only looks
+      // up PRs whose head is `worker.branch`. Accept the referenced PR two
+      // ways instead of demanding a fresh, empty PR:
+      //   1. it's already merged — DONE = MERGED regardless of who merged it
+      //      (handles the worker losing a race to a concurrent merge).
+      //   2. it's still open, but its head SHA matches the last commit this
+      //      worker reported — proof the worker's own push IS the PR's
+      //      current state, not just that the task text happens to mention a
+      //      number. A merge/review verdict can land after this worker's
+      //      session ends, so completion can't wait for `merged` here.
       if (outputReq === 'pr_required' && !hasPR && repoWithInstallation) {
         const referencedText = `${terminalTaskRow[0]?.title ?? ''} ${terminalTaskRow[0]?.description ?? ''}`;
         const referencedPrNumbers = [...new Set(
@@ -1446,7 +1448,11 @@ export async function PATCH(
               repoWithInstallation.installation.installationId,
               `/repos/${repoWithInstallation.fullName}/pulls/${prNumber}`,
             );
-            if (pr?.merged) {
+            const effectiveLastCommitSha = lastCommitSha ?? worker.lastCommitSha;
+            const headShaMatch = Boolean(
+              effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
+            );
+            if (pr?.merged || headShaMatch) {
               await db.update(workers).set({
                 prUrl: pr.html_url,
                 prNumber: pr.number,

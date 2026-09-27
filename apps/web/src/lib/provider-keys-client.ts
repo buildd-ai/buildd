@@ -83,7 +83,6 @@ export interface ProviderKeysView {
   providers: ProviderCard[];
   /** Whose key a person's chat turn spends. */
   keyPolicy: KeyPolicy;
-  chatDisabled: boolean;
 }
 
 const SOURCE_NOTE: Record<string, string> = {
@@ -116,7 +115,7 @@ export function toKeyStatus(k: MaskedProviderKey | null | undefined): ProviderKe
  * malformed body reads as "nothing configured" rather than throwing.
  */
 export function normalizeProviderKeys(body: unknown): ProviderKeysView {
-  const b = (body ?? {}) as { canManageTeamKeys?: unknown; providers?: unknown; keyPolicy?: unknown; chatDisabled?: unknown };
+  const b = (body ?? {}) as { canManageTeamKeys?: unknown; providers?: unknown; keyPolicy?: unknown };
   const list = Array.isArray(b.providers) ? (b.providers as Record<string, unknown>[]) : [];
   const byProvider = new Map<ChatProvider, ProviderCard>();
   for (const p of list) {
@@ -132,7 +131,6 @@ export function normalizeProviderKeys(body: unknown): ProviderKeysView {
     canManageTeamKeys: b.canManageTeamKeys === true,
     providers: CHAT_PROVIDER_INFO.map(({ id: provider }) => byProvider.get(provider) ?? { provider, team: null, mine: null, membersWithOwnKey: null }),
     keyPolicy: isKeyPolicy(b.keyPolicy) ? b.keyPolicy : 'team',
-    chatDisabled: b.chatDisabled === true,
   };
 }
 

@@ -10,7 +10,7 @@ const calls: any[] = [];
 let modelOk = false;
 
 mock.module('@buildd/core/db', () => ({
-  db: { query: { teams: { findFirst: async () => ({ chatDisabled: false, inferenceKeyPolicy: 'team' }) } } },
+  db: { query: { teams: { findFirst: async () => ({ chatDisabled: true, inferenceKeyPolicy: 'team' }) } } },
 }));
 mock.module('@/lib/team-access', () => ({ getUserTeamRole: async () => 'admin' }));
 mock.module('@/lib/chat/models', () => ({
@@ -21,6 +21,7 @@ const { computeChatAvailability } = await import('./chat-availability');
 const { FALLBACK_TIER } = await import('./chat/routing');
 
 describe('computeChatAvailability default deps', () => {
+  // The team row still carries the deprecated chat_disabled = true: it must not matter.
   it('asks resolveChatModel for the fallback tier, for this person', async () => {
     expect(await computeChatAvailability('u-1', 't-1')).toMatchObject({ available: false, reason: 'no_key', canManageTeamKeys: true });
     expect(calls[0]).toEqual({ tier: FALLBACK_TIER, teamId: 't-1', workspaceId: null, userId: 'u-1' });

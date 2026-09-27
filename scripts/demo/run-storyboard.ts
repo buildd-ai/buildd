@@ -11,6 +11,7 @@
  *   viewport: { width: 1440, height: 900, scale: 2 }   # the "desktop" viewport
  *   viewports: { phone: { width: 390, height: 844, scale: 3 } }   # optional; phone is built in
  *   themes: [dark, light]
+ *   as: u_member                          # optional: sign in as this story user (default: the first); env DEMO_AS overrides
  *   highlight: [goal-band, board-tile]  # optional: boxes recorded on EVERY shot where present (silent when absent)
  *   steps:
  *     - id: mission-mid-flight
@@ -44,7 +45,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -69,6 +70,7 @@ type Storyboard = {
   viewport?: ViewportSpec;
   viewports?: Record<string, ViewportSpec>;
   themes?: Array<'dark' | 'light'>;
+  as?: string;
   highlight?: string[];
   steps: Step[];
 };
@@ -126,8 +128,8 @@ async function main() {
     await seedStory(db, story, storyName, storyAbs);
   }
   let state: DemoState = await loadState(db);
-  const userKey = story.users?.[0]?.key;
-  const token = await mintSessionToken({ id: state.ids[userKey], email: story.users[0].email, name: story.users[0].name });
+  const user = loginUser(story.users, process.env.DEMO_AS ?? board.as);
+  const token = await mintSessionToken({ id: state.ids[user.key], email: user.email, name: user.name });
   const teamId = state.ids[story.team.key];
 
   const browser: Browser = await chromium.launch({ headless: true });

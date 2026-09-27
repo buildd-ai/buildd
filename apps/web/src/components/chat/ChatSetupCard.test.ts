@@ -8,8 +8,19 @@ describe('chatSetupCopy', () => {
     expect(c.cta).toEqual({ href: '/app/settings/providers', label: 'Connect a provider' });
   });
 
-  it('admin, switched off: turn it back on in AI features', () => {
-    expect(chatSetupCopy('capability_disabled', true).cta).toEqual({ href: '/app/settings/ai', label: 'Turn chat on' });
+  it('owner or admin under the own-key policy: add your own key too', () => {
+    expect(chatSetupCopy('no_key', true, 'own').cta?.href).toBe('/app/settings/account');
+  });
+
+  it('never offers an enable step: chat is always on', () => {
+    for (const admin of [true, false]) {
+      for (const policy of ['team', 'team_or_own', 'own'] as const) {
+        const c = chatSetupCopy('no_key', admin, policy);
+        const all = `${c.title} ${c.body} ${c.cta?.label ?? ''} ${c.secondary?.label ?? ''}`;
+        expect(all).not.toMatch(/turn (chat )?on|turn on chat|switched (it )?off|chat is off/i);
+        expect(c.cta?.href).not.toBe('/app/settings/ai');
+      }
+    }
   });
 
   it('member, team key policy: who to ask, no settings trip', () => {
@@ -25,11 +36,9 @@ describe('chatSetupCopy', () => {
   });
 
   it('no em dashes', () => {
-    for (const r of ['no_key', 'capability_disabled'] as const) {
-      for (const admin of [true, false]) {
-        const c = chatSetupCopy(r, admin);
-        expect(`${c.title} ${c.body}`).not.toContain('—');
-      }
+    for (const admin of [true, false]) {
+      const c = chatSetupCopy('no_key', admin);
+      expect(`${c.title} ${c.body}`).not.toContain('—');
     }
   });
 });

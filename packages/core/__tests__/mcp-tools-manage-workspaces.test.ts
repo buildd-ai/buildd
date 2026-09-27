@@ -136,3 +136,24 @@ describe('manage_workspaces — hand-written merge-policy paths removed', () => 
     expect(result.content[0].text).not.toMatch(REMOVED);
   });
 });
+
+describe('manage_workspaces update — team changes go through the checked move', () => {
+  // A workspace changes team only through the checked move; update must not
+  // silently drop a teamId either, or the caller believes the move happened.
+  for (const teamId of ['team-2', null]) {
+    it(`refuses teamId=${JSON.stringify(teamId)} without calling the API and names the move endpoint`, async () => {
+      const api = mock();
+      await expect(
+        handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'update', workspaceId: WORKSPACE_ID, name: 'x', teamId }, createContext()),
+      ).rejects.toThrow(/migrate\/precheck/);
+      expect(api).not.toHaveBeenCalled();
+    });
+  }
+
+  it('update without teamId never sends one', async () => {
+    const api = mock(async () => ({}));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'update', workspaceId: WORKSPACE_ID, name: 'x' }, createContext());
+    expect(api).toHaveBeenCalledTimes(1);
+    expect('teamId' in JSON.parse((api.mock.calls[0] as any)[1].body)).toBe(false);
+  });
+});

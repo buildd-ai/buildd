@@ -113,9 +113,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
   return (
     <SettingsSection title="Timezone">
       <p className="text-sm text-text-secondary">
-        buildd uses this zone for timestamps in the activity comment it posts on your pull requests,
-        the default zone for new schedules, and mission active hours. Your dashboard follows{' '}
-        <span className="font-mono text-xs">{detected}</span>, detected from this browser.
+        For pull request comments, new schedules and mission active hours.
       </p>
 
       {teams.length > 1 && (
@@ -162,7 +160,8 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
               >
                 {busy ? 'Saving…' : 'Save'}
               </button>
-              {detected !== stored && (
+              {/* When the picker already shows this browser's zone, Save does the same thing. */}
+              {detected !== stored && detected !== draft && (
                 <button onClick={() => save(detected)} disabled={busy} className="btn btn-quiet">
                   Use mine ({detected})
                 </button>

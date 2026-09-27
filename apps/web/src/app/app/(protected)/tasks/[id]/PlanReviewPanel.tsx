@@ -200,7 +200,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
 
       {/* Status message */}
       {message && (
-        <div className={`mb-4 p-3 rounded-[8px] text-sm ${
+        <div className={`mb-4 p-3 text-sm ${
           message.type === 'success'
             ? 'bg-status-success/10 text-status-success border border-status-success/20'
             : 'bg-status-error/10 text-status-error border border-status-error/20'
@@ -212,10 +212,10 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
       {/* Plan steps */}
       <div className="space-y-3 mb-6">
         {plan.map((step, i) => (
-          <div key={step.ref} className="p-4 bg-surface-2 border border-border-default rounded-[10px]">
+          <div key={step.ref} className="p-4 bg-surface-2 border border-border-default">
             <div className="flex items-start gap-3">
               {/* Step number badge */}
-              <span className="flex-shrink-0 w-7 h-7 rounded-[6px] flex items-center justify-center text-[12px] font-mono font-medium bg-primary/10 text-primary">
+              <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-[12px] font-mono font-medium bg-primary/10 text-primary">
                 {i + 1}
               </span>
 
@@ -270,7 +270,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
 
       {/* Reject feedback form */}
       {showRejectForm && (
-        <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-[10px]">
+        <div className="mb-4 p-4 bg-surface-2 border border-border-default">
           <label className="block text-sm text-text-secondary mb-2">
             What should change? (required)
           </label>
@@ -278,7 +278,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             placeholder="Describe the changes you want…"
-            className="w-full px-3 py-2 text-sm bg-surface-1 border border-border-default rounded-[6px] text-text-primary placeholder:text-text-muted resize-y min-h-[80px] focus:outline-none focus:border-primary"
+            className="w-full px-3 py-2 text-sm bg-surface-1 border border-border-default text-text-primary placeholder:text-text-muted resize-y min-h-[80px] focus:outline-none focus:border-primary"
             rows={3}
             disabled={rejecting}
           />
@@ -286,14 +286,14 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
             <button
               onClick={() => { setShowRejectForm(false); setFeedback(''); }}
               disabled={rejecting}
-              className="px-4 py-2 text-sm text-text-secondary hover:bg-surface-3 rounded-[6px]"
+              className="px-4 py-2 text-sm text-text-secondary hover:bg-surface-3"
             >
               Cancel
             </button>
             <button
               onClick={handleReject}
               disabled={rejecting || !feedback.trim()}
-              className="px-4 py-2 text-sm bg-status-error text-white rounded-[6px] hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+              className="px-4 py-2 text-sm bg-status-error text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
             >
               {rejecting && <Spinner size="sm" className="text-white" aria-label="Rejecting" />}
               {rejecting ? 'Rejecting…' : 'Submit Rejection'}
@@ -308,7 +308,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
           <button
             onClick={handleApprove}
             disabled={approving || rejecting}
-            className="px-5 py-2.5 text-sm font-medium bg-status-success text-white rounded-[6px] hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+            className="px-5 py-2.5 text-sm font-medium bg-status-success text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
           >
             {approving && <Spinner size="sm" className="text-white" aria-label="Approving" />}
             {approving ? 'Approving…' : 'Approve Plan'}
@@ -317,7 +317,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
             <button
               onClick={() => setShowRejectForm(true)}
               disabled={approving || rejecting}
-              className="px-5 py-2.5 text-sm font-medium border border-border-default rounded-[6px] hover:bg-surface-3 disabled:opacity-50 text-text-secondary"
+              className="px-5 py-2.5 text-sm font-medium border border-border-default hover:bg-surface-3 disabled:opacity-50 text-text-secondary"
             >
               Reject Plan
             </button>

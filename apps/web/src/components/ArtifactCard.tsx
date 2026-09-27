@@ -133,7 +133,7 @@ export default function ArtifactCard({ artifact, onOpen, footerActions }: Artifa
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onOpen()}
-      className="bg-surface-2 border border-border-default rounded-[10px] cursor-pointer hover:border-border-hover transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
+      className="bg-surface-2 border border-border-default cursor-pointer hover:border-border-hover transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
     >
       {/* Mobile collapsed layout (<640px) */}
       <div className="sm:hidden p-4">

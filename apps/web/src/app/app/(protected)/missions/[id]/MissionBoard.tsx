@@ -154,12 +154,14 @@ export function Band({ model, compact, missionId }: { model: MissionBoardModel; 
       data-testid="mission-band"
       className="mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]"
     >
-      <div data-testid="landed-band" className={`${cell} border-b md:border-b-0 md:border-r`}>
+      {/* Phone: Landed and Goal take a full row each (half width truncates the
+          phase captions and every criterion); Fleet and Needs you pair up. */}
+      <div data-testid="landed-band" className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`}>
         <SectionLabel>Landed</SectionLabel>
         <Big n={model.landed.done} small={`of ${model.landed.total}`} />
         <LandedMeter model={model} variant="band" compact={compact} />
       </div>
-      <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} border-b border-l md:border-b-0 md:border-l-0 md:border-r`} />
+      <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`} />
       <div data-testid="fleet-band" className={`${cell} md:border-r`}>
         <SectionLabel>Fleet</SectionLabel>
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />

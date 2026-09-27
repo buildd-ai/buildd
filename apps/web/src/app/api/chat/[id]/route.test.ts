@@ -18,7 +18,7 @@ mock.module('@/lib/chat/permissions-store', () => ({
 
 mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => ({ caller: { user: { id: 'u-1', name: 'Sam', timezone: null }, teamIds: ['t-1'] } }),
-  loadTeamChatSettings: async () => ({ chatEnabled: true, timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null }),
+  loadTeamChatSettings: async () => ({ timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null }),
   turnUserFor: async () => ({ id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' }),
   workspaceForConversation: async (id: string | null, teamId: string) => (teamId === 't-1' && (id === 'ws-ok' || id === 'ws-sensitive') ? { id, name: id } : null),
   isSensitiveWorkspace: async (id: string) => id === 'ws-sensitive',

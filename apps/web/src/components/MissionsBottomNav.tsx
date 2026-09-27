@@ -7,9 +7,9 @@ import { useEscalation } from './EscalationProvider';
 import { isNavActive } from '@/lib/nav-active';
 import { navItemsFor, type NavContext } from '@/lib/nav-config';
 
-const NO_CHAT: NavContext = { chat: false, audience: 'operator' };
+const OPERATOR_NAV: NavContext = { audience: 'operator' };
 
-export default function MissionsBottomNav({ nav = NO_CHAT }: { nav?: NavContext }) {
+export default function MissionsBottomNav({ nav = OPERATOR_NAV }: { nav?: NavContext }) {
   const pathname = usePathname();
   const { count: needsInputCount } = useNeedsInput();
   const { count: escalationCount } = useEscalation();

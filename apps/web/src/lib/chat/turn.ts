@@ -46,7 +46,7 @@ import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
-import { canSkipCard, contentInContext } from './permissions';
+import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -76,7 +76,6 @@ export interface TurnDeps {
    * one may run without its card while no tool output is in context.
    */
   allowedToolGroups?: ReadonlySet<ToolGroup>;
-  chatEnabled: (teamId: string) => Promise<boolean>;
   /**
    * Budget and rate limits (limits.checkChatLimits). Required: a turn that
    * passes has been admitted and counted, so there is no unmetered default.
@@ -109,7 +108,6 @@ export interface TurnDeps {
 
 export function unavailable(reason: ChatUnavailableReason, status: number, extra: Record<string, unknown> = {}): Response {
   const message: Record<ChatUnavailableReason, string> = {
-    capability_disabled: 'Chat is not enabled for this team.',
     no_key: 'No provider key is connected for chat. An admin can add a team key, or you can use your own.',
     budget_exhausted: 'Today\'s chat budget is used up. It resets at midnight in the team\'s timezone, and a team owner or admin can raise it. The mission form still works.',
     rate_limited: 'Too many chat turns in the last few minutes. Try again shortly.',
@@ -118,6 +116,9 @@ export function unavailable(reason: ChatUnavailableReason, status: number, extra
 }
 
 /** Stored rows → UI messages for the model. Event rows become short assistant notes. */
+/** Stored rows a turn loads; hitting it means older rows went unseen. */
+const STORED_MESSAGE_LIMIT = 500;
+
 export function toUiHistory(rows: MessageRow[]): UIMessage[] {
   const out: UIMessage[] = [];
   for (const m of rows.slice(-HISTORY_LIMIT)) {
@@ -172,9 +173,6 @@ export async function runChatTurn(args: {
   const { conversation: conv, user, body, deps } = args;
   const now = deps.now?.() ?? new Date();
 
-  // 1. Nothing starts unless the team turned chat on.
-  if (!(await deps.chatEnabled(conv.teamId))) return unavailable('capability_disabled', 403);
-
   const message = body?.message;
   if (!message || (message.role !== 'user' && message.role !== 'assistant') || !Array.isArray(message.parts)) {
     return Response.json({ error: 'message with role and parts is required' }, { status: 400 });
@@ -189,7 +187,7 @@ export async function runChatTurn(args: {
   // turn spends nothing.
   const [verdict, stored] = await Promise.all([
     deps.limits({ teamId: conv.teamId, userId: user.id, now }),
-    loadMessages(conv.id),
+    loadMessages(conv.id, STORED_MESSAGE_LIMIT),
   ]);
   if (!verdict.ok) {
     return unavailable(verdict.reason, 429, {
@@ -207,6 +205,9 @@ export async function runChatTurn(args: {
     : null;
 
   const history = toUiHistory(stored);
+  // The "Allow" taint covers the whole stored conversation, not only the
+  // HISTORY_LIMIT window the model is sent this turn.
+  const historyTainted = toolOutputInHistory(stored, stored.length >= STORED_MESSAGE_LIMIT);
   const resolveModel = deps.resolveModel ?? resolveChatModel;
   let route: TurnRoute;
   let authorizedToolCallIds = new Set<string>();
@@ -328,7 +329,7 @@ export async function runChatTurn(args: {
       // resolves inside reach. Anything else falls through to the card.
       if (allowedThisTurn === 0 && options?.toolCallId && canSkipCard({
         tool: name, input, allowedGroups,
-        tainted: contentInContext(options.messages ?? []),
+        tainted: historyTainted || contentInContext(options.messages ?? []),
         docked: docked !== null,
       })) {
         const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);

@@ -39,6 +39,7 @@ import { recordCredentialAuthSuccess } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
 import { sweepLookaheadMinutes } from '@/lib/cron-cadence';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 export const maxDuration = 60;
 
@@ -205,8 +206,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // Not moved to runner-side: MCP servers are often remote, not colocated with the runner.
   const mcpLookaheadMinutes = sweepLookaheadMinutes();
   const expiringMcp = await db.query.secrets.findMany({
-    where: and(
-      eq(secrets.purpose, 'mcp_connector_credential'),
+    where: teamCredentialWhere(
+      { purpose: 'mcp_connector_credential' },
       or(
         isNull(secrets.tokenExpiresAt),
         lt(secrets.tokenExpiresAt, sql`NOW() + (${mcpLookaheadMinutes} * INTERVAL '1 minute')`),

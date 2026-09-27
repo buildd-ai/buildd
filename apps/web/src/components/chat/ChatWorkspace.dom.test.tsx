@@ -1,0 +1,124 @@
+/**
+ * The chat canvas, mounted (happy-dom): the scan line runs only while a turn
+ * streams, the empty canvas greets and offers one-tap questions, the mission
+ * the chat is about pins as a compact live board, and keyboard hints stay
+ * hidden unless the person turned them on.
+ *
+ * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
+ */
+import { GlobalRegistrator } from '@happy-dom/global-registrator';
+GlobalRegistrator.register({ url: 'http://localhost/app/chat' });
+
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ push() {}, refresh() {}, replace() {}, back() {} }),
+  usePathname: () => '/app/chat',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+const { act } = await import('react');
+const { createRoot } = await import('react-dom/client');
+const { default: ChatWorkspace } = await import('./ChatWorkspace');
+const { ObjectStoreProvider } = await import('./objects/ObjectStoreProvider');
+const { KeyHintsProvider } = await import('@/components/KeyHints');
+const fixtures = await import('../../app/app/dev/chat/chat-fixtures');
+
+let container: HTMLElement;
+let root: ReturnType<typeof createRoot>;
+const sent: string[] = [];
+
+beforeEach(() => {
+  (window as any).matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  sent.length = 0;
+});
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+});
+
+type Props = Parameters<typeof ChatWorkspace>[0];
+
+async function render(over: Partial<Props> = {}, opts: { hints?: boolean; state?: Parameters<typeof fixtures.fixtureViews>[0] } = {}) {
+  const views = fixtures.fixtureViews(opts.state ?? 'split');
+  const source = { load: async (r: { kind: string; id: string }) => { const v = views[`${r.kind}:${r.id}`]; if (!v) throw new Error('Not found'); return v; } };
+  const props: Props = {
+    messages: [], status: 'ready', onSend: (t: string) => { sent.push(t); }, onApproval() {},
+    title: null, agent: fixtures.ORGANIZER, tier: 'standard', workspaces: fixtures.WORKSPACES,
+    workspaceId: fixtures.WS.id, onWorkspaceChange() {}, viewerName: 'Maya', ...over,
+  };
+  await act(async () => {
+    root.render(
+      <KeyHintsProvider value={opts.hints ?? false}>
+        <ObjectStoreProvider source={source}>
+          <ChatWorkspace {...props} />
+        </ObjectStoreProvider>
+      </KeyHintsProvider>,
+    );
+  });
+  await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+}
+
+const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
+const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
+
+describe('scan line', () => {
+  it('runs along the top edge only while a turn is in flight', async () => {
+    const msgs = fixtures.chatFixture('streaming').messages;
+    await render({ messages: msgs, status: 'streaming' });
+    expect(q('[data-testid="canvas-scan"]')).not.toBeNull();
+    await render({ messages: msgs, status: 'submitted' });
+    expect(q('[data-testid="canvas-scan"]')).not.toBeNull();
+    await render({ messages: msgs, status: 'ready' });
+    expect(q('[data-testid="canvas-scan"]')).toBeNull();
+  });
+});
+
+describe('empty canvas', () => {
+  it('greets by name and sends a suggested question in one tap', async () => {
+    await render();
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Hi Maya, what are we working on?');
+    const chips = qa('[data-testid="canvas-suggestion"]');
+    expect(chips.map(c => c.textContent)).toContain('What needs me?');
+    await act(async () => { chips[0].click(); });
+    expect(sent).toEqual(['What needs me right now?']);
+  });
+
+  it('a starter fills the box instead of sending', async () => {
+    await render();
+    const starter = qa('[data-testid="canvas-suggestion"]').find(c => c.textContent === 'Start something new')!;
+    await act(async () => { starter.click(); });
+    expect(sent).toEqual([]);
+    expect((q('#chat-composer-input') as HTMLTextAreaElement).value).toBe('I want to build ');
+  });
+});
+
+describe('pinned object', () => {
+  it('the mission the chat is about pins as a compact board', async () => {
+    await render({ focusRef: fixtures.missionRef, focusOpensSheet: false, initialPaneClosed: true });
+    const pin = q('[data-testid="canvas-pinned"]');
+    expect(pin?.dataset.kind).toBe('mission');
+    expect(qa('[data-testid="canvas-mini-row"]').length).toBeGreaterThan(0);
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Ask anything about');
+  });
+
+  it('no object in the conversation: nothing pinned', async () => {
+    await render();
+    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
+  });
+});
+
+describe('keyboard hints', () => {
+  it('are hidden by default and shown when turned on', async () => {
+    await render();
+    expect(q('[data-testid="composer-key-hints"]')).toBeNull();
+    expect(q('[data-testid="key-hint"]')).toBeNull();
+    await render({}, { hints: true });
+    expect(q('[data-testid="composer-key-hints"]')).not.toBeNull();
+  });
+});

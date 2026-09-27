@@ -35,6 +35,7 @@ mock.module('drizzle-orm', () => ({
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   and: (...c: any[]) => ({ c, type: 'and' }),
   inArray: (f: any, v: any) => ({ f, v, type: 'inArray' }),
+  isNull: (f: any) => ({ f, type: 'isNull' }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: any[]) => ({ raw: strings.join(''), values }),
     { raw: (s: string) => s },

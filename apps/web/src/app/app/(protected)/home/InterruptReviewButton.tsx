@@ -31,7 +31,7 @@ export function InterruptReviewButton({ workerId }: { workerId: string }) {
         type="button"
         onClick={interrupt}
         disabled={pending}
-        className="text-[11px] text-text-muted border border-border-default rounded-[6px] px-2.5 py-1.5 hover:border-status-error hover:text-status-error transition-colors bg-transparent whitespace-nowrap disabled:opacity-50"
+        className="text-[11px] text-text-muted border border-border-default px-2.5 py-1.5 hover:border-status-error hover:text-status-error transition-colors bg-transparent whitespace-nowrap disabled:opacity-50"
       >
         {pending ? 'Interrupting…' : 'Interrupt & take over'}
       </button>

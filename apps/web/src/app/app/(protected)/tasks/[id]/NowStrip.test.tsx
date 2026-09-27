@@ -23,3 +23,28 @@ describe('NowStrip progress number', () => {
     expect(pct![0]).toMatch(/class="[^"]*\bflex\b[^"]*\bitems-start\b/);
   });
 });
+
+// Regression (UX review, running task at 390px): six uppercase labels with
+// 1.5px tracking in six equal columns ran into each other ("STARTEDREAD",
+// "COMMITPR"). Phones drop the tracking; desktop keeps it.
+describe('NowStrip step rail on a phone', () => {
+  const steps = ['started', 'read', 'edit', 'commit', 'pr', 'done'].map((k, i) => ({
+    key: k, label: k, state: i < 3 ? 'done' : i === 3 ? 'current' : 'todo', at: null,
+  }));
+  const html = renderToStaticMarkup(
+    <NowStrip now={{ headline: 'x', pct: 45, detail: null, updatedTs: null, steps } as any} nowMs={0} />,
+  );
+  const items = [...html.matchAll(/<li [^>]*class="([^"]*)"/g)].map(m => m[1]);
+
+  it('renders one label per step', () => {
+    expect(items).toHaveLength(6);
+  });
+
+  it('tracks labels only from md up', () => {
+    for (const cls of items) {
+      expect(cls).toMatch(/(^|\s)tracking-normal(\s|$)/);
+      expect(cls).toMatch(/(^|\s)md:tracking-\[1\.5px\](\s|$)/);
+      expect(cls).not.toMatch(/(^|\s)tracking-\[1\.5px\]/);
+    }
+  });
+});

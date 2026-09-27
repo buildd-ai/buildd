@@ -17,6 +17,8 @@ import { homeAudience } from './home/home-view';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
 import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 import type { NavContext } from '@/lib/nav-config';
+import { KeyHintsProvider } from '@/components/KeyHints';
+import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
 
 export default async function ProtectedLayout({
   children,
@@ -29,7 +31,7 @@ export default async function ProtectedLayout({
   let workspaceIds: string[] = [];
   let teamWorkspaces: { id: string; name: string }[] = [];
   let teamTimezone: string | null = null;
-  let nav: NavContext = { chat: false, audience: 'operator' };
+  let nav: NavContext = { audience: 'operator' };
   // Create buttons open chat when it's available (components/chat/ChatEntry.tsx).
   let chatEntry: ChatEntryValue = { available: false, teamId: null, setupHref: null };
 
@@ -53,10 +55,10 @@ export default async function ProtectedLayout({
         .then((cookieStore) => resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value))
         // No team on failure; WorkspaceSwitcher renders nothing, timestamps use the browser zone
         .catch((): ActiveTeamScope => ({ teamId: null, workspaces: [], timezone: null }))
-        // Who sees Chat, and where (lib/chat-availability.ts): needs the team,
-        // so it rides the scope's own chain. The capability read short-circuits
-        // for every team that hasn't turned chat on. Both are React cache()d,
-        // so Home and /app/chat reuse the answer. Off on any failure.
+        // Whether a chat turn can run (lib/chat-availability.ts): needs the team,
+        // so it rides the scope's own chain. It only steers the create buttons
+        // (chat vs the form); the Chat nav entry is always there. Both are React
+        // cache()d, so Home and /app/chat reuse the answer.
         .then(async (scope) => {
           if (!scope.teamId) return { scope, nav, chatEntry };
           const [avail, role] = await Promise.all([
@@ -66,10 +68,10 @@ export default async function ProtectedLayout({
           const entry: ChatEntryValue = {
             available: avail?.available === true,
             teamId: scope.teamId,
-            // Only the missing key is an admin's to fix; a team that switched chat off isn't nagged.
-            setupHref: avail && !avail.available && avail.reason === 'no_key' && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
+            // The missing key is an owner's or admin's to fix.
+            setupHref: avail && !avail.available && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
           };
-          return { scope, nav: { chat: avail?.available === true, audience: homeAudience(role) } as NavContext, chatEntry: entry };
+          return { scope, nav: { audience: homeAudience(role) } as NavContext, chatEntry: entry };
         }),
     ]);
     userTeams = userTeamsResult;
@@ -85,7 +87,15 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
+      <KeyHintsProvider value={user?.showKeyboardHints === true}>
       <ChatEntryProvider value={chatEntry}>
+      {/* The chat canvas, summonable over any page (docs/design/chat-canvas.md). */}
+      <ChatCanvasProvider
+        available={chatEntry.available}
+        teamId={chatEntry.teamId}
+        workspaces={teamWorkspaces}
+        viewerName={user?.name?.trim().split(/\s+/)[0] ?? user?.email?.split('@')[0] ?? null}
+      >
       <ChatShortcut />
       <DisplayTimezoneProvider teamTimezone={teamTimezone}>
       <EscalationProvider workspaceIds={workspaceIds}>
@@ -138,7 +148,9 @@ export default async function ProtectedLayout({
       </NeedsInputProvider>
       </EscalationProvider>
       </DisplayTimezoneProvider>
+      </ChatCanvasProvider>
       </ChatEntryProvider>
+      </KeyHintsProvider>
     </AuthGuard>
   );
 }

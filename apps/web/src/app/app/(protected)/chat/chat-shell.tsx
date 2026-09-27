@@ -30,19 +30,19 @@ export interface ChatShellData {
   teamName: string | null;
   workspaces: Array<{ id: string; name: string }>;
   available: boolean;
-  reason: 'capability_disabled' | 'no_key' | 'budget_exhausted' | 'rate_limited' | null;
+  reason: 'no_key' | 'budget_exhausted' | 'rate_limited' | null;
   canManageTeamKeys: boolean;
   audience: 'member' | 'operator';
   context: ChatPageContext;
   conversations: ConversationListItem[];
 }
 
-export async function loadChatShell(): Promise<ChatShellData | { unavailable: true; teamId: string | null; canManage: boolean; reason: 'capability_disabled' | 'no_key'; policy?: 'team' | 'team_or_own' | 'own' }> {
+export async function loadChatShell(): Promise<ChatShellData | { unavailable: true; teamId: string | null; canManage: boolean; reason: 'no_key'; policy?: 'team' | 'team_or_own' | 'own' }> {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
   const scope = await resolveActiveTeamScope(user.id, (await cookies()).get('buildd-team')?.value);
   const teamId = scope.teamId;
-  if (!teamId) return { unavailable: true, teamId: null, canManage: false, reason: 'capability_disabled' };
+  if (!teamId) return { unavailable: true, teamId: null, canManage: false, reason: 'no_key' };
   const wsIds = scope.workspaces.map(w => w.id);
   const [avail, role, context, conversations] = await Promise.all([
     getChatAvailability(user.id, teamId),
@@ -51,7 +51,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
     listConversations(user.id, teamId).catch(() => []),
   ]);
   if (!avail.available) {
-    return { unavailable: true, teamId, canManage: avail.canManageTeamKeys, reason: avail.reason === 'no_key' ? 'no_key' : 'capability_disabled', policy: avail.keyPolicy };
+    return { unavailable: true, teamId, canManage: avail.canManageTeamKeys, reason: 'no_key', policy: avail.keyPolicy };
   }
   return {
     user: { id: user.id, name: user.name ?? null, email: user.email ?? null },
@@ -67,7 +67,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
+export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
       {/* Everyone brings their own key and this person has none: the connect
@@ -106,16 +106,16 @@ export function ConversationList({ items, currentId }: { items: readonly Convers
   if (items.length === 0) return null;
   return (
     <nav data-testid="conversation-list" aria-label="Conversations" className="mb-8">
-      <div className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">Recent</div>
-      <ul className="divide-y divide-border-default border-2 border-border-strong bg-card">
+      <div className="mb-2 px-1 font-convo text-[13px] font-medium text-text-muted">Pick up where you left off</div>
+      <ul className="divide-y divide-[var(--convo-line)] overflow-hidden rounded-[14px] bg-[var(--convo-soft)]">
         {items.map(c => (
           <li key={c.id}>
             <Link
               href={`/app/chat/${c.id}`}
               aria-current={c.id === currentId ? 'page' : undefined}
-              className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-card-hover"
+              className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-[var(--convo-soft)]"
             >
-              <span className={`min-w-0 flex-1 truncate font-mono text-[13.5px] ${c.untitled ? 'text-text-muted' : 'font-semibold text-text-primary'}`}>{c.title}</span>
+              <span className={`min-w-0 flex-1 truncate font-convo text-[14.5px] ${c.untitled ? 'text-text-muted' : 'font-medium text-text-primary'}`}>{c.title}</span>
               <ZonedTime value={c.lastMessageAt} format="datetime-short" className="shrink-0 font-mono text-[11.5px] text-text-muted" />
             </Link>
           </li>

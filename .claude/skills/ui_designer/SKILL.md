@@ -144,7 +144,7 @@ Colors are mapped via CSS vars in `tailwind.config.ts`. Use semantic class names
 
 ## Anti-Patterns (DO NOT)
 
-- **No rounded corners** — no `rounded-full`, `rounded-[10px]`, etc. on surfaces, buttons, chips (the config zeroes the scale; arbitrary values bypass it)
+- **No rounded corners** — no `rounded-full`, `rounded-[10px]`, etc. on surfaces, buttons, chips (the config zeroes the scale; arbitrary values bypass it). One sanctioned exception: the chat canvas conversation (bubbles, tool rows, composer, its chips) is soft on purpose; fleet objects inside it stay square. See `docs/design/chat-canvas.md`.
 - **No soft shadows** — never `shadow-md`/`shadow-lg` defaults or blurred drop-shadows; only hard offsets
 - **No gradients** — progress fills and accents are flat `var(--accent)`
 - **No status colors as backgrounds** for buttons, cards, or pages — badges, dots, small indicators only

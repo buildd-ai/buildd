@@ -9,15 +9,13 @@ import {
   type FeatureModes,
   type ServerFeature,
 } from '@buildd/core/inference-policy';
-import Switch from '@/components/ui/Switch';
-import { defaultLine, featureState, interactiveState, OVERRIDE_OPTIONS, type OverrideValue } from './feature-copy';
+import { defaultLine, featureState, OVERRIDE_OPTIONS, type OverrideValue } from './feature-copy';
 
 /**
  * Settings → AI features.
  *
- * Interactive runs whenever a key resolves; its only control is the admin's
- * kill switch (`teams.chatDisabled`). Built-in decision calls have no control
- * and are not listed. Server-side features run where the billing model says
+ * Chat is always on (it runs whenever a key resolves), so it has no control
+ * here. Built-in decision calls have no control and are not listed. Server-side features run where the billing model says
  * (team key → server-side, else the runner); overrides sit behind Advanced.
  */
 export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
@@ -27,7 +25,6 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
   hasTeamKey: boolean;
 }) {
   const [modes, setModes] = useState<FeatureModes | null>(null);
-  const [chatDisabled, setChatDisabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -38,7 +35,6 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
       if (res.ok) {
         const data = await res.json();
         setModes(normalizeFeatureModes(data.team?.inferenceFeatureModes));
-        setChatDisabled(data.team?.chatDisabled === true);
       }
     } catch {
       /* non-fatal: the page shows defaults */
@@ -67,12 +63,6 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
     }
   }
 
-  function setInteractive(on: boolean) {
-    const prev = chatDisabled;
-    setChatDisabled(!on);
-    void patch({ chatDisabled: !on }, () => setChatDisabled(prev));
-  }
-
   function setOverride(feature: ServerFeature, value: OverrideValue) {
     const prev = modes;
     const next = normalizeFeatureModes({ ...(modes ?? {}), [feature]: value });
@@ -82,20 +72,6 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
 
   return (
     <div className="space-y-8">
-      <section aria-labelledby="ai-interactive-h">
-        <h2 id="ai-interactive-h" className="section-label mb-3">Interactive</h2>
-        <div className="card flex items-center justify-between gap-3 px-4 py-3 min-h-14" data-testid="interactive-switch">
-          <span className="flex items-center gap-2 text-sm text-text-primary min-w-0">
-            <span aria-hidden className={`w-2 h-2 shrink-0 ${chatDisabled ? 'bg-text-muted' : 'bg-status-success'}`} />
-            <span id="ai-interactive-label">Interactive AI</span>
-            <span className="text-xs text-text-muted">{interactiveState(chatDisabled)}</span>
-          </span>
-          {canManage && (
-            <Switch labelledBy="ai-interactive-label" checked={!chatDisabled} onChange={setInteractive} disabled={busy || !loaded} />
-          )}
-        </div>
-      </section>
-
       <section aria-labelledby="ai-server-h">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
           <h2 id="ai-server-h" className="section-label">Server-side features</h2>

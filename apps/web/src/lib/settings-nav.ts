@@ -109,7 +109,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'ai',
         label: 'AI features',
         href: '/app/settings/ai',
-        description: 'Interactive AI and where server-side features run.',
+        description: 'Where server-side features run.',
       },
       {
         id: 'models',

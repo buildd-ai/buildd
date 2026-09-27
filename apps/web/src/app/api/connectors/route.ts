@@ -9,6 +9,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
 import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -97,11 +98,7 @@ export async function GET(req: NextRequest) {
       // shared-in connectors' secrets live under the owner's teamId.
       const secretTeamIds = [...new Set([teamId, ...sharedIn.map(c => c.teamId)])];
       const secretRows = await db.query.secrets.findMany({
-        where: and(
-          inArray(secrets.teamId, secretTeamIds),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-          inArray(secrets.label, connectorIds),
-        ),
+        where: teamCredentialWhere({ teamId: secretTeamIds, purpose: 'mcp_connector_credential', label: connectorIds }),
         columns: { label: true, tokenExpiresAt: true, lastVerificationError: true },
       });
       for (const s of secretRows) {

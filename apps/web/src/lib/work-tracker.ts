@@ -12,6 +12,7 @@ import { decrypt } from '@buildd/core/secrets';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 const LINEAR_API = 'https://api.linear.app/graphql';
 
@@ -90,11 +91,7 @@ export async function getConnectorAccessToken(
 
   const querySecret = () =>
     database.query.secrets.findFirst({
-      where: and(
-        eq(secrets.teamId, teamId),
-        eq(secrets.purpose, 'mcp_connector_credential'),
-        eq(secrets.label, connectorId),
-      ),
+      where: teamCredentialWhere({ teamId: teamId, purpose: 'mcp_connector_credential', label: connectorId }),
       columns: { id: true, tokenExpiresAt: true, encryptedValue: true },
     });
 

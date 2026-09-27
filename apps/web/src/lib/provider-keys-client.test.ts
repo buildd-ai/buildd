@@ -149,12 +149,12 @@ describe('normalizeProviderKeys', () => {
     expect(out.providers.every((p) => !p.team && !p.mine)).toBe(true);
     // An unknown policy reads as the column default.
     expect(out.keyPolicy).toBe('team');
-    expect(out.chatDisabled).toBe(false);
   });
 
-  it('carries the key policy and the chat switch', () => {
+  it('carries the key policy, and drops a stale chat switch', () => {
     const out = normalizeProviderKeys({ providers: [], keyPolicy: 'own', chatDisabled: true });
-    expect(out).toMatchObject({ keyPolicy: 'own', chatDisabled: true });
+    expect(out).toMatchObject({ keyPolicy: 'own' });
+    expect(out).not.toHaveProperty('chatDisabled');
   });
 });
 

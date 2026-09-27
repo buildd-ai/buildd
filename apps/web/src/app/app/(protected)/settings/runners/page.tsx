@@ -13,7 +13,7 @@ export default async function RunnersSettingsPage() {
   return (
     <SettingsPage
       title="Runners"
-      description="Runners do the work on your own machines. They sign in to Claude or Codex with your subscription or API key, and connect to buildd with a runner token."
+      description="Your machines do the work, signed in to Claude or Codex and connected to buildd with a runner token."
     >
       <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
       <RunnerTokensSection accounts={accounts} workspaces={workspaces} />

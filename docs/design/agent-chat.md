@@ -377,8 +377,21 @@ An *Allow* lets a write run without its card only when all of these hold:
 - its effective class is `write`. Admin-class calls (any delete, a mission
   budget change, workspace config) always get a card, and so does every write
   in the `admin` group;
+- it doesn't start recurring or unattended work. Creating or editing a
+  schedule (`create_schedule`, `update_schedule`), arming a held mission
+  (`manage_missions` arm), resuming paused schedules (`pause_schedules` with
+  `enabled: true`) and resuming a held task (`hold_task` with `hold: false`)
+  always get a card, next to deletes and admin writes. Unlike admin writes, a
+  member may still propose them. Pausing or holding stops work, so it may skip
+  its card (`startsUnattendedWork` in `apps/web/src/lib/chat/tools.ts`, the
+  `alwaysAsk` flag in `registry.ts`);
+- a mission or task write carries only plain edit fields (title, description,
+  priority, criteria). A field that shapes spend or run state (concurrency,
+  model, schedule, pacing, start, status and the like) gets a card
+  (`SKIPPABLE_FIELDS` in `permissions.ts`);
 - nothing a tool returned is in the model's context: no tool result earlier in
-  the turn, none in the history, and no docked object, whose task titles are in
+  the turn, none anywhere in the stored conversation (not only the window sent
+  to the model), and no docked object, whose task titles are in
   the instructions. Tool output is where an injected instruction comes from, so
   a write proposed after reading anything gets its card. In practice *Allow*
   covers a write the model makes straight from your own words ("make this a
@@ -548,10 +561,13 @@ Settings → You → *Use my own key*. The existing capability toggle (`chat`, n
 `INFERENCE_CAPABILITIES`, `fallback: 'none'`) sits next to it, off by default,
 following the policy's rule that pasting a key never starts spending by itself.
 
-**When no key resolves:** chat doesn't start a turn. The composer turns into the
-existing mission form with the draft text kept, and a card explains why: admins
-see *Add a team key*, members see *Ask an admin to connect a provider, or use your
-own key*. Nothing falls back to a subscription seat.
+**When no key resolves:** chat doesn't start a turn. Chat is always on (it is
+part of buildd, not an option), so the Chat entry point still shows and its page
+renders one inline state that says who can fix it: owners and admins see
+*Connect a model provider*, members see *Ask a team admin*, and under the
+own-key policy everyone without a key sees *Connect OpenRouter to start*. The
+mission form stays one link away, with the draft text kept. Nothing falls back
+to a subscription seat.
 
 ### Cost and rate limits
 
@@ -708,9 +724,10 @@ In dependency order, with the load-bearing piece first.
    and the no-key fallback.
 
 **Acceptance:**
-- With the capability off, or no key resolved, nothing changes for any team:
-  there's no Chat entry point and the mission form behaves as today. A test
-  asserts both.
+- With no key resolved, the Chat entry point is still there and its page says
+  who can fix it; the mission form behaves as today. There is no capability to
+  turn off. Tests assert the nav entry is always present and the no-key state
+  per role and policy.
 - A read-only question ("what's in flight on billing-web?") streams its first
   token in under 2s at the p50 and shows every tool call as a row.
 - "Make this a mission" produces exactly one approval card. Confirming files one

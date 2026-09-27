@@ -30,12 +30,11 @@ export interface ChatStatus {
 }
 
 /**
- * The interactive AI status line: the real availability reason and the one
- * action that fixes it. It used to say "chat off · Turn on chat" when the
- * cause was a missing key.
+ * The interactive AI status line: what it runs on, or (with no key) the one
+ * action that fixes it. Interactive AI is always on; there is no switch.
  */
 export function chatStatusCopy(
-  availability: { available: boolean; reason: 'capability_disabled' | 'no_key' | null },
+  availability: { available: boolean; reason: 'no_key' | null },
   key: ChatKeySummary,
   isAdmin: boolean,
   policy: KeyPolicy,
@@ -46,13 +45,6 @@ export function chatStatusCopy(
       ? `Interactive AI is on · ${label(key.provider)} · ${whose}`
       : 'Interactive AI is on';
     return { tone: 'success', text, action: null };
-  }
-  if (availability.reason === 'capability_disabled') {
-    return {
-      tone: 'muted',
-      text: 'Interactive AI is off for the team',
-      action: isAdmin ? { href: '/app/settings/ai', label: 'Turn it on' } : null,
-    };
   }
   if (policy === 'own') {
     return {

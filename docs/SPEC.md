@@ -288,9 +288,10 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   takes its runner path. Personal keys are managed via `/api/inference-keys` (any
   member) and never served to anyone else.
 - **Which calls may spend** (`packages/core/inference-policy.ts`, `isInferenceAllowed`):
-  - *Interactive* (chat and its per-turn routing): on whenever a key resolves;
-    the only control is the admin kill switch `teams.chatDisabled`. Never falls
-    back to a runner or seat; with no key the mission form stays.
+  - *Interactive* (chat and its per-turn routing): always on, no switch; it
+    runs whenever a key resolves (`teams.chatDisabled` is deprecated and
+    unread). Never falls back to a runner or seat. With no key the Chat entry
+    point still shows, its page says who can fix it, and the mission form stays.
   - *Built-in* decision calls (`task_category_shadow`, `task_classification`):
     no toggle; they run whenever a key resolves.
   - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { bannerTasks, useHiddenNeedsInput } from '@/lib/needs-input-hidden';
+import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 /**
  * A waiting task opens as the sheet over its mission, so answering it leaves
@@ -23,6 +24,8 @@ export default function NeedsInputBanner() {
   if (count === 0) return null;
 
   const firstTask = tasks[0];
+  // The sentence every page shows, not the raw "feat(scope): …" title.
+  const firstName = taskHeading(firstTask, null).heading;
 
   return (
     <div
@@ -41,19 +44,19 @@ export default function NeedsInputBanner() {
                 href={needsInputTaskHref(firstTask)}
                 className="underline underline-offset-2 hover:text-status-warning/80"
               >
-                {firstTask.title}
+                {firstName}
               </Link>
               {' '}needs your input
             </>
           ) : (
             <>
               {count} tasks need your input
-              {' \u2014 '}
+              {': '}
               <Link
                 href={needsInputTaskHref(firstTask)}
                 className="underline underline-offset-2 hover:text-status-warning/80"
               >
-                {firstTask.title}
+                {firstName}
               </Link>
               {count > 2 && (
                 <span className="text-status-warning/70">

@@ -84,6 +84,42 @@ describe('canSkipCard', () => {
     expect(canSkipCard({ tool: 'delete_schedule', input: { scheduleId: 's' }, allowedGroups: allowed('schedules'), ...clean })).toBe(false);
   });
 
+  it('a mission write that shapes spend or run state always asks, even in an allowed group', () => {
+    const upd = (extra: Record<string, unknown>) => ({ action: 'update', missionId: 'm', ...extra });
+    for (const extra of [
+      { maxConcurrentTasks: 20 }, { model: 'opus' }, { cronExpression: '* * * * *' }, { isHeartbeat: true },
+      { pacingMode: 'off' }, { pacingMaxPerHour: 100 }, { startMode: 'now' }, { status: 'cancelled' },
+      { orchestrationMode: 'parallel' }, { autoVerify: false }, { branchStrategy: 'direct' },
+    ]) {
+      expect(canSkipCard({ tool: 'manage_missions', input: upd(extra), allowedGroups: allowed('missions'), ...clean })).toBe(false);
+      expect(canSkipCard({ tool: 'manage_missions', input: { action: 'create', title: 't', ...extra }, allowedGroups: allowed('missions'), ...clean })).toBe(false);
+    }
+    // The plain edits the allow is for still skip.
+    expect(canSkipCard({ tool: 'manage_missions', input: upd({ title: 't', description: 'd', priority: 3 }), allowedGroups: allowed('missions'), ...clean })).toBe(true);
+    expect(canSkipCard({ tool: 'manage_missions', input: upd({ addGoalCriteria: [{ type: 'all_prs_merged' }] }), allowedGroups: allowed('missions'), ...clean })).toBe(true);
+  });
+
+  it('anything that starts recurring or unattended work always asks, even in an allowed group', () => {
+    const ask = (tool: string, input: Record<string, unknown>, group: string) =>
+      canSkipCard({ tool, input, allowedGroups: allowed(group), ...clean });
+    expect(ask('create_schedule', { name: 'n', cronExpression: '0 * * * *', title: 't' }, 'schedules')).toBe(false);
+    expect(ask('update_schedule', { scheduleId: 's', name: 'renamed' }, 'schedules')).toBe(false);
+    expect(ask('update_schedule', { scheduleId: 's', enabled: false }, 'schedules')).toBe(false);
+    expect(ask('pause_schedules', { workspaceId: 'w', enabled: true }, 'schedules')).toBe(false);
+    expect(ask('manage_missions', { action: 'arm', missionId: 'm' }, 'missions')).toBe(false);
+    expect(ask('hold_task', { taskId: 'x', hold: false }, 'tasks')).toBe(false);
+    // Stopping work is not starting it: a pause and a hold may still skip.
+    expect(ask('pause_schedules', { workspaceId: 'w' }, 'schedules')).toBe(true);
+    expect(ask('pause_schedules', { workspaceId: 'w', enabled: false }, 'schedules')).toBe(true);
+    expect(ask('hold_task', { taskId: 'x', hold: true }, 'tasks')).toBe(true);
+  });
+
+  it('a create_task with a field outside its declared schema always asks', () => {
+    const base = { title: 't', description: 'd' };
+    expect(canSkipCard({ tool: 'create_task', input: base, allowedGroups: allowed('tasks'), ...clean })).toBe(true);
+    expect(canSkipCard({ tool: 'create_task', input: { ...base, model: 'opus' }, allowedGroups: allowed('tasks'), ...clean })).toBe(false);
+  });
+
   it('reads and unknown tools never go through here', () => {
     expect(canSkipCard({ tool: 'list_tasks', input: {}, allowedGroups: allowed('tasks'), ...clean })).toBe(false);
     expect(canSkipCard({ tool: 'manage_secrets', input: {}, allowedGroups: allowed('tasks'), ...clean })).toBe(false);

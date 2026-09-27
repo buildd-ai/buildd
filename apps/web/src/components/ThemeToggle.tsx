@@ -8,7 +8,7 @@ export default function ThemeToggle() {
   return (
     <button
       onClick={cycle}
-      className="w-8 h-8 flex items-center justify-center rounded-[10px] hover:bg-accent-soft text-text-muted hover:text-text-secondary transition-colors"
+      className="w-8 h-8 flex items-center justify-center hover:bg-accent-soft text-text-muted hover:text-text-secondary transition-colors"
       title={`Theme: ${theme}`}
       aria-label={`Switch theme (current: ${theme})`}
     >

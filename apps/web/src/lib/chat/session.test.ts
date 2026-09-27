@@ -31,6 +31,11 @@ describe('one availability source', () => {
 });
 
 describe('loadTeamChatSettings', () => {
+  it('carries no chat switch: the deprecated chat_disabled column is not read', async () => {
+    team.chatDisabled = true;
+    expect(await loadTeamChatSettings('t')).not.toHaveProperty('chatEnabled');
+  });
+
   it('reads the daily caps as numbers, NULL as not set (the limits apply defaults)', async () => {
     expect(await loadTeamChatSettings('t')).toMatchObject({ dailyBudgetUsd: null, userDailyBudgetUsd: null });
     team.chatDailyBudgetUsd = '12.50';

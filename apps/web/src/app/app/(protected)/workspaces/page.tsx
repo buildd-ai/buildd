@@ -7,45 +7,15 @@ import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
-import WorkspaceList from './WorkspaceList';
-
-interface WorkspaceWithRunners {
-  id: string;
-  name: string;
-  repo: string | null;
-  localPath: string | null;
-  createdAt: Date;
-  teamName: string | null;
-  teamId: string | null;
-  runners: {
-    action: boolean;
-    service: boolean;
-    user: boolean;
-  };
-}
-
-function CheckIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-    </svg>
-  );
-}
-
-function XIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-    </svg>
-  );
-}
+import { moveTargets } from '../settings/workspaces/rows';
+import WorkspaceList, { type WorkspaceWithRunners } from './WorkspaceList';
 
 export default async function WorkspacesPage() {
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
 
   let allWorkspaces: WorkspaceWithRunners[] = [];
-  let userTeams: any[] = [];
+  let moveTeams: Array<{ id: string; name: string }> = [];
 
   if (!isDev) {
     if (!user) {
@@ -104,6 +74,11 @@ export default async function WorkspacesPage() {
         }
       }
 
+      const userTeams = await getUserTeamsWithDetails(user.id);
+      // Admin on the workspace's team and one other: the bar the precheck sets.
+      const targetsFor = (teamId: string | null) => (teamId ? moveTargets(user.id, userTeams, teamId) : null);
+      moveTeams = rawWorkspaces.map((ws) => targetsFor(ws.teamId)).find((t) => t !== null) ?? [];
+
       allWorkspaces = rawWorkspaces.map((ws) => {
         const connectedAccounts = ws.accountWorkspaces || [];
         const activeTypes = activityByWorkspace.get(ws.id);
@@ -115,6 +90,7 @@ export default async function WorkspacesPage() {
           createdAt: ws.createdAt,
           teamName: ws.team?.name || null,
           teamId: ws.team?.id || null,
+          canMove: targetsFor(ws.team?.id ?? null) !== null,
           runners: {
             action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim) || !!activeTypes?.has('action'),
             service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim) || !!activeTypes?.has('service'),
@@ -123,7 +99,6 @@ export default async function WorkspacesPage() {
         };
       });
 
-      userTeams = await getUserTeamsWithDetails(user.id);
     } catch (error) {
       console.error('Workspaces query error:', error);
     }
@@ -145,7 +120,7 @@ export default async function WorkspacesPage() {
           </Link>
         </div>
 
-        <WorkspaceList workspaces={allWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} teams={userTeams} />
+        <WorkspaceList workspaces={allWorkspaces.filter(ws => !isSystemWorkspace(ws.name))} moveTeams={moveTeams} />
       </div>
     </main>
   );

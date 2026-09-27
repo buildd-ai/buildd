@@ -5,9 +5,9 @@ import { getChatAvailability } from '@/lib/chat-availability';
 /**
  * GET /api/chat/availability?teamId= → ChatAvailabilityResponse
  *
- * Whether to show a Chat entry point at all: the same answer the pages use
- * (lib/chat-availability.ts). False when an admin switched chat off or no key
- * resolves for this person under the team's key policy.
+ * Whether a chat turn can run: the same answer the pages use
+ * (lib/chat-availability.ts). Chat is always on; this is false only when no
+ * key resolves for this person under the team's key policy.
  */
 export async function GET(req: NextRequest) {
   const r = await requireChatCaller(req);

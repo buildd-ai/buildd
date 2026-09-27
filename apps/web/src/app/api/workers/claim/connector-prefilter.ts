@@ -27,6 +27,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /** One connector that failed availability, with the first taxonomy mode that matched. */
 export type ConnectorFailure = { connectorId: string; connectorName: string; mode: string };
@@ -164,11 +165,7 @@ export async function runConnectorPreFilter(
         if (authConnectors.length > 0) {
           const ownerTeamIds = [...new Set(authConnectors.map(c => c.teamId))];
           const credSecretRows = await db.query.secrets.findMany({
-            where: and(
-              inArray(secrets.teamId, ownerTeamIds),
-              eq(secrets.purpose, 'mcp_connector_credential'),
-              inArray(secrets.label, authConnectors.map(c => c.id)),
-            ),
+            where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectors.map(c => c.id) }),
             columns: { id: true, label: true, tokenExpiresAt: true, lastRefreshedAt: true },
           });
           const secretByConnId = new Map(
@@ -211,11 +208,7 @@ export async function runConnectorPreFilter(
           ];
           if (envLabels.length > 0) {
             const envSecretRows = await db.query.secrets.findMany({
-              where: and(
-                inArray(secrets.teamId, ownerTeamIds),
-                eq(secrets.purpose, 'mcp_credential'),
-                inArray(secrets.label, envLabels),
-              ),
+              where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels }),
               columns: { id: true, label: true, teamId: true },
             });
             const envSecretByTeamLabel = new Map(
