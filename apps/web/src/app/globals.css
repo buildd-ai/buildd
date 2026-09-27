@@ -163,6 +163,9 @@ input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="ran
 textarea[data-bare-input] {
   border: 0 !important;
 }
+/* The chat composer's box spans the slab edge to edge: the ring above would
+   draw two copper lines across it. Its focus cue is the slab's own top rule. */
+textarea[data-composer-input]:focus-visible { outline: none; }
 
 /* iOS Safari zooms the page when a focused field's font-size is under 16px.
    Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and
@@ -654,6 +657,7 @@ textarea[data-bare-input] {
   --chat-muted: #a89f92;
   --chat-dim: #8b8276;
   --chat-panel: rgba(20, 19, 18, 0.78);
+  --chat-scrim: rgba(14, 13, 12, 0.94);
   --mood-calm: #8fb9b3;
   --mood-needs: #e0955a;
   --mood-needs-fill: #c9783b;
@@ -683,6 +687,7 @@ textarea[data-bare-input] {
   --chat-muted: #514a42;
   --chat-dim: #625a51;
   --chat-panel: rgba(251, 248, 243, 0.86);
+  --chat-scrim: rgba(38, 34, 30, 0.9);
   --mood-calm: #2f6f68;
   --mood-needs: #9c4f14;
   --mood-needs-fill: #c9783b;

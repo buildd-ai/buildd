@@ -154,21 +154,36 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   // Asked about the page you're on: the page behind already is the object.
   const aboutIsPage = !!scope.about && scopeKey(canvasScopeFromPath(pathname)) === scopeKey(scope);
 
+  const missionSheet = !scope.steer && scope.about?.kind === 'mission';
   const overlay = enabled && mounted && (
     <div
       data-testid="chat-canvas-overlay"
       data-presentation={presentation}
+      data-sheet={missionSheet ? 'mission' : undefined}
       data-open={isOpen ? 'true' : 'false'}
       className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
     >
-      {/* A flat dim: the page stays readable behind the peek. */}
-      <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className="absolute inset-0 bg-[var(--canvas-dim)]" />
+      {/* A flat dim: the page stays readable behind the peek. Over a mission on
+          a phone the scrim is near-opaque: nothing on the page reads through. */}
+      <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className={`absolute inset-0 ${missionSheet ? 'bg-[var(--chat-scrim)] md:bg-[var(--canvas-dim)]' : 'bg-[var(--canvas-dim)]'}`} />
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Chat"
-        className="canvas-rise absolute inset-0 flex flex-col overflow-hidden bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)] md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:pt-0 md:shadow-[var(--canvas-lift)]"
+        aria-label={missionSheet ? 'Ask about this mission' : 'Chat'}
+        data-testid="canvas-dialog"
+        className={`canvas-rise absolute flex flex-col overflow-hidden md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:bg-[var(--canvas-bg)] md:pt-0 md:shadow-[var(--canvas-lift)] ${
+          missionSheet
+            // The mission sheet (phone): opaque, from 84px down to the bottom
+            // edge, over the bottom nav; a 2px top edge and a square grabber.
+            ? 'inset-x-0 bottom-0 top-[84px] border-t-2 border-[var(--chat-rule-strong)] bg-[var(--chat-bar)] pb-[env(safe-area-inset-bottom)] md:pb-0'
+            : 'inset-0 bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)]'
+        }`}
       >
+        {missionSheet && (
+          <div data-testid="canvas-grabber" aria-hidden="true" className="flex h-3 shrink-0 items-center justify-center md:hidden">
+            <span className="h-1 w-9 bg-[var(--chat-rule-strong)]" />
+          </div>
+        )}
         {scope.steer ? (
           <SteerConversation key={scope.steer.taskId} taskId={scope.steer.taskId} onClose={close} />
         ) : shell ? (
