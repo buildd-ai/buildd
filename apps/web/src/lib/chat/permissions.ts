@@ -24,14 +24,14 @@
  * (permissions-store.ts).
  *
  * The rule set itself (and the taint checks) lives in the shared AI kit
- * (`@buildd/ai-kit/chat/server`, `skipCardVerdict`), so every app that adopts
+ * (`@builddai/ai-kit/chat/server`, `skipCardVerdict`), so every app that adopts
  * the kit enforces Allow exactly as buildd does. This file resolves buildd's
  * facts for a call (class, group, unattended work, skippable fields) from its
  * registry and hands them to the kit.
  */
 
 import type { ChatToolPermissionRow } from '@buildd/shared';
-import { canSkipCard as kitCanSkipCard } from '@buildd/ai-kit/chat/server';
+import { canSkipCard as kitCanSkipCard } from '@builddai/ai-kit/chat/server';
 import { effectiveClass, startsUnattendedWork } from './tools';
 import { ALL_CHAT_TOOL_SPECS, NOT_IN_CHAT, opSpec, opsOf, TOOL_GROUPS, type ToolGroup } from './registry';
 
@@ -79,7 +79,7 @@ export function toolPermissionRows(allowed: ReadonlySet<ToolGroup>): ChatToolPer
 }
 
 /** Is anything a tool returned in the messages the model is reading? (the kit's taint check) */
-export { contentInContext, toolOutputInHistory } from '@buildd/ai-kit/chat/server';
+export { contentInContext, toolOutputInHistory } from '@builddai/ai-kit/chat/server';
 
 /**
  * Fields a skipped card may carry, for tools whose schema passes extra fields

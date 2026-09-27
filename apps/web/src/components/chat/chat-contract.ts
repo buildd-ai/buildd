@@ -19,7 +19,7 @@ import {
   type BuilddObjectRef,
   type ChatEventData,
 } from '@buildd/shared';
-import type { ChatMessage, ChatPart, ChatToolPart } from '@buildd/ai-kit/chat/contract';
+import type { ChatMessage, ChatPart, ChatToolPart } from '@builddai/ai-kit/chat/contract';
 
 // The shared contract (packages/shared/src/chat.ts) is the source of truth.
 export {
@@ -48,7 +48,7 @@ export {
   type ChatToolPart,
   type ToolApproval,
   type ToolPartState,
-} from '@buildd/ai-kit/chat/contract';
+} from '@builddai/ai-kit/chat/contract';
 
 export interface ChatMessageMetadata {
   /** ISO timestamp the message was saved. */
@@ -63,7 +63,7 @@ export interface ChatMessageMetadata {
   durationMs?: number;
 }
 
-export type { ChatMessage } from '@buildd/ai-kit/chat/contract';
+export type { ChatMessage } from '@builddai/ai-kit/chat/contract';
 
 export function messageMeta(m: ChatMessage): ChatMessageMetadata {
   return m.metadata && typeof m.metadata === 'object' ? (m.metadata as ChatMessageMetadata) : {};

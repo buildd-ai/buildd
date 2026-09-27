@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ['@buildd/shared', '@buildd/core', '@buildd/ai-kit'],
+  transpilePackages: ['@buildd/shared', '@buildd/core', '@builddai/ai-kit'],
   // @ast-grep/napi is a native napi binary loaded via dynamic import() in
   // packages/core/knowledge-store/symbol-extractor.ts. Turbopack statically
   // traces the dynamic import and cannot place the .node asset in an ESM
