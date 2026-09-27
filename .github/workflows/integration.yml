@@ -276,6 +276,14 @@ jobs:
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
+      - name: Seed integration test fixtures
+        if: steps.sync.outputs.machine_online != 'false'
+        run: bun run scripts/seed-integration-fixtures.ts
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
+
       - name: Raise concurrency limits for CI
         if: steps.sync.outputs.machine_online != 'false'
         run: |
