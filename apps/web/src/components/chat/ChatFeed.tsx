@@ -13,6 +13,7 @@ import { feedSegments, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { ToolCallGroup } from './ToolCallRows';
 import { ObjectsSegment } from './objects/registry';
+import TurnFeedback from './TurnFeedback';
 
 export interface ChatAgent {
   name: string;
@@ -92,6 +93,7 @@ function AssistantMessage({ m, agent }: { m: ChatMessage; agent: ChatAgent }) {
           {meta.durationMs != null && <span>{`· ${(meta.durationMs / 1000).toFixed(1)}s`}</span>}
         </div>
         {segs.map(s => <Segment key={s.key} seg={s} />)}
+        {m.role === 'assistant' && <TurnFeedback messageId={m.id} />}
       </div>
     </div>
   );

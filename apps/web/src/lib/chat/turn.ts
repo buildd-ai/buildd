@@ -37,7 +37,8 @@ import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResu
 import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
-import { resolveChatModel, turnCostUsd, type ChatTier, type ResolvedChatModel } from './models';
+import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
+import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
 import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
@@ -75,7 +76,9 @@ export interface TurnDeps {
    */
   limits: (args: { teamId: string; userId: string; now: Date }) => Promise<LimitVerdict>;
   route?: (input: Parameters<typeof routeTurn>[0]) => Promise<TurnRoute>;
-  resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string }) => Promise<ResolvedChatModel>;
+  resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string; pool?: ChatPoolContext }) => Promise<ResolvedChatModel>;
+  /** Persist a tier-pool assignment for a saved assistant turn. */
+  recordPoolAssignment?: typeof recordChatPoolAssignment;
   makeApi: ChatToolDeps['makeApi'];
   actionContext: ActionContext;
   /** Team memory for recall/learn (see ChatToolDeps.memory). */
@@ -204,9 +207,18 @@ export async function runChatTurn(args: {
   }
 
   // 2. A model for the tier, on the caller's key, else the workspace's, else the team's.
-  let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id });
+  // The tier's chat pool may enrol the turn (docs/design/tier-model-pools.md):
+  // a turn continuing the previous turn's chain keeps its arm.
+  const prevAssistant = stored.filter(m => m.role === 'assistant').at(-1);
+  const pool: ChatPoolContext = {
+    conversationId: conv.id,
+    drawKey: `${conv.id}#${stored.length}`,
+    previous: prevAssistant ? { id: prevAssistant.id, tier: prevAssistant.tier ?? null, createdAt: new Date(prevAssistant.createdAt) } : null,
+    now,
+  };
+  let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, pool });
   if (!model.ok && route.tier !== FALLBACK_TIER) {
-    model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id });
+    model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, pool });
   }
   if (!model.ok) return unavailable('no_key', 409, { provider: model.provider });
   const resolved = model;
@@ -293,6 +305,7 @@ export async function runChatTurn(args: {
     entry,
   })}${dockedBlock}`;
 
+  const startedAt = Date.now();
   const result = (deps.streamTextImpl ?? streamText)({
     model: resolved.model as LanguageModel,
     instructions,
@@ -323,6 +336,7 @@ export async function runChatTurn(args: {
             inputTokens: u?.inputTokens ?? 0,
             outputTokens: u?.outputTokens ?? 0,
             costUsd: turnCostUsd(resolved.modelId, u, meta),
+            latencyMs: Date.now() - startedAt,
           };
         } catch { /* aborted streams may have no usage */ }
 
@@ -335,6 +349,8 @@ export async function runChatTurn(args: {
               inputTokens: prior.inputTokens + usage.inputTokens,
               outputTokens: prior.outputTokens + usage.outputTokens,
               costUsd: (prior.costUsd ?? 0) + (usage.costUsd ?? 0),
+              // Time to the reply the user first saw, not the approval resume.
+              ...(prior.latencyMs != null ? { latencyMs: prior.latencyMs } : {}),
             } : usage ?? prior ?? null,
             model: resolved.modelId,
           });
@@ -343,6 +359,8 @@ export async function runChatTurn(args: {
             id: messageId, conversationId: conv.id, role: 'assistant', parts,
             tier: resolved.tier, model: resolved.modelId, usage,
           });
+          // A continuation extends a turn that already has its row.
+          if (resolved.pool) await (deps.recordPoolAssignment ?? recordChatPoolAssignment)(resolved.pool, { messageId });
         }
         await recordApprovalRequests({ conversationId: conv.id, messageId, userId: user.id, parts });
         await pingConversation(conv.id, 'message', messageId);

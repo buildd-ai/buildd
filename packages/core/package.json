@@ -52,6 +52,8 @@
     "./experiment-lineage": "./experiment-lineage.ts",
     "./model-routing-experiment": "./model-routing-experiment.ts",
     "./model-routing-experiment-source": "./model-routing-experiment-source.ts",
+    "./tier-pool": "./tier-pool.ts",
+    "./tier-pool-source": "./tier-pool-source.ts",
     "./cbm-access-experiment": "./cbm-access-experiment.ts",
     "./cbm-access-experiment-source": "./cbm-access-experiment-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
