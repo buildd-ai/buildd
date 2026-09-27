@@ -59,13 +59,9 @@ import { attachRoleEnvSecrets } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachExternalContextProviders,
-  attachKnowledgeContext,
-  attachSubjectPriorWork,
-  attachDiscrepancyContext,
   attachTaskAreaScope,
-  predictTaskAreas,
 } from './context-injection';
-import { attachMissionHandoff } from './mission-handoff-injection';
+import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
   attachClaudeCredentials,
@@ -2026,12 +2022,6 @@ export async function POST(req: NextRequest) {
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
 
-  // Predict each task's file area from what similar COMPLETED tasks actually
-  // touched, before any block is built — attachKnowledgeContext uses it as its
-  // path filter. Advisory and never written to tasks.path_manifest; see
-  // @buildd/core/task-area-prediction.
-  const taskAreaPredictions = await predictTaskAreas(filteredTasks);
-
   // Count dependents for each claimed task (for handoff announcement). This
   // scans OTHER tasks' dependsOn arrays for a claimed id, not the claimed
   // tasks' own dependsOn — a dependent can never be claimed in the same batch
@@ -2081,16 +2071,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Prompt-context injection. ORDER IS THE CONTRACT: these five append to the
-  // same resolvedContextProviders rail and the runner concatenates it in order.
-  // See ./context-injection.
+  // Prompt-context injection. ORDER IS THE CONTRACT: these six append to the
+  // same resolvedContextProviders rail and the runner concatenates it in
+  // order — external providers, mission handoff, knowledge, subject-prior-work,
+  // discrepancy, task-area scope. See ./context-injection and
+  // ./prompt-context-pipeline for why the middle four run concurrently without
+  // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
-  // Track sources rendered by handoff for knowledge context dedupe
-  const handoffExcludedSources = new Set<string>();
-  await attachMissionHandoff(claimedWorkers, filteredTasks, handoffExcludedSources);
-  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions, handoffExcludedSources);
-  await attachSubjectPriorWork(claimedWorkers, filteredTasks);
-  await attachDiscrepancyContext(claimedWorkers, filteredTasks);
+  const taskAreaPredictions = await runDependentContextInjections(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
