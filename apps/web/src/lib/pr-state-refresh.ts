@@ -18,6 +18,7 @@
  * out of this fast path, in-process, for FAILURE_BACKOFF_MS — see below.
  */
 
+import { recordEvent, prMergedEvent } from '@/lib/subscriptions';
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
@@ -321,6 +322,8 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         }
 
         if (didMerge) {
+          // Same dedupe key as the webhook: a merge it already reported writes nothing.
+          await recordEvent(prMergedEvent({ repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl }));
           // The merge belongs to the PR: stamp any other row carrying it (a
           // retry attempt that adopted the PR number). See lib/pr-merge-stamp.
           const siblings = await stampPrMergedOnAllRows({

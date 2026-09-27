@@ -15,6 +15,7 @@ import { notify } from '@/lib/pushover';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { sendTaskCallback } from '@/lib/task-callback';
+import { recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent } from '@/lib/subscriptions';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -1065,6 +1066,11 @@ export async function PATCH(
       void import('@/lib/chat/mission-events')
         .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
         .catch(() => {});
+    }
+    // Subscriptions ledger: "tell me when this task needs input". The key is
+    // per question, so the runner re-sending the same waitingFor writes one row.
+    if (worker.taskId) {
+      await recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
     }
   }
   // Auto-clear waitingFor when worker resumes running
@@ -3601,6 +3607,13 @@ export async function PATCH(
                 .then(m => m.postTaskCompletedEvent({ taskId }))
                 .catch(() => {});
             }
+            // Subscriptions ledger. Never throws. Title omitted for sensitive workspaces.
+            await recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
+              taskId,
+              workerId: id,
+              title: isSensitive ? null : taskRecord.title,
+              workspaceId: worker.workspaceId,
+            }));
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: isSensitive
