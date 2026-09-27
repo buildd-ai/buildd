@@ -7,8 +7,11 @@
  * On a phone the same object opens as a sheet over the conversation.
  *
  * The canvas (docs/design/chat-canvas.md): crumbs for who you're talking to
- * and about what, the live object pinned at the top, an orange line scanning
- * the top edge while a turn streams, a soft conversation, and the composer.
+ * and about what, the live object pinned at the top, a soft conversation over
+ * the sea (sea.ts), and the composer, whose top edge carries the one glow while
+ * a turn streams.
+ * Before the first message: the mood, a hero line and two picked questions
+ * (canvas-empty.ts), all square.
  *
  * Transport-agnostic: `ChatConversation` (useChat) and the dev fixtures page
  * both drive it with messages and callbacks.
@@ -24,9 +27,14 @@ import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
 import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-model';
 import { ObjectPane } from './objects/registry';
 import PinnedObject from './objects/PinnedObject';
-import { canvasGreeting, canvasSuggestions } from './canvas-empty';
+import SeaLayer from './SeaLayer';
+import { useHideNeedsInputBannerOnPhone } from '@/lib/needs-input-hidden';
+import { seaMood } from './sea';
+import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
+import { MissionAskAbout, MissionContextCard, MissionScopeCell } from './MissionSheet';
+import { objectSheetTitle } from './mission-sheet';
 
 export interface ChatWorkspaceProps {
   messages: readonly ChatMessage[];
@@ -60,8 +68,10 @@ export interface ChatWorkspaceProps {
   focusRef?: BuilddObjectRef | null;
   /** Where "+ New chat" goes. */
   newChatHref?: string;
-  /** The conversation list, shown above the feed on the empty state. */
+  /** The conversation list, shown above the feed on the empty state (desktop; a phone reaches it via History). */
   emptyState?: ReactNode;
+  /** A phone's history view (/app/chat?view=history): the list in place of the empty canvas. */
+  historyOpen?: boolean;
   /** Start with the pane closed: chat full width, objects as inline cards. */
   initialPaneClosed?: boolean;
   /** The composer's placeholder when nothing is docked ("Describe the outcome you want…"). */
@@ -77,6 +87,12 @@ export interface ChatWorkspaceProps {
   formFallbackHref?: string | null;
   /** How the chat was opened, for the empty canvas's suggestions. */
   entryIntent?: 'mission' | 'task' | null;
+  /**
+   * What waits on the viewer and how many agents are at work (the chat page's
+   * context panel data). Sets the empty canvas's mood and picked questions;
+   * null (the summoned canvas) claims no mood.
+   */
+  pulse?: CanvasPulse | null;
   /**
    * `page`: /app/chat, with the docked pane. `overlay`: summoned over another
    * page (ChatCanvasOverlay): no pane, a close button, objects open on the page
@@ -102,8 +118,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
     messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
-    newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
-    composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null,
+    newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
+    composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null, pulse = null,
     variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip, pinOpenLabel,
   } = props;
   const overlay = variant === 'overlay';
@@ -113,6 +129,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   ));
   const [sheet, setSheet] = useState<BuilddObjectRef | null>(null);
   const [draft, setDraft] = useState('');
+  // The overline's date, fixed at mount (the server's clock may differ: suppressHydrationWarning below).
+  const [now] = useState(() => new Date());
   const composer = useRef<ChatComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -191,14 +209,55 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const narrow = docked || overlay;
   const busy = status === 'submitted' || status === 'streaming';
   const lastIsUser = messages[messages.length - 1]?.role === 'user';
+  // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
+  // "Mission sheet"). An opaque sheet with a context card; the title shows once.
+  const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
+  const missionEmpty = !!missionSheet && messages.length === 0;
 
   // The crumbs: who you're talking to, where, and about what.
   const wsName = workspaceId ? workspaces.find(w => w.id === workspaceId)?.name ?? null : routedScope(messages)?.name ?? null;
-  const header = (
-    <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] px-4 py-2.5 md:px-6">
-      {!overlay && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
+  // A phone (mobile chat v3): `CHAT / new` left, `HISTORY →` right, in place
+  // of the back arrow. Desktop keeps the agent / workspace / title crumbs.
+  const phoneCrumbs = !overlay && !crumbs;
+  const isNew = !title && messages.length === 0;
+  const sheetHeader = missionSheet && (
+    <header data-testid="chat-header" data-sheet="mission" className="flex h-12 shrink-0 items-stretch border-b border-[var(--chat-rule)]">
+      <p data-testid="sheet-crumbs" className="flex min-w-0 flex-1 items-center gap-1.5 px-4 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
+        <span className="text-[var(--chat-text)]">Ask</span>
+        <span aria-hidden="true" className="text-[var(--chat-dim)]">/</span>
+        <span className="truncate">This mission</span>
+      </p>
+      {fullChatHref && (
+        <Link
+          href={fullChatHref}
+          data-testid="canvas-full-chat"
+          className="inline-flex shrink-0 items-center border-l border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+        >
+          Full screen ↗
+        </Link>
+      )}
+      <button
+        type="button"
+        data-testid="canvas-close"
+        onClick={onClose}
+        aria-label="Close chat"
+        className="grid h-12 w-12 shrink-0 place-items-center border-l border-[var(--chat-rule)] font-mono text-[16px] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+      >
+        <span aria-hidden="true">✕</span>
+      </button>
+    </header>
+  );
+  const header = sheetHeader || (
+    <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 md:bg-transparent md:px-6">
+      {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
       {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
+        {phoneCrumbs && (
+          <>
+            <span data-testid="chat-mobile-section" className="shrink-0 text-[13px] font-bold uppercase tracking-[.12em] text-[var(--chat-text)] md:hidden">Chat</span>
+            <span aria-hidden="true" className="text-[var(--chat-muted)] md:hidden">/</span>
+          </>
+        )}
         <span className="hidden shrink-0 items-center gap-2 text-text-secondary md:inline-flex">
           <AgentAvatar agent={agent} size="xs" />
           <span className="font-semibold text-text-primary">{agent.name}</span>
@@ -210,7 +269,14 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           </>
         )}
         <span aria-hidden="true" className="hidden text-text-muted md:inline">/</span>
-        <h1 data-testid="chat-title" className="min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px]">{shownTitle}</h1>
+        {phoneCrumbs && (historyOpen || isNew) ? (
+          <h1 data-testid="chat-title" className="min-w-0 truncate text-[13px] text-[var(--chat-muted)] md:font-semibold md:text-text-primary">
+            <span data-testid="chat-title-mobile" className="md:hidden">{historyOpen ? 'history' : 'new'}</span>
+            <span className="hidden md:inline">{shownTitle}</span>
+          </h1>
+        ) : (
+          <h1 data-testid="chat-title" className={`min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px] ${phoneCrumbs ? 'max-md:text-[13px] max-md:font-normal max-md:text-[var(--chat-muted)]' : ''}`}>{shownTitle}</h1>
+        )}
       </nav>
       )}
       {overlay ? (
@@ -219,7 +285,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             <Link
               href={fullChatHref}
               data-testid="canvas-full-chat"
-              className="inline-flex min-h-10 shrink-0 items-center rounded-[10px] px-2.5 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary"
+              className="inline-flex min-h-10 shrink-0 items-center px-2.5 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary"
             >
               Open full chat
             </Link>
@@ -229,20 +295,31 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             data-testid="canvas-close"
             onClick={onClose}
             aria-label="Close chat"
-            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] px-2 font-convo text-[18px] text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:min-h-10 md:min-w-10"
+            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-2 font-convo text-[18px] text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:min-h-10 md:min-w-10"
           >
             <Kbd>Esc</Kbd>
             <span aria-hidden="true">✕</span>
           </button>
         </>
       ) : (
+        <>
+        {phoneCrumbs && (
+          <Link
+            href={historyOpen ? newChatHref : '/app/chat?view=history'}
+            data-testid="chat-history-link"
+            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden"
+          >
+            {historyOpen ? 'New →' : 'History →'}
+          </Link>
+        )}
         <Link
           href={newChatHref}
           data-testid="chat-new"
-          className="hidden min-h-9 shrink-0 items-center rounded-[10px] px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex"
+          className="hidden min-h-9 shrink-0 items-center px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex"
         >
           + New chat
         </Link>
+        </>
       )}
     </header>
   );
@@ -252,35 +329,74 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const aboutRef = focusRef && !focusOpensSheet ? focusRef : null;
   const pin = canvasPin(messages, aboutRef);
   const pinInPane = !!pin && !!focus && refKey(pin) === refKey(focus);
-  const suggestions = messages.length === 0 ? canvasSuggestions({ intent: entryIntent, about: aboutRef && (aboutRef.kind === 'mission' || aboutRef.kind === 'task') ? aboutRef.kind : null }) : [];
+  const aboutKind = aboutRef && (aboutRef.kind === 'mission' || aboutRef.kind === 'task') ? aboutRef.kind : null;
+  const suggestions = messages.length === 0 ? canvasSuggestions({ intent: entryIntent, about: aboutKind }, pulse) : [];
+  const mood = canvasMood(pulse);
+  const plainCanvas = !aboutRef && !entryIntent;
+  const pickedLine = plainCanvas ? pickedStatus(pulse) : null;
+  const pick = (sg: (typeof suggestions)[number]) => {
+    if (sg.send) send(sg.text);
+    else { setDraft(sg.text); requestAnimationFrame(() => composer.current?.focus()); }
+  };
 
-  const emptyCanvas = messages.length === 0 && (
-    <div data-testid="canvas-empty" className="mb-8 mt-2 md:mt-10">
-      <p className="font-convo text-[22px] font-medium leading-snug text-text-primary md:text-[26px]">
-        {canvasGreeting(viewerName, aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null)}
+  // The empty canvas (docs/design/chat-canvas.md): an overline with the mood,
+  // a hero line in the voice face, and two picked questions as square rows.
+  const hero = messages.length === 0
+    ? canvasHero({ pulse, name: viewerName, about: aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null, intent: entryIntent, now })
+    : null;
+  // The needs-you hero already says what waits on the viewer: on a phone the
+  // global banner above the page would repeat it in a third accent colour.
+  useHideNeedsInputBannerOnPhone(!overlay && hero?.mood === 'needs');
+  // The plain new chat on a phone: hero at the top, PICKED FOR YOU anchored
+  // just above the composer. Scoped chats and the history view keep flowing.
+  const anchored = !!hero && plainCanvas && !overlay && !historyOpen;
+  const emptyCanvas = hero && (
+    <div
+      data-testid="canvas-empty"
+      data-mood={hero.mood ?? undefined}
+      data-layout={anchored ? 'anchored' : undefined}
+      className={`mb-8 mt-2 md:mt-10 ${anchored ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
+    >
+      <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
+        {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
+        {hero.overline}
       </p>
-      {!aboutRef && !entryIntent && (
-        <p className="mt-2 font-convo text-[15px] leading-relaxed text-text-secondary">
-          Ask about your work in plain words, or describe something to build. I&apos;ll check with you before I change anything.
-        </p>
+      <p className={`mt-4 font-voice text-[var(--chat-text)] ${plainCanvas ? 'text-[44px] leading-[1.02] tracking-[-0.02em]' : 'text-[28px] leading-[1.1] tracking-[-0.01em]'}`}>
+        {hero.hero}
+      </p>
+      {hero.sub && (
+        <p suppressHydrationWarning className="mt-3 font-voice text-[20px] italic leading-snug text-[var(--chat-muted)]">{hero.sub}</p>
       )}
+      {/* Phone: open sea between the hero and the picked rows, which sit
+          right above the composer (the v3 frames). */}
+      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className="max-md:min-h-7 max-md:flex-1" />}
       {suggestions.length > 0 && (
-        <div data-testid="canvas-suggestions" className="mt-5 flex flex-wrap gap-2">
-          {suggestions.map(sg => (
-            <button
-              key={sg.label}
-              type="button"
-              data-testid="canvas-suggestion"
-              onClick={() => {
-                if (sg.send) send(sg.text);
-                else { setDraft(sg.text); requestAnimationFrame(() => composer.current?.focus()); }
-              }}
-              className="min-h-11 rounded-[999px] bg-[var(--convo-soft)] px-4 font-convo text-[14px] text-text-primary ring-1 ring-inset ring-[var(--convo-line)] hover:bg-[var(--convo-me)] md:min-h-10"
-            >
-              {sg.label}
-            </button>
-          ))}
-        </div>
+        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? 'md:mt-7' : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
+          <div className="flex h-[30px] items-center justify-between gap-3 border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
+            <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
+            {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
+          </div>
+          <ul className="divide-y divide-[var(--chat-rule)]">
+            {suggestions.map((sg, i) => {
+              const copper = sg.tone === 'needs';
+              return (
+                <li key={sg.label}>
+                  <button
+                    type="button"
+                    data-testid="canvas-suggestion"
+                    data-tone={sg.tone}
+                    onClick={() => pick(sg)}
+                    className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--chat-raised)]"
+                  >
+                    <span aria-hidden="true" className={`shrink-0 font-mono text-[11px] ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-dim)]'}`}>{String(i + 1).padStart(2, '0')}</span>
+                    <span data-testid="canvas-suggestion-label" className={`min-w-0 flex-1 font-voice text-[19px] leading-tight ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-text)]'}`}>{sg.label}</span>
+                    <span aria-hidden="true" className={`shrink-0 font-mono text-[14px] ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-muted)]'}`}>→</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
     </div>
   );
@@ -289,13 +405,16 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     <section
       data-testid="chat-column"
       data-canvas={variant}
+      data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative flex h-full min-h-0 min-w-0 flex-col bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
+      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
     >
-      {busy && <div data-testid="canvas-scan" aria-hidden="true" className="canvas-scan z-10" />}
+      {/* The sea: soft pools behind the phone canvas, coloured by mood. The
+          summoned overlay is an opaque sheet and draws none. */}
+      {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden" />}
       {header}
       {strip}
-      {pin && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
+      {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
       {/* The top edge fades: a line cut off under the header reads as a fade,
           not as stray glyphs. py-6 keeps the first message clear of it. */}
       <div
@@ -304,14 +423,22 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         data-testid="chat-scroller"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
       >
-        <div ref={content} className={`mx-auto px-4 py-6 ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
-          {emptyCanvas}
-          {messages.length === 0 && emptyState}
-          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} error={error} />
+        <div ref={content} className={`mx-auto px-4 py-6 ${anchored && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col' : ''} ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
+          {missionEmpty && missionSheet ? (
+            <div data-testid="mission-sheet-empty" className="mb-6">
+              <MissionContextCard objRef={missionSheet} />
+              <MissionAskAbout objRef={missionSheet} onPick={pick} />
+            </div>
+          ) : emptyCanvas}
+          {messages.length === 0 && emptyState && (
+            <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block'}>{emptyState}</div>
+          )}
+          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
-      <div className={`px-3 pb-3 pt-2 md:pb-5 ${narrow ? 'md:px-6' : 'md:px-8'} ${overlay ? 'pb-[max(0.75rem,env(safe-area-inset-bottom))]' : ''}`}>
+      {/* Phone: the composer is a full-bleed slab down to the safe area. */}
+      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] md:bg-transparent md:pb-5 md:pt-2 ${narrow ? 'md:px-6' : 'md:px-8'}`}>
         <div className={narrow ? '' : 'mx-auto max-w-[820px]'}>
           <ChatComposer
             ref={composer}
@@ -320,7 +447,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             onSend={send}
             onStop={onStop}
             busy={busy}
-            placeholder={composerPlaceholder ?? (pin ? 'Ask about this, or anything else…' : undefined)}
+            placeholder={composerPlaceholder ?? (pin ? 'Ask about this, or anything else…' : messages.length === 0 ? canvasPlaceholder(suggestions) : undefined)}
+            mood={busy ? null : mood}
             workspaces={workspaces}
             workspaceId={workspaceId}
             onWorkspaceChange={onWorkspaceChange}
@@ -333,9 +461,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             onTierChange={onTierChange}
             costRefreshKey={costRefreshKey}
             compact={narrow}
+            scopeLock={missionSheet ? <MissionScopeCell objRef={missionSheet} /> : undefined}
           />
           {formFallbackHref && messages.length === 0 && (
-            <div className="mt-2 flex justify-end">
+            <div className="hidden justify-end md:mt-2 md:flex">
               <Link
                 href={formFallbackHref}
                 data-testid="chat-form-fallback"
@@ -390,7 +519,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           </aside>
         )}
       </div>
-      <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet?.fallbackText ?? ''} height="tall" testId="chat-object-sheet">
+      <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet ? objectSheetTitle(sheet) : ''} height="tall" testId="chat-object-sheet">
         {sheet && <ObjectPane objRef={sheet} variant="sheet" />}
       </BottomSheet>
     </ChatActionsProvider>

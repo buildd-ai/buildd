@@ -83,3 +83,21 @@ describe('multi-currency story: visual review', () => {
     expect(summary.content).toContain(`${shots.length} screens reviewed, all ok`);
   });
 });
+
+/**
+ * The chat canvas's needs-you mood reads workers in `waiting_input` in the
+ * viewer's workspaces (loadChatPageContext). The story has one such window: w8
+ * asks at 14:28 and Maya replies at 16:54. A storyboard capture of the
+ * needs-you canvas uses `advance: "14:30"`; pin the window so that stays true.
+ */
+describe('multi-currency story: a needs-you window for the chat canvas', () => {
+  const at = (op: string, worker: string) => story.timeline.find((e) => e.op === op && e.worker === worker)?.t;
+  test('w8 waits on the viewer from 14:28 until the reply at 16:54, so 14:30 is inside it', () => {
+    const ask = at('waiting_input', 'w8')!;
+    const reply = at('human_reply', 'w8')!;
+    expect(ask).toBeLessThanOrEqual(14 * 60 + 30);
+    expect(reply).toBeGreaterThan(14 * 60 + 30);
+    expect(story.timeline.filter((e) => e.t > ask && e.t < reply && e.worker === 'w8')).toEqual([]);
+    expect(workers.find((w) => w.key === 'w8')?.workspaceId).toBe('ws');
+  });
+});

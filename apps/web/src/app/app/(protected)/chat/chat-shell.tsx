@@ -11,12 +11,12 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
 import { getChatAvailability } from '@/lib/chat-availability';
 import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
-import { loadChatPageContext, type ChatPageContext } from '@/lib/chat/chat-page-data';
+import { loadChatPageContext, NEEDS_YOU_LIMIT, type ChatPageContext } from '@/lib/chat/chat-page-data';
+import { pulseNeedsYou, type CanvasPulse } from '@/components/chat/canvas-empty';
 import ChatSetupCard from '@/components/chat/ChatSetupCard';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import ChatContextPanel, { contextPanelModel } from '@/components/chat/ChatContextPanel';
 import { homeAudience } from '../home/home-view';
-import { ZonedTime } from '@/components/DisplayTimezone';
 import { isUuid } from '@/lib/uuid';
 import type { BuilddObjectRef } from '@/components/chat/chat-contract';
 import { eq } from 'drizzle-orm';
@@ -95,35 +95,26 @@ export function contextAside(data: ChatShellData) {
   );
 }
 
+/**
+ * The empty canvas's mood and picked questions, from the context panel's own
+ * data (no extra query): what waits on the viewer and the agents at work.
+ */
+export function canvasPulse(context: Pick<ChatPageContext, 'needsYou' | 'fleet'>): CanvasPulse {
+  return {
+    needsYou: pulseNeedsYou(context.needsYou),
+    needsYouCapped: context.needsYou.length >= NEEDS_YOU_LIMIT,
+    live: context.fleet?.live ?? 0,
+  };
+}
+
 export function firstName(user: { name: string | null; email: string | null }): string | null {
   const n = user.name?.trim();
   if (n) return n.split(/\s+/)[0];
   return user.email?.split('@')[0] ?? null;
 }
 
-/** The conversation list: auto titles, newest first. */
-export function ConversationList({ items, currentId }: { items: readonly ConversationListItem[]; currentId?: string | null }) {
-  if (items.length === 0) return null;
-  return (
-    <nav data-testid="conversation-list" aria-label="Conversations" className="mb-8">
-      <div className="mb-2 px-1 font-convo text-[13px] font-medium text-text-muted">Pick up where you left off</div>
-      <ul className="divide-y divide-[var(--convo-line)] overflow-hidden rounded-[14px] bg-[var(--convo-soft)]">
-        {items.map(c => (
-          <li key={c.id}>
-            <Link
-              href={`/app/chat/${c.id}`}
-              aria-current={c.id === currentId ? 'page' : undefined}
-              className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-[var(--convo-soft)]"
-            >
-              <span className={`min-w-0 flex-1 truncate font-convo text-[14.5px] ${c.untitled ? 'text-text-muted' : 'font-medium text-text-primary'}`}>{c.title}</span>
-              <ZonedTime value={c.lastMessageAt} format="datetime-short" className="shrink-0 font-mono text-[11.5px] text-text-muted" />
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </nav>
-  );
-}
+/** The conversation list: auto titles, newest first (components/chat/ConversationList.tsx). */
+export { default as ConversationList } from '@/components/chat/ConversationList';
 
 /**
  * "Ask about this mission/task": the object to dock, if it's in this team and
