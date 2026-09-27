@@ -86,7 +86,25 @@ describe('CodexBackend sandbox mode — bwrap availability', () => {
     expect(threadOpts.sandboxMode).toBe('danger-full-access');
   });
 
-  test('read-only mode is unaffected by bwrapSupported', async () => {
+  test('uses read-only when bwrapSupported is true', async () => {
+    await drain(
+      new CodexBackend().runStreamed({
+        ...BASE_OPTS,
+        sandboxMode: 'read-only',
+        bwrapSupported: true,
+      }),
+    );
+    expect(mockStartThread).toHaveBeenCalledTimes(1);
+    const threadOpts = mockStartThread.mock.calls[0][0];
+    expect(threadOpts.sandboxMode).toBe('read-only');
+  });
+
+  test('read-only mode also falls back to danger-full-access when bwrapSupported is false', async () => {
+    // Codex's 'read-only' sandbox mode still needs bwrap/user-namespaces to
+    // enforce the restriction (it isn't a no-op passed straight to the CLI).
+    // On a host where bwrap can't create namespaces, staying on 'read-only'
+    // fails every exec_command before it runs — this is exactly the failure
+    // a reviewer task (kind: 'analysis' -> sandboxMode: 'read-only') hit.
     await drain(
       new CodexBackend().runStreamed({
         ...BASE_OPTS,
@@ -96,6 +114,6 @@ describe('CodexBackend sandbox mode — bwrap availability', () => {
     );
     expect(mockStartThread).toHaveBeenCalledTimes(1);
     const threadOpts = mockStartThread.mock.calls[0][0];
-    expect(threadOpts.sandboxMode).toBe('read-only');
+    expect(threadOpts.sandboxMode).toBe('danger-full-access');
   });
 });
