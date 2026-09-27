@@ -172,6 +172,14 @@ describe('ProviderKeyCard', () => {
     expect(host.querySelector('[data-testid="provider-key-square"]')!.getAttribute('data-tone')).toBe('muted');
   });
 
+  // Regression: a key that works in use but was never Tested showed WORKING
+  // next to "never checked", two states that read as a contradiction.
+  it('shows one state for a working key that was never tested', () => {
+    render({ status: RUNNER_KEY });
+    expect(host.querySelector('[data-testid="provider-key-health"]')!.textContent).toBe('working');
+    expect(host.textContent).not.toContain('never checked');
+  });
+
   it('marks the recommended provider', () => {
     render({ status: UNSET, recommended: true });
     expect(host.textContent).toContain('recommended');
