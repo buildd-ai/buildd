@@ -99,19 +99,27 @@ function tokenScore(token: string, hay: string): number | null {
     const atBoundary = direct === 0 || BOUNDARY.test(hay[direct - 1]);
     return 100 + token.length * 4 + (direct === 0 ? 30 : 0) + (atBoundary ? 20 : 0) - Math.min(direct, 20) * 0.5;
   }
-  let score = 0;
-  let h = 0;
-  let prev = -2;
-  for (const c of token) {
-    const at = hay.indexOf(c, h);
-    if (at === -1) return null;
-    score += at === prev + 1 ? 6 : 1;
-    if (at === 0 || BOUNDARY.test(hay[at - 1])) score += 4;
-    score -= Math.min(at - h, 10) * 0.3;
-    prev = at;
-    h = at + 1;
+  // Scattered match: the tightest window that holds the token in order. A
+  // window wider than about twice the token is noise ("deepseek" spread across
+  // "claude … opus … anthropic"), not a match.
+  const maxSpan = token.length * 2 + 3;
+  let best: number | null = null;
+  for (let start = hay.indexOf(token[0]); start !== -1; start = hay.indexOf(token[0], start + 1)) {
+    let score = 0;
+    let prev = start - 1;
+    let ok = true;
+    for (const c of token) {
+      const at = hay.indexOf(c, prev + 1);
+      if (at === -1 || at - start >= maxSpan) { ok = false; break; }
+      score += at === prev + 1 ? 6 : 1;
+      if (at === 0 || BOUNDARY.test(hay[at - 1])) score += 4;
+      prev = at;
+    }
+    if (!ok) continue;
+    score -= (prev - start + 1 - token.length) * 0.5;
+    if (best === null || score > best) best = score;
   }
-  return score;
+  return best;
 }
 
 /**

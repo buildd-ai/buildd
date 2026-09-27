@@ -78,6 +78,10 @@ describe('fuzzyScore', () => {
     expect(a).toBeGreaterThan(b);
   });
 
+  it('rejects a token scattered across unrelated words', () => {
+    expect(fuzzyScore('deepseek', 'anthropic/claude-opus-5 Claude Opus 5 Anthropic OpenRouter key')).toBeNull();
+  });
+
   it('empty query matches everything', () => {
     expect(fuzzyScore('  ', 'x')).toBe(0);
   });
