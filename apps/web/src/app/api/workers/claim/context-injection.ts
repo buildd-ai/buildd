@@ -158,6 +158,15 @@ export function appendContextBlock(cw: ClaimTasksResponse['workers'][number], bl
 }
 
 /**
+ * Where a computed block goes. Defaults to {@link appendContextBlock} so every
+ * existing caller is unaffected; ./prompt-context-pipeline passes a buffering
+ * sink instead so several of these attach functions can compute concurrently
+ * while still landing on the rail in the fixed contract order — see that
+ * file for why the order can't just be "whoever resolves first".
+ */
+export type ContextBlockSink = (cw: ClaimTasksResponse['workers'][number], block: string) => void;
+
+/**
  * Fetch the task's declared external context providers (5s timeout each) and
  * attach the ones that answered. Failures are logged, never fatal.
  */
@@ -230,7 +239,11 @@ export async function predictTaskAreas(
     if (!config.enabled) return out;
 
     const store = new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
-    for (const task of claimedTasks) {
+    // One task's prediction (a Voyage query plus a neighbour-paths lookup) does
+    // not depend on any other task's — the loop body's only writes are to this
+    // task's own `out` entry and its own DB row, so running the batch
+    // concurrently instead of one task at a time is safe.
+    await Promise.all(claimedTasks.map(async (task) => {
       const prediction = await predictTaskArea(store, {
         taskId: task.id,
         workspaceId: task.workspaceId,
@@ -240,10 +253,10 @@ export async function predictTaskAreas(
         console.warn('[claim] task-area prediction failed:', err?.message ?? err);
         return null;
       });
-      if (!prediction) continue;
+      if (!prediction) return;
       out.set(task.id, prediction);
       await recordTaskAreaPrediction(prediction);
-    }
+    }));
   } catch (err) {
     console.warn('[claim] task-area prediction unavailable:', (err as Error)?.message ?? err);
   }
@@ -279,10 +292,15 @@ export async function attachKnowledgeContext(
   claimedTasks: readonly ClaimedTask[],
   predictions?: ReadonlyMap<string, TaskAreaPrediction>,
   handoffExcludedSources?: Set<string>,
+  sink: ContextBlockSink = appendContextBlock,
 ): Promise<void> {
-  for (const cw of claimedWorkers) {
+  // Independent per worker — each iteration only reads the shared predictions
+  // map and excluded-sources set (both fully populated by the time this runs)
+  // and only writes its own `cw`, so the batch can run concurrently instead of
+  // one Voyage embed+rerank round trip at a time.
+  await Promise.all(claimedWorkers.map(async (cw) => {
     const task = claimedTasks.find(t => t.id === cw.taskId);
-    if (!task) continue;
+    if (!task) return;
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
     const teamId = (task as any).workspace?.teamId;
     const sensitive = (task as any).workspace?.dataClass === 'sensitive';
@@ -353,10 +371,10 @@ export async function attachKnowledgeContext(
     // on any failure; the extra .catch is belt-and-braces (claim must not 500).
     const entityCatalog = await buildEntityCatalogContext(goal, task.workspaceId).catch(() => '');
     if (entityCatalog) parts.push(entityCatalog);
-    if (parts.length === 0) continue;
+    if (parts.length === 0) return;
 
-    appendContextBlock(cw, parts.join('\n'));
-  }
+    sink(cw, parts.join('\n'));
+  }));
 }
 
 /**
@@ -370,6 +388,7 @@ export async function attachKnowledgeContext(
 export async function attachSubjectPriorWork(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  sink: ContextBlockSink = appendContextBlock,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);
@@ -384,7 +403,7 @@ export async function attachSubjectPriorWork(
     });
     if (!priorWork) continue;
 
-    appendContextBlock(cw, priorWork);
+    sink(cw, priorWork);
   }
 }
 
@@ -437,6 +456,7 @@ export async function attachTaskAreaScope(
 export async function attachDiscrepancyContext(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  sink: ContextBlockSink = appendContextBlock,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);
@@ -449,6 +469,6 @@ export async function attachDiscrepancyContext(
     });
     if (!block) continue;
 
-    appendContextBlock(cw, block);
+    sink(cw, block);
   }
 }

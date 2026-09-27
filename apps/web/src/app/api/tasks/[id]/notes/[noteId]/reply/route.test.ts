@@ -53,12 +53,12 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { POST } from './route';
 
-const params = Promise.resolve({ id: 'task-1', noteId: 'note-1' });
+const params = Promise.resolve({ id: '66666666-6666-4666-8666-666666666666', noteId: '77777777-7777-4777-8777-777777777777' });
 
 function createRequest(body?: any, apiKey?: string): NextRequest {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (apiKey) headers['authorization'] = `Bearer ${apiKey}`;
-  return new NextRequest('http://localhost:3000/api/tasks/task-1/notes/note-1/reply', {
+  return new NextRequest('http://localhost:3000/api/tasks/66666666-6666-4666-8666-666666666666/notes/77777777-7777-4777-8777-777777777777/reply', {
     method: 'POST',
     headers: new Headers(headers),
     body: JSON.stringify(body ?? {}),
@@ -66,9 +66,9 @@ function createRequest(body?: any, apiKey?: string): NextRequest {
 }
 
 const taskScopedQuestion = {
-  id: 'note-1',
+  id: '77777777-7777-4777-8777-777777777777',
   missionId: null,
-  taskId: 'task-1',
+  taskId: '66666666-6666-4666-8666-666666666666',
   workerId: 'worker-9',
   type: 'question',
   status: 'open',
@@ -100,7 +100,7 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', missionId: null });
+    mockTasksFindFirst.mockResolvedValue({ id: '66666666-6666-4666-8666-666666666666', workspaceId: 'ws-1', missionId: null });
     mockNotesFindFirst.mockResolvedValue({ ...taskScopedQuestion });
   });
 
@@ -110,6 +110,20 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
 
     const res = await POST(createRequest({ title: 'Use JWT' }), { params });
     expect(res.status).toBe(401);
+  });
+
+  it('404s a non-UUID task id without querying the db', async () => {
+    const res = await POST(createRequest({ title: 'Use JWT' }), { params: Promise.resolve({ id: 'a1b2c3d4', noteId: '77777777-7777-4777-8777-777777777777' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('404s a non-UUID note id without querying the db', async () => {
+    const res = await POST(createRequest({ title: 'Use JWT' }), { params: Promise.resolve({ id: '66666666-6666-4666-8666-666666666666', noteId: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the note does not belong to the task', async () => {
@@ -139,10 +153,10 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
     await POST(createRequest({ title: 'Use JWT' }), { params });
 
     const values = mockInsertValues.mock.calls[0][0] as any;
-    expect(values.taskId).toBe('task-1');
+    expect(values.taskId).toBe('66666666-6666-4666-8666-666666666666');
     expect(values.missionId).toBeNull();
     expect(values.workerId).toBe('worker-9');
-    expect(values.replyTo).toBe('note-1');
+    expect(values.replyTo).toBe('77777777-7777-4777-8777-777777777777');
     expect(values.type).toBe('reply');
     expect(values.authorType).toBe('user');
   });
@@ -153,7 +167,7 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
   // belong to a mission — replying to one 404'd, so a reply that WOULD have been
   // delivered could not be written at all.
   it('accepts a mission-scoped note attached to the task and keeps its mission scope', async () => {
-    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-1' });
+    mockTasksFindFirst.mockResolvedValue({ id: '66666666-6666-4666-8666-666666666666', workspaceId: 'ws-1', missionId: 'mission-1' });
     mockNotesFindFirst.mockResolvedValue({
       ...taskScopedQuestion,
       missionId: 'mission-1',
@@ -165,7 +179,7 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
     const values = mockInsertValues.mock.calls[0][0] as any;
     // Same scope as the question, so the delivery selection matches it.
     expect(values.missionId).toBe('mission-1');
-    expect(values.taskId).toBe('task-1');
+    expect(values.taskId).toBe('66666666-6666-4666-8666-666666666666');
   });
 
   // S6: an open mission page listens on the mission channel, so a reply to a
@@ -176,14 +190,14 @@ describe('POST /api/tasks/[id]/notes/[noteId]/reply', () => {
     await POST(createRequest({ title: 'Merge it' }), { params });
 
     const channelsHit = mockTriggerEvent.mock.calls.map((c: any[]) => c[0]);
-    expect(channelsHit).toEqual(['task-task-1', 'mission-mission-1']);
+    expect(channelsHit).toEqual(['task-66666666-6666-4666-8666-666666666666', 'mission-mission-1']);
   });
 
   it('announces a task-only reply on the task channel alone', async () => {
     await POST(createRequest({ title: 'Use JWT' }), { params });
 
     const channelsHit = mockTriggerEvent.mock.calls.map((c: any[]) => c[0]);
-    expect(channelsHit).toEqual(['task-task-1']);
+    expect(channelsHit).toEqual(['task-66666666-6666-4666-8666-666666666666']);
   });
 
   it('does not restrict the parent lookup to task-scoped notes', async () => {

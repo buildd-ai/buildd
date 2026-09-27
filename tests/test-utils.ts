@@ -178,6 +178,50 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
 }
 
 /**
+ * Find the integration test fixture workspace deterministically.
+ *
+ * Integration tests seeded via scripts/seed-integration-fixtures.ts create a
+ * workspace named 'integration-test-workspace'. This helper prioritizes that
+ * workspace to avoid non-deterministic failures when ephemeral branches inherit
+ * orphaned or unexpected workspaces.
+ *
+ * Resolution order:
+ *   1. Env var BUILDD_WORKSPACE_ID (exact match)
+ *   2. Workspace named 'integration-test-workspace' (seeded fixture)
+ *   3. Workspace with 'buildd' in the name (fallback heuristic)
+ *   4. First workspace in the list (final fallback)
+ *   5. Throws if none available
+ *
+ * @throws Error if no workspaces are available
+ */
+export async function findFixtureWorkspace(
+  api: ReturnType<typeof createTestApi>['api']
+): Promise<string> {
+  if (process.env.BUILDD_WORKSPACE_ID) {
+    return process.env.BUILDD_WORKSPACE_ID;
+  }
+
+  const { workspaces } = await api('/api/workspaces');
+  if (!workspaces.length) {
+    throw new Error('No workspaces available for testing');
+  }
+
+  const fixtureWorkspace = workspaces.find(
+    (w: any) => w.name === 'integration-test-workspace'
+  );
+  if (fixtureWorkspace) {
+    return fixtureWorkspace.id;
+  }
+
+  const builddWorkspace = workspaces.find((w: any) => w.name?.includes('buildd'));
+  if (builddWorkspace) {
+    return builddWorkspace.id;
+  }
+
+  return workspaces[0].id;
+}
+
+/**
  * fetch() against a runner's local UI server. State-changing requests (and the
  * config read) need the runner's local token, sent as X-Buildd-Local-Token:
  * BUILDD_LOCAL_TOKEN, else the token file in BUILDD_HOME (default ~/.buildd).

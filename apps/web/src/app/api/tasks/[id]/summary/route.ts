@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isGateSatisfied } from '@/lib/task-presentation';
 import { deriveTaskOrigin } from '@/lib/task-origin';
+import { isUuid } from '@/lib/uuid';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -21,6 +22,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid task id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
   const user = await getCurrentUser();
 
   if (!user) {

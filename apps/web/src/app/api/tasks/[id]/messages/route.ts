@@ -5,6 +5,7 @@ import { desc, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { isUuid } from '@/lib/uuid';
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
 export async function GET(
@@ -12,6 +13,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid task id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

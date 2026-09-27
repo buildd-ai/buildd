@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchLinearProgress, parseLinearUrl } from '@/lib/work-tracker';
 import type { TrackerProgressResponse } from '@/lib/tracker-progress-types';
+import { isUuid } from '@/lib/uuid';
 
 /** Check if a mission is accessible: team match OR open-access workspace. */
 async function hasMissionAccess(
@@ -91,6 +92,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

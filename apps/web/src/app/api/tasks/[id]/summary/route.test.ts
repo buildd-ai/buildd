@@ -73,6 +73,16 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.error).toBe('Unauthorized');
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const res = await callGET('a1b2c3d4');
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when task does not exist', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue(null);
@@ -153,7 +163,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns task summary for a completed task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-done',
+      id: '00000000-0000-4000-8000-000000000007',
       title: 'Completed task',
       status: 'completed',
       description: 'A finished task',
@@ -180,7 +190,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       branch: 'buildd/task-done',
     }]);
 
-    const res = await callGET('task-done');
+    const res = await callGET('00000000-0000-4000-8000-000000000007');
     expect(res.status).toBe(200);
 
     const data = await res.json();
@@ -192,7 +202,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns task summary for a pending task with no worker', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-pending',
+      id: '00000000-0000-4000-8000-00000000000a',
       title: 'Pending task',
       status: 'pending',
       description: null,
@@ -205,7 +215,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     });
     mockWorkersFindMany.mockResolvedValue([]);
 
-    const res = await callGET('task-pending');
+    const res = await callGET('00000000-0000-4000-8000-00000000000a');
     expect(res.status).toBe(200);
 
     const data = await res.json();
@@ -219,7 +229,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     // The API must forward this value as-is so consumers can coerce safely.
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-cost',
+      id: '00000000-0000-4000-8000-000000000006',
       title: 'Cost test task',
       status: 'completed',
       description: null,
@@ -246,7 +256,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       branch: null,
     }]);
 
-    const res = await callGET('task-cost');
+    const res = await callGET('00000000-0000-4000-8000-000000000006');
     expect(res.status).toBe(200);
 
     const data = await res.json();
@@ -259,7 +269,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('surfaces PR lifecycle + diff stats so the panel can render CI state without a GitHub read', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-pr',
+      id: '00000000-0000-4000-8000-00000000000c',
       title: 'PR task',
       status: 'completed',
       description: null,
@@ -290,7 +300,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       branch: 'buildd/task-pr',
     }]);
 
-    const res = await callGET('task-pr');
+    const res = await callGET('00000000-0000-4000-8000-00000000000c');
     expect(res.status).toBe(200);
 
     const data = await res.json();
@@ -303,7 +313,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns the task backend and null failover for a normal claude task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-claude',
+      id: '00000000-0000-4000-8000-000000000003',
       title: 'Claude task',
       status: 'running',
       description: null,
@@ -318,7 +328,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     });
     mockWorkersFindMany.mockResolvedValue([]);
 
-    const res = await callGET('task-claude');
+    const res = await callGET('00000000-0000-4000-8000-000000000003');
     const data = await res.json();
     expect(data.backend).toBe('claude');
     expect(data.failover).toBeNull();
@@ -327,7 +337,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('surfaces failover metadata when a task was flipped to codex', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-failover',
+      id: '00000000-0000-4000-8000-000000000009',
       title: 'Failed-over task',
       status: 'pending',
       description: null,
@@ -342,7 +352,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     });
     mockWorkersFindMany.mockResolvedValue([]);
 
-    const res = await callGET('task-failover');
+    const res = await callGET('00000000-0000-4000-8000-000000000009');
     const data = await res.json();
     expect(data.backend).toBe('codex');
     expect(data.failover?.from).toBe('claude');
@@ -352,7 +362,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('surfaces the latest error excerpt for a failed task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-failed',
+      id: '00000000-0000-4000-8000-000000000008',
       title: 'Failed task',
       status: 'failed',
       description: null,
@@ -370,7 +380,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       ts: new Date().toISOString(),
     }]);
 
-    const res = await callGET('task-failed');
+    const res = await callGET('00000000-0000-4000-8000-000000000008');
     expect(res.status).toBe(200);
 
     const data = await res.json();
@@ -384,7 +394,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns blockedByCount=0 for a pending task with no dependsOn', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-pending',
+      id: '00000000-0000-4000-8000-00000000000a',
       title: 'Pending task',
       status: 'pending',
       description: null,
@@ -400,7 +410,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     });
     mockWorkersFindMany.mockResolvedValue([]);
 
-    const res = await callGET('task-pending');
+    const res = await callGET('00000000-0000-4000-8000-00000000000a');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(0);
@@ -411,7 +421,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns blockedByCount=0 when all dependencies are completed with merged PRs', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-unblocked',
+      id: '00000000-0000-4000-8000-00000000000e',
       title: 'Unblocked task',
       status: 'pending',
       description: null,
@@ -433,7 +443,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       workers: [{ prUrl: 'https://example.test/pr/10', prNumber: 10, mergedAt: new Date().toISOString(), prLifecycleStatus: 'merged' }],
     }]);
 
-    const res = await callGET('task-unblocked');
+    const res = await callGET('00000000-0000-4000-8000-00000000000e');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(0);
@@ -442,7 +452,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns blockedByCount=1 when a dep is still pending (not completed)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-blocked',
+      id: '00000000-0000-4000-8000-000000000001',
       title: 'Blocked task',
       status: 'pending',
       description: null,
@@ -464,7 +474,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       workers: [],
     }]);
 
-    const res = await callGET('task-blocked');
+    const res = await callGET('00000000-0000-4000-8000-000000000001');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(1);
@@ -473,7 +483,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns blockedByCount=1 when a dep is completed but its PR is open and unmerged', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-pr-blocked',
+      id: '00000000-0000-4000-8000-00000000000b',
       title: 'PR-blocked task',
       status: 'pending',
       description: null,
@@ -495,7 +505,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       workers: [{ prUrl: 'https://example.test/pr/99', prNumber: 99, mergedAt: null, prLifecycleStatus: 'open' }],
     }]);
 
-    const res = await callGET('task-pr-blocked');
+    const res = await callGET('00000000-0000-4000-8000-00000000000b');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(1);
@@ -504,7 +514,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('does not count closed PRs as unresolved blockers', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-closed-pr',
+      id: '00000000-0000-4000-8000-000000000005',
       title: 'Closed PR dep task',
       status: 'pending',
       description: null,
@@ -526,7 +536,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       workers: [{ prUrl: 'https://example.test/pr/55', prNumber: 55, mergedAt: null, prLifecycleStatus: 'closed' }],
     }]);
 
-    const res = await callGET('task-closed-pr');
+    const res = await callGET('00000000-0000-4000-8000-000000000005');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(0);
@@ -543,7 +553,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('does not count a cancelled dep as a blocker', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-cancelled-dep',
+      id: '00000000-0000-4000-8000-000000000002',
       title: 'Cancelled dep task',
       status: 'pending',
       description: null,
@@ -567,7 +577,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       workers: [{ prUrl: 'https://example.test/pr/7', prNumber: 7, mergedAt: null, prLifecycleStatus: 'open' }],
     }]);
 
-    const res = await callGET('task-cancelled-dep');
+    const res = await callGET('00000000-0000-4000-8000-000000000002');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(0);
@@ -576,7 +586,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('does not query dep tasks for non-pending tasks', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-running',
+      id: '00000000-0000-4000-8000-00000000000d',
       title: 'Running task',
       status: 'running',
       description: null,
@@ -598,7 +608,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       waitingFor: null, branch: null, milestones: [],
     }]);
 
-    const res = await callGET('task-running');
+    const res = await callGET('00000000-0000-4000-8000-00000000000d');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(0);
@@ -608,7 +618,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('returns null lastError when the task has no error traces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-clean',
+      id: '00000000-0000-4000-8000-000000000004',
       title: 'Clean task',
       status: 'completed',
       description: null,
@@ -621,7 +631,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     });
     mockWorkersFindMany.mockResolvedValue([]);
 
-    const res = await callGET('task-clean');
+    const res = await callGET('00000000-0000-4000-8000-000000000004');
     const data = await res.json();
     expect(data.lastError).toBeNull();
   });
@@ -629,7 +639,7 @@ describe('GET /api/tasks/[id]/summary', () => {
   it('surfaces waiting_input status when worker is blocked', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-waiting',
+      id: '00000000-0000-4000-8000-00000000000f',
       title: 'Waiting task',
       status: 'running',
       description: null,
@@ -656,7 +666,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       branch: 'buildd/task-waiting',
     }]);
 
-    const res = await callGET('task-waiting');
+    const res = await callGET('00000000-0000-4000-8000-00000000000f');
     expect(res.status).toBe(200);
 
     const data = await res.json();

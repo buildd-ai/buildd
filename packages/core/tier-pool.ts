@@ -264,7 +264,7 @@ export interface PoolEligibilityInput {
 export function poolEligibility(input: PoolEligibilityInput): { eligible: true } | { eligible: false; reason: PoolIneligibleReason } {
   const no = (reason: PoolIneligibleReason) => ({ eligible: false as const, reason });
   if (!tierAllowsPool(input.tier)) return no('tier_excluded');
-  if (input.mode !== 'split' || input.frozen) return no('pool_not_split');
+  if (!poolTakesDraws(input.mode, input.frozen)) return no('pool_not_split');
   if (input.workspaceSensitive) return no('sensitive_workspace');
   if (input.workspaceOverride) return no('workspace_override');
   if (input.explicitModel) return no('explicit_model');
@@ -275,6 +275,11 @@ export function poolEligibility(input: PoolEligibilityInput): { eligible: true }
     return no('budget_pressure');
   }
   return { eligible: true };
+}
+
+/** Split and explore pools draw; pinned and frozen pools serve the incumbent. */
+export function poolTakesDraws(mode: PoolMode, frozen: boolean): boolean {
+  return (mode === 'split' || mode === 'explore') && !frozen;
 }
 
 /** A role floor names a tier, not a model, so it does not pin one. */

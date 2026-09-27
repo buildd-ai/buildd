@@ -6,6 +6,7 @@ import { runMission } from '@/lib/mission-run';
 import { db } from '@buildd/core/db';
 import { missions, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { isUuid } from '@/lib/uuid';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -21,6 +22,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
