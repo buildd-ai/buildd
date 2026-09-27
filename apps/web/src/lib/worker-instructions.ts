@@ -22,6 +22,13 @@ export type InstructionHistoryEntry = {
   message?: string;
   timestamp: number;
   deliveryState?: 'pending' | 'delivered';
+  /**
+   * `workers.turns` at send time — the baseline the Steer canvas measures
+   * "read at turn N" against (see `messageDeliveryStatus`). Absent on entries
+   * written before this field existed; those can reach 'delivered' but never
+   * 'read'.
+   */
+  turnAtSend?: number;
 };
 
 /** Cap on `workers.instructionHistory` length (JSONB bloat guard). */
@@ -52,15 +59,16 @@ export function isUnreachableWorkerStatus(status: string | null | undefined): bo
  */
 export function appendInstructionHistory(
   current: unknown,
-  opts: { message: string; isSensitive: boolean; deliveryState: 'pending' | 'delivered' },
+  opts: { message: string; isSensitive: boolean; deliveryState: 'pending' | 'delivered'; turnAtSend?: number },
 ): InstructionHistoryEntry[] {
   const history: InstructionHistoryEntry[] = Array.isArray(current)
     ? (current as InstructionHistoryEntry[])
     : [];
 
+  const turn = opts.turnAtSend != null ? { turnAtSend: opts.turnAtSend } : {};
   const entry: InstructionHistoryEntry = opts.isSensitive
-    ? { type: 'instruction', timestamp: Date.now(), deliveryState: opts.deliveryState }
-    : { type: 'instruction', message: opts.message, timestamp: Date.now(), deliveryState: opts.deliveryState };
+    ? { type: 'instruction', timestamp: Date.now(), deliveryState: opts.deliveryState, ...turn }
+    : { type: 'instruction', message: opts.message, timestamp: Date.now(), deliveryState: opts.deliveryState, ...turn };
 
   const updated = [...history, entry];
   if (updated.length > INSTRUCTION_HISTORY_CAP) {
@@ -103,4 +111,29 @@ export function markInstructionsDelivered(
       : deliveredText.includes(entry.message);
     return confirmed ? { ...entry, deliveryState: 'delivered' as const } : entry;
   });
+}
+
+/**
+ * One instruction's status for the Steer canvas: 'sent' (queued, not yet
+ * confirmed), 'delivered' (a consumer confirmed the agent received it, but it
+ * hasn't taken a turn since), or 'read at turn N' — the agent has since taken
+ * at least one more turn, so the instruction was in its context for that turn.
+ *
+ * N is fixed at `turnAtSend + 1`, the first turn that could have read it —
+ * not the worker's live, ever-climbing turn count, so the label doesn't keep
+ * changing after the fact. An entry written before `turnAtSend` existed, or a
+ * worker with no known turn count, can reach 'delivered' but never 'read'.
+ */
+export type MessageDeliveryStatus =
+  | { state: 'sent' }
+  | { state: 'delivered' }
+  | { state: 'read'; turn: number };
+
+export function messageDeliveryStatus(
+  entry: Pick<InstructionHistoryEntry, 'deliveryState' | 'turnAtSend'>,
+  currentTurns: number | null,
+): MessageDeliveryStatus {
+  if (entry.deliveryState !== 'delivered') return { state: 'sent' };
+  if (entry.turnAtSend == null || currentTurns == null || currentTurns <= entry.turnAtSend) return { state: 'delivered' };
+  return { state: 'read', turn: entry.turnAtSend + 1 };
 }

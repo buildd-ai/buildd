@@ -43,7 +43,7 @@ export async function GET(
     const worker = await db.query.workers.findFirst({
       where: eq(workers.taskId, id),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, instructionHistory: true },
+      columns: { id: true, instructionHistory: true, turns: true },
     });
 
     const messages = (worker?.instructionHistory as Array<{
@@ -51,9 +51,14 @@ export async function GET(
       message: string;
       timestamp: number;
       deliveryState?: 'pending' | 'delivered';
+      /** worker.turns at send time — see messageDeliveryStatus in lib/worker-instructions.ts. */
+      turnAtSend?: number;
     }> | null) ?? [];
 
-    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, messages });
+    // The Steer canvas resolves each message's sent → delivered → read status
+    // against the worker's *current* turn count, so it travels with the
+    // messages rather than needing its own round trip.
+    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, turns: worker?.turns ?? null, messages });
   } catch (error) {
     console.error('Get task messages error:', error);
     return NextResponse.json({ error: 'Failed to get task messages' }, { status: 500 });
