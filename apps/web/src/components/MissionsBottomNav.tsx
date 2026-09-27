@@ -39,7 +39,7 @@ export default function MissionsBottomNav({ nav = OPERATOR_NAV }: { nav?: NavCon
               {active && <span aria-hidden="true" data-testid="nav-active-bar" className="absolute top-0 left-1/2 h-[3px] w-10 -translate-x-1/2 bg-accent" />}
               <span data-testid="nav-tab-label">{tab.label}</span>
               {showBadge && (
-                <span data-testid="nav-tab-badge" className="absolute top-1.5 right-1 flex items-center justify-center min-w-4 h-4 px-0.5 text-[10px] leading-none font-bold bg-status-error text-white">
+                <span data-testid="nav-tab-badge" className="absolute top-1.5 right-1 flex items-center justify-center min-w-4 h-4 px-0.5 text-[11px] leading-none md:text-[10px] font-bold bg-status-error text-white">
                   {badgeCount}
                 </span>
               )}

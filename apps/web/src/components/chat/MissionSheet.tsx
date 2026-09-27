@@ -23,7 +23,7 @@ function Meter({ label, done, total, testId, unchecked }: { label: string; done:
   const segs = segments(done, total);
   return (
     <div data-testid={testId} className="min-w-0 px-3 py-2.5">
-      <p className="flex items-baseline justify-between gap-2 font-mono text-[10.5px] uppercase tracking-[.14em] text-[var(--chat-muted)]">
+      <p className="flex items-baseline justify-between gap-2 font-mono text-[11px] md:text-[10.5px] uppercase tracking-[.14em] text-[var(--chat-muted)]">
         <span>{label}</span>
         <span data-testid={`${testId}-count`} className="text-[var(--chat-text)]">{total > 0 ? `${done}/${total}` : 'none'}</span>
       </p>
@@ -51,9 +51,9 @@ export function MissionContextCard({ objRef }: { objRef: BuilddObjectRef }) {
     >
       <div className="px-3 pb-3 pt-2.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="font-mono text-[10.5px] uppercase tracking-[.16em] text-[var(--chat-muted)]">Mission</span>
+          <span className="font-mono text-[11px] md:text-[10.5px] uppercase tracking-[.16em] text-[var(--chat-muted)]">Mission</span>
           {mission && tone && (
-            <span data-testid="mission-context-status" className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[10.5px] uppercase tracking-[.12em] ${BADGE[tone]}`}>
+            <span data-testid="mission-context-status" className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] md:text-[10.5px] uppercase tracking-[.12em] ${BADGE[tone]}`}>
               {mission.stateLabel}
             </span>
           )}

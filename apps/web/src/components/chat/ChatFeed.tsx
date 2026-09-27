@@ -79,7 +79,7 @@ function IntentTag({ label }: { label: string }) {
       type="button"
       data-testid="feed-intent-tag"
       onClick={() => (document.querySelector('[data-testid="composer-scope-chip"]') as HTMLElement | null)?.click()}
-      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
+      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] md:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
     >
       {label}
     </button>
