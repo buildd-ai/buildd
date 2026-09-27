@@ -11,7 +11,7 @@
  */
 import { db } from '@buildd/core/db';
 import { releases, releaseTasks, tasks } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc } from 'drizzle-orm';
+import { and, eq, gte, inArray, desc } from 'drizzle-orm';
 
 export interface ListReleasesParams {
   workspaceId: string;
@@ -19,7 +19,13 @@ export interface ListReleasesParams {
   state?: string;
   /** Clamped to [1, 50]; defaults to 10. */
   limit?: number;
+  /** Only releases created in the last N days. */
+  sinceDays?: number;
+  /** Attach each release's shipped tasks (title, PR), from one extra query. */
+  withTasks?: boolean;
 }
+
+export interface ReleaseShippedTask { title: string | null; prNumber: number | null }
 
 export async function listReleasesQuery(params: ListReleasesParams) {
   const limit = Math.min(Math.max(1, Math.floor(params.limit ?? 10)), 50);
@@ -27,6 +33,9 @@ export async function listReleasesQuery(params: ListReleasesParams) {
   const conditions: Parameters<typeof and>[0][] = [eq(releases.workspaceId, params.workspaceId)];
   if (params.state) {
     conditions.push(eq(releases.state, params.state as 'dispatched' | 'deploying' | 'healthy' | 'failed' | 'degraded' | 'pending_external'));
+  }
+  if (params.sinceDays && params.sinceDays > 0) {
+    conditions.push(gte(releases.createdAt, new Date(Date.now() - params.sinceDays * 86_400_000)));
   }
 
   if (params.missionId) {
@@ -47,12 +56,26 @@ export async function listReleasesQuery(params: ListReleasesParams) {
     conditions.push(inArray(releases.id, releaseIds));
   }
 
-  return db
+  const rows = await db
     .select()
     .from(releases)
     .where(and(...conditions))
     .orderBy(desc(releases.createdAt))
     .limit(limit);
+  if (!params.withTasks || rows.length === 0) return rows;
+
+  const edges = await db
+    .select({ releaseId: releaseTasks.releaseId, title: tasks.title, prNumber: releaseTasks.prNumber })
+    .from(releaseTasks)
+    .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
+    .where(inArray(releaseTasks.releaseId, rows.map(r => r.id)));
+  const byRelease = new Map<string, ReleaseShippedTask[]>();
+  for (const e of edges) {
+    const list = byRelease.get(e.releaseId) ?? [];
+    list.push({ title: e.title, prNumber: e.prNumber });
+    byRelease.set(e.releaseId, list);
+  }
+  return rows.map(r => ({ ...r, tasks: byRelease.get(r.id) ?? [] }));
 }
 
 export interface ReleaseTaskEdge {

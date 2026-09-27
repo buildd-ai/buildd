@@ -85,7 +85,11 @@ export const WORKSPACE_MIN_CONFIDENCE = 0.85;
 const MAX_WORKSPACE_LABELS = 255;
 
 /** A workspace the turn may be routed to, with what it's about (repo, projects). */
-export interface RoutableWorkspace { id: string; name: string; hint?: string | null }
+export interface RoutableWorkspace {
+  id: string; name: string; hint?: string | null;
+  /** Latest task activity (ISO), null = none in the lookback; spanning reads skip idle ones. */
+  lastActiveAt?: string | null;
+}
 
 /**
  * What a workspace is about, for the workspace question: its repo's name and
