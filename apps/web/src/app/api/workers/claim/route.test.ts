@@ -3097,6 +3097,82 @@ describe('POST /api/workers/claim', () => {
       // baseline=haiku, role floor=sonnet → clamped up to sonnet
       expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
     });
+
+    // --- Role model precedence (docs/design/role-routing.md §3.1, §4) ---
+    describe('role model precedence', () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+
+      it('an explicit tasks.tier beats a role pinned to an exact model id (email-agent)', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'email-agent', model: 'claude-sonnet-5', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'email-agent', tier: 'premium' });
+        expect(res.context.routingReason).not.toBe('explicit_override');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      });
+
+      it('the role exact id still wins when the task has no tier', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'email-agent', model: 'claude-sonnet-5', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'email-agent', tier: null });
+        expect(res.context.routingReason).toBe('explicit_override');
+        expect(res.predictedModel).toBe('claude-sonnet-5');
+      });
+
+      it('an inferred role floor does not raise the model', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({
+          workspace, roleSlug: 'builder', complexity: 'simple',
+          context: { roleInferred: { confidence: 0.93 } },
+        });
+        expect(res.context.routingReason).toBe('baseline');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+      });
+
+      it('an inferred role exact-id pin does not bypass routing', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'email-agent', model: 'claude-sonnet-5', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({
+          workspace, roleSlug: 'email-agent', complexity: 'simple',
+          context: { roleInferred: { confidence: 0.93 } },
+        });
+        expect(res.context.routingReason).not.toBe('explicit_override');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+      });
+
+      it('the same role stated (not inferred) does apply its floor', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'builder', complexity: 'simple' });
+        expect(res.context.routingReason).toBe('role_floor_clamp');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      });
+
+      it("another workspace's override of the same slug never sets this task's floor", async () => {
+        // ws-2's override is returned LAST, which is what used to win when
+        // floors were keyed by slug alone.
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'builder', model: 'budget', workspaceId: 'ws-1', teamId: 'team-1' },
+          { slug: 'builder', model: 'premium', workspaceId: 'ws-2', teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'builder', complexity: 'simple' });
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+      });
+
+      it('a premium-plus role floor resolves to premium-plus, not premium', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'architect', model: 'premium-plus', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'architect', complexity: 'simple' });
+        expect(res.predictedModel).toBe(TIER_DEFAULTS['premium-plus'].model);
+        expect(res.context.resolvedTier).toMatchObject({ tier: 'premium-plus' });
+      });
+    });
   });
 
   it('skips secrets when workspace has no teamId', async () => {

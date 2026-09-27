@@ -47,6 +47,7 @@ import {
 // registry in here would add a DB dependency to task creation for a constant.
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
+import { pickRoleRowForTask, countRoleInferenceCandidates } from '@buildd/core/role-model-routing';
 import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
@@ -1134,7 +1135,40 @@ export async function POST(req: NextRequest) {
       ? [routingInference.kindReason, routingInference.complexityReason].filter(Boolean).join('; ')
       : null;
     const explicitPreviewModel = typeof incomingContext?.model === 'string' ? incomingContext.model : null;
+    // The stated role's model effect, resolved like the claim route
+    // (role-model-routing.ts). A lookup failure only costs the preview its
+    // role line — it never blocks task creation.
+    const previewRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
+    let previewRoleModel: string | null = null;
+    let roleMayBeInferred = false;
+    if (targetWorkspace.teamId) {
+      try {
+        const roleRows = await db.query.workspaceSkills.findMany({
+          where: and(
+            eq(workspaceSkills.teamId, targetWorkspace.teamId),
+            eq(workspaceSkills.isRole, true),
+            eq(workspaceSkills.enabled, true),
+            or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
+            ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
+          ),
+          columns: { slug: true, model: true, workspaceId: true, teamId: true, metadata: true },
+        });
+        if (previewRoleSlug) {
+          const row = pickRoleRowForTask(roleRows, {
+            roleSlug: previewRoleSlug, workspaceId, teamId: targetWorkspace.teamId,
+          });
+          previewRoleModel = row ? (row.model ?? 'inherit') : null;
+        } else {
+          roleMayBeInferred = countRoleInferenceCandidates(roleRows, workspaceId) >= 2;
+        }
+      } catch (err) {
+        console.warn('[tasks] role lookup for routing preview failed:', err);
+      }
+    }
     const routingPreview = computeRoutingPreview({
+      roleSlug: previewRoleSlug,
+      roleModel: previewRoleModel,
+      roleMayBeInferred,
       kind: rawKind ?? null,
       complexity: rawComplexity ?? null,
       tier: TIERS.includes(rawTier as Tier) ? (rawTier as Tier) : null,
