@@ -111,6 +111,12 @@ mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mock(() => Promise.resolve({ createdByAccountId: null, createdByWorkerId: null, creationSource: 'api', parentTaskId: null })),
 }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mock(() => Promise.resolve()) }));
+// Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts;
+// the list here is whatever the session user's workspace ids are.
+mock.module('@/lib/workspace-access', () => ({
+  listReachableWorkspaceIds: () => mockGetUserWorkspaceIds(),
+  resolveWorkspaceAccess: async () => ({ ok: false, reason: 'not_found', status: 404, error: 'No workspace found' }),
+}));
 mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: mock(() => null),
   autoResolveAccountWorkspace: mock(() => Promise.resolve({ workspaceId: 'ws-1' })),
