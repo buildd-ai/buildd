@@ -84,10 +84,9 @@ export async function recordPrSupersession(
   if (!worker.prNumber || !worker.prUrl) {
     return {
       ok: false,
-      error: 'Worker has no PR to supersede — either the PR was never opened, '
-        + 'or this worker row is not associated with a PR. '
-        + 'To record a supersession for a closed PR, ensure it was opened through buildd '
-        + 'or use create_pr with prUrl to adopt it first.',
+      error: 'Worker has no PR to supersede — this worker is not tracking a PR. '
+        + 'If you intended to record a supersession for a specific PR, '
+        + 'use record_pr_supersession with prNumber to resolve the correct worker.',
       status: 400,
     };
   }
