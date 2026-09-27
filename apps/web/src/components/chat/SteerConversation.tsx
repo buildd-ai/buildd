@@ -145,14 +145,14 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
 
       <div ref={scroller} data-testid="steer-feed" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 md:px-6">
         {(data?.messages ?? []).length === 0 && (
-          <p className="font-convo text-[14px] text-text-muted">Nothing sent yet. Instructions go straight to the agent — no approval, no delay.</p>
+          <p className="font-convo text-[14px] text-text-muted">Nothing sent yet. Instructions go straight to the agent, with no approval step.</p>
         )}
         <ul className="space-y-3">
           {(data?.messages ?? []).map((m, i) => {
             const status = messageDeliveryStatus(m, data?.turns ?? null);
             return (
               <li key={i} data-testid="steer-message" data-status={status.state} className="border-2 border-border-strong bg-card px-3 py-2">
-                <p className="font-convo text-[14px] text-text-primary [overflow-wrap:anywhere]">{m.message ?? '(hidden — sensitive workspace)'}</p>
+                <p className="font-convo text-[14px] text-text-primary [overflow-wrap:anywhere]">{m.message ?? '(hidden in a sensitive workspace)'}</p>
                 <div className="mt-1.5 flex items-center gap-2">
                   <StateChip label={statusLabel(status)} tone={STATUS_TONE[status.state]} pulse={status.state === 'sent'} />
                 </div>
@@ -170,6 +170,7 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
           <label htmlFor="steer-composer-input" className="sr-only">Steer this agent</label>
           <textarea
             id="steer-composer-input"
+            data-bare-input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
