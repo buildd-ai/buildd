@@ -84,8 +84,47 @@ describe('applyConfidenceGate', () => {
     expect(applyConfidenceGate({ verdict: 'approve', confidence: 0.7, threshold: 0.8 }).verdict).toBe('escalate');
   });
 
-  it('never touches request-changes or escalate', () => {
-    expect(applyConfidenceGate({ verdict: 'request-changes', confidence: 0.1, threshold: 0.6 })).toEqual({ verdict: 'request-changes', overrideReason: null });
-    expect(applyConfidenceGate({ verdict: 'escalate', confidence: 0.1, threshold: 0.6 })).toEqual({ verdict: 'escalate', overrideReason: null });
+  it('escalates low-confidence request-changes to prevent misclassified prose verdicts from acting immediately', () => {
+    // Low confidence request-changes (e.g., from prose fallback) should escalate for human review
+    const res = applyConfidenceGate({ verdict: 'request-changes', confidence: 0.5, threshold: 0.6 });
+    expect(res.verdict).toBe('escalate');
+    expect(res.overrideReason).toContain('request-changes');
+    expect(res.overrideReason).toContain('below workspace threshold');
+  });
+
+  it('keeps high-confidence request-changes even above threshold', () => {
+    // High confidence request-changes passes through
+    expect(applyConfidenceGate({ verdict: 'request-changes', confidence: 0.8, threshold: 0.6 })).toEqual({
+      verdict: 'request-changes',
+      overrideReason: null,
+    });
+  });
+
+  it('escalates low-confidence escalate to prevent misclassified prose verdicts from acting immediately', () => {
+    // Low confidence escalate (e.g., from prose fallback) should escalate for human review
+    const res = applyConfidenceGate({ verdict: 'escalate', confidence: 0.5, threshold: 0.6 });
+    expect(res.verdict).toBe('escalate');
+    expect(res.overrideReason).toContain('escalate');
+    expect(res.overrideReason).toContain('below workspace threshold');
+  });
+
+  it('keeps high-confidence escalate', () => {
+    expect(applyConfidenceGate({ verdict: 'escalate', confidence: 0.8, threshold: 0.6 })).toEqual({
+      verdict: 'escalate',
+      overrideReason: null,
+    });
+  });
+
+  it('applies confidence gate uniformly across all verdict types', () => {
+    const threshold = 0.6;
+    // All three verdict types should pass through at/above threshold
+    expect(applyConfidenceGate({ verdict: 'approve', confidence: 0.6, threshold }).verdict).toBe('approve');
+    expect(applyConfidenceGate({ verdict: 'request-changes', confidence: 0.6, threshold }).verdict).toBe('request-changes');
+    expect(applyConfidenceGate({ verdict: 'escalate', confidence: 0.6, threshold }).verdict).toBe('escalate');
+
+    // All three should escalate below threshold
+    expect(applyConfidenceGate({ verdict: 'approve', confidence: 0.5, threshold }).verdict).toBe('escalate');
+    expect(applyConfidenceGate({ verdict: 'request-changes', confidence: 0.5, threshold }).verdict).toBe('escalate');
+    expect(applyConfidenceGate({ verdict: 'escalate', confidence: 0.5, threshold }).verdict).toBe('escalate');
   });
 });
