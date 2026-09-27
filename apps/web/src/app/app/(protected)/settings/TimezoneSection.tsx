@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import SettingsSection from './SettingsSection';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
+import { Select } from '@/components/ui/Select';
 
 interface Team {
   id: string;
@@ -120,15 +121,12 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
       {teams.length > 1 && (
         <label className="block">
           <span className="field-label">Team</span>
-          <select
+          <Select
+            aria-label="Team"
             value={selectedTeamId}
-            onChange={(e) => setSelectedTeamId(e.target.value)}
-            className="w-full h-10 px-3 bg-surface text-sm"
-          >
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+            onChange={setSelectedTeamId}
+            options={teams.map((t) => ({ value: t.id, label: t.name }))}
+          />
         </label>
       )}
 
@@ -138,16 +136,14 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
         <>
           <label className="block">
             <span className="field-label">Team timezone</span>
-            <select
+            <Select
+              aria-label="Team timezone"
               value={draft}
               disabled={!canEdit || busy}
-              onChange={(e) => setDraft(e.target.value)}
-              className="w-full h-10 px-3 bg-surface text-sm"
-            >
-              {zones.map((z) => (
-                <option key={z} value={z}>{z}</option>
-              ))}
-            </select>
+              onChange={setDraft}
+              searchable
+              options={zones.map((z) => ({ value: z, label: z }))}
+            />
           </label>
 
           <div className="text-xs text-text-tertiary">

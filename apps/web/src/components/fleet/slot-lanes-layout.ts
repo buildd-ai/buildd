@@ -111,7 +111,7 @@ export function fitLaneWindowStart(input: {
  */
 export function axisTicks(spanMs: number, maxTicks = 10): { stepMin: number; ticks: number[] } {
   const spanMin = Math.max(1, spanMs / 60_000);
-  const ladder = [1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440];
+  const ladder = [1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440, 2880, 4320, 10080, 20160, 43200];
   const stepMin = ladder.find(s => spanMin / s <= maxTicks) ?? ladder[ladder.length - 1];
   const ticks: number[] = [];
   for (let m = 0; m <= spanMin; m += stepMin) ticks.push(m);

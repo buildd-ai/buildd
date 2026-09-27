@@ -18,7 +18,7 @@ export interface ChatAvailabilityProp {
 /**
  * Settings → Connections → Model providers. The one place a team's provider
  * keys live: status, scope, last check, Test / Replace / Remove, and whose key
- * chat spends. Keys never come back beyond last4.
+ * server-side AI spends. Keys never come back beyond last4.
  */
 export default function ModelProvidersClient({ teamId, isAdmin, availability }: {
   teamId: string;
@@ -52,7 +52,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
           {/* mt-1.5 sits the square on the first line's middle, however the text wraps. */}
           <span aria-hidden className={`mt-1.5 w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[status.tone]}`} />
           <span className="min-w-0">
-            <span className="text-text-primary">{status.text}</span>
+            <span className="text-text-primary" data-testid="chat-status-text">{status.text}</span>
             {status.action && (
               <> <Link href={status.action.href} className="underline text-accent-text hover:no-underline">{status.action.label}</Link></>
             )}
@@ -143,14 +143,14 @@ function KeyPolicyControl({ teamId, policy, canManage, onChanged }: {
 
   if (!canManage) {
     const line = policy === 'own'
-      ? 'Everyone on this team brings their own key for chat.'
+      ? "Each person's own key"
       : policy === 'team_or_own'
-        ? 'Chat uses the team key. You can use your own instead on your Profile.'
-        : 'Chat uses the team key.';
+        ? 'Team key · your own key allowed'
+        : 'Team key';
     return <p className="text-sm text-text-secondary" data-testid="key-policy">{line}</p>;
   }
 
-  const radio = (mode: PolicyChoice['mode'], text: string, hint: string) => (
+  const radio = (mode: PolicyChoice['mode'], text: string, hint?: string) => (
     <label className="flex items-start gap-3 px-4 py-3 cursor-pointer">
       <input
         type="radio"
@@ -162,17 +162,17 @@ function KeyPolicyControl({ teamId, policy, canManage, onChanged }: {
       />
       <span>
         <span className="block text-sm text-text-primary">{text}</span>
-        <span className="block text-xs text-text-secondary mt-0.5">{hint}</span>
+        {hint && <span className="block text-xs text-text-secondary mt-0.5">{hint}</span>}
       </span>
     </label>
   );
 
   return (
     <section aria-labelledby="key-policy-h" data-testid="key-policy">
-      <h2 id="key-policy-h" className="section-label mb-3">Who pays for chat</h2>
+      <h2 id="key-policy-h" className="section-label mb-3">Whose key</h2>
       <div className="card divide-y divide-border-default">
         <div>
-          {radio('team', 'Team key for everyone', 'Members have nothing to set up.')}
+          {radio('team', 'Team key')}
           {choice.mode === 'team' && (
             <label className="flex items-center gap-2 px-4 pb-3 pl-11 text-xs text-text-secondary cursor-pointer">
               <input
@@ -186,7 +186,7 @@ function KeyPolicyControl({ teamId, policy, canManage, onChanged }: {
             </label>
           )}
         </div>
-        {radio('own', 'Everyone brings their own key', 'No team fallback. Each person adds a key on their Profile before chat works for them.')}
+        {radio('own', "Each person's own key", 'Team features run on a runner.')}
       </div>
       {err && <p role="alert" className="text-xs text-status-error mt-2">{err}</p>}
     </section>

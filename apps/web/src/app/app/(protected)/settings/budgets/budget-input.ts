@@ -8,8 +8,9 @@ export type BudgetParse = { ok: true; value: number | null } | { ok: false; erro
  * resolves to a fixed default, never to unlimited.
  */
 export function parseBudgetInput(raw: string): BudgetParse {
-  const v = raw.trim().replace(/^\$/, '').trim();
-  if (!v) return { ok: true, value: null };
+  const t = raw.trim();
+  const v = t.replace(/\s*\/\s*day$/i, '').replace(/^\$/, '').trim();
+  if (!t) return { ok: true, value: null };
   if (!/^\d+(\.\d+)?$/.test(v)) return { ok: false, error: 'Enter an amount in dollars, like 20 or 7.50.' };
   const n = Math.round(Number(v) * 100) / 100;
   if (n > MAX_BUDGET_USD) return { ok: false, error: `The most you can set is $${MAX_BUDGET_USD.toLocaleString('en-US')} a day.` };

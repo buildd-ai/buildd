@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
+import { Select } from '@/components/ui/Select';
 
 interface Connector {
   id: string;
@@ -588,16 +589,14 @@ export default function ConnectionsClient({
               Share with team…
             </div>
             <div className="flex gap-2 mb-5">
-              <select
+              <Select
+                aria-label="Share with team"
                 value={shareTeamId}
-                onChange={(e) => setShareTeamId(e.target.value)}
-                className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary focus:outline-none focus:border-primary"
-              >
-                <option value="">Select a team…</option>
-                {shareableTeams.map(team => (
-                  <option key={team.id} value={team.id}>{team.name}</option>
-                ))}
-              </select>
+                onChange={setShareTeamId}
+                placeholder="Select a team…"
+                options={shareableTeams.map(team => ({ value: team.id, label: team.name }))}
+                className="flex-1"
+              />
               <button
                 onClick={handleShare}
                 disabled={shareSaving || !shareTeamId}
@@ -612,16 +611,14 @@ export default function ConnectionsClient({
                 Transfer ownership…
               </div>
               <div className="flex gap-2">
-                <select
+                <Select
+                  aria-label="Transfer ownership to team"
                   value={transferTeamId}
-                  onChange={(e) => setTransferTeamId(e.target.value)}
-                  className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-base md:text-sm text-text-primary focus:outline-none focus:border-primary"
-                >
-                  <option value="">Select a team…</option>
-                  {transferableTeams.map(team => (
-                    <option key={team.id} value={team.id}>{team.name}</option>
-                  ))}
-                </select>
+                  onChange={setTransferTeamId}
+                  placeholder="Select a team…"
+                  options={transferableTeams.map(team => ({ value: team.id, label: team.name }))}
+                  className="flex-1"
+                />
                 <button
                   onClick={() => setConfirmingTransfer(true)}
                   disabled={!transferTeamId || transferLoading}

@@ -11,7 +11,13 @@ export interface ChatContextInput {
   /** IANA zone: users.timezone, then teams.timezone, then UTC. */
   timeZone: string;
   conversationId: string;
-  workspace: { id: string; name: string } | null;
+  /**
+   * The turn's default scope: the conversation's pin, or the workspace routing
+   * picked from the message (`source: 'routed'`). Null = all workspaces.
+   */
+  workspace: { id: string; name: string; source?: 'pinned' | 'routed' } | null;
+  /** With no default: the workspaces in reach, so the model can name one. */
+  workspaces?: ReadonlyArray<{ id: string; name: string }>;
   user: { name: string | null; teamRole: 'owner' | 'admin' | 'member'; isOperator: boolean };
   tier: string;
   /** True once the team has used 80% of its daily chat budget. */
@@ -58,6 +64,18 @@ function entryLine(entry: ChatContextInput['entry']): string | null {
   return null;
 }
 
+function workspaceLine(input: ChatContextInput): string {
+  const w = input.workspace;
+  if (w?.source === 'routed') {
+    return `Workspace for this turn: ${w.name} (id ${w.id}), picked from the message. Tool calls use it unless the user names another.`;
+  }
+  if (w) return `Default workspace: ${w.name} (id ${w.id}). Tool calls use it unless the user names another.`;
+  const list = (input.workspaces ?? []).map(x => `${x.name} (id ${x.id})`).join(', ');
+  return list
+    ? `Scope: all workspaces in reach: ${list}. No default workspace: reads may span them; for anything that needs one, pass workspaceId if the message names it, or ask which one.`
+    : 'No default workspace: ask which workspace, or pass workspaceId, before filing work.';
+}
+
 export function renderChatContextBlock(input: ChatContextInput): string {
   const { iso, weekday } = zonedIsoWithOffset(input.now, input.timeZone);
   const who = [
@@ -69,9 +87,7 @@ export function renderChatContextBlock(input: ChatContextInput): string {
     '<context>',
     `Current local time: ${iso} (${weekday}), time zone ${input.timeZone}. Use this for "today", "tomorrow" and any schedule; never assume UTC.`,
     `Conversation id: ${input.conversationId}.`,
-    input.workspace
-      ? `Default workspace: ${input.workspace.name} (id ${input.workspace.id}). Tool calls use it unless the user names another.`
-      : 'No default workspace: ask which workspace, or pass workspaceId, before filing work.',
+    workspaceLine(input),
     `${who}.`,
     `Model tier for this turn: ${input.tier}.`,
     entryLine(input.entry),

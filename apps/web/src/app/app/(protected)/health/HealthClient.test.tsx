@@ -137,7 +137,6 @@ const render = (over: Record<string, any> = {}) =>
       recentFailures={[]}
       credentialHealth={[]}
       strandedBackends={[]}
-      teamWorkspaces={[{ id: 'ws-1', name: 'ws' }]}
       wsFilter={null}
       budgetForecast={null}
       failureAnalytics={null}

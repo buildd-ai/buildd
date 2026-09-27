@@ -19,13 +19,14 @@ import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalRespons
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  CHAT_PUSHER_EVENTS, conversationChannelName,
+  CHAT_PUSHER_EVENTS, conversationChannelName, type ChatTierName,
   type CreateConversationResponse, type GetConversationResponse,
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import type { BuilddObjectRef, ChatMessage } from './chat-contract';
 import ChatWorkspace from './ChatWorkspace';
 import type { ChatAgent } from './ChatFeed';
+import { TurnFeedbackProvider } from './TurnFeedback';
 import type { ComposerWorkspace } from './ChatComposer';
 import ChatSetupCard from './ChatSetupCard';
 import { chatErrorLine, parseChatUnavailable } from './chat-errors';
@@ -43,6 +44,8 @@ export interface ChatConversationProps {
   title: string | null;
   titleSource: 'auto' | 'user';
   tier: string | null;
+  /** The conversation's tier pin; null = routed per turn. */
+  pinnedTier?: ChatTierName | null;
   agent: ChatAgent;
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
@@ -76,7 +79,10 @@ export default function ChatConversation(props: ChatConversationProps) {
   const [title, setTitle] = useState(props.title);
   const [titleSource, setTitleSource] = useState(props.titleSource);
   const [tier, setTier] = useState(initialTier);
-  const [workspaceId, setWorkspaceId] = useState(props.workspaceId ?? workspaces[0]?.id ?? null);
+  const [pinnedTier, setPinnedTier] = useState<ChatTierName | null>(props.pinnedTier ?? null);
+  const [costKey, setCostKey] = useState(0);
+  // Null = all workspaces: each turn is routed to the one the message is about.
+  const [workspaceId, setWorkspaceId] = useState<string | null>(props.workspaceId ?? null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -121,6 +127,7 @@ export default function ChatConversation(props: ChatConversationProps) {
     setTitleSource(data.conversation.titleSource);
     const last = [...data.messages].reverse().find(m => m.role === 'assistant' && m.tier);
     if (last?.tier) setTier(last.tier);
+    setPinnedTier(data.conversation.tier ?? null);
   }, [conversationId, setMessages, viewerName]);
 
   useEffect(() => {
@@ -138,9 +145,33 @@ export default function ChatConversation(props: ChatConversationProps) {
   // A finished turn may have renamed the conversation (auto-title after the first exchange).
   const prevStatus = useRef(status);
   useEffect(() => {
-    if (prevStatus.current !== 'ready' && status === 'ready' && !title) void refetch();
+    if (prevStatus.current !== 'ready' && status === 'ready') {
+      if (!title) void refetch();
+      // The turn's cost is saved on end: refresh the running total.
+      setCostKey(k => k + 1);
+    }
     prevStatus.current = status;
   }, [status, title, refetch]);
+
+  const onWorkspaceChange = useCallback((next: string | null) => {
+    const before = workspaceId;
+    setWorkspaceId(next);
+    if (!conversationId) return; // sent with the create request
+    void fetch(`/api/chat/${conversationId}`, {
+      method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: next }),
+    }).then(r => { if (!r.ok) setWorkspaceId(before); }).catch(() => setWorkspaceId(before));
+  }, [conversationId, workspaceId]);
+
+  const onTierChange = useCallback((next: ChatTierName | null) => {
+    const before = pinnedTier;
+    setPinnedTier(next);
+    if (!conversationId) return; // sent with the create request
+    void fetch(`/api/chat/${conversationId}`, {
+      method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier: next }),
+    }).then(r => { if (!r.ok) setPinnedTier(before); }).catch(() => setPinnedTier(before));
+  }, [conversationId, pinnedTier]);
 
   const onSend = useCallback(async (text: string) => {
     clearError();
@@ -155,7 +186,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId, workspaceId }),
+        body: JSON.stringify({ teamId, workspaceId, tier: pinnedTier }),
       });
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
@@ -165,7 +196,7 @@ export default function ChatConversation(props: ChatConversationProps) {
       setCreateError(chatErrorLine(e));
       setCreating(false);
     }
-  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router, entry]);
+  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router, entry, pinnedTier]);
 
   const onApproval = useCallback((id: string, approved: boolean, reason?: string) => {
     void addToolApprovalResponse({ id, approved, reason });
@@ -175,8 +206,14 @@ export default function ChatConversation(props: ChatConversationProps) {
   const setupReason = unavailable && (unavailable.error === 'no_key' || unavailable.error === 'capability_disabled') ? unavailable.error : null;
   const errorLine = createError ?? (error && !setupReason ? chatErrorLine(error) : null);
 
+  // Saved assistant turns can be rated; the one still streaming cannot yet.
+  const lastMsg = messages.at(-1);
+  const pendingId = status === 'streaming' && lastMsg?.role === 'assistant' ? lastMsg.id : null;
+  const assistantIds = messages.filter(m => m.role === 'assistant' && m.id !== pendingId).map(m => m.id);
+
   return (
     <ObjectStoreProvider>
+      <TurnFeedbackProvider messageIds={assistantIds} pendingId={pendingId}>
       <ChatWorkspace
         messages={messages as ChatMessage[]}
         status={creating ? 'submitted' : status}
@@ -189,11 +226,16 @@ export default function ChatConversation(props: ChatConversationProps) {
         titleSource={titleSource}
         teamName={teamName}
         agent={agent}
-        tier={tier ?? 'standard'}
+        tier={tier}
+        teamId={teamId}
+        conversationId={conversationId}
+        pinnedTier={pinnedTier}
+        onTierChange={onTierChange}
+        costRefreshKey={costKey}
         // An existing conversation's scope was set when it was created.
-        workspaces={conversationId ? workspaces.filter(w => w.id === workspaceId) : workspaces}
+        workspaces={workspaces}
         workspaceId={workspaceId}
-        onWorkspaceChange={setWorkspaceId}
+        onWorkspaceChange={onWorkspaceChange}
         viewerName={viewerName}
         aside={aside}
         emptyState={emptyState}
@@ -203,6 +245,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
         formFallbackHref={formFallbackHref}
       />
+      </TurnFeedbackProvider>
     </ObjectStoreProvider>
   );
 }

@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds, isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
@@ -191,7 +190,6 @@ interface Props {
   recentFailures: RecentFailure[];
   credentialHealth: CredentialHealthItem[];
   strandedBackends: StrandedBackendRow[];
-  teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
@@ -241,7 +239,6 @@ export function HealthClient({
   recentFailures,
   credentialHealth,
   strandedBackends,
-  teamWorkspaces,
   wsFilter,
   budgetForecast,
   failureAnalytics,
@@ -451,9 +448,6 @@ export function HealthClient({
           <h1 className="hidden md:block text-2xl font-bold">Health</h1>
           <div className="flex items-center gap-2 ml-auto">
             <WindowPicker window={activeWindow} />
-            <span className="hidden md:block">
-              <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
-            </span>
           </div>
         </div>
       </div>

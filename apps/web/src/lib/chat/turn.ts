@@ -29,6 +29,7 @@ import {
   type ChatApprovalPreview,
   type ChatMessagePart,
   type ChatTurnEntry,
+  type ChatTurnMetadata,
   type ChatTurnRequest,
   type ChatUnavailableReason,
   type ChatUsage,
@@ -36,14 +37,16 @@ import {
 import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResult, isToolPart, type DecideFn } from './approvals';
 import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
-import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
-import { resolveChatModel, turnCostUsd, type ChatTier, type ResolvedChatModel } from './models';
+import { routeTurn, FALLBACK_TIER, type RoutableWorkspace, type TurnRoute } from './routing';
+import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
+import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
 import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
+import { canSkipCard, contentInContext } from './permissions';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -68,6 +71,11 @@ export interface TurnUser {
 
 export interface TurnDeps {
   now?: () => Date;
+  /**
+   * Tool groups this person set to "Allow" (permissions-store.ts). A write in
+   * one may run without its card while no tool output is in context.
+   */
+  allowedToolGroups?: ReadonlySet<ToolGroup>;
   chatEnabled: (teamId: string) => Promise<boolean>;
   /**
    * Budget and rate limits (limits.checkChatLimits). Required: a turn that
@@ -75,11 +83,18 @@ export interface TurnDeps {
    */
   limits: (args: { teamId: string; userId: string; now: Date }) => Promise<LimitVerdict>;
   route?: (input: Parameters<typeof routeTurn>[0]) => Promise<TurnRoute>;
-  resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string }) => Promise<ResolvedChatModel>;
+  resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string; pool?: ChatPoolContext }) => Promise<ResolvedChatModel>;
+  /** Persist a tier-pool assignment for a saved assistant turn. */
+  recordPoolAssignment?: typeof recordChatPoolAssignment;
   makeApi: ChatToolDeps['makeApi'];
   actionContext: ActionContext;
   /** Team memory for recall/learn (see ChatToolDeps.memory). */
   memory?: ChatToolDeps['memory'];
+  /**
+   * The action context and memory for a workspace routing picked this turn
+   * (an unpinned conversation). Absent ⇒ `actionContext` / `memory` as given.
+   */
+  scopeFor?: (workspaceId: string) => { actionContext: ActionContext; memory?: ChatToolDeps['memory'] };
   decide?: DecideFn;
   /** Link a filed mission to this conversation (missions.conversation_id). */
   linkMission: (missionId: string) => Promise<void>;
@@ -143,7 +158,13 @@ function userText(message: ChatTurnRequest['message']): string | null {
 
 export async function runChatTurn(args: {
   conversation: ConversationRow;
+  /** The conversation's pinned workspace, when it's in reach. Null = all workspaces. */
   workspace: { id: string; name: string } | null;
+  /**
+   * Unpinned: the in-reach workspaces. Routing may pick one per turn from the
+   * message (routing.ts, confidence-gated); otherwise the turn has no default.
+   */
+  workspaces?: readonly RoutableWorkspace[];
   user: TurnUser;
   body: ChatTurnRequest;
   deps: TurnDeps;
@@ -177,8 +198,12 @@ export async function runChatTurn(args: {
       ...(verdict.scope ? { scope: verdict.scope } : {}),
     });
   }
+  const routable = args.workspace ? undefined : args.workspaces;
   const routePromise = text
-    ? (deps.route ?? routeTurn)({ teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, message: text })
+    ? (deps.route ?? routeTurn)({
+      teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
+      ...(routable && routable.length > 1 ? { workspaces: routable } : {}),
+    })
     : null;
 
   const history = toUiHistory(stored);
@@ -190,6 +215,8 @@ export async function runChatTurn(args: {
 
   if (message.role === 'user') {
     route = await routePromise!;
+    // A tier the person pinned for this conversation wins over routing's pick.
+    if (conv.tier) route = { ...route, tier: conv.tier };
   } else {
     // An approval answer: it must extend the latest stored assistant message.
     const last = stored.filter(m => m.role === 'assistant').at(-1);
@@ -201,12 +228,36 @@ export async function runChatTurn(args: {
     continuing = { ...last, parts: r.parts };
     await updateMessage(last.id, conv.id, { parts: r.parts });
     route = { tier: (last.tier as ChatTier) || FALLBACK_TIER, allowWrites: true, source: 'fallback' };
+    // Keep the scope the card was built in, so the rebuilt card matches it.
+    const cardWs = [...approvedPreviews.values()].map(p => p.target.workspaceId).find(id => !!id);
+    if (cardWs) route = { ...route, workspaceId: cardWs };
   }
 
+  // The turn's scope: the pin, else the workspace routing picked (only one in reach).
+  const routedWs = !args.workspace && route.workspaceId
+    ? (args.workspaces ?? []).find(w => w.id === route.workspaceId) ?? null
+    : null;
+  const scopeWs: { id: string; name: string; source: 'pinned' | 'routed' } | null = args.workspace
+    ? { id: args.workspace.id, name: args.workspace.name, source: 'pinned' }
+    : routedWs ? { id: routedWs.id, name: routedWs.name, source: 'routed' } : null;
+  const scoped = routedWs && deps.scopeFor ? deps.scopeFor(routedWs.id) : null;
+  const actionContext = scoped?.actionContext ?? deps.actionContext;
+  const memory = scoped?.memory ?? deps.memory;
+
   // 2. A model for the tier, on the caller's key, else the workspace's, else the team's.
-  let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id });
+  // The tier's chat pool may enrol the turn (docs/design/tier-model-pools.md):
+  // a turn continuing the previous turn's chain keeps its arm.
+  const prevAssistant = stored.filter(m => m.role === 'assistant').at(-1);
+  const pool: ChatPoolContext = {
+    conversationId: conv.id,
+    drawKey: `${conv.id}#${stored.length}`,
+    previous: prevAssistant ? { id: prevAssistant.id, tier: prevAssistant.tier ?? null, createdAt: new Date(prevAssistant.createdAt) } : null,
+    now,
+  };
+  const modelWs = scopeWs?.id ?? null;
+  let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   if (!model.ok && route.tier !== FALLBACK_TIER) {
-    model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id });
+    model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   }
   if (!model.ok) return unavailable('no_key', 409, { provider: model.provider });
   const resolved = model;
@@ -235,7 +286,7 @@ export async function runChatTurn(args: {
   const docked = await loadDocked(read, entry?.about ?? null, linkedMissionId);
   const previewEnv = {
     read,
-    scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: args.workspace?.id ?? null },
+    scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: scopeWs?.id ?? null },
   };
   const preview = (tool: string, input: Record<string, unknown>) => {
     const s = opSpec(tool, input);
@@ -243,16 +294,19 @@ export async function runChatTurn(args: {
     return buildPreview(tool, input, previewEnv, { confirmAdmin: admin });
   };
 
+  // Writes that run without a card this turn (the person's "Allow"; see below).
+  const allowedToolCallIds = new Set<string>();
   const tools: ToolSet = buildChatTools({
-    ctx: deps.actionContext,
+    ctx: actionContext,
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
     canAdmin,
     authorizedToolCallIds,
+    allowedToolCallIds,
     approvedPreviews,
     preview,
     resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
-    memory: deps.memory,
+    memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
@@ -263,10 +317,27 @@ export async function runChatTurn(args: {
   }));
 
   let approvalsThisTurn = 0;
+  let allowedThisTurn = 0;
+  const allowedGroups = deps.allowedToolGroups ?? new Set<ToolGroup>();
   const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
     name,
-    async (input: unknown) => {
+    async (input: unknown, options?: { toolCallId?: string; messages?: Parameters<typeof contentInContext>[0] }) => {
       if (!needsApproval(name, input)) return 'not-applicable' as const;
+      // The person's "Allow": one write per turn, only while nothing a tool
+      // returned is in the model's context, and only with a preview that
+      // resolves inside reach. Anything else falls through to the card.
+      if (allowedThisTurn === 0 && options?.toolCallId && canSkipCard({
+        tool: name, input, allowedGroups,
+        tainted: contentInContext(options.messages ?? []),
+        docked: docked !== null,
+      })) {
+        const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);
+        if (p?.ok) {
+          allowedThisTurn += 1;
+          allowedToolCallIds.add(options.toolCallId);
+          return 'not-applicable' as const;
+        }
+      }
       // At most one approval card per turn; a second write waits.
       if (approvalsThisTurn >= 1) {
         return { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
@@ -286,13 +357,15 @@ export async function runChatTurn(args: {
     now,
     timeZone: user.timeZone,
     conversationId: conv.id,
-    workspace: args.workspace,
+    workspace: scopeWs,
+    ...(!scopeWs && args.workspaces ? { workspaces: args.workspaces } : {}),
     user: { name: user.name, teamRole: user.teamRole, isOperator: user.teamRole !== 'member' },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
     entry,
   })}${dockedBlock}`;
 
+  const startedAt = Date.now();
   const result = (deps.streamTextImpl ?? streamText)({
     model: resolved.model as LanguageModel,
     instructions,
@@ -306,11 +379,14 @@ export async function runChatTurn(args: {
     toolApproval,
   });
 
+  const turnMetadata: ChatTurnMetadata = { tier: resolved.tier, scope: scopeWs };
   const stream = toUIMessageStream({
     stream: result.stream,
     tools,
     originalMessages: uiMessages,
     generateMessageId: () => randomUUID(),
+    // The composer shows the turn's tier and scope ("→ billing-web") from this.
+    messageMetadata: ({ part }) => (part.type === 'start' ? turnMetadata : undefined),
     onEnd: async ({ responseMessage, isContinuation, isAborted }) => {
       try {
         const parts = [...(responseMessage.parts as ChatMessagePart[])];
@@ -323,6 +399,7 @@ export async function runChatTurn(args: {
             inputTokens: u?.inputTokens ?? 0,
             outputTokens: u?.outputTokens ?? 0,
             costUsd: turnCostUsd(resolved.modelId, u, meta),
+            latencyMs: Date.now() - startedAt,
           };
         } catch { /* aborted streams may have no usage */ }
 
@@ -335,6 +412,8 @@ export async function runChatTurn(args: {
               inputTokens: prior.inputTokens + usage.inputTokens,
               outputTokens: prior.outputTokens + usage.outputTokens,
               costUsd: (prior.costUsd ?? 0) + (usage.costUsd ?? 0),
+              // Time to the reply the user first saw, not the approval resume.
+              ...(prior.latencyMs != null ? { latencyMs: prior.latencyMs } : {}),
             } : usage ?? prior ?? null,
             model: resolved.modelId,
           });
@@ -343,6 +422,8 @@ export async function runChatTurn(args: {
             id: messageId, conversationId: conv.id, role: 'assistant', parts,
             tier: resolved.tier, model: resolved.modelId, usage,
           });
+          // A continuation extends a turn that already has its row.
+          if (resolved.pool) await (deps.recordPoolAssignment ?? recordChatPoolAssignment)(resolved.pool, { messageId });
         }
         await recordApprovalRequests({ conversationId: conv.id, messageId, userId: user.id, parts });
         await pingConversation(conv.id, 'message', messageId);

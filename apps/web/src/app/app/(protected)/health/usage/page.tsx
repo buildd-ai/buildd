@@ -122,7 +122,6 @@ export default async function UsageDrilldownPage({
   return (
     <UsageClient
       view={view}
-      teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
     />
   );

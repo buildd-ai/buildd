@@ -155,7 +155,7 @@ This intentionally differs from the credentials doc's workspace → account → 
 - The provider returns `usage.cost` in USD on every response. The client surfaces it as `usage.costUsd`, or `null` when it is absent. No price is hardcoded, because a hardcoded price goes stale.
 - Output tokens are free, and a well-formed shadow call is a few hundred input tokens. At the published per-token price, one shadow call costs a small fraction of a cent.
 - Attribution follows the inference doc's decision: team level only, not persisted per call for now. Every shadow record carries `costUsd` and `inputTokens`, so the log alone can produce a spend total.
-- Spend is gated like inference spend: the team's `enabledInferenceCapabilities` allowlist is checked before the key is resolved. The default is empty, so storing a key changes nothing.
+- Spend is gated like inference spend: the team's inference policy (`packages/core/inference-policy.ts`) is checked before the key is resolved. Decision calls are built-in: they run whenever a key resolves, with no per-team toggle. (This replaced the opt-in `enabledInferenceCapabilities` allowlist.)
 
 ### Point 7: Decision call vs inference call — the policy
 
@@ -228,6 +228,10 @@ These are for agent chat, designed in `docs/design/agent-chat.md` (Proposed), wh
   - Second question: a Choice over the available tool groups.
   - Both go in one request against the same state, because questions are evaluated in parallel.
   - Below the gate, fall back to letting the generative model decide with all tools available.
+- **Routing a turn to a workspace.** A Choice over the conversation's in-reach workspaces, asked in the same request, only when the conversation isn't pinned to one and there are at least two.
+  - Labels are the workspace names (a shared name gets its short id), each defined by its repo name and projects. No catch-all: a message about no workspace in particular shows up as low confidence.
+  - Above the gate (0.85, provisional) the workspace becomes the turn's default scope. Below it the turn has no default and the agent asks, which is what an unpinned conversation did before.
+  - A wrong pick stays inside reach and inside the team, and a write's card names the workspace it lands in.
 
 ## Implementation sketch
 

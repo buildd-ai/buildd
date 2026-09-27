@@ -8,7 +8,7 @@
 >
 > **Derived from:** `packages/core/db/schema.ts`, `apps/web/src/app/api/**`,
 > `apps/runner/**`, and the implemented specs in `docs/` (codex, credentials,
-> knowledge-store), as of **2026-06-24**.
+> knowledge-store), as of **2026-06-24** (§3a: **2026-09-26**).
 > **Maintenance:** see `docs/SPEC.md` §10 and the `spec-sync` skill.
 
 ---
@@ -20,6 +20,8 @@ declare goals; agents decompose them into tasks, claim them, execute on external
 runners, and deliver outcomes (PRs, artifacts, research). The web app is
 **coordination-only** — it stores state and brokers work but never runs agents
 itself (Vercel can't host multi-minute agent executions; runners are external).
+It does make short **server-side model calls** (chat turns, grading, visual QA
+judgment, classification) on metered API keys — see §3a.
 
 **Current product narrative:** *"Dispatch missions, not tasks."* Set an objective →
 agents break it down, connect to your tools (MCP), and deliver. The user-facing
@@ -198,8 +200,10 @@ runner `availableSkills`.
 ### Secret (`secrets`)
 **The single, unified credential store.** One row per scoped credential; `purpose` ∈
 `anthropic_api_key | oauth_token | codex_credential | webhook_token | mcp_credential |
-vercel_token | custom`. Scoped by team (always) + optional account + optional
-workspace; a team-wide row (account/workspace NULL) covers everything. Multi-field
+vercel_token | custom | claude_credential | inference_key | decision_key | …`. Scoped
+by team (always) + optional account + optional workspace (+ optional `userId`, for a
+person's own `inference_key` only); a team-wide row (account/workspace/user NULL)
+covers everything. Multi-field
 creds are encrypted JSON in `encryptedValue`. Expiring tokens use `tokenExpiresAt` +
 `lastRefreshedAt` (the latter doubles as the optimistic-lock column for refresh).
 **Do not add per-integration credential tables** — add a `purpose`. See
@@ -254,6 +258,74 @@ shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
   classifier, or schedule cadence) → router picks a model at claim time
   (`predictedModel`); actual outcome logged to `task_outcomes`; a calibration cron
   (`/api/cron/routing-calibration`) closes the loop.
+
+---
+
+## 3a. Where AI runs & who pays
+
+Two places, never mixed. Subscription (OAuth) auth is runner-anchored and has no
+per-request form, so server-side calls **structurally cannot** use a seat.
+
+| | Server-side model call | Runner-side agent run |
+|---|---|---|
+| Runs | in the web app, seconds | on the team's runner, minutes to hours |
+| Shape | one call or a short streaming turn; no repo, no shell | Claude Code (Agent SDK) or Codex harness, worktree + tools |
+| Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check | all engineering/research tasks, planning, prose-criteria grading fallback |
+| Credential | API key: `inference_key` (label `anthropic` \| `openai` \| `openrouter`), or `anthropic_api_key` for Anthropic, `decision_key` (legacy) for OpenRouter | `oauth_token` / `claude_credential` (Claude subscription), `anthropic_api_key`, `codex_credential` (ChatGPT/Codex auth.json) or runner-local `OPENAI_API_KEY`, runner-local `LLM_PROVIDER=openrouter` |
+| Billing | metered per token | seat/session window (virtual cost) or per token |
+| Code | `inference-client.ts` (`inferenceCall`), `decision-client.ts`, `apps/web/src/lib/chat/` | `apps/runner/src/backends/` |
+
+- **One key resolver** — `packages/core/inference-keys.ts`. Precedence: caller's own
+  key (`secrets.userId`) → calling API account → workspace → team → legacy
+  account row (no-account callers) → provider env var (only outside production, or
+  `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` for self-hosting). OAuth rows are never read.
+  Runners never use these keys.
+- **Key policy** — `teams.inferenceKeyPolicy` (default `team`; Settings → Model
+  providers → "Whose key": "Team key" / "Each person's own key") binds every
+  server-side call: `team` = team key for everyone, personal keys ignored;
+  `team_or_own` = a person's own key wins, team key covers the rest; `own` = own
+  key only, no fallback, so work with no person (grading, cron) finds no key and
+  takes its runner path. Personal keys are managed via `/api/inference-keys` (any
+  member) and never served to anyone else.
+- **Which calls may spend** (`packages/core/inference-policy.ts`, `isInferenceAllowed`):
+  - *Interactive* (chat and its per-turn routing): on whenever a key resolves;
+    the only control is the admin kill switch `teams.chatDisabled`. Never falls
+    back to a runner or seat; with no key the mission form stays.
+  - *Built-in* decision calls (`task_category_shadow`, `task_classification`):
+    no toggle; they run whenever a key resolves.
+  - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`
+    declared with no call site and not shown in Settings): default by billing
+    model — a team key resolves → server-side, else the runner — with per-feature
+    overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
+    CI visual QA judges on an OAuth seat via `claude-code-action`, not through this.
+  - The old opt-in allowlist `teams.enabledInferenceCapabilities` is deprecated
+    (nothing reads it).
+- **Budgets** — interactive spend is capped by `teams.chatDailyBudgetUsd` (default
+  $20/day, never uncapped) and a per-person cap (`chatUserDailyBudgetUsd`, default
+  half); under `own` there is no team cap and the per-person cap defaults to none.
+  Settings → Budgets shows each person's spend split into Interactive and Agent runs
+  (agent runs attributed to the mission's creator), per person for admins.
+- **Providers per path** — chat: `anthropic | openai | openrouter`. `inferenceCall`:
+  `anthropic | openrouter` (`openai` returns `unsupported_provider`). Decision calls:
+  OpenRouter.
+- **Decision calls** (`decisionCall`) — fixed-label classifications. Chat uses them
+  to pick each turn's tier and tool set, confidence-gated, defaulting to `standard`
+  with all tools. The task-category check is shadow only
+  (`docs/design/decision-calls.md`).
+
+### Model tiers
+
+Callers ask for a **tier**, never a vendor model: `premium-plus` (opt-in only;
+nothing routes there on its own) · `premium` · `standard` · `budget`
+(`packages/core/model-tier-defaults.ts`). An admin maps tier → `(provider, model)` in
+`model_tier_registry` (Settings → Model tiers, or `manage_model_tiers`); provider ∈
+`anthropic | openai | openai-codex | openrouter`. Resolution (`resolveTierEntry`,
+60s cache): workspace row → team row → the catalog's newest in-band release →
+`TIER_DEFAULTS`. Agent runs resolve at **claim** time, so a remap applies to queued
+tasks. Chat and inference calls resolve per call; for chat, a tier on Anthropic or
+OpenAI with only an OpenRouter key is served through OpenRouter. An explicit `model` on a task or a
+role's full-ID pin bypasses tiers. **Tier model pools** (several models per tier with
+traffic splits) are proposed, not shipped (`docs/design/tier-model-pools.md`).
 
 ---
 
@@ -449,6 +521,11 @@ brutalist UI.
 | `design/reviewer-evidence-and-verification.md` | Reviewer patch evidence, filters, verification | Partly shipped |
 | `design/cross-workspace-retrieval.md` | Team-scoped docs retrieval across workspaces | Proposed |
 | `design/mission-delivery-arc.md` | Mission integration branch (Option A′) | Implemented |
+| `design/inference-calls-primitive.md` | Server-side `inferenceCall`, capability policy | Partly shipped |
+| `design/decision-calls.md` | Fixed-label `decisionCall` (shadow) | Partly shipped |
+| `design/model-tiers.md` | Tier vocabulary + registry | Implemented |
+| `design/agent-chat.md` | Server-side chat on API keys | Partly shipped |
+| `design/tier-model-pools.md` | Multiple models per tier | Proposed |
 | `testing.md`, `testing-strategy.md` | TDD, test layers, fixtures | Implemented |
 | `plans/archive/remove-objectives.md` | Objectives→Mission port | Shipped/historical |
 | `plans/ios-app-mvp.md` | iOS MVP | Planned (separate repo) |

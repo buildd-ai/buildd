@@ -51,7 +51,7 @@ export default async function ProtectedLayout({
       // after it (dashboard-waterfall.test.ts).
       cookies()
         .then((cookieStore) => resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value))
-        // No team on failure; WorkspaceFilter renders nothing, timestamps use the browser zone
+        // No team on failure; WorkspaceSwitcher renders nothing, timestamps use the browser zone
         .catch((): ActiveTeamScope => ({ teamId: null, workspaces: [], timezone: null }))
         // Who sees Chat, and where (lib/chat-availability.ts): needs the team,
         // so it rides the scope's own chain. The capability read short-circuits

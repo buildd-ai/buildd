@@ -52,7 +52,7 @@ export function StartTaskShell({
           className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
           onClick={(e) => e.target === e.currentTarget && onBackdropClick()}
         >
-          <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-md">{modal}</div>
+          <div className="w-full max-w-md border-2 border-border-strong bg-surface-1 shadow-[var(--card-shadow)] mx-4">{modal}</div>
         </div>
       )}
     </>

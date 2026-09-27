@@ -24,8 +24,10 @@ export interface LoadedConversation {
   workspaceId: string | null;
   title: string | null;
   titleSource: 'auto' | 'user';
-  /** The tier the latest assistant turn ran on — shown, never chosen. */
+  /** The tier the latest assistant turn ran on. */
   tier: string | null;
+  /** The tier the person pinned this conversation to; null = routed per turn. */
+  pinnedTier: 'budget' | 'standard' | 'premium' | null;
   messages: ChatMessage[];
 }
 
@@ -82,7 +84,7 @@ export async function loadConversation(id: string, userId: string, authorName: s
   const [conv, rows] = await Promise.all([
     db.query.conversations.findFirst({
       where: and(eq(conversations.id, id), eq(conversations.createdByUserId, userId)),
-      columns: { id: true, teamId: true, workspaceId: true, title: true, titleSource: true, archivedAt: true },
+      columns: { id: true, teamId: true, workspaceId: true, title: true, titleSource: true, archivedAt: true, tier: true },
     }),
     db
       .select({
@@ -103,6 +105,7 @@ export async function loadConversation(id: string, userId: string, authorName: s
     title: conv.title?.trim() ? conv.title : null,
     titleSource: conv.titleSource,
     tier: latestTier(rows),
+    pinnedTier: conv.tier ?? null,
     messages: rows.map(r => toChatMessage(r, authorName)),
   };
 }

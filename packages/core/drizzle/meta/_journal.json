@@ -1317,6 +1317,27 @@
       "when": 1790464318880,
       "tag": "0188_flippant_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1790478671519,
+      "tag": "0189_furry_famine",
+      "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1790481243729,
+      "tag": "0190_broad_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1790482790092,
+      "tag": "0191_keen_iron_fist",
+      "breakpoints": true
     }
   ]
 }

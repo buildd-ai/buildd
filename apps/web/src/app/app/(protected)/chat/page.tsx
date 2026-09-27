@@ -22,9 +22,10 @@ export default async function ChatPage({
   }
   const wsIds = data.workspaces.map(w => w.id);
   const about = await loadAboutRef(entry.about, { teamId: data.teamId, workspaceIds: wsIds });
-  // The object's own workspace, else the one the button was in, else the first.
-  const workspaceId = [about?.workspaceId, entry.workspaceId].find((id): id is string => !!id && wsIds.includes(id))
-    ?? data.workspaces[0]?.id ?? null;
+  // The object's own workspace, else the one the button (or the app's
+  // workspace switcher) was on, else all workspaces: routed per turn.
+  const picked = typeof q.workspace === 'string' ? q.workspace : null;
+  const workspaceId = [about?.workspaceId, entry.workspaceId, picked].find((id): id is string => !!id && wsIds.includes(id)) ?? null;
   return (
     <ChatConversation
       conversationId={null}

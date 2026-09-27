@@ -2,115 +2,126 @@ import { describe, it, expect } from 'bun:test';
 import {
   INFERENCE_CAPABILITIES,
   ALL_INFERENCE_CAPABILITIES,
+  SERVER_FEATURES,
+  LIVE_SERVER_FEATURES,
   isInferenceCapability,
-  isInferenceEnabled,
-  normalizeInferenceCapabilities,
-  capabilitiesWithoutFallback,
+  isInferenceAllowed,
+  normalizeFeatureModes,
+  resolveFeatureMode,
 } from '../inference-policy';
 
 /**
- * Having a key and using it are two decisions. This policy is the second one, per
- * action — so a team can pay for the fast path where latency matters and keep the
- * agent path (free on their subscription seat) everywhere else.
+ * Which calls may spend a provider key. Three kinds:
+ * - interactive (chat): on whenever a key resolves; the admin's kill switch is `chatDisabled`.
+ * - built-in decision calls: always allowed; they run when a key resolves.
+ * - server-side features: default by billing model, per-feature override `runner`.
  */
 
-describe('isInferenceEnabled', () => {
-  it('is off when nothing is configured', () => {
-    // Default off: pasting a credential must not silently start spending on call
-    // sites the operator has never seen.
-    expect(isInferenceEnabled('criteria_grading', null)).toBe(false);
-    expect(isInferenceEnabled('criteria_grading', undefined)).toBe(false);
-    expect(isInferenceEnabled('criteria_grading', [])).toBe(false);
-  });
-
-  it('is on only for the capabilities named', () => {
-    const enabled = ['criteria_grading'];
-    expect(isInferenceEnabled('criteria_grading', enabled)).toBe(true);
-    expect(isInferenceEnabled('visual_qa', enabled)).toBe(false);
-    expect(isInferenceEnabled('task_classification', enabled)).toBe(false);
-  });
-
-  it('supports enabling everything', () => {
+describe('isInferenceAllowed', () => {
+  it('allows every capability on a team that never touched a setting', () => {
     for (const c of ALL_INFERENCE_CAPABILITIES) {
-      expect(isInferenceEnabled(c, ALL_INFERENCE_CAPABILITIES)).toBe(true);
+      expect(isInferenceAllowed(c, { chatDisabled: false, featureModes: null })).toBe(true);
     }
   });
 
-  it('ignores a name this build does not know', () => {
-    // A row written by a newer deploy must not enable spend on a capability this
-    // build cannot reason about.
-    expect(isInferenceEnabled('criteria_grading', ['something_new'])).toBe(false);
+  it('never gates the built-in decision calls', () => {
+    const gate = { chatDisabled: true, featureModes: { task_classification: 'runner', task_category_shadow: 'runner' } };
+    expect(isInferenceAllowed('task_classification', gate)).toBe(true);
+    expect(isInferenceAllowed('task_category_shadow', gate)).toBe(true);
+  });
+
+  it('stops chat, and only chat, when an admin switches it off', () => {
+    const gate = { chatDisabled: true, featureModes: null };
+    expect(isInferenceAllowed('chat', gate)).toBe(false);
+    expect(isInferenceAllowed('criteria_grading', gate)).toBe(true);
+  });
+
+  it('sends a server-side feature to the runner when overridden', () => {
+    const gate = { chatDisabled: false, featureModes: { visual_qa: 'runner' } };
+    expect(isInferenceAllowed('visual_qa', gate)).toBe(false);
+    expect(isInferenceAllowed('criteria_grading', gate)).toBe(true);
+    expect(isInferenceAllowed('mission_summary', gate)).toBe(true);
+  });
+
+  it('fails closed on a missing team row', () => {
+    for (const c of ALL_INFERENCE_CAPABILITIES) expect(isInferenceAllowed(c, null)).toBe(false);
+  });
+
+  it('ignores garbage in the stored modes', () => {
+    expect(isInferenceAllowed('criteria_grading', { chatDisabled: false, featureModes: 'runner' })).toBe(true);
+    expect(isInferenceAllowed('criteria_grading', { chatDisabled: false, featureModes: { criteria_grading: 'off' } })).toBe(true);
   });
 });
 
-describe('normalizeInferenceCapabilities', () => {
-  it('keeps known capabilities in a stable order', () => {
-    const out = normalizeInferenceCapabilities(['visual_qa', 'criteria_grading']);
-    expect(out).toEqual(ALL_INFERENCE_CAPABILITIES.filter(c => c === 'criteria_grading' || c === 'visual_qa'));
+describe('resolveFeatureMode', () => {
+  it('defaults to server-side when the team has a pay-per-token key', () => {
+    expect(resolveFeatureMode('criteria_grading', null, true)).toEqual({ mode: 'server', source: 'default', needsKey: false });
   });
 
-  it('drops unknown names rather than storing them', () => {
-    expect(normalizeInferenceCapabilities(['criteria_grading', 'nope'])).toEqual(['criteria_grading']);
+  it('defaults to the runner when no team key resolves (subscription only)', () => {
+    expect(resolveFeatureMode('criteria_grading', null, false)).toEqual({ mode: 'runner', source: 'default', needsKey: false });
   });
 
-  it('dedupes', () => {
-    expect(normalizeInferenceCapabilities(['criteria_grading', 'criteria_grading'])).toEqual(['criteria_grading']);
+  it('honours an override either way', () => {
+    expect(resolveFeatureMode('visual_qa', { visual_qa: 'runner' }, true)).toEqual({ mode: 'runner', source: 'override', needsKey: false });
+    expect(resolveFeatureMode('visual_qa', { visual_qa: 'server' }, false)).toEqual({ mode: 'server', source: 'override', needsKey: true });
+  });
+});
+
+describe('normalizeFeatureModes', () => {
+  it('keeps known features with a known mode', () => {
+    expect(normalizeFeatureModes({ criteria_grading: 'runner', visual_qa: 'server' }))
+      .toEqual({ criteria_grading: 'runner', visual_qa: 'server' });
   });
 
-  it('collapses every empty form to null so the column has one representation', () => {
-    expect(normalizeInferenceCapabilities([])).toBeNull();
-    expect(normalizeInferenceCapabilities(['nope'])).toBeNull();
-    expect(normalizeInferenceCapabilities(null)).toBeNull();
-    expect(normalizeInferenceCapabilities('criteria_grading')).toBeNull();
-    expect(normalizeInferenceCapabilities(undefined)).toBeNull();
+  it('drops built-ins, chat, unknown names and unknown modes', () => {
+    expect(normalizeFeatureModes({ chat: 'runner', task_classification: 'runner', nope: 'server', mission_summary: 'maybe' })).toBeNull();
+  });
+
+  it('treats "default" as clearing the override', () => {
+    expect(normalizeFeatureModes({ criteria_grading: 'default', visual_qa: 'runner' })).toEqual({ visual_qa: 'runner' });
+  });
+
+  it('collapses every empty form to null', () => {
+    expect(normalizeFeatureModes({})).toBeNull();
+    expect(normalizeFeatureModes(null)).toBeNull();
+    expect(normalizeFeatureModes(['runner'])).toBeNull();
+    expect(normalizeFeatureModes('runner')).toBeNull();
   });
 });
 
 describe('the capability registry', () => {
   it('keys every descriptor by its own id', () => {
-    for (const [key, d] of Object.entries(INFERENCE_CAPABILITIES)) {
-      expect(d.id).toBe(key);
-    }
+    for (const [key, d] of Object.entries(INFERENCE_CAPABILITIES)) expect(d.id).toBe(key);
   });
 
-  it('gives every capability operator-facing copy and a cost hint', () => {
-    for (const d of Object.values(INFERENCE_CAPABILITIES)) {
+  it('shows only server-side features that have a call site', () => {
+    // Visual QA judgment and mission summaries have no call site yet: a switch
+    // for them would claim a behaviour that does not exist.
+    expect([...LIVE_SERVER_FEATURES]).toEqual(['criteria_grading']);
+    for (const f of LIVE_SERVER_FEATURES) expect(SERVER_FEATURES).toContain(f);
+  });
+
+  it('classifies every capability', () => {
+    expect([...SERVER_FEATURES]).toEqual(['criteria_grading', 'visual_qa', 'mission_summary']);
+    for (const f of SERVER_FEATURES) expect(INFERENCE_CAPABILITIES[f].kind).toBe('server_feature');
+    expect(INFERENCE_CAPABILITIES.chat.kind).toBe('interactive');
+    expect(INFERENCE_CAPABILITIES.task_classification.kind).toBe('built_in');
+    expect(INFERENCE_CAPABILITIES.task_category_shadow.kind).toBe('built_in');
+  });
+
+  it('gives every server-side feature a one-line label and description', () => {
+    for (const f of SERVER_FEATURES) {
+      const d = INFERENCE_CAPABILITIES[f];
       expect(d.label.length).toBeGreaterThan(0);
-      expect(d.description.length).toBeGreaterThan(0);
-      expect(d.costHint.length).toBeGreaterThan(0);
+      expect(d.description.split('. ').length).toBeLessThanOrEqual(2);
+      expect(d.description.length).toBeLessThanOrEqual(100);
     }
-  });
-
-  it('declares whether an agent run can substitute', () => {
-    // The distinction the UI must not flatten: turning off a fallback:'none'
-    // capability turns the feature off, it does not make it slower.
-    expect(INFERENCE_CAPABILITIES.criteria_grading.fallback).toBe('agent');
-    expect(INFERENCE_CAPABILITIES.visual_qa.fallback).toBe('none');
-  });
-
-  it('reports which capabilities have no fallback', () => {
-    const none = capabilitiesWithoutFallback();
-    expect(none).toContain('visual_qa');
-    expect(none).not.toContain('criteria_grading');
   });
 
   it('recognises exactly its own capability names', () => {
     for (const c of ALL_INFERENCE_CAPABILITIES) expect(isInferenceCapability(c)).toBe(true);
     expect(isInferenceCapability('criteria_grading ')).toBe(false);
-    expect(isInferenceCapability('')).toBe(false);
     expect(isInferenceCapability(null)).toBe(false);
-    expect(isInferenceCapability(42)).toBe(false);
-  });
-});
-
-describe('the chat capability', () => {
-  it('exists, has no agent fallback, and is off by default', () => {
-    // Chat never runs on a runner or a seat (docs/design/agent-chat.md), so
-    // turning it off turns the feature off. Pasting a key never starts spend.
-    expect(INFERENCE_CAPABILITIES.chat.fallback).toBe('none');
-    expect(isInferenceEnabled('chat', null)).toBe(false);
-    expect(isInferenceEnabled('chat', [])).toBe(false);
-    expect(isInferenceEnabled('chat', ['criteria_grading'])).toBe(false);
-    expect(isInferenceEnabled('chat', ['chat'])).toBe(true);
   });
 });

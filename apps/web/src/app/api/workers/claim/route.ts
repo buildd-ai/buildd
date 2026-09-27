@@ -28,6 +28,7 @@ import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } fr
 import { readModelPin } from '@buildd/core/model-pin';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
+import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
@@ -1579,6 +1580,7 @@ export async function POST(req: NextRequest) {
     // taskTeamId already defined above (line ~619)
     let resolvedModel: string;
     let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
+    let poolDraw: AgentPoolDraw | null = null;
 
     if (routingDecision.reason === 'explicit_override') {
       resolvedModel = routingDecision.model;
@@ -1605,6 +1607,26 @@ export async function POST(req: NextRequest) {
           if (treatment) {
             resolvedModel = treatment.model;
             resolvedTierMeta = { tier: treatment.tier, provider: treatment.provider, source: treatment.source };
+          }
+        }
+        // Tier model pool (docs/design/tier-model-pools.md). Null, and a no-op,
+        // unless the team has a split pool on this tier and the task is
+        // eligible. A task in the model-routing experiment serves the
+        // incumbent: one experiment per unit. Never throws, never defers.
+        poolDraw = await drawAgentPoolArm({
+          teamId: taskTeamId, tier: derivedTier, task: task as any,
+          workspace: task.workspace as any, workspaceOverride: entry.source === 'workspace',
+          explicitModel: explicit, roleModel, budgetPressure: dailyBudgetPct,
+          inModelRoutingExperiment: !!experimentDraw,
+        });
+        if (poolDraw) {
+          const served = applyAgentPoolArm(poolDraw, {
+            incumbentModel: entry.model, backend: task.backend,
+            clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
+          });
+          if (served) {
+            resolvedModel = served.model;
+            resolvedTierMeta = { tier: derivedTier, provider: served.provider, source: 'pool' };
           }
         }
       } else {
@@ -1674,6 +1696,9 @@ export async function POST(req: NextRequest) {
 
     if (experimentDraw) {
       await recordModelRoutingAssignment(experimentDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
+    }
+    if (poolDraw) {
+      await recordAgentPoolAssignment(poolDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
     }
 
     // Count this claim toward the per-workspace cap for the rest of the batch.

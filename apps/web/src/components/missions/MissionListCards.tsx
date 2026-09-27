@@ -12,6 +12,7 @@
  *
  * Every link into a task goes through the model's `missionTaskHref` output.
  */
+import { describeMissionDuration } from '@/lib/mission-duration';
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
@@ -367,7 +368,7 @@ export function DoneMissionRows({ items }: { items: ReadonlyArray<{ view: Missio
               {model.criteria ? <>crit <b className="text-status-success">{model.criteria.passed}/{model.criteria.total}</b></> : `${view.done}/${view.total}`}
             </span>
             <span className="text-right text-text-muted">
-              {d?.durationMs != null && <span className="hidden md:inline">{shortDuration(d.durationMs)} · </span>}
+              {d?.durationMs != null && <span data-testid="mission-done-duration" className="hidden md:inline">{describeMissionDuration({ activeMs: d.activeMs, openMs: d.durationMs }).label} · </span>}
               {shortAgo(d?.completedAt)}
             </span>
           </div>

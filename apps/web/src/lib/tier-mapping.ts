@@ -42,48 +42,11 @@ export interface CatalogModel {
   openRouterId?: string;
   inputPrice?: number;
   outputPrice?: number;
-}
-
-export interface ModelOption {
-  value: string;
-  label: string;
-  price?: string;
-}
-
-function money(n: number): string {
-  return `$${n.toFixed(2)}`;
-}
-
-/**
- * Model choices for one provider.
- *
- * - anthropic: native Anthropic ids (what the Claude SDK takes).
- * - openrouter: OpenRouter ids (`vendor/slug`), which is what an OpenRouter
- *   registry row stores.
- * - openai-codex: native OpenAI ids.
- *
- * The current value is always kept, flagged when the catalog does not list it,
- * so opening the picker never silently changes a saved mapping.
- */
-export function modelOptionsFor(provider: TierProvider, models: readonly CatalogModel[], current?: string): ModelOption[] {
-  const out: ModelOption[] = [];
-  const seen = new Set<string>();
-  for (const m of models) {
-    let value: string | undefined;
-    if (provider === 'anthropic' && m.provider === 'anthropic') value = m.id;
-    else if (provider === 'openrouter') value = m.openRouterId;
-    else if ((provider === 'openai-codex' || provider === 'openai') && m.provider === 'openai') value = m.id;
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    const price = m.inputPrice !== undefined && m.outputPrice !== undefined
-      ? `${money(m.inputPrice)} / ${money(m.outputPrice)}`
-      : undefined;
-    out.push({ value, label: value, price });
-  }
-  if (current && !seen.has(current)) {
-    out.unshift({ value: current, label: `${current} (not in catalog)` });
-  }
-  return out;
+  /** Picker metadata (see lib/model-picker.ts). */
+  vendor?: string;
+  contextLength?: number;
+  created?: number;
+  expiresAt?: number | null;
 }
 
 export interface TierSourceState {

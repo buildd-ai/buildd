@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { MergePolicy, MergePolicyTier, WorkspacePolicyConfig } from '@buildd/shared';
 import MissionPolicyDrawer from '@/components/MissionPolicyDrawer';
 import { PolicyRescanSheet } from '@/components/PolicyRescanSheet';
 import { describePolicyConfig } from '@/lib/workspace-health';
+import { Select } from '@/components/ui/Select';
 
 interface Role {
   slug: string;
@@ -27,6 +28,8 @@ interface Props {
   policyConfig: WorkspacePolicyConfig | null;
   roles: Role[];
   missionOverrides: MissionOverride[];
+  /** Right of the page title (the workspace's "Move to team…"). */
+  headerAction?: ReactNode;
 }
 
 const TIER_OPTIONS: { value: MergePolicyTier; label: string; hint: string }[] = [
@@ -66,6 +69,7 @@ export default function MergePolicyEditor({
   policyConfig,
   roles,
   missionOverrides: initialOverrides,
+  headerAction,
 }: Props) {
   const router = useRouter();
   const [rescanOpen, setRescanOpen] = useState(false);
@@ -165,11 +169,14 @@ export default function MergePolicyEditor({
         <span className="text-text-primary">Merge Policy</span>
       </div>
 
-      <div>
-        <h1 className="text-xl font-semibold text-text-primary">Merge Policy</h1>
-        <p className="mt-1 text-sm text-text-muted">
-          Controls when and how PRs created by agents are merged in <strong>{workspaceName}</strong>.
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold text-text-primary">Merge Policy</h1>
+          <p className="mt-1 text-sm text-text-muted">
+            Controls when and how PRs created by agents are merged in <strong>{workspaceName}</strong>.
+          </p>
+        </div>
+        {headerAction && <div className="shrink-0">{headerAction}</div>}
       </div>
 
       {/* Tier selector */}
@@ -229,16 +236,13 @@ export default function MergePolicyEditor({
           <div className="space-y-1">
             <label className="text-xs font-medium text-text-secondary">Reviewer role</label>
             {roles.length > 0 ? (
-              <select
+              <Select
+                aria-label="Reviewer role"
                 value={reviewerRole}
-                onChange={e => setReviewerRole(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-              >
-                <option value="">Select a role</option>
-                {roles.map(r => (
-                  <option key={r.slug} value={r.slug}>{r.name}</option>
-                ))}
-              </select>
+                onChange={setReviewerRole}
+                placeholder="Select a role"
+                options={roles.map(r => ({ value: r.slug, label: r.name }))}
+              />
             ) : (
               <p className="text-xs text-text-muted">
                 No roles found in this workspace.{' '}
@@ -264,14 +268,15 @@ export default function MergePolicyEditor({
 
             <div className="space-y-1">
               <label className="text-xs font-medium text-text-secondary">Gate condition</label>
-              <select
+              <Select
+                aria-label="Gate condition"
                 value={gateCondition}
-                onChange={e => setGateCondition(e.target.value as 'approve-and-merge' | 'approve-only')}
-                className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-              >
-                <option value="approve-and-merge">Approve and merge</option>
-                <option value="approve-only">Approve only (human merges)</option>
-              </select>
+                onChange={v => setGateCondition(v as 'approve-and-merge' | 'approve-only')}
+                options={[
+                  { value: 'approve-and-merge', label: 'Approve and merge' },
+                  { value: 'approve-only', label: 'Approve only', description: 'A human merges' },
+                ]}
+              />
             </div>
           </div>
         </section>

@@ -18,10 +18,10 @@ describe('chatKeyLine: the one Account row about chat', () => {
 
   it('when everyone brings their own key, asks for yours', () => {
     expect(chatKeyLine({ kind: 'needs_own' }, { isAdmin: false, chatDisabled: false }).text)
-      .toBe('Add your OpenRouter key to use chat');
+      .toBe('Add your OpenRouter key');
   });
 
-  it('says so when an admin switched chat off', () => {
+  it('says so when an admin switched interactive AI off', () => {
     expect(chatKeyLine({ kind: 'team', provider: 'openrouter' }, { isAdmin: false, chatDisabled: true }).text)
       .toBe('Off for this team');
   });

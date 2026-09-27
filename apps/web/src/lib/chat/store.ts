@@ -3,12 +3,13 @@
  * personal: only their creator reads or writes them (P1).
  */
 
-import { and, asc, desc, eq, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { conversationApprovals, conversationMessages, conversations } from '@buildd/core/db/schema';
 import { conversationDisplayTitle, normalizeConversationTitle } from '@buildd/core/conversation-title';
 import type {
   ChatMessagePart,
+  ChatTierName,
   ChatUsage,
   ConversationApprovalDTO,
   ConversationDTO,
@@ -33,6 +34,7 @@ export function toConversationDTO(c: ConversationRow): ConversationDTO {
     title: conversationDisplayTitle(c),
     titleSource: c.titleSource,
     agentRoleSlug: c.agentRoleSlug,
+    tier: c.tier ?? null,
     lastMessageAt: c.lastMessageAt.toISOString(),
     archivedAt: c.archivedAt ? c.archivedAt.toISOString() : null,
     createdAt: c.createdAt.toISOString(),
@@ -58,11 +60,13 @@ export async function createConversation(input: {
   teamId: string;
   workspaceId: string | null;
   userId: string;
+  tier?: ChatTierName | null;
 }): Promise<ConversationRow> {
   const [row] = await db.insert(conversations).values({
     teamId: input.teamId,
     workspaceId: input.workspaceId,
     createdByUserId: input.userId,
+    tier: input.tier ?? null,
   }).returning();
   return row;
 }
@@ -173,6 +177,27 @@ export async function setConversationTitle(id: string, raw: string, source: 'aut
       : eq(conversations.id, id))
     .returning({ id: conversations.id });
   return rows.length > 0 ? title : null;
+}
+
+/** Pin the conversation to a workspace, or null for all workspaces (routed per turn). */
+export async function setConversationWorkspace(id: string, workspaceId: string | null): Promise<void> {
+  await db.update(conversations).set({ workspaceId }).where(eq(conversations.id, id));
+}
+
+/** Pin the conversation to a tier, or null to route per turn. */
+export async function setConversationTier(id: string, tier: ChatTierName | null): Promise<void> {
+  await db.update(conversations).set({ tier }).where(eq(conversations.id, id));
+}
+
+/**
+ * What the conversation has cost so far, USD: every turn's usage plus the
+ * routing call stored on each user message. Null when nothing reported a cost.
+ */
+export async function conversationCostUsd(conversationId: string): Promise<number | null> {
+  const [row] = await db.select({
+    total: sql<string | null>`sum((${conversationMessages.usage}->>'costUsd')::numeric)`,
+  }).from(conversationMessages).where(eq(conversationMessages.conversationId, conversationId));
+  return row?.total != null ? Number(row.total) : null;
 }
 
 export async function setConversationArchived(id: string, archived: boolean): Promise<void> {

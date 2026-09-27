@@ -25,7 +25,7 @@ mock.module('@buildd/core/mission-helpers', () => ({
   },
 }));
 
-mock.module('@/components/BottomSheet', () => ({
+mock.module('@/components/SideSheet', () => ({
   default: ({ open, onClose, title, children }: any) =>
     open ? `<div role="dialog" aria-label="${title}">${children}</div>` : null,
 }));
@@ -126,5 +126,13 @@ describe('MissionVerifiedPill — criteria panel URL sync and hash-based opening
     const html = renderPill();
     // The button should have the MISSION_CRITERIA_ANCHOR id for hash-based navigation
     expect(html).toContain('id="mission-criteria"');
+  });
+});
+
+describe('MissionVerifiedPill — sheet only (terminal mission, no pill)', () => {
+  it('renders no pill, so COMPLETE never sits beside "Needs verification"', () => {
+    const html = renderPill({ sheetOnly: true, overall: null, criteriaState: null, readonly: true });
+    expect(html).not.toContain('id="mission-criteria"');
+    expect(html).not.toContain('<button');
   });
 });

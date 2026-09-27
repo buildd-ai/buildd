@@ -23,9 +23,9 @@
  *   if the deadline still has room. There is no way to make this block for
  *   minutes. The SDK's own retry is switched off (`maxRetries: 0`): its budget
  *   is per attempt with no total ceiling, and two retry loops would stack.
- * - **Gated before spend.** The team's inference capability allowlist
- *   (`teams.enabledInferenceCapabilities`) is checked before the key is even
- *   resolved, exactly as `inferenceCall` does. Default empty ⇒ nothing runs.
+ * - **Gated before spend.** The team's inference policy (`inference-policy.ts`:
+ *   built-ins always, chat unless switched off) is checked before the key is
+ *   even resolved, exactly as `inferenceCall` does. No key ⇒ nothing runs.
  *
  * ## Credential
  *
@@ -65,7 +65,7 @@ import {
   APIUserAbortError,
   type Fetch,
 } from '@typesafe-ai/sdk';
-import { isInferenceEnabled, type InferenceCapability } from './inference-policy';
+import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 
 /** OpenRouter's System One API root, per OpenRouter's TypeSafe SDK guide. */
 export const DECISIONS_BASE_URL = 'https://openrouter.ai/api';
@@ -360,9 +360,9 @@ async function teamAllowsCapability(teamId: string, capability: InferenceCapabil
     const { db } = await import('./db');
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { enabledInferenceCapabilities: true },
+      columns: { chatDisabled: true, inferenceFeatureModes: true },
     });
-    return isInferenceEnabled(capability, team?.enabledInferenceCapabilities ?? null);
+    return isInferenceAllowed(capability, team ? { chatDisabled: team.chatDisabled, featureModes: team.inferenceFeatureModes } : null);
   } catch (e) {
     console.warn(`[decision] capability lookup failed for team ${teamId}:`, e);
     return false;
@@ -438,7 +438,7 @@ function mapSdkError(e: unknown, timeoutMs: number): { error: DecisionError; ret
 }
 
 export interface DecisionCallParams<Q extends DecisionQuestions> {
-  /** Which call site — checked against the team allowlist before any spend. */
+  /** Which call site — checked against the team's inference policy before any spend. */
   capability: InferenceCapability;
   teamId: string;
   workspaceId?: string | null;
@@ -452,7 +452,7 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   model?: string;
   /** Whole-call deadline across all attempts (default 5s). */
   timeoutMs?: number;
-  /** Pre-resolved key (the offline eval passes one; skips DB lookup + allowlist). */
+  /** Pre-resolved key (the offline eval passes one; skips DB lookup + policy). */
   apiKey?: string;
   /** Test seams. */
   fetcher?: Fetcher;
@@ -463,7 +463,7 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
 /**
  * Make one decision call. See the module docstring for the contract.
  *
- * When `apiKey` is supplied the allowlist and key lookup are skipped — that path
+ * When `apiKey` is supplied the policy and key lookup are skipped — that path
  * exists for the offline eval script, which runs outside any team.
  */
 export async function decisionCall<Q extends DecisionQuestions>(

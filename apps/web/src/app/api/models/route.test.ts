@@ -414,6 +414,20 @@ describe('GET /api/models', () => {
     expect(qwen).toMatchObject({ openRouterId: 'qwen/qwen3-coder', inputPrice: 0.3, outputPrice: 1.2 });
   });
 
+  it('carries vendor, context window, release time and expiry for the model picker', async () => {
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      { ...publicEntry('gemini-3-flash', 'other'), openRouterId: 'google/gemini-3-flash', vendor: 'google', expiresAt: 1_790_000_000 },
+      publicEntry('claude-opus-5'),
+    ]));
+
+    const data = await (await GET(req())).json();
+    const gem = data.models.find((m: any) => m.id === 'gemini-3-flash');
+    expect(gem).toMatchObject({ vendor: 'google', contextLength: 1_000_000, created: 1_780_000_000, expiresAt: 1_790_000_000 });
+    // A persisted catalog row without `vendor` still gets one, from the OpenRouter id.
+    const opus = data.models.find((m: any) => m.id === 'claude-opus-5');
+    expect(opus).toMatchObject({ vendor: 'anthropic', contextLength: 1_000_000, created: 1_780_000_000 });
+  });
+
   it('enriches a tier model with its public price instead of dropping it as a duplicate', async () => {
     mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([publicEntry('claude-opus-5')]));
 

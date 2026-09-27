@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.233.0",
+  "version": "0.234.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -52,6 +52,9 @@
     "./experiment-lineage": "./experiment-lineage.ts",
     "./model-routing-experiment": "./model-routing-experiment.ts",
     "./model-routing-experiment-source": "./model-routing-experiment-source.ts",
+    "./tier-pool": "./tier-pool.ts",
+    "./tier-pool-source": "./tier-pool-source.ts",
+    "./tier-pool-admin": "./tier-pool-admin.ts",
     "./cbm-access-experiment": "./cbm-access-experiment.ts",
     "./cbm-access-experiment-source": "./cbm-access-experiment-source.ts",
     "./experiment-readout": "./experiment-readout.ts",

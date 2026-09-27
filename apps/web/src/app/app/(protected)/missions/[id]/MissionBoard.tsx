@@ -31,6 +31,9 @@ import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationB
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
 import BoardVisualShots from './BoardVisualShots';
+import CriteriaCheckNow from './CriteriaCheckNow';
+import { describeMissionDuration } from '@/lib/mission-duration';
+import { axisTicks, formatAxisMinutes } from '@/components/fleet/slot-lanes-layout';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -78,7 +81,7 @@ export default function MissionBoard({ model: serverModel, completionText, notic
 
   return (
     <div data-testid="mission-board" data-compact={compact ? 'true' : undefined} className="flex flex-col">
-      <Band model={model} compact={compact} />
+      <Band model={model} compact={compact} missionId={link.missionId} />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -142,7 +145,7 @@ export default function MissionBoard({ model: serverModel, completionText, notic
 
 // ── Band ─────────────────────────────────────────────────────────────────────
 
-function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }) {
+export function Band({ model, compact, missionId }: { model: MissionBoardModel; compact: boolean; missionId: string }) {
   const needs = model.needsYou.length;
   const first = needs ? model.tasks[model.needsYou[0]] : null;
   const cell = 'flex min-w-0 flex-col gap-2.5 border-border-default px-[18px] pb-4 pt-3.5';
@@ -156,39 +159,7 @@ function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }
         <Big n={model.landed.done} small={`of ${model.landed.total}`} />
         <LandedMeter model={model} variant="band" compact={compact} />
       </div>
-      <a
-        href={`#${MISSION_CRITERIA_ANCHOR}`}
-        data-testid="goal-band"
-        className={`${cell} border-b border-l md:border-b-0 md:border-l-0 md:border-r hover:bg-card-hover`}
-      >
-        <SectionLabel>{`Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`}</SectionLabel>
-        {compact ? (
-          <div className="flex flex-wrap gap-1.5" role="list" aria-label="Goal criteria">
-            {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
-            {model.criteria.map((c, i) => (
-              <span
-                key={i}
-                role="listitem"
-                data-testid="goal-criterion-pip"
-                data-state={c.state}
-                title={`${c.label} · ${c.value}`}
-                aria-label={`${c.label} · ${c.value}`}
-              >
-                <CriterionBox c={c} size={16} />
-              </span>
-            ))}
-          </div>
-        ) : <div className="grid gap-[5px]">
-          {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
-          {model.criteria.map((c, i) => (
-            <div key={i} data-testid="goal-criterion" data-state={c.state} className="flex min-w-0 items-center gap-2 font-mono text-[12px] text-text-secondary">
-              <CriterionBox c={c} />
-              <span className="min-w-0 truncate">{c.label}</span>
-              <span className={`ml-auto shrink-0 tabular-nums ${c.state === 'pending' ? 'font-medium text-text-muted' : 'font-semibold text-text-primary'}`}>{c.value}</span>
-            </div>
-          ))}
-        </div>}
-      </a>
+      <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} border-b border-l md:border-b-0 md:border-l-0 md:border-r`} />
       <div data-testid="fleet-band" className={`${cell} md:border-r`}>
         <SectionLabel>Fleet</SectionLabel>
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
@@ -218,6 +189,57 @@ function Band({ model, compact }: { model: MissionBoardModel; compact: boolean }
   );
 }
 
+/**
+ * The band's goal cell. A mission that completed without anything evaluating
+ * its criteria says so once, with Check now — not a "not checked" on every row.
+ */
+export function GoalCell({ model, compact, missionId, className }: { model: MissionBoardModel; compact: boolean; missionId: string; className: string }) {
+  const unevaluated = model.complete && !model.criteriaEvaluated && model.criteria.length > 0;
+  const heading = unevaluated ? 'Goal' : `Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`;
+  return (
+    <div data-testid="goal-band" data-evaluated={unevaluated ? 'false' : undefined} className={className}>
+      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="hover:underline">
+        <SectionLabel>{heading}</SectionLabel>
+      </a>
+      {unevaluated && (
+        <div data-testid="criteria-not-evaluated" className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 font-mono text-[12px] text-text-secondary">
+          <span>Criteria not evaluated</span>
+          <CriteriaCheckNow missionId={missionId} />
+        </div>
+      )}
+      {compact ? (
+        <div className="flex flex-wrap gap-1.5" role="list" aria-label="Goal criteria">
+          {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
+          {model.criteria.map((c, i) => (
+            <span
+              key={i}
+              role="listitem"
+              data-testid="goal-criterion-pip"
+              data-state={c.state}
+              title={unevaluated ? c.label : `${c.label} · ${c.value}`}
+              aria-label={unevaluated ? c.label : `${c.label} · ${c.value}`}
+            >
+              <CriterionBox c={c} size={16} />
+            </span>
+          ))}
+        </div>
+      ) : <div className="grid gap-[5px]">
+        {model.criteria.length === 0 && <span className="font-mono text-[12px] text-text-muted">No criteria set.</span>}
+        {model.criteria.map((c, i) => (
+          <a key={i} href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-criterion" data-state={c.state} className="flex min-w-0 items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary">
+            <CriterionBox c={c} />
+            <span className="min-w-0 truncate">{c.label}</span>
+            {/* Unevaluated: the one line above says it; a per-row "not checked" is noise. */}
+            {!(unevaluated && c.state === 'pending') && (
+              <span className={`ml-auto shrink-0 tabular-nums ${c.state === 'pending' ? 'font-medium text-text-muted' : 'font-semibold text-text-primary'}`}>{c.value}</span>
+            )}
+          </a>
+        ))}
+      </div>}
+    </div>
+  );
+}
+
 function Big({ n, small }: { n: number; small: string }) {
   return (
     <span className="font-mono text-[34px] font-semibold leading-none tracking-[-1px] text-text-primary tabular-nums">
@@ -229,7 +251,7 @@ function Big({ n, small }: { n: number; small: string }) {
 
 // ── Needs you ────────────────────────────────────────────────────────────────
 
-function AskBanner({ task, now }: { task: BoardTask; now: number }) {
+export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
   const prompt = task.waitingFor?.prompt ?? 'Waiting on you.';
   return (
     <section
@@ -531,35 +553,31 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; text: string | null; shots: readonly VisualShot[] | null }) {
   const r = model.record;
   const review = shots ? summarizeVisualRun(shots) : null;
+  const d = describeMissionDuration({ activeMs: model.activeMs, openMs: (model.endedAt ?? model.now) - model.startedAt });
   // Only what happened: a CI auto-fix count of 0 is not an outcome, and a
-  // visual review is. The numbers sit in one 2-column block beside the prose,
-  // so each tile is about half the prose's height; an odd last tile spans both.
-  const stats: Array<{ label: string; value: string; testId: string; sub?: string }> = [
+  // visual review is. One compact card, like the Lanes side card: the summary
+  // across the top, the numbers in one row under it.
+  const stats: Array<{ label: string; value: string; testId: string; sub?: string; subCls?: string }> = [
     { label: 'PRs merged', value: String(r.prsMerged), testId: 'record-prs' },
     { label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' },
     ...(r.ciFixes > 0 ? [{ label: 'CI auto-fix', value: String(r.ciFixes), testId: 'record-ci-fixes' }] : []),
     ...(review && review.shots > 0
-      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review) }]
+      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review), subCls: review.ok === review.shots ? 'text-status-success' : 'text-text-secondary' }]
       : []),
     { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
+    { label: 'Work', value: d.work ?? '—', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
   ];
   return (
-    <section data-testid="mission-completion-record" className="mt-[18px] grid grid-cols-1 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.4fr_1fr]">
-      <div className="px-[18px] py-3.5">
-        <SectionLabel className="!text-status-success">Completion record</SectionLabel>
-        {text && <p className="mt-2 font-mono text-[12.5px] leading-[1.55] text-text-secondary whitespace-pre-line">{text}</p>}
-      </div>
-      <div data-testid="record-stats" className="grid grid-cols-2 border-t border-border-default md:border-l md:border-t-0">
-        {stats.map((st, i) => (
-          <div
-            key={st.testId}
-            data-testid={st.testId}
-            className={`flex flex-col justify-center gap-2 border-border-default px-[18px] py-3 ${i % 2 ? 'border-l' : ''} ${i >= 2 ? 'border-t' : ''} ${i === stats.length - 1 && i % 2 === 0 ? 'col-span-2' : ''}`}
-          >
-            <SectionLabel>{st.label}</SectionLabel>
+    <section data-testid="mission-completion-record" className="mt-[18px] flex flex-col gap-3 border-2 border-border-strong bg-card px-[18px] py-3.5 shadow-[var(--card-shadow)]">
+      <SectionLabel className="!text-status-success">Completion record</SectionLabel>
+      {text && <p data-testid="record-text" className="max-w-[100ch] font-mono text-[12.5px] leading-[1.55] text-text-secondary whitespace-pre-line">{text}</p>}
+      <div data-testid="record-stats" className="flex flex-wrap gap-x-8 gap-y-3 border-t border-border-default pt-3">
+        {stats.map(st => (
+          <div key={st.testId} data-testid={st.testId} className="flex min-w-0 flex-col gap-1.5">
+            <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.2px] text-text-muted">{st.label}</span>
             <div className="flex items-baseline gap-2">
-              <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-text-primary">{st.value}</span>
-              {st.sub && <span className={`font-mono text-[12px] ${st.sub === 'all ok' ? 'text-status-success' : 'text-text-secondary'}`}>{st.sub}</span>}
+              <b className="font-mono text-[22px] font-semibold leading-none tabular-nums text-text-primary">{st.value}</b>
+              {st.sub && <span className={`font-mono text-[12px] ${st.subCls ?? 'text-text-secondary'}`}>{st.sub}</span>}
             </div>
           </div>
         ))}
@@ -571,13 +589,13 @@ function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; te
 function Concurrency({ model }: { model: MissionBoardModel }) {
   const from = model.startedAt;
   const to = Math.max(from + 60_000, ...model.bars.map(b => b.end ?? model.now), ...model.merges.map(m => m.at));
-  const bins = concurrencyBins(model.bars, from, to, 72);
+  // Side runs (a friction report's) are not agents working the mission.
+  const bins = concurrencyBins(model.bars.filter(b => b.tone !== 'side'), from, to, 72);
   const peak = Math.max(1, ...bins);
   const x = (t: number) => `${((t - from) / (to - from)) * 100}%`;
-  const spanMin = (to - from) / 60_000;
-  const step = spanMin > 90 ? 30 : spanMin > 25 ? 5 : 2;
-  const ticks: number[] = [];
-  for (let m = 0; m <= spanMin; m += step) ticks.push(m);
+  // The shared axis ladder (minutes up to days), so a mission open for weeks
+  // gets a handful of day ticks, not a solid bar of overlapping "30m" labels.
+  const { ticks } = axisTicks(to - from, 10);
   return (
     <section data-testid="mission-concurrency" className="mt-[26px] hidden md:block">
       <div className="mb-2.5 flex items-baseline gap-3.5">
@@ -599,7 +617,7 @@ function Concurrency({ model }: { model: MissionBoardModel }) {
         ))}
       </div>
       <div className="relative h-[26px] font-mono text-[11px] md:text-[10.5px] text-[var(--fleet-faint)]">
-        {ticks.map(m => <span key={m} className="absolute top-1.5 -translate-x-1/2" style={{ left: x(from + m * 60_000) }}>{`${m}m`}</span>)}
+        {ticks.map(m => <span key={m} data-testid="concurrency-tick" className="absolute top-1.5 -translate-x-1/2" style={{ left: x(from + m * 60_000) }}>{formatAxisMinutes(m)}</span>)}
         {model.merges.map(m => <i key={m.pr} title={`#${m.pr}`} className="absolute -top-0.5 block h-2 w-2 -translate-x-1/2 bg-status-success" style={{ left: x(m.at) }} />)}
       </div>
     </section>

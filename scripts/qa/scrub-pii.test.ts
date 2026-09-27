@@ -85,8 +85,8 @@ function sqlCoverage(sql: string) {
 // ids, timestamps-as-text, cron/timezone, colours, counts, numeric/uuid json.
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
-  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities'],
-  team_members: [],
+  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes'],
+  team_members: ['chat_allowed_tool_groups'], // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
   users: ['timezone'],
   accounts: ['monthly_cost_month', 'budget_alerts_sent'],
   missions: ['context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
@@ -114,7 +114,13 @@ const SAFE: Record<string, string[]> = {
   github_repos: ['default_branch'],
   workspace_skills: ['content_hash', 'model', 'color', 'config_hash', 'config_storage_key'],
   task_outcomes: ['kind', 'complexity', 'classified_by', 'predicted_model', 'actual_model', 'total_cost_usd', 'exit_cause'],
-  experiment_assignments: ['default_model', 'assigned_model', 'runner_cli_version'],
+  // arm: 'control' | 'treatment' or a tier_pool_arms id (docs/design/tier-model-pools.md).
+  experiment_assignments: ['default_model', 'assigned_model', 'runner_cli_version', 'arm'],
+  // Tier pools hold no text by design: shares keyed by arm id, model ids, and
+  // an audit log of those same shares plus a system actor label.
+  tier_pools: ['allocation'],
+  tier_pool_arms: ['model', 'stats'],
+  tier_pool_changes: ['before', 'after', 'evidence', 'actor_system'],
   tenant_budgets: ['tenant_id'],
   model_tier_registry: ['model'],
   change_intents: ['head_sha'],

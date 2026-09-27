@@ -6,7 +6,7 @@ import AiFeedback from '@/components/AiFeedback';
 import type { MissionNote, MissionNoteType } from '@buildd/shared';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
 import { isReplyableQuestion } from '@/lib/mission-note-reply';
-import BottomSheet from '@/components/BottomSheet';
+import SideSheet from '@/components/SideSheet';
 
 const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: string; icon: string }> = {
   decision: { label: 'DECISION', color: 'text-status-success', bg: 'bg-status-success/10', icon: 'M9 12.75L11.25 15 15 9.75' },
@@ -319,16 +319,14 @@ export function MissionNotesSheet({ missionId, defaultOpen = false }: { missionI
         <span className="flex-1">Notes</span>
         <span aria-hidden="true">›</span>
       </button>
-      <BottomSheet
+      <SideSheet
         open={open}
         onClose={() => setOpen(false)}
         title="Notes"
-        height="tall"
-        lockTarget={() => document.querySelector('main')}
         testId="mission-notes-sheet"
       >
         <MissionFeed missionId={missionId} />
-      </BottomSheet>
+      </SideSheet>
     </>
   );
 }

@@ -14,7 +14,9 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { MISSION_LAYOUTS, MISSION_LAYOUT_LABEL, missionLayoutHref, type MissionLayout } from '@/lib/mission-layout';
 import type { MastheadChip } from '@/components/missions/MissionMasthead';
 import { formatClock } from '@/lib/mission-board';
+import { describeMissionDuration, formatDuration } from '@/lib/mission-duration';
 import { useNow } from './MissionBoardParts';
+import MissionSheetRow from './MissionSheetRow';
 
 const LayoutContext = createContext<{ layout: MissionLayout; setLayout: (l: MissionLayout) => void } | null>(null);
 
@@ -77,17 +79,52 @@ export interface MissionBoardHeaderProps {
   /** The Verified pill (opens goal criteria). */
   verified?: ReactNode;
   actions?: ReactNode;
-  /** Plain-text goal line under the title. */
+  /** Plain-text goal line under the title: one sentence (`missionSummaryLine`). */
   goal?: string | null;
+  /** The full description, behind a "Description" control beside the goal line. */
+  description?: ReactNode;
   serverNow: number;
   startedAt: number;
-  /** Set once complete: the clock reads `took` and stops. */
+  /** Set once complete: the clock stops. */
   endedAt?: number | null;
+  /** Wall time agents worked (`MissionBoardModel.activeMs`). Absent: the open span is the work. */
+  activeMs?: number | null;
   children?: ReactNode;
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * The header clock. Under a day of a live mission: `T+ 11:50`, ticking. Past
+ * that, or once complete, work and open time in readable units — `40m of work
+ * · open 35d`, or `took 38m` when the two are about the same.
+ */
+export function MissionClock({ startedAt, endedAt, activeMs, now }: { startedAt: number; endedAt?: number | null; activeMs?: number | null; now: number }) {
+  const done = endedAt != null;
+  const openMs = (done ? endedAt! : now) - startedAt;
+  if (!done && openMs < DAY_MS) {
+    return (
+      <span data-testid="mission-clock" className="font-mono text-[13px] text-text-secondary">
+        {'T+ '}<b className="font-semibold tabular-nums text-text-primary">{formatClock(openMs)}</b>
+      </span>
+    );
+  }
+  const d = describeMissionDuration({ activeMs: activeMs === undefined ? openMs : activeMs, openMs });
+  return (
+    <span data-testid="mission-clock" title={`Agents worked ${d.work ?? 'no time'}; open ${formatDuration(openMs)}`} className="font-mono text-[13px] text-text-secondary">
+      {d.work == null ? (
+        <>{'open '}<b className="font-semibold tabular-nums text-text-primary">{d.open}</b></>
+      ) : d.showOpen ? (
+        <><b className="font-semibold tabular-nums text-text-primary">{d.work}</b>{' of work · open '}<b className="font-semibold tabular-nums text-text-primary">{d.open}</b></>
+      ) : (
+        <>{'took '}<b className="font-semibold tabular-nums text-text-primary">{d.work}</b></>
+      )}
+    </span>
+  );
+}
+
 /** The Board/Lanes header: back, title, state, clock, layout tabs, overflow; the goal line under it. */
-export function MissionBoardHeader({ back, title, chip, verified, actions, goal, serverNow, startedAt, endedAt, children }: MissionBoardHeaderProps) {
+export function MissionBoardHeader({ back, title, chip, verified, actions, goal, description, serverNow, startedAt, endedAt, activeMs, children }: MissionBoardHeaderProps) {
   const now = useNow(serverNow, 1_000, endedAt == null);
   const done = endedAt != null;
   return (
@@ -101,14 +138,20 @@ export function MissionBoardHeader({ back, title, chip, verified, actions, goal,
         </span>
         {verified}
         <span className="flex-1" />
-        <span data-testid="mission-clock" className="font-mono text-[13px] text-text-secondary">
-          {done ? 'took ' : 'T+ '}
-          <b className="font-semibold tabular-nums text-text-primary">{formatClock((done ? endedAt! : now) - startedAt)}</b>
-        </span>
+        <MissionClock startedAt={startedAt} endedAt={endedAt} activeMs={activeMs} now={now} />
         <MissionLayoutTabs />
         {actions}
       </header>
-      {goal && <p className="mt-1.5 max-w-[90ch] truncate font-mono text-[12.5px] text-text-muted">{goal}</p>}
+      {(goal || description) && (
+        <div className="mt-1.5 flex min-w-0 max-w-[110ch] flex-wrap items-baseline gap-x-3 gap-y-0.5 md:flex-nowrap">
+          {goal && <p data-testid="mission-goal-line" className="min-w-0 font-mono text-[12.5px] text-text-secondary md:truncate">{goal}</p>}
+          {description && (
+            <MissionSheetRow inline label="Description" title="Description" testId="mission-description-open" sheetTestId="mission-description-sheet">
+              {description}
+            </MissionSheetRow>
+          )}
+        </div>
+      )}
       {children}
     </div>
   );

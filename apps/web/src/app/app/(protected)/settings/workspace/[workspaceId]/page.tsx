@@ -3,8 +3,10 @@ import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { eq, and, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
+import { MoveToTeamButton } from '@/components/MoveToTeamDialog';
+import { moveTargets } from '../../workspaces/rows';
 import MergePolicyEditor from './MergePolicyEditor';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +26,7 @@ export default async function WorkspaceMergePolicyPage({
 
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    columns: { id: true, name: true, gitConfig: true },
+    columns: { id: true, name: true, teamId: true, gitConfig: true },
   });
   if (!workspace) notFound();
 
@@ -48,6 +50,9 @@ export default async function WorkspaceMergePolicyPage({
 
   const effectivePolicy = resolvePolicy(workspace);
 
+  const teams = await getUserTeamsWithDetails(user.id).catch(() => []);
+  const moveTeams = moveTargets(user.id, teams, workspace.teamId);
+
   const missionOverrides = missionsWithOverrides
     .filter(m => m.mergePolicy != null)
     .map(m => ({ id: m.id, title: m.title, policy: m.mergePolicy! }));
@@ -62,6 +67,12 @@ export default async function WorkspaceMergePolicyPage({
           policyConfig={workspace.gitConfig?.policyConfig ?? null}
           roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
           missionOverrides={missionOverrides}
+          headerAction={moveTeams && (
+            <MoveToTeamButton
+              workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
+              teams={moveTeams}
+            />
+          )}
         />
       </div>
     </main>

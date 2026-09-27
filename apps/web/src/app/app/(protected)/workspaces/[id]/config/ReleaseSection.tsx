@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import type { WorkspaceReleaseConfig, ReleaseTrigger, ReleaseStrategy } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
+import { Select } from '@/components/ui/Select';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -239,16 +240,17 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
           {/* Strategy selector */}
           <div>
             <label className="block text-sm font-medium mb-1">Strategy</label>
-            <select
+            <Select
+              aria-label="Strategy"
               value={strategy}
-              onChange={(e) => setStrategy(e.target.value as StrategyOption)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
-            >
-              <option value="none">None · releases off</option>
-              <option value="branch_merge">Branch merge (merge source → production)</option>
-              <option value="workflow_dispatch">Workflow dispatch (trigger GitHub Actions)</option>
-              <option value="script" disabled>Script · coming soon</option>
-            </select>
+              onChange={(v) => setStrategy(v as StrategyOption)}
+              options={[
+                { value: 'none', label: 'None', description: 'Releases off' },
+                { value: 'branch_merge', label: 'Branch merge', description: 'Merge source into production' },
+                { value: 'workflow_dispatch', label: 'Workflow dispatch', description: 'Trigger GitHub Actions' },
+                { value: 'script', label: 'Script', description: 'Coming soon', disabled: true },
+              ]}
+            />
             {strategy === 'none' && (
               <p className="text-xs text-text-muted mt-1">buildd won&apos;t run releases for this workspace.</p>
             )}

@@ -4,6 +4,10 @@ import {
   priceFromCatalog,
   pickTierModel,
   TIER_PRICE_BANDS,
+  vendorOf,
+  modelFamily,
+  modelVariantFlags,
+  snapshotBase,
 } from '../model-catalog';
 import fixture from './fixtures/openrouter-models.json';
 
@@ -259,5 +263,61 @@ describe('pickTierModel', () => {
         pickTierModel('standard', entries, 'anthropic')?.id,
       );
     });
+  });
+});
+
+describe('picker metadata', () => {
+  test('normalizeCatalog records the vendor and an expiry', () => {
+    const [e] = normalizeCatalog({
+      data: [{
+        id: 'google/gemini-3-flash-preview', name: 'Gemini 3 Flash', created: 1_780_000_000, context_length: 1_048_576,
+        expiration_date: '2026-11-11', supported_parameters: ['tools'], architecture: { output_modalities: ['text'] },
+        pricing: { prompt: '0.0000005', completion: '0.000003' },
+      }],
+    });
+    expect(e.vendor).toBe('google');
+    expect(e.expiresAt).toBe(Date.UTC(2026, 10, 11) / 1000);
+    expect(e.contextLength).toBe(1_048_576);
+  });
+
+  test('vendorOf reads the OpenRouter prefix and infers a bare native id', () => {
+    expect(vendorOf('qwen/qwen3-coder')).toBe('qwen');
+    expect(vendorOf('claude-sonnet-5')).toBe('anthropic');
+    expect(vendorOf('gpt-5.3-codex')).toBe('openai');
+    expect(vendorOf('o4-mini')).toBe('openai');
+    expect(vendorOf('mystery-model')).toBe('other');
+  });
+
+  test('modelFamily drops versions, dates and preview tags', () => {
+    expect(modelFamily('claude-sonnet-4-5')).toBe('anthropic:claude-sonnet');
+    expect(modelFamily('claude-haiku-4-5-20251001')).toBe('anthropic:claude-haiku');
+    expect(modelFamily('anthropic/claude-opus-4.1')).toBe('anthropic:claude-opus');
+    expect(modelFamily('gpt-5.3-codex')).toBe('openai:gpt-codex');
+    expect(modelFamily('openai/gpt-4o-mini-2024-07-18')).toBe('openai:gpt-4o-mini');
+    expect(modelFamily('google/gemini-3.1-pro-preview')).toBe('google:gemini-pro');
+    expect(modelFamily('qwen/qwen3.6-max-preview')).toBe('qwen:qwen-max');
+    expect(modelFamily('deepseek/deepseek-v4-pro-0813')).toBe('deepseek:deepseek-v-pro');
+    expect(modelFamily('mistralai/mistral-large-2512')).toBe('mistralai:mistral-large');
+    expect(modelFamily('meta-llama/llama-3.3-70b-instruct')).toBe('meta-llama:llama-70b-instruct');
+  });
+
+  test('modelVariantFlags spots previews, dated snapshots and deprecations', () => {
+    expect(modelVariantFlags('google/gemini-3.1-pro-preview')).toMatchObject({ preview: true, snapshot: false });
+    expect(modelVariantFlags('deepseek/deepseek-v3.2-exp').preview).toBe(true);
+    expect(modelVariantFlags('claude-haiku-4-5-20251001')).toMatchObject({ preview: false, snapshot: true });
+    expect(modelVariantFlags('openai/gpt-4o-2024-08-06').snapshot).toBe(true);
+    expect(modelVariantFlags('mistralai/mistral-large-2512').snapshot).toBe(true);
+    expect(modelVariantFlags('claude-sonnet-5').snapshot).toBe(false);
+    expect(modelVariantFlags('openrouter/auto').preview).toBe(true);
+    const now = Date.UTC(2026, 9, 1) / 1000;
+    expect(modelVariantFlags('x/y', { expiresAt: now + 86_400, now }).deprecated).toBe(true);
+    expect(modelVariantFlags('x/y', { expiresAt: null, now }).deprecated).toBe(false);
+  });
+
+  test('snapshotBase strips the date suffix', () => {
+    expect(snapshotBase('claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5');
+    expect(snapshotBase('openai/gpt-4o-2024-08-06')).toBe('openai/gpt-4o');
+    expect(snapshotBase('deepseek/deepseek-r1-0528')).toBe('deepseek/deepseek-r1');
+    expect(snapshotBase('claude-sonnet-5')).toBe('claude-sonnet-5');
   });
 });

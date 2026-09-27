@@ -14,7 +14,7 @@ import { listConversations, type ConversationListItem } from '@/lib/chat/convers
 import { loadChatPageContext, type ChatPageContext } from '@/lib/chat/chat-page-data';
 import ChatSetupCard from '@/components/chat/ChatSetupCard';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
-import ChatContextPanel from '@/components/chat/ChatContextPanel';
+import ChatContextPanel, { contextPanelModel } from '@/components/chat/ChatContextPanel';
 import { homeAudience } from '../home/home-view';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { isUuid } from '@/lib/uuid';
@@ -82,7 +82,9 @@ export function ChatUnavailable({ reason, canManage, policy, teamId = null, form
   );
 }
 
+/** The context panel, or null when it has nothing in it (the chat takes the width). */
 export function contextAside(data: ChatShellData) {
+  if (contextPanelModel(data.context).empty) return null;
   return (
     <ChatContextPanel
       audience={data.audience}
@@ -101,16 +103,7 @@ export function firstName(user: { name: string | null; email: string | null }): 
 
 /** The conversation list: auto titles, newest first. */
 export function ConversationList({ items, currentId }: { items: readonly ConversationListItem[]; currentId?: string | null }) {
-  if (items.length === 0) {
-    return (
-      <div data-testid="conversation-list" className="mb-8 border-2 border-dashed border-border-default px-5 py-4">
-        <p className="font-mono text-[13px] font-semibold text-text-primary">Ask anything about your fleet, or describe the work.</p>
-        <p className="mt-1 text-[14px] leading-relaxed text-text-secondary">
-          Reads run on their own. Filing a mission shows you the draft first, and nothing is filed until you confirm.
-        </p>
-      </div>
-    );
-  }
+  if (items.length === 0) return null;
   return (
     <nav data-testid="conversation-list" aria-label="Conversations" className="mb-8">
       <div className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">Recent</div>

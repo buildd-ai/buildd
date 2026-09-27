@@ -65,14 +65,14 @@ describe('mission page wiring (source shape)', () => {
     expect(src).not.toMatch(/\.map\(toMissionFeedTaskInput\)/);
   });
 
-  it('passes the same feedTasks to the sheet owner and to the list', () => {
+  it('passes feedTasks to the sheet owner (its ‹ › and n / N)', () => {
     expect(src).toMatch(/<TaskPanelWrapper[\s\S]*?feedTasks=\{feedTasks\}/);
-    expect(src).toMatch(/feed=\{\{\s*tasks: feedTasks,/);
-    expect(src).toMatch(/segments=\{pulseSegments\}/);
   });
 
-  it('links the Verified delivery step to the criteria sheet only when the page renders its target', () => {
-    expect(src).toMatch(/verified: criteriaReachable \? \(\s*<a\s+href=\{`#\$\{MISSION_CRITERIA_ANCHOR\}`\}/);
+  it('every layout reads the one board model: Board, Lanes and the Feed', () => {
+    expect(src).toMatch(/<MissionBoard model=\{boardModel\}/);
+    expect(src).toMatch(/<MissionLanes model=\{boardModel\}/);
+    expect(src).toMatch(/<MissionFeedLayout\s+model=\{boardModel\}/);
     expect(src).toMatch(/criteriaReachable=\{criteriaReachable\}/);
   });
 

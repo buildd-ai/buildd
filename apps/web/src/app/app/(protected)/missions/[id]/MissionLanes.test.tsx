@@ -98,3 +98,24 @@ describe('laneWindow', () => {
     expect(to).toBeLessThan(BOARD_T0 + 18 * 60_000);
   });
 });
+
+describe('MissionLanes — complete, open for weeks', () => {
+  const html = render('long-open');
+
+  it('draws the friction report as its own kind, with a tooltip saying what it is', () => {
+    expect(html).toContain('data-tone="side"');
+    expect(html).toMatch(/title="Friction report · not mission work · run orphaned[^"]*"/);
+    expect(html).not.toMatch(/data-tone="plan"[^>]*title="[^"]*no admin API/);
+  });
+
+  it('names every bar kind it draws in the legend', () => {
+    expect(html).toContain('data-testid="mission-lanes-legend"');
+    expect(html).toContain('data-legend="short"');
+    expect(html).toContain('data-legend="side"');
+    expect(html).not.toContain('data-legend="stopped"');
+  });
+
+  it('never prints a raw H:MM:SS over a day', () => {
+    expect(html).not.toMatch(/\d{3,}:\d{2}:\d{2}/);
+  });
+});

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import SettingsSection from './SettingsSection';
+import { Select } from '@/components/ui/Select';
 
 interface Workspace {
   id: string;
@@ -145,16 +146,14 @@ export default function ConnectorsSection({
       action={
         <div className="flex items-center gap-2 min-w-0">
           {teams.length > 1 && (
-            <select
-              value={selectedTeamId}
-              onChange={(e) => setSelectedTeamId(e.target.value)}
+            <Select
               aria-label="Team"
-              className="h-8 min-w-0 px-2 text-xs bg-surface text-text-secondary"
-            >
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
+              size="sm"
+              value={selectedTeamId}
+              onChange={setSelectedTeamId}
+              options={teams.map((t) => ({ value: t.id, label: t.name }))}
+              className="min-w-[10rem] max-w-[16rem]"
+            />
           )}
         </div>
       }

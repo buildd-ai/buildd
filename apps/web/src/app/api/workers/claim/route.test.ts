@@ -271,6 +271,18 @@ mock.module('@buildd/core/model-routing-experiment-source', () => ({
   recordModelRoutingAssignment: mockRecordModelRoutingAssignment,
 }));
 
+// Tier-pool draw glue. The real module is exercised in
+// packages/core/__tests__/tier-pool-source.test.ts; here only the call-site
+// wiring. Default: no pool, so the tier resolves as today.
+const mockDrawAgentPoolArm = mock((_args: any): Promise<any> => Promise.resolve(null));
+const mockApplyAgentPoolArm = mock((_draw: any, _args: any): any => null);
+const mockRecordAgentPoolAssignment = mock((_draw: any, _args: any) => Promise.resolve());
+mock.module('@buildd/core/tier-pool-source', () => ({
+  drawAgentPoolArm: mockDrawAgentPoolArm,
+  applyAgentPoolArm: mockApplyAgentPoolArm,
+  recordAgentPoolAssignment: mockRecordAgentPoolAssignment,
+}));
+
 // CBM-access experiment glue. The real module is exercised in
 // packages/core/__tests__/cbm-access-experiment-source.test.ts; here only the
 // call-site wiring is under test. Default: no running experiment.
@@ -1386,6 +1398,60 @@ describe('POST /api/workers/claim', () => {
       mockDrawModelRoutingArm.mockResolvedValue({ arm: 'control' });
       await POST(claimReq());
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+    });
+
+    describe('tier pool wiring', () => {
+      beforeEach(() => {
+        mockDrawAgentPoolArm.mockReset();
+        mockDrawAgentPoolArm.mockResolvedValue(null);
+        mockApplyAgentPoolArm.mockReset();
+        mockApplyAgentPoolArm.mockReturnValue(null);
+        mockRecordAgentPoolAssignment.mockReset();
+        mockRecordAgentPoolAssignment.mockResolvedValue(undefined);
+      });
+
+      it('with no pool, routes exactly as before and records nothing', async () => {
+        const sets = setup();
+        await POST(claimReq());
+        expect(mockDrawAgentPoolArm).toHaveBeenCalledTimes(1);
+        expect(mockDrawAgentPoolArm.mock.calls[0][0]).toMatchObject({
+          teamId: 'team-1', tier: 'standard', task: { id: 'task-1' }, explicitModel: null, inModelRoutingExperiment: false,
+          workspaceOverride: false,
+        });
+        expect(mockRecordAgentPoolAssignment).not.toHaveBeenCalled();
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+      });
+
+      it('a challenger arm overrides the tier model and is recorded after the lock', async () => {
+        const sets = setup();
+        const draw = { arm: { id: 'arm-2' } };
+        mockDrawAgentPoolArm.mockResolvedValue(draw);
+        mockApplyAgentPoolArm.mockReturnValue({ model: 'claude-opus-5', provider: 'anthropic' });
+        await POST(claimReq());
+        const applyArgs = mockApplyAgentPoolArm.mock.calls[0][1];
+        expect(applyArgs.incumbentModel).toBe('claude-sonnet-5');
+        expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
+        const claimSet = sets.find(v => v.status === 'assigned');
+        expect(claimSet.predictedModel).toBe('claude-opus-5');
+        expect(claimSet.context.resolvedTier).toMatchObject({ tier: 'standard', source: 'pool' });
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][0]).toBe(draw);
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ taskId: 'task-1', resolvedModel: 'claude-opus-5' });
+      });
+
+      it('a task in the model-routing experiment is flagged so the pool serves its incumbent', async () => {
+        setup();
+        mockDrawModelRoutingArm.mockResolvedValue({ arm: 'control' });
+        await POST(claimReq());
+        expect(mockDrawAgentPoolArm.mock.calls[0][0].inModelRoutingExperiment).toBe(true);
+      });
+
+      it('does not record when the optimistic lock is lost', async () => {
+        setup();
+        mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
+        mockDrawAgentPoolArm.mockResolvedValue({ arm: { id: 'arm-1' } });
+        await POST(claimReq());
+        expect(mockRecordAgentPoolAssignment).not.toHaveBeenCalled();
+      });
     });
 
     describe('CBM-access experiment wiring', () => {

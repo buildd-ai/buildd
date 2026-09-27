@@ -32,14 +32,13 @@
  *
  * ## The team's key policy (`teams.inferenceKeyPolicy`)
  *
- * Binds calls made for a person (`userId` set), i.e. chat turns:
+ * Binds every server-side call (chat, decision calls, server-side features):
  *
  * - `team`: the team key pays for everyone; a person's own key is ignored.
  * - `team_or_own`: a person's own key wins, the team key covers the rest.
  * - `own`: only the person's own key. No workspace, team, account or env
- *   fallback, so a member without a key gets null and chat says so.
- *
- * Team work with no person (grading, visual QA, cron) ignores the policy.
+ *   fallback, so a member without a key gets null and chat says so, and team
+ *   work with no person (grading, visual QA, cron) gets null and runs on a runner.
  *
  * ## Invariants
  *
@@ -149,7 +148,7 @@ interface CandidateRow {
 }
 
 /** Rank of a row for this caller, or null when it must not be used at all. */
-function scopeRank(r: CandidateRow, opts: ResolveInferenceKeyOptions, policy: InferenceKeyPolicy | null): { rank: number; scope: InferenceKeyScope } | null {
+function scopeRank(r: CandidateRow, opts: ResolveInferenceKeyOptions, policy: InferenceKeyPolicy): { rank: number; scope: InferenceKeyScope } | null {
   if (r.userId != null) {
     if (policy === 'team') return null;
     return opts.userId && r.userId === opts.userId ? { rank: 0, scope: 'user' } : null;
@@ -175,10 +174,9 @@ export async function resolveInferenceCredential(
     ? [...opts.purposes.filter(p => accepted.includes(p)), ...accepted.filter(p => !opts.purposes!.includes(p))]
     : accepted;
 
-  // Only a call for a person is bound by the team's policy.
-  const policy: InferenceKeyPolicy | null = opts.userId
-    ? opts.keyPolicy ?? await loadInferenceKeyPolicy(opts.teamId)
-    : null;
+  // The policy binds every call. With no person, `own` leaves nothing to spend
+  // (no own key, no shared fallback), so team work takes its runner path.
+  const policy: InferenceKeyPolicy = opts.keyPolicy ?? await loadInferenceKeyPolicy(opts.teamId);
 
   let rows: CandidateRow[] = [];
   try {
@@ -231,6 +229,20 @@ export async function resolveInferenceCredential(
 /** The key alone. See `resolveInferenceCredential` for where it came from. */
 export async function resolveInferenceKey(opts: ResolveInferenceKeyOptions): Promise<string | null> {
   return (await resolveInferenceCredential(opts))?.key ?? null;
+}
+
+/**
+ * The team's billing model for server-side features: does team work (no
+ * person) resolve a pay-per-token key for any provider under the team's key
+ * policy? True → server-side by default; false (subscription only, or `own`)
+ * → the runner. Personal keys never count.
+ */
+export async function hasTeamInferenceKey(teamId: string): Promise<boolean> {
+  const keyPolicy = await loadInferenceKeyPolicy(teamId);
+  for (const provider of INFERENCE_KEY_PROVIDERS) {
+    if (await resolveInferenceCredential({ provider, teamId, keyPolicy })) return true;
+  }
+  return false;
 }
 
 // ── Display and health ────────────────────────────────────────────────────────

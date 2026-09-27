@@ -75,8 +75,10 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user }) {
+function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any }) {
   const apiCalls: string[] = [];
+  const resolveCalls: any[] = [];
+  const poolRecords: Array<{ draw: any; messageId: string }> = [];
   const linked: string[] = [];
   const decide = async ({ approvalId, inputHash, approved }: any) => {
     const a = approvals.find(x => x.approvalId === approvalId);
@@ -84,14 +86,17 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     a.status = approved ? 'approved' : 'denied';
     return true;
   };
+  const tiersAsked: string[] = [];
   const deps = {
     now: () => new Date('2026-09-26T21:30:00Z'),
+    allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     chatEnabled: async () => opts.enabled ?? true,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
-    resolveModel: async (o: any) => (opts.key ?? true)
-      ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const }
-      : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier },
+    resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
+      ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const, ...(opts.pool ? { pool: opts.pool } : {}) }
+      : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier }; },
+    recordPoolAssignment: async (draw: any, a: { messageId: string }) => { poolRecords.push({ draw, messageId: a.messageId }); },
     makeApi: (onCall: any) => async (endpoint: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       apiCalls.push(`${method} ${endpoint.split('?')[0]}`);
@@ -105,14 +110,15 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     actionContext: { workspaceId: 'ws-1', teamId: 'team-1', getWorkspaceId: async () => 'ws-1', getLevel: async () => 'admin' } as any,
     decide,
     linkMission: async (id: string) => { linked.push(id); },
+    ...(opts.scopeFor ? { scopeFor: opts.scopeFor } : {}),
   };
   const turn = async (message: any, extra: Record<string, unknown> = {}) => {
-    const res = await runChatTurn({ conversation, workspace: { id: 'ws-1', name: 'billing-web' }, user: opts.user ?? user, body: { message, ...extra } as any, deps });
+    const res = await runChatTurn({ conversation: { ...conversation, ...(opts.conversation ?? {}) }, workspace: opts.workspace === undefined ? { id: 'ws-1', name: 'billing-web' } : opts.workspace, workspaces: opts.workspaces, user: opts.user ?? user, body: { message, ...extra } as any, deps });
     const text = res.body ? await res.text() : '';
     await new Promise(r => setTimeout(r, 20)); // let onEnd persistence settle
     return { res, text };
   };
-  return { turn, apiCalls, linked };
+  return { turn, apiCalls, linked, resolveCalls, poolRecords, tiersAsked };
 }
 
 const userMsg = (text: string) => ({ id: 'client-1', role: 'user', parts: [{ type: 'text', text }] });
@@ -176,6 +182,30 @@ describe('a read-only question', () => {
     expect(prompt).toContain('2026-09-27T10:30:00+13:00');
     expect(prompt).toContain('Pacific/Auckland');
     expect(prompt).toContain('conv-1');
+  });
+});
+
+describe('tier pools (docs/design/tier-model-pools.md)', () => {
+  it('passes the chain context and records the saved turn\'s assignment by message id', async () => {
+    const model = new MockLanguageModelV4({ doStream: [textStream('one'), textStream('two')] as any });
+    const draw = { arm: { id: 'arm-2' } };
+    const { turn, resolveCalls, poolRecords } = harness({ model, pool: draw });
+    await turn(userMsg('first'));
+    expect(resolveCalls[0].pool).toMatchObject({ conversationId: 'conv-1', drawKey: 'conv-1#0', previous: null });
+    const first = lastAssistant();
+    expect(poolRecords).toEqual([{ draw, messageId: first.id }]);
+    expect(typeof first.usage.latencyMs).toBe('number');
+
+    await turn(userMsg('second'));
+    // The next turn carries the previous assistant turn so the chain can keep its arm.
+    expect(resolveCalls[1].pool).toMatchObject({ drawKey: 'conv-1#2', previous: { id: first.id, tier: 'standard' } });
+  });
+
+  it('records nothing when the pool did not enrol the turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn, poolRecords } = harness({ model });
+    await turn(userMsg('hello'));
+    expect(poolRecords).toEqual([]);
   });
 });
 
@@ -468,5 +498,160 @@ describe('steering a docked mission (fictional Harborline data)', () => {
     const r2 = await turn(approve, about);
     expect(r2.res.status).toBe(409);
     expect(writesIn(apiCalls)).toHaveLength(2);
+  });
+
+  it('with tasks allowed, a docked mission still gets a card (its task titles are in context)', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-h', 'hold_task', { taskId: 'stripe checkout' }), textStream('Held.')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, api: world(), allowedGroups: ['tasks'] });
+    await turn(userMsg('Hold the Stripe checkout.'), about);
+    expect(lastAssistant().parts.find(p => p.type === 'tool-hold_task').state).toBe('approval-requested');
+    expect(writesIn(apiCalls)).toEqual([]);
+  });
+
+  it('with tasks allowed, the injection test still gets a card, never a write', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'get_task', { taskId: C }), toolStream('call-x', 'update_task', { taskId: A, status: 'cancelled' }), textStream('Done.')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, api: world(), allowedGroups: ['tasks'] });
+    await turn(userMsg('What does the admin guide task say?'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-update_task').state).toBe('approval-requested');
+    expect(writesIn(apiCalls)).toEqual([]);
+  });
+});
+
+describe('"Allow" for a tool group (docs/design/agent-chat.md → Tools and permissions)', () => {
+  const mission = () => new MockLanguageModelV4({
+    doStream: [toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('Filed it.')] as any,
+  });
+
+  it('allowed group, nothing read yet: the write runs in the same turn with no card', async () => {
+    const { turn, apiCalls, linked } = harness({ model: mission(), allowedGroups: ['missions'] });
+    await turn(userMsg('make this a mission'));
+    const part = lastAssistant().parts.find(p => p.type === 'tool-manage_missions');
+    expect(part.state).toBe('output-available');
+    expect(part.output.allowed).toBe(true);
+    expect(approvals).toHaveLength(0);
+    expect(apiCalls).toEqual(['POST /api/missions']);
+    expect(linked).toEqual(['mission-1']);
+  });
+
+  it('the allow is per group: a missions allow does not skip a task write', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-t', 'update_task', { taskId: '22222222-2222-4222-8222-222222222222', status: 'cancelled' }), textStream('ok')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, allowedGroups: ['missions'], api: () => ({ id: '22222222-2222-4222-8222-222222222222', title: 'x', status: 'pending', workspaceId: 'ws-1' }) });
+    await turn(userMsg('cancel it'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-update_task').state).toBe('approval-requested');
+    expect(apiCalls.filter(c => !c.startsWith('GET '))).toEqual([]);
+  });
+
+  it('after a read, the same write gets a card: tool output is in context', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}), toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('ok')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, allowedGroups: ['missions'] });
+    await turn(userMsg('look at what is running, then make it a mission'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual(['GET /api/tasks']);
+  });
+
+  it('tool output from an earlier turn in the history also means a card', async () => {
+    messages.push({
+      id: 'old', conversationId: 'conv-1', role: 'assistant', createdAt: new Date(),
+      parts: [{ type: 'tool-list_tasks', toolCallId: 'r0', state: 'output-available', input: {}, output: { data: 'Task: do the thing', objects: [] } }],
+    });
+    const { turn, apiCalls } = harness({ model: mission(), allowedGroups: ['missions'] });
+    await turn(userMsg('make this a mission'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual([]);
+  });
+
+  it('admin-class writes ask even in an allowed group', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-b', 'manage_missions', { ...MISSION_INPUT, costBudgetUsd: 50 }), textStream('ok')] as any,
+    });
+    const owner = { ...user, teamRole: 'owner' as const };
+    const { turn, apiCalls } = harness({ model, allowedGroups: ['missions'], user: owner });
+    await turn(userMsg('make this a mission with a $50 budget'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual([]);
+  });
+});
+
+describe('a conversation pinned to a tier', () => {
+  it('uses the pinned tier whatever routing picks', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn, tiersAsked } = harness({
+      model,
+      conversation: { tier: 'premium' },
+      route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }),
+    });
+    await turn(userMsg('hi'));
+    expect(tiersAsked[0]).toBe('premium');
+    expect(lastAssistant().tier).toBe('premium');
+  });
+
+  it('unpinned: routing picks', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn, tiersAsked } = harness({ model, route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }) });
+    await turn(userMsg('hi'));
+    expect(tiersAsked[0]).toBe('budget');
+  });
+});
+
+describe('workspace scope: all workspaces by default, routed per turn', () => {
+  const both = [{ id: 'ws-1', name: 'billing-web' }, { id: 'ws-2', name: 'docs-site' }];
+
+  it('unpinned: routing is offered the workspaces; a confident pick scopes the turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const scoped: string[] = [];
+    const { turn, tiersAsked, resolveCalls } = harness({
+      model, workspace: null, workspaces: both,
+      route: async (i: any) => { asked.push(i); return { tier: 'standard', allowWrites: true, source: 'decision', workspaceId: 'ws-2' }; },
+      scopeFor: (id: string) => { scoped.push(id); return { actionContext: { workspaceId: id, teamId: 'team-1', getWorkspaceId: async () => id, getLevel: async () => 'admin' } }; },
+    } as any);
+    const { text } = await turn(userMsg('what changed in the docs site this week?'));
+    expect(asked[0].workspaces.map((w: any) => w.id)).toEqual(['ws-1', 'ws-2']);
+    expect(scoped).toEqual(['ws-2']);
+    expect(resolveCalls[0].workspaceId).toBe('ws-2');
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('Workspace for this turn: docs-site (id ws-2)');
+    // The composer reads the routed scope from the message metadata.
+    expect(text).toContain('"source":"routed"');
+    expect(tiersAsked).toHaveLength(1);
+  });
+
+  it('unpinned, no confident pick: no default, every workspace listed', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, workspace: null, workspaces: both });
+    await turn(userMsg('hi'));
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('all workspaces in reach');
+    expect(prompt).toContain('docs-site (id ws-2)');
+  });
+
+  it('pinned: routing is not asked to pick a workspace, and a routed id is ignored', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const { turn } = harness({
+      model, workspaces: both,
+      route: async (i: any) => { asked.push(i); return { tier: 'standard', allowWrites: true, source: 'decision', workspaceId: 'ws-2' }; },
+    } as any);
+    await turn(userMsg('hi'));
+    expect(asked[0].workspaces).toBeUndefined();
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('Default workspace: billing-web (id ws-1)');
+  });
+
+  it('a routed id outside the list is ignored', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({
+      model, workspace: null, workspaces: both,
+      route: async () => ({ tier: 'standard', allowWrites: true, source: 'decision', workspaceId: 'ws-elsewhere' }),
+    } as any);
+    await turn(userMsg('hi'));
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('all workspaces in reach');
   });
 });

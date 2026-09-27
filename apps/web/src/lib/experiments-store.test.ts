@@ -31,14 +31,14 @@ const ID = 'exp-1';
 describe('experiments-store predicates', () => {
   it('list is scoped to the team', () => {
     const { sql, params } = render(store.teamExperimentsScope(TEAM));
-    expect(sql).toBe('"experiments"."team_id" = $1');
-    expect(params).toEqual([TEAM]);
+    expect(sql).toBe('("experiments"."team_id" = $1 and "experiments"."kind" <> $2)');
+    expect(params).toEqual([TEAM, 'tier_pool']);
   });
 
   it('get-by-id is scoped by id AND team — an id from another team matches nothing', () => {
     const { sql, params } = render(store.teamExperimentScope(TEAM, ID));
-    expect(sql).toBe('("experiments"."id" = $1 and "experiments"."team_id" = $2)');
-    expect(params).toEqual([ID, TEAM]);
+    expect(sql).toBe('("experiments"."id" = $1 and "experiments"."team_id" = $2 and "experiments"."kind" <> $3)');
+    expect(params).toEqual([ID, TEAM, 'tier_pool']);
   });
 
   it('other-running: same team, same kind, running, excluding self', () => {

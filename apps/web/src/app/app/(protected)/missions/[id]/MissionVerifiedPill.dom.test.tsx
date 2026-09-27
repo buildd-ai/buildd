@@ -40,8 +40,8 @@ mock.module('next/navigation', () => ({
   }),
 }));
 
-// Mock BottomSheet to render when open
-mock.module('@/components/BottomSheet', () => ({
+// Mock the side sheet to render when open
+mock.module('@/components/SideSheet', () => ({
   default: ({ open, onClose, title, children }: any) =>
     open ? (
       <div data-testid="bottom-sheet" role="dialog" aria-label={title}>
@@ -142,7 +142,7 @@ const click = (el: Element) => act(() => {
 });
 
 describe('MissionVerifiedPill mounted — chip tap opens panel', () => {
-  it('clicking the chip button opens the BottomSheet panel', () => {
+  it('clicking the chip button opens the side sheet', () => {
     renderPill({ overall: 'fail' });
     const button = getButton();
     expect(button).not.toBeNull();

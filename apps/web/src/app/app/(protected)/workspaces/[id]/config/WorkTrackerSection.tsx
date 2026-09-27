@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import type { WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
+import { Select } from '@/components/ui/Select';
 
 interface Connector {
   id: string;
@@ -145,20 +146,16 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
           <label className="block text-sm font-medium mb-1" htmlFor="work-tracker-select">
             Tracker
           </label>
-          <select
+          <Select
             id="work-tracker-select"
-            className="w-full border border-border-subtle rounded px-3 py-2 bg-surface-1 text-base md:text-sm"
             value={selection}
-            onChange={e => setSelection(e.target.value)}
-          >
-            <option value="">None (work tracker off)</option>
-            <option value={GITHUB_APP}>GitHub (this repo&apos;s App)</option>
-            {connectors.map(c => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({detectProvider(c.url)})
-              </option>
-            ))}
-          </select>
+            onChange={setSelection}
+            options={[
+              { value: '', label: 'None', description: 'Work tracker off' },
+              { value: GITHUB_APP, label: 'GitHub', description: "This repo's App" },
+              ...connectors.map(c => ({ value: c.id, label: c.name, description: detectProvider(c.url) })),
+            ]}
+          />
         </div>
 
         <button

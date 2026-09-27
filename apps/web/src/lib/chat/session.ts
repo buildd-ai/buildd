@@ -4,14 +4,16 @@
  */
 
 import type { NextRequest } from 'next/server';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, teams, workspaces } from '@buildd/core/db/schema';
 import { resolveTimezone } from '@buildd/core/timezone';
+import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
 import type { TurnUser } from './turn';
 import { isStandardWorkspace } from './reach';
+import { workspaceHint, type RoutableWorkspace } from './routing';
 
 export type ChatCaller = { user: CurrentUser; teamIds: string[] };
 
@@ -31,7 +33,7 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
+    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true },
   });
   return {
     // On whenever a key resolves; an admin can switch it off (teams.chatDisabled).
@@ -40,6 +42,7 @@ export async function loadTeamChatSettings(teamId: string) {
     // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
     userDailyBudgetUsd: team?.chatUserDailyBudgetUsd != null ? Number(team.chatUserDailyBudgetUsd) : null,
+    keyPolicy: isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? team.inferenceKeyPolicy : null,
   };
 }
 
@@ -95,4 +98,17 @@ export async function linkMissionToConversation(missionId: string, conversationI
   await db.update(missions)
     .set({ conversationId })
     .where(and(eq(missions.id, missionId), eq(missions.teamId, teamId)));
+}
+
+/**
+ * The workspaces an unpinned conversation's turn may be routed to: this team's,
+ * in reach (never a sensitive one), with a hint of what each is about.
+ */
+export async function loadRoutableWorkspaces(teamId: string, inReach: ReadonlySet<string>): Promise<RoutableWorkspace[]> {
+  if (inReach.size === 0) return [];
+  const rows = await db.select({ id: workspaces.id, name: workspaces.name, repo: workspaces.repo, projects: workspaces.projects })
+    .from(workspaces)
+    .where(and(eq(workspaces.teamId, teamId), inArray(workspaces.id, [...inReach])))
+    .orderBy(asc(workspaces.name));
+  return rows.map(w => ({ id: w.id, name: w.name, hint: workspaceHint(w) }));
 }

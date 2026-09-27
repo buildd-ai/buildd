@@ -22,8 +22,17 @@ const TIERS = {
   'premium-plus': { provider: 'anthropic', model: 'claude-opus-5', source: 'catalog' },
   premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'catalog' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-4-6', source: 'team' },
-  budget: { provider: 'openai-codex', model: 'gpt-mini', source: 'team' },
+  budget: { provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', source: 'team' },
 };
+
+const T = (iso: string) => Date.parse(iso) / 1000;
+const MODELS = [
+  { id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', provider: 'anthropic', openRouterId: 'anthropic/claude-sonnet-5', vendor: 'anthropic', inputPrice: 2, outputPrice: 10, contextLength: 1_000_000, created: T('2026-06-30') },
+  { id: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', provider: 'anthropic', openRouterId: 'anthropic/claude-sonnet-4.6', vendor: 'anthropic', inputPrice: 3, outputPrice: 15, contextLength: 1_000_000, created: T('2026-02-01') },
+  // OpenRouter writes the version with a dot; the registry row above uses dashes.
+  { id: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', provider: 'anthropic', openRouterId: 'anthropic/claude-haiku-4.5', vendor: 'anthropic', inputPrice: 1, outputPrice: 5, contextLength: 200_000, created: T('2025-10-01') },
+  { id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', provider: 'other', openRouterId: 'deepseek/deepseek-v4-pro', vendor: 'deepseek', inputPrice: 1.6, outputPrice: 3.2, contextLength: 1_000_000, created: T('2026-08-10') },
+];
 
 const posts: unknown[] = [];
 beforeEach(() => {
@@ -36,7 +45,7 @@ beforeEach(() => {
     if (String(url).startsWith('/api/model-tiers')) return new Response(JSON.stringify(TIERS), { status: 200 });
     if (String(url).startsWith('/api/models')) {
       return new Response(JSON.stringify({
-        models: [], catalogComplete: true,
+        models: MODELS, catalogComplete: true,
         tierAudit: { checked: true, unknown: [], superseded: [{ tier: 'standard', model: 'claude-sonnet-4-6', newer: 'claude-sonnet-5' }] },
       }), { status: 200 });
     }
@@ -70,7 +79,38 @@ describe('ModelTiersClient', () => {
     await mount();
     const usedBy = (tier: string) => host.querySelector(`[data-testid="tier-row-${tier}"] [data-testid="tier-used-by"]`)?.textContent;
     expect(usedBy('standard')).toBe('agent runs, chat');
-    expect(usedBy('budget')).toBe('agent runs only');
+    expect(usedBy('budget')).toBe('agent runs, chat');
+  });
+
+  it('has no provider dropdown and no free-text model field: one picker per row', async () => {
+    await mount();
+    const row = host.querySelector('[data-testid="tier-row-standard"]')!;
+    expect(row.querySelector('[aria-label="Provider for standard"]')).toBeNull();
+    expect(row.querySelector('input')).toBeNull();
+    expect(row.querySelector('select, datalist')).toBeNull();
+    expect(row.querySelector('[data-testid="model-picker-trigger"]')!.textContent).toContain('claude-sonnet-4-6');
+  });
+
+  it('regression: a listed OpenRouter model saved with dashes is not flagged as missing from the catalog', async () => {
+    await mount();
+    const row = host.querySelector('[data-testid="tier-row-budget"]')!;
+    const trigger = row.querySelector('[data-testid="model-picker-trigger"]') as HTMLButtonElement;
+    expect(trigger.textContent).toContain('anthropic/claude-haiku-4.5');
+    await act(async () => { trigger.click(); });
+    const current = document.querySelector('[data-testid="model-picker-row"][aria-selected="true"]')!;
+    expect(current.getAttribute('data-key')).toBe('openrouter::anthropic/claude-haiku-4.5');
+    expect(document.body.textContent).not.toContain('not in the catalog');
+    expect(document.body.textContent).not.toContain('not in catalog');
+  });
+
+  it('picking a model from another route shows Apply, which saves the route and id', async () => {
+    await mount();
+    const row = host.querySelector('[data-testid="tier-row-standard"]')!;
+    await act(async () => { (row.querySelector('[data-testid="model-picker-trigger"]') as HTMLButtonElement).click(); });
+    await act(async () => { (document.querySelector('[data-key="openrouter::deepseek/deepseek-v4-pro"]') as HTMLElement).click(); });
+    const apply = row.querySelector('[data-testid="tier-apply"]') as HTMLButtonElement;
+    await act(async () => { apply.click(); });
+    expect(posts).toEqual([{ tier: 'standard', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', teamId: 'team-demo' }]);
   });
 
   it('puts a newer catalog release on its row as a Switch action', async () => {
@@ -91,7 +131,7 @@ describe('ModelTiersClient', () => {
   it('gives members the table without controls', async () => {
     await mount(false);
     const row = host.querySelector('[data-testid="tier-row-standard"]')!;
-    expect((row.querySelector('select') as HTMLSelectElement).disabled).toBe(true);
+    expect((row.querySelector('[data-testid="model-picker-trigger"]') as HTMLButtonElement).disabled).toBe(true);
     expect(Array.from(row.querySelectorAll('button')).some((b) => b.textContent === 'Switch')).toBe(false);
   });
 });

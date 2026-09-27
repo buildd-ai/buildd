@@ -1,0 +1,55 @@
+{
+  "_meta": {
+    "purpose": "Synthetic multi-team story for scripts/demo: one user on several teams (owner, admin, member) with workspaces spread across them, for Settings -> Workspaces and the move-to-team dialog. Everything here is made up."
+  },
+  "team": { "key": "team", "name": "Example Co", "slug": "example-co", "timezone": "UTC" },
+  "users": [{ "key": "u_demo", "name": "Demo User", "email": "demo@example.com" }],
+  "accounts": [
+    { "key": "acct_fleet", "type": "user", "level": "worker", "name": "example-fleet", "authType": "oauth", "maxConcurrentWorkers": 4, "apiKey": "bld_demo_placeholder_not_a_real_key_00", "apiKeyPrefix": "bld_demo" }
+  ],
+  "runners": [
+    { "key": "alpha", "runner": "alpha", "localUiUrl": "http://alpha.local:8766", "maxConcurrentWorkers": 2 }
+  ],
+  "workspace": {
+    "key": "ws", "name": "example-app", "repo": "https://github.com/example/example-app", "accessMode": "restricted", "configStatus": "admin_confirmed",
+    "gitConfig": { "defaultBranch": "main", "branchingStrategy": "trunk", "branchStrategy": "direct", "commitStyle": "conventional", "requiresPR": true, "targetBranch": "main", "autoCreatePR": true },
+    "_github": { "fullName": "example/example-app" }
+  },
+  "roles": [
+    { "key": "organizer", "slug": "organizer", "name": "Organizer", "color": "#6366F1", "model": "sonnet", "isRole": true, "description": "Plans missions into tasks" },
+    { "key": "builder", "slug": "builder", "name": "Builder", "color": "#0C72CB", "model": "opus", "isRole": true, "description": "Writes code and opens PRs" }
+  ],
+  "missions": [
+    { "key": "B1", "workspaceId": "ws", "title": "Faster first page load", "description": "Cut time-to-interactive on the dashboard.", "status": "completed", "_createdAgo": "-5d", "_completedAgo": "-4d", "goalCriteria": [{ "type": "all_prs_merged" }], "goalCriteriaState": { "overall": "pass" } }
+  ],
+  "backgroundMissions": [
+    { "missionKey": "B1", "tasks": [
+      { "key": "B1_t1", "workspaceId": "ws", "missionId": "B1", "title": "perf(web): lazy-load the chart bundle", "roleSlug": "builder", "kind": "engineering", "status": "completed", "outputRequirement": "pr_required", "_worker": { "runner": "alpha", "status": "completed", "prNumber": 101, "prUrl": "https://github.com/example/example-app/pull/101", "linesAdded": 88, "linesRemoved": 40, "prLifecycleStatus": "merged" } },
+      { "key": "B1_t2", "workspaceId": "ws", "missionId": "B1", "title": "perf(api): cache the workspace summary query", "roleSlug": "builder", "kind": "engineering", "status": "completed", "outputRequirement": "pr_required", "_worker": { "runner": "alpha", "status": "completed", "prNumber": 102, "prUrl": "https://github.com/example/example-app/pull/102", "linesAdded": 64, "linesRemoved": 9, "prLifecycleStatus": "merged" } }
+    ] }
+  ],
+  "extraTeams": [
+    { "key": "team_labs", "name": "Example Labs", "slug": "example-labs", "timezone": "UTC", "_role": "owner" },
+    { "key": "team_ops", "name": "Example Ops", "slug": "example-ops", "timezone": "UTC", "_role": "admin" },
+    { "key": "team_partner", "name": "Partner Co", "slug": "partner-co", "timezone": "UTC", "_role": "member" }
+  ],
+  "extraWorkspaces": [
+    {
+      "key": "ws_api", "name": "example-api", "teamId": "team", "repo": "https://github.com/example/example-api", "accessMode": "open", "configStatus": "admin_confirmed",
+      "gitConfig": { "defaultBranch": "main", "branchingStrategy": "trunk", "commitStyle": "conventional", "requiresPR": true, "autoCreatePR": true, "useClaudeMd": true, "enforceGreenCI": true, "mergePolicy": { "tier": "human" } }
+    },
+    {
+      "key": "ws_mobile", "name": "example-mobile", "teamId": "team_labs", "repo": "https://github.com/example/example-mobile", "accessMode": "open", "configStatus": "admin_confirmed",
+      "gitConfig": { "defaultBranch": "main", "branchingStrategy": "trunk", "branchStrategy": "direct", "commitStyle": "conventional", "requiresPR": true, "autoCreatePR": true, "useClaudeMd": true, "mergePolicy": { "tier": "agent-review", "agentReview": { "reviewerRole": "builder" } } }
+    },
+    {
+      "key": "ws_infra", "name": "example-infrastructure-terraform-modules", "teamId": "team_ops", "repo": "https://github.com/example/example-infra", "accessMode": "open", "configStatus": "admin_confirmed",
+      "gitConfig": { "defaultBranch": "main", "branchingStrategy": "trunk", "commitStyle": "conventional", "requiresPR": true, "autoCreatePR": true, "useClaudeMd": true, "enforceGreenCI": true }
+    },
+    {
+      "key": "ws_partner", "name": "partner-portal", "teamId": "team_partner", "repo": "https://github.com/example/partner-portal", "accessMode": "open", "configStatus": "admin_confirmed",
+      "gitConfig": { "defaultBranch": "main", "branchingStrategy": "trunk", "commitStyle": "conventional", "requiresPR": true, "autoCreatePR": true, "useClaudeMd": true }
+    }
+  ],
+  "timeline": []
+}

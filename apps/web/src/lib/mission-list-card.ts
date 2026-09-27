@@ -13,6 +13,7 @@
  * not `running` — the platform owns it (auto-merge evaluates on green), and the
  * owner can tell "an agent is typing" from "the checks are running".
  */
+import { activeWorkMs } from './mission-duration';
 import {
   deriveFeedPrState,
   deriveFeedTaskState,
@@ -127,7 +128,8 @@ export interface MissionListCardModel {
     lastSummary: string | null;
   } | null;
   held: { ready: number; roles: string[]; since: string | null } | null;
-  done: { prs: number; fixes: number; durationMs: number | null; completedAt: string | null } | null;
+  /** `durationMs`: filed → completed. `activeMs`: wall time agents worked (`activeWorkMs`). */
+  done: { prs: number; fixes: number; durationMs: number | null; activeMs: number | null; completedAt: string | null } | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -353,9 +355,21 @@ export function buildMissionListCard(
     const fixes = folded.rows.reduce((n, r) => n + r.attempts.length, 0);
     const start = msOf(row.createdAt);
     const end = msOf(row.completedAt);
+    // Work = the runs of deliverables, their attempts and the orchestrator,
+    // unioned; a friction report or other bookkeeping run is not mission work.
+    const workIds = new Set<string>([
+      ...folded.rows.flatMap(r => [r.task.id, ...r.attempts.map(x => x.id)]),
+      ...tasks.filter(t => t.mode === 'planning').map(t => t.id),
+    ]);
+    const spans = tasks.filter(t => workIds.has(t.id)).flatMap(t => (t.workers ?? []).map(w => ({
+      start: msOf(w.startedAt),
+      end: Number.isFinite(msOf(w.completedAt)) ? msOf(w.completedAt) : Number.isFinite(msOf(w.updatedAt)) ? msOf(w.updatedAt) : NaN,
+    })));
+    const activeMs = activeWorkMs(spans, now);
     done = {
       prs, fixes,
       durationMs: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null,
+      activeMs: activeMs > 0 ? activeMs : null,
       completedAt: isoOf(row.completedAt ?? null),
     };
   }

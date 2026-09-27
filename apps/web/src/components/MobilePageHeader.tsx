@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
 import UserAvatarMenu from './UserAvatarMenu';
-import { WorkspaceFilter } from './WorkspaceFilter';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
 import { isAccountRoute } from '@/lib/nav-active';
 
@@ -40,6 +40,9 @@ export default function MobilePageHeader({
   const bannersRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const bannerHeight = useElementHeight(bannersRef, title !== null);
+  // One switcher for the app: in this header on a phone, and in the desktop
+  // bar below on the same pages. Both read and write ?workspace=.
+  const showSwitcher = workspaces.length > 0 && showsWorkspaceFilter(pathname);
   const headerHeight = useElementHeight(headerRef, title !== null);
 
   // Sticky bands inside <main> offset themselves by `--mobile-header-h` (e.g.
@@ -52,7 +55,14 @@ export default function MobilePageHeader({
 
   // Only render the header on top-level pages (where the title resolves). Detail
   // pages (e.g. /app/missions/[id]) render their own headers; banners stay in flow.
-  if (!title) return <>{banners}</>;
+  // Desktop: the same switcher, right-aligned in a slim bar above the page.
+  const desktopBar = showSwitcher ? (
+    <div data-testid="desktop-app-header" className="hidden md:flex items-center justify-end gap-3 border-b border-border-default bg-surface-1 px-8 py-1.5">
+      <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />
+    </div>
+  ) : null;
+
+  if (!title) return <>{desktopBar}{banners}</>;
 
   const headerRow = (
     <div ref={headerRef} data-testid="mobile-page-header" className="md:hidden flex items-center justify-between gap-2 px-4 py-1 bg-surface-2 border-b border-border-default">
@@ -85,18 +95,20 @@ export default function MobilePageHeader({
         )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {workspaces.length > 0 && showsWorkspaceFilter(pathname) && <WorkspaceFilter workspaces={workspaces} />}
+        {showSwitcher && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
         <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
       </div>
     </div>
   );
 
+
   return (
     <>
       {/* Fixed on mobile, in flow on desktop (the header row is md:hidden there,
-          so desktop sees just the banners at the top of the column). */}
+          so desktop sees the switcher bar and the banners at the top of the column). */}
       <div data-testid="mobile-top-stack" className="max-md:fixed max-md:top-0 max-md:inset-x-0 max-md:z-10">
         {headerRow}
+        {desktopBar}
         {/* Opaque base: the banners use translucent tints, and fixed over
             scrolling content they would let the page show through. */}
         <div ref={bannersRef} className="max-md:bg-surface-1">{banners}</div>

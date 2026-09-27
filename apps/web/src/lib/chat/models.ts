@@ -12,6 +12,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { resolveTierEntry } from '@buildd/core/model-tier-registry';
+import { drawChatPoolArm, type ChatPoolDraw } from '@buildd/core/tier-pool-source';
 import { resolveInferenceCredential, isInferenceKeyProvider, type InferenceKeyScope } from '@buildd/core/inference-keys';
 import { priceForModel } from '@buildd/core/model-prices';
 import type { Tier } from '@buildd/core/model-tier-defaults';
@@ -20,7 +21,11 @@ import type { ChatProvider } from '@buildd/shared';
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
 export type ResolvedChatModel =
-  | { ok: true; model: LanguageModel; provider: ChatProvider; modelId: string; tier: ChatTier; keyScope: InferenceKeyScope }
+  | {
+    ok: true; model: LanguageModel; provider: ChatProvider; modelId: string; tier: ChatTier; keyScope: InferenceKeyScope;
+    /** Set when the tier's chat pool enrolled this turn (docs/design/tier-model-pools.md). */
+    pool?: ChatPoolDraw;
+  }
   | { ok: false; reason: 'no_key' | 'unsupported_provider'; provider: string; tier: ChatTier };
 
 export function languageModelFor(provider: ChatProvider, modelId: string, apiKey: string): LanguageModel {
@@ -50,6 +55,21 @@ export function openRouterModelId(provider: string, modelId: string): string {
 interface ResolveDeps {
   resolveTierEntry: typeof resolveTierEntry;
   resolveInferenceCredential: typeof resolveInferenceCredential;
+  drawChatPoolArm?: typeof drawChatPoolArm;
+}
+
+/**
+ * What a chat turn passes so its tier's pool can enrol it. Callers that are
+ * not a user's turn (auto-title, availability probes) pass nothing and always
+ * get the incumbent.
+ */
+export interface ChatPoolContext {
+  conversationId: string;
+  /** Stable per chain start, e.g. `${conversationId}#${storedMessageCount}`. */
+  drawKey: string;
+  /** The last stored assistant turn, for chain stickiness. */
+  previous: { id: string; tier: string | null; createdAt: Date } | null;
+  now: Date;
 }
 
 export async function resolveChatModel(
@@ -58,8 +78,66 @@ export async function resolveChatModel(
     teamId: string;
     workspaceId: string | null;
     userId: string;
+    pool?: ChatPoolContext;
   },
-  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential },
+  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential, drawChatPoolArm },
+): Promise<ResolvedChatModel> {
+  const incumbent = await resolveIncumbentChatModel(opts, deps);
+  if (!incumbent.ok || !opts.pool || !deps.drawChatPoolArm) return incumbent;
+  return withChatPool(incumbent, opts, opts.pool, deps);
+}
+
+/**
+ * The pool step. The incumbent is served on its own route, with the
+ * OpenRouter fallback as today; a challenger is served on its exact route, and
+ * when this user has no key for that route the turn serves the incumbent and
+ * records `served = false`. Never throws.
+ */
+async function withChatPool(
+  incumbent: ResolvedChatModel & { ok: true },
+  opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string },
+  pool: ChatPoolContext,
+  deps: ResolveDeps,
+): Promise<ResolvedChatModel> {
+  try {
+    const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
+    const draw = await deps.drawChatPoolArm!({
+      teamId: opts.teamId, workspaceId: opts.workspaceId, tier: opts.tier,
+      conversationId: pool.conversationId, drawKey: pool.drawKey, previous: pool.previous,
+      workspaceOverride: entry.source === 'workspace', now: pool.now,
+    });
+    if (!draw) return incumbent;
+    draw.defaultModel = incumbent.modelId;
+    draw.assignedModel = incumbent.modelId;
+    if (draw.arm.role === 'incumbent') {
+      draw.served = true;
+      return { ...incumbent, pool: draw };
+    }
+    const route = draw.arm.route;
+    draw.served = false;
+    if (!isInferenceKeyProvider(route)) return { ...incumbent, pool: draw };
+    const cred = await deps.resolveInferenceCredential({ provider: route, teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId });
+    if (!cred) return { ...incumbent, pool: draw };
+    draw.served = true;
+    draw.assignedModel = draw.arm.model;
+    return {
+      ok: true,
+      model: languageModelFor(route, draw.arm.model, cred.key),
+      provider: route,
+      modelId: draw.arm.model,
+      tier: opts.tier,
+      keyScope: cred.scope,
+      pool: draw,
+    };
+  } catch (err) {
+    console.warn('[chat] tier pool step failed; serving the incumbent:', err);
+    return incumbent;
+  }
+}
+
+async function resolveIncumbentChatModel(
+  opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string },
+  deps: ResolveDeps,
 ): Promise<ResolvedChatModel> {
   const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
   const provider = entry.provider as string;

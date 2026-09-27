@@ -11,12 +11,13 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
+import type { ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions } from './ChatActions';
 import ChatComposer, { type ChatComposerHandle, type ComposerWorkspace } from './ChatComposer';
 import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
-import { paneFocus, provisionalTitle } from './feed-model';
+import { paneFocus, provisionalTitle, routedScope } from './feed-model';
 import { ObjectPane } from './objects/registry';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
 
@@ -36,9 +37,15 @@ export interface ChatWorkspaceProps {
   teamName?: string | null;
   agent: ChatAgent;
   tier: string | null;
+  /** The composer's tools and tier controls (absent in the dev fixtures). */
+  teamId?: string | null;
+  conversationId?: string | null;
+  pinnedTier?: ChatTierName | null;
+  onTierChange?(tier: ChatTierName | null): void;
+  costRefreshKey?: number;
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
-  onWorkspaceChange(id: string): void;
+  onWorkspaceChange(id: string | null): void;
   viewerName: string | null;
   /** Shown beside the chat when no object is docked (member / operator context). */
   aside?: ReactNode;
@@ -67,8 +74,8 @@ const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(m
 
 export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
-    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, titleSource = 'auto', teamName,
-    agent, tier, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
+    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
+    agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null,
   } = props;
@@ -164,17 +171,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         </div>
         <div className="flex min-w-0 items-center gap-2">
           <h1 data-testid="chat-title" className="min-w-0 truncate font-mono text-[16px] font-semibold text-text-primary md:text-[19px]">{shownTitle}</h1>
-          {title && titleSource === 'auto' && !docked && (
-            <span className="hidden shrink-0 border border-dashed border-border-strong px-1.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted sm:inline">
-              auto-titled
-            </span>
-          )}
         </div>
-        <div className="truncate font-mono text-[11.5px] text-text-muted md:hidden">{`${agent.name} · your buildd agent`}</div>
+        <div className="truncate font-mono text-[11.5px] text-text-muted md:hidden">{agent.name}</div>
       </div>
-      {tier && (
-        <span className="border-[1.5px] border-dashed border-border-strong px-2 py-1 font-mono text-[11.5px] text-text-muted sm:hidden">{tier}</span>
-      )}
       <Link
         href={newChatHref}
         data-testid="chat-new"
@@ -220,7 +219,14 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             workspaces={workspaces}
             workspaceId={workspaceId}
             onWorkspaceChange={onWorkspaceChange}
+            routedWorkspace={routedScope(messages)}
+            teamName={teamName}
             tier={tier}
+            teamId={teamId}
+            conversationId={conversationId}
+            pinnedTier={pinnedTier}
+            onTierChange={onTierChange}
+            costRefreshKey={costRefreshKey}
             compact={docked}
           />
           {formFallbackHref && messages.length === 0 && (
@@ -245,13 +251,13 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       <div className="flex min-h-12 items-center gap-2.5 border-b border-border-default bg-surface-2 px-4 py-2">
         <span aria-hidden="true" className="h-2.5 w-2.5 bg-[var(--status-info)]" />
         <span className="min-w-0 truncate font-mono text-[12px] text-text-secondary">
-          {pane.pinned ? 'Pinned · ' : 'Opened from chat · follows the conversation'}
+          {pane.pinned ? 'Pinned · ' : 'Following'}
           {pane.pinned && (
-            <button type="button" onClick={() => dispatch({ type: 'unpin' })} className="underline hover:text-text-primary">follow the conversation</button>
+            <button type="button" onClick={() => dispatch({ type: 'unpin' })} className="underline hover:text-text-primary">Unpin</button>
           )}
         </span>
         <span className="flex-1" />
-        <button type="button" data-testid="pane-swap" onClick={swap} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">⇄ Swap sides</button>
+        <button type="button" data-testid="pane-swap" onClick={swap} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">⇄ Swap</button>
         {popOut && (
           <a href={popOut} target="_blank" rel="noreferrer" data-testid="pane-popout" className="inline-flex min-h-9 items-center border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Pop out ↗</a>
         )}
@@ -274,7 +280,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         {docked && <div aria-hidden="true" className="hidden w-[2px] shrink-0 bg-border-strong md:block" />}
         {column}
         {!docked && aside && (
-          <aside data-testid="chat-aside" className="hidden w-[400px] shrink-0 overflow-y-auto border-l border-border-default bg-surface-2 px-6 py-5 xl:block">
+          <aside data-testid="chat-aside" className="hidden w-[400px] min-w-0 shrink-0 overflow-y-auto overflow-x-hidden border-l border-border-default bg-surface-2 px-6 py-5 xl:block">
             {aside}
           </aside>
         )}
