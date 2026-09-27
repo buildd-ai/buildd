@@ -178,9 +178,9 @@ export function LandedMeter({ model, variant, compact = false }: { model: Missio
   );
 }
 
-export function SectionLabel({ children, className = '', 'data-testid': testId }: { children: ReactNode; className?: string; 'data-testid'?: string }) {
+export function SectionLabel({ children, className = '', title, 'data-testid': testId }: { children: ReactNode; className?: string; title?: string; 'data-testid'?: string }) {
   return (
-    <span data-testid={testId} className={`font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.6px] text-text-muted ${className}`}>
+    <span data-testid={testId} title={title} className={`font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.6px] text-text-muted ${className}`}>
       {children}
     </span>
   );
