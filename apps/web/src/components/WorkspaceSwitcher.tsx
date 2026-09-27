@@ -351,8 +351,8 @@ export function WorkspaceSwitcher({
         <span className="min-w-0 truncate">{chipLabel.name}</span>
       ) : (
         <>
-          <span data-testid="scope-chip-short" className="min-w-0 truncate md:hidden">{chipLabel.short}</span>
-          <span data-testid="scope-chip-name" className="min-w-0 truncate max-md:hidden">{chipLabel.name}</span>
+          <span data-testid="scope-chip-short" className="min-w-0 truncate md:hidden lg:inline">{chipLabel.short}</span>
+          <span data-testid="scope-chip-name" className="min-w-0 truncate max-md:hidden lg:hidden">{chipLabel.name}</span>
         </>
       )}
       <span aria-hidden="true" className="shrink-0 text-[var(--chat-dim)]">▾</span>

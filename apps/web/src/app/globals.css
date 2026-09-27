@@ -819,6 +819,12 @@ textarea[data-composer-input]:focus-visible { outline: none; }
     vertical-align: -.14em; background: var(--mood-thinking);
   }
 }
+/* Desktop (docs/design/chat-v3-desktop.md): the stage is wide, so the same
+ * pools grow to about 300-560px. `scale` grows each pool and its blur as one,
+ * so the peak it paints, and the AA cap above, stay the same. */
+@media (min-width: 1024px) {
+  .sea-current { scale: 1.75; }
+}
 @keyframes sea-drift {
   from { transform: translate3d(0, 0, 0); }
   to { transform: translate3d(var(--dx), var(--dy), 0); }

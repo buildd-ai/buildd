@@ -27,7 +27,8 @@ export default async function ChatPage({
   const picked = typeof q.workspace === 'string' ? q.workspace : null;
   const workspaceId = [about?.workspaceId, entry.workspaceId, picked].find((id): id is string => !!id && wsIds.includes(id)) ?? null;
   // A phone's HISTORY → (`?view=history`): the conversation list in place of
-  // the empty canvas. Desktop always shows the list above the canvas.
+  // the empty canvas. Desktop reaches it the same way (HISTORY →); only the
+  // tablet band shows the list above the canvas.
   const historyOpen = q.view === 'history' && !about && !entry.intent;
   const emptyState = data.conversations.length > 0
     ? <ConversationList items={data.conversations} />
